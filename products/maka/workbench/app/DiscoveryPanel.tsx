@@ -16,7 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, platform, signal, Text, View, Scroll, inputAction, windowSize } from 'nsh';
+import { cleanup, platform, signal, Text, View, Scroll, windowSize } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   AgentScheduledDetail,
@@ -57,12 +57,12 @@ import { readSettingsModels, settingsModelKey } from './settings';
 import { accessLabel } from './SessionPermissionsSelect';
 import { C, bodyTextStyle, captionTextStyle, toolbarControlStyle, textTooltip } from './ui';
 import { sameValue } from '../../../../plugins/shared/value';
+import { nativeModelSelection } from './modelSelection';
 
 type Props = {
   host: Host;
   sessionId: string;
   control(method: string, input: unknown): Promise<any>;
-  selection(): Promise<{ model: ModelSelection; thinkingLevel: ThinkingLevel | null } | null>;
   openWorker(id: string): void;
   chooseModel(): void;
 };
@@ -156,24 +156,18 @@ function DiscoveryModelField(props: {
   );
 }
 
-export function DiscoveryPanel(props: Props) {
-  const open = signal(false);
+export function DiscoveryPanel(props: { open(): void }) {
   return (
-    <>
-      <Button
-        accessibilityLabel={tr('Proactive discovery')}
-        tooltip={textTooltip(() => tr('Proactive discovery'))}
-        style={{ ...toolbarControlStyle, flexDirection: 'row', gap: 6, alignItems: 'center' }}
-        onPress={inputAction(() => open.set(true), null)}
-        hoverStyle={{ backgroundColor: C.card }}
-      >
-        <Icon name="activity" color={C.secondary} />
-        <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Proactive discovery')}</Text>
-      </Button>
-      <If when={open()}>
-        <DiscoveryDialog {...props} close={() => open.set(false)} />
-      </If>
-    </>
+    <Button
+      accessibilityLabel={tr('Proactive discovery')}
+      tooltip={textTooltip(() => tr('Proactive discovery'))}
+      style={{ ...toolbarControlStyle, flexDirection: 'row', gap: 6, alignItems: 'center' }}
+      onPress={props.open}
+      hoverStyle={{ backgroundColor: C.card }}
+    >
+      <Icon name="activity" color={C.secondary} />
+      <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Proactive discovery')}</Text>
+    </Button>
   );
 }
 
@@ -258,7 +252,9 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     void stream?.close().catch(() => {});
   });
   const capture = async (ticket = formGeneration): Promise<DiscoveryApproval> => {
-    const { session } = await props.host.query('agent', 'observe', { sessionId: props.sessionId });
+    const { session, rememberedBackend } = await props.host.query('agent', 'observe', {
+      sessionId: props.sessionId,
+    });
     const target = {
       sessionId: session.id,
       workspace: session.workspace,
@@ -267,8 +263,20 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
       binding: session.binding,
     };
     if (alive && editing() && ticket === formGeneration) formTarget.set(target);
-    const chosen = formModel() ?? (await props.selection());
-    if (!chosen) throw new UiError('Choose a model before sending.');
+    let chosen = formModel();
+    if (!chosen) {
+      const backend = session.backend ?? rememberedBackend;
+      if (backend?.kind !== 'model') throw new UiError('This action requires a native model.');
+      const available = await props.host.query('agent', 'model', { backend });
+      if (available.kind !== 'ready')
+        throw new UiError('Model unavailable: {model}. Choose another model.', {
+          model: backend.modelId,
+        });
+      chosen = {
+        model: nativeModelSelection(backend),
+        thinkingLevel: backend.thinkingLevel ?? null,
+      };
+    }
     const resolved = await props.host.query('settings', 'resolveModel', chosen.model);
     if (alive && ticket === formGeneration)
       formChoice.set(resolved.kind === 'ready' ? resolved.choice : null);
@@ -700,7 +708,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
           gap: 8,
         }}
       >
-        <If when={editing()} else={<DialogHeader title={tr('Proactive discovery')} />}>
+        <If when={editing()} else={<DialogHeader title={tr('Discovery plans')} />}>
           <Text
             role="header"
             style={{
@@ -792,9 +800,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <Text style={{ ...captionTextStyle, color: C.secondary }}>
               {tr('Discovery permissions')}:{' '}
               {resolvedWorkerTools() === 'session'
-                ? tr('Use standard Session tools') +
-                  ' · ' +
-                  accessLabel(snapshot()!.target.permissions.access)
+                ? tr('Use standard Session tools') + ' · ' + accessLabel('read_only')
                 : tr('Use read-only investigation tools')}
             </Text>
             <If when={planSelection() != null}>
@@ -940,7 +946,7 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
             <If when={workerTools() === 'session' && formTarget()}>
               <Text style={{ ...captionTextStyle, color: C.muted }}>
                 {tr('Discovery workspace scope', {
-                  access: accessLabel(formTarget()!.permissions.access),
+                  access: accessLabel('read_only'),
                 })}
                 {' ' + discoveryExternalToolNotice(selectedTools())}
               </Text>

@@ -19,10 +19,15 @@
 
 import { platform, signal, Storage } from 'nsh';
 
-export type SidebarFeature = 'bot' | 'automations' | 'rooms';
+export type SidebarFeature = 'bot' | 'automations' | 'rooms' | 'discovery';
 export type SidebarSortMode = 'project' | 'time';
 
-export const ALL_SIDEBAR_FEATURES: readonly SidebarFeature[] = ['bot', 'automations', 'rooms'];
+export const ALL_SIDEBAR_FEATURES: readonly SidebarFeature[] = [
+  'bot',
+  'automations',
+  'rooms',
+  'discovery',
+];
 export const DEFAULT_PINNED_SIDEBAR_FEATURES: readonly SidebarFeature[] = ['bot', 'automations'];
 
 const VALID_FEATURES = new Set<string>(ALL_SIDEBAR_FEATURES);

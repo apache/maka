@@ -19,6 +19,7 @@
 
 import { UiError } from './text';
 import { immutableAsset } from './immutableAsset';
+import { settingsValue } from './settingsOperations';
 import { tr } from './locale';
 import { host as nativeHost } from 'maka/host';
 import { context } from 'nsh';
@@ -223,6 +224,15 @@ export function createHost(application: UiHost) {
       };
     },
     query,
+    async mutateAgent<M extends Method<'agent', 'mutation'>>(
+      method: M,
+      input: Input<'agent', M>,
+    ): Promise<Output<'agent', M>> {
+      return settingsValue((await application.mutation('agent', method, input)).reply) as Output<
+        'agent',
+        M
+      >;
+    },
     get systemPermissionWindow() {
       return nativeHost.systemPermissionWindow;
     },

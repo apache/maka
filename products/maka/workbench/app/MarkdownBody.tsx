@@ -39,7 +39,7 @@ export function MarkdownBody(props: {
   citations?(): readonly InlineCitation[] | undefined;
   bindToc?: BindTextViewToc;
   sourceId: string;
-  sessionId: string;
+  sessionId: string | null;
   compact?: boolean;
   /** Signed-in users can send Markdown code without instantiating a generated view. */
   interactiveBlocks?: boolean;
@@ -106,11 +106,12 @@ export function MarkdownBody(props: {
     for (const ids of segmentMatches.values()) for (const id of ids) matched.add(id);
     props.onMarksMatch?.(matched);
   };
+  const interactive = () => props.sessionId !== null && props.interactiveBlocks !== false;
   const segments = computed(() => {
     const text = rawMarkdown();
-    return props.interactiveBlocks === false
-      ? [{ kind: 'markdown' as const, key: 'markdown', text, start: 0 }]
-      : splitSpecMarkdown(text);
+    return interactive()
+      ? splitSpecMarkdown(text)
+      : [{ kind: 'markdown' as const, key: 'markdown', text, start: 0 }];
   });
   const markers = computed(() => {
     const citations = props.citations?.();
@@ -161,9 +162,10 @@ export function MarkdownBody(props: {
   const body = (
     <View
       selectable={props.selectable ?? true}
-      onSelectionChange={(event: { text: string }) =>
-        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
-      }
+      onSelectionChange={(event: { text: string }) => {
+        if (props.sessionId)
+          notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text);
+      }}
     >
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
@@ -191,7 +193,7 @@ export function MarkdownBody(props: {
                   : undefined;
               if (toc) cleanup(() => toc.dispose());
               const extensions = () => {
-                const base = props.interactiveBlocks === false ? [] : markdownExtensions;
+                const base = interactive() ? markdownExtensions : [];
                 const inline = atSegment();
                 return inline
                   ? [...base, ...inline.map(({ name, afterByte }) => ({ name, afterByte }))]
@@ -236,7 +238,7 @@ export function MarkdownBody(props: {
                           <SpecView
                             source={() => node.text ?? ''}
                             streaming={isStreaming}
-                            sessionId={props.sessionId}
+                            sessionId={props.sessionId!}
                             openLink={openSpecLink}
                           />
                         ) : (
@@ -249,7 +251,7 @@ export function MarkdownBody(props: {
                       })()}
                       contentStyle={{ rowGap: blockGap }}
                       options={{
-                        streaming: props.interactiveBlocks !== false,
+                        streaming: interactive(),
                         preserveLineBreaks: true,
                       }}
                       labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
@@ -264,15 +266,19 @@ export function MarkdownBody(props: {
                             return target.focus();
                           });
                       }}
-                      renderImage={(context) => (
-                        <MarkdownImageView
-                          image={() => context.image}
-                          sessionId={props.sessionId}
-                          linked={context.linked}
-                          flow={context.flow}
-                          lineHeight={context.lineHeight}
-                        />
-                      )}
+                      renderImage={(context) =>
+                        props.sessionId === null ? (
+                          <Text>{context.image.alt || context.image.src}</Text>
+                        ) : (
+                          <MarkdownImageView
+                            image={() => context.image}
+                            sessionId={props.sessionId}
+                            linked={context.linked}
+                            flow={context.flow}
+                            lineHeight={context.lineHeight}
+                          />
+                        )
+                      }
                       renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
                       codeBlockActions={codeBlockActions()}
                       styles={{
@@ -347,7 +353,7 @@ export function MarkdownBody(props: {
                         const current = seg();
                         return isStreaming() && current.kind === 'spec' && !current.closed;
                       }}
-                      sessionId={props.sessionId}
+                      sessionId={props.sessionId!}
                       openLink={openSpecLink}
                     />
                     <Each of={atSegment() ?? []} key={(marker) => marker.name}>

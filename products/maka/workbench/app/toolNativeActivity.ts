@@ -445,4 +445,81 @@ export const nativeToolPresentations: Record<string, ActivityPresentation> = {
       ];
     },
   },
+  'maka.agent.Builtin@1/ListDossiers': {
+    title: () => tr('List discovery dossiers'),
+    icon: 'activity',
+    arguments: () => [],
+  },
+  'maka.agent.Builtin@1/ReadDossier': {
+    title: () => tr('Read discovery dossier'),
+    icon: 'file',
+    arguments: (value) => section(tr('Dossier topic'), record(value)?.topic_id),
+  },
+  'maka.agent.Builtin@1/UpsertDossier': {
+    title: () => tr('Update discovery dossier'),
+    icon: 'activity',
+    arguments: (value) => {
+      const input = record(value);
+      return [...section(tr('Title'), input?.title), ...section(tr('Note'), input?.change_note)];
+    },
+  },
+  'maka.agent.Builtin@1/FinishNoChange': {
+    title: () => tr('Complete discovery check'),
+    icon: 'activity',
+    arguments: (value) => section(tr('Note'), record(value)?.note),
+  },
+  'maka.agent.Builtin@1/StageArtifact': {
+    title: () => tr('Stage discovery draft'),
+    icon: 'paperclip',
+    arguments: (value) => {
+      const input = record(value);
+      return [
+        ...section(tr('Staged path'), input?.relative_path),
+        ...section(tr('Note'), input?.purpose),
+      ];
+    },
+  },
+  'maka.agent.Builtin@1/RegisterWatch': {
+    title: () => tr('Register discovery watch'),
+    icon: 'activity',
+    arguments: (value) => {
+      const req = record(record(value)?.request) ?? record(value);
+      return section(tr('Watch target'), req?.target);
+    },
+  },
+  'maka.agent.Builtin@1/StagePendingAction': {
+    title: () => tr('Stage discovery action'),
+    icon: 'activity',
+    arguments: (value) => section(tr('Action'), record(value)?.connector_tool),
+  },
+  'maka.agent.Builtin@1/UpdateDiscoveryPreferences': {
+    title: () => tr('Update discovery preferences'),
+    icon: 'settings',
+    arguments: (value) => {
+      const input = record(value);
+      const text =
+        typeof input?.rule === 'string'
+          ? input.rule
+          : Array.isArray(input?.rules)
+            ? input.rules.filter((item): item is string => typeof item === 'string').join('\n')
+            : undefined;
+      return section(tr('Note'), text);
+    },
+  },
+  'maka.agent.Builtin@1/UpdateWatchScope': {
+    title: () => tr('Update discovery watch scope'),
+    icon: 'folder',
+    arguments: (value) => {
+      const req = record(record(value)?.request) ?? record(value);
+      return section(tr('Action'), req?.action);
+    },
+  },
+  'maka.agent.Builtin@1/UpdateWorkspaceMap': {
+    title: () => tr('Update workspace map'),
+    icon: 'folder',
+    arguments: (value) => {
+      const req = record(record(value)?.request) ?? record(value);
+      return section(tr('Action'), req?.action);
+    },
+  },
 };

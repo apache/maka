@@ -139,6 +139,7 @@ import {
   replayStartCursor,
   groupStepsFollowCursor,
   senderSession,
+  recentMessages,
   stableRowId,
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
@@ -444,7 +445,7 @@ type ConversationProps = {
   stopAction(): () => void;
   /** Starts the Bot over; offered only on the Bot's own conversation. */
   restartBot?(): Promise<void>;
-  chooseModel?(): void;
+  openDiscovery(): void;
   /** Shows only the latest exchange, as tall as its content, with no header. */
   compact?: boolean;
 };
@@ -4378,23 +4379,7 @@ export function Conversation(props: ConversationProps) {
     sessionId,
     prediction,
     title: () => (title() === null ? null : title() || tr('Untitled conversation')),
-    recentMessages() {
-      const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
-      for (const row of [...rows(), ...live()]) {
-        if (
-          (row.role === 'user' || row.role === 'assistant') &&
-          row.field === 'body' &&
-          !row.origin &&
-          row.text.trim().length > 0
-        ) {
-          const prev = merged.at(-1);
-          const id = stableRowId(row);
-          if (prev && prev.id === id) prev.text = row.text;
-          else merged.push({ id, role: row.role, text: row.text });
-        }
-      }
-      return merged.slice(-6);
-    },
+    recentMessages: () => recentMessages([...rows(), ...live()]),
     queue: queueSession,
     interactions,
     executionWaitMessage,
@@ -5606,14 +5591,7 @@ export function Conversation(props: ConversationProps) {
         actions={
           bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
             <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
-              <DiscoveryPanel
-                host={host}
-                sessionId={sessionId}
-                control={props.control}
-                selection={() => selection()}
-                openWorker={openWorker}
-                chooseModel={() => props.chooseModel?.()}
-              />
+              <DiscoveryPanel open={props.openDiscovery} />
               <BotRestart restart={props.restartBot} />
             </View>
           ) : undefined

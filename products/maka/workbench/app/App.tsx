@@ -116,10 +116,14 @@ function App(
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
+  const discovery = signal<{ topicId: string | null } | null>(null);
+  const discoveryOpen = () => discovery() !== null;
   windowTitle(() =>
-    workspaceMode() === 'rooms'
-      ? (roomWorkspace()?.title() ?? tr('Rooms'))
-      : (session()?.title() ?? null),
+    discoveryOpen()
+      ? tr('Discovery dossiers')
+      : workspaceMode() === 'rooms'
+        ? (roomWorkspace()?.title() ?? tr('Rooms'))
+        : (session()?.title() ?? null),
   );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
@@ -170,6 +174,7 @@ function App(
     sessionId: selected,
     showPanel() {
       navigationGeneration++;
+      discovery.set(null);
       settingsOpened.set(false);
       preview()?.close();
     },
@@ -190,8 +195,9 @@ function App(
     render(): JSX.Element;
   };
   const sideCard = signal<SideCard | null>(null);
-  const sideCardBudget = () =>
-    workspaceMode() === 'conversations' && sideCard() !== null ? sideCardWidth() : 0;
+  const sideCardVisible = () =>
+    workspaceMode() === 'conversations' && !discoveryOpen() && sideCard() !== null;
+  const sideCardBudget = () => (sideCardVisible() ? sideCardWidth() : 0);
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
   const previewFullscreen = () =>
     platform.idiom !== 'terminal' &&
@@ -212,11 +218,13 @@ function App(
     close: closePreview,
   });
   const sideRoom = () =>
-    sidePaneRoom(
-      sidebarExpanded() && canDockBrowser(previewShown(), sideCardBudget()),
-      previewShown() && canDockPreview(sideCardBudget()),
-      sideCardBudget(),
-    );
+    discoveryOpen()
+      ? 0
+      : sidePaneRoom(
+          sidebarExpanded() && canDockBrowser(previewShown(), sideCardBudget()),
+          previewShown() && canDockPreview(sideCardBudget()),
+          sideCardBudget(),
+        );
   const launcherClosed = () =>
     batch(() => {
       assistant.set(null);
@@ -284,9 +292,11 @@ function App(
       first?.quotes,
     );
   const askBeside = (request: SideQuestionRequest) => {
-    if (!alive || blocked()) return;
+    if (!alive || blocked() || discoveryOpen()) return;
+    const generation = navigationGeneration;
     void closeSideCard().then((closed) => {
-      if (!closed || !alive || blocked()) return;
+      if (!closed || !alive || blocked() || discoveryOpen() || generation !== navigationGeneration)
+        return;
       const card: SideCard = {
         parent: selected(),
         pane: signal<SidePane | null>(null),
@@ -333,7 +343,10 @@ function App(
     if (!current() || parent === null || id === parent) return false;
     const shown = sideCard();
     const needsRoute =
-      parent !== selected() || workspaceMode() !== 'conversations' || settingsOpened();
+      parent !== selected() ||
+      workspaceMode() !== 'conversations' ||
+      settingsOpened() ||
+      discoveryOpen();
     if (shown?.parent === parent && shown.pane()?.id() === id && selected() === parent)
       return !needsRoute || ((await openSession(parent)) && current());
     if (!(await closeSideCard()) || !(await releaseAssistant(id))) return false;
@@ -345,6 +358,7 @@ function App(
       selected() !== parent ||
       workspaceMode() !== 'conversations' ||
       settingsOpened() ||
+      discoveryOpen() ||
       sideCard() !== null ||
       openElsewhere(id)
     )
@@ -389,9 +403,10 @@ function App(
     }
   };
   const openSession = async (id: string | null): Promise<boolean> => {
+    const generation = ++navigationGeneration;
     if (id !== null) {
       if ((await session()?.kind(id)) === 'room') {
-        if (!(await roomWorkspace()?.open(id))) return false;
+        if (!(await roomWorkspace()?.open(id)) || generation !== navigationGeneration) return false;
         return switchWorkspace('rooms');
       }
     }
@@ -401,7 +416,6 @@ function App(
     const from = id === null ? undefined : sideFor(id);
     if (from && !(await openSide(from, null))) return false;
     if (id !== null && sideCard()?.pane()?.id() === id && !(await closeSideCard())) return false;
-    const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
     try {
@@ -415,6 +429,7 @@ function App(
       )
         return false;
       batch(() => {
+        discovery.set(null);
         settingsOpened.set(false);
         workspaceMode.set('conversations');
         selected.set(id);
@@ -476,16 +491,37 @@ function App(
     sessionId: selected,
     visible: () =>
       workspaceMode() === 'conversations' &&
+      !discoveryOpen() &&
       !settingsOpened() &&
       !(plugins.panel() && !canDockPreview(sideCardBudget())),
     paneVisible: conversationPaneVisible,
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
+    openRooms: () => void switchWorkspace('rooms'),
+    discovery: {
+      route: discovery,
+      async open(topicId) {
+        if (!alive || blocked()) return;
+        const generation = ++navigationGeneration;
+        ++sideOpening;
+        if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
+        if (!alive || blocked() || generation !== navigationGeneration) return;
+        batch(() => {
+          const panel = plugins.panel();
+          if (panel) plugins.closePanel(panel.instance);
+          settingsOpened.set(false);
+          workspaceMode.set('conversations');
+          if (topicId !== undefined || !discoveryOpen())
+            discovery.set({ topicId: topicId ?? null });
+        });
+      },
+    },
     openSettings(model, page) {
       if (!alive || blocked()) return;
       navigationGeneration++;
       batch(() => {
+        discovery.set(null);
         settingsModel.set(model);
         settingsPage.set(page);
         settingsNavigation.set(settingsNavigation() + 1);
@@ -505,9 +541,11 @@ function App(
       if (!blocked()) sidebarExpanded.set(false);
     },
     dismissRoute() {
-      if (!settingsOpened() || blocked()) return false;
+      if (blocked()) return false;
+      if (settingsOpened()) settingsOpened.set(false);
+      else if (discoveryOpen()) discovery.set(null);
+      else return false;
       navigationGeneration++;
-      settingsOpened.set(false);
       return true;
     },
     get openBeside() {
@@ -518,20 +556,22 @@ function App(
       : {
           // The side question in its card is beside the conversation too.
           besideSessionIds: () => {
+            if (discoveryOpen()) return [];
             const card = sideCard()?.pane()?.id();
             return card ? [...besides(), card] : besides();
           },
           askBeside,
           openSideQuestion,
-          sideQuestionId: () => sideCard()?.pane()?.id() ?? null,
+          sideQuestionId: () => (sideCardVisible() ? (sideCard()?.pane()?.id() ?? null) : null),
         }),
   };
   const sidebarHover = createSidebarHover(
-    () => !sidebarExpanded() && conversationPaneVisible() && !blocked(),
+    () => !sidebarExpanded() && (conversationPaneVisible() || discoveryOpen()) && !blocked(),
   );
   const switchWorkspace = async (mode: 'conversations' | 'rooms') => {
     if (blocked()) return false;
     if (mode === workspaceMode()) return true;
+    const generation = ++navigationGeneration;
     if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
     else {
       const panes = [
@@ -541,7 +581,9 @@ function App(
       ];
       if ((await Promise.all(panes.map((pane) => pane?.leave()))).includes(false)) return false;
     }
+    if (!alive || blocked() || generation !== navigationGeneration) return false;
     batch(() => {
+      discovery.set(null);
       settingsOpened.set(false);
       workspaceMode.set(mode);
     });
@@ -724,10 +766,12 @@ function App(
           closePreview={closePreview}
           sides={sides}
           card={() => (workspaceMode() === 'conversations' ? sideCard() : null)}
+          cardVisible={sideCardVisible}
+          sideRoom={sideRoom}
           navigation={(temporary) =>
             runtime.renderView(configuration.navigation, conversationNavigationView, {
               shell,
-              openRooms: () => void switchWorkspace('rooms'),
+              openRooms: shell.openRooms,
               suppressSidebarHover: sidebarHover.suppressUntilExit,
               holdSidebarHover: temporary ? sidebarHover.hold : undefined,
               pinSidebar: temporary ? shell.showSidebar : undefined,
@@ -761,7 +805,7 @@ function App(
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
           active: () => workspaceMode() === 'rooms',
-          visible: () => workspaceMode() === 'rooms' && !settingsOpened(),
+          visible: () => workspaceMode() === 'rooms' && !settingsOpened() && !discoveryOpen(),
           blocked,
           sidebarExpanded,
           setSidebarExpanded: (expanded) => sidebarExpanded.set(expanded),
