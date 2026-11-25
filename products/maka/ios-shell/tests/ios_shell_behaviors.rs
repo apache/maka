@@ -25,6 +25,7 @@ use maka_event_log::{
     root_store::RootStore,
 };
 use maka_host_runtime::application::{
+    NativeRegistry,
     host::{Configuration, Host, LifecycleMode, Options, PeerPairingOptions},
     logs,
     transport::GATEWAY,
@@ -41,7 +42,7 @@ use nsh_core::{
     platform::{Environment, Os},
     prelude::px,
 };
-use nsh_engine::HostChannel;
+use nsh_engine::{Bundle, EngineConfig, HostChannel};
 use nsh_testing::Headless;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -81,12 +82,24 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
             "exports":{"HostLogs":{"contract":contract,"availability":"required"}}
         }),
     );
+    let web_contract = maka_web_api::contract();
+    let web = package(
+        "test.web",
+        json!({
+            "implementation":{"kind":"native","implementation":maka_web_api::IMPLEMENTATION},
+            "configuration":maka_web_api::configuration_schema(),"imports":{},
+            "exports":{(maka_web_api::EXPORT):{"contract":web_contract,"availability":"required"}}
+        }),
+    );
     let gateway = package(
         "test.gateway",
         json!({
             "implementation":{"kind":"native","implementation":GATEWAY},
             "configuration":{"type":"object"},"exports":{},
-            "imports":{"hostLogs":{"contract":contract,"cardinality":{"kind":"one"}}}
+            "imports":{
+                "hostLogs":{"contract":contract,"cardinality":{"kind":"one"}},
+                "web":{"contract":web_contract,"cardinality":{"kind":"one"}}
+            }
         }),
     );
     let consumer = Uuid::new_v4();
@@ -95,14 +108,20 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
         deployment, 0,
         serde_json::from_value(json!({"instances":{
             "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+            "web":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":web.application_ref()},"usePackage":"host",
+                "configuration":{"values":{"network":"denied"}}},
             "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
-                "bindings":{"hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}]}}
+                "bindings":{
+                "hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}],
+                "web":[{"kind":"instance","path":["web"],"export":maka_web_api::EXPORT}]
+            }}
         }})).unwrap(),
-        vec![], vec![logs, gateway],
+        vec![], vec![logs, web, gateway],
     ).await.unwrap();
     let configuration = Configuration::PublicHost {
         endpoints: serde_json::from_value(json!({
-            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}}
+            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}},
+            "web":{"consumer":[consumer],"import":"web","grant":{"methods":["snapshot","save","saveKey"],"recovery":false}}
         })).unwrap(),
         native: Default::default(),
         product_methods: Default::default(),
@@ -111,10 +130,12 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
         .select_committed_application_launch(source, serde_json::to_value(&configuration).unwrap())
         .await
         .unwrap();
+    let mut native = NativeRegistry::default();
+    maka_web::provide(&mut native).unwrap();
     let host = Host::open_with_options(
         store.clone(),
         deployment,
-        Default::default(),
+        native,
         None,
         configuration.clone(),
         Options {
@@ -161,10 +182,10 @@ struct Live {
 impl Live {
     async fn start(config: &Relay, name: &str) -> Self {
         let (root, host) = logs_host().await;
-        let mut transport = HostPeerTransport::bind(&host, std::slice::from_ref(config), false)
+        let transport = HostPeerTransport::bind(&host, std::slice::from_ref(config), false)
             .await
             .unwrap();
-        let routes = transport.wait_for_relay().await.unwrap();
+        transport.wait_for_relay().await.unwrap();
         let (send, receive) = HostPeerTransport::ingress();
         let stop = CancellationToken::new();
         let (accepted, handshakes) = mpsc::unbounded_channel();
@@ -180,9 +201,7 @@ impl Live {
         });
         let invite = host
             .prepare_peer_pairing(PeerPairingOptions {
-                relays: routes,
                 host_name: name.into(),
-                direct_endpoints: vec![],
                 label: None,
                 ttl_secs: None,
             })
@@ -306,6 +325,164 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     first.shutdown().await;
     second.shutdown().await;
     relay.shutdown().await.unwrap();
+}
+
+// Exercise the same HostChannel boundary as the app without relying on screen layout.
+struct RpcDriver {
+    channel: HostChannel,
+    replies: mpsc::UnboundedReceiver<Value>,
+}
+
+impl RpcDriver {
+    async fn batch(&mut self, requests: Value) -> Value {
+        self.channel.send("test.rpc", requests).unwrap();
+        self.replies.recv().await.unwrap()
+    }
+
+    async fn call(&mut self, name: &str, data: Value) -> Value {
+        let result = self.batch(json!([[name, data]])).await;
+        assert!(
+            result[0].get("ok").is_some(),
+            "{name}: {}",
+            result[0]["error"]
+        );
+        result[0]["ok"].clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and_revocation() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (relay, config, relay_url) = https_relay().await;
+        let mut a = Live::start(&config, "Host A").await;
+        let mut b = Live::start(&config, "Host B").await;
+        let support = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let runtime = tokio::runtime::Handle::current();
+        let _bridge = HostBridge::attach(channel.clone(), support.path().into(), runtime.clone()).unwrap();
+        let (reply, replies) = mpsc::unbounded_channel();
+        let (item, mut items) = mpsc::unbounded_channel();
+        let (state, mut states) = mpsc::unbounded_channel();
+        for (name, send) in [("test.reply", reply), ("test.item", item), ("test.state", state)] {
+            channel.handle(name, move |mut call| { send.send(call.take_data()).unwrap(); });
+        }
+        let bundle = Bundle::source(r#"
+            import { host } from 'nsh';
+            host.on('test.rpc', async (requests) => {
+              const replies = await Promise.all(requests.map(async ([name, data]) => {
+                try { return { ok: await host.call(name, data) }; }
+                catch (error) { return { error: String(error) }; }
+              }));
+              host.post('test.reply', replies);
+            });
+            host.on('ios.subscriptionItem', data => host.post('test.item', data));
+            host.on('ios.hostState', data => host.post('test.state', data));
+        "#.to_owned()).with_capabilities_json(Some(r#"{"host":true}"#)).unwrap();
+        let mut engine = EngineConfig::new(bundle);
+        engine.host = channel.clone();
+        engine.runtime = Some(runtime);
+        let app = Headless::start(engine).unwrap();
+        let mut driver = RpcDriver { channel, replies };
+        let mut peers = Vec::new();
+        for host in [&mut a, &mut b] {
+            let ticket = driver.call("ios.beginPairing", json!({
+                "uri":host.uri,"relayUrl":relay_url,"relayToken":RELAY_TOKEN
+            })).await;
+            let (peer, sas) = host.sas().await;
+            let paired = driver.call("ios.confirmPairing", json!({"pairingId":ticket["pairingId"],"sas":sas})).await;
+            assert_eq!(paired["connections"][host.host.root_id()]["status"], "connected");
+            peers.push(peer);
+        }
+
+        let a_id = a.host.root_id().to_owned();
+        let b_id = b.host.root_id().to_owned();
+        let state = driver.call("ios.bootstrap", json!({})).await;
+        let b_session = state["connections"][&b_id]["connection"]["session"].clone();
+        assert_eq!(state["connections"][&a_id]["status"], "connected");
+        assert_eq!(state["activeRootId"], b_id);
+
+        let save = |root: &str| json!({
+            "rootId":root, "endpoint":"web", "method":"save",
+            "input":{"revision":null,"settings":{"enabled":true,"source":"custom","backend":{"kind":"tavily"}}}
+        });
+        let watch = |root: &str| json!({
+            "rootId":root, "endpoint":"hostLogs", "method":"watch",
+            "subscriptionId":"shared", "input":{"position":{"kind":"tail"}}
+        });
+        let query = |root: &str| json!({
+            "rootId":root, "endpoint":"web", "method":"snapshot", "input":{}
+        });
+        // Same subscription ID on both Hosts must not replace the other stream.
+        let replies = driver.batch(json!([
+            ["ios.hostMutate", save(&a_id)], ["ios.hostMutate", save(&b_id)],
+            ["ios.subscribe", watch(&a_id)], ["ios.subscribe", watch(&b_id)],
+        ])).await;
+        for reply in &replies.as_array().unwrap()[..2] {
+            assert_eq!(reply["ok"]["value"]["kind"], "updated", "{reply}");
+        }
+        let snapshots = driver.batch(json!([
+            ["ios.hostQuery", query(&a_id)], ["ios.hostQuery", query(&b_id)],
+        ])).await;
+        for snapshot in snapshots.as_array().unwrap() {
+            assert_eq!(snapshot["ok"]["value"]["settings"]["source"], "custom");
+            assert_eq!(snapshot["ok"]["value"]["credential"]["configured"], false);
+        }
+        let b_watch = replies[3]["ok"]["generation"].clone();
+        assert_ne!(b_watch, replies[2]["ok"]["generation"]);
+        let mut watched_roots = vec![items.recv().await.unwrap(), items.recv().await.unwrap()];
+        watched_roots.sort_by(|a, b| a["rootId"].as_str().cmp(&b["rootId"].as_str()));
+        let mut expected = [a_id.as_str(), b_id.as_str()];
+        expected.sort();
+        assert_eq!(watched_roots.iter().map(|item| item["rootId"].as_str().unwrap()).collect::<Vec<_>>(), expected);
+        assert!(watched_roots.iter().all(|item| item["item"]["kind"] == "missing"));
+
+        let secret = "test-key-密文";
+        let rejected = driver.batch(json!([["ios.hostMutate", {
+            "rootId":b_id, "endpoint":"web","method":"save","input":{}, "secret":secret
+        }]])).await;
+        assert!(rejected[0]["error"].as_str().unwrap().contains("does not accept a secret"));
+        let saved = driver.call("ios.hostMutate", json!({
+            "rootId":b_id, "endpoint":"web", "method":"saveKey", "secret":secret,
+            "input":{"settingsRevision":snapshots[1]["ok"]["value"]["revision"],"revision":null}
+        })).await;
+        assert_eq!(saved["value"]["kind"], "updated");
+        assert_eq!(saved["value"]["snapshot"]["credential"]["configured"], true);
+
+        let state = driver.call("ios.disconnectHost", json!({"rootId":a_id})).await;
+        assert_eq!(state["connections"][&a_id]["status"], "offline");
+        assert_eq!(state["connections"][&b_id]["connection"]["session"], b_session);
+        driver.call("ios.connectHost", json!({"rootId":a_id})).await;
+        assert_eq!(a.sas().await.0, peers[0]);
+        assert!(a.host.revoke_peer_access(peers.remove(0)).await.unwrap());
+        loop {
+            let state = states.recv().await.unwrap();
+            if state["connections"][&a_id]["status"] == "error" {
+                assert_eq!(state["connections"][&b_id]["connection"]["session"], b_session);
+                break;
+            }
+        }
+        let removed = driver.call("ios.removeHost", json!({"rootId":a_id})).await;
+        assert!(removed["connections"].get(&a_id).is_none());
+        let saved = driver.call("ios.hostQuery", query(&b_id)).await;
+        assert_eq!(saved["value"]["credential"]["configured"], true);
+        assert!(!std::fs::read_to_string(support.path().join("hosts.json")).unwrap().contains(secret));
+
+        // Same stream, without resubscribing, sees new data after A's disconnect.
+        use std::io::Write;
+        let source = maka_host_runtime::logs::Source::for_root(&b_id, &RootNamespaces {
+            ownership:b._root.path().join("ownership"), control:b._root.path().join("control"),
+        }).unwrap();
+        source.open_capture().unwrap().write_all(b"still online\n").unwrap();
+        let item = items.recv().await.unwrap();
+        assert_eq!(item["rootId"], b_id);
+        assert_eq!(item["generation"], b_watch);
+        assert_eq!(item["item"]["kind"], "data");
+
+        drop(app);
+        a.shutdown().await;
+        b.shutdown().await;
+        relay.shutdown().await.unwrap();
+    }).await.expect("multi-Host bridge test timed out");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

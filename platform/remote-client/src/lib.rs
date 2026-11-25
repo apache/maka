@@ -25,8 +25,8 @@ mod pairing;
 mod store;
 
 pub use client::{
-    RemoteCallHandle, RemoteClientError, RemoteDeploymentRef, RemoteHostConnection,
-    RemoteSubscription,
+    Attachments, ReadResource, RemoteCallHandle, RemoteClientError, RemoteDeploymentRef,
+    RemoteHostConnection, RemoteSubscription,
 };
 pub use pairing::{PendingPairing, RedeemedPairing, RelayAuthorization};
 pub use store::{HostProfile, SavedHosts};

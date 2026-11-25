@@ -34,7 +34,8 @@ export interface SavedHostItem {
   hostName: string;
   peerId: string;
   endpoints: string[];
-  connected: boolean;
+  connected: boolean; // Legacy selected-Host projection.
+  status?: HostConnectionState['status'];
   relayUrls?: string[];
 }
 
@@ -64,12 +65,19 @@ export function pathLabel(
   });
 }
 
+export type HostConnectionState =
+  | { status: 'offline' | 'connecting' }
+  | { status: 'connected'; connection: ActiveHostInfo }
+  | { status: 'error'; error: string };
+
 export interface HostStateSnapshot {
   revision: number;
   devicePeerId: string;
   filter: HostViewFilter;
   hosts: SavedHostItem[];
   active: ActiveHostInfo | null;
+  activeRootId?: string | null;
+  connections?: Record<string, HostConnectionState>;
   pendingPairUri?: string;
   disconnectReason?: string;
   disconnectedRootId?: string;
@@ -93,12 +101,14 @@ export interface SubscriptionHandle {
 }
 
 export interface SubscriptionItemPayload {
+  rootId?: string;
   subscriptionId: string;
   generation: number;
   item: unknown;
 }
 
 export interface SubscriptionEndedPayload {
+  rootId?: string;
   subscriptionId: string;
   generation: number;
   error?: string;
@@ -516,8 +526,8 @@ export function confirmPairing(pairingId: number, sas: string): Promise<HostStat
   return host.call('ios.confirmPairing', { pairingId, sas }) as Promise<HostStateSnapshot>;
 }
 
-export function cancelPairing(): Promise<unknown> {
-  return host.call('ios.cancelPairing', {});
+export function cancelPairing(rootId?: string): Promise<unknown> {
+  return host.call('ios.cancelPairing', { rootId });
 }
 
 export function connectWebSocket(
@@ -546,8 +556,8 @@ export function connectHost(
   }) as Promise<HostStateSnapshot>;
 }
 
-export function disconnectHost(): Promise<HostStateSnapshot> {
-  return host.call('ios.disconnectHost', {}) as Promise<HostStateSnapshot>;
+export function disconnectHost(rootId?: string): Promise<HostStateSnapshot> {
+  return host.call('ios.disconnectHost', { rootId }) as Promise<HostStateSnapshot>;
 }
 
 export function removeHost(rootId: string): Promise<HostStateSnapshot> {
@@ -569,9 +579,11 @@ export async function hostQuery<T = unknown>(
   method: string,
   input: Record<string, unknown> = {},
   targetAnchor = anchorSession,
+  rootId?: string,
 ): Promise<T> {
   const res = (await host.call('ios.hostQuery', {
-    anchorSession: targetAnchor,
+    anchorSession: rootId ? undefined : targetAnchor,
+    rootId,
     endpoint,
     method,
     input,
@@ -585,8 +597,17 @@ export async function hostMutate<T = unknown>(
   endpoint: string,
   method: string,
   input: Record<string, unknown> = {},
+  { rootId, secret, progressId }: { rootId?: string; secret?: string; progressId?: string } = {},
 ): Promise<T> {
-  const res = (await host.call('ios.hostMutate', { anchorSession, endpoint, method, input })) as {
+  const res = (await host.call('ios.hostMutate', {
+    anchorSession: rootId ? undefined : anchorSession,
+    rootId,
+    endpoint,
+    method,
+    input,
+    secret,
+    progressId,
+  })) as {
     value: T;
   };
   return res.value;
@@ -597,18 +618,30 @@ export function subscribe(
   endpoint: string,
   method: string,
   input: Record<string, unknown> = {},
+  rootId?: string,
 ): Promise<SubscriptionHandle> {
   return host.call('ios.subscribe', {
     subscriptionId,
-    anchorSession,
+    rootId,
+    anchorSession: rootId ? undefined : anchorSession,
     endpoint,
     method,
     input,
   }) as Promise<SubscriptionHandle>;
 }
 
-export function unsubscribe(subscriptionId: string): Promise<{ cancelled: boolean }> {
-  return host.call('ios.unsubscribe', { subscriptionId }) as Promise<{ cancelled: boolean }>;
+export function unsubscribe(subscriptionId: string, rootId?: string): Promise<{ cancelled: boolean }> {
+  return host.call('ios.unsubscribe', { subscriptionId, rootId }) as Promise<{ cancelled: boolean }>;
+}
+
+export interface MutationProgress {
+  rootId: string;
+  progressId: string;
+  value: unknown;
+}
+
+export function onMutationProgress(listener: (progress: MutationProgress) => void): () => void {
+  return host.on('ios.mutationProgress', (data) => listener(data as MutationProgress));
 }
 
 export function onHostState(listener: (state: HostStateSnapshot) => void): () => void {

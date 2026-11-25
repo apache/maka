@@ -174,6 +174,19 @@ struct WireCallOpen {
     input: Value,
 }
 
+/// Named, immutable request-local resources. The mobile client only needs the
+/// Host's UTF-8 resource contract, without linking its native capability stack.
+pub type Attachments = BTreeMap<String, ReadResource>;
+
+/// An in-memory Host UTF-8 resource. Its contents are never serialized or formatted.
+pub struct ReadResource(String);
+
+impl ReadResource {
+    pub fn utf8(text: String) -> Self {
+        Self(text)
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WireControl {
@@ -193,7 +206,9 @@ enum WireReply {
     Item {
         value: Value,
     },
-    Progress {},
+    Progress {
+        value: Value,
+    },
     Finished {
         result: Result<Value, String>,
         cleanup: Result<(), String>,
@@ -441,6 +456,7 @@ impl RemoteCallHandle {
         endpoint: &str,
         method: &str,
         input: Value,
+        attachments: &Attachments,
     ) -> Result<BufReader<BoxedStream>, RemoteClientError> {
         let Some(ep) = self.endpoints.get(endpoint) else {
             return Err(RemoteClientError::UnknownEndpoint(endpoint.to_owned()));
@@ -489,19 +505,48 @@ impl RemoteCallHandle {
             method: method.to_owned(),
             input,
         };
-        let empty_descriptors: BTreeMap<String, Value> = BTreeMap::new();
+        let descriptors: BTreeMap<_, _> = attachments
+            .iter()
+            .map(|(slot, resource)| {
+                (
+                    slot,
+                    json!({
+                        "encoding": "utf8",
+                        "resource": {"name": "maka.text.utf8", "version": 1},
+                        "length": resource.0.len(),
+                        "metadata": {},
+                    }),
+                )
+            })
+            .collect();
         write_frame(reader.get_mut(), &open_msg).await?;
-        write_frame(reader.get_mut(), &empty_descriptors).await?;
+        write_frame(reader.get_mut(), &descriptors).await?;
 
         match read_frame::<_, WireReply>(&mut reader).await? {
-            WireReply::Ready => Ok(reader),
+            WireReply::Ready => {}
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
-                Err(RemoteClientError::HostRejected(reason))
+                return Err(RemoteClientError::HostRejected(reason));
             }
-            _ => Err(RemoteClientError::Protocol(
-                "Host did not reply Ready to call open".into(),
-            )),
+            _ => {
+                return Err(RemoteClientError::Protocol(
+                    "Host did not reply Ready to call open".into(),
+                ));
+            }
         }
+
+        // The Host reserves the descriptors before accepting any payload bytes.
+        for resource in attachments.values() {
+            let mut remaining = resource.0.as_str();
+            while !remaining.is_empty() {
+                let end = remaining.floor_char_boundary(remaining.len().min(RESOURCE_CHUNK_LIMIT));
+                let (chunk, rest) = remaining.split_at(end);
+                reader.get_mut().write_u32(chunk.len() as u32).await?;
+                reader.get_mut().write_all(chunk.as_bytes()).await?;
+                remaining = rest;
+            }
+        }
+        reader.get_mut().flush().await?;
+        Ok(reader)
     }
 
     /// Invoke a query and return its terminal result without retaining progress frames.
@@ -511,10 +556,12 @@ impl RemoteCallHandle {
         method: &str,
         input: Value,
     ) -> Result<Value, RemoteClientError> {
-        let mut reader = self.open_call_channel(endpoint, method, input).await?;
+        let mut reader = self
+            .open_call_channel(endpoint, method, input, &Attachments::new())
+            .await?;
         loop {
             match read_frame::<_, WireReply>(&mut reader).await? {
-                WireReply::Progress {} => {}
+                WireReply::Progress { .. } => {}
                 WireReply::Finished { result, cleanup } => {
                     cleanup.map_err(RemoteClientError::HostRejected)?;
                     return result.map_err(RemoteClientError::HostRejected);
@@ -541,7 +588,24 @@ impl RemoteCallHandle {
         method: &str,
         input: Value,
     ) -> Result<Value, RemoteClientError> {
-        let mut reader = self.open_call_channel(endpoint, method, input).await?;
+        self.mutate_with(endpoint, method, input, Attachments::new(), |_| {})
+            .await
+    }
+
+    /// Send request-local attachments out of band, and observe progress in
+    /// wire order. The terminal return still includes receipt/cleanup errors.
+    pub async fn mutate_with(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+        attachments: Attachments,
+        on_progress: impl FnMut(Value),
+    ) -> Result<Value, RemoteClientError> {
+        let mut reader = self
+            .open_call_channel(endpoint, method, input, &attachments)
+            .await?;
+        drop(attachments);
         let reference = match read_frame::<_, WireReply>(&mut reader).await? {
             WireReply::Prepared { reference } => reference,
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
@@ -559,7 +623,7 @@ impl RemoteCallHandle {
             }
         };
 
-        confirm_mutation(&mut reader, endpoint, method, reference).await
+        confirm_mutation(&mut reader, endpoint, method, reference, on_progress).await
     }
 
     /// Open a demand-driven streaming subscription on an admitted Host endpoint
@@ -570,7 +634,9 @@ impl RemoteCallHandle {
         method: &str,
         input: Value,
     ) -> Result<RemoteSubscription, RemoteClientError> {
-        let mut reader = self.open_call_channel(endpoint, method, input).await?;
+        let mut reader = self
+            .open_call_channel(endpoint, method, input, &Attachments::new())
+            .await?;
         match read_frame::<_, WireReply>(&mut reader).await? {
             WireReply::Subscribed => {}
             WireReply::Aborted { reason } | WireReply::BindingRetired { reason } => {
@@ -598,6 +664,7 @@ async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin>(
     endpoint: &str,
     method: &str,
     reference: Value,
+    mut on_progress: impl FnMut(Value),
 ) -> Result<Value, RemoteClientError> {
     let recovery = json!({
         "kind": "maka_remote_mutation",
@@ -610,7 +677,7 @@ async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin>(
         write_frame(reader.get_mut(), &WireControl::Confirm { recovery }).await?;
         loop {
             match read_frame::<_, WireReply>(reader).await? {
-                WireReply::Progress {} => {}
+                WireReply::Progress { value } => on_progress(value),
                 reply @ (WireReply::Mutation { .. }
                 | WireReply::Aborted { .. }
                 | WireReply::BindingRetired { .. }) => {
@@ -761,7 +828,7 @@ impl RemoteSubscription {
                     self.channel = Some(channel);
                     return Ok(Some(value));
                 }
-                WireReply::Progress {} => {}
+                WireReply::Progress { .. } => {}
                 WireReply::Finished { result, cleanup } => {
                     cleanup.map_err(RemoteClientError::HostRejected)?;
                     result.map_err(RemoteClientError::HostRejected)?;
@@ -788,7 +855,7 @@ impl RemoteSubscription {
             write_frame(channel.get_mut(), &WireControl::Cancel).await?;
             loop {
                 match read_frame::<_, WireReply>(&mut channel).await? {
-                    WireReply::Item { .. } | WireReply::Progress {} => {}
+                    WireReply::Item { .. } | WireReply::Progress { .. } => {}
                     WireReply::Finished { cleanup, .. } => {
                         return cleanup.map_err(RemoteClientError::HostRejected);
                     }
@@ -861,6 +928,20 @@ impl RemoteHostConnection {
         self.handle.mutate(endpoint, method, input).await
     }
 
+    /// Invoke a mutation with out-of-band resources and a progress observer.
+    pub async fn mutate_with(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+        attachments: Attachments,
+        on_progress: impl FnMut(Value),
+    ) -> Result<Value, RemoteClientError> {
+        self.handle
+            .mutate_with(endpoint, method, input, attachments, on_progress)
+            .await
+    }
+
     /// Open a demand-driven streaming subscription on an admitted Host endpoint.
     pub async fn subscribe(
         &self,
@@ -922,7 +1003,7 @@ mod tests {
         let mut channel = BufReader::new(client);
         let reference = json!({"operation":Uuid::new_v4()});
         let (result, ()) = tokio::join!(
-            confirm_mutation(&mut channel, "agent", "send", reference.clone()),
+            confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {}),
             async {
                 let confirm: Value = read_frame(&mut BufReader::new(host)).await.unwrap();
                 assert_eq!(confirm["kind"], "confirm");
@@ -932,6 +1013,48 @@ mod tests {
         );
         assert!(
             matches!(result, Err(RemoteClientError::MutationUncertain { reference: saved, .. }) if saved == reference)
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_does_not_hide_a_terminal_cleanup_error() {
+        let (client, host) = tokio::io::duplex(2048);
+        let mut channel = BufReader::new(client);
+        let reference = json!({"operation":Uuid::new_v4()});
+        let mut progress = Vec::new();
+        let (result, ()) =
+            tokio::join!(
+                confirm_mutation(
+                    &mut channel,
+                    "setup",
+                    "discoverModels",
+                    reference.clone(),
+                    |value| progress.push(value)
+                ),
+                async {
+                    let mut host = BufReader::new(host);
+                    let _: Value = read_frame(&mut host).await.unwrap();
+                    write_frame(
+                        host.get_mut(),
+                        &json!({"kind":"progress","value":{"step":"discovering"}}),
+                    )
+                    .await
+                    .unwrap();
+                    write_frame(
+                    host.get_mut(),
+                    &json!({
+                        "kind":"mutation",
+                        "reply":{"reference": reference, "receipt":{"kind":"recorded","outcome":{
+                            "kind":"returned","result":{"kind":"success","value":{}}
+                        }}},
+                        "cleanup":{"Err":"fixture cleanup failed"},
+                    }),
+                ).await.unwrap();
+                },
+            );
+        assert_eq!(progress, [json!({"step":"discovering"})]);
+        assert!(
+            matches!(result, Err(RemoteClientError::MutationCleanup(error)) if error == "fixture cleanup failed")
         );
     }
 
@@ -947,7 +1070,7 @@ mod tests {
             let mut channel = BufReader::new(client);
             let reference = json!({"operation":Uuid::new_v4()});
             let (result, ()) = tokio::join!(
-                confirm_mutation(&mut channel, "agent", "send", reference.clone()),
+                confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {}),
                 async {
                     let mut host = BufReader::new(host);
                     let _: Value = read_frame(&mut host).await.unwrap();

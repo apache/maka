@@ -25,13 +25,16 @@ use maka_event_log::{
     root_store::RootStore,
 };
 use maka_host_runtime::application::{
+    Context, Handler, HandlerResult, NativeActivation, NativeRegistry,
     host::{Configuration, Host, LifecycleMode, Options, PeerId, PeerPairingOptions},
     logs,
     transport::GATEWAY,
 };
 use maka_packages::Package;
+use maka_plugin_core::{contract::Contract, runtime::Published};
 use maka_remote_client::{
-    DeviceIdentity, PendingPairing, RelayAuthorization, RemoteHostConnection, SavedHosts,
+    Attachments, DeviceIdentity, PendingPairing, ReadResource, RelayAuthorization,
+    RemoteHostConnection, SavedHosts,
 };
 use maka_remote_pairing::{RelayEndpoint, SignedPairingTicket};
 use maka_remote_transport::{
@@ -58,6 +61,37 @@ fn package(id: &str, host: Value) -> Package {
     .unwrap()
 }
 
+const PROBE: &str = "test.remote.probe";
+
+fn probe_secret() -> String {
+    // Force the first 64 KiB chunk boundary into the middle of a scalar.
+    format!("{}🔒密文", "x".repeat(64 * 1024 - 1))
+}
+
+struct Probe;
+
+impl Handler for Probe {
+    fn call(
+        &self,
+        _method: String,
+        input: Value,
+        context: Context,
+    ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
+        Box::pin(async move {
+            if input != json!({"keyId": "test-key"}) {
+                return Err("unexpected JSON input".into());
+            }
+            let resource = &context.attachments()["secret"];
+            if resource.read(0..resource.bytes())? != probe_secret().as_bytes() {
+                return Err("wrong attachment bytes".into());
+            }
+            context.emit(json!({"step": "received"})).await?;
+            context.emit(json!({"step": "saved"})).await?;
+            Ok(json!({"saved": true}).into())
+        })
+    }
+}
+
 async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
     let dir = tempfile::tempdir().unwrap();
     private_directory(dir.path()).unwrap();
@@ -81,28 +115,74 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
             "exports":{"HostLogs":{"contract":contract,"availability":"required"}}
         }),
     );
+    let probe_contract: Contract = serde_json::from_value(json!({
+        "name":"maka.test.RemoteProbe", "version":1, "transport":"remote",
+        "interface":{"kind":"service","methods":{"commit":{
+            "mode":"mutation", "input":{"type":"object"}, "output":{"type":"object"},
+            "progress":{"type":"object"},
+            "resources":{"secret":{"type":{"name":"maka.text.utf8","version":1},"optional":false}}
+        }}}
+    }))
+    .unwrap();
+    let probe = package(
+        PROBE,
+        json!({
+            "implementation":{"kind":"native","implementation":PROBE},
+            "configuration":{"type":"object"},"imports":{},
+            "exports":{"Probe":{"contract":probe_contract,"availability":"required"}}
+        }),
+    );
     let gateway = package(
         "test.gateway",
         json!({
             "implementation":{"kind":"native","implementation":GATEWAY},
             "configuration":{"type":"object"},"exports":{},
-            "imports":{"hostLogs":{"contract":contract,"cardinality":{"kind":"one"}}}
+            "imports":{
+                "hostLogs":{"contract":contract,"cardinality":{"kind":"one"}},
+                "probe":{"contract":probe_contract,"cardinality":{"kind":"one"}}
+            }
         }),
     );
+    let mut native = NativeRegistry::default();
+    native
+        .insert(
+            PROBE.into(),
+            Arc::new(move |_, _| {
+                let contract = probe_contract.clone();
+                Box::pin(async move {
+                    NativeActivation {
+                        exports: Ok(BTreeMap::from([(
+                            "Probe".into(),
+                            Published {
+                                contract,
+                                value: Arc::new(Probe) as Arc<dyn Handler>,
+                            },
+                        )])),
+                        owner: Arc::new(()),
+                    }
+                })
+            }),
+        )
+        .unwrap();
     let consumer = Uuid::new_v4();
     let deployment = Uuid::new_v4();
     let source = store.commit_application(
         deployment, 0,
         serde_json::from_value(json!({"instances":{
             "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
+            "probe":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":probe.application_ref()},"usePackage":"host"},
             "gateway":{"key":consumer,"package":{"source":"pinned","package":gateway.application_ref()},"usePackage":"host",
-                "bindings":{"hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}]}}
+                "bindings":{
+                "hostLogs":[{"kind":"instance","path":["logs"],"export":"HostLogs"}],
+                "probe":[{"kind":"instance","path":["probe"],"export":"Probe"}]
+            }}
         }})).unwrap(),
-        vec![], vec![logs, gateway],
+        vec![], vec![logs, probe, gateway],
     ).await.unwrap();
     let configuration = Configuration::PublicHost {
         endpoints: serde_json::from_value(json!({
-            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}}
+            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}},
+            "probe":{"consumer":[consumer],"import":"probe","grant":{"methods":["commit"],"recovery":false}}
         })).unwrap(),
         native: Default::default(),
         product_methods: Default::default(),
@@ -114,7 +194,7 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>) {
     let host = Host::open_with_options(
         store.clone(),
         deployment,
-        Default::default(),
+        native,
         None,
         configuration.clone(),
         Options {
@@ -162,7 +242,7 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         let (relay, route) = https_relay().await;
         let (dir, host) = logs_host().await;
         let relay_config = Relay::new(&route, None, Some(TOKEN.into())).unwrap();
-        let mut transport = HostPeerTransport::bind(&host, &[relay_config], false)
+        let transport = HostPeerTransport::bind(&host, &[relay_config], false)
             .await
             .unwrap();
         transport.wait_for_relay().await.unwrap();
@@ -183,9 +263,7 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         let peer_id = PeerId::new(identity.public_key().to_string()).unwrap();
         let invite = host
             .prepare_peer_pairing(PeerPairingOptions {
-                relays: vec![route.clone()],
                 host_name: "Logs fixture".into(),
-                direct_endpoints: vec![],
                 label: None,
                 ttl_secs: None,
             })
@@ -224,6 +302,23 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         assert!(!pending.path_summary().unwrap().direct);
 
         let (profile, client) = pending.confirm(&sas, None).await.unwrap();
+        let mut progress = Vec::new();
+        let saved_value = client
+            .mutate_with(
+                "probe",
+                "commit",
+                json!({"keyId":"test-key"}),
+                Attachments::from([("secret".into(), ReadResource::utf8(probe_secret()))]),
+                |value| progress.push(value),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            progress,
+            [json!({"step":"received"}), json!({"step":"saved"})]
+        );
+        assert_eq!(saved_value, json!({"saved":true}));
+
         let mut watch = client
             .subscribe("hostLogs", "watch", json!({"position":{"kind":"tail"}}))
             .await
@@ -319,28 +414,16 @@ async fn websocket_bearer_admission_uses_tls_and_the_endpoint_server_name() {
         #[cfg(windows)]
         let socket =
             std::path::PathBuf::from(format!(r"\\.\pipe\maka-client-test-{}", Uuid::new_v4()));
-        let direct_invite = host
+        let error = host
             .prepare_peer_pairing(PeerPairingOptions {
-                relays: vec![],
                 host_name: "Logs fixture".into(),
-                direct_endpoints: vec!["wss://localhost/runtime-host".into()],
                 label: None,
                 ttl_secs: None,
             })
             .await
-            .unwrap();
-        let identity = DeviceIdentity::generate().unwrap();
-        let saved = SavedHosts::load(_dir.path().join("hosts.json")).unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-            .try_into()
-            .unwrap();
-        assert!(matches!(
-            PendingPairing::begin(&identity, &direct_invite.uri, now, None, &saved).await,
-            Err(maka_remote_client::RemoteClientError::NoNativeRoute)
-        ));
+            .err()
+            .expect("a WebSocket Bearer is not a native pairing route");
+        assert!(error.contains("no active native relay routes"));
 
         let local = LocalListener::bind(&socket).unwrap();
         let upstream = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
