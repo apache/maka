@@ -28,7 +28,7 @@ import {
   type JSX,
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
-import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import type { AgentSession, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
@@ -535,15 +535,16 @@ export function SideComposer(props: {
 }
 
 /**
- * The side questions asked beside a reply, under it: each opens its card. They
- * stay when the reply's actions are hidden, so a reply shows what was asked of it.
+ * The side questions asked beside a reply, under it, with what each is doing: each opens
+ * its card. They stay when the reply's actions are hidden, so a reply shows what was asked
+ * of it.
  */
 export function SideNotes(props: {
   /**
    * Those not underlined in the reply (asked about all of it, or about text not found in
    * it), and underlined ones that are working, waiting or unread.
    */
-  questions(): readonly { id: string; title: string; activity?: string; hasUnread?: boolean }[];
+  questions(): readonly Pick<AgentSession, 'id' | 'title' | 'activity' | 'hasUnread'>[];
   /** The side question whose card is open. */
   shown(): string | null;
   open(sessionId: string): void;

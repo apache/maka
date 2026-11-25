@@ -1125,7 +1125,7 @@ export const contracts: {
                   },
                   {
                     description:
-                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists.',
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists, except while\none waits for the user.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -11720,7 +11720,7 @@ export const contracts: {
               },
               side: {
                 description:
-                  "Makes the fork a side question of the source conversation: lists leave\nit out unless they ask for that conversation's side questions.",
+                  "Makes the fork a side question of the source conversation: lists leave\nit out unless they ask for that conversation's side questions, or it\nwaits for the user.",
                 type: 'boolean',
                 default: false,
               },
@@ -23701,7 +23701,7 @@ export const contracts: {
                   },
                   {
                     description:
-                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists.',
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists, except while\none waits for the user.',
                     type: 'object',
                     properties: {
                       kind: {

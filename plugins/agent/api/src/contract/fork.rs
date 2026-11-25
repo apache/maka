@@ -36,7 +36,8 @@ pub struct Fork {
     pub title: String,
     pub labels: Vec<String>,
     /// Makes the fork a side question of the source conversation: lists leave
-    /// it out unless they ask for that conversation's side questions.
+    /// it out unless they ask for that conversation's side questions, or it
+    /// waits for the user.
     #[serde(default)]
     pub side: bool,
 }

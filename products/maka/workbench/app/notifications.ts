@@ -96,11 +96,20 @@ export function watchNotifications(props: {
       const { id, activity } = session;
       const before = previous.get(id);
       seen.set(id, activity);
-      if (!background || before === undefined) continue;
+      if (!background) continue;
+      // A side question is listed only while it waits, so it first shows up waiting. Other
+      // conversations that show up (a first load, a reload) are where they were.
+      const appeared =
+        before === undefined &&
+        previous.size > 0 &&
+        activity === 'waiting' &&
+        !!session.branch?.side;
+      if (before === undefined && !appeared) continue;
       const notify =
-        before === activity
+        appeared ||
+        (before === activity
           ? previousPending.has(id)
-          : activity === 'waiting' || (before === 'working' && activity === 'idle');
+          : activity === 'waiting' || (before === 'working' && activity === 'idle'));
       if (notify) pending.set(id, session);
     }
     if (pending.size && !delivering) void deliver();

@@ -1007,6 +1007,30 @@ mod tests {
         }
     }
 
+    /// The session's request is answered: nothing waits for the user any more.
+    struct ClearPending {
+        session: &'static str,
+    }
+    impl Statement for ClearPending {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            c.execute(
+                "DELETE FROM agent_interaction_pending WHERE session=?1",
+                [self.session],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
     #[tokio::test]
     async fn side_questions_are_listed_under_their_parent_until_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1107,6 +1131,35 @@ mod tests {
                 .map(|record| record.metadata.id.as_str())
                 .collect::<Vec<_>>(),
             ["sess-02"]
+        );
+        // Once answered it leaves the lists and the count again.
+        data.write(ClearPending { session: "sess-02" }).await.unwrap();
+        assert_eq!(
+            pages(SideQuestions::Hidden, 32).await,
+            vec![vec!["sess-06", "sess-04", "sess-03", "sess-01"]]
+        );
+        assert_eq!(
+            catalog
+                .page(
+                    CatalogScope::Profile,
+                    None,
+                    Position::Start,
+                    Filter {
+                        base: CatalogFilter {
+                            roots_only: false,
+                            archived_only: false,
+                            include_archived: true,
+                        },
+                        needs_you_only: true,
+                        room: None,
+                        side: SideQuestions::Hidden,
+                    },
+                    32,
+                )
+                .await
+                .unwrap()
+                .pending_session_count,
+            0
         );
         root.close().await.unwrap();
     }

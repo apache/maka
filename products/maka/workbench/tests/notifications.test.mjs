@@ -213,6 +213,16 @@ test('presses focus then open, and a remounted owner shares only the pending per
   assert.deepEqual(shown, [{ id: 'b', title: 'b', body: 'Turn finished' }]);
 });
 
+test('a side question that shows up waiting is announced, other new rows are not', async (t) => {
+  const { owner, shown } = await setup(t, 'granted');
+  const side = (id, activity) => ({ ...session(id, activity), branch: { side: true } });
+  owner.update(session('a', 'idle'), side('first-load', 'waiting'));
+  owner.update(session('a', 'idle'), side('first-load', 'waiting'), session('b', 'waiting'));
+  owner.update(session('a', 'idle'), side('s', 'waiting'));
+  await setImmediate();
+  assert.deepEqual(shown, [{ id: 's', title: 's', body: 'Waiting for you' }]);
+});
+
 for (const status of ['granted', 'denied', 'unavailable']) {
   test(`an existing ${status} permission is respected without a prompt`, async (t) => {
     const { owner, requestPermission, shown } = await setup(t, status);
