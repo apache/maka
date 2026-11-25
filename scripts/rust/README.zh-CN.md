@@ -44,14 +44,15 @@ node scripts/rust/notices.mjs check
 
 ## CI
 
-测试套件统一在 [`scripts/ci/suites.mjs`](../ci/suites.mjs) 定义，本地 `just` 与 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 共用 [`scripts/ci.mjs`](../ci.mjs) 执行：
+测试套件统一在 [`scripts/ci/suites.mjs`](../ci/suites.mjs) 定义，本地 `just`、[`.github/workflows/pr.yml`](../../.github/workflows/pr.yml) 与 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) 共用 [`scripts/ci.mjs`](../ci.mjs) 执行：
 
 ```sh
-node scripts/ci.mjs plan --base origin/rust-preview
+node scripts/ci.mjs check pr
+node scripts/ci.mjs plan --base origin/main
 node scripts/ci.mjs run bridge
 ```
 
-PR 计划根据 Cargo 反向依赖图以及声明的运行时资源（如内置 `skills/`、产品包与辅助子进程二进制）精准计算受影响套件；改动公共配置则触发全量矩阵。主构建任务产出一份包含运行时资源的 `cargo nextest` 归档，由各平台测试节点分片消费。
+PR 仅运行轻量 `test` 门禁（`node scripts/ci.mjs check pr`）；合入 `main` 后按 Cargo 反向依赖图与声明的运行时资源（如内置 `skills/`、产品包与辅助子进程二进制）执行全量 root 验证，并由每日定时任务跑全量矩阵。主构建任务产出一份包含运行时资源的 `cargo nextest` 归档，由各平台测试节点分片消费。
 
 ## 性能基准测试
 

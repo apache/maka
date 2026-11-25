@@ -43,7 +43,7 @@ def seconds(start, end):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="apache/maka")
-    parser.add_argument("--branch", default="rust-preview")
+    parser.add_argument("--branch", default="main")
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

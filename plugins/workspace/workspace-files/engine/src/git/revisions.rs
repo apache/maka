@@ -157,11 +157,9 @@ fn detect_default_base(
     const CANDIDATES: &[&str] = &[
         "origin/main",
         "origin/master",
-        "origin/rust-preview",
         "origin/develop",
         "main",
         "master",
-        "rust-preview",
         "develop",
     ];
     for candidate in CANDIDATES {
