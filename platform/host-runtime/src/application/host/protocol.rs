@@ -176,6 +176,8 @@ pub enum Request {
     RevokeAccess {
         credential: String,
     },
+    RemoteAccessStatus,
+    UpdateRemoteAccess(super::remote_access::RemoteAccessUpdate),
     PreparePeerPairing(super::PeerPairingOptions),
     ListPeerAccess,
     RevokePeerAccess {
@@ -215,6 +217,8 @@ pub enum Response {
     PeerAccessRevoked,
     Pairing(Result<super::Pairing>),
     Revoked(Result<bool>),
+    RemoteAccessStatus(Result<super::remote_access::RemoteAccessStatus>),
+    RemoteAccessUpdated(Result<super::remote_access::RemoteAccessConfig>),
     PeerPairingInvite(Result<super::PeerPairingInvite>),
     PeerAccess(Result<Vec<super::HostPeerAccess>>),
     PeerPairingReceipt(Result<super::PeerPairingReceipt>),

@@ -64,7 +64,7 @@ pub(super) fn now() -> Result<u64> {
     u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
         .map_err(|_| "clock precedes Unix epoch".into())
 }
-fn timestamp() -> Result<String> {
+pub(super) fn timestamp() -> Result<String> {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|error| error.to_string())
@@ -304,6 +304,7 @@ pub struct PeerPairingInvite {
     pub root_id: String,
     pub invite_id: String,
     pub expires_at_ms: u64,
+    pub relays: Vec<RelayEndpoint>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -398,6 +399,7 @@ impl Host {
             root_id: payload.root_id.clone(),
             invite_id: payload.invite_id.clone(),
             expires_at_ms,
+            relays: payload.relays.clone(),
         })
     }
 

@@ -919,6 +919,14 @@ async fn local_pairing_invite_grants_only_the_redeeming_native_peer_and_can_be_r
             .is_err()
     );
     for request in [
+        Request::RemoteAccessStatus,
+        Request::UpdateRemoteAccess(
+            maka_host_runtime::application::host::remote_access::RemoteAccessUpdate {
+                enabled: false,
+                relay_only: false,
+                relays: Vec::new(),
+            },
+        ),
         Request::PreparePeerPairing(options(None, None)),
         Request::ListPeerAccess,
         Request::RevokePeerAccess {

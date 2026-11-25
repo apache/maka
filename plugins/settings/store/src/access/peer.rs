@@ -65,6 +65,19 @@ impl ConfigurationStore {
         .await
     }
 
+    pub async fn record_host_peer_activity(
+        &self,
+        peer: PeerId,
+        host_grant: String,
+        at: String,
+    ) -> Result<bool> {
+        self.transaction(TransactionMode::Immediate, move |tx| {
+            Ok(tx.prepare_cached(
+                "UPDATE host_peer_access SET last_active_at = ? WHERE peer_id = ? AND host_grant = ?",
+            )?.execute(params![at, peer.as_str(), host_grant])? != 0)
+        }).await
+    }
+
     pub async fn revoke_host_peer_access(&self, peer: PeerId) -> Result<bool> {
         self.transaction(TransactionMode::Immediate, move |tx| {
             Ok(tx
@@ -92,6 +105,7 @@ pub struct HostPeerAccess {
     pub grant: String,
     pub label: String,
     pub created_at: String,
+    pub last_active_at: Option<String>,
 }
 
 fn sqlite_ms(ms: u64) -> Result<i64> {
@@ -163,11 +177,11 @@ impl ConfigurationStore {
                 .format(&Rfc3339)
                 .map_err(|error| invalid(&error.to_string()))?;
             tx.prepare_cached(
-                "INSERT INTO host_peer_access (peer_id, host_grant, label, created_at)
-                 VALUES (?, ?, ?, ?)
+                "INSERT INTO host_peer_access (peer_id, host_grant, label, created_at, last_active_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)
                  ON CONFLICT (peer_id) DO UPDATE SET
                     host_grant = excluded.host_grant, label = excluded.label,
-                    created_at = excluded.created_at",
+                    created_at = excluded.created_at, last_active_at = excluded.last_active_at",
             )?
             .execute(params![
                 peer.as_str(),
@@ -184,7 +198,7 @@ impl ConfigurationStore {
         self.transaction(TransactionMode::Deferred, |tx| {
             Ok(tx
                 .prepare_cached(
-                    "SELECT peer_id, host_grant, label, created_at
+                    "SELECT peer_id, host_grant, label, created_at, last_active_at
                      FROM host_peer_access ORDER BY peer_id",
                 )?
                 .query_map([], |row| {
@@ -193,6 +207,7 @@ impl ConfigurationStore {
                         grant: row.get(1)?,
                         label: row.get(2)?,
                         created_at: row.get(3)?,
+                        last_active_at: row.get(4)?,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?)

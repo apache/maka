@@ -382,3 +382,127 @@ async fn host_discovery_waits_for_the_connected_home_relay() {
     .await
     .expect("Host did not become discoverable after relay registration");
 }
+
+#[tokio::test]
+async fn saved_remote_transport_applies_live_and_starts_after_restart() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    use maka_host_runtime::application::host::{
+        PeerPairingOptions,
+        remote_access::{ConnectionStatus, RelayAuthUpdate, RemoteAccessUpdate, RemoteRelayUpdate},
+    };
+    use maka_remote_pairing::RelayEndpoint;
+    use std::path::PathBuf;
+
+    timeout(Duration::from_secs(90), async {
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        let relay = Server::spawn(config).await.unwrap();
+        let url = format!("http://{}/", relay.http_addr().unwrap());
+        let launch = || {
+            let mut cmd =
+                host::command_for(&crate::maka_executable(), &sandbox.home, &sandbox.workspace);
+            cmd.args(["host", "serve", "--root"]).arg(&sandbox.root);
+            cmd
+        };
+        let target = |ready: Value| {
+            (
+                PathBuf::from(ready["socketPath"].as_str().unwrap()),
+                ready["hostEpoch"].as_str().unwrap().parse().unwrap(),
+            )
+        };
+        let update = |enabled| RemoteAccessUpdate {
+            enabled,
+            relay_only: true,
+            relays: vec![RemoteRelayUpdate {
+                endpoint: RelayEndpoint {
+                    url: url.clone(),
+                    quic_port: None,
+                    cert_sha256: None,
+                },
+                ca_der_path: None,
+                auth: RelayAuthUpdate::Keep,
+            }],
+        };
+        let (server, ready) = spawn_ready(launch(), Stdio::inherit()).await;
+        let (socket, epoch) = target(ready);
+        let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+        assert!(matches!(status.status, ConnectionStatus::Disabled));
+        assert!(!status.config.enabled);
+
+        Client::update_remote_access(&socket, epoch, update(true))
+            .await
+            .unwrap();
+        loop {
+            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            assert!(status.error.is_none(), "{:?}", status.error);
+            if matches!(status.status, ConnectionStatus::Connected) {
+                assert_eq!(status.connected_relays, [url.as_str()]);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let invite = Client::prepare_peer_pairing(
+            &socket,
+            epoch,
+            PeerPairingOptions {
+                host_name: "Desktop test".into(),
+                label: None,
+                ttl_secs: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ticket = SignedPairingTicket::parse_and_verify_uri(&invite.uri, 0).unwrap();
+        let device = DeviceIdentity::generate().unwrap();
+        let route = Relay::new(&invite.relays[0], None, None).unwrap();
+        let endpoint = PeerEndpoint::bind(&device, &[route], true).await.unwrap();
+        let connected = endpoint.connect_ticket(&ticket).await.unwrap();
+        loop {
+            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            if let Some(notice) = status.sas {
+                assert_eq!(notice.peer_id, device.public_key().to_string());
+                assert_eq!(notice.sas, connected.export_sas().unwrap());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        connected
+            .redeem_pairing(&ticket, Some("Phone".into()))
+            .await
+            .unwrap();
+        let peers = Client::list_peer_access(&socket, epoch).await.unwrap();
+        assert_eq!(peers[0].label, "Phone");
+        assert!(peers[0].last_active_at.is_some());
+
+        Client::update_remote_access(&socket, epoch, update(false))
+            .await
+            .unwrap();
+        let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+        assert!(matches!(status.status, ConnectionStatus::Disabled));
+        assert!(status.connected_relays.is_empty() && status.sas.is_none());
+        connected.closed().await;
+        endpoint.close().await;
+        Client::update_remote_access(&socket, epoch, update(true))
+            .await
+            .unwrap();
+        stop(server).await;
+
+        let (restarted, ready) = spawn_ready(launch(), Stdio::inherit()).await;
+        let (socket, epoch) = target(ready);
+        loop {
+            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            assert!(status.config.enabled);
+            assert!(status.error.is_none(), "{:?}", status.error);
+            if matches!(status.status, ConnectionStatus::Connected) {
+                assert_eq!(status.paired_peer_count, 1);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        stop(restarted).await;
+        relay.shutdown().await.unwrap();
+    })
+    .await
+    .expect("saved remote transport did not complete");
+}

@@ -155,7 +155,11 @@ impl HostPeerTransport {
                         let peer = peer_id.clone();
                         let transport = conn.clone();
                         let host = self.host.clone();
+                        let notice = sas.clone();
                         let task = streams.spawn(async move {
+                            if let Err(error) = host.observe_peer_handshake(&peer, notice).await {
+                                tracing::warn!(%error, "could not record peer handshake");
+                            }
                             serve_connection(transport, &peer, ingress, &host, deadline).await;
                             peer
                         });

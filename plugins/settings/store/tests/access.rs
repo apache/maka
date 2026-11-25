@@ -320,3 +320,76 @@ async fn an_invite_that_expires_while_waiting_for_the_writer_is_not_redeemed() {
     assert!(!redemption.await.unwrap());
     assert!(store.list_host_peer_access().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn remote_relay_token_is_write_only_scoped_and_cleared_on_remove() {
+    use maka_config::remote_access::{RelayAuthUpdate, RemoteAccessUpdate, RemoteRelayUpdate};
+    use maka_remote_pairing::RelayEndpoint;
+
+    const TOKEN: &str = "vault-only-token-for-test";
+    let (temp, _, store) = setup().await;
+    let update = |url: &str, auth| RemoteAccessUpdate {
+        enabled: true,
+        relay_only: true,
+        relays: vec![RemoteRelayUpdate {
+            endpoint: RelayEndpoint {
+                url: url.into(),
+                quic_port: None,
+                cert_sha256: None,
+            },
+            ca_der_path: None,
+            auth,
+        }],
+    };
+    let config = store
+        .update_remote_access(
+            update(
+                "https://relay.example.test",
+                RelayAuthUpdate::Replace(TOKEN.into()),
+            ),
+            1,
+        )
+        .await
+        .unwrap();
+    assert!(config.relays[0].has_auth_token);
+    assert!(!serde_json::to_string(&config).unwrap().contains(TOKEN));
+    let transport = store.remote_transport().await.unwrap();
+    assert!(transport.relays[0].auth_token.as_deref() == Some(TOKEN));
+    assert!(
+        store
+            .update_remote_access(
+                update(
+                    "http://relay.example.test",
+                    RelayAuthUpdate::Replace(TOKEN.into())
+                ),
+                2,
+            )
+            .await
+            .is_err()
+    );
+
+    let db =
+        rusqlite::Connection::open(temp.path().join("root/configuration-rust.sqlite")).unwrap();
+    let json: String = db
+        .query_row("SELECT relays FROM host_remote_transport", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(!json.contains(TOKEN));
+    let config = store
+        .update_remote_access(
+            update("https://other.example.test", RelayAuthUpdate::Keep),
+            3,
+        )
+        .await
+        .unwrap();
+    assert!(!config.relays[0].has_auth_token);
+    let previous: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM credentials WHERE secret = ?)",
+            [TOKEN],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!previous, "removing the relay must remove its Vault token");
+}

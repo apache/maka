@@ -629,6 +629,42 @@ impl Client {
             _ => Err("Host configuration response mismatch".into()),
         }
     }
+    pub fn local_owner_control(
+        &self,
+        request: Request,
+    ) -> impl Future<Output = Result<Response>> + use<> {
+        let local = self.phase == Phase::Ready && self.peer.is_none() && !self.target.is_remote();
+        let target = self.target.clone();
+        let epoch = self.connected.epoch;
+        async move {
+            if !local {
+                return Err("Host control requires a ready local owner session".into());
+            }
+            target.owner_control(epoch, request).await
+        }
+    }
+
+    pub async fn remote_access_status(
+        address: &Path,
+        epoch: Uuid,
+    ) -> Result<super::remote_access::RemoteAccessStatus> {
+        match control(address, Some(epoch), Request::RemoteAccessStatus).await? {
+            Response::RemoteAccessStatus(result) => result,
+            _ => Err("Host remote access status response mismatch".into()),
+        }
+    }
+
+    pub async fn update_remote_access(
+        address: &Path,
+        epoch: Uuid,
+        update: super::remote_access::RemoteAccessUpdate,
+    ) -> Result<super::remote_access::RemoteAccessConfig> {
+        match control(address, Some(epoch), Request::UpdateRemoteAccess(update)).await? {
+            Response::RemoteAccessUpdated(result) => result,
+            _ => Err("Host remote access update response mismatch".into()),
+        }
+    }
+
     pub async fn prepare_peer_pairing(
         address: &Path,
         epoch: Uuid,

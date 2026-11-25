@@ -80,13 +80,7 @@ impl Relay {
 }
 
 pub(crate) fn validate_bearer(token: &str) -> Result<()> {
-    // RFC 6750 b64token, with optional trailing padding.
-    let value = token.trim_end_matches('=');
-    if value.is_empty()
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._~+/".contains(&b))
-    {
+    if !maka_remote_pairing::valid_relay_bearer(token) {
         return Err("invalid Bearer token".into());
     }
     Ok(())
@@ -276,8 +270,9 @@ impl PeerEndpoint {
                 let Some(error) = status.last_error() else {
                     continue;
                 };
-                failures.push(if let Some(reason) = status.auth_denied_reason() {
-                    format!("relay {url} rejected authentication: {reason}")
+                failures.push(if status.auth_denied_reason().is_some() {
+                    // The server supplies the rejection text and can echo credentials.
+                    format!("relay {url} rejected authentication (missing or invalid relay Bearer token, or relay policy denied access)")
                 } else {
                     format!("relay {url}: {error:#}")
                 });

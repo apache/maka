@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod remote_access;
+
 use clap::Args;
 use maka_host_runtime::{
     HostError,
@@ -199,6 +201,7 @@ async fn serve_product(
             ready["websocketUrl"] = format!("ws://{address}/runtime-host").into();
         }
         let remote = if let Some(remote) = remote {
+            host.remote_access_reset(true, true);
             let pairing_output = pairing_notices(remote.pairing_output)?;
             let transport = HostPeerTransport::bind(host, &remote.relays, remote.relay_only).await?;
             let registered = tokio::select! {
@@ -279,9 +282,26 @@ pub(super) async fn listen(
     host: Arc<Host>,
     cancellation: CancellationToken,
 ) -> Result<(), HostError> {
-    host.serve(endpoint.listener, websocket, cancellation)
-        .await
-        .map_err(Into::into)
+    let (sender, ingress) = HostPeerTransport::ingress();
+    let updates = host.remote_access_updates()?;
+    let serving = host.serve_with_peers(
+        endpoint.listener,
+        websocket,
+        Some(ingress),
+        cancellation.clone(),
+    );
+    let managing = remote_access::supervise(&host, sender, updates, cancellation.clone());
+    tokio::pin!(serving, managing);
+    tokio::select! {
+        result = &mut serving => {
+            cancellation.cancel();
+            result.map_err(HostError::from).and(managing.await)
+        }
+        result = &mut managing => {
+            cancellation.cancel();
+            result.and(serving.await.map_err(Into::into))
+        }
+    }
 }
 
 pub(super) fn home_directory() -> Result<Option<std::path::PathBuf>, maka_host_runtime::HostError> {
