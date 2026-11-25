@@ -323,17 +323,29 @@ function App(
       sideCard.set(card);
     });
   };
-  const openSideQuestion = (id: string) => {
-    if (!alive || blocked() || id === selected() || openElsewhere(id)) return;
-    void closeSideCard().then((closed) => {
-      if (!closed || !alive || blocked() || openElsewhere(id)) return;
-      const pane = sidePane(id);
-      sideCard.set({
-        parent: selected(),
-        pane: signal<SidePane | null>(pane),
-        render: () => <SideCardFrame>{pane.render()}</SideCardFrame>,
-      });
+  let sideOpening = 0;
+  // A side question's card opens beside the conversation it was asked from, which is
+  // selected first. The card open before closes once, and a pane showing the side question
+  // gives it up. The last request wins.
+  const openSideQuestion = async (id: string, parent = selected()): Promise<boolean> => {
+    const opening = ++sideOpening;
+    const current = () => alive && !blocked() && opening === sideOpening;
+    if (!current() || parent === null || id === parent) return false;
+    const shown = sideCard();
+    if (shown?.parent === parent && shown.pane()?.id() === id && selected() === parent) return true;
+    if (!(await closeSideCard()) || !(await releaseAssistant(id))) return false;
+    const from = sideFor(id);
+    if (from && !(await openSide(from, null))) return false;
+    if (parent !== selected() && !(await openSession(parent))) return false;
+    if (!current() || selected() !== parent || sideCard() !== null || openElsewhere(id))
+      return false;
+    const pane = sidePane(id);
+    sideCard.set({
+      parent,
+      pane: signal<SidePane | null>(pane),
+      render: () => <SideCardFrame>{pane.render()}</SideCardFrame>,
     });
+    return true;
   };
   effect(() => {
     const card = sideCard();
@@ -494,7 +506,11 @@ function App(
     ...(platform.idiom === 'terminal'
       ? {}
       : {
-          besideSessionIds: besides,
+          // The side question in its card is beside the conversation too.
+          besideSessionIds: () => {
+            const card = sideCard()?.pane()?.id();
+            return card ? [...besides(), card] : besides();
+          },
           askBeside,
           openSideQuestion,
           sideQuestionId: () => sideCard()?.pane()?.id() ?? null,

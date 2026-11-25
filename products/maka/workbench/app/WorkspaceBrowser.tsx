@@ -97,7 +97,8 @@ export type WorkspaceBrowserProps = {
   close(): void;
   /** Collapses the docked browser, from the toggle in its top row. */
   collapse(expectedSessionId: string | null): void;
-  selectSession(id: string, expectedSessionId: string | null): Promise<void>;
+  /** Resolves whether it opened; a side question opens as its card beside its conversation. */
+  selectSession(id: string, expectedSessionId: string | null): Promise<boolean>;
   create(
     workspace: BrowserWorkspace,
     expectedSessionId: string | null,
@@ -118,10 +119,6 @@ export type WorkspaceBrowserProps = {
   /** The conversations open beside the selected one, marked like a selected row. */
   beside?(): readonly string[];
   openBeside?(sessionId: string): void;
-  /** Whether a side question can open as a card beside its parent. */
-  canOpenSideQuestion?(): boolean;
-  /** Opens a side question of the selected conversation as its card. */
-  openSideQuestion?(sessionId: string): void;
   /**
    * The keys of the collapsed workspace groups, kept by the owner, whose
    * next and previous conversation skip them.
@@ -170,6 +167,12 @@ function GuideLine(props: { last(): boolean; height(): number }) {
 }
 // At most this many of the Bot's running or waiting conversations show under it.
 const botWorkerCap = 5;
+
+/** What a branch is, for its row. Forks renamed or titled before the prefix still read as forks. */
+function branchCaption(session: AgentSession): string {
+  if (session.branch?.side) return tr('Side question');
+  return session.branch && !hasForkPrefix(session.title) ? tr('Fork') : '';
+}
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && (props.docked() || !!props.pinSidebar);
@@ -381,22 +384,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
-    // A side question opens as a card beside its parent, so the user stays on the main line.
-    const branch = sessionsById().get(id)?.branch;
-    const parent = branch?.side && props.canOpenSideQuestion?.() ? branch.sessionId : null;
-    if (parent !== null) {
-      await props.selectSession(parent, origin);
-      if (!alive) return;
-      if (props.selected() === parent) {
-        props.openSideQuestion?.(id);
-        return;
-      }
-      // The parent cannot open (for example it was deleted): open the side question itself.
-      if (props.selected() !== origin) return;
-    }
-    await props.selectSession(id, origin);
+    const opened = await props.selectSession(id, origin);
     // In Desktop docked mode the conversation stays visible and reports draft blocks directly.
-    if (alive && id !== origin && props.selected() === origin && !props.docked()) {
+    if (alive && !opened && id !== origin && props.selected() === origin && !props.docked()) {
       toast.show({
         id: 'workbench.draft-not-ready',
         tone: 'warning',
@@ -1507,11 +1497,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   activityKnown() && current.activity === 'waiting'
                     ? sessionStatusCaption.waiting
                     : '',
-                  current.branch?.side
-                    ? tr('Side question')
-                    : current.branch && !hasForkPrefix(current.title)
-                      ? tr('Fork')
-                      : '',
+                  branchCaption(current),
                   current.pinned || sortByTime() ? workspaceLabel(current.workspace) : '',
                 ]
                   .filter(Boolean)
@@ -1685,12 +1671,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                     : session()?.activity === 'waiting'
                                       ? `${sessionStatusCaption.waiting} · `
                                       : ''}
-                                {/* Forks renamed or titled before the prefix still read as forks. */}
-                                {session()?.branch?.side
-                                  ? `${tr('Side question')} · `
-                                  : session()?.branch && !hasForkPrefix(session()!.title)
-                                    ? `${tr('Fork')} · `
-                                    : ''}
+                                {session() && branchCaption(session()!)
+                                  ? `${branchCaption(session()!)} · `
+                                  : ''}
                                 {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
                                   session()?.workspace.path}
                               </Text>
