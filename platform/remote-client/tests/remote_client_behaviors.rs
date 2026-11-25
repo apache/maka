@@ -79,16 +79,18 @@ impl Handler for Probe {
         context: Context,
     ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         Box::pin(async move {
+            let key_id = input["keyId"].as_str().ok_or("missing key ID")?;
+            if input != json!({"keyId": key_id}) {
+                return Err("unexpected JSON input".into());
+            }
             let resource = context
                 .attachments()
                 .get("secret")
                 .ok_or("missing attachment")?;
-            let valid = match input["keyId"].as_str() {
-                Some("test-key") => {
-                    resource.read(0..resource.bytes())? == probe_secret().as_bytes()
-                }
-                Some("empty") => resource.bytes() == 0 && resource.read(0..0)?.is_empty(),
-                Some("large") => {
+            let valid = match key_id {
+                "test-key" => resource.read(0..resource.bytes())? == probe_secret().as_bytes(),
+                "empty" => resource.bytes() == 0 && resource.read(0..0)?.is_empty(),
+                "large" => {
                     resource.bytes() == LARGE_UPLOAD
                         && resource.read(0..1)? == b"x"
                         && resource.read(resource.bytes() - 1..resource.bytes())? == b"x"
@@ -470,7 +472,6 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
         let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}/runtime-host", proxy.local_addr().unwrap());
         let (forwarded, first_chunk) = oneshot::channel();
-        let (cut, cancelled) = oneshot::channel();
         let proxy_task = tokio::spawn({
             let bearer = bearer.clone();
             async move {
@@ -510,7 +511,12 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
                 upstream.send(length).await.unwrap();
                 upstream.send(body).await.unwrap();
                 forwarded.send(()).unwrap();
-                cancelled.await.unwrap();
+                // Hold the rest of the upload here until the mutation's socket
+                // actually closes. The proxy must not initiate that disconnect.
+                if let Err(error) = tokio::io::copy(client.get_mut(), &mut tokio::io::sink()).await
+                {
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+                }
                 drop(client);
                 upstream.get_mut().shutdown().await.unwrap();
                 assert!(!matches!(upstream.next().await, Some(Ok(_))));
@@ -557,7 +563,6 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
                 result = first_chunk => result.unwrap(),
             }
         }
-        cut.send(()).unwrap();
 
         // Each upload reserves more than half of the Host's attachment window.
         // A leaked reservation would reject this retry before another upload starts.
