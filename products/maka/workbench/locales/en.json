@@ -8,6 +8,7 @@
   "A new message closed the question.": "A new message closed the question.",
   "A provider credential is stored. Sign in again to replace it.": "A provider credential is stored. Sign in again to replace it.",
   "A proxy password is stored. Its value is never read back.": "A proxy password is stored. Its value is never read back.",
+  "A question for you": "A question for you",
   "A server with this name already exists at this location.": "A server with this name already exists at this location.",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.",
   "A subagent with this name already exists.": "A subagent with this name already exists.",

@@ -8,6 +8,7 @@
   "A new message closed the question.": "Un nuevo mensaje cerró la pregunta.",
   "A provider credential is stored. Sign in again to replace it.": "Hay una credencial de proveedor guardada. Inicia sesión de nuevo para reemplazarla.",
   "A proxy password is stored. Its value is never read back.": "Hay una contraseña de proxy guardada. Su valor nunca se vuelve a leer.",
+  "A question for you": "Una pregunta para ti",
   "A server with this name already exists at this location.": "Ya existe un servidor con este nombre en esta ubicación.",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "Un atajo ejecuta el comando desde cualquier aplicación. Escribe el alias para encontrarlo; si lo dejas vacío, se usa el alias integrado.",
   "A subagent with this name already exists.": "Ya existe un subagente con este nombre.",

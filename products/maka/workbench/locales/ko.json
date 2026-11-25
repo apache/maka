@@ -8,6 +8,7 @@
   "A new message closed the question.": "새 메시지가 도착해 질문이 종료되었습니다.",
   "A provider credential is stored. Sign in again to replace it.": "프로바이더 자격 증명이 저장되어 있습니다. 교체하려면 다시 로그인하세요.",
   "A proxy password is stored. Its value is never read back.": "프록시 비밀번호가 저장되어 있습니다. 저장된 값은 다시 읽지 않습니다.",
+  "A question for you": "질문이 있습니다",
   "A server with this name already exists at this location.": "이 위치에 같은 이름의 서버가 이미 있습니다.",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "단축키를 사용하면 어느 앱에서나 명령을 실행할 수 있습니다. 별칭을 입력해 찾을 수 있으며, 비워 두면 기본 별칭이 사용됩니다.",
   "A subagent with this name already exists.": "같은 이름의 서브에이전트가 이미 있습니다.",
