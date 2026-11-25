@@ -617,7 +617,7 @@ function progressKey(rootId: string, generation: number, progressId: string) {
 }
 
 host.on('ios.mutationProgress', (data) => {
-  const progress = data as MutationProgress & { credit: number };
+  const progress = data as MutationProgress & { deliveryId: number; sequence: number };
   try {
     if (connection(progress.rootId)?.generation === progress.generation) {
       progressListeners.get(
@@ -626,7 +626,10 @@ host.on('ios.mutationProgress', (data) => {
     }
   } finally {
     // Return credit even if the event belongs to a Host or call that has since ended.
-    host.post('ios.ackMutationProgress', progress.credit);
+    host.post('ios.ackMutationProgress', {
+      deliveryId: progress.deliveryId,
+      sequence: progress.sequence,
+    });
   }
 });
 
@@ -656,16 +659,20 @@ export async function hostMutate<T = unknown>(
     progressListeners.set(key, onProgress);
   }
   try {
-    const res = (await host.call('ios.hostMutate', {
-      anchorSession: rootId ? undefined : hostState?.active?.session,
-      rootId,
-      generation: target?.generation,
-      endpoint,
-      method,
-      input,
-      secret,
-      progressId: onProgress ? progressId : undefined,
-    })) as { value: T };
+    const res = (await host.call(
+      'ios.hostMutate',
+      {
+        anchorSession: rootId ? undefined : hostState?.active?.session,
+        rootId,
+        generation: target?.generation,
+        endpoint,
+        method,
+        input,
+        secret,
+        progressId: onProgress ? progressId : undefined,
+      },
+      onProgress ? { timeout: 0 } : undefined,
+    )) as { value: T };
     return res.value;
   } finally {
     if (key !== undefined) progressListeners.delete(key);

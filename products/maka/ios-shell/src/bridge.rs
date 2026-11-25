@@ -25,7 +25,7 @@ use nsh_engine::{HostCall, HostChannel};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc, Mutex as SyncMutex,
@@ -35,13 +35,13 @@ use std::{
 };
 use tokio::{
     runtime::Handle,
-    sync::{Mutex, oneshot},
+    sync::{Mutex, oneshot, watch},
     task::AbortHandle,
 };
 use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
-const PROGRESS_WINDOW: usize = 8;
+const PROGRESS_WINDOW: u64 = 8;
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
     "ios.beginPairing",
@@ -156,12 +156,13 @@ struct ActiveHost {
     info: Value,
     calls: RemoteCallHandle,
     receipt_scope: Option<ReceiptScope>,
-    _stop: oneshot::Sender<()>,
+    retired: CancellationToken,
     subscriptions: BTreeMap<String, (u64, AbortHandle)>,
 }
 
 impl Drop for ActiveHost {
     fn drop(&mut self) {
+        self.retired.cancel();
         for (_, task) in self.subscriptions.values() {
             task.abort();
         }
@@ -174,13 +175,25 @@ struct ReceiptScope {
     host_peer_id: String,
 }
 
+struct ProgressWindow {
+    sent: u64,
+    acknowledged: watch::Sender<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressAck {
+    delivery_id: u64,
+    sequence: u64,
+}
+
 #[derive(Default)]
 struct State {
     generation: u64,
     pairing: Option<Attempt>,
     pending: Option<Pending>,
     redeeming: BTreeMap<u64, RootId>,
-    unacked_progress: BTreeSet<u64>,
+    mutation_progress: BTreeMap<u64, ProgressWindow>,
     // The legacy pairing screen also uses cancelPairing for manual WebSocket admission.
     manual: Option<RootId>,
     active_root: Option<RootId>,
@@ -253,7 +266,62 @@ struct Bridge {
     pending_uri: Arc<SyncMutex<Option<String>>>,
     channel: HostChannel,
     snapshot_revision: Arc<AtomicU64>,
+    shutdown: CancellationToken,
     runtime: Handle,
+}
+
+struct MutationProgress<'a> {
+    caller: &'a HostCall,
+    progress_id: &'a str,
+    delivery_id: u64,
+    retired: CancellationToken,
+    ack: watch::Receiver<u64>,
+}
+
+impl MutationProgress<'_> {
+    async fn emit(&self, bridge: &Bridge, root: &str, generation: u64, value: Value) {
+        let mut ack = self.ack.clone();
+        let mut event = json!({
+            "rootId": root, "generation": generation, "progressId": self.progress_id,
+            "deliveryId": self.delivery_id,
+        });
+        event["value"] = value;
+        loop {
+            let mut state = bridge.state.lock().await;
+            if self.retired.is_cancelled() || state.current(root, generation).is_none() {
+                return;
+            }
+            let window = state
+                .mutation_progress
+                .get_mut(&self.delivery_id)
+                .expect("active delivery");
+            if window.sent - *ack.borrow_and_update() < PROGRESS_WINDOW {
+                let sequence = window.sent + 1;
+                event["sequence"] = sequence.into();
+                if bridge
+                    .channel
+                    .send_to_caller(self.caller, "ios.mutationProgress", event)
+                    .expect("valid progress event name")
+                {
+                    window.sent = sequence;
+                }
+                return;
+            }
+            drop(state);
+            // Stop delivering if the recipient is gone, but keep reading the
+            // mutation stream for its terminal receipt or error.
+            tokio::select! {
+                biased;
+                _ = self.retired.cancelled() => return,
+                _ = bridge.channel.caller_detached(self.caller) => return,
+                changed = ack.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl HostBridge {
@@ -283,6 +351,7 @@ impl HostBridge {
             runtime,
             channel: channel.clone(),
             snapshot_revision: Arc::new(AtomicU64::new(0)),
+            shutdown: CancellationToken::new(),
         };
         for &name in ALLOWED_HOST_CALLS {
             let bridge = bridge.clone();
@@ -300,6 +369,9 @@ impl HostBridge {
                             }
                             Err(err) => call.reply(Err(err)),
                         }
+                    } else if name == "ios.hostMutate" {
+                        let result = bridge.mutate(data, Some(&call)).await;
+                        call.reply(result);
                     } else {
                         call.reply(bridge.dispatch(name, data).await);
                     }
@@ -318,6 +390,7 @@ impl HostBridge {
 
 impl Drop for HostBridge {
     fn drop(&mut self) {
+        self.bridge.shutdown.cancel();
         for name in ALLOWED_HOST_CALLS {
             self.bridge.channel.remove_handler(name);
         }
@@ -451,7 +524,7 @@ impl Bridge {
             }
             "ios.hostQuery" => {
                 let rpc = read_only_rpc(data)?;
-                let (root, id, calls, _) = self.calls(&rpc).await?;
+                let (root, id, calls) = self.calls(&rpc).await?;
                 let value = calls
                     .query(&rpc.endpoint, &rpc.method, rpc.input)
                     .await
@@ -459,10 +532,23 @@ impl Bridge {
                 self.check_active(&root, id).await?;
                 Ok(json!({"value": value}))
             }
-            "ios.hostMutate" => self.mutate(data).await,
             "ios.ackMutationProgress" => {
-                let credit: u64 = decode(data)?;
-                self.state.lock().await.unacked_progress.remove(&credit);
+                let ProgressAck {
+                    delivery_id,
+                    sequence,
+                } = decode(data)?;
+                // JS receives events in order, but its ACK tasks can run out of order.
+                if let Some(window) = self.state.lock().await.mutation_progress.get(&delivery_id)
+                    && sequence <= window.sent
+                {
+                    window.acknowledged.send_if_modified(|acknowledged| {
+                        if sequence <= *acknowledged {
+                            return false;
+                        }
+                        *acknowledged = sequence;
+                        true
+                    });
+                }
                 Ok(Value::Null)
             }
             "ios.unsubscribe" => {
@@ -492,7 +578,7 @@ impl Bridge {
         }
     }
 
-    async fn mutate(&self, mut data: Value) -> Result<Value, String> {
+    async fn mutate(&self, mut data: Value, caller: Option<&HostCall>) -> Result<Value, String> {
         // Do not feed a credential to serde's diagnostics or the Host's JSON input.
         let secret = match data.as_object_mut().and_then(|data| data.remove("secret")) {
             Some(Value::String(secret)) => Some(secret),
@@ -501,16 +587,63 @@ impl Bridge {
         };
         let rpc: Rpc = decode(data)?;
         let attachments = credential_attachments(&rpc, secret)?;
-        let (root, id, calls, receipt_scope) = self.calls(&rpc).await?;
+        let (root, id, calls, receipt_scope, progress) = {
+            let mut state = self.state.lock().await;
+            let (root, host) = Self::target(&state, &rpc)?;
+            let retired = host.retired.clone();
+            let (root, id, calls, receipt_scope) = (
+                root.clone(),
+                host.id,
+                host.calls.clone(),
+                host.receipt_scope.clone(),
+            );
+            let progress = caller
+                .filter(|call| !call.is_post())
+                .zip(rpc.progress_id.as_deref())
+                .map(|(caller, progress_id)| {
+                    let delivery_id = state.next_generation();
+                    let (acknowledged, ack) = watch::channel(0);
+                    state.mutation_progress.insert(
+                        delivery_id,
+                        ProgressWindow {
+                            sent: 0,
+                            acknowledged,
+                        },
+                    );
+                    MutationProgress {
+                        caller,
+                        progress_id,
+                        delivery_id,
+                        retired,
+                        ack,
+                    }
+                });
+            (root, id, calls, receipt_scope, progress)
+        };
         let result = calls
             .mutate_with_progress(
                 &rpc.endpoint,
                 &rpc.method,
                 rpc.input,
                 attachments,
-                |value| self.emit_progress(&root, id, rpc.progress_id.as_deref(), value),
+                |value| {
+                    let progress = progress.as_ref();
+                    let root = root.as_str();
+                    async move {
+                        if let Some(progress) = progress {
+                            progress.emit(self, root, id, value).await;
+                        }
+                    }
+                },
             )
             .await;
+        if let Some(progress) = progress {
+            self.state
+                .lock()
+                .await
+                .mutation_progress
+                .remove(&progress.delivery_id);
+        }
         if let Err(RemoteClientError::MutationUncertain { reference, .. }) = &result
             && let Some(scope) = receipt_scope
         {
@@ -519,31 +652,6 @@ impl Bridge {
         let value = result.map_err(error)?;
         self.check_active(&root, id).await?;
         Ok(json!({"value": value}))
-    }
-
-    async fn emit_progress(
-        &self,
-        root: &str,
-        generation: u64,
-        progress_id: Option<&str>,
-        value: Value,
-    ) {
-        let Some(progress_id) = progress_id else {
-            return;
-        };
-        let mut state = self.state.lock().await;
-        // A shared window bounds the NSH queue even across reconnects and concurrent calls.
-        // Progress is advisory when JS falls behind; never wait for credit on the receipt path.
-        if state.unacked_progress.len() == PROGRESS_WINDOW
-            || state.current(root, generation).is_none()
-        {
-            return;
-        }
-        let credit = state.next_generation();
-        state.unacked_progress.insert(credit);
-        self.emit("ios.mutationProgress", json!({
-            "rootId": root, "generation": generation, "progressId": progress_id, "value": value, "credit": credit,
-        }));
     }
 
     async fn new_pairing(&self) -> (u64, CancellationToken) {
@@ -862,7 +970,7 @@ impl Bridge {
         transport: &str,
         credential: Option<Arc<RelayCredential>>,
     ) -> Result<Value, String> {
-        let (stop_tx, stop_rx) = oneshot::channel();
+        let retired = self.shutdown.child_token();
         let endpoints = connection.endpoint_names();
         let (snapshot, reconcile) = {
             let mut state = self.state.lock().await;
@@ -899,7 +1007,7 @@ impl Bridge {
                 id,
                 calls: connection.call_handle(),
                 receipt_scope,
-                _stop: stop_tx,
+                retired: retired.clone(),
                 subscriptions: BTreeMap::new(),
                 info: json!({
                     "rootId": connection.root_id(), "hostName": name, "epoch": connection.epoch(),
@@ -911,7 +1019,7 @@ impl Bridge {
         };
         let bridge = self.clone();
         self.runtime.spawn(async move {
-            bridge.monitor(id, connection, stop_rx).await;
+            bridge.monitor(id, connection, retired).await;
         });
         if let Some((scope, references, calls)) = reconcile {
             let bridge = self.clone();
@@ -1001,7 +1109,7 @@ impl Bridge {
         &self,
         id: u64,
         mut connection: RemoteHostConnection,
-        mut stop: oneshot::Receiver<()>,
+        retired: CancellationToken,
     ) {
         let root = connection.root_id().to_owned();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -1009,7 +1117,7 @@ impl Bridge {
             let path = path_summary(connection.path_summary());
             tokio::select! {
                 biased;
-                _ = &mut stop => {
+                _ = retired.cancelled() => {
                     match tokio::time::timeout(Duration::from_secs(3), connection.close()).await {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => log::warn!("close remote Host: {err}"),
@@ -1049,11 +1157,13 @@ impl Bridge {
         }
     }
 
-    async fn calls(
-        &self,
-        rpc: &Rpc,
-    ) -> Result<(RootId, u64, RemoteCallHandle, Option<ReceiptScope>), String> {
+    async fn calls(&self, rpc: &Rpc) -> Result<(RootId, u64, RemoteCallHandle), String> {
         let state = self.state.lock().await;
+        let (root, active) = Self::target(&state, rpc)?;
+        Ok((root.clone(), active.id, active.calls.clone()))
+    }
+
+    fn target<'a>(state: &'a State, rpc: &Rpc) -> Result<(&'a RootId, &'a ActiveHost), String> {
         // Without an explicit root, require the selected anchor as before.
         // Explicit-root callers can independently pin a connection generation.
         let target = match &rpc.root_id {
@@ -1068,7 +1178,7 @@ impl Bridge {
                         .is_some_and(|session| active.info["session"] == *session)
                 }),
         };
-        let (root, active) = target
+        target
             .filter(|(_, active)| {
                 rpc.anchor_session
                     .as_ref()
@@ -1082,13 +1192,7 @@ impl Bridge {
                     "remote Host is not connected".to_owned()
                 }
                 _ => "remote Host anchor no longer matches UI".to_owned(),
-            })?;
-        Ok((
-            root.clone(),
-            active.id,
-            active.calls.clone(),
-            active.receipt_scope.clone(),
-        ))
+            })
     }
 
     async fn check_active(&self, root: &str, id: u64) -> Result<(), String> {
@@ -1104,7 +1208,7 @@ impl Bridge {
         data: Value,
     ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let rpc = read_only_rpc(data)?;
-        let (root, active, calls, _) = self.calls(&rpc).await?;
+        let (root, active, calls) = self.calls(&rpc).await?;
         let id = rpc.subscription_id.ok_or("missing subscription ID")?;
         let mut subscription = calls
             .subscribe(&rpc.endpoint, &rpc.method, rpc.input)
@@ -1298,6 +1402,8 @@ mod tests {
                 let args = json!({"endpoint":"web","method":"saveKey","input":input});
                 let error = if call == "ios.subscribe" {
                     bridge.open_subscription(args).await.unwrap_err()
+                } else if call == "ios.hostMutate" {
+                    bridge.mutate(args, None).await.unwrap_err()
                 } else {
                     bridge.dispatch(call, args).await.unwrap_err()
                 };
@@ -1311,11 +1417,11 @@ mod tests {
             ("settings", "updateNetwork"),
         ] {
             let error = bridge
-                .dispatch(
-                    "ios.hostMutate",
+                .mutate(
                     json!({
                         "endpoint":endpoint, "method":method, "input":[], "secret":"attachment"
                     }),
+                    None,
                 )
                 .await
                 .unwrap_err();
@@ -1432,16 +1538,18 @@ mod tests {
             assert_eq!(state["active"]["session"], session.to_string());
             let stale = json!({"anchorSession":Uuid::new_v4(),"endpoint":"agent","method":"openBot",
                                "input":{},"subscriptionId":"watch"});
-            for method in ["ios.hostQuery", "ios.hostMutate"] {
-                assert_eq!(
-                    attached
-                        .bridge
-                        .dispatch(method, stale.clone())
-                        .await
-                        .unwrap_err(),
-                    "remote Host anchor no longer matches UI"
-                );
-            }
+            let (query, mutation) = tokio::join!(
+                attached.bridge.dispatch("ios.hostQuery", stale.clone()),
+                attached.bridge.mutate(stale.clone(), None),
+            );
+            assert_eq!(
+                query.unwrap_err(),
+                "remote Host anchor no longer matches UI"
+            );
+            assert_eq!(
+                mutation.unwrap_err(),
+                "remote Host anchor no longer matches UI"
+            );
             assert!(matches!(attached.bridge.open_subscription(stale).await,
                 Err(reason) if reason == "remote Host anchor no longer matches UI"));
         })
@@ -1499,7 +1607,7 @@ mod tests {
             let (query, mutation, ()) =
                 tokio::join!(
                     bridge.dispatch("ios.hostQuery", args("read")),
-                    bridge.dispatch("ios.hostMutate", args("write")),
+                    bridge.mutate(args("write"), None),
                     async {
                         let (method, first) = open_rpc(&b, session_b).await;
                         let (other, second) = open_rpc(&b, session_b).await;
@@ -1554,25 +1662,161 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn slow_js_progress_is_bounded_and_old_calls_cannot_emit_after_reconnect() {
+    async fn progress_backpressure_is_lossless_and_isolated_to_the_call() {
+        let (_dir, host, app, mut events) = progress_fixture();
+        let bridge = &host.bridge;
+        let a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (a_generation, a_session, _anchor_a) = progress_host(bridge, &a, "a").await;
+            let (b_generation, b_session, _anchor_b) = progress_host(bridge, &b, "b").await;
+            let (mut a_call, a_ref) =
+                start_progress(bridge, &a, "a", a_generation, a_session).await;
+            for step in 0..PROGRESS_WINDOW * 2 {
+                send_frame(&mut a_call, json!({"kind":"progress","value":step})).await;
+            }
+            finish_mutation(&mut a_call, a_ref).await;
+
+            let mut last = Value::Null;
+            for step in 0..PROGRESS_WINDOW {
+                last = events.recv().await.unwrap();
+                assert_progress(&last, "a", a_generation, json!(step));
+            }
+
+            // B's only prompt and its terminal error arrive while A is still unacked.
+            let (mut b_call, _) = start_progress(bridge, &b, "b", b_generation, b_session).await;
+            let prompt = json!({"url":"https://login.example.test/device","user_code":"SINGLE"});
+            send_frame(&mut b_call, json!({"kind":"progress","value":prompt})).await;
+            send_frame(
+                &mut b_call,
+                json!({"kind":"aborted","reason":"login failed"}),
+            )
+            .await;
+            assert_progress(&events.recv().await.unwrap(), "b", b_generation, prompt);
+            let terminal = events.recv().await.unwrap();
+            assert_eq!(terminal["rootId"], "b");
+            assert!(terminal["error"].as_str().unwrap().contains("login failed"));
+            assert!(events.try_recv().is_err(), "unacked A exceeded its window");
+
+            // Returning only one credit must deliver exactly the next frame.
+            ack_progress(bridge, &last, 1);
+            assert_progress(
+                &events.recv().await.unwrap(),
+                "a",
+                a_generation,
+                json!(PROGRESS_WINDOW),
+            );
+            ack_progress(bridge, &last, PROGRESS_WINDOW);
+            for step in PROGRESS_WINDOW + 1..PROGRESS_WINDOW * 2 {
+                assert_progress(
+                    &events.recv().await.unwrap(),
+                    "a",
+                    a_generation,
+                    json!(step),
+                );
+            }
+            // The terminal reply does not require ACKs for the last window.
+            assert_eq!(
+                events.recv().await.unwrap(),
+                json!({"rootId":"a","reply":{"value":"done"}}),
+            );
+        })
+        .await
+        .unwrap();
+        drop(app);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retiring_the_host_wakes_unacked_progress_without_masking_the_error() {
+        let (_dir, host, app, mut events) = progress_fixture();
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (old, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            let (mut blocked, _) = start_progress(bridge, &listener, "root", old, session).await;
+            fill_progress_window(&mut blocked, &mut events, old).await;
+            send_frame(
+                &mut blocked,
+                json!({"kind":"aborted","reason":"original error"}),
+            )
+            .await;
+
+            let (new, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            assert_ne!(old, new);
+            let terminal = events.recv().await.unwrap();
+            assert_eq!(terminal["rootId"], "root");
+            assert!(
+                terminal["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("original error")
+            );
+
+            let (mut call, reference) =
+                start_progress(bridge, &listener, "root", new, session).await;
+            send_frame(&mut call, json!({"kind":"progress","value":"fresh"})).await;
+            finish_mutation(&mut call, reference).await;
+            assert_progress(&events.recv().await.unwrap(), "root", new, json!("fresh"));
+            assert_eq!(
+                events.recv().await.unwrap(),
+                json!({"rootId":"root","reply":{"value":"done"}}),
+            );
+        })
+        .await
+        .unwrap();
+        drop(app);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detaching_the_app_or_dropping_the_bridge_wakes_unacked_progress() {
+        for detach_app in [true, false] {
+            let (_dir, host, app, mut events) = progress_fixture();
+            let bridge = host.bridge.clone();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (generation, session, _anchor) =
+                    progress_host(&bridge, &listener, "root").await;
+                let (mut call, _) =
+                    start_progress(&bridge, &listener, "root", generation, session).await;
+                fill_progress_window(&mut call, &mut events, generation).await;
+                send_frame(&mut call, json!({"kind":"aborted","reason":"last error"})).await;
+                if detach_app {
+                    drop(app);
+                    assert!(matches!(call.next().await, None | Some(Err(_))));
+                } else {
+                    drop(host);
+                    let terminal = events.recv().await.unwrap();
+                    assert!(terminal["error"].as_str().unwrap().contains("last error"));
+                    drop(app);
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    fn progress_fixture() -> (
+        tempfile::TempDir,
+        HostBridge,
+        nsh_testing::Headless,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let channel = HostChannel::new();
-        let attached =
+        let host =
             HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
-        let bridge = &attached.bridge;
         let bundle = nsh_engine::Bundle::source(
             r#"
             import { host } from 'nsh';
-            let progress = [];
-            host.on('ios.mutationProgress', event => progress.push(event));
+            host.on('ios.mutationProgress', event => host.post('test.event', event));
+            host.on('test.ack', ack => host.post('ios.ackMutationProgress', ack));
             host.on('test.mutate', async (data) => {
+                const {rootId} = data;
                 try {
-                    const reply = await host.call('ios.hostMutate', data);
-                    host.post('test.reply', {reply, progress});
+                    const reply = await host.call('ios.hostMutate', data, {timeout: 0});
+                    host.post('test.event', {rootId, reply});
                 } catch (error) {
-                    host.post('test.reply', {error: String(error), progress});
-                } finally {
-                    progress = [];
+                    host.post('test.event', {rootId, error: String(error)});
                 }
             });
         "#
@@ -1580,95 +1824,104 @@ mod tests {
         )
         .with_capabilities_json(Some(r#"{"host":true}"#))
         .unwrap();
-        let (send, mut replies) = tokio::sync::mpsc::unbounded_channel();
-        channel.handle("test.reply", move |mut call| {
-            send.send(call.take_data()).unwrap()
+        let (events, received) = tokio::sync::mpsc::unbounded_channel();
+        channel.handle("test.event", move |mut call| {
+            events.send(call.take_data()).unwrap();
         });
         let mut engine = nsh_engine::EngineConfig::new(bundle);
-        engine.host = channel.clone();
+        engine.host = channel;
         engine.runtime = Some(Handle::current());
-        let _app = nsh_testing::Headless::start(engine).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        (
+            dir,
+            host,
+            nsh_testing::Headless::start(engine).unwrap(),
+            received,
+        )
+    }
 
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let connect = async |session| {
-                let (snap, anchor) = tokio::join!(
-                    bridge.dispatch("ios.connectWebSocket", input(&listener)),
-                    admit_anchor(&listener, "root", session),
-                );
-                (snap.unwrap()["active"]["generation"].clone(), anchor)
-            };
-            let start = |generation| {
-                channel
-                    .send(
-                        "test.mutate",
-                        json!({
-                            "rootId":"root", "generation":generation, "endpoint":"agent",
-                            "method":"write", "input":{}, "progressId":"shared",
-                        }),
-                    )
-                    .unwrap();
-            };
-            let old_session = Uuid::new_v4();
-            let (old_generation, _old_anchor) = connect(old_session).await;
-            start(old_generation.clone());
-            let (_, mut old_call) = open_rpc(&listener, old_session).await;
-            let old_ref = prepare_mutation(&mut old_call).await;
+    async fn progress_host(
+        bridge: &Bridge,
+        listener: &TcpListener,
+        root: &str,
+    ) -> (
+        u64,
+        Uuid,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let session = Uuid::new_v4();
+        let mut args = input(listener);
+        args["rootId"] = json!(root);
+        let (snap, anchor) = tokio::join!(
+            bridge.dispatch("ios.connectWebSocket", args),
+            admit_anchor(listener, root, session),
+        );
+        (
+            snap.unwrap()["active"]["generation"].as_u64().unwrap(),
+            session,
+            anchor,
+        )
+    }
 
-            let session = Uuid::new_v4();
-            let (generation, _anchor) = connect(session).await;
-            assert_ne!(old_generation, generation);
-            send_frame(&mut old_call, json!({"kind":"progress","value":"stale"})).await;
-            finish_mutation(&mut old_call, old_ref).await;
-            let old = replies.recv().await.unwrap();
-            assert!(old["error"].as_str().unwrap().contains("Host changed"));
-            assert_eq!(old["progress"], json!([]));
-
-            start(generation.clone());
-            let (_, mut call) = open_rpc(&listener, session).await;
-            let reference = prepare_mutation(&mut call).await;
-            for i in 0..PROGRESS_WINDOW * 4 {
-                send_frame(&mut call, json!({"kind":"progress","value":i})).await;
-            }
-            finish_mutation(&mut call, reference).await;
-            let response = replies.recv().await.unwrap();
-            assert_eq!(response["reply"]["value"], "done");
-            let progress = response["progress"].as_array().unwrap();
-            assert_eq!(progress.len(), PROGRESS_WINDOW);
-            for (i, event) in progress.iter().enumerate() {
-                assert_eq!(event["rootId"], "root");
-                assert_eq!(event["generation"], generation);
-                assert_eq!(event["progressId"], "shared");
-                assert_eq!(event["value"], i);
-            }
-
-            bridge
-                .dispatch("ios.ackMutationProgress", progress[0]["credit"].clone())
-                .await
-                .unwrap();
-            start(generation);
-            let (_, mut call) = open_rpc(&listener, session).await;
-            prepare_mutation(&mut call).await;
-            send_frame(&mut call, json!({"kind":"progress","value":"one credit"})).await;
-            send_frame(&mut call, json!({"kind":"progress","value":"no credit"})).await;
-            send_frame(
-                &mut call,
-                json!({"kind":"aborted","reason":"mutation failed"}),
+    async fn start_progress(
+        bridge: &Bridge,
+        listener: &TcpListener,
+        root: &str,
+        generation: u64,
+        session: Uuid,
+    ) -> (
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        Value,
+    ) {
+        bridge
+            .channel
+            .send(
+                "test.mutate",
+                json!({
+                    "rootId":root, "generation":generation, "endpoint":"agent",
+                    "method":"write", "input":{}, "progressId":"shared",
+                }),
             )
-            .await;
-            let response = replies.recv().await.unwrap();
-            assert!(
-                response["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("mutation failed")
+            .unwrap();
+        let (_, mut call) = open_rpc(listener, session).await;
+        let reference = prepare_mutation(&mut call).await;
+        (call, reference)
+    }
+
+    async fn fill_progress_window(
+        call: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
+        generation: u64,
+    ) {
+        for step in 0..=PROGRESS_WINDOW {
+            send_frame(call, json!({"kind":"progress","value":step})).await;
+        }
+        for step in 0..PROGRESS_WINDOW {
+            assert_progress(
+                &events.recv().await.unwrap(),
+                "root",
+                generation,
+                json!(step),
             );
-            let progress = response["progress"].as_array().unwrap();
-            assert_eq!(progress.len(), 1);
-            assert_eq!(progress[0]["value"], "one credit");
-        })
-        .await
-        .unwrap();
+        }
+    }
+
+    fn assert_progress(event: &Value, root: &str, generation: u64, value: Value) {
+        assert_eq!(event["rootId"], root, "{event}");
+        assert_eq!(event["generation"], generation, "{event}");
+        assert_eq!(event["progressId"], "shared", "{event}");
+        assert_eq!(event["value"], value, "{event}");
+    }
+
+    fn ack_progress(bridge: &Bridge, event: &Value, sequence: u64) {
+        bridge
+            .channel
+            .send(
+                "test.ack",
+                json!({
+                    "deliveryId":event["deliveryId"], "sequence":sequence,
+                }),
+            )
+            .unwrap();
     }
 
     async fn prepare_mutation(
