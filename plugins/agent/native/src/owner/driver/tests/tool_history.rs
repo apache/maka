@@ -4312,6 +4312,387 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
+    use maka_agent_facts::executor::{Output, Selection, Settings};
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let original = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let mut spec = original.spec.clone();
+        let selection = Selection {
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection": selection, "import": "fixture", "member": 0, "basis": "fixture"
+        }))?;
+        let mut contents = vec![descriptor.clone()];
+        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+            contents.push(ContentBlob::new(
+                driver
+                    .state
+                    .content(original.run, reference.clone())
+                    .await?,
+            ));
+        }
+        spec.turn_id = Uuid::new_v4().to_string();
+        spec.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        spec.backend = BackendSpec::Executor {
+            selection,
+            descriptor: descriptor.reference().clone(),
+        };
+        let admitted = driver
+            .state
+            .admit(Admission::new(spec, at(), contents))
+            .await?;
+        let run = admitted.facts[0].run;
+        let claim = driver.state.claim(run).await?;
+        let task = ExternalTaskId::new();
+        let session_history = driver
+            .state
+            .session_history(driver.owner.run_owner(), session.clone());
+        let append = |facts: Vec<Fact>| {
+            let claim = &claim;
+            let session_history = &session_history;
+            async move {
+                let view = driver.state.frontier(run).await?;
+                driver
+                    .state
+                    .append(
+                        claim,
+                        (&view).into(),
+                        facts
+                            .into_iter()
+                            .map(|fact| Change::new(fact, at()))
+                            .collect(),
+                        vec![],
+                    )
+                    .await?;
+                Ok::<u64, Box<dyn Error + Send + Sync>>(
+                    session_history.capture().await?.through_sequence,
+                )
+            }
+        };
+        append(vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: descriptor.reference().clone(),
+                live_workspace: true,
+            },
+            Fact::ExternalTaskAdmitted { task },
+            Fact::ExternalTaskObserved {
+                task,
+                index: 0,
+                model_time_ms: None,
+                output: Output::ThinkingDelta {
+                    message_id: "t1".into(),
+                    text: "Initial plan.".into(),
+                },
+            },
+        ])
+        .await?;
+
+        let chat = |position: Value,
+                    through: Option<u64>,
+                    include_thinking: bool,
+                    thought: Option<Value>| {
+            let rig = &rig;
+            let session = &session;
+            async move {
+                let mut req = json!({
+                    "sessionId": session,
+                    "through": through,
+                    "position": position,
+                    "includeThinking": include_thinking,
+                    "view": "chat",
+                });
+                if let Some(thought) = thought {
+                    req["thought"] = thought;
+                }
+                query(rig, "history", req).await
+            }
+        };
+        let work_chunk = |page: &Value| -> Option<Value> {
+            page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|chunk| !chunk["work"].is_null())
+                .cloned()
+        };
+
+        let first_page = chat(json!({"kind": "tail"}), None, true, None).await?;
+        let first_group = work_chunk(&first_page).ok_or("missing initial work group")?;
+        assert_eq!(
+            first_group["work"]["last"]["kind"], "thought",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["text"], "Initial plan.",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["offset"],
+            "Initial plan.".len() as u64,
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["end"]["offset"],
+            "Initial plan.".len() as u64,
+            "{first_group}"
+        );
+        let t1_position = first_group["work"]["lastThought"]["position"].clone();
+
+        // Continuation delta on t1 is delivered in the same Chat After follow via tailThought.
+        let cont_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 1,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " Checking PR #7270.".into(),
+            },
+        }])
+        .await?;
+        let cont_page = chat(
+            json!({"kind": "after", "cursor": first_group["work"]["end"]}),
+            Some(cont_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": "Initial plan.".len() as u64,
+            })),
+        )
+        .await?;
+        assert!(
+            cont_page["chunks"].as_array().unwrap().is_empty(),
+            "{cont_page}"
+        );
+        let expected_t1 = "Initial plan. Checking PR #7270.";
+        assert_eq!(
+            cont_page["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1.len() as u64,
+                "text": expected_t1,
+            }),
+            "{cont_page}"
+        );
+
+        // Following again from the updated offset produces no redundant tailThought.
+        let updated_end = json!({
+            "position": t1_position,
+            "field": "thinking",
+            "offset": expected_t1.len() as u64,
+        });
+        let idle_page = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(cont_fence),
+            true,
+            Some(updated_end.clone()),
+        )
+        .await?;
+        assert!(
+            idle_page["chunks"].as_array().unwrap().is_empty(),
+            "{idle_page}"
+        );
+        assert!(idle_page["tailThought"].is_null(), "{idle_page}");
+
+        // Following tool returns a refreshed WorkGroup chunk (no tailThought) while preserving lastThought.
+        let tool_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 2,
+            model_time_ms: None,
+            output: Output::ToolStart {
+                tool_call_id: "call-1".into(),
+                name: "run_command".into(),
+                input: json!({"CommandLine": "cargo test"}),
+            },
+        }])
+        .await?;
+        let after_tool = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(tool_fence),
+            true,
+            Some(updated_end.clone()),
+        )
+        .await?;
+        assert!(after_tool["tailThought"].is_null(), "{after_tool}");
+        let tool_group = work_chunk(&after_tool).ok_or("missing work group after tool")?;
+        assert_eq!(tool_group["work"]["last"]["kind"], "tool", "{tool_group}");
+        assert_eq!(
+            tool_group["work"]["lastThought"]["text"], expected_t1,
+            "{tool_group}"
+        );
+        assert_eq!(
+            tool_group["work"]["lastThought"]["offset"],
+            expected_t1.len() as u64,
+            "{tool_group}"
+        );
+
+        // Continuing the same thinking message ID after a tool now occupies work.end
+        // still delivers tailThought from the already-projected executor transcript.
+        let after_tool_thought_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 3,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " After tool.".into(),
+            },
+        }])
+        .await?;
+        let after_tool_thought = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(after_tool_thought_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1.len() as u64,
+            })),
+        )
+        .await?;
+        assert!(
+            after_tool_thought["chunks"].as_array().unwrap().is_empty(),
+            "{after_tool_thought}"
+        );
+        let expected_t1_after_tool = "Initial plan. Checking PR #7270. After tool.";
+        assert_eq!(
+            after_tool_thought["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1_after_tool.len() as u64,
+                "text": expected_t1_after_tool,
+            }),
+            "{after_tool_thought}"
+        );
+
+        // Whitespace-first thought leaves lastThought on t1; once non-empty CJK text arrives,
+        // Chat After re-summarizes the group with a bounded valid UTF-8 tail (<= 3072 bytes).
+        let blank_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 4,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: "  \n".into(),
+            },
+        }])
+        .await?;
+        let blank_page = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(blank_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
+        )
+        .await?;
+        let blank_group = work_chunk(&blank_page).ok_or("missing work group after blank t2")?;
+        assert_eq!(blank_group["work"]["last"]["kind"], "tool", "{blank_group}");
+        assert_eq!(
+            blank_group["work"]["lastThought"]["text"], expected_t1_after_tool,
+            "{blank_group}"
+        );
+
+        let long_cjk = format!("{}结尾思考", "思".repeat(1200));
+        let second_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 5,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: long_cjk,
+            },
+        }])
+        .await?;
+        let after_second = chat(
+            json!({"kind": "after", "cursor": blank_group["work"]["end"]}),
+            Some(second_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
+        )
+        .await?;
+        assert!(after_second["tailThought"].is_null(), "{after_second}");
+        let second_group = work_chunk(&after_second).ok_or("missing work group after t2")?;
+        assert_eq!(
+            second_group["work"]["last"]["kind"], "thought",
+            "{second_group}"
+        );
+        let second_text = second_group["work"]["lastThought"]["text"]
+            .as_str()
+            .ok_or("missing t2 lastThought text")?;
+        assert!(
+            second_text.len() <= 3072,
+            "tail byte len {}",
+            second_text.len()
+        );
+        assert!(second_text.ends_with("结尾思考"), "{second_text}");
+
+        // Reading without thinking omits lastThought from the WorkGroup summary.
+        let no_thinking = chat(json!({"kind": "tail"}), None, false, None).await?;
+        let no_thinking_group = work_chunk(&no_thinking).ok_or("missing no-thinking work group")?;
+        assert!(
+            no_thinking_group["work"]["lastThought"].is_null(),
+            "{no_thinking_group}"
+        );
+
+        // Finished turns omit lastThought and reset work.end.offset to 0.
+        append(vec![
+            Fact::ExternalTaskClosed {
+                task,
+                outcome: Terminal::Completed,
+                diagnostic: None,
+                final_message: None,
+            },
+            Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            },
+        ])
+        .await?;
+        let finished = chat(json!({"kind": "tail"}), None, true, None).await?;
+        let finished_group = work_chunk(&finished).ok_or("missing finished work group")?;
+        assert!(
+            finished_group["work"]["lastThought"].is_null(),
+            "{finished_group}"
+        );
+        assert_eq!(
+            finished_group["work"]["end"]["offset"], 0,
+            "{finished_group}"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "work group lastThought regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
     const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 

@@ -116,6 +116,7 @@ import {
 import {
   acceptedSend,
   activityMessage,
+  applyWorkTailThought,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -131,6 +132,7 @@ import {
   type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
+  groupStepsFollowCursor,
   senderSession,
   stableRowId,
   replaceHistoryMetadata,
@@ -252,6 +254,7 @@ import type {
   TurnViewState,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import {
+  groupLatestIsThought,
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
@@ -759,7 +762,6 @@ export function Conversation(props: ConversationProps) {
       state = {
         expanded: signal<boolean | null>(null),
         ran: false,
-        thought: signal<string | null>(null),
       };
       turnStates.set(id, state);
     }
@@ -1340,23 +1342,6 @@ export function Conversation(props: ConversationProps) {
       pendingCount: pendingMessages().length,
       outgoingCount: outgoing().length,
     });
-  // Keep the active turn's latest thought on turnState so folding the turn,
-  // running tools, recycling rows, or switching tabs never collapses its peek.
-  let keptThoughtTurn: string | null = null;
-  effect(() => {
-    const activeTurn = runTurn();
-    if (keptThoughtTurn !== null && keptThoughtTurn !== activeTurn) {
-      turnStates.get(keptThoughtTurn)?.thought.set(null);
-      keptThoughtTurn = null;
-    }
-    if (activeTurn === null) return;
-    keptThoughtTurn = activeTurn;
-    const live = activity();
-    if (live.kind === 'thinking' && live.rowId) {
-      const text = currentRow(live.rowId)?.text.trim() || null;
-      if (text !== null) turnState(activeTurn).thought.set(text);
-    }
-  });
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -2080,6 +2065,7 @@ export function Conversation(props: ConversationProps) {
     through: number | null,
     position: HistoryPosition,
     view: HistoryListView | 'turn' | 'steps' = 'conversation',
+    thought?: HistoryCursor,
   ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
@@ -2087,6 +2073,7 @@ export function Conversation(props: ConversationProps) {
       position,
       includeThinking: true,
       view,
+      ...(thought ? { thought } : {}),
     });
     if (page.kind !== 'ready') throw new Error('Expected conversation history.');
     if (page.through === null || (through !== null && page.through !== through))
@@ -2290,10 +2277,12 @@ export function Conversation(props: ConversationProps) {
           return;
         }
         position = { kind: direction, cursor };
-      } else if (!state.after && state.last && state.through < (row.metadataThrough ?? through)) {
-        position = { kind: 'after', cursor: state.last };
       } else {
-        return;
+        const cursor = groupStepsFollowCursor(row, state, through, (stepKey) =>
+          historyRows().byKey.get(stepKey),
+        );
+        if (!cursor) return;
+        position = { kind: 'after', cursor };
       }
     }
     const window = state;
@@ -2529,17 +2518,41 @@ export function Conversation(props: ConversationProps) {
               position = { kind: 'after', cursor: page.after };
             }
           }
+          const thoughtCursor: HistoryCursor | undefined =
+            owner.view === 'chat' && initial.kind === 'after' && tail?.work?.lastThought
+              ? {
+                  position: tail.work.lastThought.position,
+                  field: 'thinking',
+                  offset: tail.work.lastThought.offset,
+                }
+              : undefined;
+          let tailThought: ConversationHistoryPage['tailThought'] = null;
           let position = initial;
           for (;;) {
-            const page = await history(fence, position, owner.view);
+            const page = await history(
+              fence,
+              position,
+              owner.view,
+              position === initial ? thoughtCursor : undefined,
+            );
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
+            if (page.tailThought) tailThought = page.tailThought;
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
           batch(() => {
             historyWindow.set({ ...historyWindow()!, through: fence, after: null });
             publishHistory(chunks, fence, false, coveredFrom, windowStart);
+            if (tailThought && tail?.work) {
+              const current = historyRows();
+              const target = current.byKey.get(tail.key);
+              const next = target && applyWorkTailThought(target, tailThought);
+              if (next && next !== target) {
+                current.put([next]);
+                historyRows.set(current);
+              }
+            }
           });
         }
         const last = rows().at(-1);
@@ -5034,14 +5047,17 @@ export function Conversation(props: ConversationProps) {
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
                 canFold={() => workFold(turn()) !== 'unavailable'}
-                doing={() =>
-                  initial.turnKey === runTurn()
-                    ? liveActivityTitle(
-                        activity(),
-                        latestToolActivity(toolActivity(), runId(), runTurn()),
-                      )
-                    : null
-                }
+                doing={() => {
+                  if (initial.turnKey !== runTurn()) return null;
+                  const live = activity();
+                  const tool = latestToolActivity(toolActivity(), runId(), runTurn());
+                  if (live.kind === 'working' && !tool) {
+                    const open = groups().findLast((group) => !group.closed);
+                    if (open && groupLatestIsThought(open, currentRow))
+                      return tr('Analyzing the request');
+                  }
+                  return liveActivityTitle(live, tool);
+                }}
                 images={{
                   sessionId,
                   through: () => latestKnown,

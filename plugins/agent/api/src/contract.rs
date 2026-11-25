@@ -1542,6 +1542,8 @@ pub struct History {
     pub include_thinking: bool,
     #[serde(default)]
     pub view: maka_agent_ports::session::history::HistoryView,
+    #[serde(default)]
+    pub thought: Option<Cursor>,
 }
 pub use maka_agent_ports::session::history::Position as HistoryPosition;
 pub use maka_agent_ports::session::history::Prompt as HistoryPrompt;
@@ -1735,6 +1737,8 @@ pub enum HistoryPage {
         before: Option<Cursor>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         after: Option<Cursor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail_thought: Option<Box<maka_agent_ports::session::history::WorkThought>>,
     },
 }
 
@@ -1973,11 +1977,13 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             chunks,
             before,
             after,
+            tail_thought,
         } = value;
         HistoryPage::Ready {
             through,
             before,
             after,
+            tail_thought,
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {

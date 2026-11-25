@@ -128,6 +128,50 @@ export function showTurnSummary(turn: TurnPresentation, terminal: boolean): bool
   return !terminal || outcome !== null || turnWorkFold(turn, terminal) === 'closed';
 }
 
+type ThoughtRow = Pick<Row, 'position' | 'field' | 'tool' | 'text' | 'work'>;
+
+/** Latest non-empty thought for a process group: unpersisted live text, or its summary tail. */
+export function groupThought(
+  group: ProcessGroup,
+  row: (id: string) => ThoughtRow | undefined,
+): string | null {
+  const work = group.workRowId ? row(group.workRowId)?.work : undefined;
+  for (let at = group.rowIds.length - 1; at >= 0; at -= 1) {
+    const item = row(group.rowIds[at]);
+    if (!item || (work && item.position !== undefined)) continue;
+    if (!item.tool && item.field === 'thinking') {
+      const text = item.text.trim();
+      if (text) return text;
+    }
+  }
+  return work?.lastThought?.text.trim() || null;
+}
+
+/** Latest active-group thought for a folded running turn. */
+export function turnThought(
+  groups: readonly ProcessGroup[],
+  row: (id: string) => ThoughtRow | undefined,
+): string | null {
+  const open = groups.findLast((group) => !group.closed);
+  return open ? groupThought(open, row) : null;
+}
+
+/** Whether a group's latest recorded or unpersisted step is a thought. */
+export function groupLatestIsThought(
+  group: ProcessGroup,
+  row: (id: string) => ThoughtRow | undefined,
+): boolean {
+  const lastRow = row(group.rowIds.at(-1) ?? '');
+  const work =
+    lastRow && lastRow.position === undefined
+      ? undefined
+      : group.workRowId
+        ? row(group.workRowId)?.work
+        : undefined;
+  if (work) return work.last.kind === 'thought';
+  return Boolean(lastRow && !lastRow.tool && lastRow.field === 'thinking');
+}
+
 export function displayOrder(row: ProcessRow): HistoryOrder | undefined {
   if (row.order) return row.order;
   const sequence = row.startSequence ?? row.sequence;

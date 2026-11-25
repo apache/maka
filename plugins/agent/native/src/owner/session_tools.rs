@@ -838,6 +838,7 @@ impl Owner {
                         position: pos,
                         include_thinking,
                         view: hist_view,
+                        thought: None,
                     },
                 )
                 .await
@@ -849,6 +850,7 @@ impl Owner {
                     chunks,
                     before,
                     after,
+                    ..
                 } => {
                     let before_cursor = before.and_then(|cursor| {
                         encode_cursor(&OpaqueSessionCursor::AgentBefore {
@@ -1044,6 +1046,7 @@ impl Owner {
                                 position: pos,
                                 include_thinking: false,
                                 view: wire::HistoryView::Conversation,
+                                thought: None,
                             },
                         )
                         .await

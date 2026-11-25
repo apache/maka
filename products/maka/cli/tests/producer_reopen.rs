@@ -536,6 +536,7 @@ async fn failed_run_history(client: &Client, session: &str, execution: &Value) -
         chunks,
         before,
         after,
+        ..
     } = page
     else {
         return Err("producer history unexpectedly selected a Room".into());
