@@ -34,15 +34,26 @@ class MakaInfraError(RuntimeError):
 
 
 def _populate_agent_context(context: AgentContext, payload: object) -> None:
-    """Populate Harbor's AgentContext from a validated guest-result payload."""
+    """Populate Harbor's AgentContext from a gradable guest-result payload."""
     if not isinstance(payload, dict):
-        return
-    body = payload.get("completed") or payload.get("subjectStopped")
-    if not isinstance(body, dict):
-        return
+        raise MakaInfraError(
+            f"guest-result.json must be a JSON object, got {type(payload).__name__}"
+        )
+    gradable = [k for k in ("completed", "subjectStopped") if k in payload]
+    if (
+        len(gradable) != 1
+        or len(payload) != 1
+        or not isinstance(payload[gradable[0]], dict)
+    ):
+        raise MakaInfraError(
+            "guest-result.json missing gradable 'completed' or 'subjectStopped' object"
+        )
+    body = payload[gradable[0]]
     settlement = body.get("settlement")
     if not isinstance(settlement, dict):
-        return
+        raise MakaInfraError(
+            f"guest-result.json '{gradable[0]}' missing 'settlement' object"
+        )
     for src_key, ctx_key in (
         ("inputTokens", "n_input_tokens"),
         ("cacheTokens", "n_cache_tokens"),
@@ -52,10 +63,12 @@ def _populate_agent_context(context: AgentContext, payload: object) -> None:
         if val is not None:
             setattr(context, ctx_key, int(val))
     metering = settlement.get("metering")
-    if isinstance(metering, dict):
-        complete = metering.get("complete")
-        if isinstance(complete, dict) and complete.get("costUsd") is not None:
-            context.cost_usd = float(complete["costUsd"])
+    if metering == "lower_bound":
+        return
+    if not isinstance(metering, dict) or not isinstance(metering.get("complete"), dict):
+        raise MakaInfraError("guest-result.json 'settlement' has invalid 'metering'")
+    if metering["complete"].get("costUsd") is not None:
+        context.cost_usd = float(metering["complete"]["costUsd"])
 
 
 class MakaHostAgent(BaseAgent):
@@ -126,7 +139,7 @@ class MakaHostAgent(BaseAgent):
                 )
         except MakaInfraError:
             raise
-        except (OSError, RuntimeError) as exc:
+        except Exception as exc:
             raise MakaInfraError(f"maka agent setup failed: {exc}") from exc
 
     async def _cleanup_request(
@@ -246,7 +259,12 @@ class MakaHostAgent(BaseAgent):
                     f"maka-eval guest-run exited with {exec_res.return_code}: "
                     f"{exec_res.stderr or exec_res.stdout}"
                 )
+            # guest-run unlinks the secret request file before starting Host on exit 0.
+            request_uploaded = False
 
+            # Sync, validate, and populate AgentContext inside run() so artifact errors raise
+            # MakaInfraError before verifier grading (SingleStepTrial._recover_outputs re-enters
+            # populate_context_post_run even on failed runs).
             if environment.is_path_mounted(self.environment_logs_dir, self.logs_dir):
                 await environment.prepare_logs_for_host()
             else:
@@ -282,6 +300,6 @@ class MakaHostAgent(BaseAgent):
                 await self._cleanup_request(environment, request_remote, q_req)
             if isinstance(exc, MakaInfraError):
                 raise
-            if isinstance(exc, (OSError, RuntimeError)):
+            if isinstance(exc, Exception):
                 raise MakaInfraError(f"maka agent execution failed: {exc}") from exc
             raise

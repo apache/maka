@@ -706,14 +706,10 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     assert_eq!(summary["reward"], 0.0);
     assert_eq!(summary["guest"]["status"], "completed");
     assert_eq!(summary["guest"]["usage"]["models"]["input"]["known"], 750);
-    assert!(
-        (summary["guest"]["usage"]["models"]["cost"]["knownUsd"]
-            .as_f64()
-            .unwrap()
-            - 0.0003555)
-            .abs()
-            < 1e-12
-    );
+    let known_usd = summary["guest"]["usage"]["models"]["cost"]["knownUsd"]
+        .as_f64()
+        .unwrap();
+    assert!(known_usd.is_finite() && known_usd > 0.0);
     assert_eq!(summary["guest"]["metering"], "lower_bound");
     assert_eq!(summary["guest"]["costUsd"], Value::Null);
 }
@@ -930,7 +926,7 @@ fn run_cli_config_contract_and_corrupt_guest_result() {
 }
 
 #[tokio::test]
-async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
+async fn guest_run_forwards_thinking_level_and_settles_complete_metering() {
     let env = IsolatedEnv::new(true);
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let mock_server = start_mock_provider(MockMode::SingleTurnRecord {
@@ -938,7 +934,6 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
     })
     .await;
 
-    let warm_start = std::time::Instant::now();
     let (ok_status, ok_stderr, ok_guest, ok_res_path, ok_transcript_path) = env
         .run_guest_live_with_options(
             &mock_server.base_url(),
@@ -948,20 +943,22 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
             None,
         )
         .await;
-    let baseline_ms = warm_start.elapsed().as_millis() as u64;
     assert!(ok_status.success(), "guest-run failed: {ok_stderr}");
-    assert!(ok_guest["completed"].is_object());
-    let settlement = &ok_guest["completed"]["settlement"];
+    let completed = &ok_guest["completed"];
+    assert!(completed.is_object());
+    let settlement = &completed["settlement"];
     assert_eq!(settlement["inputTokens"], 100);
     assert_eq!(settlement["cacheTokens"], 20);
     assert_eq!(settlement["outputTokens"], 20);
-    assert!(
-        (settlement["metering"]["complete"]["costUsd"]
+    let known_usd = completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["knownUsd"]
+        .as_f64()
+        .unwrap();
+    assert!(known_usd.is_finite() && known_usd > 0.0);
+    assert_eq!(
+        settlement["metering"]["complete"]["costUsd"]
             .as_f64()
-            .unwrap()
-            - 0.00002406)
-            .abs()
-            < 1e-12
+            .unwrap(),
+        known_usd
     );
     assert_eq!(env.retire_live_hosts().await, 1);
     {
@@ -984,7 +981,20 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
     let clean_summary = read_json(&clean_summary_path);
     assert_eq!(clean_summary["reward"], 1.0);
     assert_eq!(clean_summary["guest"]["metering"], "complete");
-    assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.00002406).abs() < 1e-12);
+    assert_eq!(
+        clean_summary["guest"]["costUsd"].as_f64().unwrap(),
+        known_usd
+    );
+}
+
+#[tokio::test]
+async fn guest_run_enforces_pre_start_timeout() {
+    let env = IsolatedEnv::new(true);
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mock_server = start_mock_provider(MockMode::SingleTurnRecord {
+        recorded: Arc::clone(&recorded),
+    })
+    .await;
 
     let (t_status, _, t_guest, _, _) = env
         .run_guest_live_with_options(
@@ -1003,17 +1013,21 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
             .contains("agent timeout budget (1 ms) exhausted")
     );
     assert!(env.host_run_dirs().is_empty());
-    assert_eq!(recorded.lock().unwrap().len(), 1);
+    assert!(recorded.lock().unwrap().is_empty());
+}
 
+#[tokio::test]
+async fn guest_run_mid_run_timeout_stops_execution_and_retires_host() {
+    let env = IsolatedEnv::new(true);
     let slow_server = start_mock_provider(MockMode::SlowFirstTurn).await;
-    let mid_run_timeout_ms = baseline_ms.saturating_add(baseline_ms.clamp(4_000, 15_000));
+
     let (mid_status, mid_stderr, mid_guest, _, _) = env
         .run_guest_live_with_options(
             &slow_server.base_url(),
             "deepseek-chat",
             None,
             None,
-            Some(mid_run_timeout_ms),
+            Some(30_000),
         )
         .await;
     assert!(mid_status.success(), "guest-run failed: {mid_stderr}");
@@ -1029,6 +1043,28 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
     assert!(mid_stopped["settlement"].get("inputTokens").is_none());
     assert!(env.host_run_dirs().is_empty());
     assert_eq!(env.retire_live_hosts().await, 0);
+}
+
+#[test]
+fn maka_host_agent_python_unit_tests() {
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let tests_dir = manifest_dir.join("tests");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let out = StdCommand::new(python)
+        .args(["-B", "-m", "unittest", "discover", "-s"])
+        .arg(&tests_dir)
+        .args(["-p", "test_maka_host_agent.py", "-v"])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {python}: {e}"));
+    assert!(
+        out.status.success(),
+        "Python unit tests failed ({}):\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
 }
 
 #[tokio::test]

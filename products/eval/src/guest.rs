@@ -34,7 +34,7 @@ use maka_agent_facts::accounting::{
 };
 use maka_agent_facts::configuration::policy::ChatDefaults;
 use maka_agent_facts::configuration::validation::MAX_SAFE_INTEGER;
-use maka_agent_facts::durable::{RunId, StepId};
+use maka_agent_facts::durable::{RunId, StepId, Terminal};
 use maka_agent_facts::execution::ThinkingLevel;
 use maka_agent_ports::session::history::Role;
 use maka_agent_state::usage::{UsageActivityCursor, UsageFence};
@@ -55,6 +55,7 @@ use uuid::Uuid;
 
 const EVAL_CONNECTION_SLUG: &str = "eval-target";
 const UNBOUNDED_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+const TERMINAL_SETTLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,11 +123,13 @@ pub(crate) enum GuestRunResult {
     },
 }
 
-fn is_terminal_execution_state(state: &ExecutionState) -> bool {
-    matches!(
-        state,
-        ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled
-    )
+fn terminal_state(state: &ExecutionState) -> Option<Terminal> {
+    match state {
+        ExecutionState::Completed => Some(Terminal::Completed),
+        ExecutionState::Failed { .. } => Some(Terminal::Failed),
+        ExecutionState::Cancelled => Some(Terminal::Cancelled),
+        ExecutionState::Admitted | ExecutionState::Running | ExecutionState::Waiting { .. } => None,
+    }
 }
 
 impl GuestRunResult {
@@ -147,34 +150,46 @@ impl GuestRunResult {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Deadline {
-    at: tokio::time::Instant,
-    budget_ms: NonZeroU64,
+enum ObservedRun {
+    Ended,
+    Stopped(String),
 }
 
-impl Deadline {
-    fn from_timeout_ms(timeout_ms: Option<NonZeroU64>) -> Result<Option<Self>, String> {
-        timeout_ms
-            .map(|budget_ms| {
-                tokio::time::Instant::now()
-                    .checked_add(Duration::from_millis(budget_ms.get()))
-                    .map(|at| Self { at, budget_ms })
-                    .ok_or_else(|| format!("timeoutMs ({budget_ms}) overflows runtime clock"))
-            })
-            .transpose()
+#[derive(Clone, Copy)]
+enum Budget {
+    Unbounded,
+    Deadline {
+        at: tokio::time::Instant,
+        budget_ms: NonZeroU64,
+    },
+}
+
+impl Budget {
+    fn from_timeout_ms(timeout_ms: Option<NonZeroU64>) -> Result<Self, String> {
+        match timeout_ms {
+            Some(budget_ms) => tokio::time::Instant::now()
+                .checked_add(Duration::from_millis(budget_ms.get()))
+                .map(|at| Self::Deadline { at, budget_ms })
+                .ok_or_else(|| format!("timeoutMs ({budget_ms}) overflows runtime clock")),
+            None => Ok(Self::Unbounded),
+        }
     }
 
-    fn remaining(self, stage: &str) -> Result<Duration, String> {
-        self.at
-            .checked_duration_since(tokio::time::Instant::now())
-            .filter(|rem| !rem.is_zero())
-            .ok_or_else(|| {
-                format!(
-                    "agent timeout budget ({} ms) exhausted before {stage}",
-                    self.budget_ms
-                )
-            })
+    fn remaining(self, stage: &str) -> Result<Option<Duration>, String> {
+        match self {
+            Self::Unbounded => Ok(None),
+            Self::Deadline { at, budget_ms } => at
+                .checked_duration_since(tokio::time::Instant::now())
+                .filter(|rem| !rem.is_zero())
+                .map(Some)
+                .ok_or_else(|| {
+                    format!("agent timeout budget ({budget_ms} ms) exhausted before {stage}")
+                }),
+        }
+    }
+
+    fn check(self, stage: &str) -> Result<(), String> {
+        self.remaining(stage).map(|_| ())
     }
 
     async fn run<T>(
@@ -182,55 +197,57 @@ impl Deadline {
         stage: &str,
         fut: impl std::future::Future<Output = Result<T, String>>,
     ) -> Result<T, String> {
-        let rem = self.remaining(stage)?;
-        tokio::time::timeout(rem, fut).await.map_err(|_| {
-            format!(
-                "agent timeout budget ({} ms) exhausted during {stage}",
-                self.budget_ms
-            )
-        })?
-    }
-}
-
-fn check_deadline(deadline: Option<Deadline>, stage: &str) -> Result<(), String> {
-    if let Some(d) = deadline {
-        d.remaining(stage)?;
-    }
-    Ok(())
-}
-
-async fn run_before_deadline<T>(
-    deadline: Option<Deadline>,
-    stage: &str,
-    fut: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    match deadline {
-        Some(d) => d.run(stage, fut).await,
-        None => fut.await,
-    }
-}
-
-async fn run_startup_stage<T>(
-    deadline: Option<Deadline>,
-    stage: &str,
-    unbounded_timeout_error: &str,
-    fut: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    match deadline {
-        Some(d) => d.run(stage, fut).await,
-        None => tokio::time::timeout(UNBOUNDED_STARTUP_TIMEOUT, fut)
-            .await
-            .map_err(|_| unbounded_timeout_error.to_owned())?,
-    }
-}
-
-async fn sleep_deadline(deadline: Option<Deadline>) -> NonZeroU64 {
-    match deadline {
-        Some(d) => {
-            tokio::time::sleep_until(d.at).await;
-            d.budget_ms
+        match self {
+            Self::Unbounded => fut.await,
+            Self::Deadline { budget_ms, .. } => {
+                let rem = self
+                    .remaining(stage)?
+                    .expect("deadline produces remaining duration");
+                tokio::time::timeout(rem, fut).await.map_err(|_| {
+                    format!("agent timeout budget ({budget_ms} ms) exhausted during {stage}")
+                })?
+            }
         }
-        None => std::future::pending().await,
+    }
+
+    async fn run_startup_within<T>(
+        self,
+        stage: &str,
+        unbounded_timeout: Duration,
+        unbounded_timeout_error: &str,
+        fut: impl std::future::Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        match self {
+            Self::Unbounded => tokio::time::timeout(unbounded_timeout, fut)
+                .await
+                .map_err(|_| unbounded_timeout_error.to_owned())?,
+            Self::Deadline { .. } => self.run(stage, fut).await,
+        }
+    }
+
+    async fn run_startup<T>(
+        self,
+        stage: &str,
+        unbounded_timeout_error: &str,
+        fut: impl std::future::Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        self.run_startup_within(
+            stage,
+            UNBOUNDED_STARTUP_TIMEOUT,
+            unbounded_timeout_error,
+            fut,
+        )
+        .await
+    }
+
+    async fn sleep(self) -> NonZeroU64 {
+        match self {
+            Self::Unbounded => std::future::pending().await,
+            Self::Deadline { at, budget_ms } => {
+                tokio::time::sleep_until(at).await;
+                budget_ms
+            }
+        }
     }
 }
 
@@ -305,7 +322,7 @@ async fn execute(
     req: GuestRunRequest,
     timeout_ms: Option<NonZeroU64>,
 ) -> Result<GuestRunResult, String> {
-    let deadline = Deadline::from_timeout_ms(timeout_ms)?;
+    let budget = Budget::from_timeout_ms(timeout_ms)?;
     let workspace_dir = std::env::current_dir()
         .map_err(|e| format!("failed to resolve current working directory: {e}"))?;
     let canonical_workspace = tokio::fs::canonicalize(&workspace_dir).await.map_err(|e| {
@@ -345,17 +362,13 @@ async fn execute(
     let command_path = prepend_binary_dir_to_path(&maka_bin)?;
 
     let result = async {
-        run_before_deadline(
-            deadline,
-            "host init",
-            init_host(
-                &maka_bin,
-                &command_path,
-                &state_root,
-                &canonical_workspace,
-                &req,
-                deadline,
-            ),
+        init_host(
+            &maka_bin,
+            &command_path,
+            &state_root,
+            &canonical_workspace,
+            &req,
+            budget,
         )
         .await?;
         let mut host_proc = spawn_host_serve(
@@ -363,7 +376,7 @@ async fn execute(
             &command_path,
             &state_root,
             &req.artifacts_dir,
-            deadline,
+            budget,
         )
         .await?;
 
@@ -372,7 +385,7 @@ async fn execute(
             &canonical_workspace_str,
             &journal_path,
             &host_proc,
-            deadline,
+            budget,
         )
         .await;
         if matches!(inner, Ok(GuestRunResult::Completed { .. })) {
@@ -395,50 +408,50 @@ async fn run_session(
     canonical_workspace_str: &str,
     journal_path: &Path,
     host_proc: &HostServerProcess,
-    deadline: Option<Deadline>,
+    budget: Budget,
 ) -> Result<GuestRunResult, String> {
-    let host_client = run_startup_stage(
-        deadline,
-        "host readiness",
-        "timed out waiting for Host readiness",
-        async {
-            let mut host_client = HostClient::connect(
-                Path::new(&host_proc.socket_path),
-                Some(host_proc.host_epoch),
-            )
-            .await
-            .map_err(|e| {
-                format!(
-                    "failed to connect to maka host socket {}: {e}",
-                    host_proc.socket_path
+    let host_client = budget
+        .run_startup(
+            "host readiness",
+            "timed out waiting for Host readiness",
+            async {
+                let mut host_client = HostClient::connect(
+                    Path::new(&host_proc.socket_path),
+                    Some(host_proc.host_epoch),
                 )
-            })?;
+                .await
+                .map_err(|e| {
+                    format!(
+                        "failed to connect to maka host socket {}: {e}",
+                        host_proc.socket_path
+                    )
+                })?;
 
-            loop {
-                if let Some(error) = host_client.catalogue().startup_error() {
-                    return Err(format!("Host startup: {error:?}"));
+                loop {
+                    if let Some(error) = host_client.catalogue().startup_error() {
+                        return Err(format!("Host startup: {error:?}"));
+                    }
+                    let mut registered = true;
+                    for endpoint in ["agent", "settings", "receipts"] {
+                        registered &= host_client
+                            .catalogue()
+                            .describe(endpoint)
+                            .map_err(|e| format!("describe {endpoint} failed: {e}"))?
+                            .registration_epoch
+                            .is_some();
+                    }
+                    if registered {
+                        return Ok(host_client);
+                    }
+                    host_client
+                        .refresh()
+                        .await
+                        .map_err(|e| format!("Host refresh failed: {e}"))?;
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                let mut registered = true;
-                for endpoint in ["agent", "settings", "receipts"] {
-                    registered &= host_client
-                        .catalogue()
-                        .describe(endpoint)
-                        .map_err(|e| format!("describe {endpoint} failed: {e}"))?
-                        .registration_epoch
-                        .is_some();
-                }
-                if registered {
-                    return Ok(host_client);
-                }
-                host_client
-                    .refresh()
-                    .await
-                    .map_err(|e| format!("Host refresh failed: {e}"))?;
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        },
-    )
-    .await?;
+            },
+        )
+        .await?;
 
     let journal = Journal::open(journal_path)
         .await
@@ -446,7 +459,7 @@ async fn run_session(
     let client = Client::new(host_client, journal, "receipts".into())
         .map_err(|e| format!("failed to create maka app client: {e}"))?;
 
-    let outcome = run_session_with_client(req, canonical_workspace_str, &client, deadline).await;
+    let outcome = run_session_with_client(req, canonical_workspace_str, &client, budget).await;
     let close_res = client.close().await.map_err(|e| e.to_string());
     merge_teardown(outcome, "client close", close_res)
 }
@@ -455,82 +468,84 @@ async fn run_session_with_client(
     req: &GuestRunRequest,
     canonical_workspace_str: &str,
     client: &Client,
-    deadline: Option<Deadline>,
+    budget: Budget,
 ) -> Result<GuestRunResult, String> {
-    let (session_id, watch) = run_before_deadline(deadline, "session setup", async {
-        let backend = resolve_backend(client, req).await?;
+    let (session_id, watch) = budget
+        .run("session setup", async {
+            let backend = resolve_backend(client, req).await?;
 
-        let created: Created = commit_typed(
-            "agent.create",
-            client
-                .control(
-                    Uuid::new_v4(),
-                    "create",
-                    json!({
-                        "title": "Eval Task",
-                        "automaticTitle": false,
-                        "labels": [],
-                        "backend": backend,
-                        "workspace": WorkspaceSelection::Directory {
-                            path: canonical_workspace_str.to_owned(),
-                        },
-                        "tools": Value::Null,
-                    }),
-                )
-                .await
-                .map_err(|e| format!("create control open failed: {e}"))?,
-        )
-        .await?;
-
-        let session_id = match created {
-            Created::Created { session } => session.id,
-            Created::Rejected { reason } => {
-                return Err(format!(
-                    "session creation rejected: {}",
-                    serde_json::to_string(&reason).unwrap_or_default()
-                ));
-            }
-        };
-
-        let watch = client
-            .subscribe(
-                "agent",
-                "watch",
-                json!({ "sessionId": session_id, "after": 0 }),
+            let created: Created = commit_typed(
+                "agent.create",
+                client
+                    .control(
+                        Uuid::new_v4(),
+                        "create",
+                        json!({
+                            "title": "Eval Task",
+                            "automaticTitle": false,
+                            "labels": [],
+                            "backend": backend,
+                            "workspace": WorkspaceSelection::Directory {
+                                path: canonical_workspace_str.to_owned(),
+                            },
+                            "tools": Value::Null,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| format!("create control open failed: {e}"))?,
             )
-            .await
-            .map_err(|e| format!("subscribe watch failed: {e}"))?;
+            .await?;
 
-        Ok((session_id, watch))
-    })
-    .await?;
+            let session_id = match created {
+                Created::Created { session } => session.id,
+                Created::Rejected { reason } => {
+                    return Err(format!(
+                        "session creation rejected: {}",
+                        serde_json::to_string(&reason).unwrap_or_default()
+                    ));
+                }
+            };
 
-    let run_outcome = async {
-        let send_result = run_before_deadline(deadline, "agent.send", async {
-            let send = client
-                .mutation(
-                    Uuid::new_v4(),
+            let watch = client
+                .subscribe(
                     "agent",
-                    "send",
-                    json!({
-                        "sessionId": session_id,
-                        "delivery": "steer",
-                        "message": req.instruction,
-                        "attachments": [],
-                    }),
-                    Attachments::new(),
-                    Some(session_id.clone()),
-                    Value::Null,
+                    "watch",
+                    json!({ "sessionId": session_id, "after": 0 }),
                 )
                 .await
-                .map_err(|e| format!("agent.send open failed: {e}"))?;
-            commit_typed::<SendResult>("agent.send", send).await
+                .map_err(|e| format!("subscribe watch failed: {e}"))?;
+
+            Ok((session_id, watch))
         })
         .await?;
+
+    let run_outcome = async {
+        let send_result = budget
+            .run("agent.send", async {
+                let send = client
+                    .mutation(
+                        Uuid::new_v4(),
+                        "agent",
+                        "send",
+                        json!({
+                            "sessionId": session_id,
+                            "delivery": "steer",
+                            "message": req.instruction,
+                            "attachments": [],
+                        }),
+                        Attachments::new(),
+                        Some(session_id.clone()),
+                        Value::Null,
+                    )
+                    .await
+                    .map_err(|e| format!("agent.send open failed: {e}"))?;
+                commit_typed::<SendResult>("agent.send", send).await
+            })
+            .await?;
         let run_id = match send_result {
             SendResult::Started { run_id, .. } => run_id,
             SendResult::Queued { message_id, .. } => {
-                resolve_queued_run_id(client, &session_id, &message_id, deadline).await?
+                resolve_queued_run_id(client, &session_id, &message_id, budget).await?
             }
             SendResult::Rejected { reason, .. } => {
                 return Err(format!(
@@ -543,10 +558,10 @@ async fn run_session_with_client(
             }
         };
 
-        let (run_error, mut step_ids) =
-            observe_run(client, &watch, &session_id, run_id, req, deadline).await?;
+        let (observed, mut step_ids) =
+            observe_run(client, &watch, &session_id, run_id, req, budget).await?;
 
-        let execution = await_terminal_execution(client, &session_id, run_id).await?;
+        let (execution, terminal) = fetch_terminal_execution(client, &session_id, run_id).await?;
 
         let (transcript, failure_diagnostic) = export_history(client, &session_id, run_id).await?;
         let transcript_file = req.artifacts_dir.join("transcript.json");
@@ -556,8 +571,10 @@ async fn run_session_with_client(
             .await
             .map_err(|e| format!("failed to write transcript: {e}"))?;
 
-        let is_completed =
-            run_error.is_none() && matches!(execution.state, ExecutionState::Completed);
+        let is_completed = matches!(
+            (&terminal, &observed),
+            (Terminal::Completed, ObservedRun::Ended)
+        );
         let settle_timeout = if is_completed {
             Duration::from_secs(5)
         } else {
@@ -571,43 +588,41 @@ async fn run_session_with_client(
             execution,
             host_usage,
         });
-        match (&evidence.execution.state, run_error) {
-            (ExecutionState::Failed { reason }, _) => {
+        let outcome = match (terminal, observed) {
+            (Terminal::Failed, _) => {
+                let reason = match &evidence.execution.state {
+                    ExecutionState::Failed { reason } => reason.as_ref(),
+                    _ => None,
+                };
                 let detail = failure_diagnostic
-                    .or_else(|| reason.as_ref().and_then(|r| serde_json::to_string(r).ok()))
+                    .or_else(|| reason.and_then(|r| serde_json::to_string(r).ok()))
                     .unwrap_or_else(|| "unknown failure".into());
-                Ok(GuestRunResult::InfraFailed {
-                    infra_error: format!("execution failed: {detail}"),
-                    evidence: Some(evidence),
-                })
+                Err(format!("execution failed: {detail}"))
             }
-            (ExecutionState::Cancelled, None) => Ok(GuestRunResult::InfraFailed {
-                infra_error: "execution cancelled unexpectedly".into(),
+            (Terminal::Cancelled, ObservedRun::Ended) => {
+                Err("execution cancelled unexpectedly".into())
+            }
+            (Terminal::Completed, ObservedRun::Ended) => Ok(None),
+            (Terminal::Completed | Terminal::Cancelled, ObservedRun::Stopped(stop_reason)) => {
+                Ok(Some(stop_reason))
+            }
+        };
+        match outcome {
+            Err(infra_error) => Ok(GuestRunResult::InfraFailed {
+                infra_error,
                 evidence: Some(evidence),
             }),
-            (state, None) if !matches!(state, ExecutionState::Completed) => {
-                let encoded = serde_json::to_string(state).unwrap_or_else(|_| "unknown".into());
-                Ok(GuestRunResult::InfraFailed {
-                    infra_error: format!("execution ended in unexpected state: {encoded}"),
+            Ok(stop_reason) => match settle_usage(
+                &evidence.host_usage.summary.models,
+                &evidence.host_usage.summary.pending,
+                missing_success_usage,
+                stop_reason.is_none(),
+            ) {
+                Err(infra_error) => Ok(GuestRunResult::InfraFailed {
+                    infra_error,
                     evidence: Some(evidence),
-                })
-            }
-            (_, stop_reason) => {
-                let settlement = match settle_usage(
-                    &evidence.host_usage.summary.models,
-                    &evidence.host_usage.summary.pending,
-                    missing_success_usage,
-                    stop_reason.is_none(),
-                ) {
-                    Ok(settlement) => settlement,
-                    Err(infra_error) => {
-                        return Ok(GuestRunResult::InfraFailed {
-                            infra_error,
-                            evidence: Some(evidence),
-                        });
-                    }
-                };
-                match stop_reason {
+                }),
+                Ok(settlement) => match stop_reason {
                     None => Ok(GuestRunResult::Completed {
                         evidence,
                         settlement,
@@ -617,8 +632,8 @@ async fn run_session_with_client(
                         evidence,
                         settlement,
                     }),
-                }
-            }
+                },
+            },
         }
     }
     .await;
@@ -644,28 +659,69 @@ async fn observe_run(
     session_id: &str,
     run_id: RunId,
     req: &GuestRunRequest,
-    deadline: Option<Deadline>,
-) -> Result<(Option<String>, BTreeSet<StepId>), String> {
+    budget: Budget,
+) -> Result<(ObservedRun, BTreeSet<StepId>), String> {
     let mut step_ids = BTreeSet::<StepId>::new();
+    let mut stop_reason: Option<String> = None;
+    let mut settle_deadline: Option<tokio::time::Instant> = None;
+
     loop {
-        let next_ev = tokio::select! {
-            biased;
-            ms = sleep_deadline(deadline) => {
-                let reason = stop_with_reason(
-                    client,
-                    session_id,
-                    run_id,
-                    format!("execution timed out after {ms} ms"),
-                )
-                .await;
-                return Ok((Some(reason), step_ids));
+        // Pin `watch.next()` so firing `budget.sleep()` does not drop an in-flight pull.
+        let next_fut = watch.next();
+        tokio::pin!(next_fut);
+        let next_ev = loop {
+            if let Some(deadline) = settle_deadline {
+                tokio::select! {
+                    biased;
+                    () = tokio::time::sleep_until(deadline) => {
+                        let last_state = query_execution(client, session_id, run_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|e| serde_json::to_string(&e.state).ok());
+                        return Err(format!(
+                            "timed out after {}s waiting for terminal execution state (last_state={})",
+                            TERMINAL_SETTLE_TIMEOUT.as_secs(),
+                            last_state.as_deref().unwrap_or("missing")
+                        ));
+                    }
+                    res = &mut next_fut => break res,
+                }
+            } else {
+                tokio::select! {
+                    biased;
+                    ms = budget.sleep() => {
+                        stop_reason = Some(
+                            stop_with_reason(
+                                client,
+                                session_id,
+                                run_id,
+                                format!("execution timed out after {ms} ms"),
+                            )
+                            .await,
+                        );
+                        settle_deadline =
+                            Some(tokio::time::Instant::now() + TERMINAL_SETTLE_TIMEOUT);
+                    }
+                    res = &mut next_fut => break res,
+                }
             }
-            res = watch.next() => res,
         };
+
         match next_ev {
             Ok(Some(SubscriptionEvent::Item(raw))) => {
                 let page: DeliveryPage = serde_json::from_value(raw)
                     .map_err(|e| format!("watch page decode failed: {e}"))?;
+                if let Some(reason) = stop_reason.as_ref() {
+                    if let DeliveryPage::Events { events, .. } = page
+                        && events.iter().any(|ev| {
+                            ev.run_id == run_id && matches!(ev.fact, DeliveryFact::Ended { .. })
+                        })
+                    {
+                        return Ok((ObservedRun::Stopped(reason.clone()), step_ids));
+                    }
+                    continue;
+                }
                 match page {
                     DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
                         let request_ids: Vec<&str> = pending
@@ -673,47 +729,79 @@ async fn observe_run(
                             .iter()
                             .map(|entry| entry.request_id.as_str())
                             .collect();
-                        let reason = stop_with_reason(
-                            client,
-                            session_id,
-                            run_id,
-                            format!("execution blocked by pending interaction(s): {request_ids:?}"),
-                        )
-                        .await;
-                        return Ok((Some(reason), step_ids));
+                        stop_reason = Some(
+                            stop_with_reason(
+                                client,
+                                session_id,
+                                run_id,
+                                format!(
+                                    "execution blocked by pending interaction(s): {request_ids:?}"
+                                ),
+                            )
+                            .await,
+                        );
+                        settle_deadline =
+                            Some(tokio::time::Instant::now() + TERMINAL_SETTLE_TIMEOUT);
                     }
                     DeliveryPage::Events { events, .. } => {
+                        let mut ended = false;
                         for ev in events {
                             if ev.run_id != run_id {
                                 continue;
                             }
-                            if let Some(step_id) = delivery_fact_step_id(&ev.fact)
+                            if matches!(ev.fact, DeliveryFact::Ended { .. }) {
+                                ended = true;
+                                break;
+                            }
+                            if stop_reason.is_none()
+                                && let Some(step_id) = delivery_fact_step_id(&ev.fact)
                                 && !step_ids.contains(&step_id)
                             {
                                 if let Some(max_steps) = req.max_steps
                                     && step_ids.len() >= max_steps.get() as usize
                                 {
-                                    let reason = stop_with_reason(
-                                        client,
-                                        session_id,
-                                        run_id,
-                                        format!("exceeded maxSteps ({max_steps})"),
-                                    )
-                                    .await;
-                                    return Ok((Some(reason), step_ids));
+                                    stop_reason = Some(
+                                        stop_with_reason(
+                                            client,
+                                            session_id,
+                                            run_id,
+                                            format!("exceeded maxSteps ({max_steps})"),
+                                        )
+                                        .await,
+                                    );
+                                    settle_deadline =
+                                        Some(tokio::time::Instant::now() + TERMINAL_SETTLE_TIMEOUT);
+                                } else {
+                                    step_ids.insert(step_id);
                                 }
-                                step_ids.insert(step_id);
                             }
-                            if matches!(ev.fact, DeliveryFact::Ended { .. }) {
-                                return Ok((None, step_ids));
-                            }
+                        }
+                        if ended {
+                            let observed = match stop_reason {
+                                Some(reason) => ObservedRun::Stopped(reason),
+                                None => ObservedRun::Ended,
+                            };
+                            return Ok((observed, step_ids));
                         }
                     }
                     _ => {}
                 }
             }
-            Ok(Some(_)) | Ok(None) => return Err("watch stream closed before run settled".into()),
-            Err(e) => return Err(format!("watch stream error: {e}")),
+            Ok(Some(_)) | Ok(None) => {
+                return Err(if stop_reason.is_some() {
+                    "watch stream closed while waiting for terminal execution state"
+                } else {
+                    "watch stream closed before run settled"
+                }
+                .into());
+            }
+            Err(e) => {
+                return Err(if stop_reason.is_some() {
+                    format!("watch stream error while waiting for terminal execution state: {e}")
+                } else {
+                    format!("watch stream error: {e}")
+                });
+            }
         }
     }
 }
@@ -722,7 +810,7 @@ async fn resolve_queued_run_id(
     client: &Client,
     session_id: &str,
     message_id: &str,
-    deadline: Option<Deadline>,
+    budget: Budget,
 ) -> Result<RunId, String> {
     let input = json!({
         "sessionId": session_id,
@@ -734,7 +822,7 @@ async fn resolve_queued_run_id(
     loop {
         tokio::select! {
             biased;
-            ms = sleep_deadline(deadline) => {
+            ms = budget.sleep() => {
                 return Err(format!(
                     "queued message '{message_id}' did not start execution before timeout ({ms} ms)"
                 ));
@@ -782,37 +870,37 @@ async fn resolve_backend(
     })
 }
 
-async fn await_terminal_execution(
+async fn query_execution(
     client: &Client,
     session_id: &str,
     run_id: RunId,
-) -> Result<Execution, String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut poll = tokio::time::interval(Duration::from_millis(50));
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last_state: Option<String> = None;
-    loop {
-        if let ExecutionResult::Found { execution } = query_typed(
-            client,
-            "agent",
-            "execution",
-            json!({ "sessionId": session_id, "runId": run_id }),
-        )
-        .await?
-        {
-            if is_terminal_execution_state(&execution.state) {
-                return Ok(execution);
-            }
-            last_state = serde_json::to_string(&execution.state).ok();
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for terminal execution state (last_state={})",
-                last_state.as_deref().unwrap_or("missing")
-            ));
-        }
-        poll.tick().await;
+) -> Result<Option<Execution>, String> {
+    match query_typed(
+        client,
+        "agent",
+        "execution",
+        json!({ "sessionId": session_id, "runId": run_id }),
+    )
+    .await?
+    {
+        ExecutionResult::Found { execution } => Ok(Some(execution)),
+        ExecutionResult::Missing => Ok(None),
     }
+}
+
+async fn fetch_terminal_execution(
+    client: &Client,
+    session_id: &str,
+    run_id: RunId,
+) -> Result<(Execution, Terminal), String> {
+    let execution = query_execution(client, session_id, run_id)
+        .await?
+        .ok_or_else(|| "execution missing after terminal watch event".to_owned())?;
+    let terminal = terminal_state(&execution.state).ok_or_else(|| {
+        let encoded = serde_json::to_string(&execution.state).unwrap_or_else(|_| "unknown".into());
+        format!("execution remained non-terminal after Ended event: {encoded}")
+    })?;
+    Ok((execution, terminal))
 }
 
 async fn query_settled_usage_summary(
@@ -1144,60 +1232,71 @@ async fn init_host(
     state_root: &Path,
     canonical_workspace: &Path,
     req: &GuestRunRequest,
-    deadline: Option<Deadline>,
+    budget: Budget,
 ) -> Result<(), String> {
-    let init_timeout_ms = match deadline {
-        // Bounded by `maka --timeout-ms` CLI range (1..=600_000).
-        Some(d) => d.remaining("host init")?.as_millis().clamp(1, 600_000) as u64,
-        None => UNBOUNDED_STARTUP_TIMEOUT.as_millis() as u64,
-    };
+    let rem = budget.remaining("host init")?;
+    // Bounded by `maka --timeout-ms` CLI range (1..=600_000).
+    let init_timeout_ms = rem.map_or(UNBOUNDED_STARTUP_TIMEOUT.as_millis() as u64, |d| {
+        d.as_millis().clamp(1, 600_000) as u64
+    });
     let init_timeout_arg = init_timeout_ms.to_string();
     let settings = build_init_settings(req, canonical_workspace);
     let payload = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
 
-    let mut child = Command::new(maka_bin)
-        .args([
-            "host",
-            "init",
-            "--settings-stdin",
-            "--timeout-ms",
-            &init_timeout_arg,
-            "--root",
-        ])
-        .arg(state_root)
-        .env("PATH", command_path)
-        .env("NO_PROXY", "localhost,127.0.0.1,::1,host.docker.internal")
-        .env("no_proxy", "localhost,127.0.0.1,::1,host.docker.internal")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("failed to spawn {}: {e}", maka_bin.display()))?;
+    let run_init = async {
+        let mut child = Command::new(maka_bin)
+            .args([
+                "host",
+                "init",
+                "--settings-stdin",
+                "--timeout-ms",
+                &init_timeout_arg,
+                "--root",
+            ])
+            .arg(state_root)
+            .env("PATH", command_path)
+            .env("NO_PROXY", "localhost,127.0.0.1,::1,host.docker.internal")
+            .env("no_proxy", "localhost,127.0.0.1,::1,host.docker.internal")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("failed to spawn {}: {e}", maka_bin.display()))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&payload)
-            .await
-            .map_err(|e| format!("failed writing init settings stdin: {e}"))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| format!("failed closing init settings stdin: {e}"))?;
-    }
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(&payload)
+                .await
+                .map_err(|e| format!("failed writing init settings stdin: {e}"))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| format!("failed closing init settings stdin: {e}"))?;
+        }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("failed waiting for maka host init: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "maka host init failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("failed waiting for maka host init: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "maka host init failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    };
+
+    match (budget, rem) {
+        (Budget::Deadline { budget_ms, .. }, Some(rem)) => {
+            tokio::time::timeout(rem, run_init).await.map_err(|_| {
+                format!("agent timeout budget ({budget_ms} ms) exhausted during host init")
+            })?
+        }
+        _ => run_init.await,
     }
-    Ok(())
 }
 
 struct HostServerProcess {
@@ -1246,9 +1345,9 @@ async fn spawn_host_serve(
     command_path: &OsStr,
     state_root: &Path,
     artifacts_dir: &Path,
-    deadline: Option<Deadline>,
+    budget: Budget,
 ) -> Result<HostServerProcess, String> {
-    check_deadline(deadline, "host startup")?;
+    budget.check("host startup")?;
     let stderr_path = artifacts_dir.join("host-serve.stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path)
         .map_err(|e| format!("failed creating {}: {e}", stderr_path.display()))?;
@@ -1271,61 +1370,60 @@ async fn spawn_host_serve(
         .map_err(|e| format!("failed to spawn maka host serve: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("missing host stdout pipe")?;
-    let handshake: Result<(tokio::task::JoinHandle<()>, String, Uuid), String> = run_startup_stage(
-        deadline,
-        "host startup",
-        "timed out waiting for maka host serve ready line",
-        async {
-            let mut stdout_lines = BufReader::new(stdout).lines();
-            let mut ready_line = None;
-            while let Some(line) = stdout_lines
-                .next_line()
-                .await
-                .map_err(|e| format!("failed reading host stdout: {e}"))?
-            {
-                if let Ok(parsed) = serde_json::from_str::<Value>(&line)
-                    && parsed["kind"].as_str() == Some("ready")
+    let handshake: Result<(tokio::task::JoinHandle<()>, String, Uuid), String> = budget
+        .run_startup(
+            "host startup",
+            "timed out waiting for maka host serve ready line",
+            async {
+                let mut stdout_lines = BufReader::new(stdout).lines();
+                let mut ready_line = None;
+                while let Some(line) = stdout_lines
+                    .next_line()
+                    .await
+                    .map_err(|e| format!("failed reading host stdout: {e}"))?
                 {
-                    ready_line = Some(parsed);
-                    break;
-                }
-            }
-            let ready_line = match ready_line {
-                Some(parsed) => parsed,
-                None => {
-                    let stderr_text = tokio::fs::read_to_string(&stderr_path)
-                        .await
-                        .unwrap_or_default();
-                    let trimmed = stderr_text.trim();
-                    if trimmed.is_empty() {
-                        return Err("maka host serve exited before printing ready line".into());
+                    if let Ok(parsed) = serde_json::from_str::<Value>(&line)
+                        && parsed["kind"].as_str() == Some("ready")
+                    {
+                        ready_line = Some(parsed);
+                        break;
                     }
-                    return Err(format!(
-                        "maka host serve exited before printing ready line: {trimmed}"
-                    ));
                 }
-            };
+                let ready_line = match ready_line {
+                    Some(parsed) => parsed,
+                    None => {
+                        let stderr_text = tokio::fs::read_to_string(&stderr_path)
+                            .await
+                            .unwrap_or_default();
+                        let trimmed = stderr_text.trim();
+                        if trimmed.is_empty() {
+                            return Err("maka host serve exited before printing ready line".into());
+                        }
+                        return Err(format!(
+                            "maka host serve exited before printing ready line: {trimmed}"
+                        ));
+                    }
+                };
 
-            let socket_path = ready_line["socketPath"]
-                .as_str()
-                .ok_or_else(|| format!("ready line missing socketPath: {ready_line}"))?
-                .to_owned();
-            let epoch_str = ready_line["hostEpoch"]
-                .as_str()
-                .ok_or_else(|| format!("ready line missing hostEpoch: {ready_line}"))?;
-            let host_epoch = Uuid::parse_str(epoch_str)
-                .map_err(|e| format!("invalid hostEpoch '{epoch_str}': {e}"))?;
+                let socket_path = ready_line["socketPath"]
+                    .as_str()
+                    .ok_or_else(|| format!("ready line missing socketPath: {ready_line}"))?
+                    .to_owned();
+                let epoch_str = ready_line["hostEpoch"]
+                    .as_str()
+                    .ok_or_else(|| format!("ready line missing hostEpoch: {ready_line}"))?;
+                let host_epoch = Uuid::parse_str(epoch_str)
+                    .map_err(|e| format!("invalid hostEpoch '{epoch_str}': {e}"))?;
 
-            // Keep draining remaining stdout lines so pipe never fills.
-            let stdout_drain =
-                tokio::spawn(
-                    async move { while let Ok(Some(_)) = stdout_lines.next_line().await {} },
-                );
+                // Keep draining remaining stdout lines so pipe never fills.
+                let stdout_drain = tokio::spawn(async move {
+                    while let Ok(Some(_)) = stdout_lines.next_line().await {}
+                });
 
-            Ok((stdout_drain, socket_path, host_epoch))
-        },
-    )
-    .await;
+                Ok((stdout_drain, socket_path, host_epoch))
+            },
+        )
+        .await;
 
     match handshake {
         Ok((stdout_drain, socket_path, host_epoch)) => Ok(HostServerProcess {
@@ -1468,6 +1566,19 @@ mod tests {
             }
         );
 
+        // Priced model with all fields known settles as Complete with cost_usd.
+        assert_eq!(
+            settle_usage(&sample_models(), &settled, (0, 0), true).unwrap(),
+            UsageSettlement {
+                metering: Metering::Complete {
+                    cost_usd: Some(0.001),
+                },
+                input_tokens: Some(100),
+                cache_tokens: Some(10),
+                output_tokens: Some(20),
+            }
+        );
+
         // Unpriced model completes with cost_usd: None while preserving settled tokens.
         let mut unpriced = sample_models();
         unpriced.cost = Cost {
@@ -1484,5 +1595,46 @@ mod tests {
                 output_tokens: Some(20),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn budget_enforces_pre_stage_during_stage_startup_and_sleep_deadlines() {
+        let unbounded = Budget::from_timeout_ms(None).unwrap();
+        assert_eq!(unbounded.remaining("init").unwrap(), None);
+        unbounded.check("startup").unwrap();
+        let startup_err = unbounded
+            .run_startup_within(
+                "host startup",
+                Duration::from_millis(15),
+                "timed out waiting for Host",
+                std::future::pending::<Result<(), String>>(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(startup_err, "timed out waiting for Host");
+
+        let bounded = Budget::from_timeout_ms(NonZeroU64::new(40)).unwrap();
+        assert!(bounded.remaining("stage1").unwrap().is_some());
+        let val = bounded.run("stage1", async { Ok(42) }).await.unwrap();
+        assert_eq!(val, 42);
+
+        let during_err = bounded
+            .run("stage2", std::future::pending::<Result<(), String>>())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            during_err,
+            "agent timeout budget (40 ms) exhausted during stage2"
+        );
+        let before_err = bounded.remaining("stage3").unwrap_err();
+        assert_eq!(
+            before_err,
+            "agent timeout budget (40 ms) exhausted before stage3"
+        );
+
+        let sleep_budget = Budget::from_timeout_ms(NonZeroU64::new(15)).unwrap();
+        let start = tokio::time::Instant::now();
+        assert_eq!(sleep_budget.sleep().await.get(), 15);
+        assert!(start.elapsed() >= Duration::from_millis(15));
     }
 }
