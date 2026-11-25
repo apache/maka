@@ -119,6 +119,8 @@ fn parse_verifier_env(raw: &str) -> Result<VerifierEnvRef, String> {
 #[derive(Deserialize)]
 struct TaskToml {
     agent: Option<TaskAgentToml>,
+    #[serde(default)]
+    steps: Vec<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -126,11 +128,23 @@ struct TaskAgentToml {
     timeout_sec: Option<f64>,
 }
 
-fn read_task_timeout_ms(task_toml: &Path) -> Result<Option<NonZeroU64>, String> {
+fn read_task_timeout_ms(
+    task_toml: &Path,
+    override_timeout_ms: Option<NonZeroU64>,
+) -> Result<Option<NonZeroU64>, String> {
     let raw = std::fs::read_to_string(task_toml)
         .map_err(|e| format!("failed to read {}: {e}", task_toml.display()))?;
     let parsed: TaskToml =
         toml::from_str(&raw).map_err(|e| format!("invalid {}: {e}", task_toml.display()))?;
+    if !parsed.steps.is_empty() {
+        return Err(format!(
+            "multi-step tasks ([[steps]]) in {} are not supported by maka-eval run",
+            task_toml.display()
+        ));
+    }
+    if let Some(ms) = override_timeout_ms {
+        return Ok(Some(ms));
+    }
     let Some(secs) = parsed.agent.and_then(|agent| agent.timeout_sec) else {
         return Ok(None);
     };
@@ -312,10 +326,7 @@ pub(crate) fn run_trial(opts: &HarborRunOptions) -> Result<HarborRunOutcome, Str
             task_path.display()
         ));
     }
-    let effective_timeout_ms = match opts.timeout_ms {
-        Some(ms) => Some(ms),
-        None => read_task_timeout_ms(&task_toml)?,
-    };
+    let effective_timeout_ms = read_task_timeout_ms(&task_toml, opts.timeout_ms)?;
 
     let bundle_dir = std::fs::canonicalize(&opts.bundle_dir).map_err(|e| {
         format!(
@@ -644,7 +655,10 @@ mod tests {
         let path = dir.path().join("task.toml");
 
         std::fs::write(&path, "[task]\nname = \"ws\"\n").unwrap();
-        assert_eq!(read_task_timeout_ms(&path).unwrap(), None);
+        assert_eq!(read_task_timeout_ms(&path, None).unwrap(), None);
+
+        std::fs::write(&path, "[task]\nname = \"ws\"\nsteps = []\n").unwrap();
+        assert_eq!(read_task_timeout_ms(&path, None).unwrap(), None);
 
         std::fs::write(
             &path,
@@ -652,19 +666,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            read_task_timeout_ms(&path).unwrap(),
+            read_task_timeout_ms(&path, None).unwrap(),
             NonZeroU64::new(10_500)
         );
 
+        let override_ms = NonZeroU64::new(5_000);
         for invalid in [
             "[agent]\ntimeout_sec = 0\n",
             "[agent]\ntimeout_sec = -1.0\n",
         ] {
             std::fs::write(&path, invalid).unwrap();
             assert!(
-                read_task_timeout_ms(&path)
+                read_task_timeout_ms(&path, None)
                     .unwrap_err()
                     .contains("must be finite and > 0")
+            );
+        }
+        std::fs::write(&path, "[agent]\ntimeout_sec = 0\n").unwrap();
+        assert_eq!(
+            read_task_timeout_ms(&path, override_ms).unwrap(),
+            override_ms
+        );
+
+        std::fs::write(&path, "[[steps]]\nname = \"main\"\n").unwrap();
+        for override_arg in [None, override_ms] {
+            assert!(
+                read_task_timeout_ms(&path, override_arg)
+                    .unwrap_err()
+                    .contains("multi-step tasks ([[steps]])")
             );
         }
     }
