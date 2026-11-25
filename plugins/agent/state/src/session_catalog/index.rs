@@ -114,7 +114,22 @@ fn run_flags(view: &RunView) -> (bool, bool, bool) {
         .blockers
         .values()
         .any(|b| b.decision.is_none() && b.resolved_by.is_none());
-    let unknown = view.tools.values().any(|t| {
+    let unknown = has_unknown_effects(view, false);
+    let cleanup = view.tools.values().any(|t| {
+        t.original.is_some()
+            && !matches!(
+                &t.receipt,
+                Some(Receipt::Recorded {
+                    cleanup: OperationCleanup::Confirmed,
+                    ..
+                })
+            )
+    });
+    (blocked, unknown, cleanup)
+}
+
+pub(crate) fn has_unknown_effects(view: &RunView, allow_closed_native_unobservable: bool) -> bool {
+    view.tools.values().any(|t| {
         !t.outcome_unknown_accepted()
             && matches!(
                 &t.receipt,
@@ -128,25 +143,16 @@ fn run_flags(view: &RunView) -> (bool, bool, bool) {
     }) || view.blockers.values().any(|b| {
         b.resolved_by.is_none()
             && b.decision.is_none()
-            && matches!(
-                b.reason,
+            && match b.reason {
                 BlockerKind::OperationUnknown { .. }
-                    | BlockerKind::ProviderEffectUnknown { .. }
-                    | BlockerKind::OriginalAdmissionUnknown { .. }
-                    | BlockerKind::ExternalTaskUnobservable { .. }
-            )
-    });
-    let cleanup = view.tools.values().any(|t| {
-        t.original.is_some()
-            && !matches!(
-                &t.receipt,
-                Some(Receipt::Recorded {
-                    cleanup: OperationCleanup::Confirmed,
-                    ..
-                })
-            )
-    });
-    (blocked, unknown, cleanup)
+                | BlockerKind::ProviderEffectUnknown { .. }
+                | BlockerKind::OriginalAdmissionUnknown { .. } => true,
+                BlockerKind::ExternalTaskUnobservable { .. } => {
+                    !(allow_closed_native_unobservable && view.closed_native_process())
+                }
+                _ => false,
+            }
+    })
 }
 
 pub(crate) fn run_status(view: &RunView, late_sequence: u64) -> RunStatus {

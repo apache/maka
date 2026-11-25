@@ -263,6 +263,7 @@ impl Producer {
                     Rule::Admission => metadata.role = AuthorRole::Canonical(Role::User),
                     Rule::Returned { .. }
                     | Rule::ExternalReturned(_)
+                    | Rule::ExternalObserved { .. }
                     | Rule::Accepted(_)
                     | Rule::Cell(_)
                     | Rule::Receipt(_) => metadata.role = AuthorRole::Canonical(Role::ToolResult),
@@ -346,6 +347,14 @@ impl Producer {
                             Field::Arguments,
                             required(&source, &["input"], &self.budget).await?.source,
                             &self.budget,
+                        )
+                        .await?;
+                    }
+                    Rule::ExternalObserved(diagnostic) => {
+                        literal(
+                            &mut doc,
+                            Field::Result,
+                            &maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
                         )
                         .await?;
                     }

@@ -2091,12 +2091,7 @@ impl Engine {
             let diagnostic = self.unknown_outcome_diagnostic(view, tool).await?;
             ContentBlob::json(
                 &maka_agent_facts::tool_output::AcceptedToolResult::OutcomeUnknown {
-                    diagnostic: format!(
-                        "The call ended, but its result is unknown: {}. It may or may not have \
-                         taken effect. Check the current state before deciding what to do next; \
-                         do not simply repeat the call.",
-                        diagnostic.trim_end_matches('.')
-                    ),
+                    diagnostic: maka_agent_facts::tool_output::ended_unknown_message(&diagnostic),
                 },
             )?
         } else {

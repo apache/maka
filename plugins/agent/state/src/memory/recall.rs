@@ -429,7 +429,7 @@ impl Query for RestrictedArchives {
                 WHERE call.owner=?1 AND call.fact_id=sources.fact AND call.tool_start=1
                   AND result.owner=call.owner AND result.session=call.session AND result.run=call.run
                   AND result.tool_use_id=call.tool_use_id
-                  AND (result.result_source=1 OR result.kind='operation_observed')
+                  AND (result.result_source=1 OR result.kind='operation_observed' OR (result.kind='external_effect' AND result.tool_start=0))
                   AND EXISTS(",
             restricted_spans_sql!("SELECT 1 FROM", "s.namespace=?1 AND s.fact=result.fact_id"),
             "))",

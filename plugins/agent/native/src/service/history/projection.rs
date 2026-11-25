@@ -119,11 +119,17 @@ pub(super) fn visible(fact: &Fact) -> bool {
                 | maka_agent_facts::executor::Output::ContextUsage(_),
             ..
         } => false,
-        Fact::ExternalEffect { event } => matches!(
-            event,
-            maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
-                | maka_agent_facts::external_effects::ExternalEffectEvent::Returned { .. }
-        ),
+        Fact::ExternalEffect { event } => {
+            matches!(
+                event,
+                maka_agent_facts::external_effects::ExternalEffectEvent::Prepared { .. }
+                    | maka_agent_facts::external_effects::ExternalEffectEvent::Returned { .. }
+            ) || matches!(
+                event,
+                maka_agent_facts::external_effects::ExternalEffectEvent::Observed { observation, .. }
+                    if maka_agent_facts::tool_output::ended_unknown_diagnostic(observation).is_some()
+            )
+        }
         _ => true,
     }
 }
@@ -903,6 +909,10 @@ pub(super) async fn project(
             if !matches!(
                 event,
                 ExternalEffectEvent::Prepared { .. } | ExternalEffectEvent::Returned { .. }
+            ) && !matches!(
+                event,
+                ExternalEffectEvent::Observed { observation, .. }
+                    if maka_agent_facts::tool_output::ended_unknown_diagnostic(observation).is_some()
             ) {
                 return Ok(result);
             }
@@ -946,7 +956,8 @@ pub(super) async fn project(
                     call.dispatched = state.admitted;
                     call.pending = view.terminal.is_none()
                         && state.returned.is_none()
-                        && state.rejected.is_none();
+                        && state.rejected.is_none()
+                        && !state.ended_unknown();
                     row.fields
                         .push((SourceField::Arguments, Field::Json(descriptor.input)));
                     row
@@ -965,6 +976,27 @@ pub(super) async fn project(
                         .settlement = Some(settlement);
                     row.fields
                         .push((SourceField::Result, Field::Content(output.clone())));
+                    row
+                }
+                ExternalEffectEvent::Observed { observation, .. } => {
+                    let diagnostic =
+                        maka_agent_facts::tool_output::ended_unknown_diagnostic(observation)
+                            .expect("selected ended-unknown external observation");
+                    let mut row = base(item, turn, 0, Role::ToolResult, address)?;
+                    row.evidence_text = EvidenceText::ReturnedToolName;
+                    tool(&mut row, id, None, Some(true));
+                    row.chunk
+                        .tool
+                        .as_mut()
+                        .and_then(|tool| tool.result.as_mut())
+                        .expect("external Host observation")
+                        .settlement = Some(maka_agent_facts::tool_call::ToolSettlement::Unknown);
+                    row.fields.push((
+                        SourceField::Result,
+                        Field::Text(
+                            maka_agent_facts::tool_output::ended_unknown_message(diagnostic).into(),
+                        ),
+                    ));
                     row
                 }
                 _ => unreachable!("selected external history event"),

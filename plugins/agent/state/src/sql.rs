@@ -2777,4 +2777,601 @@ mod tests {
             assert_eq!(migrated, folded, "migrated streak mismatch for {run}");
         }
     }
+
+    #[test]
+    fn migration_55_indexes_ended_unknown_external_observations_and_bidirectional_redaction() {
+        use crate::{
+            ContentBlob,
+            fold::RunView,
+            memory::recall::{ArchiveRestriction, RestrictedArchives, indexed_spans},
+        };
+        use maka_agent_facts::{
+            durable::{
+                BackendSpec, BlockerId, BlockerKind, ExecutionIdentity, ExternalTaskId, Fact,
+                FactId, RecordedFact, RunId, SCHEMA_VERSION, Terminal, UnixMillis,
+            },
+            executor::Selection,
+            external_effects::{ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey},
+            memory::MemorySource,
+            tool_call::ToolOrigin,
+            tools::ToolDefinition,
+        };
+        use maka_event_log::connection::Query;
+        use maka_plugin_core::{
+            contract::Transport,
+            deployment::DeploymentRef,
+            operation::{
+                OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryContract,
+                RecoveryProtocol, RecoveryRef,
+            },
+        };
+        use uuid::Uuid;
+
+        let db = Connection::open_in_memory().unwrap();
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let through_54: Vec<_> = catalog
+            .iter()
+            .filter(|m| m.version <= 54)
+            .copied()
+            .collect();
+        maka_event_log::migration::run(&db, &through_54).unwrap();
+
+        let seed_external = |session: &str,
+                             diagnostic: &str,
+                             initial_cleanup: OperationCleanup,
+                             terminal: Terminal,
+                             terminal_diag: Option<String>,
+                             pre_v55_recall: bool| {
+            let run = RunId::new();
+            let (mut spec, _) = crate::store::stop_tests::spec();
+            let task = ExternalTaskId::new();
+            let key = ExternalEffectKey {
+                task,
+                operation: Uuid::new_v4(),
+            };
+            let task_source = maka_agent_facts::executor::Binding {
+                executor_id: "external".to_string().try_into().unwrap(),
+                package_id: "maka.agent".into(),
+                entry_id: "maka.agent".into(),
+                activation: "fixture".into(),
+            };
+            let task_blob = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+                protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+                source: task_source,
+                payload: serde_json::json!({}),
+            })
+            .unwrap();
+            spec.session_id = session.to_owned();
+            spec.backend = BackendSpec::Executor {
+                selection: Selection {
+                    executor: "external".into(),
+                    settings: Default::default(),
+                },
+                descriptor: task_blob.reference().clone(),
+            };
+            let spec_blob = ContentBlob::json(&spec).unwrap();
+            let owner_json = serde_json::to_string(&spec.owner).unwrap();
+            let spec_cid = super::put(&db, &spec_blob).unwrap();
+            super::put(&db, &task_blob).unwrap();
+            db.execute(
+                "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
+                params![run.to_string(), SCHEMA_VERSION, owner_json, spec.session_id, spec_cid],
+            )
+            .unwrap();
+            super::pin(&db, run, spec_blob.reference()).unwrap();
+            super::pin(&db, run, task_blob.reference()).unwrap();
+
+            let descriptor_blob = ContentBlob::json(&ExternalEffectDescriptor {
+                schema_version: SCHEMA_VERSION,
+                protocol: "fixture".into(),
+                execution: ExecutionIdentity {
+                    session_id: spec.session_id.clone(),
+                    run_id: run,
+                    turn_id: spec.turn_id.clone(),
+                },
+                key,
+                origin: ToolOrigin::External {
+                    task,
+                    operation: key.operation,
+                    package_id: "maka.agent".into(),
+                    entry_id: "maka.agent".into(),
+                    activation: "fixture".into(),
+                },
+                operation_id: format!("external:{task}:{}", key.operation),
+                name: "cua_repl".into(),
+                input: serde_json::json!({"code": "paste()"}),
+                definition: ToolDefinition {
+                    name: "cua_repl".into(),
+                    description: "cua".into(),
+                    input_schema: serde_json::json!({}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                catalog_digest: format!("sha256:{}", "1".repeat(64)),
+                resources: vec![],
+            })
+            .unwrap();
+            super::put(&db, &descriptor_blob).unwrap();
+            super::pin(&db, run, descriptor_blob.reference()).unwrap();
+
+            let digest = format!("sha256-{}", "a".repeat(64));
+            let reference = RecoveryRef {
+                source: DeploymentRef {
+                    state_domain: "b".repeat(64),
+                    deployment: spec.owner.deployment,
+                    revision: 1,
+                },
+                namespace: spec.owner.namespace.clone(),
+                export: "computer".into(),
+                method: "evaluate".into(),
+                operation: Uuid::new_v4(),
+                fingerprint: digest.clone(),
+                contract: RecoveryContract {
+                    name: "maka.workspace.Computer".into(),
+                    version: 1,
+                    transport: Transport::Remote,
+                    digest,
+                },
+                recovery: RecoveryProtocol::JournalV1,
+            };
+            let make_obs = |cleanup| Fact::ExternalEffect {
+                event: ExternalEffectEvent::Observed {
+                    key,
+                    observation: OperationReply {
+                        reference: reference.clone(),
+                        receipt: Receipt::Recorded {
+                            outcome: OperationOutcome::Unknown {
+                                diagnostic: diagnostic.into(),
+                            },
+                            cleanup,
+                        },
+                    },
+                },
+            };
+
+            let mut facts = vec![
+                Fact::RunAdmitted {
+                    spec: spec_blob.reference().clone(),
+                },
+                Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor: task_blob.reference().clone(),
+                    live_workspace: true,
+                },
+                Fact::ExternalTaskAdmitted { task },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Prepared {
+                        key,
+                        descriptor: descriptor_blob.reference().clone(),
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Admitted {
+                        key,
+                        approval: None,
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Bound {
+                        key,
+                        reference: reference.clone(),
+                    },
+                },
+                make_obs(initial_cleanup),
+            ];
+            if terminal == Terminal::Failed {
+                facts.push(Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: BlockerKind::ExternalEffectUnknown {
+                        task,
+                        operation: key.operation,
+                    },
+                });
+            } else {
+                facts.push(Fact::ExternalTaskClosed {
+                    task,
+                    outcome: Terminal::Completed,
+                    diagnostic: None,
+                    final_message: None,
+                });
+            }
+            facts.push(Fact::ExternalTaskCleanupObserved {
+                task,
+                cleanup: OperationCleanup::Confirmed,
+            });
+            facts.push(Fact::RunTerminated {
+                terminal: terminal.clone(),
+                diagnostic: terminal_diag,
+            });
+
+            let mut view = RunView::admitted(run, spec.clone()).unwrap();
+            let mut recorded_facts = Vec::new();
+            let mut revision = 0_u64;
+            for fact in facts {
+                revision += 1;
+                let recorded = RecordedFact {
+                    schema_version: SCHEMA_VERSION,
+                    id: FactId::new(),
+                    run,
+                    revision,
+                    at: UnixMillis(revision as i64),
+                    fact,
+                };
+                view.apply(&recorded).unwrap();
+                let fact_blob = ContentBlob::json(&recorded).unwrap();
+                let cid = super::put(&db, &fact_blob).unwrap();
+                db.execute(
+                    "INSERT INTO agent_facts(id,run,revision,schema_version,at,body_content_id) VALUES(?,?,?,?,?,?)",
+                    params![
+                        recorded.id.to_string(),
+                        run.to_string(),
+                        revision as i64,
+                        SCHEMA_VERSION,
+                        recorded.at.0,
+                        cid
+                    ],
+                )
+                .unwrap();
+                let seq = db.last_insert_rowid() as u64;
+                if revision == 1 {
+                    db.execute(
+                        "INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,stopped,terminal,tokens,retries,retry_due_at,retry_pending,current_step,current_attempt,cancelled_by_risk,replans,baseline,external,stop_request,stop_assessed,retry_phase,finish_requested,proactive_summary,output_limit_continuations)
+                         VALUES(?,?,?,?,?,?,?,0,0,?,0,0,NULL,NULL,NULL,NULL,0,'{}',NULL,NULL,NULL,NULL,'primary',0,NULL,0)",
+                        params![
+                            run.to_string(),
+                            super::HEADER_SCHEMA_VERSION,
+                            owner_json,
+                            spec.session_id,
+                            seq as i64,
+                            1_i64,
+                            revision as i64,
+                            serde_json::to_string(&terminal).unwrap(),
+                        ],
+                    )
+                    .unwrap();
+                } else {
+                    db.execute(
+                        "UPDATE agent_runs SET revision=?, external=? WHERE run=?",
+                        params![
+                            revision as i64,
+                            view.external
+                                .as_ref()
+                                .map(|t| serde_json::to_string(t).unwrap()),
+                            run.to_string(),
+                        ],
+                    )
+                    .unwrap();
+                }
+                if let Fact::ExternalEffect { event } = &recorded.fact {
+                    crate::external_effects::replay(&db, run, revision, event).unwrap();
+                }
+                crate::session_history::index(&db, &recorded).unwrap();
+                if !pre_v55_recall
+                    || !matches!(
+                        recorded.fact,
+                        Fact::ExternalEffect {
+                            event: ExternalEffectEvent::Observed { .. }
+                        }
+                    )
+                {
+                    crate::recall::index_fact(&db, &spec, &recorded, seq).unwrap();
+                } else {
+                    let digest: String = db
+                        .query_row(
+                            "SELECT prefix_digest FROM agent_session_history WHERE sequence=?",
+                            [seq as i64],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    db.execute(
+                        "INSERT INTO agent_recall_heads(owner,session,sequence,digest) VALUES(?,?,?,?)
+                         ON CONFLICT(owner,session) DO UPDATE SET sequence=excluded.sequence,digest=excluded.digest",
+                        params![owner_json, spec.session_id, seq as i64, digest],
+                    )
+                    .unwrap();
+                }
+                recorded_facts.push((seq, recorded));
+            }
+            (run, spec, key, reference, view, recorded_facts)
+        };
+
+        // Run A: real v54 failed external run (no ExternalTaskClosed, generic v54 RunTerminated
+        // diagnostic, Observed(Unknown, Confirmed) skipped by pre-v55 Recall while head advanced).
+        let diag_a = "paste-v54-secret-alpha";
+        let (run_a, spec_a, _key_a, _ref_a, view_a, facts_a) = seed_external(
+            "mig55-a",
+            diag_a,
+            OperationCleanup::Confirmed,
+            Terminal::Failed,
+            Some("Could not determine the outcome of an external agent operation.".into()),
+            true,
+        );
+        let obs_a_seq = facts_a[6].0;
+        let obs_a_id = facts_a[6].1.id;
+        let prep_a_id = facts_a[3].1.id;
+        let canonical_facts = || -> Vec<(String, String)> {
+            db.prepare(
+                "SELECT f.id, b.content_sha256 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? ORDER BY f.revision",
+            )
+            .unwrap()
+            .query_map([run_a.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        let pre_facts_a = canonical_facts();
+        let pre_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_recall_messages WHERE sequence=?",
+                [obs_a_seq as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pre_count, 0,
+            "v54 must omit Observed from agent_recall_messages"
+        );
+
+        // Cold upgrade v54 -> v55 without manual Recall rebuild.
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+
+        assert_eq!(
+            canonical_facts(),
+            pre_facts_a,
+            "v55 must not rewrite canonical facts"
+        );
+
+        // 1) Run A's pre-existing Observed(Confirmed) is indexed in Recall (single Field::Result),
+        // surfaces its real diagnostic, and is Quiescent despite closed == None.
+        let (body_a, fields_a): (String, String) = db
+            .query_row(
+                "SELECT body, fields_json FROM agent_recall_messages WHERE sequence=?",
+                [obs_a_seq as i64],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            body_a,
+            maka_agent_facts::tool_output::ended_unknown_message(diag_a)
+        );
+        let spans_a: Vec<crate::recall::FieldSpan> = serde_json::from_str(&fields_a).unwrap();
+        assert_eq!(spans_a.len(), 1);
+        assert_eq!(spans_a[0].field, crate::recall::Field::Result);
+        let fts_hits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_recall_terms WHERE rowid=(SELECT id FROM agent_recall_messages WHERE sequence=?)",
+                [obs_a_seq as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            fts_hits, 1,
+            "rebuilt Recall FTS must index migrated observation for {run_a}"
+        );
+        assert!(!view_a.blocks_followup());
+        assert_eq!(
+            view_a.recovery_failure_diagnostic().as_deref(),
+            Some(diag_a)
+        );
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_a.owner, &spec_a.session_id).unwrap(),
+            crate::SessionQuiescence::Quiescent
+        );
+
+        let restrict_fact = |owner: &maka_agent_facts::durable::RunOwner,
+                             session: &str,
+                             fact_id: FactId,
+                             seq: u64,
+                             start: usize,
+                             end: usize,
+                             quote: &str| {
+            let owner_json = serde_json::to_string(owner).unwrap();
+            let mem_id = Uuid::new_v4().to_string();
+            let user_src = serde_json::to_string(&MemorySource::UserOperation {
+                operation_id: Uuid::new_v4(),
+                observed_at: 0,
+            })
+            .unwrap();
+            let conv_src = serde_json::json!({
+                "kind": "conversation",
+                "reference": {
+                    "sessionId": session,
+                    "sequence": seq,
+                    "factId": fact_id.to_string(),
+                    "itemIndex": 0,
+                    "start": start,
+                    "end": end,
+                    "quote": quote,
+                    "fingerprint": "fp"
+                }
+            })
+            .to_string();
+            db.execute(
+                    "INSERT INTO agent_memories VALUES(?1,'personal',?2,1,1,'user_recall','suppressed',0,0)",
+                    params![owner_json, mem_id],
+                )
+                .unwrap();
+            db.execute(
+                    "INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+                     VALUES(?1,'personal',?2,1,?3,?4,'digest','suppressed')",
+                    params![owner_json, mem_id, quote, user_src],
+                )
+                .unwrap();
+            db.execute(
+                "INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
+                     VALUES(?1,'personal',?2,1,?3,?4)",
+                params![owner_json, mem_id, conv_src, format!("ev-{mem_id}")],
+            )
+            .unwrap();
+            mem_id
+        };
+
+        let obs_a_start = body_a.find(diag_a).unwrap();
+        let _mem_a = restrict_fact(
+            &spec_a.owner,
+            &spec_a.session_id,
+            obs_a_id,
+            obs_a_seq,
+            obs_a_start,
+            obs_a_start + diag_a.len(),
+            diag_a,
+        );
+        assert_eq!(
+            crate::session_history::recovery_diagnostic(&db, &view_a, true)
+                .unwrap()
+                .as_deref(),
+            Some("The operation outcome is unknown.")
+        );
+        assert_eq!(
+            RestrictedArchives {
+                owner: spec_a.owner.clone(),
+                facts: vec![prep_a_id],
+            }
+            .execute(&db)
+            .unwrap()
+            .get(&prep_a_id),
+            Some(&ArchiveRestriction::PairedResult)
+        );
+
+        // 2) Post-v55 failed external run (no ExternalTaskClosed, v55 RunTerminated carrying
+        // unconfirmed diagnostic) before late Observed(Confirmed) arrives: quiescence reports
+        // Busy(ExternalEffect) -> Quiescent, and RunTerminated <-> Observed redaction works both ways.
+        let diag_b = "paste-v55-secret-beta";
+        let term_diag_b =
+            format!("{diag_b}. The call may still be running; its end was not confirmed.");
+        let (run_b, spec_b, key_b, ref_b, mut view_b, facts_b) = seed_external(
+            "mig55-b",
+            diag_b,
+            OperationCleanup::Unconfirmed,
+            Terminal::Failed,
+            Some(term_diag_b),
+            false,
+        );
+        let prep_b_id = facts_b[3].1.id;
+        let term_b_seq = facts_b.last().unwrap().0;
+        let term_b_id = facts_b.last().unwrap().1.id;
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_b.owner, &spec_b.session_id).unwrap(),
+            crate::SessionQuiescence::Busy(crate::SessionObligation::ExternalEffect)
+        );
+
+        let late_obs_rev = (facts_b.len() + 1) as u64;
+        let late_obs = RecordedFact {
+            schema_version: SCHEMA_VERSION,
+            id: FactId::new(),
+            run: run_b,
+            revision: late_obs_rev,
+            at: UnixMillis(late_obs_rev as i64),
+            fact: Fact::ExternalEffect {
+                event: ExternalEffectEvent::Observed {
+                    key: key_b,
+                    observation: OperationReply {
+                        reference: ref_b,
+                        receipt: Receipt::Recorded {
+                            outcome: OperationOutcome::Unknown {
+                                diagnostic: diag_b.into(),
+                            },
+                            cleanup: OperationCleanup::Confirmed,
+                        },
+                    },
+                },
+            },
+        };
+        view_b.apply(&late_obs).unwrap();
+        assert_eq!(
+            view_b.recovery_failure_diagnostic().as_deref(),
+            Some(diag_b)
+        );
+        let late_cid = super::put(&db, &ContentBlob::json(&late_obs).unwrap()).unwrap();
+        db.execute(
+            "INSERT INTO agent_facts(id,run,revision,schema_version,at,body_content_id) VALUES(?,?,?,?,?,?)",
+            params![late_obs.id.to_string(), run_b.to_string(), late_obs_rev as i64, SCHEMA_VERSION, late_obs.at.0, late_cid],
+        )
+        .unwrap();
+        let late_seq = db.last_insert_rowid() as u64;
+        if let Fact::ExternalEffect { event } = &late_obs.fact {
+            crate::external_effects::replay(&db, run_b, late_obs_rev, event).unwrap();
+        }
+        crate::session_history::index(&db, &late_obs).unwrap();
+        crate::recall::index_fact(&db, &spec_b, &late_obs, late_seq).unwrap();
+        assert_eq!(
+            crate::store::quiescence::observe(&db, &spec_b.owner, &spec_b.session_id).unwrap(),
+            crate::SessionQuiescence::Quiescent
+        );
+
+        // Direction 1: Restrict RunTerminated -> masks late Observed(Confirmed) AND recovery_diagnostic.
+        let mem1 = restrict_fact(
+            &spec_b.owner,
+            &spec_b.session_id,
+            term_b_id,
+            term_b_seq,
+            0,
+            diag_b.len(),
+            diag_b,
+        );
+        assert!(
+            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0)], &[])
+                .unwrap()
+                .contains_key(&0),
+            "RunTerminated restriction must propagate to late Observed"
+        );
+        assert_eq!(
+            crate::session_history::recovery_diagnostic(&db, &view_b, true)
+                .unwrap()
+                .as_deref(),
+            Some("The operation outcome is unknown.")
+        );
+        assert_eq!(
+            crate::session_history::recovery_diagnostic(&db, &view_b, false)
+                .unwrap()
+                .as_deref(),
+            Some(diag_b)
+        );
+
+        // Direction 2: Restrict late Observed(Confirmed) -> masks RunTerminated, paired Prepared, and recovery_diagnostic.
+        db.execute("DELETE FROM agent_memory_evidence WHERE id=?", [&mem1])
+            .unwrap();
+        db.execute("DELETE FROM agent_memory_versions WHERE id=?", [&mem1])
+            .unwrap();
+        db.execute("DELETE FROM agent_memories WHERE id=?", [&mem1])
+            .unwrap();
+        let obs_body = maka_agent_facts::tool_output::ended_unknown_message(diag_b);
+        let obs_start = obs_body.find(diag_b).unwrap();
+        let _mem2 = restrict_fact(
+            &spec_b.owner,
+            &spec_b.session_id,
+            late_obs.id,
+            late_seq,
+            obs_start,
+            obs_start + diag_b.len(),
+            diag_b,
+        );
+        assert!(
+            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0)], &[])
+                .unwrap()
+                .contains_key(&0),
+            "Observed restriction must propagate to RunTerminated"
+        );
+        assert_eq!(
+            RestrictedArchives {
+                owner: spec_b.owner.clone(),
+                facts: vec![prep_b_id],
+            }
+            .execute(&db)
+            .unwrap()
+            .get(&prep_b_id),
+            Some(&ArchiveRestriction::PairedResult)
+        );
+        assert_eq!(
+            crate::session_history::recovery_diagnostic(&db, &view_b, true)
+                .unwrap()
+                .as_deref(),
+            Some("The operation outcome is unknown.")
+        );
+    }
 }

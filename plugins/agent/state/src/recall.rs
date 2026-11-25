@@ -44,7 +44,7 @@ mod query;
 pub(crate) use query::checked_source_cut;
 pub(crate) mod terms;
 pub use find::{Find, FindPage, Found, Landmark};
-pub(crate) use index::{index_fact, index_sources};
+pub(crate) use index::{index_fact, index_sources, migrate_external_effect_observations};
 
 pub(crate) fn number(n: u64) -> Result<i64, StoreError> {
     i64::try_from(n).map_err(|_| invalid("Recall value exceeds SQLite range"))

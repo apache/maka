@@ -90,7 +90,7 @@ pub use local::LocalResult;
 mod metadata;
 pub use metadata::{NotificationAttention, NotificationState};
 mod publication;
-mod quiescence;
+pub(crate) mod quiescence;
 mod removal;
 pub use content::{ContentBlob, ImmutableContentBody};
 pub use publication::PublicationRead;

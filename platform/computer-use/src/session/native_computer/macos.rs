@@ -908,9 +908,11 @@ fn commit_app_text(
 
 fn preserve_raw_error(error: ToolError, cleanup: ToolError) -> ToolError {
     match error {
-        error @ (ToolError::OutcomeUnknown(_)
-        | ToolError::CleanupUnconfirmed(_)
-        | ToolError::OperationUnknown { .. }
+        ToolError::OutcomeUnknown(reason)
+        | ToolError::OperationUnknown {
+            message: reason, ..
+        } => ToolError::CleanupUnconfirmed(format!("{reason}; cleanup failed: {cleanup}")),
+        error @ (ToolError::CleanupUnconfirmed(_)
         | ToolError::OperationCleanupUnconfirmed { .. }
         | ToolError::Persistence(_)) => error,
         _ => cleanup,
@@ -996,18 +998,31 @@ mod tests {
     }
 
     #[test]
-    fn observation_cleanup_does_not_replace_an_original_uncertain_outcome() {
+    fn failed_observation_cleanup_escalates_unknown_outcome_to_cleanup_unconfirmed() {
         use maka_agent_facts::tools::ToolError;
-        assert!(
-            matches!(preserve_raw_error(ToolError::OutcomeUnknown("original observation".into()),
-            ToolError::Failed("cleanup refused".into())),
-            ToolError::OutcomeUnknown(reason) if reason == "original observation")
-        );
-        assert!(
-            matches!(preserve_raw_error(ToolError::Failed("observation refused".into()),
-            ToolError::CleanupUnconfirmed("original cleanup".into())),
-            ToolError::CleanupUnconfirmed(reason) if reason == "original cleanup")
-        );
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::OutcomeUnknown("original observation".into()),
+                ToolError::CleanupUnconfirmed("AX owner dropped".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason)
+                if reason.contains("original observation") && reason.contains("AX owner dropped")
+        ));
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::OutcomeUnknown("original observation".into()),
+                ToolError::Failed("cleanup refused".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason)
+                if reason.contains("original observation") && reason.contains("cleanup refused")
+        ));
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::Failed("observation refused".into()),
+                ToolError::CleanupUnconfirmed("original cleanup".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason) if reason == "original cleanup"
+        ));
     }
 
     fn app(name: &str, bundle_id: Option<&str>, launch_path: Option<&str>) -> AppInfo {

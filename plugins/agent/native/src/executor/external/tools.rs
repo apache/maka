@@ -58,7 +58,7 @@ pub(crate) struct HostTools {
     pub effects: Arc<dyn HostEffects>,
 }
 
-pub(super) struct Tools {
+pub(crate) struct Tools {
     tools: Option<BoundTools>,
     execution: ExecutionIdentity,
     custody: Arc<dyn WorkCustody>,
@@ -111,6 +111,29 @@ impl Tools {
             task: request.task_id,
             source: owner.source_identity(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        catalog: ToolCatalog,
+        effects: Arc<dyn HostEffects>,
+        execution: ExecutionIdentity,
+        custody: Arc<dyn WorkCustody>,
+        task: ExternalTaskId,
+        source: maka_agent_facts::executor::Binding,
+    ) -> Self {
+        let definitions = catalog.definitions().cloned().collect();
+        Self {
+            tools: Some(BoundTools {
+                catalog,
+                definitions,
+                effects,
+            }),
+            execution,
+            custody,
+            task,
+            source,
+        }
     }
 
     pub fn finish_signal(&self) -> CancellationToken {
@@ -209,8 +232,14 @@ impl Tools {
                                 cleanup: OperationCleanup::Confirmed,
                             } => None,
                             Receipt::Recorded {
-                                outcome:
-                                    OperationOutcome::Unresolved | OperationOutcome::Unknown { .. },
+                                outcome: OperationOutcome::Unknown { diagnostic },
+                                cleanup: OperationCleanup::Confirmed,
+                            } => Some((
+                                maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
+                                None,
+                            )),
+                            Receipt::Recorded {
+                                outcome: OperationOutcome::Unresolved,
                                 ..
                             }
                             | Receipt::NotRecorded
@@ -260,34 +289,7 @@ impl Tools {
                         ),
                     }
                 }
-                Err(error) => {
-                    let fatal = match &error {
-                        ToolError::OperationUnknown { .. } | ToolError::OutcomeUnknown(_) => {
-                            Some(Error::Unknown)
-                        }
-                        ToolError::CleanupUnconfirmed(_)
-                        | ToolError::OperationCleanupUnconfirmed { .. } => {
-                            Some(Error::CleanupUnconfirmed)
-                        }
-                        ToolError::Persistence(message) => {
-                            Some(Error::Persistence(message.clone()))
-                        }
-                        _ => None,
-                    };
-                    let observation = match &error {
-                        ToolError::OperationUnknown { observation, .. }
-                        | ToolError::OperationCleanupUnconfirmed { observation, .. } => Some(
-                            serde_json::to_value(observation).expect("operation receipt is JSON"),
-                        ),
-                        _ => None,
-                    };
-                    (
-                        mcp_error(
-                            serde_json::json!({"message":error.to_string(),"operationId":operation_id,"observation":observation}),
-                        ),
-                        fatal,
-                    )
-                }
+                Err(error) => map_tool_error(&operation_id, error),
             }
         })
     }
@@ -329,6 +331,48 @@ fn tool_result(content: Vec<Value>, error: bool) -> Value {
     }
     result
 }
+fn map_tool_error(operation_id: &str, error: ToolError) -> (Value, Option<Error>) {
+    let ended_unknown = match &error {
+        ToolError::OperationUnknown { observation, .. } => {
+            maka_agent_facts::tool_output::ended_unknown_diagnostic(observation)
+        }
+        _ => None,
+    };
+    let fatal = if ended_unknown.is_some() {
+        None
+    } else {
+        match &error {
+            ToolError::OperationUnknown { .. } | ToolError::OutcomeUnknown(_) => {
+                Some(Error::Unknown)
+            }
+            ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. } => {
+                Some(Error::CleanupUnconfirmed)
+            }
+            ToolError::Persistence(message) => Some(Error::Persistence(message.clone())),
+            _ => None,
+        }
+    };
+    let observation = match &error {
+        ToolError::OperationUnknown { observation, .. }
+        | ToolError::OperationCleanupUnconfirmed { observation, .. } => {
+            Some(serde_json::to_value(observation).expect("operation receipt is JSON"))
+        }
+        _ => None,
+    };
+    let message = match ended_unknown {
+        Some(diagnostic) => maka_agent_facts::tool_output::ended_unknown_message(diagnostic),
+        None => error.to_string(),
+    };
+    (
+        mcp_error(serde_json::json!({
+            "message": message,
+            "operationId": operation_id,
+            "observation": observation,
+        })),
+        fatal,
+    )
+}
+
 fn mcp_error(value: Value) -> Value {
     mcp(value, true)
 }

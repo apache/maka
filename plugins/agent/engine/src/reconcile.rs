@@ -1093,7 +1093,7 @@ fn next_action(
                     return Action::Idle;
                 }
                 if let Some((&operation, _)) =
-                    task.effects.iter().find(|(_, effect)| effect.pending())
+                    task.effects.iter().find(|(_, effect)| effect.unsettled())
                 {
                     return Action::Block(BlockerKind::ExternalEffectUnknown {
                         task: task.task,

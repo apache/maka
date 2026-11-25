@@ -41,6 +41,8 @@ mod sql;
 pub mod tool_result_source;
 pub use continuation::ContinuationSource;
 pub(crate) use continuation::admit_continuation;
+#[cfg(test)]
+pub(crate) use sql::recovery_diagnostic;
 pub(crate) use sql::{capture_at, captured_tool_call, source_content_at, sources_at, validate_cut};
 pub(crate) use sql::{index, index_queue, index_retained};
 

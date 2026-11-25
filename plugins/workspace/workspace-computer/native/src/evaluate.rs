@@ -33,13 +33,14 @@ use uuid::Uuid;
 #[derive(Debug)]
 enum OperationFailure {
     Ordinary(ToolError),
-    // A browser result has a durable Unknown receipt. Native input additionally
-    // requires its exact physical drain proof before this observer may continue.
+    // An unknown outcome whose physical execution has already finished and
+    // cleaned up (browser durable receipt, in-process macOS action, or drained
+    // Windows native helper). Cleanup failures still return CleanupUnconfirmed.
     ReportedUnknown(ToolError),
 }
 impl OperationFailure {
-    fn reported(error: ToolError, browser: bool, native_drained: bool) -> Self {
-        if (browser || native_drained)
+    fn reported(error: ToolError, cleanup_confirmed: bool) -> Self {
+        if cleanup_confirmed
             && matches!(
                 error,
                 ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. }
@@ -473,7 +474,8 @@ impl Computer {
         let turn = invocation.turn_id.clone();
         let execution = maka_computer_use::ExecutionCorrelation::new(invocation.run_id.to_string())
             .map_err(failed)?;
-        let monitor_enabled = native.platform() == "mac";
+        let macos_in_process = native.platform() == "mac";
+        let monitor_enabled = macos_in_process;
         let monitor_owner = self.clone();
         let monitor_gate = bridge.admission.clone();
         let monitor_operation = operation_id.clone();
@@ -669,9 +671,8 @@ impl Computer {
         } else {
             None
         };
-        let result = result.map_err(|error| {
-            OperationFailure::reported(error, browser_operation, native_drain.is_some())
-        });
+        let cleanup_confirmed = browser_operation || macos_in_process || native_drain.is_some();
+        let result = result.map_err(|error| OperationFailure::reported(error, cleanup_confirmed));
         let failure = if let Err(OperationFailure::Ordinary(
             error @ (ToolError::Persistence(_)
             | ToolError::CleanupUnconfirmed(_)
