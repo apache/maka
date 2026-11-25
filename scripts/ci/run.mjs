@@ -367,11 +367,20 @@ export function executor(
     );
   };
 
+  async function checkRustFormat() {
+    await cargo(['fmt', '--all', '--', '--check']);
+    await run('rustfmt', ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs']);
+  }
+
   async function check(id) {
     if (id === 'format') {
-      await cargo(['fmt', '--all', '--', '--check']);
-      await run('rustfmt', ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs']);
+      await checkRustFormat();
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
+    } else if (id === 'pr') {
+      await checkRustFormat();
+      await node(['scripts/asf-license-headers.mjs', 'check']);
+      await check('migrations');
+      await check('i18n');
     } else if (id === 'tooling-tests') {
       await node([
         '--test',

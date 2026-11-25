@@ -44,14 +44,15 @@ node scripts/rust/notices.mjs check
 
 ## CI
 
-Suite definitions live in [`scripts/ci/suites.mjs`](../ci/suites.mjs) and run identically in local `just` recipes and [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) via [`scripts/ci.mjs`](../ci.mjs):
+Suite definitions live in [`scripts/ci/suites.mjs`](../ci/suites.mjs) and run identically in local `just` recipes, [`.github/workflows/pr.yml`](../../.github/workflows/pr.yml), and [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) via [`scripts/ci.mjs`](../ci.mjs):
 
 ```sh
-node scripts/ci.mjs plan --base origin/rust-preview
+node scripts/ci.mjs check pr
+node scripts/ci.mjs plan --base origin/main
 node scripts/ci.mjs run bridge
 ```
 
-PR plans trace reverse Cargo dependencies plus declared runtime assets (`skills/`, product bundles, helper binaries); shared build inputs select the full suite matrix. The root build job produces a single `cargo nextest` archive (including embedded runtime assets) that downstream OS test runners partition and execute.
+Pull requests run the fast `test` gate (`node scripts/ci.mjs check pr`). Pushes to `main` trace reverse Cargo dependencies plus declared runtime assets (`skills/`, product bundles, helper binaries) with full root coverage, and a daily schedule runs the full suite matrix. The root build job produces a single `cargo nextest` archive (including embedded runtime assets) that downstream OS test runners partition and execute.
 
 ## Benchmarks
 
