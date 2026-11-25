@@ -23,7 +23,6 @@ import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import {
   hasAgentEndpoint,
   hostMutate,
-  hostQuery,
   type AgentModelChoice,
   type AgentWorkspaceSelection,
 } from '../../bridge';
@@ -41,6 +40,7 @@ import {
   allSessions,
   listHostDirectoryRoots,
   listHostProjects,
+  listHostModels,
   type ScopedSession,
 } from '../../state/sessions';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
@@ -111,25 +111,20 @@ export function NewChatSheet(props: {
     modelIndex.set('');
     loadingWorkspaces.set(true);
     ready.set(false);
+    const current = () => !cancelled && generation === activeHostInfo(rootId)?.generation;
     const rpc = settingsRpc(rootId);
     const settings = activeHostInfo(rootId)?.endpoints.includes('settings');
     void Promise.all([
-      listHostProjects(rootId),
+      listHostProjects(rootId, current),
       listHostDirectoryRoots(rootId),
-      hostQuery<{ kind: string; choices: AgentModelChoice[] }>(
-        'agent',
-        'models',
-        { kind: 'start', query: '' },
-        undefined,
-        rootId,
-      ),
+      listHostModels(rootId, current),
       settings ? rpc.query('settings', 'connections', { kind: 'start' }) : undefined,
     ])
       .then(async ([projects, roots, choices, catalog]) => {
-        if (cancelled || generation !== activeHostInfo(rootId)?.generation) return;
+        if (!current()) return;
         const target = catalog?.kind === 'ready' ? catalog.defaultTarget : null;
         const model = target ? await rpc.query('settings', 'resolveModel', target) : null;
-        if (cancelled || generation !== activeHostInfo(rootId)?.generation) return;
+        if (!current()) return;
         const opts: WorkspaceOption[] = projects.map((project) => ({
           id: 'proj:' + project.reference.id,
           label: project.name,
@@ -148,7 +143,7 @@ export function NewChatSheet(props: {
         }
         workspaces.set(opts);
         selectedWorkspaceId.set(opts[0]?.id ?? '');
-        if (choices.kind === 'ready') models.set(choices.choices);
+        models.set(choices);
         ready.set(true);
         if (model?.kind === 'ready') defaultModel.set(model.choice.label);
       })
@@ -201,13 +196,22 @@ export function NewChatSheet(props: {
       )
       .map(({ session }) => ({ id: 'session:' + session.id, title: session.title })),
   ];
+  const reset = () => {
+    targetRootId.set('');
+    createdRoom.set(null);
+    title.set('');
+    modeIndex.set(0);
+    ready.set(false);
+    error.set(null);
+    props.onClose();
+  };
+  const close = () => {
+    if (!creating()) reset();
+  };
   const finish = (created: ScopedSession) => {
     lastUsedRootId = created.rootId;
     hapticNotification('success');
-    createdRoom.set(null);
-    title.set('');
-    targetRootId.set('');
-    props.onClose();
+    reset();
     props.onCreated(created);
   };
 
@@ -288,11 +292,7 @@ export function NewChatSheet(props: {
       grabber
       closeOnSwipe={!creating()}
       onOpenChange={({ open }) => {
-        if (!open && !creating()) {
-          targetRootId.set('');
-          createdRoom.set(null);
-          props.onClose();
-        }
+        if (!open) close();
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
       popupStyle={{
@@ -329,9 +329,7 @@ export function NewChatSheet(props: {
         <View
           role="button"
           accessibilityLabel={tr('Cancel')}
-          onPress={() => {
-            if (!creating()) props.onClose();
-          }}
+          onPress={close}
           class="active:opacity-60"
           style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
         >
@@ -350,7 +348,7 @@ export function NewChatSheet(props: {
 
         {/* Target Computer */}
         <If when={savedHosts().length > 1}>
-          <InsetGroup elevated>
+          <InsetGroup elevated header={tr('Target computer')}>
             <MenuButton
               accessibilityLabel={tr('Target computer')}
               title={tr('Target computer')}
@@ -468,11 +466,8 @@ export function NewChatSheet(props: {
           </If>
         </InsetGroup>
 
-        <InsetGroup elevated>
-          <If
-            when={modeIndex() === 0}
-            else={<GroupRow title={tr('Model')} value={defaultModel() || tr('Default')} />}
-          >
+        <If when={modeIndex() === 0}>
+          <InsetGroup elevated>
             <SettingChoice
               title={tr('Model')}
               value={modelIndex()}
@@ -483,8 +478,8 @@ export function NewChatSheet(props: {
               ]}
               change={modelIndex.set}
             />
-          </If>
-        </InsetGroup>
+          </InsetGroup>
+        </If>
 
         <If when={modeIndex() === 1}>
           <InsetGroup elevated header={tr('Room members')}>
@@ -492,10 +487,10 @@ export function NewChatSheet(props: {
               <GroupRow title={tr('Loading…')} />
             </If>
             <Each of={candidates()} key={(item) => item.id}>
-              {(item) => (
+              {(item, index) => (
                 <GroupRow
                   title={item().title}
-                  divider
+                  divider={index() < candidates().length - 1}
                   disabled={creating() || !!createdRoom()}
                   trailing={
                     memberIds().includes(item().id) ? (

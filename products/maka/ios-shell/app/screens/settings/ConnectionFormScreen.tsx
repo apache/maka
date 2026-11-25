@@ -36,7 +36,13 @@ import {
 } from '../../state/settings/models';
 import { credentialBasis, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
-import { SettingField, SettingsForm, SettingSwitch, type SettingsPageProps } from './SettingsForm';
+import {
+  confirmDeleteApiKey,
+  SettingField,
+  SettingsForm,
+  SettingSwitch,
+  type SettingsPageProps,
+} from './SettingsForm';
 
 export type ConnectionTarget =
   | { connectionId: string }
@@ -50,8 +56,8 @@ export function ConnectionFormScreen(
     onChanged: () => void;
   },
 ) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const detail = signal<Awaited<ReturnType<typeof readConnection>> | null>(null);
   const provider = signal<SettingsProvider | null>(null);
   const credential = signal<CredentialStatus | null>(null);
@@ -62,6 +68,7 @@ export function ConnectionFormScreen(
   const enabled = signal(true);
   const compaction = signal(false);
   const overlay = signal('');
+  const advanced = signal(false);
   const key = signal('');
   const usageId = signal('');
   const usageSecret = signal('');
@@ -162,6 +169,7 @@ export function ConnectionFormScreen(
       await load();
     });
   const remove = async () => {
+    const current = work.fence();
     const { action } = await AlertDialog.show({
       title: tr('Remove {name}?', { name: name() }),
       actions: [
@@ -169,14 +177,14 @@ export function ConnectionFormScreen(
         { id: 'remove', label: tr('Remove'), role: 'destructive' },
       ],
     });
-    if (action !== 'remove') return;
+    if (!current() || action !== 'remove') return;
     await work.run(async () => {
       const result = await rpc.mutate('settings', 'remove', {
         expected: connectionBasis(detail()!.target),
       });
       if (result.kind !== 'committed') throw new Error(result.kind);
       props.onChanged();
-      props.onBack();
+      if (work.canWrite()) props.onBack();
     });
   };
   const saveKey = (isUsage: boolean) => {
@@ -212,19 +220,7 @@ export function ConnectionFormScreen(
     work.run(async () => {
       progress.set(tr('Discovering models…'));
       try {
-        const result = await rpc.mutate('settingsSetup', 'discoverModels', detail()!.target, {
-          onProgress: ({ value }) => {
-            if (!work.alive()) return;
-            if (typeof value === 'string') progress.set(value);
-            else if (
-              value &&
-              typeof value === 'object' &&
-              'message' in value &&
-              typeof value.message === 'string'
-            )
-              progress.set(value.message);
-          },
-        });
+        const result = await rpc.mutate('settingsSetup', 'discoverModels', detail()!.target);
         if (result.kind !== 'ready') throw new Error(result.kind);
         props.onChanged();
         await load();
@@ -246,10 +242,10 @@ export function ConnectionFormScreen(
           },
           {
             onProgress: ({ value }) => {
-              const prompt = value as Partial<SettingsLoginPrompt> & { user_code?: string };
-              const code = prompt?.userCode ?? prompt?.user_code;
+              const prompt = value as Partial<SettingsLoginPrompt>;
+              const code = prompt?.userCode;
               if (
-                work.alive() &&
+                work.canWrite() &&
                 typeof prompt?.url === 'string' &&
                 /^https?:\/\//i.test(prompt.url) &&
                 typeof code === 'string'
@@ -265,6 +261,14 @@ export function ConnectionFormScreen(
         progress.set('');
       }
     });
+  const deleteApiKey = async () => {
+    const current = work.fence();
+    const status = credential()!;
+    if ((await confirmDeleteApiKey()) && current()) await removeKey(status);
+  };
+  const interactive = () =>
+    provider()?.descriptor.authentication.filter((method) => method.interactive) ?? [];
+  const afterApiKey = () => interactive().length > 0 || !!progress();
   const canOperate = () => !dirtyDetails() && !work.busy();
   const models = () => [
     ...new Set([
@@ -281,6 +285,7 @@ export function ConnectionFormScreen(
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={detail()?.name ?? tr('Connection')}
@@ -323,7 +328,7 @@ export function ConnectionFormScreen(
           checked={enabled()}
           change={enabled.set}
           disabled={work.busy()}
-          divider
+          divider={supportsCompaction()}
         />
         <If when={supportsCompaction()}>
           <SettingSwitch
@@ -331,16 +336,8 @@ export function ConnectionFormScreen(
             checked={compaction()}
             change={compaction.set}
             disabled={work.busy()}
-            divider
           />
         </If>
-        <SettingField
-          label={tr('Request body overlay')}
-          value={overlay()}
-          edit={overlay.set}
-          multiline
-          disabled={work.busy()}
-        />
       </InsetGroup>
       <If when={credential()}>
         <InsetGroup header={tr('API Key')}>
@@ -357,7 +354,7 @@ export function ConnectionFormScreen(
               title={tr('Save API key')}
               tone="primary"
               disabled={!canOperate() || !key().trim()}
-              divider
+              divider={!!credential()?.configured || afterApiKey()}
               onPress={() => void saveKey(false)}
             />
           </If>
@@ -366,20 +363,17 @@ export function ConnectionFormScreen(
               title={tr('Delete API key')}
               tone="destructive"
               disabled={!canOperate()}
-              divider
-              onPress={() => void removeKey(credential()!)}
+              divider={afterApiKey()}
+              onPress={() => void deleteApiKey()}
             />
           </If>
-          <Each
-            of={provider()?.descriptor.authentication.filter((method) => method.interactive) ?? []}
-            key={(method) => method.id}
-          >
-            {(method) => (
+          <Each of={interactive()} key={(method) => method.id}>
+            {(method, index) => (
               <GroupRow
                 title={method().label}
                 tone="primary"
                 disabled={!canOperate()}
-                divider
+                divider={index() < interactive().length - 1 || !!progress()}
                 onPress={() => void authorize(method().id)}
               />
             )}
@@ -439,7 +433,7 @@ export function ConnectionFormScreen(
             title={tr('Save usage credential')}
             tone="primary"
             disabled={!canOperate() || !usageId() || !usageSecret()}
-            divider
+            divider={!!usage()?.configured}
             onPress={() => void saveKey(true)}
           />
           <If when={usage()?.configured}>
@@ -459,16 +453,16 @@ export function ConnectionFormScreen(
               title={tr('Discover models')}
               tone="primary"
               disabled={!canOperate()}
-              divider
+              divider={models().length > 0}
               onPress={() => void discover()}
             />
           </If>
           <Each of={models()} key={(id) => id}>
-            {(id) => (
+            {(id, index) => (
               <GroupRow
                 title={detail()?.editing.modelOverrides?.[id()]?.displayName ?? id()}
                 chevron
-                divider
+                divider={index() < models().length - 1}
                 disabled={!canOperate()}
                 onPress={() => props.openModel(detail()!.target.connectionId, detail()!.name, id())}
               />
@@ -484,6 +478,23 @@ export function ConnectionFormScreen(
           />
         </InsetGroup>
       </If>
+      <InsetGroup>
+        <GroupRow
+          title={tr('Advanced options')}
+          value={advanced() ? tr('Hide') : tr('Show')}
+          divider={advanced()}
+          onPress={() => advanced.update((value) => !value)}
+        />
+        <If when={advanced()}>
+          <SettingField
+            label={tr('Request body overlay')}
+            value={overlay()}
+            edit={overlay.set}
+            multiline
+            disabled={work.busy()}
+          />
+        </If>
+      </InsetGroup>
     </SettingsForm>
   );
 }

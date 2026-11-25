@@ -333,10 +333,12 @@ function MainTabShell() {
             if (route.name === 'device') {
               return <DeviceDetailScreen rootId={route.rootId} onBack={() => settingsNav.pop()} />;
             }
+            const active = () => activeTab() === 2 && settingsNav.routes().at(-1) === route;
             const back = () => settingsNav.pop();
             if (route.name === 'providers') {
               return (
                 <ProviderPicker
+                  active={active}
                   rootId={route.rootId}
                   backLabel={tr('Models & Connections')}
                   onBack={back}
@@ -354,6 +356,7 @@ function MainTabShell() {
             if (route.name === 'connection') {
               return (
                 <ConnectionFormScreen
+                  active={active}
                   rootId={route.rootId}
                   onBack={back}
                   target={route.target}
@@ -375,6 +378,7 @@ function MainTabShell() {
             if (route.name === 'model') {
               return (
                 <ConnectionModelScreen
+                  active={active}
                   rootId={route.rootId}
                   onBack={back}
                   backLabel={route.connectionName}
@@ -390,6 +394,7 @@ function MainTabShell() {
                 case 'general':
                   return (
                     <GeneralSettingsScreen
+                      active={active}
                       rootId={route.rootId}
                       onBack={back}
                       backLabel={backLabel}
@@ -398,6 +403,7 @@ function MainTabShell() {
                 case 'models':
                   return (
                     <ModelsSettingsScreen
+                      active={active}
                       rootId={route.rootId}
                       onBack={back}
                       backLabel={backLabel}
@@ -421,6 +427,7 @@ function MainTabShell() {
                 case 'network':
                   return (
                     <NetworkSettingsScreen
+                      active={active}
                       rootId={route.rootId}
                       onBack={back}
                       backLabel={backLabel}
@@ -429,6 +436,7 @@ function MainTabShell() {
                 case 'web_search':
                   return (
                     <WebSearchSettingsScreen
+                      active={active}
                       rootId={route.rootId}
                       onBack={back}
                       backLabel={backLabel}

@@ -17,19 +17,20 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, Text, View, token } from 'nsh';
+import { platform, safeAreaInsets, Scroll, Text, View, token } from 'nsh';
 import { AlertDialog, Input, MenuButton, NavPage } from 'nsh/base';
 import { Switch } from 'nsh/mobile';
 import { tr } from '../../locale';
 import { hostById } from '../../state/hostPool';
 import type { SettingsWork } from '../../state/settings/rpc';
 import { type } from '../../theme/tokens';
-import { BannerNotice, GroupRow, ScreenHeader } from '../../ui';
+import { ActionButton, BannerNotice, GroupDivider, GroupRow, ScreenHeader } from '../../ui';
 
 export interface SettingsPageProps {
   rootId: string;
   onBack: () => void;
   backLabel?: string;
+  active?: () => boolean;
 }
 
 export function SettingsForm(
@@ -46,6 +47,7 @@ export function SettingsForm(
   const insets = safeAreaInsets();
   const back = async () => {
     if (!props.dirty) return props.onBack();
+    const current = props.work.fence();
     const { action } = await AlertDialog.show({
       title: tr('Discard changes?'),
       actions: [
@@ -53,7 +55,7 @@ export function SettingsForm(
         { id: 'discard', label: tr('Discard'), role: 'destructive' },
       ],
     });
-    if (action === 'discard') props.onBack();
+    if (current() && action === 'discard') props.onBack();
   };
   const backLabel = () => props.backLabel ?? hostById(props.rootId)?.hostName ?? tr('Settings');
   return (
@@ -104,11 +106,10 @@ export function SettingsForm(
         </If>
         <If when={props.ready}>
           {props.children}
-          <If when={props.save}>
+          <If when={platform.os !== 'ios' && props.save}>
             <View style={{ paddingHorizontal: 16 }}>
-              <GroupRow
+              <ActionButton
                 title={tr('Save')}
-                tone="primary"
                 disabled={props.work.busy() || props.dirty === false}
                 onPress={props.save}
               />
@@ -131,30 +132,33 @@ export function SettingField(props: {
   divider?: boolean;
 }) {
   return (
-    <View
-      style={{
-        paddingHorizontal: 16,
-        paddingVertical: 10,
-        gap: 6,
-        borderBottomWidth: props.divider ? 0.5 : 0,
-        borderBottomColor: token('separator'),
-      }}
-    >
-      <Text style={{ ...type.footnote, color: token('muted-foreground') }}>{props.label}</Text>
-      <Input
-        accessibilityLabel={props.label}
-        value={props.value}
-        multiline={props.multiline}
-        masked={props.secret}
-        disabled={props.disabled}
-        keyboardType={props.keyboard}
-        onChange={({ value }) => props.edit(value)}
+    <View>
+      <View
         style={{
-          ...(props.multiline ? type.mono : type.body),
-          minHeight: props.multiline ? 110 : 34,
-          color: token('foreground'),
+          paddingHorizontal: 16,
+          paddingVertical: 10,
+          gap: 6,
         }}
-      />
+      >
+        <Text style={{ ...type.footnote, color: token('muted-foreground') }}>{props.label}</Text>
+        <Input
+          accessibilityLabel={props.label}
+          value={props.value}
+          multiline={props.multiline}
+          masked={props.secret}
+          disabled={props.disabled}
+          keyboardType={props.keyboard}
+          onChange={({ value }) => props.edit(value)}
+          style={{
+            ...(props.multiline ? type.mono : type.body),
+            minHeight: props.multiline ? 110 : 34,
+            color: token('foreground'),
+          }}
+        />
+      </View>
+      <If when={props.divider}>
+        <GroupDivider inset={16} />
+      </If>
     </View>
   );
 }
@@ -189,6 +193,7 @@ export function SettingChoice<T extends string>(props: {
   value: T;
   options: readonly { id: T; label: string }[];
   disabled?: boolean;
+  divider?: boolean;
   change: (value: T) => void;
 }) {
   return (
@@ -209,9 +214,32 @@ export function SettingChoice<T extends string>(props: {
       <GroupRow
         title={props.title}
         value={props.options.find((item) => item.id === props.value)?.label ?? props.value}
+        divider={props.divider}
         chevron
         disabled={props.disabled}
       />
     </MenuButton>
   );
+}
+
+export function SettingStatus(props: {
+  label: string;
+  tone: 'success' | 'warning' | 'destructive' | 'muted-foreground';
+}) {
+  return (
+    <Text style={{ ...type.footnote, color: token(props.tone), flexShrink: 1, numberOfLines: 1 }}>
+      {props.label}
+    </Text>
+  );
+}
+
+export async function confirmDeleteApiKey() {
+  const { action } = await AlertDialog.show({
+    title: tr('Delete API key'),
+    actions: [
+      { id: 'cancel', label: tr('Cancel'), role: 'cancel' },
+      { id: 'delete', label: tr('Delete'), role: 'destructive' },
+    ],
+  });
+  return action === 'delete';
 }

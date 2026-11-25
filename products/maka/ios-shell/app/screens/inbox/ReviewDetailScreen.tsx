@@ -21,7 +21,7 @@ import { cleanup, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh'
 import { Input, NavPage } from 'nsh/base';
 import { describeChildDecision, describePermissions } from '../../approval';
 import { hostQuery, onSubscriptionItem, type AgentInteractionRecord } from '../../bridge';
-import { ApprovalButton, ApprovalOutcome } from '../../ui/ApprovalCard';
+import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
 import { hapticSelection } from '../../state/preferences';
@@ -273,18 +273,20 @@ export function ReviewDetailScreen(props: {
           {/* Request Details */}
           <InsetGroup header={tr('Request details')}>
             <View style={{ paddingHorizontal: 16, paddingVertical: 14, gap: 10 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <StatusDot kind={isResolvedRemotely() ? 'online' : 'waiting'} size={7} />
-                <Text
-                  style={{
-                    ...type.caption,
-                    fontWeight: '600',
-                    color: isResolvedRemotely() ? token('success') : token('warning'),
-                  }}
-                >
-                  {isResolvedRemotely() ? tr('Resolved') : badgeLabel(props.item.summary.kind)}
-                </Text>
-              </View>
+              <If when={!isResolvedRemotely()}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <StatusDot kind={'waiting'} size={7} />
+                  <Text
+                    style={{
+                      ...type.caption,
+                      fontWeight: '600',
+                      color: token('warning'),
+                    }}
+                  >
+                    {badgeLabel(props.item.summary.kind)}
+                  </Text>
+                </View>
+              </If>
               <Text style={{ ...type.headline, color: token('foreground') }}>{title()}</Text>
 
               <If when={scopeDetail().command}>
@@ -388,38 +390,25 @@ export function ReviewDetailScreen(props: {
               !isResolvedRemotely() && !questionItem() && (allowPayload('once') || denyPayload())
             }
           >
-            <View
-              style={{
-                paddingHorizontal: spacing.pageX,
-                gap: 8,
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-              }}
-            >
-              <If when={allowPayload('once')}>
-                <ApprovalButton
-                  title={tr('Allow once')}
-                  kind="allow"
-                  busy={busy()}
-                  onPress={() => void submitAnswer(allowPayload('once')!, 'success')}
-                />
-              </If>
-              <If when={req()?.kind === 'permissions' || req()?.kind === 'computer_app'}>
-                <ApprovalButton
-                  title={tr('This session')}
-                  kind="session"
-                  busy={busy()}
-                  onPress={() => void submitAnswer(allowPayload('session')!, 'success')}
-                />
-              </If>
-              <If when={denyPayload()}>
-                <ApprovalButton
-                  title={tr('Deny')}
-                  kind="deny"
-                  busy={busy()}
-                  onPress={() => void submitAnswer(denyPayload()!, 'warning')}
-                />
-              </If>
+            <View style={{ paddingHorizontal: spacing.pageX }}>
+              <ApprovalActions
+                allowLabel={tr('Allow once')}
+                denyLabel={tr('Deny')}
+                busy={busy()}
+                onAllow={
+                  allowPayload('once')
+                    ? () => void submitAnswer(allowPayload('once')!, 'success')
+                    : undefined
+                }
+                onDeny={
+                  denyPayload() ? () => void submitAnswer(denyPayload()!, 'warning') : undefined
+                }
+                onAllowSession={
+                  req()?.kind === 'permissions' || req()?.kind === 'computer_app'
+                    ? () => void submitAnswer(allowPayload('session')!, 'success')
+                    : undefined
+                }
+              />
             </View>
           </If>
 

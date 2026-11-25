@@ -214,7 +214,7 @@ function SessionRow(props: {
               textOverflow: 'ellipsis',
             }}
           >
-            {attribution()}
+            {[attribution(), memberSummary()].filter(Boolean).join(' · ')}
           </Text>
           <If when={s().activity === 'waiting'}>
             <Text style={{ ...type.caption, fontWeight: '600', color: token('warning') }}>
@@ -485,24 +485,24 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
               (!hasRooms() || category() !== 2)
             }
           >
-            <Scroll
-              horizontal={botStrip()}
-              scrollbar={false}
-              style={{ flexGrow: 0, flexShrink: 0, marginBottom: 12 }}
-              contentStyle={{ paddingHorizontal: spacing.pageX }}
-            >
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Each of={scopedBots()} key={(bot) => bot.host.rootId}>
-                  {(bot) => (
-                    <View
-                      style={{
-                        flexGrow: botStrip() ? 0 : 1,
-                        borderRadius: 12,
-                        backgroundColor: token('surface'),
-                        overflow: 'hidden',
-                      }}
-                    >
+            <If
+              when={botStrip()}
+              else={
+                <View
+                  style={{
+                    marginHorizontal: spacing.pageX,
+                    marginBottom: 12,
+                    borderRadius: 12,
+                    backgroundColor: token('surface'),
+                    overflow: 'hidden',
+                  }}
+                >
+                  <Each of={scopedBots()} key={(bot) => bot.host.rootId}>
+                    {(bot) => (
                       <GroupRow
+                        title="Maka Bot"
+                        subtitle={bot().outbox?.preview || undefined}
+                        chevron
                         leading={
                           bot().session?.session.activity === 'working' ? (
                             <ThinkingMark />
@@ -510,13 +510,6 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                             <Icon name="sparkles" color={token('primary')} size={16} />
                           )
                         }
-                        title={
-                          botStrip() ? tr('{name} Bot', { name: bot().host.hostName }) : 'Maka Bot'
-                        }
-                        accessibilityLabel={
-                          botStrip() ? 'Maka Bot · ' + bot().host.hostName : 'Maka Bot'
-                        }
-                        subtitle={botStrip() ? undefined : bot().outbox?.preview || undefined}
                         trailing={
                           bot().session?.session.activity === 'working' ? (
                             <ShimmerText
@@ -529,14 +522,69 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                             <StatusDot kind="working" size={7} />
                           ) : undefined
                         }
-                        chevron={!botStrip()}
                         onPress={() => void openBot(bot().host.rootId, bot().host.hostName)}
                       />
-                    </View>
-                  )}
-                </Each>
-              </View>
-            </Scroll>
+                    )}
+                  </Each>
+                </View>
+              }
+            >
+              <Scroll
+                horizontal
+                scrollbar={false}
+                style={{ flexGrow: 0, flexShrink: 0, marginBottom: 12 }}
+                contentStyle={{ paddingHorizontal: spacing.pageX }}
+              >
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Each of={scopedBots()} key={(bot) => bot.host.rootId}>
+                    {(bot) => (
+                      <View
+                        role="button"
+                        accessibilityLabel={'Maka Bot · ' + bot().host.hostName}
+                        onPress={() => void openBot(bot().host.rootId, bot().host.hostName)}
+                        class="active:bg-row-pressed"
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 7,
+                          minHeight: 38,
+                          maxWidth: 172,
+                          paddingHorizontal: 12,
+                          backgroundColor: token('surface'),
+                          borderRadius: 12,
+                          borderCurve: 'continuous',
+                        }}
+                      >
+                        <If
+                          when={bot().session?.session.activity === 'working'}
+                          else={
+                            (bot().outbox?.through ?? 0) > (bot().outbox?.readThrough ?? 0) ||
+                            bot().session?.session.hasUnread ? (
+                              <StatusDot kind="working" size={7} />
+                            ) : (
+                              <Icon name="sparkles" color={token('muted-foreground')} size={14} />
+                            )
+                          }
+                        >
+                          <ThinkingMark size={14} />
+                        </If>
+                        <Text
+                          style={{
+                            ...type.footnote,
+                            color: token('foreground'),
+                            numberOfLines: 1,
+                            textOverflow: 'ellipsis',
+                            flexShrink: 1,
+                          }}
+                        >
+                          {tr('{name} Bot', { name: bot().host.hostName })}
+                        </Text>
+                      </View>
+                    )}
+                  </Each>
+                </View>
+              </Scroll>
+            </If>
           </If>
 
           <If when={hasRooms()}>

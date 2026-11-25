@@ -78,6 +78,10 @@ const glyphs = {
     { tag: 'line', x1: 16, y1: 16, x2: 20.5, y2: 20.5 },
   ],
   check: [{ tag: 'path', d: 'm5.5 12.5 4.2 4.2 8.8-9.2' }],
+  xCircle: [
+    { tag: 'circle', cx: 12, cy: 12, r: 9 },
+    { tag: 'path', d: 'm9 9 6 6m0-6-6 6' },
+  ],
   checkCircle: [
     { tag: 'circle', cx: 12, cy: 12, r: 9 },
     { tag: 'path', d: 'm8.5 12.3 2.4 2.4 4.8-5.2' },

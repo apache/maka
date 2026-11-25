@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { cleanup, signal } from 'nsh';
+import { cleanup, computed, effect, signal } from 'nsh';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
 import type {
   CredentialStatus,
   CredentialVersionBasis,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
+import { activeHostInfo } from '../hostPool';
 import { hostMutate, hostQuery, type MutationProgress } from '../../bridge';
 
 const service = {
@@ -47,7 +48,7 @@ type Output<E extends Endpoint, M extends keyof ServiceMethods[E]> = ServiceMeth
   ? O
   : never;
 
-export function settingsRpc(rootId: string) {
+export function settingsRpc(rootId: string, canWrite?: () => boolean) {
   const endpoint = (name: Endpoint) => service[name as keyof typeof service] ?? name;
   return {
     query<E extends Endpoint, M extends Method<E, 'query'>>(
@@ -69,6 +70,7 @@ export function settingsRpc(rootId: string) {
       input: Input<E, M>,
       options?: { secret?: string; onProgress?: (progress: MutationProgress) => void },
     ) {
+      if (canWrite && !canWrite()) throw new Error('Settings page is no longer active');
       return hostMutate<Output<E, M>>(endpoint(name), method, input as Record<string, unknown>, {
         rootId,
         ...options,
@@ -84,28 +86,44 @@ export function credentialBasis(status: CredentialStatus | null): CredentialVers
   return { locator: status.locator, credentialId: status.credentialId, revision: status.revision };
 }
 
-export function settingsWork() {
+export function settingsWork(rootId: string, active?: () => boolean) {
   const busy = signal(false);
   const error = signal('');
   let alive = true;
+  let epoch = 0;
+  let operation: (() => boolean) | undefined;
+  const generation = computed(() => activeHostInfo(rootId)?.generation);
+  effect(() => {
+    active?.();
+    generation();
+    ++epoch;
+  });
+  const fence = () => {
+    const started = epoch;
+    const connected = generation();
+    return () => alive && (active?.() ?? true) && started === epoch && connected === generation();
+  };
   cleanup(() => {
     alive = false;
   });
 
   async function run(work: () => Promise<void>, safeError?: string) {
     if (!alive || busy()) return;
+    operation = fence();
     busy.set(true);
     error.set('');
     try {
       await work();
     } catch (cause) {
-      if (alive) error.set(safeError ?? (cause instanceof Error ? cause.message : String(cause)));
+      if (operation?.())
+        error.set(safeError ?? (cause instanceof Error ? cause.message : String(cause)));
     } finally {
+      operation = undefined;
       if (alive) busy.set(false);
     }
   }
 
-  return { busy, error, run, alive: () => alive };
+  return { busy, error, run, fence, canWrite: () => operation?.() === true };
 }
 
 export type SettingsWork = ReturnType<typeof settingsWork>;

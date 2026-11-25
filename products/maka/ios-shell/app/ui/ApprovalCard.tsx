@@ -30,6 +30,7 @@ export function ApprovalButton(props: {
   title: string;
   kind: 'allow' | 'session' | 'deny';
   busy?: boolean;
+  weight: number;
   onPress: () => void;
 }) {
   const color = () =>
@@ -51,25 +52,27 @@ export function ApprovalButton(props: {
       class={
         reduceMotion()
           ? 'active:opacity-85 disabled:opacity-45'
-          : 'active:scale-[0.97] active:opacity-85 disabled:opacity-45 transition duration-150'
+          : 'active:scale-[0.96] active:opacity-85 disabled:opacity-45 transition duration-150'
       }
       style={{
         minHeight: 44,
-        maxWidth: '100%',
-        paddingHorizontal: props.kind === 'allow' ? 18 : 14,
+        flex: props.weight,
+        minWidth: 0,
+        paddingHorizontal: 5,
         paddingVertical: 8,
-        borderRadius: spacing.pillRadius,
+        borderRadius: 13,
+        borderCurve: 'continuous',
         backgroundColor: token(
           props.kind === 'allow'
             ? 'primary'
             : props.kind === 'deny'
-              ? 'approval-reject-bg'
+              ? 'surface-muted'
               : 'approval-session-bg',
         ),
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
+        gap: 4,
       }}
     >
       <If when={props.kind === 'allow'}>
@@ -77,7 +80,9 @@ export function ApprovalButton(props: {
       </If>
       <Text
         style={{
-          ...type.subheadlineMedium,
+          ...type.footnote,
+          numberOfLines: 1,
+          textOverflow: 'ellipsis',
           fontWeight: '600',
           color: color(),
           flexShrink: 1,
@@ -90,8 +95,8 @@ export function ApprovalButton(props: {
   );
 }
 
-export function approvalFeedback() {
-  const outcome = signal<boolean | null>(null);
+export function approvalFeedback<T = boolean>() {
+  const outcome = signal<T | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let alive = true;
   cleanup(() => {
@@ -100,7 +105,7 @@ export function approvalFeedback() {
   });
   return {
     outcome,
-    show(accepted: boolean) {
+    show(accepted: T) {
       if (!alive) return;
       clearTimeout(timer);
       outcome.set(accepted);
@@ -135,10 +140,49 @@ export function ApprovalOutcome(props: { title: string; accepted: boolean }) {
         backgroundColor: token(props.accepted ? 'approval-accepted-bg' : 'surface-muted'),
       }}
     >
-      <If when={props.accepted}>
-        <Icon name="checkCircle" size={14} color={color()} />
-      </If>
+      <Icon name={props.accepted ? 'checkCircle' : 'xCircle'} size={14} color={color()} />
       <Text style={{ ...type.footnote, color: color() }}>{props.title}</Text>
+    </View>
+  );
+}
+
+export function ApprovalActions(props: {
+  allowLabel?: string;
+  denyLabel?: string;
+  onAllow?: () => void;
+  onDeny?: () => void;
+  onAllowSession?: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      <If when={props.onDeny && props.denyLabel}>
+        <ApprovalButton
+          title={props.denyLabel!}
+          kind="deny"
+          weight={props.onAllowSession ? 0.72 : 1}
+          busy={props.busy}
+          onPress={props.onDeny!}
+        />
+      </If>
+      <If when={props.onAllowSession}>
+        <ApprovalButton
+          title={tr('This session')}
+          kind="session"
+          weight={1.04}
+          busy={props.busy}
+          onPress={props.onAllowSession!}
+        />
+      </If>
+      <If when={props.onAllow && props.allowLabel}>
+        <ApprovalButton
+          title={props.allowLabel!}
+          kind="allow"
+          weight={props.onAllowSession ? 1.24 : 1}
+          busy={props.busy}
+          onPress={props.onAllow!}
+        />
+      </If>
     </View>
   );
 }
@@ -153,7 +197,8 @@ export function ApprovalCard(props: {
   busy?: boolean;
   allowLabel?: string;
   denyLabel?: string;
-  sessionLabel?: string;
+  accepted?: boolean;
+  inline?: boolean;
   onAllowSession?: () => void;
   onAllow?: () => void;
   onDeny?: () => void;
@@ -218,17 +263,18 @@ export function ApprovalCard(props: {
             </If>
           </View>
 
-          <Text
-            style={{
-              ...type.footnote,
-              color: token('muted-foreground'),
-              numberOfLines: 1,
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {props.sourceLine}
-          </Text>
-
+          <If when={props.sourceLine}>
+            <Text
+              style={{
+                ...type.footnote,
+                color: token('muted-foreground'),
+                numberOfLines: 1,
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {props.sourceLine}
+            </Text>
+          </If>
           <Text
             style={{
               ...type.headline,
@@ -247,7 +293,7 @@ export function ApprovalCard(props: {
                 paddingVertical: 8,
                 borderRadius: 8,
                 borderCurve: 'continuous',
-                backgroundColor: token('grouped-bg'),
+                backgroundColor: token(props.inline ? 'inline-command' : 'grouped-bg'),
               }}
             >
               <Text
@@ -264,33 +310,22 @@ export function ApprovalCard(props: {
           </If>
         </View>
 
-        <If when={props.onAllow || props.onDeny}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
-            <If when={props.onAllow && props.allowLabel}>
-              <ApprovalButton
-                title={props.allowLabel!}
-                kind="allow"
+        <If
+          when={props.accepted !== undefined}
+          else={
+            <If when={props.onAllow || props.onDeny}>
+              <ApprovalActions
+                allowLabel={props.allowLabel}
+                denyLabel={props.denyLabel}
                 busy={props.busy}
-                onPress={props.onAllow!}
+                onAllow={props.onAllow}
+                onAllowSession={props.onAllowSession}
+                onDeny={props.onDeny}
               />
             </If>
-            <If when={props.onAllowSession && props.sessionLabel}>
-              <ApprovalButton
-                title={props.sessionLabel!}
-                kind="session"
-                busy={props.busy}
-                onPress={props.onAllowSession!}
-              />
-            </If>
-            <If when={props.onDeny && props.denyLabel}>
-              <ApprovalButton
-                title={props.denyLabel!}
-                kind="deny"
-                busy={props.busy}
-                onPress={props.onDeny!}
-              />
-            </If>
-          </View>
+          }
+        >
+          <ApprovalFeedback accepted={props.accepted ?? null} />
         </If>
       </View>
       <If when={props.divider}>

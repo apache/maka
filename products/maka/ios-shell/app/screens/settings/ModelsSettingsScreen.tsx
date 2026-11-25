@@ -39,6 +39,7 @@ import {
   SettingChoice,
   SettingField,
   SettingSwitch,
+  SettingStatus,
   SettingsForm,
   type SettingsPageProps,
 } from './SettingsForm';
@@ -50,8 +51,8 @@ export function ModelsSettingsScreen(
     openProviders: (revision: number) => void;
   },
 ) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const data = signal<{
     catalog: Awaited<ReturnType<typeof connectionCatalog>>;
     models: Awaited<ReturnType<typeof modelChoices>>;
@@ -72,6 +73,7 @@ export function ModelsSettingsScreen(
     untracked(reload);
   });
   const changeRuntime = async (id: string, enabled: boolean) => {
+    const current = work.fence();
     if (enabled) {
       const { action } = await AlertDialog.show({
         title: tr('Confirm permissions and enable'),
@@ -85,6 +87,7 @@ export function ModelsSettingsScreen(
       });
       if (action !== 'enable') return;
     }
+    if (!current()) return;
     await work.run(async () => {
       await setExternalRuntime(rpc, id, enabled);
       await load();
@@ -100,9 +103,24 @@ export function ModelsSettingsScreen(
     data()?.models.find(
       (row) => modelId(row.selection.connectionId, row.selection.modelId) === selected(),
     );
+  const externalStatus = () => {
+    switch (data()?.external.state.kind) {
+      case 'ready':
+        return { label: tr('Ready'), tone: 'success' } as const;
+      case 'enabled':
+        return { label: tr('Enabled'), tone: 'success' } as const;
+      case 'disabled':
+        return { label: tr('Disabled'), tone: 'muted-foreground' } as const;
+      case 'workspace_required':
+        return { label: tr('Workspace required'), tone: 'warning' } as const;
+      case 'unavailable':
+        return { label: tr('Unavailable'), tone: 'destructive' } as const;
+    }
+  };
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={tr('Models & Connections')}
@@ -110,9 +128,10 @@ export function ModelsSettingsScreen(
       ready={!!data()}
       reload={reload}
     >
-      <InsetGroup header={tr('Default model')}>
+      <InsetGroup>
         <SettingChoice
           title={tr('Default model')}
+          divider={!!currentModel()?.thinkingLevels.length}
           value={selected()}
           options={[
             { id: '', label: tr('None') },
@@ -202,7 +221,14 @@ export function ModelsSettingsScreen(
             />
           )}
         </Each>
-        <GroupRow title={tr('Status')} value={data()?.external.state.kind} />
+        <If when={externalStatus()}>
+          <GroupRow
+            title={tr('Status')}
+            trailing={
+              <SettingStatus label={externalStatus()!.label} tone={externalStatus()!.tone} />
+            }
+          />
+        </If>
       </InsetGroup>
     </SettingsForm>
   );
@@ -211,15 +237,20 @@ export function ModelsSettingsScreen(
 export function ProviderPicker(
   props: SettingsPageProps & { onSelect: (provider: Identity) => void },
 ) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const providers = signal<Awaited<ReturnType<typeof providerCatalog>> | null>(null);
   const search = signal('');
+  const matches = () =>
+    (providers() ?? []).filter((row) =>
+      row.label.toLowerCase().includes(search().trim().toLowerCase()),
+    );
   const reload = () => void work.run(async () => providers.set(await providerCatalog(rpc)));
   reload();
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={tr('Provider')}
@@ -228,18 +259,18 @@ export function ProviderPicker(
       reload={reload}
     >
       <InsetGroup>
-        <SettingField label={tr('Search providers')} value={search()} edit={search.set} divider />
-        <Each
-          of={(providers() ?? []).filter((row) =>
-            row.label.toLowerCase().includes(search().trim().toLowerCase()),
-          )}
-          key={(row) => JSON.stringify(row.identity)}
-        >
-          {(row) => (
+        <SettingField
+          label={tr('Search providers')}
+          value={search()}
+          edit={search.set}
+          divider={matches().length > 0}
+        />
+        <Each of={matches()} key={(row) => JSON.stringify(row.identity)}>
+          {(row, index) => (
             <GroupRow
               title={row().label}
               chevron
-              divider
+              divider={index() < matches().length - 1}
               onPress={() => props.onSelect(row().identity)}
             />
           )}

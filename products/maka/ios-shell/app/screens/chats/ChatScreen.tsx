@@ -39,7 +39,7 @@ import type {
   AgentModelChoice,
   AgentRoomMessage,
 } from '../../bridge';
-import { ApprovalFeedback, approvalFeedback } from '../../ui/ApprovalCard';
+import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { tr } from '../../locale';
 import {
@@ -50,7 +50,13 @@ import {
   saveScrollOffset,
   setDraft,
 } from '../../state/chat';
-import { connectSavedHost, hostStatusKind, isHostConnected, showToast } from '../../state/hostPool';
+import {
+  connectSavedHost,
+  hostStatusKind,
+  isHostConnected,
+  savedHosts,
+  showToast,
+} from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import type { ScopedSession } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
@@ -152,7 +158,9 @@ function CollapsibleActivity(props: {
     const hasThink = props.thinking.trim().length > 0;
     if (toolCount > 0 && hasThink) {
       return props.live
-        ? tr('Thinking · {count} tools running…', { count: toolCount })
+        ? tr('Thinking · {count, plural, one {# tool running} other {# tools running}}…', {
+            count: toolCount,
+          })
         : tr('Thought process · {count, plural, one {# tool} other {# tools}}', {
             count: toolCount,
           });
@@ -183,7 +191,7 @@ function CollapsibleActivity(props: {
             paddingVertical: 5,
             borderRadius: 8,
             borderCurve: 'continuous',
-            backgroundColor: token('grouped-bg'),
+            backgroundColor: token('inline-card'),
             flexDirection: 'row',
             alignItems: 'center',
             gap: 6,
@@ -198,7 +206,7 @@ function CollapsibleActivity(props: {
             }
           >
             <ThinkingMark size={14} />
-            <ShimmerText text={summaryText()} style={type.footnote} />
+            <ShimmerText text={summaryText()} style={type.footnote} surface="inline-card" />
           </If>
           <Icon
             name={expanded() ? 'chevronDown' : 'chevronRight'}
@@ -258,6 +266,7 @@ function InlineInteractionCard(props: {
   hostName: string;
   sessionTitle: string;
   busy: boolean;
+  accepted?: boolean;
   onRespond: (answer: Record<string, unknown>, kind: 'success' | 'warning') => void;
 }) {
   const customAnswer = signal('');
@@ -273,7 +282,7 @@ function InlineInteractionCard(props: {
           marginVertical: 8,
           borderRadius: spacing.groupRadius,
           borderCurve: 'continuous',
-          backgroundColor: token('grouped-bg'),
+          backgroundColor: token('inline-card'),
           padding: 14,
           gap: 10,
         }}
@@ -439,13 +448,15 @@ function InlineInteractionCard(props: {
         marginVertical: 8,
         borderRadius: spacing.groupRadius,
         borderCurve: 'continuous',
-        backgroundColor: token('grouped-bg'),
+        backgroundColor: token('inline-card'),
         overflow: 'hidden',
       }}
     >
       <ApprovalCard
         badge={badge()}
-        sourceLine={props.hostName + ' · ' + props.sessionTitle}
+        inline
+        accepted={props.accepted}
+        sourceLine={savedHosts().length > 1 ? props.hostName + ' · ' + props.sessionTitle : ''}
         title={title()}
         detail={detail().text}
         monospaceDetail={detail().mono}
@@ -454,7 +465,6 @@ function InlineInteractionCard(props: {
         denyLabel={tr('Deny')}
         onAllow={() => props.onRespond(allowAnswer('once'), 'success')}
         onDeny={() => props.onRespond(denyAnswer(), 'warning')}
-        sessionLabel={tr('This session')}
         onAllowSession={
           req().kind === 'permissions' || req().kind === 'computer_app'
             ? () => props.onRespond(allowAnswer('session'), 'success')
@@ -474,7 +484,20 @@ export function ChatScreen(props: {
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const ctrl = createConversationController(rootId, sessionId);
-  const feedback = approvalFeedback();
+  const feedback = approvalFeedback<{
+    record: AgentInteractionRecord;
+    index: number;
+    accepted: boolean;
+  }>();
+  const inlineInteractions = () => {
+    const pending = ctrl.pendingInteractions();
+    const settled = feedback.outcome();
+    if (!settled || pending.some(({ requestId }) => requestId === settled.record.requestId))
+      return pending;
+    const rows = [...pending];
+    rows.splice(settled.index, 0, settled.record);
+    return rows;
+  };
 
   const atBottom = signal(true);
   const queueSheetOpen = signal(false);
@@ -487,7 +510,8 @@ export function ChatScreen(props: {
     const ws = ctrl.observation()?.session?.workspace ?? props.item.session.workspace;
     return ws?.name || ws?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
   };
-  const subtitleLine = () => props.item.hostName + ' · ' + workspaceName();
+  const subtitleLine = () =>
+    savedHosts().length > 1 ? props.item.hostName + ' · ' + workspaceName() : workspaceName();
   const turns = () => groupHistoryTurns(ctrl.chunks());
   const isRunning = () => ctrl.observation()?.run !== null && ctrl.observation()?.run !== undefined;
   const hostOnline = () => isHostConnected(rootId);
@@ -836,8 +860,8 @@ export function ChatScreen(props: {
                               gap: 4,
                             }}
                           >
-                            <Icon name="copy" color={token('tertiary-foreground')} size={14} />
-                            <Text style={{ ...type.caption, color: token('tertiary-foreground') }}>
+                            <Icon name="copy" color={token('muted-foreground')} size={14} />
+                            <Text style={{ ...type.caption, color: token('muted-foreground') }}>
                               {tr('Copy')}
                             </Text>
                           </View>
@@ -893,26 +917,32 @@ export function ChatScreen(props: {
           </If>
 
           {/* Inline Pending Approvals & Questions */}
-          <Each of={ctrl.pendingInteractions()} key={(rec) => rec.requestId}>
-            {(rec) => (
+          <Each of={inlineInteractions()} key={(rec) => rec.requestId}>
+            {(rec, index) => (
               <InlineInteractionCard
                 record={rec()}
                 hostName={props.item.hostName}
                 sessionTitle={sessionTitle()}
+                accepted={
+                  feedback.outcome()?.record.requestId === rec().requestId
+                    ? feedback.outcome()?.accepted
+                    : undefined
+                }
                 busy={Boolean(ctrl.busyInteractionIds()[rec().requestId])}
                 onRespond={async (answer, kind) => {
-                  const request = rec().request;
+                  const record = rec();
+                  const position = index();
                   if (
-                    (await ctrl.respondInteraction(rec().requestId, answer, kind)) &&
-                    request.kind !== 'question' &&
-                    request.kind !== 'form'
-                  )
-                    feedback.show(kind === 'success');
+                    (await ctrl.respondInteraction(record.requestId, answer, kind)) &&
+                    record.request.kind !== 'question' &&
+                    record.request.kind !== 'form'
+                  ) {
+                    feedback.show({ record, index: position, accepted: kind === 'success' });
+                  }
                 }}
               />
             )}
           </Each>
-          <ApprovalFeedback accepted={feedback.outcome()} />
         </Scroll>
 
         {/* Subtle Floating Jump-to-Latest Pill when user scrolled up */}

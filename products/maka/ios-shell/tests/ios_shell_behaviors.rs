@@ -638,19 +638,37 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
             ("root-a" | "root-b", "botOutbox") => json!({
                 "sessionId": null, "isBot": false, "through": 0, "readThrough": 0, "preview": "", "messages": []
             }),
+            ("root-b", "projects") if data["input"]["cursor"].is_null() => json!({
+                "kind":"projects","revision":"projects-b","next":{"revision":"projects-b","after":"unavailable"},
+                "projects":[
+                    {"reference":{"id":"archived"},"name":"Archived workspace","path":"/archive","archived":true,"available":true},
+                    {"reference":{"id":"unavailable"},"name":"Unavailable workspace","path":"/old","archived":false,"available":false},
+                    {"reference":{"id":"no-path"},"name":"Missing path","path":null,"archived":false,"available":true}
+                ]
+            }),
             ("root-a" | "root-b", "projects") => json!({
-                "kind": "projects", "projects": [{
+                "kind": "projects", "next":null, "projects": [{
                     "reference": {"id": "same-project-id"}, "name": if root == "root-a" { "Apple workspace" } else { "Linux workspace" },
-                    "path": if root == "root-a" { "/apple" } else { "/linux" }
+                    "path": if root == "root-a" { "/apple" } else { "/linux" }, "archived":false, "available":true
                 }]
             }),
             ("root-a" | "root-b", "directories") => json!({"kind":"roots","roots":[]}),
-            ("root-a" | "root-b", "models") => json!({"kind":"ready","choices":[]}),
+            ("root-b", "models") if data["input"]["kind"] == "start" => json!({
+                "kind":"ready","revision":"models-b","choices":[],"next":{"query":"","offset":16}
+            }),
+            ("root-b", "models") => {
+                assert_eq!(data["input"]["revision"], "models-b");
+                json!({"kind":"ready","revision":"models-b","next":null,"choices":[{
+                    "selection":{"kind":"model","connectionId":"fixture","modelId":"second"},"sourceName":"Fixture",
+                    "label":"Second page model","thinkingLevels":[],"defaultThinkingLevel":null
+                }]})
+            }
+            ("root-a", "models") => json!({"kind":"ready","choices":[],"next":null}),
             ("root-a" | "root-b", "connections") => json!({"kind":"ready","revision":9,"connections":[],"defaultTarget":null,"next":null}),
             ("root-b", "assistantPreferences") => json!({
                 "revision": 7, "language": "en", "resolvedLanguage":"en", "workspaceInstructions":true,
                 "defaultSandboxMode":"workspace-write", "shell":{"titles":true}, "predictions":{"enabled":true},
-                "defaultCompactionPrompt":"Summarize.", "compactionPrompt":"Summarize."
+                "defaultCompactionPrompt":"Default summary.", "compactionPrompt":"Summarize."
             }),
             ("root-b", "globalInstructions") => json!({"kind":"available","source":"agents","revision":"etag","content":"Original instructions","exists":true}),
 
@@ -700,19 +718,19 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         call.reply(Ok(json!({ "value": value })));
     });
     let (mutate_tx, mut mutate_rx) = mpsc::unbounded_channel();
+    let (save_tx, mut save_rx) = mpsc::unbounded_channel();
     let approved_m = approved.clone();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         if data["method"] == "respond" {
             approved_m.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        let outcome = if data["method"] == "updateGlobalInstructions" {
-            "saved"
+        if data["method"] == "updateGlobalInstructions" {
+            save_tx.send(call.into_reply().unwrap()).unwrap();
         } else {
-            "recorded"
-        };
+            call.resolve(json!({"value":{"kind":"recorded"}}));
+        }
         mutate_tx.send(data).unwrap();
-        call.reply(Ok(json!({ "value": { "kind": outcome } })));
     });
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
@@ -744,6 +762,17 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.press("label:Target computer").unwrap();
     app.choose_menu_item("Linux Workstation").unwrap();
     app.wait_for("text:Linux workspace").unwrap();
+    for excluded in [
+        "Archived workspace",
+        "Unavailable workspace",
+        "Missing path",
+    ] {
+        assert!(!app.shows(&format!("text:{excluded}")));
+    }
+    app.press("label:Model").unwrap();
+    app.choose_menu_item("Second page model").unwrap();
+    app.wait_for("text:Second page model").unwrap();
+
     app.wait_for_gone("text:Apple workspace", Duration::from_secs(2))
         .unwrap();
     app.press("label:Cancel").unwrap();
@@ -775,6 +804,8 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.press("label:General").unwrap();
     app.wait_for("label:AGENTS.md").unwrap();
     app.type_text("label:AGENTS.md", "Linux only").unwrap();
+    app.type_text("label:Compaction prompt", "Retain more context")
+        .unwrap();
     app.press("label:Save").unwrap();
     let write = tokio::time::timeout(Duration::from_secs(2), mutate_rx.recv())
         .await
@@ -790,6 +821,21 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
             .as_str()
             .unwrap()
             .contains("Linux only")
+    );
+
+    // Once the settings tab is left, acknowledgement of the first write must
+    // not start the second (assistant preferences) write on the old Host.
+    app.send_url_scheme("maka://chats");
+    app.wait_for("text:Auth refactor").unwrap();
+    save_rx
+        .recv()
+        .await
+        .unwrap()
+        .resolve(json!({"value":{"kind":"saved"}}));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), mutate_rx.recv())
+            .await
+            .is_err()
     );
 }
 
@@ -1172,13 +1218,14 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
             "saveCredential" => json!({"kind":"saved"}),
             "saveKey" => json!({"kind":"updated","snapshot":web}),
             "updateNetwork" => json!({"kind":"applied","result":{"kind":"committed","revision":5}}),
-            method @ ("discoverModels" | "loginCredential") => {
+            "discoverModels" => {
+                assert!(data["progressId"].is_null());
+                tx.send((data, call.into_reply())).unwrap();
+                return;
+            }
+            "loginCredential" => {
                 assert_eq!(data["generation"], 7);
-                let event = if method == "discoverModels" {
-                    json!({"message":"Reading provider catalog"})
-                } else {
-                    json!({"url":"https://example.com/device","userCode":"ABCD-1234"})
-                };
+                let event = json!({"url":"https://example.com/device","userCode":"ABCD-1234"});
                 events.send("ios.mutationProgress", json!({
                     "rootId":"root", "generation":7, "progressId":data["progressId"], "value":event,
                     "sequence":1, "deliveryId":1
@@ -1224,7 +1271,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     );
 
     app.press("label:Discover models").unwrap();
-    app.wait_for("text:Reading provider catalog").unwrap();
+    app.wait_for("text:Discovering models…").unwrap();
     let (call, reply) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
         .unwrap()
@@ -1234,7 +1281,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     reply
         .unwrap()
         .resolve(json!({"value":{"kind":"ready","connection":{"connectionId":"c1","revision":9}}}));
-    app.wait_for_gone("text:Reading provider catalog", Duration::from_secs(2))
+    app.wait_for_gone("text:Discovering models…", Duration::from_secs(2))
         .unwrap();
 
     app.press("label:Sign in with device code").unwrap();
@@ -1255,6 +1302,14 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Settings").unwrap();
 
     app.press("label:Web Search").unwrap();
+    app.wait_for("label:API Key").unwrap();
+    app.type_text("label:API Key", "discarded-web-key").unwrap();
+    app.press("label:Search source").unwrap();
+    app.choose_menu_item("Model").unwrap();
+    app.wait_for_gone("label:API Key", Duration::from_secs(2))
+        .unwrap();
+    app.press("label:Search source").unwrap();
+    app.choose_menu_item("Search provider").unwrap();
     app.wait_for("label:API Key").unwrap();
     app.type_text("label:API Key", "web-fixture-secret")
         .unwrap();

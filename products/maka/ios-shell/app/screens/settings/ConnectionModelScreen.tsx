@@ -44,8 +44,8 @@ const limitKeys = [
 export function ConnectionModelScreen(
   props: SettingsPageProps & { connectionId: string; modelId: string; onSaved: () => void },
 ) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const detail = signal<Awaited<ReturnType<typeof readConnection>> | null>(null);
   const draft = signal<ModelOverride>({});
   const limits = signal({
@@ -106,7 +106,7 @@ export function ConnectionModelScreen(
       });
       if (result.kind !== 'committed') throw new Error(result.kind);
       props.onSaved();
-      props.onBack();
+      if (work.canWrite()) props.onBack();
     });
   const labels = () => ({
     contextWindow: tr('Context window'),
@@ -118,6 +118,7 @@ export function ConnectionModelScreen(
     <SettingsForm
       rootId={props.rootId}
       backLabel={props.backLabel}
+      active={props.active}
       onBack={props.onBack}
       title={props.modelId}
       work={work}

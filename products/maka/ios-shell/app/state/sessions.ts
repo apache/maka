@@ -312,16 +312,41 @@ export async function deleteSession(item: ScopedSession): Promise<boolean> {
   }
 }
 
-export async function listHostProjects(rootId: string): Promise<AgentProject[]> {
-  const page = await hostQuery<ServiceMethods['agent']['projects']['output']>(
-    'agent',
-    'projects',
-    { kind: 'list', cursor: null },
-    undefined,
-    rootId,
-  );
-  if (page.kind !== 'projects') throw new Error(page.kind);
-  return page.projects;
+export async function listHostProjects(rootId: string, current: () => boolean) {
+  type Page = ServiceMethods['agent']['projects']['output'];
+  const projects: (AgentProject & { path: string })[] = [];
+  let cursor: Extract<Page, { kind: 'projects' }>['next'] = null;
+  do {
+    const page: Page = await hostQuery<Page>(
+      'agent',
+      'projects',
+      { kind: 'list', cursor },
+      undefined,
+      rootId,
+    );
+    if (!current()) return [];
+    if (page.kind !== 'projects') throw new Error(page.kind);
+    for (const project of page.projects) {
+      if (!project.archived && project.available !== false && project.path != null)
+        projects.push({ ...project, path: project.path });
+    }
+    cursor = page.next;
+  } while (cursor != null);
+  return projects;
+}
+
+export async function listHostModels(rootId: string, current: () => boolean) {
+  type Page = ServiceMethods['agent']['models']['output'];
+  let input: ServiceMethods['agent']['models']['input'] = { kind: 'start', query: '' };
+  const choices: Extract<Page, { kind: 'ready' }>['choices'] = [];
+  for (;;) {
+    const page: Page = await hostQuery<Page>('agent', 'models', input, undefined, rootId);
+    if (!current()) return [];
+    if (page.kind !== 'ready') throw new Error(page.kind);
+    choices.push(...page.choices);
+    if (page.next == null) return choices;
+    input = { kind: 'continue', revision: page.revision, cursor: page.next };
+  }
 }
 
 export async function listHostDirectoryRoots(
@@ -384,11 +409,7 @@ export async function createHostSession(params: {
   presetId?: string;
   backend?: AgentBackendPreference | null;
 }): Promise<ScopedSession> {
-  const res = await hostMutate<
-    | { kind: 'created'; session: AgentSession }
-    | { kind: 'rejected'; reason: unknown }
-    | AgentSession
-  >(
+  const res = await hostMutate<ServiceMethods['agent']['create']['output']>(
     'agent',
     'create',
     {
@@ -404,19 +425,8 @@ export async function createHostSession(params: {
     },
     { rootId: params.rootId },
   );
-  let session: AgentSession;
-  if (res && typeof res === 'object' && 'kind' in res) {
-    if (res.kind === 'created' && 'session' in res && res.session) {
-      session = res.session;
-    } else if (res.kind === 'rejected') {
-      const reason = 'reason' in res ? res.reason : 'unknown';
-      throw new Error(typeof reason === 'string' ? reason : JSON.stringify(reason));
-    } else {
-      session = res as AgentSession;
-    }
-  } else {
-    session = res as AgentSession;
-  }
+  if (res.kind === 'rejected') throw new Error(res.reason);
+  const session = res.session;
   const hostName = hostById(params.rootId)?.hostName ?? params.rootId;
   await refreshHostSessions(params.rootId, hostName);
   return {
