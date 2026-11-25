@@ -422,6 +422,16 @@ impl Backend {
             Implementation::External(_) => None,
         }
     }
+    pub(crate) fn validate_start(&self, input: &Request) -> Result<(), Error> {
+        input
+            .settings
+            .validate()
+            .map_err(|error| Error::Invalid(error.into()))?;
+        if let Implementation::External(owner) = &self.implementation {
+            owner.require_runtime(input.settings.runtime.as_deref())?;
+        }
+        Ok(())
+    }
     pub(crate) async fn admit_execution(
         &self,
         input: Request,
@@ -430,10 +440,7 @@ impl Backend {
         actual: maka_sandbox::Sandbox,
         isolated: Option<maka_process::isolated::TaskOwner>,
     ) -> Result<Admitted, Error> {
-        input
-            .settings
-            .validate()
-            .map_err(|error| Error::Invalid(error.into()))?;
+        self.validate_start(&input)?;
         match &self.implementation {
             Implementation::External(owner) => {
                 let isolated = isolated.ok_or_else(|| {
