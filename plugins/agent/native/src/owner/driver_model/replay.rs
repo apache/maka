@@ -203,6 +203,9 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             messages,
             recorded:
                 RecordedInputs {
+                    discovery_children,
+                    discovery_steps,
+                    discovery_last_results,
                     unfinished_provider_calls,
                     cells: original_cells,
                     restricted_cells,
@@ -222,6 +225,19 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let prefix_attempt = *prefix_attempt;
         let vision = *vision;
         let after = fact.revision;
+        let discovery = driver
+            .discovery
+            .as_ref()
+            .filter(|_| view.run == driver.execution.run_id);
+        let checkpoint =
+            move |attempt: ModelAttemptId, step: Option<&maka_agent_facts::durable::StepId>| {
+                Some(crate::owner::driver::discovery::SettledStep {
+                    id: fact.id,
+                    revision: after,
+                    number: *discovery_steps.get(step?)?,
+                    last: discovery_last_results.get(&attempt) == Some(&fact.id),
+                })
+            };
         let sealed = view.terminal.is_some();
         let work: BoxFuture<'b, Result<(), RunError>> = match &fact.fact {
             Fact::StepPrepared { step, .. } => Box::pin(async move {
@@ -447,9 +463,53 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         {
                             assistant.parts.push(part);
                         }
-                    } else if let Some(part) = preparation::assistant_part(part)? {
+                    } else if let Some(mut part) = preparation::assistant_part(part)? {
+                        if let Some(guard) = discovery
+                            && let AssistantPart::ToolResult {
+                                tool_call_id,
+                                output,
+                                ..
+                            } = &mut part
+                            && let Some(step) = checkpoint(*attempt, attempt_steps.get(attempt))
+                        {
+                            let call = reader
+                                .tool_call(
+                                    view.run,
+                                    &ToolKey {
+                                        attempt: *attempt,
+                                        call: tool_call_id.clone(),
+                                    },
+                                )
+                                .await?;
+                            let success = !matches!(
+                                output,
+                                ToolOutput::ErrorText(_) | ToolOutput::ErrorJson(_)
+                            );
+                            let raw = std::mem::replace(
+                                output,
+                                ToolOutput::Json(serde_json::Value::Null),
+                            );
+                            *output = guard_result(guard, view, step, call, raw, success).await?.1;
+                        }
                         assistant.parts.push(part);
                     }
+                    Ok(())
+                })
+            }
+            Fact::Cell { .. } if discovery_children.contains_key(&fact.id) => {
+                Box::pin(async move {
+                    let (name, input) = &discovery_children[&fact.id];
+                    let args = reader.decode(view.run, input).await?;
+                    let read = crate::owner::driver::discovery::canonical_target(
+                        name,
+                        Some(&args),
+                        std::path::Path::new(&view.spec.workspace),
+                    );
+                    discovery
+                        .expect("discovery child observation")
+                        .lock()
+                        .unwrap()
+                        .child_returned(after, read, name == crate::owner::discovery::UPSERT);
                     Ok(())
                 })
             }
@@ -505,6 +565,21 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         )
                         .await?
                 };
+                let (call, output) = if let Some(guard) = discovery
+                    && let Some(step) = checkpoint(tool.attempt, attempt_steps.get(&tool.attempt))
+                {
+                    guard_result(
+                        guard,
+                        view,
+                        step,
+                        call,
+                        output,
+                        *outcome == AcceptedResult::Succeeded,
+                    )
+                    .await?
+                } else {
+                    (call, output)
+                };
                 let message = tool_message(&call, output);
                 if assistant.is_attempt(tool.attempt) {
                     // More calls may still arrive from this attempt.
@@ -557,6 +632,40 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             last_emitted_attempt: self.assistant.last_emitted_attempt,
         })
     }
+}
+
+async fn guard_result(
+    guard: &std::sync::Mutex<crate::owner::driver::discovery::Progress>,
+    view: &RunView,
+    step: crate::owner::driver::discovery::SettledStep,
+    call: ModelToolCall,
+    mut output: ToolOutput,
+    success: bool,
+) -> Result<(ModelToolCall, ToolOutput), RunError> {
+    use crate::owner::driver::discovery::{Observation, append_note};
+    let id = step.id;
+    let call = if !guard.lock().unwrap().recorded(step.revision) {
+        let workspace = std::path::PathBuf::from(&view.spec.workspace);
+        let (call, raw, observation) = tokio::task::spawn_blocking(move || {
+            let observation = Observation::new(&call, &output, success, &workspace);
+            (call, output, observation)
+        })
+        .await
+        .map_err(|error| RunError::Internal(error.to_string()))?;
+        output = raw;
+        guard
+            .lock()
+            .unwrap()
+            .observe(observation, step, view.spec.language);
+        call
+    } else {
+        call
+    };
+    let note = guard.lock().unwrap().note(id).map(str::to_owned);
+    if let Some(note) = note {
+        append_note(&mut output, &note);
+    }
+    Ok((call, output))
 }
 
 const FRESH_READ: &str = "Archived output requires a fresh authorized read";

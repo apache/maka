@@ -48,6 +48,7 @@ impl Owner {
         if self.store.checkpoint_execution().is_none() {
             self.start_goals();
             self.start_schedules();
+            self.start_change_tracker();
             self.start_bot_wake();
             self.start_completion_notifications();
         }

@@ -30,6 +30,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::watch;
 
+pub mod changes;
 #[cfg(test)]
 mod tests;
 mod tracking;

@@ -33,6 +33,7 @@ struct Index {
 pub(super) struct ReadyIndex {
     pub pending: std::collections::BTreeSet<String>,
     pub due: BTreeMap<i64, std::collections::BTreeSet<String>>,
+    file_changes: BTreeSet<String>,
 }
 fn due_at(plan: &Plan) -> Option<i64> {
     if plan.pending.is_some() {
@@ -70,6 +71,7 @@ impl ReadyIndex {
     }
     fn update(&mut self, id: &str, old: Option<&Plan>, new: Option<&Plan>) {
         self.pending.remove(id);
+        self.file_changes.remove(id);
         if let Some(at) = old.and_then(due_at)
             && let Some(ids) = self.due.get_mut(&at)
         {
@@ -79,6 +81,9 @@ impl ReadyIndex {
             }
         }
         if let Some(plan) = new {
+            if file_change_grant(plan).is_some() {
+                self.file_changes.insert(id.to_owned());
+            }
             if plan.pending.is_some() {
                 self.pending.insert(id.to_owned());
             }
@@ -170,6 +175,13 @@ fn schedule_budget(
             .cloned(),
     ))
 }
+#[derive(Clone, Copy)]
+enum Selection {
+    All,
+    Due(i64),
+    FileChanges,
+}
+
 impl Scheduler {
     pub(in crate::owner) async fn capture_budget(
         &self,
@@ -215,12 +227,15 @@ impl Scheduler {
         Ok(budget)
     }
     pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
-        self.load_selected(None).await
+        self.load_selected(Selection::All).await
     }
     pub(super) async fn load_ready(&self, at: i64) -> Result<Catalog, String> {
-        self.load_selected(Some(at)).await
+        self.load_selected(Selection::Due(at)).await
     }
-    async fn load_selected(&self, at: Option<i64>) -> Result<Catalog, String> {
+    pub(in crate::owner) async fn load_change_plans(&self) -> Result<Catalog, String> {
+        self.load_selected(Selection::FileChanges).await
+    }
+    async fn load_selected(&self, selection: Selection) -> Result<Catalog, String> {
         let record = self.storage.read("index".into()).await.map_err(reason)?;
         let revision = record.as_ref().map(|record| record.revision);
         let index: Index = record
@@ -239,10 +254,12 @@ impl Scheduler {
             .transpose()
             .map_err(reason)?
             .unwrap_or_default();
-        let selected: Vec<String> = if let Some(at) = at.filter(|_| !rebuild) {
-            ready.ready_ids(at).cloned().collect()
-        } else {
-            index.ids.clone()
+        let selected: BTreeSet<String> = match (rebuild, selection) {
+            (true, _) | (_, Selection::All) => index.ids.iter().cloned().collect(),
+            (_, Selection::Due(at)) => ready.ready_ids(at).cloned().collect(),
+            (_, Selection::FileChanges) => {
+                ready.pending.union(&ready.file_changes).cloned().collect()
+            }
         };
         let mut plans = BTreeMap::new();
         for id in selected {
@@ -282,7 +299,7 @@ impl Scheduler {
             ready_revision,
             ready,
         };
-        if at.is_some() && rebuild {
+        if !matches!(selection, Selection::All) && rebuild {
             let written = self
                 .storage
                 .batch(vec![Mutation {

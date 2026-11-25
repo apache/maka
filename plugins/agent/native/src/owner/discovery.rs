@@ -51,6 +51,7 @@ pub(super) const MODEL_ROUTE_CHANGED: &str = "background_model_route_changed";
 pub(super) const APPROVED_MODEL_UNAVAILABLE: &str = "background_model_unavailable";
 const RECALL_TOOLS: &[&str] = &["Recall", "RecallMore", "RecallMaterial"];
 const ACTIVE: &str = "discovery/active";
+pub(in crate::owner) mod changes;
 mod context;
 mod records;
 
@@ -74,8 +75,13 @@ enum Report {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Phase {
-    Investigating { result: Option<Report> },
+    Investigating {
+        result: Option<Report>,
+    },
     Delivering,
+    Converged {
+        reason: driver::discovery::StopReason,
+    },
     Stopping,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -160,7 +166,17 @@ fn investigation_prompt(
 ) -> String {
     let direction = direction.trim();
     let focused = maka_agent_facts::i18n::discovery::investigation_focused(language);
-    let broad = maka_agent_facts::i18n::discovery::investigation_broad(language);
+    let broad = match language {
+        Language::ZH_CN => {
+            "从增量清单和活跃主线开始，按需核对原始证据、时效和反证。没有实质变化时静默结束。"
+        }
+        Language::ZH_TW => {
+            "從增量清單和活躍主線開始，按需核對原始證據、時效和反證。沒有實質變化時靜默結束。"
+        }
+        _ => {
+            "Start with the deltas and active topics. Verify promising connections against original sources, dates and counterevidence. Finish quietly when nothing material changed."
+        }
+    };
     let memory = maka_agent_facts::i18n::discovery::investigation_memory(language);
     let history = maka_agent_facts::i18n::discovery::investigation_history(language);
     let finish = match language {
@@ -206,7 +222,7 @@ impl scheduler::Scheduler {
                     phase: match job.phase {
                         Phase::Investigating { .. } => InvestigationPhase::Investigating,
                         Phase::Delivering => InvestigationPhase::Delivering,
-                        Phase::Stopping => InvestigationPhase::Stopping,
+                        Phase::Stopping | Phase::Converged { .. } => InvestigationPhase::Stopping,
                     },
                 })
             }))
@@ -221,6 +237,7 @@ impl scheduler::Scheduler {
             .map_err(reason)?;
         *self.investigation.write().unwrap() =
             job.as_ref().map(|job| scheduler::ActiveInvestigation {
+                task_id: job.task_id.clone(),
                 worker: job.worker.clone(),
                 profile: job.tools.profile,
             });
@@ -239,6 +256,7 @@ impl scheduler::Scheduler {
             ])
             .await?;
         *self.investigation.write().unwrap() = Some(scheduler::ActiveInvestigation {
+            task_id: job.task_id.clone(),
             worker: job.worker.clone(),
             profile: job.tools.profile,
         });
@@ -331,12 +349,14 @@ impl Owner {
         let authorized = self.discovery_authorized(&job).await;
         let pending = self.scheduler.has_active_fire(&job).await?;
         let retired = self.discovery_worker_retired(&job).await?;
-        if matches!(job.phase, Phase::Stopping)
+        if matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
             || !pending
             || authorization_revoked(&authorized)
             || retired
         {
-            if !matches!(job.phase, Phase::Stopping) {
+            if !matches!(job.phase, Phase::Stopping)
+                && (!pending || authorization_revoked(&authorized) || retired)
+            {
                 job.phase = Phase::Stopping;
                 self.scheduler
                     .save_investigation(revision, &job)
@@ -353,7 +373,9 @@ impl Owner {
                     .session_run(&job.worker, run)
                     .await?
                     .ok_or("discovery_execution_unavailable")?;
-                self.stop_discovery_run(&view).await?;
+                self.stop_discovery_run(&view, &job.phase)
+                    .await
+                    .map_err(reason)?;
             }
         } else {
             authorized?;
@@ -400,7 +422,59 @@ impl Owner {
         }
         Ok(delivery)
     }
-    async fn stop_discovery_run(&self, view: &RunView) -> Result<bool, String> {
+    pub(super) async fn converge_discovery(
+        &self,
+        view: &RunView,
+        reason: driver::discovery::StopReason,
+    ) -> Result<(), String> {
+        let _gate = self.scheduler.gate.lock().await;
+        let (revision, job) = self.scheduler.investigation().await?;
+        let Some(mut job) = job.filter(|j| j.worker == view.spec.session_id) else {
+            return Err("discovery_execution_changed".into());
+        };
+        let mut current = self
+            .durable
+            .frontier(view.run)
+            .await
+            .map_err(self::reason)?;
+        if current.stopped || current.terminal.is_some() {
+            return Ok(());
+        }
+        if matches!(job.phase, Phase::Investigating { result: None }) {
+            job.phase = Phase::Converged { reason };
+            self.scheduler
+                .save_investigation(revision, &job)
+                .await
+                .map_err(self::reason)?;
+        }
+        loop {
+            match self.stop_discovery_run(&current, &job.phase).await {
+                Err(e)
+                    if matches!(
+                        e.underlying(),
+                        maka_event_log::StoreError::RevisionConflict { .. }
+                    ) =>
+                {
+                    current = self
+                        .durable
+                        .frontier(view.run)
+                        .await
+                        .map_err(self::reason)?;
+                }
+                result => {
+                    result.map_err(self::reason)?;
+                    break;
+                }
+            }
+        }
+        self.scheduler.wake.notify_one();
+        Ok(())
+    }
+    async fn stop_discovery_run(
+        &self,
+        view: &RunView,
+        phase: &Phase,
+    ) -> Result<bool, maka_event_log::StoreError> {
         if view.terminal.is_some() || view.stopped {
             return Ok(false);
         }
@@ -410,15 +484,18 @@ impl Owner {
                 Head::from(view),
                 vec![Change::new(
                     Fact::StopRequested {
-                        diagnostic: "discovery_cancelled".into(),
+                        diagnostic: match phase {
+                            Phase::Converged { reason } => reason.message(),
+                            _ => "discovery_cancelled",
+                        }
+                        .into(),
                         requester: maka_agent_facts::durable::StopRequester::Internal,
                     },
                     UnixMillis(now() as i64),
                 )],
                 vec![],
             )
-            .await
-            .map_err(reason)?;
+            .await?;
         self.wake_notify.notify_one();
         Ok(true)
     }
@@ -602,7 +679,6 @@ impl Owner {
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
         enabled: bool,
         timezone: &str,
-        previous: Option<&Run>,
     ) -> Result<Option<Run>, String> {
         if let Some(record) = self
             .scheduler
@@ -654,23 +730,6 @@ impl Owner {
         };
         let authorized = self.discovery_authorized(&job).await;
         if new_job {
-            if enabled
-                && authorized.is_ok()
-                && matches!(
-                    fire.authorization,
-                    Some(scheduler::Approval::Discovery { .. })
-                )
-            {
-                let source = self.session(&job.bot).await?;
-                let allowed = self.discovery_worker_tools(
-                    &job.tools.names,
-                    source.configuration.tools.as_deref(),
-                    fire.effect.selected_discovery_tools(),
-                );
-                job.input = self
-                    .discovery_input(&job, fire, previous, timezone, &allowed)
-                    .await?;
-            }
             revision = Some(
                 self.scheduler
                     .save_investigation(revision, &job)
@@ -737,7 +796,7 @@ impl Owner {
                         .map(Some);
                 }
                 if let Err(error) = self
-                    .enqueue_discovery_worker(&job, fire, previous, timezone)
+                    .enqueue_discovery_worker(&mut job, &mut revision, fire, timezone)
                     .await
                 {
                     return self
@@ -794,7 +853,12 @@ impl Owner {
                             .map_err(reason)?,
                     );
                 }
-                if matches!(job.phase, Phase::Stopping) && self.stop_discovery_run(&view).await? {
+                if matches!(job.phase, Phase::Stopping | Phase::Converged { .. })
+                    && self
+                        .stop_discovery_run(&view, &job.phase)
+                        .await
+                        .map_err(reason)?
+                {
                     return Ok(None);
                 }
                 let Some(terminal) = view.terminal else {
@@ -815,6 +879,14 @@ impl Owner {
                     return Ok(None);
                 }
                 drop(runs);
+                if let Phase::Converged { reason } = job.phase
+                    && matches!(terminal, Terminal::Completed | Terminal::Cancelled)
+                {
+                    return self
+                        .settle_discovery(fire, revision, &job, Outcome::Ok, reason.message())
+                        .await
+                        .map(Some);
+                }
                 if terminal != Terminal::Completed || matches!(job.phase, Phase::Stopping) {
                     return self
                         .settle_discovery(
@@ -884,36 +956,40 @@ impl Owner {
         &self,
         job: &Job,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
-        previous: Option<&Run>,
         timezone: &str,
         allowed_tools: &[String],
-    ) -> Result<MessageInput, String> {
+    ) -> Result<
+        (
+            MessageInput,
+            Vec<maka_agent_state::discovery::changes::Delta>,
+        ),
+        String,
+    > {
         let history_allowed = fire.effect.selected_discovery_tools().is_none()
             || allowed_tools
                 .iter()
                 .any(|name| self.discovery_tool_group(name) == DiscoveryToolGroup::History);
-        let mut prompt = investigation_prompt(
+        let (mut prompt, shown) = self.discovery_opening(job, allowed_tools).await?;
+        prompt.push_str("\n\n");
+        prompt.push_str(&investigation_prompt(
             job.approval.language,
             fire.intent.body(),
             allowed_tools.iter().any(|name| name == MEMORY),
             history_allowed,
-        );
+        ));
         prompt.push_str(&context::environment(
             job.approval.language,
             &job.approval.target.workspace.path,
             timezone,
         ));
-        if history_allowed {
-            prompt.push_str(&self.discovery_opening(job, previous, allowed_tools).await?);
-        }
-        Ok(prompt.into())
+        Ok((prompt.into(), shown))
     }
 
     async fn enqueue_discovery_worker(
         &self,
-        job: &Job,
+        job: &mut Job,
+        revision: &mut Option<u64>,
         fire: &Fire<ScheduledEffect, scheduler::Approval>,
-        previous: Option<&Run>,
         timezone: &str,
     ) -> Result<(), CaptureError> {
         let source = self.session(&job.bot).await?;
@@ -922,13 +998,6 @@ impl Owner {
             source.configuration.tools.as_deref(),
             fire.effect.selected_discovery_tools(),
         );
-        // A narrower live ceiling must also narrow the references supplied to the model.
-        let input = if allowed_tools == job.tools.names {
-            job.input.clone()
-        } else {
-            self.discovery_input(job, fire, previous, timezone, &allowed_tools)
-                .await?
-        };
         if self
             .store
             .get_session::<StoredSessionConfiguration>(&job.worker)
@@ -1002,6 +1071,21 @@ impl Owner {
             return Err(CaptureError::RouteChanged);
         }
         basis.model = Some(job.approval.accepted_model.clone());
+        // Freeze the opening and acknowledge exactly its displayed deltas in the same Root transaction.
+        if !job.input.has_content() || allowed_tools != job.tools.names {
+            let (input, shown) = self
+                .discovery_input(job, fire, timezone, &allowed_tools)
+                .await?;
+            job.input = input;
+            job.tools.names.clone_from(&allowed_tools);
+            let active = mutation(ACTIVE.into(), *revision, job)?;
+            let records = self
+                .commit_discovery_writes(self.discovery.acknowledge_changes(shown), vec![active])
+                .await
+                .map_err(reason)?;
+            *revision = Some(records[0].revision);
+        }
+        let input = job.input.clone();
         basis.allowed_tools = Some(allowed_tools);
         basis.background = Some(job.approval.target.clone());
         basis.background_sandbox_ceiling = job.approval.sandbox_ceiling.clone();
