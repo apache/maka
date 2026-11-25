@@ -72,6 +72,9 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   `ROOT_ID`; configured host loading, lazy plugin chunks,
   `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
   terminal inspection are required by Maka's shells and plugin composition.
+- **Caller-scoped Host events:** `HostChannel::send_to_caller` and
+  `Message::CallerHostEvent` keep progress with the originating app;
+  `HostChannel::caller_detached` wakes pending delivery when that app detaches.
 - **Source-aware reading:** TextView preserves canonical source identity,
   byte offsets and reading anchors through Markdown rendering and repair.
   Markdown without source mapping uses the upstream incremental parser,
