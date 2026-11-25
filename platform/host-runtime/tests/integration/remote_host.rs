@@ -25,17 +25,25 @@ use maka_event_log::{
 use maka_host_runtime::{
     application::{
         host::{
-            Channel, Client, Configuration, Host, LifecycleMode, OpenChannel, Options,
+            AuthenticatedPeerStream, Channel, Client, Configuration, Host, LifecycleMode,
+            LocalCall, OpenChannel, Options, PeerId, VERSION,
+            protocol::{Opening, Request, Response, SessionControl},
             websocket::{self, WebSocketListener},
         },
         logs,
-        transport::{GATEWAY, Reply},
+        transport::{GATEWAY, Reply, wire},
     },
     ipc::LocalListener,
 };
 use maka_packages::Package;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{io::AsyncReadExt, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -48,8 +56,7 @@ fn package(id: &str, host: Value) -> Package {
     .unwrap()
 }
 
-#[tokio::test]
-async fn host_opens_independent_supplied_channels() {
+async fn logs_host() -> (tempfile::TempDir, Arc<Host>, Configuration) {
     let dir = tempfile::tempdir().unwrap();
     private_directory(dir.path()).unwrap();
     let root = Arc::new(
@@ -82,7 +89,7 @@ async fn host_opens_independent_supplied_channels() {
     );
     let consumer = Uuid::new_v4();
     let deployment = Uuid::new_v4();
-    store.commit_application(
+    let source = store.commit_application(
         deployment, 0,
         serde_json::from_value(json!({"instances":{
             "logs":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":logs.application_ref()},"usePackage":"host"},
@@ -93,11 +100,15 @@ async fn host_opens_independent_supplied_channels() {
     ).await.unwrap();
     let configuration = Configuration::PublicHost {
         endpoints: serde_json::from_value(json!({
-            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read"],"recovery":false}}
+            "hostLogs":{"consumer":[consumer],"import":"hostLogs","grant":{"methods":["read","watch"],"recovery":false}}
         })).unwrap(),
         native: Default::default(),
         product_methods: Default::default(),
     };
+    store
+        .select_committed_application_launch(source, serde_json::to_value(&configuration).unwrap())
+        .await
+        .unwrap();
     let host = Host::open_with_options(
         store,
         deployment,
@@ -112,16 +123,18 @@ async fn host_opens_independent_supplied_channels() {
     .await
     .unwrap();
 
+    (dir, host, configuration)
+}
+
+#[tokio::test]
+async fn host_opens_independent_supplied_channels() {
+    let (dir, host, configuration) = logs_host().await;
     let pairing = host
         .prepare_access("test-remote-client".into())
         .await
         .unwrap();
     let epoch = host.epoch();
-    #[cfg(unix)]
-    let socket = dir.path().join("host.sock");
-    #[cfg(windows)]
-    let socket = std::path::PathBuf::from(format!(r"\\.\pipe\maka-remote-test-{}", Uuid::new_v4()));
-    let local = LocalListener::bind(&socket).unwrap();
+    let (socket, local) = local_listener(dir.path());
     let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
         .await
         .unwrap();
@@ -216,27 +229,468 @@ async fn host_opens_independent_supplied_channels() {
         .unwrap();
 }
 
-async fn read_logs_on_independent_channels(client: &Client) {
-    let read = || {
-        client.call(
-            "hostLogs",
-            "read".into(),
-            json!({"position":{"kind":"tail"}}),
-            Default::default(),
-        )
+fn local_listener(dir: &std::path::Path) -> (std::path::PathBuf, LocalListener) {
+    #[cfg(unix)]
+    let socket = dir.join("host.sock");
+    #[cfg(windows)]
+    let socket = {
+        let _ = dir;
+        std::path::PathBuf::from(format!(r"\\.\pipe\maka-remote-test-{}", Uuid::new_v4()))
     };
-    let (first, second) = tokio::join!(read(), read());
-    for mut call in [first.unwrap(), second.unwrap()] {
-        call.start().await.unwrap();
-        match call.receive().await.unwrap() {
-            Reply::Finished { result, cleanup } => {
-                cleanup.unwrap();
-                let page: maka_host_runtime::logs::HostLogPage =
-                    serde_json::from_value(result.unwrap()).unwrap();
-                assert_eq!(page, maka_host_runtime::logs::HostLogPage::Missing);
-            }
-            _ => panic!("HostLogs.read did not finish"),
+    let listener = LocalListener::bind(&socket).unwrap();
+    (socket, listener)
+}
+
+fn read_call(client: &Client) -> impl Future<Output = Result<LocalCall, String>> + use<> {
+    client.call(
+        "hostLogs",
+        "read".into(),
+        json!({"position":{"kind":"tail"}}),
+        Default::default(),
+    )
+}
+
+async fn finish_log_read(mut call: LocalCall) {
+    call.start().await.unwrap();
+    match call.receive().await.unwrap() {
+        Reply::Finished { result, cleanup } => {
+            cleanup.unwrap();
+            let page: maka_host_runtime::logs::HostLogPage =
+                serde_json::from_value(result.unwrap()).unwrap();
+            assert_eq!(page, maka_host_runtime::logs::HostLogPage::Missing);
         }
-        call.close().await.unwrap();
+        _ => panic!("HostLogs.read did not finish"),
     }
+    call.close().await.unwrap();
+}
+
+async fn read_logs_on_independent_channels(client: &Client) {
+    let read = || async { finish_log_read(read_call(client).await.unwrap()).await };
+    tokio::join!(read(), read());
+}
+
+type PeerSender = mpsc::Sender<AuthenticatedPeerStream>;
+
+async fn peer_channel(sender: &PeerSender, peer_id: PeerId) -> io::Result<Channel> {
+    let (client, stream) = tokio::io::duplex(64 * 1024);
+    sender
+        .send(AuthenticatedPeerStream {
+            peer_id,
+            stream: Box::new(stream),
+        })
+        .await
+        .map_err(io::Error::other)?;
+    Ok(Box::new(client))
+}
+
+fn peer_opener(sender: &PeerSender, peer: &PeerId) -> OpenChannel {
+    let sender = sender.downgrade();
+    let peer = peer.clone();
+    Arc::new(move || {
+        let sender = sender.upgrade();
+        let peer = peer.clone();
+        Box::pin(async move {
+            let sender = sender.ok_or(io::ErrorKind::BrokenPipe)?;
+            peer_channel(&sender, peer).await
+        })
+    })
+}
+
+async fn opening(
+    open: &OpenChannel,
+    request: Request,
+    client_instance: Option<String>,
+) -> wire::Reader<Channel> {
+    let mut stream = open().await.unwrap();
+    wire::write(
+        &mut stream,
+        &Opening {
+            version: VERSION,
+            epoch: None,
+            client_instance,
+            request,
+        },
+    )
+    .await
+    .unwrap();
+    wire::Reader::new(stream)
+}
+
+async fn assert_peer_closed(mut stream: impl tokio::io::AsyncRead + Unpin) {
+    let bytes = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut [0]))
+        .await
+        .expect("Host did not close the peer stream")
+        .unwrap();
+    assert_eq!(
+        bytes, 0,
+        "Host sent an unexpected response instead of closing"
+    );
+}
+
+async fn assert_rejected(mut stream: wire::Reader<Channel>) {
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), stream.read::<Response>())
+            .await
+            .expect("Host did not reject the opening")
+            .is_err()
+    );
+}
+
+async fn wait_for_server(server: tokio::task::JoinHandle<Result<(), String>>) {
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("Host did not finish serving")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn native_peers_can_call_but_cannot_control_the_host_and_are_revocable() {
+    let (_dir, host, configuration) = logs_host().await;
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    let ungranted = PeerId::new("another-transport-key".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    let mut revoked = host.subscribe_revoked_peers();
+    let (sender, ingress) = mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    let server = tokio::spawn({
+        let host = host.clone();
+        let cancel = cancel.clone();
+        async move { host.serve_peer_streams(ingress, cancel).await }
+    });
+    let open = peer_opener(&sender, &peer);
+    let outsider = peer_opener(&sender, &ungranted);
+    assert!(
+        Client::connect_authenticated_peer(outsider.clone(), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        Client::status_channel(outsider().await.unwrap(), None)
+            .await
+            .is_err()
+    );
+
+    let mut client = Client::connect_authenticated_peer(open.clone(), None)
+        .await
+        .unwrap();
+    let mut raw_anchor = opening(&open, Request::Connect, None).await;
+    let Response::Connected(connected) = raw_anchor.read().await.unwrap() else {
+        panic!("native anchor did not connect");
+    };
+    let ((), status) = tokio::join!(read_logs_on_independent_channels(&client), async {
+        Client::status_channel(open().await.unwrap(), Some(client.epoch()))
+            .await
+            .unwrap()
+    });
+    assert_eq!(status.epoch, host.epoch());
+    assert_eq!(status.sessions, 2);
+
+    for request in [
+        Request::PrepareAccess {
+            principal: "forbidden".into(),
+        },
+        Request::RevokeAccess {
+            credential: "forbidden".into(),
+        },
+        Request::Configure {
+            source: client.source().clone(),
+            previous: configuration.clone(),
+            configuration,
+        },
+        Request::Retire {
+            interrupt: true,
+            allow_idle_connections: true,
+            refuse_active_sessions: false,
+        },
+        Request::Quit {
+            session: connected.session,
+            ephemeral_only: false,
+        },
+        Request::Publication,
+    ] {
+        assert_peer_closed(opening(&open, request, None).await.inner).await;
+    }
+    // Leave a call stream waiting for its first RPC frame, as well as two anchors.
+    let call = client.open_call_channel().await.unwrap();
+    assert!(host.revoke_peer_access(peer.clone()).await.unwrap());
+    assert_eq!(revoked.try_recv().unwrap(), peer);
+    assert_peer_closed(opening(&open, Request::Connect, None).await.inner).await;
+    assert!(
+        Client::status_channel(open().await.unwrap(), None)
+            .await
+            .is_err()
+    );
+    assert_peer_closed(call).await;
+    assert_peer_closed(raw_anchor.inner).await;
+    assert!(client.refresh().await.is_err());
+    cancel.cancel();
+    wait_for_server(server).await;
+}
+
+#[tokio::test]
+async fn narrowing_publication_fences_old_peers_and_leaves_idempotent_configure_alone() {
+    let (dir, host, configuration) = logs_host().await;
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    let other = PeerId::new("other-transport-key".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    host.grant_peer_access(other.clone()).await.unwrap();
+    let mut revoked = host.subscribe_revoked_peers();
+
+    let (socket, local) = local_listener(dir.path());
+    let (sender, ingress) = mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    let server = tokio::spawn({
+        let host = host.clone();
+        let cancel = cancel.clone();
+        async move {
+            host.serve_with_peers(local, None, Some(ingress), cancel)
+                .await
+        }
+    });
+    let open = peer_opener(&sender, &peer);
+    let old = Client::connect_authenticated_peer(open.clone(), None)
+        .await
+        .unwrap();
+    let duplicate = Client::connect_authenticated_peer(open.clone(), None)
+        .await
+        .unwrap();
+    let other_anchor = Client::connect_authenticated_peer(peer_opener(&sender, &other), None)
+        .await
+        .unwrap();
+    let mut owner = Client::connect(&socket, None).await.unwrap();
+    let source = owner.publication().await.unwrap().source;
+
+    owner
+        .configure(source.clone(), configuration.clone(), configuration.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        revoked.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    read_logs_on_independent_channels(&old).await;
+
+    let mut inert = read_call(&old).await.unwrap();
+    let old_opener = old.call_channel_opener().unwrap();
+    let mut narrowed = configuration.clone();
+    let Configuration::PublicHost { endpoints, .. } = &mut narrowed;
+    assert!(
+        endpoints
+            .get_mut("hostLogs")
+            .unwrap()
+            .grant
+            .methods
+            .remove("read")
+    );
+    owner
+        .configure(source.clone(), configuration.clone(), narrowed.clone())
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), inert.start())
+            .await
+            .expect("stale inert call was not fenced")
+            .is_err()
+    );
+    // One notification per peer, even with multiple sessions and a subscriber
+    // that has not polled while the entire batch was published.
+    assert_eq!(
+        BTreeSet::from([revoked.try_recv().unwrap(), revoked.try_recv().unwrap()]),
+        BTreeSet::from([peer.clone(), other]),
+    );
+    assert!(matches!(
+        revoked.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(
+        Client::connect_authenticated_peer(open.clone(), None)
+            .await
+            .is_err()
+    );
+
+    host.grant_peer_access(peer).await.unwrap();
+    assert!(old_opener.open().await.is_err());
+    let mut fresh = Client::connect_authenticated_peer(open, None)
+        .await
+        .unwrap();
+    let mut removed_method = read_call(&fresh).await.unwrap();
+    assert_eq!(
+        removed_method.start().await.unwrap_err(),
+        "Application method is not granted"
+    );
+
+    owner
+        .configure(source, configuration, narrowed)
+        .await
+        .unwrap();
+    fresh.refresh().await.unwrap();
+    assert!(matches!(
+        revoked.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    drop((old, duplicate, other_anchor));
+    fresh.close().await.unwrap();
+    owner.close().await.unwrap();
+    cancel.cancel();
+    wait_for_server(server).await;
+}
+
+#[tokio::test]
+async fn peer_only_eof_drains_a_call_whose_handshake_has_not_started() {
+    let (_dir, host, _) = logs_host().await;
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    let (sender, ingress) = mpsc::channel(1);
+    let server = tokio::spawn(async move {
+        host.serve_peer_streams(ingress, CancellationToken::new())
+            .await
+    });
+
+    // Control exactly when the client gets each stream, not how the server
+    // schedules its handshake task.
+    let (handoff, streams) = mpsc::channel::<Channel>(1);
+    let streams = Arc::new(tokio::sync::Mutex::new(streams));
+    let open: OpenChannel = Arc::new(move || {
+        let streams = streams.clone();
+        Box::pin(async move { Ok(streams.lock().await.recv().await.unwrap()) })
+    });
+    handoff
+        .send(peer_channel(&sender, peer.clone()).await.unwrap())
+        .await
+        .unwrap();
+    let mut client = Client::connect_authenticated_peer(open, None)
+        .await
+        .unwrap();
+
+    let last = peer_channel(&sender, peer).await.unwrap();
+    drop(sender);
+    handoff.send(last).await.unwrap();
+    finish_log_read(read_call(&client).await.unwrap()).await;
+    client.close().await.unwrap();
+    wait_for_server(server).await;
+}
+
+#[tokio::test]
+async fn peer_only_cancel_interrupts_eof_drain_with_an_open_anchor() {
+    let (_dir, host, _) = logs_host().await;
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    let (sender, ingress) = mpsc::channel(1);
+    let open = peer_opener(&sender, &peer);
+    let cancel = CancellationToken::new();
+    let serving = host.serve_peer_streams(ingress, cancel.clone());
+    tokio::pin!(serving);
+    let anchor = tokio::select! {
+        result = &mut serving => panic!("Host stopped before connect: {result:?}"),
+        anchor = async {
+            let mut anchor = opening(&open, Request::Connect, None).await;
+            assert!(matches!(anchor.read::<Response>().await.unwrap(), Response::Connected(_)));
+            anchor
+        } => anchor,
+    };
+    drop(sender);
+    // Drive the server past EOF, while the live anchor still prevents it draining.
+    assert!(futures_util::poll!(&mut serving).is_pending());
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("cancel did not interrupt EOF drain")
+        .unwrap();
+    assert_peer_closed(anchor.inner).await;
+}
+
+#[tokio::test]
+async fn websocket_and_native_principals_are_isolated_and_ingress_eof_keeps_other_listeners_live() {
+    let (dir, host, _) = logs_host().await;
+    let peer = PeerId::new("same-identity-string".into()).unwrap();
+    let wrong_peer = PeerId::new("different-transport-key".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    let pairing = host.prepare_access("websocket".into()).await.unwrap();
+    let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+        .await
+        .unwrap();
+    let address = websocket.local_addr().unwrap();
+    let tcp: OpenChannel = Arc::new(move || {
+        Box::pin(
+            async move { Ok(Box::new(tokio::net::TcpStream::connect(address).await?) as Channel) },
+        )
+    });
+    let ws = websocket::channel_opener(tcp, pairing.credential.into());
+    let (socket, local) = local_listener(dir.path());
+    let (sender, ingress) = mpsc::channel(2);
+    let cancel = CancellationToken::new();
+    let server = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            host.serve_with_peers(local, Some(websocket), Some(ingress), cancel)
+                .await
+        }
+    });
+    let native = peer_opener(&sender, &peer);
+    let wrong_native = peer_opener(&sender, &wrong_peer);
+    let claimed = Some(peer.as_str().to_owned());
+
+    assert_rejected(opening(&ws, Request::Connect, claimed.clone()).await).await;
+    Client::finalize_access(ws.clone(), peer.as_str().into(), None)
+        .await
+        .unwrap();
+    let mut ws_anchor = opening(&ws, Request::Connect, claimed.clone()).await;
+    let Response::Connected(web) = ws_anchor.read().await.unwrap() else {
+        panic!("active Bearer did not establish a WebSocket session");
+    };
+    let mut peer_anchor = opening(&native, Request::Connect, None).await;
+    let Response::Connected(binary) = peer_anchor.read().await.unwrap() else {
+        panic!("granted identity did not establish a native session");
+    };
+    assert_rejected(
+        opening(
+            &ws,
+            Request::Call {
+                session: binary.session,
+            },
+            claimed.clone(),
+        )
+        .await,
+    )
+    .await;
+    assert_peer_closed(
+        opening(
+            &native,
+            Request::Call {
+                session: web.session,
+            },
+            claimed.clone(),
+        )
+        .await
+        .inner,
+    )
+    .await;
+    assert_peer_closed(
+        opening(&wrong_native, Request::Connect, claimed.clone())
+            .await
+            .inner,
+    )
+    .await;
+
+    drop(sender);
+    let mut local = Client::connect(&socket, None).await.unwrap();
+    read_logs_on_independent_channels(&local).await;
+    local.close().await.unwrap();
+    let mut web_after_eof = Client::connect_on(ws, None, claimed.map(Arc::from))
+        .await
+        .unwrap();
+    read_logs_on_independent_channels(&web_after_eof).await;
+    web_after_eof.close().await.unwrap();
+    // Keep peer_anchor open to ensure EOF stops accepting peers, not existing sessions.
+    wire::write(peer_anchor.inner.get_mut(), &SessionControl::Refresh)
+        .await
+        .unwrap();
+    assert!(matches!(
+        peer_anchor.read::<Response>().await.unwrap(),
+        Response::Refreshed(Ok(_))
+    ));
+    cancel.cancel();
+    wait_for_server(server).await;
 }

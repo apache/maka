@@ -18,17 +18,20 @@
  */
 
 //! Credentials grant the exact published application source and endpoint set.
-use super::{Host, Result};
+use super::{Host, PeerId, Result, Session};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_agent_facts::access::ManagedPrincipalKind;
 use maka_config::access::{AccessCreateMode, AccessCredential, CredentialState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{collections::BTreeSet, sync::Arc};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 pub(super) enum Authority {
     Local,
     Remote { hash: String },
+    AuthenticatedPeer { peer_id: PeerId },
 }
 impl Authority {
     pub(super) fn local(&self) -> Result<()> {
@@ -41,6 +44,7 @@ impl Authority {
 pub(super) enum Principal {
     Local,
     Credential(String),
+    AuthenticatedPeer(PeerId),
 }
 /// Intended only for the importing client; never logged or formatted as Debug.
 #[derive(Serialize, Deserialize)]
@@ -59,6 +63,13 @@ fn timestamp() -> Result<String> {
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|error| error.to_string())
 }
+impl Session {
+    fn revoke(&self) {
+        self.peer.revoke();
+        self.transport.request_close();
+    }
+}
+
 impl Host {
     pub(super) async fn credential(&self, hash: &str) -> Result<AccessCredential> {
         self.access
@@ -79,6 +90,18 @@ impl Host {
     ) -> Result<Principal> {
         match authority {
             Authority::Local => Ok(Principal::Local),
+            Authority::AuthenticatedPeer { peer_id } => {
+                let grant = self.access_grant.lock().unwrap().clone();
+                if !self
+                    .access
+                    .has_host_peer_access(peer_id.clone(), grant)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err("transport peer does not grant this application source".into());
+                }
+                Ok(Principal::AuthenticatedPeer(peer_id.clone()))
+            }
             Authority::Remote { hash } => {
                 let credential = self.credential(hash).await?;
                 let client = client
@@ -96,17 +119,82 @@ impl Host {
             }
         }
     }
-    pub(super) fn revoked(&self, credentials: &[String]) -> Result<()> {
+    fn revoked(&self, credentials: &[String]) {
+        self.revoke_sessions(
+            |principal| matches!(principal, Principal::Credential(id) if credentials.contains(id)),
+        )
+    }
+
+    fn revoke_sessions(&self, revoked: impl Fn(&Principal) -> bool) {
         for session in self.sessions.lock().unwrap().values() {
-            if let Principal::Credential(id) = &session.principal
-                && credentials.contains(id)
-            {
-                session.peer.replace(vec![])?;
-                session.transport.request_close();
+            if revoked(&session.principal) {
+                session.revoke();
             }
         }
-        Ok(())
     }
+
+    /// Call under access_gate before publishing a different Host grant.
+    pub(super) fn revoke_native_sessions(&self) {
+        let peers = {
+            let sessions = self.sessions.lock().unwrap();
+            let mut peers = BTreeSet::new();
+            for session in sessions.values() {
+                if let Principal::AuthenticatedPeer(id) = &session.principal {
+                    session.revoke();
+                    peers.insert(id.clone());
+                }
+            }
+            peers
+        };
+        for id in peers {
+            let _ = self.revoked_peers.send(id);
+        }
+    }
+
+    /// Trusted embedding only; grants this peer the current Host publication.
+    pub async fn grant_peer_access(&self, peer_id: PeerId) -> Result<()> {
+        let _gate = self.access_gate.lock().await;
+        if self.stop.is_cancelled() {
+            return Err("Host is closing".into());
+        }
+        let grant = self.access_grant.lock().unwrap().clone();
+        self.access
+            .grant_host_peer_access(peer_id, grant)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Subscribe before accepting authenticated transports. Close the named
+    /// connection(s) on revocation. On `Lagged`, close all peer connections:
+    /// their underlying transports may otherwise outlive a missed revocation.
+    pub fn subscribe_revoked_peers(&self) -> broadcast::Receiver<PeerId> {
+        self.revoked_peers.subscribe()
+    }
+
+    /// Trusted embedding only; removes the grant and fences all live sessions.
+    pub async fn revoke_peer_access(self: &Arc<Self>, peer_id: PeerId) -> Result<bool> {
+        let host = self.clone();
+        // The durable mutation and live fence must finish together even if
+        // the caller drops its acknowledgement future.
+        tokio::spawn(async move {
+            let _gate = host.access_gate.lock().await;
+            let changed = host
+                .access
+                .revoke_host_peer_access(peer_id.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            if changed {
+                host.revoke_sessions(|principal| {
+                    matches!(principal, Principal::AuthenticatedPeer(id) if id == &peer_id)
+                });
+                let _ = host.revoked_peers.send(peer_id);
+            }
+            Ok(changed)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
     pub async fn prepare_access(&self, principal: String) -> Result<Pairing> {
         let _gate = self.access_gate.lock().await;
         if self.stop.is_cancelled() {
@@ -117,7 +205,7 @@ impl Host {
             .expire_access_credentials(now()?)
             .await
             .map_err(|error| error.to_string())?;
-        self.revoked(&expired)?;
+        self.revoked(&expired);
         let mut bytes = [0; 32];
         getrandom::fill(&mut bytes).map_err(|_| "cannot generate access credential")?;
         let secret = format!("maka_rh_{}", URL_SAFE_NO_PAD.encode(bytes));
@@ -147,7 +235,7 @@ impl Host {
             .create_access_credential(credential, AccessCreateMode::Prepare, None)
             .await
             .map_err(|error| error.to_string())?;
-        self.revoked(&changed.revoked)?;
+        self.revoked(&changed.revoked);
         Ok(Pairing {
             root_id: self.source.state_domain.clone(),
             credential_id,
@@ -161,7 +249,7 @@ impl Host {
             .revoke_access_credential(credential, timestamp()?)
             .await
             .map_err(|error| error.to_string())?;
-        self.revoked(&changed.revoked)?;
+        self.revoked(&changed.revoked);
         Ok(changed.value)
     }
     pub(super) async fn finalize_access(
@@ -184,6 +272,7 @@ impl Host {
             )
             .await
             .map_err(|error| error.to_string())?;
-        self.revoked(&changed.revoked)
+        self.revoked(&changed.revoked);
+        Ok(())
     }
 }

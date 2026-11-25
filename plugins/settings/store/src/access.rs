@@ -20,8 +20,10 @@
 //! Private credential authority, independent of catalog and execution facts.
 mod creation;
 mod lifecycle;
+mod peer;
 mod record;
 use crate::{ConfigurationStore, Result, TransactionMode};
+pub use peer::PeerId;
 use record::load;
 pub use record::{AccessChange, AccessCreateMode, AccessCredential, CredentialState};
 

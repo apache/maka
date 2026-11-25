@@ -237,6 +237,10 @@
       "plugins/settings/store/migrations/0002_message_predictions.sql": {
         "version": 2,
         "sha384": "416dafe8f3de289a5cd21611d3c3eaa278db58cf6a5a6d9fc8182748044be01eaa13e34cf24cb1a3201f26a269a9fc8f"
+      },
+      "plugins/settings/store/migrations/0003_host_peer_access.sql": {
+        "version": 3,
+        "sha384": "ac28400bc91b50a65433658e859d8dd4a81da71661ace37b60fe6d4867c2f4e2263e1ab2f4f39b57c84eac10b183af85"
       }
     },
     "deployment": {
