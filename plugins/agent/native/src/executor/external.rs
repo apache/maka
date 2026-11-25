@@ -416,6 +416,9 @@ impl External {
         lifecycle.closed(outcome.clone()).await?;
         Ok(NativeTaskObservation::Known { outcome })
     }
+    pub(super) fn has_runtime(&self, runtime: NativeRuntime) -> bool {
+        self.commands.contains_key(&runtime)
+    }
     pub(super) fn require_runtime(&self, runtime: Option<&str>) -> Result<NativeRuntime, Error> {
         let runtime = runtime
             .ok_or_else(|| Error::Invalid("External agent requires a runtime selection".into()))?
@@ -473,7 +476,7 @@ impl External {
         selected: Option<NativeRuntime>,
         read: catalog::Read,
         cancellation: CancellationToken,
-    ) -> Result<(Vec<Value>, bool), Error> {
+    ) -> Result<(Vec<Value>, bool, bool), Error> {
         let mut changes = self.catalog_changes();
         let mut cache = self.catalog.lock().await;
         cache.failure()?;
@@ -517,7 +520,7 @@ impl External {
                 ));
             }
             let snapshot = cache.snapshot(selected);
-            if read != catalog::Read::Resolve || !snapshot.0.is_empty() || !snapshot.1 {
+            if read != catalog::Read::Resolve || !snapshot.1 {
                 return Ok(snapshot);
             }
             drop(cache);

@@ -78,6 +78,7 @@ type SelectionAction = {
   sessionId: string;
   expected: BackendIdentity;
   backend: ModelBackend;
+  label?: string | null;
 };
 type EffortAction = SelectionAction & { level: string };
 type ModelsPage = Pick<
@@ -107,7 +108,7 @@ export function ModelSelect(props: {
   current(): boolean;
   toggle(target: ModelTarget): void;
   close(instance: number): boolean;
-  select(instance: number, backend: ModelBackend): Promise<void>;
+  select(instance: number, backend: ModelBackend, label?: string | null): Promise<void>;
   manage(target: { sessionId: string; instance: number }): void;
 }) {
   const owner = props.owner;
@@ -224,7 +225,7 @@ export function ModelSelect(props: {
               instance={instance}
               current={() => props.current() && props.instance() === instance}
               close={props.close}
-              select={(backend) => props.select(instance, backend)}
+              select={(backend, label) => props.select(instance, backend, label)}
               manage={() => {
                 if (props.current() && props.instance() === instance)
                   props.manage({ sessionId: owner.sessionId, instance });
@@ -248,7 +249,7 @@ function ModelMenu(props: {
   instance: number;
   current(): boolean;
   close(instance: number): boolean;
-  select(backend: ModelBackend): Promise<void>;
+  select(backend: ModelBackend, label?: string | null): Promise<void>;
   manage(): void;
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
@@ -301,11 +302,15 @@ function ModelMenu(props: {
       effortOpen.set(false);
   });
 
-  const action = (backend: ModelBackend): SelectionAction => ({
+  const action = (
+    backend: ModelBackend,
+    label: string | null = readyChoice()?.label ?? null,
+  ): SelectionAction => ({
     instance: props.instance,
     sessionId: owner.sessionId,
     expected: owner.backend(),
     backend,
+    label,
   });
   const submit = async (request: SelectionAction) => {
     if (
@@ -321,7 +326,7 @@ function ModelMenu(props: {
     pending.set(true);
     error.set('');
     try {
-      await props.select(request.backend);
+      await props.select(request.backend, request.label ?? null);
     } catch (reason) {
       if (active()) error.set(errorText(reason, 'Could not change the model.'));
     } finally {
@@ -471,7 +476,7 @@ function ModelMenu(props: {
   const byId = computed(() => new Map(choices().map((choice) => [routeId(choice), choice])));
   const ids = computed(() => choices().map(routeId));
   const modelAction = (choice: ModelChoice) =>
-    action(selectionForChoice(owner.backend(), choice) ?? choice.selection);
+    action(selectionForChoice(owner.backend(), choice) ?? choice.selection, choice.label);
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(choices().length - 1, index() + delta));
     selected.set(next);

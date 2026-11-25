@@ -263,17 +263,21 @@ impl Executors {
         runtime: Option<&str>,
         read: CatalogRead,
         cancellation: CancellationToken,
-    ) -> Result<(Vec<Value>, bool), Error> {
+    ) -> Result<(Vec<Value>, bool, bool), Error> {
         let Some(Backend {
             implementation: Implementation::External(owner),
             ..
         }) = self.0.get("external")
         else {
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), false, false));
         };
-        let selected = runtime
-            .map(|runtime| owner.require_runtime(Some(runtime)))
-            .transpose()?;
+        let selected = match runtime {
+            Some(runtime) => match runtime.parse::<maka_agent_api::executor::NativeRuntime>() {
+                Ok(native) if owner.has_runtime(native) => Some(native),
+                _ => return Ok((Vec::new(), false, false)),
+            },
+            None => None,
+        };
         owner.catalog(cwd, selected, read, cancellation).await
     }
 

@@ -195,6 +195,7 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+mod model;
 #[cfg(test)]
 mod quote_tests;
 mod recovery;
@@ -202,6 +203,7 @@ mod recovery;
 mod room_tests;
 mod workspaces;
 mod write;
+pub use model::RecentModel;
 pub use workspaces::RecentWorkspace;
 
 impl Journal {
@@ -452,6 +454,8 @@ impl Journal {
                 }
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(error)?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS recent_model (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
