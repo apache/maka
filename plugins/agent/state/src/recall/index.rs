@@ -95,7 +95,21 @@ fn cell_final(
     Ok(())
 }
 
-fn insert(c: &Connection, spec: &RunSpec, mut message: Message) -> Result<(), StoreError> {
+#[derive(Clone, Copy)]
+enum MessageLayout {
+    /// Current schema (v59+): `folded` column removed.
+    Current,
+    /// Historical v55 schema (v11..=v58): `folded TEXT NOT NULL` still present
+    /// while migration 55 runs ahead of migration 59 on multi-hop upgrades.
+    LegacyV55Folded,
+}
+
+fn insert(
+    c: &Connection,
+    spec: &RunSpec,
+    mut message: Message,
+    layout: MessageLayout,
+) -> Result<(), StoreError> {
     if message.fields.is_empty() {
         message.fields.push(FieldSpan {
             field: match message.role {
@@ -120,9 +134,64 @@ fn insert(c: &Connection, spec: &RunSpec, mut message: Message) -> Result<(), St
         c.prepare_cached("DELETE FROM agent_recall_terms WHERE rowid=?")?
             .execute([id])?;
     }
-    let id: i64 = c
-        .prepare_cached("INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,folded,attachments,references_json,fields_json,origin_json,internal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session,sequence,ordinal) DO UPDATE SET message=excluded.message,body=excluded.body,folded=excluded.folded,attachments=excluded.attachments,references_json=excluded.references_json,fields_json=excluded.fields_json,origin_json=excluded.origin_json,internal=excluded.internal RETURNING id")?
-        .query_row(params![owner, spec.session_id, seq, ordinal, message.run.to_string(), message.turn_id, message.message_id, number(message.timestamp)?, serde_json::to_string(&message.role)?, message.body, folded, serde_json::to_string(&message.attachments)?, serde_json::to_string(&message.references)?, serde_json::to_string(&message.fields)?, message.origin.map(|o| serde_json::to_string(&o)).transpose()?, message.fields.iter().all(|f| f.internal)], |r| r.get(0))?;
+    let run = message.run.to_string();
+    let timestamp = number(message.timestamp)?;
+    let role = serde_json::to_string(&message.role)?;
+    let attachments = serde_json::to_string(&message.attachments)?;
+    let references = serde_json::to_string(&message.references)?;
+    let fields = serde_json::to_string(&message.fields)?;
+    let origin = message
+        .origin
+        .map(|o| serde_json::to_string(&o))
+        .transpose()?;
+    let internal = message.fields.iter().all(|f| f.internal);
+    let id: i64 = match layout {
+        MessageLayout::Current => c
+            .prepare_cached("INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,attachments,references_json,fields_json,origin_json,internal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session,sequence,ordinal) DO UPDATE SET message=excluded.message,body=excluded.body,attachments=excluded.attachments,references_json=excluded.references_json,fields_json=excluded.fields_json,origin_json=excluded.origin_json,internal=excluded.internal RETURNING id")?
+            .query_row(
+                params![
+                    owner,
+                    spec.session_id,
+                    seq,
+                    ordinal,
+                    run,
+                    message.turn_id,
+                    message.message_id,
+                    timestamp,
+                    role,
+                    message.body,
+                    attachments,
+                    references,
+                    fields,
+                    origin,
+                    internal,
+                ],
+                |r| r.get(0),
+            )?,
+        MessageLayout::LegacyV55Folded => c
+            .prepare_cached("INSERT INTO agent_recall_messages(owner,session,sequence,ordinal,run,turn,message,at,role,body,folded,attachments,references_json,fields_json,origin_json,internal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session,sequence,ordinal) DO UPDATE SET message=excluded.message,body=excluded.body,folded=excluded.folded,attachments=excluded.attachments,references_json=excluded.references_json,fields_json=excluded.fields_json,origin_json=excluded.origin_json,internal=excluded.internal RETURNING id")?
+            .query_row(
+                params![
+                    owner,
+                    spec.session_id,
+                    seq,
+                    ordinal,
+                    run,
+                    message.turn_id,
+                    message.message_id,
+                    timestamp,
+                    role,
+                    message.body,
+                    folded,
+                    attachments,
+                    references,
+                    fields,
+                    origin,
+                    internal,
+                ],
+                |r| r.get(0),
+            )?,
+    };
     c.prepare_cached("INSERT INTO agent_recall_terms(rowid,grams) VALUES(?,?)")?
         .execute(params![id, terms::grams(&folded)])?;
     Ok(())
@@ -132,6 +201,7 @@ fn project(
     spec: &RunSpec,
     fact: &RecordedFact,
     sequence: u64,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     if spec.schema_version != SCHEMA_VERSION
         || fact.schema_version != SCHEMA_VERSION
@@ -186,6 +256,7 @@ fn project(
                                 content,
                                 spec.input.clone(),
                             ),
+                            layout,
                         )?;
                     } else {
                         for (ordinal, source) in source_messages.into_iter().enumerate() {
@@ -201,7 +272,7 @@ fn project(
                                 spec.input.clone(),
                             );
                             indexed.origin = source.message.origin;
-                            insert(c, spec, indexed)?;
+                            insert(c, spec, indexed, layout)?;
                         }
                     }
                 }
@@ -210,7 +281,7 @@ fn project(
                     row.role = Role::User;
                     row.body = source;
                     row.references.push(spec.input.clone());
-                    insert(c, spec, row)?;
+                    insert(c, spec, row, layout)?;
                 }
                 RunInput::Continuation { .. }
                 | RunInput::CheckpointHandoff { .. }
@@ -562,7 +633,7 @@ fn project(
         // index_sources projects messages at the fact that consumed them.
         Rule::QueueSources => return Ok(()),
     }
-    insert(c, spec, message)
+    insert(c, spec, message, layout)
 }
 fn head(c: &Connection, spec: &RunSpec, sequence: u64) -> Result<(), StoreError> {
     let owner = serde_json::to_string(&spec.owner)?;
@@ -576,7 +647,25 @@ pub(crate) fn index_fact(
     fact: &RecordedFact,
     sequence: u64,
 ) -> Result<(), StoreError> {
-    match project(c, spec, fact, sequence) {
+    index_fact_with_layout(c, spec, fact, sequence, MessageLayout::Current)
+}
+#[cfg(test)]
+pub(crate) fn index_fact_v55(
+    c: &Connection,
+    spec: &RunSpec,
+    fact: &RecordedFact,
+    sequence: u64,
+) -> Result<(), StoreError> {
+    index_fact_with_layout(c, spec, fact, sequence, MessageLayout::LegacyV55Folded)
+}
+fn index_fact_with_layout(
+    c: &Connection,
+    spec: &RunSpec,
+    fact: &RecordedFact,
+    sequence: u64,
+    layout: MessageLayout,
+) -> Result<(), StoreError> {
+    match project(c, spec, fact, sequence, layout) {
         Ok(()) => {}
         Err(error)
             if matches!(
@@ -594,6 +683,14 @@ pub(crate) fn index_sources(
     c: &Connection,
     spec: &RunSpec,
     sequence: u64,
+) -> Result<(), StoreError> {
+    index_sources_with_layout(c, spec, sequence, MessageLayout::Current)
+}
+fn index_sources_with_layout(
+    c: &Connection,
+    spec: &RunSpec,
+    sequence: u64,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     let kind: String = c.query_row(
         "SELECT kind FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",
@@ -648,7 +745,7 @@ pub(crate) fn index_sources(
                 reference,
             );
             indexed.origin = message.message.origin;
-            insert(c, spec, indexed)?;
+            insert(c, spec, indexed, layout)?;
         }
         if let Some(next) = page.next {
             after = Some(next);
@@ -665,7 +762,7 @@ pub(super) fn rebuild(
 ) -> Result<(), StoreError> {
     store.session(session)?;
     let owner = store.key()?;
-    rebuild_session(c, &store.owner, &owner, session)
+    rebuild_session(c, &store.owner, &owner, session, MessageLayout::Current)
 }
 
 pub(crate) fn migrate_external_effect_observations(c: &Connection) -> Result<(), StoreError> {
@@ -694,7 +791,13 @@ pub(crate) fn migrate_external_effect_observations(c: &Connection) -> Result<(),
         .collect::<Result<_, _>>()?;
     for (owner_json, session) in sessions {
         let owner: RunOwner = serde_json::from_str(&owner_json)?;
-        rebuild_session(c, &owner, &owner_json, &session)?;
+        rebuild_session(
+            c,
+            &owner,
+            &owner_json,
+            &session,
+            MessageLayout::LegacyV55Folded,
+        )?;
     }
     Ok(())
 }
@@ -704,6 +807,7 @@ fn rebuild_session(
     expected_owner: &RunOwner,
     owner: &str,
     session: &str,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     c.execute("DELETE FROM agent_recall_terms WHERE rowid IN(SELECT id FROM agent_recall_messages WHERE owner=? AND session=?)",params![owner,session])?;
     for table in [
@@ -741,8 +845,8 @@ fn rebuild_session(
                     r.get(0)
                 })?;
             let fact: RecordedFact = serde_json::from_slice(&bytes)?;
-            index_fact(c, spec, &fact, unsigned(sequence)?)?;
-            index_sources(c, spec, unsigned(sequence)?)?;
+            index_fact_with_layout(c, spec, &fact, unsigned(sequence)?, layout)?;
+            index_sources_with_layout(c, spec, unsigned(sequence)?, layout)?;
             after = sequence;
         }
     }

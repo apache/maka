@@ -824,6 +824,19 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     assert!(!exists, "v59 must drop duplicate index {dropped} on {rel}");
                 }
             }
+            if has_runs > 0 && versions.contains(&60) {
+                let has_folded: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_recall_messages') WHERE name='folded')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    !has_folded,
+                    "v60 must drop agent_recall_messages.folded on {rel}"
+                );
+            }
             ledgers.insert(rel, versions);
         }
     }
