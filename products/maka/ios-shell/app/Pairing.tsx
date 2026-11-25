@@ -22,8 +22,8 @@ import { Input } from 'nsh/base';
 import { Haptics, SegmentedControl } from 'nsh/mobile';
 import type { HostStateSnapshot, ParsedTicketInfo } from './bridge';
 import { connectWebSocket, pathLabel } from './bridge';
+import { tr } from './locale';
 import { Action } from './ui';
-import { copy } from './copy';
 
 export function PairingOverlay(props: {
   ticketUri: () => string;
@@ -74,13 +74,11 @@ export function PairingOverlay(props: {
   return (
     <Scroll class="flex-1" contentClass="gap-4 p-5">
       <View class="flex-row items-center justify-between gap-4">
-        <Text class="text-xl font-semibold text-foreground">
-          {copy('Connect to a Host', '连接远端电脑', '連接遠端電腦')}
-        </Text>
-        <Action title={copy('Close', '关闭', '關閉')} onPress={props.onBack} />
+        <Text class="text-xl font-semibold text-foreground">{tr('Connect to a Host')}</Text>
+        <Action title={tr('Close')} onPress={props.onBack} />
       </View>
       <SegmentedControl
-        items={[{ title: copy('Signed invite', '签名邀请', '簽署邀請') }, { title: 'WebSocket' }]}
+        items={[{ title: tr('Signed invite') }, { title: tr('WebSocket') }]}
         testID="pairing-mode"
         selectedIndex={mode()}
         disabled={!editable() || !!props.parsedTicket()}
@@ -92,14 +90,12 @@ export function PairingOverlay(props: {
       <If when={mode() === 0}>
         <If when={!props.parsedTicket()}>
           <Text class="text-muted-foreground">
-            {copy(
+            {tr(
               'Paste the invite link. Next, compare the pairing code with the one shown on the Host.',
-              '粘贴邀请链接。下一步会显示需要和 Host 对照的验证码。',
-              '貼上邀請連結。下一步會顯示需要和 Host 核對的驗證碼。',
             )}
           </Text>
           <Input
-            accessibilityLabel="Pairing URI input"
+            accessibilityLabel={tr('Pairing URI input')}
             class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
             value={props.ticketUri()}
             onChange={({ value }) => props.onChangeUri(value)}
@@ -108,35 +104,23 @@ export function PairingOverlay(props: {
             autoCorrect={false}
           />
           <Input
-            accessibilityLabel="Relay URL"
+            accessibilityLabel={tr('Relay URL')}
             class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
             value={relayUrl()}
             onChange={({ value }) => relayUrl.set(value)}
-            placeholder={copy(
-              'Relay URL (for authenticated relays)',
-              'Relay URL（授权时填写）',
-              'Relay URL（授權時填寫）',
-            )}
+            placeholder={tr('Relay URL (for authenticated relays)')}
             autoCapitalize="none"
           />
           <Input
-            accessibilityLabel="Relay Bearer token"
+            accessibilityLabel={tr('Relay Bearer token')}
             class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
             value={relayToken()}
             onChange={({ value }) => relayToken.set(value)}
-            placeholder={copy(
-              'Relay Bearer (optional)',
-              'Relay Bearer（可选）',
-              'Relay Bearer（選填）',
-            )}
+            placeholder={tr('Relay Bearer (optional)')}
             masked
           />
           <Action
-            title={
-              props.busy()
-                ? copy('Connecting…', '正在连接…', '正在連接…')
-                : copy('Connect and compare', '连接并核对', '連接並核對')
-            }
+            title={props.busy() ? tr('Connecting…') : tr('Connect and compare')}
             primary
             disabled={!editable() || !props.ticketUri().trim()}
             onPress={() => props.onParse(relayUrl().trim() || undefined, relayToken() || undefined)}
@@ -151,24 +135,23 @@ export function PairingOverlay(props: {
               {pathLabel(props.parsedTicket()?.pathSummary)}
             </Text>
             <Text class="text-muted-foreground">
-              {copy(
-                'Continue only if the code matches the one shown on the Host.',
-                '只有与 Host 显示的验证码一致时才继续。',
-                '只有與 Host 顯示的驗證碼一致時才繼續。',
-              )}
+              {tr('Continue only if the code matches the one shown on the Host.')}
             </Text>
-            <Text accessibilityLabel="Live pairing code" class="text-3xl font-mono text-foreground">
+            <Text
+              accessibilityLabel={tr('Live pairing code')}
+              class="text-3xl font-mono text-foreground"
+            >
               {props.parsedTicket()?.sasCode}
             </Text>
             <Action
-              title={copy('Copy pairing code', '复制验证码', '複製驗證碼')}
+              title={tr('Copy pairing code')}
               onPress={() => {
                 const code = props.parsedTicket()?.sasCode;
                 if (code) Clipboard.writeText(code).catch((err) => directError.set(String(err)));
               }}
             />
             <Action
-              title={copy('Codes match — pair', '验证码一致，确认配对', '驗證碼一致，確認配對')}
+              title={tr('Codes match — pair')}
               primary
               disabled={!editable()}
               onPress={props.onConfirm}
@@ -178,14 +161,12 @@ export function PairingOverlay(props: {
       </If>
       <If when={mode() === 1}>
         <Text class="text-muted-foreground">
-          {copy(
+          {tr(
             'Use an authorized Bearer token. This mode does not redeem invites or save credentials.',
-            '使用已授权的 Bearer；此模式不兑换签名邀请，也不保存凭据。',
-            '使用已授權的 Bearer；此模式不兌換簽署邀請，也不儲存憑證。',
           )}
         </Text>
         <Input
-          accessibilityLabel="WebSocket URL"
+          accessibilityLabel={tr('WebSocket URL')}
           class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
           placeholder="wss://host/runtime-host"
           value={endpoint()}
@@ -193,39 +174,31 @@ export function PairingOverlay(props: {
           autoCapitalize="none"
         />
         <Input
-          accessibilityLabel="Host Root ID"
+          accessibilityLabel={tr('Host Root ID')}
           class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
-          placeholder="Host Root ID"
+          placeholder={tr('Host Root ID')}
           value={rootId()}
           onChange={({ value }) => rootId.set(value)}
           autoCapitalize="none"
         />
         <Input
-          accessibilityLabel="WebSocket client instance"
+          accessibilityLabel={tr('WebSocket client instance')}
           class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
-          placeholder={copy(
-            'Bound client instance (defaults to device Peer ID)',
-            '已绑定的 Client Instance（默认设备 Peer ID）',
-            '已綁定的 Client Instance（預設為裝置 Peer ID）',
-          )}
+          placeholder={tr('Bound client instance (defaults to device Peer ID)')}
           value={clientInstance()}
           onChange={({ value }) => clientInstance.set(value)}
           autoCapitalize="none"
         />
         <Input
-          accessibilityLabel="WebSocket Bearer"
+          accessibilityLabel={tr('WebSocket Bearer')}
           class="min-h-11 rounded-xl border border-border bg-card px-3 text-foreground"
-          placeholder="Bearer"
+          placeholder={tr('Bearer')}
           value={bearer()}
           onChange={({ value }) => bearer.set(value)}
           masked
         />
         <Action
-          title={
-            connecting()
-              ? copy('Connecting…', '正在连接…', '正在連接…')
-              : copy('Connect via WebSocket', '连接 WebSocket', '連接 WebSocket')
-          }
+          title={connecting() ? tr('Connecting…') : tr('Connect via WebSocket')}
           primary
           disabled={!editable() || !endpoint().trim() || !rootId().trim() || !bearer()}
           onPress={connect}

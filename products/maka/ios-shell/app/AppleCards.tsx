@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import { copy } from './copy';
 import { signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { token } from 'nsh';
+import { type MessageKey, tr } from './locale';
 
 export type PermissionAction =
   | 'once'
@@ -39,7 +39,7 @@ export interface PermissionCardItem {
   mode: PermissionCardMode;
   title: string;
   subtitle: string;
-  command: string;
+  command: () => string;
   /** Original grant::Permissions object required by PermissionDecision::Allow. */
   requestedPermissions?: Record<string, unknown>;
   /** True when the request is bound to a specific toolUseId so PermissionScope::Once is legal. */
@@ -49,7 +49,7 @@ export interface PermissionCardItem {
   unsupportedNotice?: string;
   resolved?: {
     allowed: boolean;
-    label: string;
+    label: MessageKey;
   };
 }
 
@@ -88,15 +88,16 @@ export function ApplePermissionCard(props: {
   busy?: () => boolean;
   onDecide: (decision: PermissionAction) => void;
 }) {
+  const resolved = () => props.item().resolved;
   const primaryLabel = () =>
     props.item().interactionKind === 'session_approval'
-      ? copy('Approve child decision', '批准子会话决定', '批准子對話決定')
+      ? tr('Approve child decision')
       : props.item().mode === 'binary'
-        ? copy('Allow', '允许', '允許')
-        : copy('Allow once', '允许本次', '允許這次');
-  const runLabel = () => copy('Allow for this turn', '本轮允许', '允許這個輪次');
-  const denyLabel = () => copy('Deny', '拒绝', '拒絕');
-  const cancelWaitLabel = () => copy('Stop waiting', '取消等待', '取消等待');
+        ? tr('Allow')
+        : tr('Allow once');
+  const runLabel = () => tr('Allow for this run');
+  const denyLabel = () => tr('Deny');
+  const cancelWaitLabel = () => tr('Stop waiting');
 
   const secondaryAction = (): PermissionAction => {
     const it = props.item();
@@ -108,14 +109,13 @@ export function ApplePermissionCard(props: {
 
   const secondaryLabel = (): string => {
     const it = props.item();
-    if (it.mode === 'computer_app' && it.allowAlways)
-      return copy('Always allow', '始终允许', '一律允許');
-    return copy('Allow for this conversation', '本会话允许', '允許這段對話');
+    if (it.mode === 'computer_app' && it.allowAlways) return tr('Always allow');
+    return tr('Allow for this session');
   };
 
   return (
     <View style={{ width: '100%' }}>
-      <If when={!!props.item().resolved}>
+      <If when={!!resolved()}>
         <View
           style={{
             flexDirection: 'row',
@@ -129,20 +129,21 @@ export function ApplePermissionCard(props: {
             style={{
               fontSize: 12.5,
               fontWeight: '600',
-              color: props.item().resolved?.allowed
-                ? token('muted-foreground')
-                : token('destructive'),
+              color: resolved()?.allowed ? token('muted-foreground') : token('destructive'),
             }}
           >
-            {props.item().resolved?.allowed ? '✓' : '✕'}
+            {resolved()?.allowed ? '✓' : '✕'}
           </Text>
           <Text style={{ fontSize: 12.5, color: token('subdued') }}>
-            {(props.item().resolved?.label ?? '') + ' · ' + props.item().command}
+            {tr('{label} · {command}', {
+              label: tr(resolved()!.label),
+              command: props.item().command(),
+            })}
           </Text>
         </View>
       </If>
 
-      <If when={!props.item().resolved && props.item().mode === 'unsupported'}>
+      <If when={!resolved() && props.item().mode === 'unsupported'}>
         <View
           style={{
             borderRadius: 22,
@@ -175,7 +176,8 @@ export function ApplePermissionCard(props: {
                 {props.item().title}
               </Text>
               <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-                {props.item().unsupportedNotice ?? '此类交互请求仅支持在桌面端 Maka 处理'}
+                {props.item().unsupportedNotice ??
+                  tr('This type of request can only be handled in Maka on desktop.')}
               </Text>
             </View>
           </View>
@@ -188,7 +190,7 @@ export function ApplePermissionCard(props: {
             }}
           >
             <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-              {props.item().command}
+              {props.item().command()}
             </Text>
           </View>
           <If when={props.item().interactionKind === 'system_permission'}>
@@ -215,7 +217,7 @@ export function ApplePermissionCard(props: {
         </View>
       </If>
 
-      <If when={!props.item().resolved && props.item().mode !== 'unsupported'}>
+      <If when={!resolved() && props.item().mode !== 'unsupported'}>
         <View
           style={{
             borderRadius: 22,
@@ -262,7 +264,7 @@ export function ApplePermissionCard(props: {
             }}
           >
             <Text style={{ fontSize: 12.5, lineHeight: 18, color: token('foreground') }}>
-              {props.item().command}
+              {props.item().command()}
             </Text>
           </View>
 
@@ -422,12 +424,14 @@ export function AppleQuestionCard(props: {
   };
 
   const customOptionLabel = (index: number) =>
-    index === 0 ? 'Question custom option' : 'Question custom option ' + String(index + 1);
+    index === 0
+      ? tr('Question custom option')
+      : tr('Question custom option {number}', { number: index + 1 });
 
   const customInputLabel = (index: number) =>
     index === 0
-      ? 'Custom question answer input'
-      : 'Custom question answer input ' + String(index + 1);
+      ? tr('Custom question answer input')
+      : tr('Custom question answer input {number}', { number: index + 1 });
 
   return (
     <View style={{ width: '100%' }}>
@@ -445,8 +449,9 @@ export function AppleQuestionCard(props: {
             ✓
           </Text>
           <Text style={{ fontSize: 12.5, color: token('subdued') }}>
-            {'已回答 · ' +
-              (props.item().answered ?? []).map((a) => (a === null ? '已跳过' : a)).join(' / ')}
+            {tr('Answered · {answers}', {
+              answers: (props.item().answered ?? []).map((a) => a ?? tr('Skipped')).join(' / '),
+            })}
           </Text>
         </View>
       </If>
@@ -489,7 +494,7 @@ export function AppleQuestionCard(props: {
                     </Text>
                     <If when={q().index === 0}>
                       <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
-                        选择一个方案，或自己输入补充说明
+                        {tr('Choose an option or write your own answer.')}
                       </Text>
                     </If>
                   </View>
@@ -507,7 +512,7 @@ export function AppleQuestionCard(props: {
                     {(opt) => (
                       <View
                         role="button"
-                        accessibilityLabel={'Question option ' + opt().label}
+                        accessibilityLabel={tr('Question option {label}', { label: opt().label })}
                         onPress={() => setSelectedFor(q().id, opt().id)}
                         style={{
                           minHeight: 48,
@@ -612,10 +617,10 @@ export function AppleQuestionCard(props: {
                       <Text
                         style={{ fontSize: 14.5, fontWeight: '500', color: token('foreground') }}
                       >
-                        其他，自己输入…
+                        {tr('Other answer…')}
                       </Text>
                       <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
-                        按你的想法自定义回复内容
+                        {tr('Write your own answer.')}
                       </Text>
                     </View>
                   </View>
@@ -632,7 +637,7 @@ export function AppleQuestionCard(props: {
                         accessibilityLabel={customInputLabel(q().index)}
                         value={customDrafts()[q().id] ?? ''}
                         onChange={({ value }: { value: string }) => setCustomFor(q().id, value)}
-                        placeholder="输入你的方案或补充说明…"
+                        placeholder={tr('Enter an alternative or add more details…')}
                         style={{
                           minHeight: 44,
                           borderRadius: 11,
@@ -655,7 +660,7 @@ export function AppleQuestionCard(props: {
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <View
               role="button"
-              accessibilityLabel="Skip question"
+              accessibilityLabel={tr('Skip question')}
               onPress={() => {
                 if (!props.busy?.()) {
                   props.onSubmit(props.item().questions.map(() => null));
@@ -672,12 +677,12 @@ export function AppleQuestionCard(props: {
               }}
             >
               <Text style={{ fontSize: 14, fontWeight: '600', color: token('muted-foreground') }}>
-                跳过
+                {tr('Skip')}
               </Text>
             </View>
             <View
               role="button"
-              accessibilityLabel="Submit question answer"
+              accessibilityLabel={tr('Submit question answer')}
               onPress={() => {
                 const ans = resolvedAnswers();
                 if (ans.length > 0 && ans.every((a) => a.length > 0) && !props.busy?.()) {
@@ -700,7 +705,7 @@ export function AppleQuestionCard(props: {
                   color: canSubmit() ? token('primary-foreground') : token('subdued'),
                 }}
               >
-                提交回答
+                {tr('Submit answers')}
               </Text>
             </View>
           </View>
@@ -724,7 +729,7 @@ export function TurnPanel(props: {
       {/* Level 1: Minimal inline disclosure */}
       <View
         role="button"
-        accessibilityLabel={'Toggle work details ' + props.id}
+        accessibilityLabel={tr('Toggle work details {id}', { id: props.id })}
         onPress={() => open.set(!open())}
         style={{
           flexDirection: 'row',
@@ -753,7 +758,7 @@ export function TurnPanel(props: {
               <View style={{ gap: 4 }}>
                 <View
                   role="button"
-                  accessibilityLabel={'Step ' + step().title}
+                  accessibilityLabel={tr('Step {title}', { title: step().title })}
                   onPress={() => {
                     if (step().kind === 'edit') {
                       props.onOpenDiff(step().diffPath);

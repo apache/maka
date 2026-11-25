@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { copy } from './copy';
+import { tr } from './locale';
 import { Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import { Switch } from 'nsh/mobile';
+import { LanguagePicker } from './LanguagePicker';
 import {
   agentListDirectoryChildren,
   type AgentBackendPreference,
@@ -119,13 +120,13 @@ export function parseUnifiedWorkspacePatch(patch: string, filterPath?: string): 
 function scheduleStatusLabel(status: AgentScheduledSummary['status']): string {
   switch (status) {
     case 'active':
-      return '运行中';
+      return tr('Enabled');
     case 'paused':
-      return '已暂停';
+      return tr('Paused');
     case 'completed':
-      return '已完成';
+      return tr('Completed');
     case 'expired':
-      return '已过期';
+      return tr('Expired');
   }
 }
 
@@ -151,13 +152,11 @@ export function DiffOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Back from diff"
+          accessibilityLabel={tr('Back from diff')}
           onPress={props.onBack}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center' }}
         >
-          <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {copy('‹ Back', '‹ 返回', '‹ 返回')}
-          </Text>
+          <Text style={{ fontSize: 16, color: token('foreground') }}>{tr('‹ Back')}</Text>
         </View>
         <Text style={{ fontSize: 15, fontWeight: '600', color: token('foreground') }}>
           {props.title()}
@@ -175,7 +174,7 @@ export function DiffOverlay(props: {
         }}
       >
         <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-          轻点任意一行可引用发给 Maka
+          {tr('Tap any line to quote it to Maka')}
         </Text>
         <If when={props.truncatedNotice() !== null}>
           <Text style={{ fontSize: 12, color: token('warning') }}>
@@ -187,7 +186,9 @@ export function DiffOverlay(props: {
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 8, paddingBottom: 32 }}>
         <If when={props.lines().length === 0}>
           <View style={{ padding: 24, alignItems: 'center' }}>
-            <Text style={{ fontSize: 14, color: token('subdued') }}>当前工作区暂无未提交变更</Text>
+            <Text style={{ fontSize: 14, color: token('subdued') }}>
+              {tr('No uncommitted changes in this workspace')}
+            </Text>
           </View>
         </If>
 
@@ -215,7 +216,7 @@ export function DiffOverlay(props: {
               <If when={line().kind !== 'header'}>
                 <View
                   role="button"
-                  accessibilityLabel={'Quote diff line ' + line().num}
+                  accessibilityLabel={tr('Quote diff line {line}', { line: line().num })}
                   onPress={() => props.onQuoteLine(line())}
                   style={{
                     paddingHorizontal: 14,
@@ -279,31 +280,29 @@ export function AutomationsOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Back from automations"
+          accessibilityLabel={tr('Back from automations')}
           onPress={props.onBack}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center' }}
         >
-          <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {copy('‹ Back', '‹ 返回', '‹ 返回')}
-          </Text>
+          <Text style={{ fontSize: 16, color: token('foreground') }}>{tr('‹ Back')}</Text>
         </View>
         <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-          定时任务
+          {tr('Automations')}
         </Text>
         <View
           role="button"
-          accessibilityLabel="Refresh automations"
+          accessibilityLabel={tr('Refresh automations')}
           onPress={props.onRefresh}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center', alignItems: 'flex-end' }}
         >
-          <Text style={{ fontSize: 13.5, color: token('muted-foreground') }}>刷新</Text>
+          <Text style={{ fontSize: 13.5, color: token('muted-foreground') }}>{tr('Refresh')}</Text>
         </View>
       </View>
 
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 12 }}>
         <If when={props.loading()}>
           <Text style={{ fontSize: 13.5, color: token('muted-foreground') }}>
-            正在读取远端 Host 定时任务…
+            {tr('Loading automations from the remote Host…')}
           </Text>
         </If>
 
@@ -319,10 +318,12 @@ export function AutomationsOverlay(props: {
             }}
           >
             <Text style={{ fontSize: 15, fontWeight: '600', color: token('foreground') }}>
-              暂无自动化任务
+              {tr('No automations yet')}
             </Text>
             <Text style={{ fontSize: 13, color: token('muted-foreground') }}>
-              在对话中让 Maka 创建定时巡检或日报任务后，会同步展示在这里。
+              {tr(
+                'Ask Maka in a conversation to schedule checks or daily reports. The tasks will appear here.',
+              )}
             </Text>
           </View>
         </If>
@@ -360,13 +361,15 @@ export function AutomationsOverlay(props: {
                 </Text>
               </View>
               <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-                {(task().approved ? '已批准' : '待审批') +
-                  (task().script ? ' · 脚本任务' : ' · 会话任务') +
-                  (task().nextFireAt ? ' · 已排程' : '')}
+                {tr('{approval} · {taskType}{scheduled, select, yes { · Scheduled} other {}}', {
+                  approval: task().approved ? tr('Approved') : tr('Waiting for approval'),
+                  taskType: task().script ? tr('Script task') : tr('Conversation task'),
+                  scheduled: task().nextFireAt ? 'yes' : 'no',
+                })}
               </Text>
               <If when={!!task().lastError}>
                 <Text style={{ fontSize: 12, color: token('destructive') }}>
-                  {'上次异常: ' + (task().lastError ?? '')}
+                  {tr('Last error: {error}', { error: task().lastError ?? '' })}
                 </Text>
               </If>
             </View>
@@ -403,16 +406,14 @@ export function SettingsOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Back from settings"
+          accessibilityLabel={tr('Back from settings')}
           onPress={props.onBack}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center' }}
         >
-          <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {copy('‹ Back', '‹ 返回', '‹ 返回')}
-          </Text>
+          <Text style={{ fontSize: 16, color: token('foreground') }}>{tr('‹ Back')}</Text>
         </View>
         <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-          {copy('Settings', '设置', '設定')}
+          {tr('Settings')}
         </Text>
         <View style={{ minWidth: 44 }} />
       </View>
@@ -422,7 +423,7 @@ export function SettingsOverlay(props: {
           <Text
             style={{ fontSize: 12, fontWeight: '600', color: token('subdued'), paddingLeft: 6 }}
           >
-            外观与交互
+            {tr('Appearance & interaction')}
           </Text>
           <View
             style={{
@@ -443,14 +444,15 @@ export function SettingsOverlay(props: {
               }}
             >
               <Text style={{ fontSize: 15, color: token('foreground') }}>
-                {copy('Steer while the agent is running', '运行中发送直接纠偏', '執行中直接導正')}
+                {tr('Steer while the agent is running')}
               </Text>
               <Switch
-                accessibilityLabel="Steer while running"
+                accessibilityLabel={tr('Steer while the agent is running')}
                 checked={props.defaultDelivery() === 'steer'}
                 onChange={props.onToggleDelivery}
               />
             </View>
+            <LanguagePicker />
           </View>
         </View>
 
@@ -458,7 +460,7 @@ export function SettingsOverlay(props: {
           <Text
             style={{ fontSize: 12, fontWeight: '600', color: token('subdued'), paddingLeft: 6 }}
           >
-            已配对电脑
+            {tr('Paired computers')}
           </Text>
           <View
             style={{
@@ -472,7 +474,7 @@ export function SettingsOverlay(props: {
             <If when={props.hostState().hosts.length === 0}>
               <View style={{ padding: 16 }}>
                 <Text style={{ fontSize: 14, color: token('subdued') }}>
-                  {copy('No paired Hosts', '尚未配对任何远端 Host', '尚未配對任何遠端 Host')}
+                  {tr('No paired Hosts')}
                 </Text>
               </View>
             </If>
@@ -499,7 +501,7 @@ export function SettingsOverlay(props: {
                         {item().hostName}
                       </Text>
                       <Text style={{ fontSize: 12, color: token('subdued') }}>
-                        {'Root ' + item().rootId.slice(0, 12)}
+                        {tr('Root {id}', { id: item().rootId.slice(0, 12) })}
                       </Text>
                     </View>
                     <Text
@@ -509,9 +511,7 @@ export function SettingsOverlay(props: {
                         color: item().connected ? token('success') : token('subdued'),
                       }}
                     >
-                      {item().connected
-                        ? copy('Connected', '当前连接', '目前連線')
-                        : copy('Offline', '离线', '離線')}
+                      {item().connected ? tr('Connected') : tr('Offline')}
                     </Text>
                   </View>
 
@@ -519,7 +519,7 @@ export function SettingsOverlay(props: {
                     <If when={item().connected}>
                       <View
                         role="button"
-                        accessibilityLabel="Disconnect active host"
+                        accessibilityLabel={tr('Disconnect active Host')}
                         onPress={props.onDisconnect}
                         style={{
                           flex: 1,
@@ -533,7 +533,7 @@ export function SettingsOverlay(props: {
                         <Text
                           style={{ fontSize: 13.5, fontWeight: '600', color: token('foreground') }}
                         >
-                          断开连接
+                          {tr('Disconnect')}
                         </Text>
                       </View>
                     </If>
@@ -541,7 +541,7 @@ export function SettingsOverlay(props: {
                     <If when={!item().connected}>
                       <View
                         role="button"
-                        accessibilityLabel={'Connect ' + item().hostName}
+                        accessibilityLabel={tr('Connect {name}', { name: item().hostName })}
                         onPress={() => props.onConnectHost(item())}
                         style={{
                           flex: 1,
@@ -559,7 +559,7 @@ export function SettingsOverlay(props: {
                             color: token('primary-foreground'),
                           }}
                         >
-                          {copy('Connect', '连接', '連接')}
+                          {tr('Connect')}
                         </Text>
                       </View>
                     </If>
@@ -567,16 +567,18 @@ export function SettingsOverlay(props: {
                     <If when={!!item().relayUrls?.length}>
                       <View
                         role="button"
-                        accessibilityLabel={'Relay Bearer ' + item().hostName}
+                        accessibilityLabel={tr('Relay Bearer for {name}', {
+                          name: item().hostName,
+                        })}
                         class="min-h-11 justify-center px-3"
                         onPress={() => props.onRelayAuthorization(item())}
                       >
-                        <Text class="text-foreground">Relay Bearer</Text>
+                        <Text class="text-foreground">{tr('Relay Bearer')}</Text>
                       </View>
                     </If>
                     <View
                       role="button"
-                      accessibilityLabel={'Remove ' + item().hostName}
+                      accessibilityLabel={tr('Remove {name}', { name: item().hostName })}
                       onPress={() => props.onRemoveHost(item().rootId)}
                       style={{
                         minWidth: 74,
@@ -591,7 +593,7 @@ export function SettingsOverlay(props: {
                       <Text
                         style={{ fontSize: 13.5, fontWeight: '600', color: token('destructive') }}
                       >
-                        {copy('Remove', '移除', '移除')}
+                        {tr('Remove')}
                       </Text>
                     </View>
                   </View>
@@ -601,7 +603,7 @@ export function SettingsOverlay(props: {
 
             <View
               role="button"
-              accessibilityLabel="Pair from settings"
+              accessibilityLabel={tr('Pair a new computer')}
               onPress={props.onOpenPairing}
               style={{
                 minHeight: 48,
@@ -612,7 +614,7 @@ export function SettingsOverlay(props: {
               }}
             >
               <Text style={{ fontSize: 15, fontWeight: '500', color: token('foreground') }}>
-                配对新电脑
+                {tr('Pair a new computer')}
               </Text>
               <Text style={{ fontSize: 15, color: token('subdued') }}>＋</Text>
             </View>
@@ -623,7 +625,7 @@ export function SettingsOverlay(props: {
           <Text
             style={{ fontSize: 12, fontWeight: '600', color: token('subdued'), paddingLeft: 6 }}
           >
-            本机身份
+            {tr('Device identity')}
           </Text>
           <View
             style={{
@@ -635,9 +637,11 @@ export function SettingsOverlay(props: {
               gap: 4,
             }}
           >
-            <Text style={{ fontSize: 13, color: token('muted-foreground') }}>Device Peer ID</Text>
+            <Text style={{ fontSize: 13, color: token('muted-foreground') }}>
+              {tr('Device Peer ID')}
+            </Text>
             <Text style={{ fontSize: 12, color: token('subdued') }}>
-              {props.hostState().devicePeerId || '初始化中…'}
+              {props.hostState().devicePeerId || tr('Initializing…')}
             </Text>
           </View>
         </View>
@@ -688,16 +692,14 @@ export function NewRoomOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Cancel new room"
+          accessibilityLabel={tr('Cancel room creation')}
           onPress={props.onBack}
           style={{ minWidth: 44, minHeight: 40, justifyContent: 'center' }}
         >
-          <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {copy('‹ Cancel', '‹ 取消', '‹ 取消')}
-          </Text>
+          <Text style={{ fontSize: 16, color: token('foreground') }}>{tr('‹ Cancel')}</Text>
         </View>
         <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-          新建协作 Room
+          {tr('New room')}
         </Text>
         <View style={{ minWidth: 44 }} />
       </View>
@@ -714,13 +716,13 @@ export function NewRoomOverlay(props: {
           }}
         >
           <Text style={{ fontSize: 13.5, fontWeight: '600', color: token('muted-foreground') }}>
-            Room 名称
+            {tr('Room name')}
           </Text>
           <Input
-            accessibilityLabel="New room title input"
+            accessibilityLabel={tr('Room name')}
             value={title()}
             onChange={({ value }: { value: string }) => title.set(value)}
-            placeholder="例如：发布前联调 Room"
+            placeholder={tr('For example: Pre-release testing')}
             style={{
               minHeight: 42,
               borderRadius: 11,
@@ -739,7 +741,7 @@ export function NewRoomOverlay(props: {
               marginTop: 6,
             }}
           >
-            所属工作区
+            {tr('Workspace')}
           </Text>
 
           <If when={props.projects().filter((p) => !p.archived && !!p.path).length > 0}>
@@ -751,7 +753,9 @@ export function NewRoomOverlay(props: {
                 {(proj) => (
                   <View
                     role="button"
-                    accessibilityLabel={'Room workspace ' + proj().name}
+                    accessibilityLabel={tr('Use project {name} for this room', {
+                      name: proj().name,
+                    })}
                     onPress={() => {
                       if (proj().path) {
                         selected.set({
@@ -789,7 +793,9 @@ export function NewRoomOverlay(props: {
                 {(root) => (
                   <View
                     role="button"
-                    accessibilityLabel={'Room root ' + root().name}
+                    accessibilityLabel={tr('Use directory {name} for this room', {
+                      name: root().name,
+                    })}
                     onPress={() => selected.set({ kind: 'directory', path: root().path })}
                     style={{
                       paddingHorizontal: 12,
@@ -812,7 +818,7 @@ export function NewRoomOverlay(props: {
 
         <View
           role="button"
-          accessibilityLabel="Create room submit"
+          accessibilityLabel={tr('Create room')}
           onPress={() => {
             const cleanTitle = title().trim();
             if (cleanTitle.length > 0 && !props.busy()) {
@@ -838,7 +844,7 @@ export function NewRoomOverlay(props: {
                   : token('subdued'),
             }}
           >
-            {props.busy() ? '正在创建…' : '创建 Room'}
+            {props.busy() ? tr('Creating…') : tr('Create room')}
           </Text>
         </View>
       </Scroll>
@@ -923,7 +929,7 @@ export function WorkspacePickerOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Back from workspace picker"
+          accessibilityLabel={tr('Back from workspace picker')}
           onPress={() => {
             if (browsingPath() !== null) {
               dirBrowseGen += 1;
@@ -940,11 +946,11 @@ export function WorkspacePickerOverlay(props: {
           style={{ minWidth: 52, minHeight: 40, justifyContent: 'center' }}
         >
           <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {browsingPath() !== null ? '‹ 根目录' : copy('‹ Back', '‹ 返回', '‹ 返回')}
+            {browsingPath() !== null ? tr('‹ Root directory') : tr('‹ Back')}
           </Text>
         </View>
         <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-          选择工作区
+          {tr('Choose workspace')}
         </Text>
         <View style={{ minWidth: 52 }} />
       </View>
@@ -954,7 +960,7 @@ export function WorkspacePickerOverlay(props: {
           <View style={{ gap: 10 }}>
             <View
               role="button"
-              accessibilityLabel="Use current directory"
+              accessibilityLabel={tr('Use current directory')}
               onPress={() => {
                 const p = browsingPath()!;
                 const name = p.split('/').filter(Boolean).pop() ?? p;
@@ -972,7 +978,9 @@ export function WorkspacePickerOverlay(props: {
               <Text
                 style={{ fontSize: 14.5, fontWeight: '600', color: token('primary-foreground') }}
               >
-                {'使用当前目录 · ' + (browsingPath()?.split('/').filter(Boolean).pop() ?? '')}
+                {tr('Use current directory · {name}', {
+                  name: browsingPath()?.split('/').filter(Boolean).pop() ?? '',
+                })}
               </Text>
             </View>
 
@@ -980,7 +988,9 @@ export function WorkspacePickerOverlay(props: {
               <Text style={{ fontSize: 12.5, color: token('destructive') }}>{dirError()}</Text>
             </If>
             <If when={loadingDir()}>
-              <Text style={{ fontSize: 13, color: token('subdued') }}>正在读取子目录…</Text>
+              <Text style={{ fontSize: 13, color: token('subdued') }}>
+                {tr('Loading subdirectories…')}
+              </Text>
             </If>
 
             <Each of={children()} key={(d) => d.path}>
@@ -1000,7 +1010,7 @@ export function WorkspacePickerOverlay(props: {
                 >
                   <View
                     role="button"
-                    accessibilityLabel={'Select dir ' + dir().name}
+                    accessibilityLabel={tr('Select directory {name}', { name: dir().name })}
                     onPress={() =>
                       props.onSelect({ kind: 'directory', path: dir().path }, dir().name)
                     }
@@ -1013,7 +1023,7 @@ export function WorkspacePickerOverlay(props: {
                   </View>
                   <View
                     role="button"
-                    accessibilityLabel={'Browse dir ' + dir().name}
+                    accessibilityLabel={tr('Browse directory {name}', { name: dir().name })}
                     onPress={() => openDirectory(dir().path)}
                     style={{
                       paddingHorizontal: 10,
@@ -1022,7 +1032,9 @@ export function WorkspacePickerOverlay(props: {
                       backgroundColor: token('muted'),
                     }}
                   >
-                    <Text style={{ fontSize: 12, color: token('muted-foreground') }}>进入 ›</Text>
+                    <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
+                      {tr('Browse ›')}
+                    </Text>
                   </View>
                 </View>
               )}
@@ -1031,7 +1043,7 @@ export function WorkspacePickerOverlay(props: {
             <If when={dirAfter() !== null}>
               <View
                 role="button"
-                accessibilityLabel="Load more directories"
+                accessibilityLabel={tr('Load more directories')}
                 onPress={loadMoreDirectories}
                 style={{
                   minHeight: 40,
@@ -1044,7 +1056,7 @@ export function WorkspacePickerOverlay(props: {
                 }}
               >
                 <Text style={{ fontSize: 13, fontWeight: '600', color: token('muted-foreground') }}>
-                  {loadingMoreDir() ? '正在加载更多目录…' : '加载更多目录'}
+                  {loadingMoreDir() ? tr('Loading more directories…') : tr('Load more directories')}
                 </Text>
               </View>
             </If>
@@ -1056,7 +1068,7 @@ export function WorkspacePickerOverlay(props: {
             <If when={props.projects().filter((p) => !p.archived && !!p.path).length > 0}>
               <View style={{ gap: 6 }}>
                 <Text style={{ fontSize: 12.5, fontWeight: '600', color: token('subdued') }}>
-                  已有项目
+                  {tr('Existing projects')}
                 </Text>
                 <Each
                   of={props.projects().filter((p) => !p.archived && !!p.path)}
@@ -1065,7 +1077,7 @@ export function WorkspacePickerOverlay(props: {
                   {(proj) => (
                     <View
                       role="button"
-                      accessibilityLabel={'Pick project ' + proj().name}
+                      accessibilityLabel={tr('Select project {name}', { name: proj().name })}
                       onPress={() => {
                         if (proj().path) {
                           props.onSelect(
@@ -1105,7 +1117,7 @@ export function WorkspacePickerOverlay(props: {
             <If when={props.roots().length > 0}>
               <View style={{ gap: 6 }}>
                 <Text style={{ fontSize: 12.5, fontWeight: '600', color: token('subdued') }}>
-                  远端目录
+                  {tr('Remote directories')}
                 </Text>
                 <Each of={props.roots()} key={(r) => r.path}>
                   {(root) => (
@@ -1124,7 +1136,7 @@ export function WorkspacePickerOverlay(props: {
                     >
                       <View
                         role="button"
-                        accessibilityLabel={'Pick root ' + root().name}
+                        accessibilityLabel={tr('Select directory {name}', { name: root().name })}
                         onPress={() =>
                           props.onSelect({ kind: 'directory', path: root().path }, root().name)
                         }
@@ -1141,7 +1153,7 @@ export function WorkspacePickerOverlay(props: {
                       </View>
                       <View
                         role="button"
-                        accessibilityLabel={'Browse root ' + root().name}
+                        accessibilityLabel={tr('Browse directory {name}', { name: root().name })}
                         onPress={() => openDirectory(root().path)}
                         style={{
                           paddingHorizontal: 10,
@@ -1151,7 +1163,7 @@ export function WorkspacePickerOverlay(props: {
                         }}
                       >
                         <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
-                          子目录 ›
+                          {tr('Subdirectories ›')}
                         </Text>
                       </View>
                     </View>
@@ -1218,29 +1230,27 @@ export function ModelPickerOverlay(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Back from model picker"
+          accessibilityLabel={tr('Back from model picker')}
           onPress={props.onBack}
           style={{ minWidth: 52, minHeight: 40, justifyContent: 'center' }}
         >
-          <Text style={{ fontSize: 16, color: token('foreground') }}>
-            {copy('‹ Back', '‹ 返回', '‹ 返回')}
-          </Text>
+          <Text style={{ fontSize: 16, color: token('foreground') }}>{tr('‹ Back')}</Text>
         </View>
         <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-          模型与思考强度
+          {tr('Model and reasoning effort')}
         </Text>
         <View style={{ minWidth: 52 }} />
       </View>
 
       <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
         <Input
-          accessibilityLabel="Search models input"
+          accessibilityLabel={tr('Search models')}
           value={query()}
           onChange={({ value }: { value: string }) => {
             query.set(value);
             props.onSearch(value);
           }}
-          placeholder="搜索模型名称或来源…"
+          placeholder={tr('Search models and sources…')}
           style={{
             minHeight: 38,
             borderRadius: 11,
@@ -1254,7 +1264,7 @@ export function ModelPickerOverlay(props: {
 
       <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 16, gap: 10 }}>
         <If when={props.loading()}>
-          <Text style={{ fontSize: 13, color: token('subdued') }}>正在加载模型目录…</Text>
+          <Text style={{ fontSize: 13, color: token('subdued') }}>{tr('Loading models…')}</Text>
         </If>
 
         <If when={!props.loading() && props.choices().length === 0}>
@@ -1269,10 +1279,10 @@ export function ModelPickerOverlay(props: {
             }}
           >
             <Text style={{ fontSize: 14.5, fontWeight: '600', color: token('foreground') }}>
-              暂无可用模型
+              {tr('No model is available')}
             </Text>
             <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-              请在远端 Host 配置模型连接后重试。
+              {tr('Set up a model connection on the remote Host, then try again.')}
             </Text>
           </View>
         </If>
@@ -1307,7 +1317,7 @@ export function ModelPickerOverlay(props: {
               >
                 <View
                   role="button"
-                  accessibilityLabel={'Model ' + choice().label}
+                  accessibilityLabel={tr('Model {name}', { name: choice().label })}
                   onPress={() => {
                     if (choice().selection.kind === 'model' && choice().thinkingLevels.length > 0) {
                       pendingChoice.set(expanded() ? null : choice());
@@ -1322,8 +1332,11 @@ export function ModelPickerOverlay(props: {
                       {choice().label}
                     </Text>
                     <Text style={{ fontSize: 12, color: token('subdued') }}>
-                      {choice().sourceName +
-                        (choice().thinkingLevels.length > 0 ? ' · 支持思考强度' : '')}
+                      {choice().thinkingLevels.length > 0
+                        ? tr('{source} · Supports reasoning effort', {
+                            source: choice().sourceName,
+                          })
+                        : choice().sourceName}
                     </Text>
                   </View>
                   <If when={isSelectedChoice(choice())}>
@@ -1343,7 +1356,9 @@ export function ModelPickerOverlay(props: {
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 2 }}>
                     <View
                       role="button"
-                      accessibilityLabel={'Thinking default ' + choice().label}
+                      accessibilityLabel={tr('Use default effort for {name}', {
+                        name: choice().label,
+                      })}
                       onPress={() => applyChoiceWithThinking(choice(), null)}
                       style={{
                         paddingHorizontal: 10,
@@ -1365,14 +1380,17 @@ export function ModelPickerOverlay(props: {
                               : token('muted-foreground'),
                         }}
                       >
-                        默认
+                        {tr('Default')}
                       </Text>
                     </View>
                     <Each of={choice().thinkingLevels} key={(lvl) => lvl}>
                       {(lvl) => (
                         <View
                           role="button"
-                          accessibilityLabel={'Thinking ' + lvl() + ' ' + choice().label}
+                          accessibilityLabel={tr('Use effort {level} for {name}', {
+                            level: lvl(),
+                            name: choice().label,
+                          })}
                           onPress={() => applyChoiceWithThinking(choice(), lvl())}
                           style={{
                             paddingHorizontal: 10,

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { copy } from './copy';
 import { describeChildDecision, describePermissions } from './approval';
 import {
   cleanup,
@@ -36,6 +35,7 @@ import {
 } from 'nsh';
 import { ContextMenu, Input, Menu } from 'nsh/base';
 import { Haptics } from 'nsh/mobile';
+import { installIosLocaleCatalog, type MessageKey, tr } from './locale';
 import { PairingOverlay } from './Pairing';
 import { Action, Command, Feedback, Panel, confirmDestructive, glass } from './ui';
 import { installTheme, motion } from './theme';
@@ -155,19 +155,20 @@ interface ChatMessage {
 }
 
 function formatBackendPill(backend: AgentBackendPreference | null | undefined): string {
-  if (!backend) return copy('Default model', '默认模型', '預設模型');
+  if (!backend) return tr('Default model');
   if (backend.kind === 'executor') return backend.selection.executor;
-  const lvl = backend.thinkingLevel ? ' · ' + backend.thinkingLevel : '';
-  return backend.modelId + lvl;
+  return backend.thinkingLevel
+    ? tr('{model} · {level}', { model: backend.modelId, level: backend.thinkingLevel })
+    : backend.modelId;
 }
 
 function toolTitleOf(tool: AgentHistoryChunk['tool']): string {
-  if (!tool) return '执行工具';
+  if (!tool) return tr('Running tool');
   if (typeof tool.title === 'string' && tool.title.length > 0) return tool.title;
   if (tool.title && typeof tool.title === 'object' && typeof tool.title.text === 'string') {
     return tool.title.text;
   }
-  return tool.name ?? '执行工具';
+  return tool.name ?? tr('Running tool');
 }
 
 function historyRowKey({ position: p, field }: AgentHistoryChunk): string {
@@ -257,7 +258,9 @@ function mapHistoryPageToMessages(
           id: item.id,
           sourceMessageId: item.id,
           role: 'user',
-          author: '你',
+          get author() {
+            return tr('You');
+          },
           text: item.content.text,
           reactions,
         };
@@ -302,7 +305,9 @@ function mapHistoryPageToMessages(
       pendingSteps.push({
         id: 'think-' + String(stepCounter),
         kind: 'thinking',
-        title: '思考过程',
+        get title() {
+          return tr('Thinking');
+        },
         detail: ch.text.slice(0, 600),
       });
       continue;
@@ -320,7 +325,9 @@ function mapHistoryPageToMessages(
       pendingSteps.push({
         id: ch.tool.toolUseId ?? 'tool-' + String(stepCounter),
         kind,
-        title: toolTitleOf(ch.tool),
+        get title() {
+          return toolTitleOf(ch.tool);
+        },
         detail: ch.text ? ch.text.slice(0, 400) : undefined,
       });
       continue;
@@ -335,7 +342,13 @@ function mapHistoryPageToMessages(
         role: 'agent',
         author: 'Maka',
         text: ch.text,
-        turnSummary: steps ? '执行过程 · ' + String(steps.length) + ' 步' : undefined,
+        get turnSummary() {
+          return steps
+            ? tr('Execution · {count, plural, one {# step} other {# steps}}', {
+                count: steps.length,
+              })
+            : undefined;
+        },
         steps,
       });
     }
@@ -346,8 +359,14 @@ function mapHistoryPageToMessages(
       id: 'steps-tail',
       role: 'agent',
       author: 'Maka',
-      text: '正在整理结果…',
-      turnSummary: '执行过程 · ' + String(pendingSteps.length) + ' 步',
+      get text() {
+        return tr('Preparing results…');
+      },
+      get turnSummary() {
+        return tr('Execution · {count, plural, one {# step} other {# steps}}', {
+          count: pendingSteps.length,
+        });
+      },
       steps: pendingSteps,
     });
   }
@@ -394,21 +413,18 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         interactionKind: 'permissions',
         mode: 'permissions',
         canAllowOnce: req.toolUseId !== null && req.toolUseId !== undefined,
-        title: copy(
-          'Additional workspace permissions requested',
-          '请求工作区额外权限',
-          '要求額外工作區權限',
-        ),
+        get title() {
+          return tr('Additional workspace permissions requested');
+        },
         subtitle: req.request.reason + cwd,
-        command:
-          cmd +
-          '\n' +
-          (grantDetails ??
-            copy(
-              'This permission shape must be reviewed on Desktop.',
-              '请在桌面端审核这项权限。',
-              '請在桌面端審核這項權限。',
-            )),
+        command() {
+          return (
+            cmd +
+            '\n' +
+            (describePermissions(req.request.permissions) ??
+              tr('Review this permission request on Desktop.'))
+          );
+        },
         allowBlocked: grantDetails === null,
         requestedPermissions: req.request.permissions,
       });
@@ -421,13 +437,11 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         requestId: rec.requestId,
         interactionKind: 'computer_app',
         mode: 'computer_app',
-        title: copy(
-          `Allow control of ${req.display.name}?`,
-          `允许控制桌面应用 ${req.display.name}？`,
-          `允許控制桌面應用程式 ${req.display.name}？`,
-        ),
+        get title() {
+          return tr('Allow control of {name}?', { name: req.display.name });
+        },
         subtitle: req.display.warning ?? req.display.appPath,
-        command: req.display.appPath,
+        command: () => req.display.appPath,
         allowAlways: req.allowAlways,
       });
       continue;
@@ -439,13 +453,11 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         requestId: rec.requestId,
         interactionKind: 'service_approval',
         mode: 'binary',
-        title: copy(
-          `Allow service call ${req.toolName}?`,
-          `允许调用服务 ${req.toolName}？`,
-          `允許呼叫服務 ${req.toolName}？`,
-        ),
+        get title() {
+          return tr('Allow service call {tool}?', { tool: req.toolName });
+        },
         subtitle: req.service + '.' + req.method,
-        command: req.binding + ' → ' + req.service + '.' + req.method,
+        command: () => req.binding + ' → ' + req.service + '.' + req.method,
       });
       continue;
     }
@@ -457,26 +469,23 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         requestId: rec.requestId,
         interactionKind: 'session_approval',
         mode: 'binary',
-        title: copy(
-          'Allow this child conversation decision?',
-          '允许子会话审批决策？',
-          '允許這項子對話的審批決定？',
-        ),
-        subtitle: copy('Child conversation ', '子会话 ', '子對話 ') + req.sessionId,
-        command:
-          copy('Request ', '请求 ', '要求 ') +
-          req.requestId +
-          '\n' +
-          (decision ??
-            copy(
-              'Review this decision on Desktop.',
-              '请在桌面端审核此决定。',
-              '請在桌面端審核此決定。',
-            )) +
-          '\n' +
-          JSON.stringify(req.answer, null, 2) +
-          '\n' +
-          JSON.stringify(req.basis, null, 2),
+        get title() {
+          return tr('Allow this child conversation decision?');
+        },
+        get subtitle() {
+          return tr('Child conversation {id}', { id: req.sessionId });
+        },
+        command() {
+          return (
+            tr('Request {id}', { id: req.requestId }) +
+            '\n' +
+            (describeChildDecision(req.answer) ?? tr('Review this decision on Desktop.')) +
+            '\n' +
+            JSON.stringify(req.answer, null, 2) +
+            '\n' +
+            JSON.stringify(req.basis, null, 2)
+          );
+        },
         allowBlocked: decision === null,
       });
       continue;
@@ -488,50 +497,44 @@ function mapInteractionToCards(records: AgentInteractionRecord[]): {
         requestId: rec.requestId,
         interactionKind: 'client_capability',
         mode: 'binary',
-        title: copy(
-          'Allow access to the client capability?',
-          '允许访问客户端能力？',
-          '允許存取用戶端功能？',
-        ),
-        subtitle: req.target.capability ?? 'client_capability',
-        command: req.target.toolName ?? req.target.serverId ?? 'capability',
+        get title() {
+          return tr('Allow access to the client capability?');
+        },
+        get subtitle() {
+          return req.target.capability ?? tr('Capability');
+        },
+        command() {
+          return req.target.toolName ?? req.target.serverId ?? tr('Capability');
+        },
       });
       continue;
     }
 
-    const detail =
+    const detail = () =>
       req.kind === 'system_permission'
         ? req.application + ': ' + req.grants.join(', ')
         : req.kind === 'form'
           ? req.message
-          : String((req as { kind?: string }).kind ?? 'unknown');
+          : ((req as { kind?: string }).kind ?? tr('Unknown'));
     permissions.push({
       id: rec.requestId,
       requestId: rec.requestId,
       interactionKind: req.kind,
       mode: 'unsupported',
-      title:
-        req.kind === 'system_permission'
-          ? copy('Desktop system permission required', '需要桌面端系统权限', '需要桌面端系統權限')
-          : copy('Complete this form on Desktop', '需在桌面端完成表单', '請在桌面端完成表單'),
-      subtitle: copy(
-        'This request cannot be submitted on mobile',
-        '移动端暂不直接提交此类请求',
-        '無法在行動裝置上提交這項要求',
-      ),
+      get title() {
+        return req.kind === 'system_permission'
+          ? tr('Desktop system permission required')
+          : tr('Complete this form on Desktop');
+      },
+      get subtitle() {
+        return tr('This request cannot be submitted on mobile');
+      },
       command: detail,
-      unsupportedNotice:
-        req.kind === 'system_permission'
-          ? copy(
-              'Grant system permission on Desktop, or stop waiting here',
-              '系统授权需在桌面端完成，或在此取消等待',
-              '請在桌面端授予系統權限，或在此取消等待',
-            )
-          : copy(
-              `Review this request (${req.kind}) in Maka Desktop`,
-              `请在桌面端 Maka 处理此请求（${req.kind}）`,
-              `請在桌面端 Maka 審核這項要求（${req.kind}）`,
-            ),
+      get unsupportedNotice() {
+        return req.kind === 'system_permission'
+          ? tr('Grant system permission on Desktop, or stop waiting here')
+          : tr('Review this request ({kind}) in Maka Desktop', { kind: req.kind });
+      },
     });
   }
   return { permissions, questions };
@@ -609,7 +612,12 @@ function App() {
     hostState.set(snap);
     return true;
   };
-  const statusBanner = signal<string | null>(null);
+  const banner = signal<string | (() => string) | null>(null);
+  const setStatusBanner = (message: string | (() => string) | null) => banner.set(message);
+  const statusBanner = () => {
+    const message = banner();
+    return typeof message === 'function' ? message() : message;
+  };
   const busy = signal(false);
 
   // Host-owned Agent catalog projection
@@ -713,7 +721,7 @@ function App() {
     queueBusy.set(null);
     queueError.set(null);
   };
-  const diffTitle = signal(copy('Workspace changes', '工作区变更', '工作區變更'));
+  const diffTitle = signal(tr('Workspace changes'));
   const diffLines = signal<DiffLineItem[]>([]);
   const diffTruncatedNotice = signal<string | null>(null);
   const activeTurnId = signal<string | null>(null);
@@ -845,7 +853,7 @@ function App() {
           projectId: cur.workspace.projectId,
           path: cur.workspace.path,
         },
-        label: proj?.name ?? cur.workspace.name ?? '当前项目',
+        label: proj?.name ?? cur.workspace.name ?? tr('Current project'),
       };
     }
     const firstProj = projects().find((p) => !p.archived && !!p.path);
@@ -864,7 +872,7 @@ function App() {
     }
     return {
       selection: { kind: 'directory', path: '~' },
-      label: copy('Default workspace', '默认工作区', '預設工作區'),
+      label: tr('Default workspace'),
     };
   };
 
@@ -1010,7 +1018,9 @@ function App() {
       },
       (err: Error) => {
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-          statusBanner.set('读取历史失败: ' + err.message);
+          setStatusBanner(() =>
+            tr('Could not load conversation history: {reason}', { reason: err.message }),
+          );
         }
       },
     );
@@ -1041,7 +1051,9 @@ function App() {
       (err: Error) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
         loadingEarlier.set(false);
-        statusBanner.set('加载更早历史失败: ' + err.message);
+        setStatusBanner(() =>
+          tr('Could not load earlier messages: {reason}', { reason: err.message }),
+        );
       },
     );
   };
@@ -1086,7 +1098,11 @@ function App() {
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
           queueFresh.set(false);
           queueReview.set(null);
-          watchError.set('实时会话订阅失败: ' + err.message);
+          watchError.set(
+            tr('Could not subscribe to live conversation updates: {reason}', {
+              reason: err.message,
+            }),
+          );
         }
       },
     );
@@ -1195,7 +1211,11 @@ function App() {
         if (catalogSub !== slot) return;
         catalogSub = null;
         if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
-          catalogError.set('会话目录订阅失败: ' + err.message);
+          catalogError.set(
+            tr('Could not subscribe to conversation list updates: {reason}', {
+              reason: err.message,
+            }),
+          );
         }
       },
     );
@@ -1260,7 +1280,9 @@ function App() {
       },
       (err: Error) => {
         if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
-          statusBanner.set('读取会话列表失败: ' + err.message);
+          setStatusBanner(() =>
+            tr('Could not load conversations: {reason}', { reason: err.message }),
+          );
         }
       },
     );
@@ -1323,7 +1345,9 @@ function App() {
       },
       (err: Error) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, session.id)) return;
-        statusBanner.set('观察会话状态失败: ' + err.message);
+        setStatusBanner(() =>
+          tr('Could not watch conversation state: {reason}', { reason: err.message }),
+        );
         startWatchSubscription(session.id, watchCursor, gen, epoch, sGen);
       },
     );
@@ -1336,7 +1360,9 @@ function App() {
       },
       (err: Error) => {
         if (isSessionStillCurrent(gen, epoch, sGen, session.id)) {
-          statusBanner.set('读取历史失败: ' + err.message);
+          setStatusBanner(() =>
+            tr('Could not load conversation history: {reason}', { reason: err.message }),
+          );
         }
       },
     );
@@ -1491,7 +1517,7 @@ function App() {
     pairGeneration++;
     parsedTicket.set(null);
     busy.set(false);
-    cancelPairing().catch((err) => statusBanner.set(String(err)));
+    cancelPairing().catch((err) => setStatusBanner(String(err)));
   };
 
   const runParseTicket = (relayUrl?: string, relayToken?: string) => {
@@ -1530,14 +1556,14 @@ function App() {
     bootstrap().then(
       (snap) => {
         if (applyHostState(snap)) {
-          statusBanner.set(null);
+          setStatusBanner(null);
           syncConnectedAgentHost(snap);
         }
         if (snap.pendingPairUri) {
           openIncomingPairUri(snap.pendingPairUri);
         }
       },
-      (err: Error) => statusBanner.set(err.message),
+      (err: Error) => setStatusBanner(err.message),
     );
   };
 
@@ -1555,7 +1581,7 @@ function App() {
           : null,
       );
       Haptics.notification('warning');
-      statusBanner.set(snap.disconnectReason);
+      setStatusBanner(snap.disconnectReason);
     }
     syncConnectedAgentHost(snap);
   });
@@ -1565,8 +1591,14 @@ function App() {
     const status = recoveryStatus();
     if (!status || hostState().active?.session !== status.session) return null;
     return status.pending > 0
-      ? `已查到 ${status.settled} 项操作结果，${status.pending} 项尚未确认。不会自动重发。`
-      : `已查到 ${status.settled} 项操作结果。请查看同步后的会话。`;
+      ? tr(
+          'Recovered {settled, plural, one {# result} other {# results}}. {pending, plural, one {# operation is} other {# operations are}} still unconfirmed. No automatic retry.',
+          { settled: status.settled, pending: status.pending },
+        )
+      : tr(
+          'Recovered {settled, plural, one {# result} other {# results}}. Check the synced conversation.',
+          { settled: status.settled },
+        );
   };
   const launchUri = UrlScheme.url();
   if (launchUri) openIncomingPairUri(launchUri);
@@ -1594,7 +1626,11 @@ function App() {
         queueReview.set(null);
       } else {
         queueReview.set(null);
-        queueError.set('已保存上次提交；新的编辑已保留，请查看当前版本。');
+        queueError.set(
+          tr(
+            'Your previous edit was saved. Your newer changes are kept. Review the current version.',
+          ),
+        );
       }
     }
   };
@@ -1750,7 +1786,11 @@ function App() {
       slot.ended = true;
       catalogSub = null;
       if (isHostStillCurrent(slot.hostGen, slot.hostEpoch)) {
-        catalogError.set('会话目录同步中断' + (payload.error ? ': ' + payload.error : ''));
+        catalogError.set(
+          payload.error
+            ? tr('Conversation list updates ended: {reason}', { reason: payload.error })
+            : tr('Conversation list updates ended.'),
+        );
       }
     }
     if (matchesSubSlot(goalSub, payload.subscriptionId, payload.generation) && goalSub) {
@@ -1768,7 +1808,11 @@ function App() {
       ) {
         queueFresh.set(false);
         queueReview.set(null);
-        watchError.set('会话流式订阅中断' + (payload.error ? ': ' + payload.error : ''));
+        watchError.set(
+          payload.error
+            ? tr('Live conversation updates ended: {reason}', { reason: payload.error })
+            : tr('Live conversation updates ended.'),
+        );
       }
     }
   });
@@ -1831,7 +1875,7 @@ function App() {
     savedConnectionGeneration++;
     connectingSavedHost.set(false);
     busy.set(false);
-    cancelPairing().catch((err) => statusBanner.set(String(err)));
+    cancelPairing().catch((err) => setStatusBanner(String(err)));
   };
   const relayHost = signal<SavedHostItem | null>(null);
   const savedRelayUrl = signal('');
@@ -1850,7 +1894,7 @@ function App() {
     const generation = ++savedConnectionGeneration;
     connectingSavedHost.set(true);
     busy.set(true);
-    statusBanner.set(null);
+    setStatusBanner(null);
     connectHost(hostItem.rootId, relayUrl, relayToken).then(
       (snap) => {
         if (generation !== savedConnectionGeneration) return;
@@ -1868,7 +1912,7 @@ function App() {
       (err: Error) => {
         if (generation !== savedConnectionGeneration) return;
         connectingSavedHost.set(false);
-        statusBanner.set(err.message);
+        setStatusBanner(err.message);
         busy.set(false);
       },
     );
@@ -1885,9 +1929,9 @@ function App() {
       (s) => {
         if (!applyHostState(s)) return;
         syncConnectedAgentHost(s);
-        statusBanner.set(null);
+        setStatusBanner(null);
       },
-      (err: Error) => statusBanner.set(err.message),
+      (err: Error) => setStatusBanner(err.message),
     );
   };
 
@@ -1906,16 +1950,25 @@ function App() {
         if (!isHostStillCurrent(gen, epoch)) return;
         if (res.kind === 'committed') {
           upsertSessionInList(res.session);
-          statusBanner.set(null);
+          setStatusBanner(null);
         } else if (res.kind === 'revision_conflict') {
-          statusBanner.set('会话已被其他端修改，已刷新列表，请重试重命名');
+          setStatusBanner(() =>
+            tr(
+              'The conversation changed on another device. The list was refreshed; try renaming it again.',
+            ),
+          );
           reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
         } else {
-          statusBanner.set('重命名被拒绝: ' + JSON.stringify(res.reason));
+          setStatusBanner(() =>
+            tr('Rename rejected: {reason}', { reason: String(JSON.stringify(res.reason)) }),
+          );
         }
       },
       (err: Error) => {
-        if (isHostStillCurrent(gen, epoch)) statusBanner.set('重命名失败: ' + err.message);
+        if (isHostStillCurrent(gen, epoch))
+          setStatusBanner(() =>
+            tr('Could not rename the conversation: {reason}', { reason: err.message }),
+          );
       },
     );
   };
@@ -1937,14 +1990,19 @@ function App() {
         if (res.kind === 'committed') {
           upsertSessionInList(res.session);
         } else if (res.kind === 'revision_conflict') {
-          statusBanner.set('会话版本变化，已刷新，请重试');
+          setStatusBanner(() => tr('The conversation changed. It was refreshed; try again.'));
           reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
         } else {
-          statusBanner.set('置顶操作失败: ' + JSON.stringify(res.reason));
+          setStatusBanner(() =>
+            tr('Pin change rejected: {reason}', { reason: String(JSON.stringify(res.reason)) }),
+          );
         }
       },
       (err: Error) => {
-        if (isHostStillCurrent(gen, epoch)) statusBanner.set('置顶失败: ' + err.message);
+        if (isHostStillCurrent(gen, epoch))
+          setStatusBanner(() =>
+            tr('Could not change pin status: {reason}', { reason: err.message }),
+          );
       },
     );
   };
@@ -1980,14 +2038,21 @@ function App() {
             upsertSessionInList(res.session);
           }
         } else if (res.kind === 'revision_conflict') {
-          statusBanner.set('会话版本变化，已刷新，请重试');
+          setStatusBanner(() => tr('The conversation changed. It was refreshed; try again.'));
           reloadCatalog(catalogFilter(), catalogQuery(), gen, epoch);
         } else {
-          statusBanner.set('操作被拒绝: ' + JSON.stringify(res.reason));
+          setStatusBanner(() =>
+            tr('Conversation action rejected: {reason}', {
+              reason: String(JSON.stringify(res.reason)),
+            }),
+          );
         }
       },
       (err: Error) => {
-        if (isHostStillCurrent(gen, epoch)) statusBanner.set('会话操作失败: ' + err.message);
+        if (isHostStillCurrent(gen, epoch))
+          setStatusBanner(() =>
+            tr('Could not update the conversation: {reason}', { reason: err.message }),
+          );
       },
     );
   };
@@ -2007,7 +2072,7 @@ function App() {
       (err: Error) => {
         if (!isHostStillCurrent(gen, epoch)) return;
         modelsLoading.set(false);
-        statusBanner.set('读取模型列表失败: ' + err.message);
+        setStatusBanner(() => tr('Could not load models: {reason}', { reason: err.message }));
       },
     );
   };
@@ -2037,19 +2102,23 @@ function App() {
           upsertSessionInList(res.session);
           route.set('chat');
         } else if (res.kind === 'rejected') {
-          statusBanner.set(
-            '切换模型被拒绝: ' +
-              (typeof res.reason === 'string'
-                ? res.reason
-                : JSON.stringify(res.reason ?? 'rejected')),
+          setStatusBanner(() =>
+            tr('Model selection rejected: {reason}', {
+              reason:
+                typeof res.reason === 'string'
+                  ? res.reason
+                  : res.reason == null
+                    ? tr('Rejected')
+                    : String(JSON.stringify(res.reason)),
+            }),
           );
         } else {
-          statusBanner.set('切换模型冲突，请重试');
+          setStatusBanner(() => tr('Model selection changed. Try again.'));
         }
       },
       (err: Error) => {
         if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-          statusBanner.set('切换模型失败: ' + err.message);
+          setStatusBanner(() => tr('Could not switch models: {reason}', { reason: err.message }));
         }
       },
     );
@@ -2070,9 +2139,9 @@ function App() {
         if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
         busy.set(false);
         if (res.kind === 'rejected') {
-          statusBanner.set('目标操作被拒绝: ' + res.reason);
+          setStatusBanner(() => tr('Goal action rejected: {reason}', { reason: res.reason }));
         } else if (res.kind === 'conflict') {
-          statusBanner.set('目标状态已更新，正在刷新');
+          setStatusBanner(() => tr('Goal state changed. Refreshing…'));
         }
         agentReadGoal(sessionId).then(
           (view) => {
@@ -2085,7 +2154,7 @@ function App() {
       (err: Error) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
         busy.set(false);
-        statusBanner.set('目标操作失败: ' + err.message);
+        setStatusBanner(() => tr('Could not update the Goal: {reason}', { reason: err.message }));
       },
     );
   };
@@ -2107,7 +2176,7 @@ function App() {
             } else {
               openAgentSession({
                 id: res.sessionId,
-                title: 'Maka Bot',
+                title: tr('Maka Bot'),
                 kind: 'agent',
                 parentSessionId: null,
                 labels: [],
@@ -2127,7 +2196,7 @@ function App() {
         },
         (err: Error) => {
           busy.set(false);
-          statusBanner.set(err.message);
+          setStatusBanner(err.message);
           drawerOpen.set(false);
           route.set('chat');
         },
@@ -2153,7 +2222,7 @@ function App() {
   const runVerifyLiveRpc = () => {
     const active = hostState().active;
     if (!active) {
-      statusBanner.set('尚未连接远端 Host');
+      setStatusBanner(() => tr('Not connected to a remote Host'));
       return;
     }
     const gen = hostSyncGen;
@@ -2186,7 +2255,7 @@ function App() {
         (err: Error) => {
           busy.set(false);
           if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
-            statusBanner.set('同步失败: ' + err.message);
+            setStatusBanner(() => tr('Sync failed: {reason}', { reason: err.message }));
           }
         },
       );
@@ -2194,7 +2263,7 @@ function App() {
     }
     const targetEndpoint = active.endpoints.includes('hostLogs') ? 'hostLogs' : active.endpoints[0];
     if (!targetEndpoint) {
-      statusBanner.set('远端 Host 未暴露可用端点');
+      setStatusBanner(() => tr('The remote Host has no available endpoint.'));
       return;
     }
     busy.set(true);
@@ -2202,12 +2271,12 @@ function App() {
       () => {
         busy.set(false);
         if (!isHostStillCurrent(gen, epoch)) return;
-        statusBanner.set(copy('Host responded', '已收到 Host 响应', '已收到 Host 回應'));
+        setStatusBanner(() => tr('Host responded'));
       },
       (err: Error) => {
         busy.set(false);
         if (isHostStillCurrent(gen, epoch)) {
-          statusBanner.set('RPC 失败: ' + err.message);
+          setStatusBanner(() => tr('RPC failed: {reason}', { reason: err.message }));
         }
       },
     );
@@ -2221,7 +2290,7 @@ function App() {
       const epoch = active.session;
       const sGen = sessionSyncGen;
       const sessionId = sess.id;
-      diffTitle.set(path ?? sess.title + ' · Diff');
+      diffTitle.set(path ?? tr('{title} · Diff', { title: sess.title }));
       diffLines.set([]);
       diffTruncatedNotice.set(null);
       route.set('diff');
@@ -2236,19 +2305,21 @@ function App() {
           diffLines.set(parseUnifiedWorkspacePatch(diff.patch, path));
           diffTruncatedNotice.set(
             diff.truncated
-              ? 'Diff 已截断 · 跳过 ' + String(diff.skippedFiles ?? 0) + ' 个文件'
+              ? tr('Diff truncated; {count} binary or large files omitted.', {
+                  count: diff.skippedFiles ?? 0,
+                })
               : null,
           );
         },
         (err: Error) => {
           if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-            statusBanner.set('读取 Diff 失败: ' + err.message);
+            setStatusBanner(() => tr('Could not load the diff: {reason}', { reason: err.message }));
           }
         },
       );
       return;
     }
-    statusBanner.set('先打开一个会话，再查看工作区变更。');
+    setStatusBanner(() => tr('Open a conversation to view workspace changes.'));
   };
 
   const runOpenAutomations = () => {
@@ -2268,7 +2339,9 @@ function App() {
         (err: Error) => {
           if (!isHostStillCurrent(gen, epoch)) return;
           schedulesLoading.set(false);
-          statusBanner.set('读取定时任务失败: ' + err.message);
+          setStatusBanner(() =>
+            tr('Could not load automations: {reason}', { reason: err.message }),
+          );
         },
       );
     }
@@ -2289,16 +2362,14 @@ function App() {
       const result = await agentSetRoomReaction(session.id, message.id, emoji, add);
       if (!current()) return;
       if (result.kind !== 'reaction_updated')
-        throw new Error('Host did not return a Room reaction result');
+        throw new Error(tr('Host did not return a Room reaction result'));
       const page = await agentHistory(session.id, {
         position: { kind: 'around_message', messageId: message.id },
       });
       if (current()) applyHistory(page, 'around');
     } catch (err) {
       if (current())
-        statusBanner.set(
-          copy('Could not update reaction: ', '无法更新回应：', '無法更新回應：') + String(err),
-        );
+        setStatusBanner(() => tr('Could not update reaction: {reason}', { reason: String(err) }));
     } finally {
       if (current()) reactionPending.set(false);
     }
@@ -2334,8 +2405,8 @@ function App() {
         ) {
           queueError.set(
             result.kind === 'missing'
-              ? '消息已不在队列中；编辑内容已保留。'
-              : '队列已变化，请重新查看当前消息。',
+              ? tr('Message no longer queued · your edit is kept')
+              : tr('The queue changed. Review the current message again.'),
           );
           return;
         }
@@ -2355,7 +2426,7 @@ function App() {
       (err: Error) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
         queueBusy.set(null);
-        queueError.set('读取排队消息失败: ' + err.message);
+        queueError.set(tr('Could not load queued messages: {reason}', { reason: err.message }));
       },
     );
   };
@@ -2370,7 +2441,7 @@ function App() {
     const active = hostState().active;
     if (!sess || !active || !queueFresh() || queueBusy() !== null) return;
     if (queue()?.revision !== revision) {
-      queueError.set('队列已变化，请查看当前消息；编辑内容已保留。');
+      queueError.set(tr('The queue changed. Review the current message. Your edit is kept.'));
       return;
     }
     const gen = hostSyncGen,
@@ -2396,15 +2467,15 @@ function App() {
           queueBusy.set(null);
           queueError.set(
             result.kind === 'revision_conflict'
-              ? '队列已变化，请查看当前消息；编辑内容已保留。'
-              : '队列修改被拒绝: ' + result.reason,
+              ? tr('The queue changed. Review the current message. Your edit is kept.')
+              : tr('Queue change rejected: {reason}', { reason: result.reason }),
           );
         }
       },
       (err: Error) => {
         if (!isSessionStillCurrent(gen, epoch, sGen, sess.id)) return;
         queueBusy.set(null);
-        queueError.set('修改队列失败: ' + err.message);
+        queueError.set(tr('Could not update the message queue: {reason}', { reason: err.message }));
       },
     );
   };
@@ -2485,12 +2556,14 @@ function App() {
               const reasonText =
                 typeof res.reason === 'string'
                   ? res.reason
-                  : JSON.stringify(res.reason ?? 'unknown');
-              statusBanner.set('消息被 Host 拒绝: ' + reasonText);
+                  : res.reason == null
+                    ? tr('Unknown')
+                    : JSON.stringify(res.reason);
+              setStatusBanner(() => tr('Send rejected: {reason}', { reason: reasonText }));
             } else if (res.kind === 'not_your_worker') {
               awaitingReply.set(false);
               restoreFailedDraft();
-              statusBanner.set('当前会话不允许直接发送消息');
+              setStatusBanner(() => tr('This conversation does not accept direct messages.'));
             }
             refreshSessionTranscript(targetSessionId, false, gen, epoch, targetSGen);
           },
@@ -2498,8 +2571,11 @@ function App() {
             if (isSessionStillCurrent(gen, epoch, targetSGen, targetSessionId)) {
               awaitingReply.set(false);
               restoreFailedDraft();
-              statusBanner.set(
-                '未收到发送结果。请先查看同步后的会话，再决定是否重发：' + err.message,
+              setStatusBanner(() =>
+                tr(
+                  'No send result was received. Check the synced conversation before sending again: {reason}',
+                  { reason: err.message },
+                ),
               );
             }
           },
@@ -2526,7 +2602,7 @@ function App() {
           activeSession() === null;
         creatingDraft.set(true);
         agentCreateSession({
-          title: 'New conversation',
+          title: tr('New conversation'),
           kind: 'agent',
           workspace: ws,
           automaticTitle: true,
@@ -2552,7 +2628,9 @@ function App() {
               if (inFlightDraft === pendingEntry) inFlightDraft = null;
               creatingDraft.set(false);
               restoreFailedDraft();
-              statusBanner.set('创建会话失败: ' + err.message);
+              setStatusBanner(() =>
+                tr('Could not create a conversation: {reason}', { reason: err.message }),
+              );
             } else {
               preserveUnsentDraft();
             }
@@ -2562,24 +2640,24 @@ function App() {
       return;
     }
 
-    statusBanner.set('连接支持 Agent 的 Host 后再发送。');
+    setStatusBanner(() => tr('Connect to a Host with Agent support to send a message.'));
   };
 
   const resolvePermission = (card: PermissionCardItem, action: PermissionAction) => {
-    const label =
+    const label: MessageKey =
       action === 'deny'
-        ? copy('Denied', '已拒绝', '已拒絕')
+        ? 'Denied'
         : action === 'cancel_system_permission'
-          ? copy('Stopped waiting', '已取消等待', '已取消等待')
+          ? 'Stopped waiting'
           : action === 'run'
-            ? copy('Allowed for this turn', '已本轮允许', '已允許這個輪次')
+            ? 'Allowed for this turn'
             : action === 'session'
-              ? copy('Allowed for this conversation', '已本会话允许', '已允許這段對話')
+              ? 'Allowed for this conversation'
               : action === 'always'
-                ? copy('Always allowed', '已始终允许', '已設為一律允許')
+                ? 'Always allowed'
                 : card.mode === 'binary'
-                  ? copy('Allowed', '已允许', '已允許')
-                  : copy('Allowed once', '已允许本次', '已允許這次');
+                  ? 'Allowed'
+                  : 'Allowed once';
     Haptics.impact('light');
     const allowed = action !== 'deny' && action !== 'cancel_system_permission';
     const sess = activeSession();
@@ -2587,19 +2665,22 @@ function App() {
 
     const markResolved = () => {
       permissions.set(
-        permissions().map((p) => (p.id === card.id ? { ...p, resolved: { allowed, label } } : p)),
+        permissions().map((p) =>
+          p.id === card.id
+            ? {
+                ...p,
+                resolved: { allowed, label },
+              }
+            : p,
+        ),
       );
     };
 
     if (sess && card.requestId && active && hasAgentEndpoint(active)) {
       const answer = buildInteractionAnswer(card, action);
       if (!answer) {
-        statusBanner.set(
-          copy(
-            'Required permission details are missing. Review this request on Desktop.',
-            '当前交互请求缺少必需的原始权限字段，请在桌面端处理',
-            '缺少必要的權限資訊。請在桌面端審核這項要求。',
-          ),
+        setStatusBanner(() =>
+          tr('Required permission details are missing. Review this request on Desktop.'),
         );
         return;
       }
@@ -2613,15 +2694,15 @@ function App() {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
           if (res.kind !== 'recorded') {
-            statusBanner.set(
-              copy(
-                'Host denied the approval response: ',
-                '权限回复被 Host 拒绝：',
-                '權限回覆遭 Host 拒絕：',
-              ) +
-                (typeof res.reason === 'string'
-                  ? res.reason
-                  : JSON.stringify(res.reason ?? 'rejected')),
+            setStatusBanner(() =>
+              tr('Host denied the approval response: {reason}', {
+                reason:
+                  typeof res.reason === 'string'
+                    ? res.reason
+                    : res.reason == null
+                      ? tr('Rejected')
+                      : String(JSON.stringify(res.reason)),
+              }),
             );
             return;
           }
@@ -2631,22 +2712,15 @@ function App() {
         (err: Error) => {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
-          statusBanner.set(
-            copy('Could not respond to approval: ', '权限回复失败：', '權限回覆失敗：') +
-              err.message,
+          setStatusBanner(() =>
+            tr('Could not respond to approval: {reason}', { reason: err.message }),
           );
         },
       );
       return;
     }
 
-    statusBanner.set(
-      copy(
-        "This approval's Host session is no longer available.",
-        '此审批的 Host 会话已不可用。',
-        '這項審批的 Host 對話已無法使用。',
-      ),
-    );
+    setStatusBanner(() => tr("This approval's Host session is no longer available."));
   };
 
   const submitQuestion = (card: QuestionCardItem, answers: (string | null)[]) => {
@@ -2670,11 +2744,15 @@ function App() {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
           if (res.kind !== 'recorded') {
-            statusBanner.set(
-              '问题回复被 Host 拒绝: ' +
-                (typeof res.reason === 'string'
-                  ? res.reason
-                  : JSON.stringify(res.reason ?? 'rejected')),
+            setStatusBanner(() =>
+              tr('Host rejected the answer: {reason}', {
+                reason:
+                  typeof res.reason === 'string'
+                    ? res.reason
+                    : res.reason == null
+                      ? tr('Rejected')
+                      : String(JSON.stringify(res.reason)),
+              }),
             );
             return;
           }
@@ -2684,13 +2762,15 @@ function App() {
         (err: Error) => {
           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
           busy.set(false);
-          statusBanner.set('问题回复失败: ' + err.message);
+          setStatusBanner(() =>
+            tr('Could not submit the answer: {reason}', { reason: err.message }),
+          );
         },
       );
       return;
     }
 
-    statusBanner.set('此提问的 Host 会话已不可用。');
+    setStatusBanner(() => tr('This question’s Host session is no longer available.'));
   };
 
   const pendingCount = () =>
@@ -2700,18 +2780,18 @@ function App() {
   const chatTitle = () => {
     const sess = activeSession();
     if (sess) return (sess.kind === 'room' ? '# ' : '') + sess.title;
-    if (hasAgentEndpoint(hostState().active)) return copy('New chat', '新对话', '新對話');
-    return hostState().active?.hostName ?? 'Maka Bot';
+    if (hasAgentEndpoint(hostState().active)) return tr('New conversation');
+    return hostState().active?.hostName ?? tr('Maka Bot');
   };
 
   const chatSubtitle = () => {
     const active = hostState().active;
-    if (!active) return copy('Disconnected', '未连接', '未連線');
-    if (creatingDraft()) return active.hostName + ' · 正在创建会话…';
-    if (activeRunId()) return active.hostName + ' · 执行中';
-    if (activeSession()) return active.hostName + ' · 实时同步';
-    if (hasAgentEndpoint(active)) return active.hostName + ' · 草稿';
-    return copy('Remote Host ready', '远端 Host 已就绪', '遠端 Host 已就緒');
+    if (!active) return tr('Disconnected');
+    if (creatingDraft()) return tr('{host} · Creating conversation…', { host: active.hostName });
+    if (activeRunId()) return tr('{host} · Working', { host: active.hostName });
+    if (activeSession()) return tr('{host} · Live sync', { host: active.hostName });
+    if (hasAgentEndpoint(active)) return tr('{host} · Draft', { host: active.hostName });
+    return tr('Remote Host ready');
   };
 
   const turnEntries = (): TurnRailEntry[] =>
@@ -2787,7 +2867,9 @@ function App() {
         (err: Error) => {
           if (isHostStillCurrent(gen, epoch) && qGen === catalogQueryGen) {
             loadingMoreSessions = false;
-            statusBanner.set('加载更多失败: ' + err.message);
+            setStatusBanner(() =>
+              tr('Could not load more conversations: {reason}', { reason: err.message }),
+            );
           }
         },
       );
@@ -2842,7 +2924,7 @@ function App() {
           >
             <View
               role="button"
-              accessibilityLabel="Open drawer"
+              accessibilityLabel={tr('Open drawer')}
               onPress={() => drawerOpen.set(true)}
               style={{
                 minWidth: 42,
@@ -2858,7 +2940,7 @@ function App() {
 
             <View
               role="button"
-              accessibilityLabel="Rename active session title"
+              accessibilityLabel={tr('Rename conversation')}
               onPress={() => {
                 const sess = activeSession();
                 if (sess && hasAgentEndpoint(hostState().active)) {
@@ -2900,7 +2982,7 @@ function App() {
                 popupClass="bg-card rounded-xl p-1"
                 trigger={
                   <View
-                    accessibilityLabel="Host actions"
+                    accessibilityLabel={tr('Host actions')}
                     style={glass}
                     class="min-h-11 px-3 justify-center"
                   >
@@ -2908,25 +2990,16 @@ function App() {
                   </View>
                 }
               >
-                <Command
-                  title={copy('Workspace changes', '工作区变更', '工作區變更')}
-                  select={() => runOpenDiff()}
-                />
-                <Command
-                  title={copy('Connection settings', '连接设置', '連線設定')}
-                  select={() => route.set('settings')}
-                />
+                <Command title={tr('Workspace changes')} select={() => runOpenDiff()} />
+                <Command title={tr('Connection settings')} select={() => route.set('settings')} />
                 <If when={!!hostState().active && !hasAgentEndpoint(hostState().active)}>
-                  <Command
-                    title={copy('Check connection', '检查连接', '檢查連線')}
-                    select={runVerifyLiveRpc}
-                  />
+                  <Command title={tr('Check connection')} select={runVerifyLiveRpc} />
                 </If>
                 <Command
-                  title={copy('Copy device Peer ID', '复制设备 Peer ID', '複製裝置 Peer ID')}
+                  title={tr('Copy device Peer ID')}
                   select={() =>
                     Clipboard.writeText(hostState().devicePeerId).catch((err) =>
-                      statusBanner.set(String(err)),
+                      setStatusBanner(String(err)),
                     )
                   }
                 />
@@ -2935,7 +3008,7 @@ function App() {
               <If when={catalogError() !== null || watchError() !== null}>
                 <View
                   role="button"
-                  accessibilityLabel="Retry subscriptions"
+                  accessibilityLabel={tr('Reconnect updates')}
                   onPress={retrySubscriptions}
                   style={{
                     minWidth: 40,
@@ -2948,7 +3021,7 @@ function App() {
                   }}
                 >
                   <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
-                    {copy('Retry', '重试', '重試')}
+                    {tr('Retry')}
                   </Text>
                 </View>
               </If>
@@ -2970,10 +3043,10 @@ function App() {
               }}
             >
               <Input
-                accessibilityLabel="Inline rename active session input"
+                accessibilityLabel={tr('Conversation title')}
                 value={headerRenameDraft()}
                 onChange={({ value }: { value: string }) => headerRenameDraft.set(value)}
-                placeholder="修改会话标题…"
+                placeholder={tr('Rename conversation…')}
                 style={{
                   flex: 1,
                   minHeight: 34,
@@ -2986,7 +3059,7 @@ function App() {
               />
               <View
                 role="button"
-                accessibilityLabel="Save inline session title"
+                accessibilityLabel={tr('Save conversation title')}
                 onPress={() => {
                   const sess = activeSession();
                   const next = headerRenameDraft().trim();
@@ -3005,25 +3078,23 @@ function App() {
                 <Text
                   style={{ fontSize: 12.5, fontWeight: '600', color: token('primary-foreground') }}
                 >
-                  {copy('Save', '保存', '儲存')}
+                  {tr('Save')}
                 </Text>
               </View>
               <View
                 role="button"
-                accessibilityLabel="Cancel inline session rename"
+                accessibilityLabel={tr('Cancel editing')}
                 onPress={() => headerRenaming.set(false)}
                 style={{ paddingHorizontal: 6, paddingVertical: 6 }}
               >
-                <Text style={{ fontSize: 12.5, color: token('subdued') }}>
-                  {copy('Cancel', '取消', '取消')}
-                </Text>
+                <Text style={{ fontSize: 12.5, color: token('subdued') }}>{tr('Cancel')}</Text>
               </View>
             </View>
           </If>
 
           <If when={reconnectHost()}>
             <Action
-              title={copy('Reconnect', '重新连接', '重新連接')}
+              title={tr('Reconnect')}
               disabled={busy()}
               onPress={() => {
                 const item = hostState().hosts.find((host) => host.rootId === reconnectHost());
@@ -3097,7 +3168,7 @@ function App() {
                 <If when={historyBefore() !== null}>
                   <View
                     role="button"
-                    accessibilityLabel="Load earlier messages"
+                    accessibilityLabel={tr('Load earlier messages')}
                     onPress={loadEarlierHistory}
                     style={{
                       alignSelf: 'center',
@@ -3111,12 +3182,8 @@ function App() {
                   >
                     <Text style={{ fontSize: 12.5, color: token('muted-foreground') }}>
                       {loadingEarlier()
-                        ? copy(
-                            'Loading earlier messages…',
-                            '正在加载更早消息…',
-                            '正在載入更早的訊息…',
-                          )
-                        : copy('Load earlier messages', '加载更早消息', '載入更早的訊息')}
+                        ? tr('Loading earlier messages…')
+                        : tr('Load earlier messages')}
                     </Text>
                   </View>
                 </If>
@@ -3135,8 +3202,12 @@ function App() {
                     </Text>
                     <Text style={{ fontSize: 13, color: token('subdued') }}>
                       {activeSession() === null && hasAgentEndpoint(hostState().active)
-                        ? '直接发第一条消息即可自动创建会话并生成标题'
-                        : '发一条消息开始对话，Maka 会实时同步执行过程'}
+                        ? tr(
+                            'Send your first message to create a conversation with an automatic title.',
+                          )
+                        : tr(
+                            'Send a message to start chatting. Maka will show progress in real time.',
+                          )}
                     </Text>
                   </View>
                 </If>
@@ -3227,13 +3298,13 @@ function App() {
                             items={[
                               {
                                 id: 'copy',
-                                label: copy('Copy message', '复制消息', '複製訊息'),
+                                label: tr('Copy message'),
                                 icon: 'doc.on.doc',
                               },
                             ]}
                             onSelect={() =>
                               Clipboard.writeText(msg().text).catch((err) =>
-                                statusBanner.set(String(err)),
+                                setStatusBanner(String(err)),
                               )
                             }
                             trigger={
@@ -3251,7 +3322,7 @@ function App() {
                       <If when={activeSession()?.kind === 'room' && msg().reactions !== undefined}>
                         <View
                           role="button"
-                          accessibilityLabel={'Add reaction to ' + msg().id}
+                          accessibilityLabel={tr('Add reaction to message {id}', { id: msg().id })}
                           class="min-h-11 min-w-11 items-center justify-center"
                           onPress={() =>
                             activeReactionMsgId.set(
@@ -3300,7 +3371,9 @@ function App() {
                         backgroundColor: token('working'),
                       }}
                     />
-                    <Text style={{ fontSize: 13, color: token('subdued') }}>Maka 正在思考…</Text>
+                    <Text style={{ fontSize: 13, color: token('subdued') }}>
+                      {tr('Maka is thinking…')}
+                    </Text>
                   </View>
                 </If>
 
@@ -3319,7 +3392,7 @@ function App() {
                   >
                     <View
                       role="button"
-                      accessibilityLabel="Toggle live thinking"
+                      accessibilityLabel={tr('Toggle live thinking')}
                       onPress={() => streamingThinkingExpanded.set(!streamingThinkingExpanded())}
                       style={{
                         flexDirection: 'row',
@@ -3343,11 +3416,11 @@ function App() {
                             color: token('muted-foreground'),
                           }}
                         >
-                          {streamingText().length > 0 ? '思考过程' : '正在思考…'}
+                          {streamingText().length > 0 ? tr('Thinking') : tr('Thinking…')}
                         </Text>
                       </View>
                       <Text style={{ fontSize: 11.5, color: token('subdued') }}>
-                        {streamingThinkingExpanded() ? '收起 ▾' : '展开 ▸'}
+                        {streamingThinkingExpanded() ? tr('Collapse ▾') : tr('Expand ▸')}
                       </Text>
                     </View>
                     <If when={streamingThinkingExpanded()}>
@@ -3381,7 +3454,7 @@ function App() {
                           color: token('muted-foreground'),
                         }}
                       >
-                        {'准备调用工具 · ' + tool().name}
+                        {tr('Preparing tool · {name}', { name: tool().name })}
                       </Text>
                       <If when={tool().inputPreview.length > 0}>
                         <Text style={{ fontSize: 12, color: token('subdued') }}>
@@ -3407,7 +3480,9 @@ function App() {
                             backgroundColor: token('working'),
                           }}
                         />
-                        <Text style={{ fontSize: 11.5, color: token('subdued') }}>正在输出…</Text>
+                        <Text style={{ fontSize: 11.5, color: token('subdued') }}>
+                          {tr('Generating answer…')}
+                        </Text>
                       </View>
                     </If>
                   </View>
@@ -3458,7 +3533,7 @@ function App() {
             >
               <View
                 role="button"
-                accessibilityLabel="Open queued messages"
+                accessibilityLabel={tr('Open queued messages')}
                 onPress={() => {
                   if (!reduceMotion())
                     LayoutAnimation.configureNext(
@@ -3470,8 +3545,10 @@ function App() {
               >
                 <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
                   {queuedMessages().length > 0
-                    ? '已排队 ' + String(queuedMessages().length) + ' 条消息 ▾'
-                    : '消息已不在队列 · 编辑保留 ▾'}
+                    ? tr('{count, plural, one {# queued message} other {# queued messages}}', {
+                        count: queuedMessages().length,
+                      }) + ' ▾'
+                    : tr('Message no longer queued · your edit is kept') + ' ▾'}
                 </Text>
               </View>
               <If when={queueOpen()}>
@@ -3481,19 +3558,19 @@ function App() {
                       const actions = () => [
                         {
                           id: 'edit',
-                          label: copy('Edit', '编辑', '編輯'),
+                          label: tr('Edit'),
                           icon: 'pencil',
                           disabled: !queueFresh() || !!queueEdit() || !!queueBusy(),
                         },
                         {
                           id: 'up',
-                          label: copy('Move up', '上移', '上移'),
+                          label: tr('Move up'),
                           icon: 'arrow.up',
                           disabled: !canMoveQueuedMessage(entry(), -1),
                         },
                         {
                           id: 'down',
-                          label: copy('Move down', '下移', '下移'),
+                          label: tr('Move down'),
                           icon: 'arrow.down',
                           disabled: !canMoveQueuedMessage(entry(), 1),
                         },
@@ -3518,7 +3595,9 @@ function App() {
                             popupClass="bg-card rounded-xl p-1"
                             trigger={
                               <View
-                                accessibilityLabel={'Queued message actions ' + entry().messageId}
+                                accessibilityLabel={tr('Actions for queued message {id}', {
+                                  id: entry().messageId,
+                                })}
                                 class="min-h-11 min-w-11 items-center justify-center"
                               >
                                 <Text class="text-muted-foreground">•••</Text>
@@ -3544,7 +3623,7 @@ function App() {
                   <If when={queueEdit() !== null}>
                     <View style={{ padding: 12, gap: 8 }}>
                       <Input
-                        accessibilityLabel="Queued message editor"
+                        accessibilityLabel={tr('Queued message editor')}
                         multiline
                         value={queueEdit()?.text ?? ''}
                         onChange={({ value }: { value: string }) => {
@@ -3560,17 +3639,21 @@ function App() {
                       <If
                         when={queueEdit()?.hasAttachments || (queueEdit()?.quotes.length ?? 0) > 0}
                       >
-                        <Text style={{ color: token('muted-foreground') }}>附件与引用将保留</Text>
+                        <Text style={{ color: token('muted-foreground') }}>
+                          {tr('Attachments and quotes will be kept.')}
+                        </Text>
                       </If>
                       <If when={queueReview() !== null}>
                         <Text style={{ color: token('muted-foreground') }}>
-                          {'当前消息: ' + (queueReview()?.message ?? '')}
+                          {tr('Current queued message: {message}', {
+                            message: queueReview()?.message ?? '',
+                          })}
                         </Text>
                       </If>
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 14 }}>
                         <View
                           role="button"
-                          accessibilityLabel="Save queued message"
+                          accessibilityLabel={tr('Save queued message')}
                           onPress={() => {
                             const edit = queueEdit();
                             if (
@@ -3584,24 +3667,24 @@ function App() {
                               });
                           }}
                         >
-                          <Text style={{ color: token('foreground') }}>
-                            {copy('Save', '保存', '儲存')}
-                          </Text>
+                          <Text style={{ color: token('foreground') }}>{tr('Save')}</Text>
                         </View>
                         <View
                           role="button"
-                          accessibilityLabel="Review queued message"
+                          accessibilityLabel={tr('Review current queued message')}
                           onPress={() => {
                             const edit = queueEdit();
                             if (edit) readQueuedMessage(edit.messageId, true);
                           }}
                         >
-                          <Text style={{ color: token('foreground') }}>查看当前版本</Text>
+                          <Text style={{ color: token('foreground') }}>
+                            {tr('Review current queued message')}
+                          </Text>
                         </View>
                         <If when={queueReview() !== null}>
                           <View
                             role="button"
-                            accessibilityLabel="Keep queued edit"
+                            accessibilityLabel={tr('Keep my queued message edit')}
                             onPress={() => {
                               const edit = queueEdit(),
                                 review = queueReview();
@@ -3611,7 +3694,9 @@ function App() {
                                 !review ||
                                 queue()?.revision !== review.revision
                               ) {
-                                queueError.set('队列再次变化，请重新查看。');
+                                queueError.set(
+                                  tr('The queue changed again. Review the message again.'),
+                                );
                                 return;
                               }
                               queueEdit.set({
@@ -3624,12 +3709,14 @@ function App() {
                               queueError.set(null);
                             }}
                           >
-                            <Text style={{ color: token('foreground') }}>保留我的编辑</Text>
+                            <Text style={{ color: token('foreground') }}>
+                              {tr('Keep my queued message edit')}
+                            </Text>
                           </View>
                         </If>
                         <View
                           role="button"
-                          accessibilityLabel="Cancel queued edit"
+                          accessibilityLabel={tr('Cancel queued message edit')}
                           onPress={() => {
                             if (queueBusy() !== 'request' || !queueFresh()) {
                               queueEdit.set(null);
@@ -3638,9 +3725,7 @@ function App() {
                             }
                           }}
                         >
-                          <Text style={{ color: token('foreground') }}>
-                            {copy('Cancel', '取消', '取消')}
-                          </Text>
+                          <Text style={{ color: token('foreground') }}>{tr('Cancel')}</Text>
                         </View>
                       </View>
                     </View>
@@ -3650,12 +3735,14 @@ function App() {
                   </If>
                   <If when={!queueFresh()}>
                     <Text style={{ padding: 12, color: token('muted-foreground') }}>
-                      队列同步已中断，请重试后再修改。
+                      {tr('Queue sync ended. Retry before making changes.')}
                     </Text>
                   </If>
                   <If when={queueBusy() !== null}>
                     <Text style={{ padding: 12, color: token('muted-foreground') }}>
-                      {queueBusy() === 'request' ? '正在更新队列…' : '等待队列同步…'}
+                      {queueBusy() === 'request'
+                        ? tr('Updating the queue…')
+                        : tr('Waiting for queue sync…')}
                     </Text>
                   </If>
                 </Scroll>
@@ -3680,11 +3767,11 @@ function App() {
               }}
             >
               <Text style={{ flex: 1, fontSize: 12, color: token('muted-foreground') }}>
-                {'引用: ' + (quotedLine() ?? '')}
+                {tr('Quote: {message}', { message: quotedLine() ?? '' })}
               </Text>
               <View
                 role="button"
-                accessibilityLabel="Remove quote"
+                accessibilityLabel={tr('Remove quote')}
                 onPress={() => quotedLine.set(null)}
                 style={{ paddingLeft: 8 }}
               >
@@ -3707,7 +3794,7 @@ function App() {
               <If when={activeSession() === null}>
                 <View
                   role="button"
-                  accessibilityLabel="Pick draft workspace"
+                  accessibilityLabel={tr('Choose composer workspace')}
                   onPress={() => route.set('workspace_picker')}
                   style={{
                     paddingHorizontal: 10,
@@ -3719,16 +3806,16 @@ function App() {
                   }}
                 >
                   <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
-                    {'工作区 · ' +
-                      (draftWorkspace()?.label ?? defaultDraftWorkspace().label) +
-                      ' ▾'}
+                    {tr('Workspace · {name}', {
+                      name: draftWorkspace()?.label ?? defaultDraftWorkspace().label,
+                    }) + ' ▾'}
                   </Text>
                 </View>
               </If>
 
               <View
                 role="button"
-                accessibilityLabel="Select model and thinking"
+                accessibilityLabel={tr('Select model and thinking effort')}
                 onPress={runOpenModelPicker}
                 style={{
                   paddingHorizontal: 10,
@@ -3768,23 +3855,15 @@ function App() {
               }}
             >
               <Input
-                accessibilityLabel="Chat composer input"
+                accessibilityLabel={tr('Conversation composer')}
                 value={composerDraft()}
                 onChange={({ value }: { value: string }) => composerDraft.set(value)}
                 placeholder={
                   activeSession()?.kind === 'room'
-                    ? copy(
-                        'Message the Room or @mention an Agent…',
-                        '在 Room 中发言，或 @ 提及 Agent…',
-                        '在 Room 中發言或 @ 提及 Agent…',
-                      )
+                    ? tr('Message the Room or @mention an Agent…')
                     : activeRunId() !== null && defaultDelivery() === 'queue'
-                      ? copy('Queue a message…', '输入消息（排队发送）…', '將訊息排入佇列…')
-                      : copy(
-                          'Send a message or start a task…',
-                          '发送消息，或开始一项任务…',
-                          '傳送訊息或開始一項任務…',
-                        )
+                      ? tr('Queue a message…')
+                      : tr('Message or run a task…')
                 }
                 style={{
                   flex: 1,
@@ -3797,7 +3876,7 @@ function App() {
               <If when={activeRunId() !== null}>
                 <View
                   role="button"
-                  accessibilityLabel="Stop active run"
+                  accessibilityLabel={tr('Stop conversation run')}
                   onPress={() => {
                     const sess = activeSession();
                     const active = hostState().active;
@@ -3811,13 +3890,17 @@ function App() {
                         (res) => {
                           if (!isSessionStillCurrent(gen, epoch, sGen, sessionId)) return;
                           if (res && res.requested === false) {
-                            statusBanner.set('当前运行已结束或不支持中断');
+                            setStatusBanner(() =>
+                              tr('The run already ended or cannot be stopped.'),
+                            );
                           }
                           refreshSessionTranscript(sessionId, false, gen, epoch, sGen);
                         },
                         (err: Error) => {
                           if (isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
-                            statusBanner.set('停止失败: ' + err.message);
+                            setStatusBanner(() =>
+                              tr('Could not stop the run: {reason}', { reason: err.message }),
+                            );
                           }
                         },
                       );
@@ -3840,7 +3923,7 @@ function App() {
 
               <View
                 role="button"
-                accessibilityLabel="Send message"
+                accessibilityLabel={tr('Send message')}
                 onPress={() => sendMessage()}
                 style={{
                   minWidth: 36,
@@ -3942,7 +4025,9 @@ function App() {
               (err: Error) => {
                 busy.set(false);
                 if (isHostStillCurrent(gen, epoch)) {
-                  statusBanner.set('创建 Room 失败: ' + err.message);
+                  setStatusBanner(() =>
+                    tr('Could not create the Room: {reason}', { reason: err.message }),
+                  );
                 }
               },
             );
@@ -3997,30 +4082,22 @@ function App() {
               (snap) => {
                 if (!applyHostState(snap)) return;
                 syncConnectedAgentHost(snap);
-                statusBanner.set(
-                  copy('Disconnected from Host', '已断开远端 Host', '已中斷遠端 Host 連線'),
-                );
+                setStatusBanner(() => tr('Disconnected from Host'));
               },
-              (err: Error) => statusBanner.set(err.message),
+              (err: Error) => setStatusBanner(err.message),
             );
           }}
           onRemoveHost={async (rootId) => {
             const anchorSession = hostState().active?.session;
-            if (
-              !(await confirmDestructive(
-                copy('Remove this Host?', '移除此 Host？', '移除此 Host？'),
-                copy('Remove', '移除', '移除'),
-              ))
-            )
-              return;
+            if (!(await confirmDestructive(tr('Remove this Host?'), tr('Remove')))) return;
             if (hostState().active?.session !== anchorSession) return;
             removeHost(rootId).then(
               (snap) => {
                 if (!applyHostState(snap)) return;
                 syncConnectedAgentHost(snap);
-                statusBanner.set(copy('Host removed', '已移除电脑', '已移除電腦'));
+                setStatusBanner(() => tr('Host removed'));
               },
-              (err: Error) => statusBanner.set(err.message),
+              (err: Error) => setStatusBanner(err.message),
             );
           }}
           onOpenPairing={() => route.set('pairing')}
@@ -4028,31 +4105,28 @@ function App() {
         />
       </Panel>
       <If when={connectingSavedHost() && !relayHost()}>
-        <Action
-          title={copy('Cancel connection', '取消连接', '取消連線')}
-          onPress={cancelSavedConnection}
-        />
+        <Action title={tr('Cancel connection')} onPress={cancelSavedConnection} />
       </If>
       <Panel open={relayHost() !== null} close={closeRelayPrompt}>
         <View class="gap-4 p-5">
           <Text class="text-lg font-semibold text-foreground">
-            Relay Bearer · {relayHost()?.hostName}
+            {tr('Relay Bearer token · {host}', { host: relayHost()?.hostName ?? '' })}
           </Text>
           <Input
-            accessibilityLabel="Saved Host relay URL"
+            accessibilityLabel={tr('Saved Host relay URL')}
             class="min-h-11 bg-card px-3 text-foreground"
             value={savedRelayUrl()}
             onChange={({ value }) => savedRelayUrl.set(value)}
           />
           <Input
-            accessibilityLabel="Saved Host relay Bearer"
+            accessibilityLabel={tr('Saved Host relay Bearer token')}
             class="min-h-11 bg-card px-3 text-foreground"
             masked
             value={savedRelayToken()}
             onChange={({ value }) => savedRelayToken.set(value)}
           />
           <Action
-            title="Connect with Bearer"
+            title={tr('Connect with Bearer token')}
             primary
             disabled={busy() || !savedRelayToken() || !savedRelayUrl()}
             onPress={() => {
@@ -4060,13 +4134,13 @@ function App() {
               if (target) runConnectSaved(target, savedRelayUrl().trim(), savedRelayToken());
             }}
           />
-          <Action title="Cancel" onPress={closeRelayPrompt} />
+          <Action title={tr('Cancel')} onPress={closeRelayPrompt} />
         </View>
       </Panel>
       <Feedback
         message={statusBanner() ?? receiptMessage()}
         dismiss={() => {
-          if (statusBanner()) statusBanner.set(null);
+          if (statusBanner()) setStatusBanner(null);
           else recoveryStatus.set(null);
         }}
       />
@@ -4075,4 +4149,5 @@ function App() {
 }
 
 installTheme();
+installIosLocaleCatalog();
 mount(App);

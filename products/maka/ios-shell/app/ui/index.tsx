@@ -19,6 +19,7 @@
 
 import { Overlay, Text, View, safeArea, type JSX } from 'nsh';
 import { AlertDialog, Button, MenuItem, Sheet, Toast, ToastStack } from 'nsh/base';
+import { tr } from '../locale';
 
 export const glass = {
   borderRadius: 24,
@@ -83,7 +84,7 @@ export async function confirmDestructive(title: string, label: string): Promise<
   const { action } = await AlertDialog.show({
     title,
     actions: [
-      { id: 'cancel', label: '取消', role: 'cancel' },
+      { id: 'cancel', label: tr('Cancel'), role: 'cancel' },
       { id: 'confirm', label, role: 'destructive' },
     ],
   });

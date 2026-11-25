@@ -121,6 +121,7 @@ async function main(args) {
       if (rest.length !== 1) throw new Error('Usage: ci.mjs check ios');
       const packages = iosValidation.packages.flatMap((name) => ['-p', name]);
       const cargo = process.env.CARGO || 'cargo';
+      await command(process.execPath, ['scripts/i18n/check.mjs'], { cwd: root });
       await command(process.execPath, ['--test', iosValidation.scriptTest], { cwd: root });
       await command(cargo, ['test', '--locked', ...packages], { cwd: root });
       await command(

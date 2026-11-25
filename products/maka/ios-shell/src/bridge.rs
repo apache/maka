@@ -1053,7 +1053,7 @@ mod tests {
             app.wait_for("text:test · Online").unwrap();
 
             answer_receipt(&listener, session, &early, json!({"kind":"not_recorded"})).await;
-            app.wait_for("text:/已查到 0 项操作结果，1 项尚未确认/")
+            app.wait_for("text:/Recovered 0 results.*1 operation is still unconfirmed/")
                 .unwrap();
             bridge
                 .register_uncertain(original, scope, late.clone())
@@ -1065,7 +1065,7 @@ mod tests {
                 json!({"kind":"recorded","outcome":{"kind":"returned"}}),
             )
             .await;
-            app.wait_for("text:/已查到 1 项操作结果，1 项尚未确认/")
+            app.wait_for("text:/Recovered 1 result.*1 operation is still unconfirmed/")
                 .unwrap();
         })
         .await

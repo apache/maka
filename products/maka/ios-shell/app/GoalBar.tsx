@@ -20,32 +20,35 @@
 import { signal, Text, View } from 'nsh';
 import type { AgentGoalDetail } from './bridge';
 import { token } from 'nsh';
+import { tr } from './locale';
 
 function goalStatusLabel(status: string): string {
   switch (status) {
+    case 'armed':
+      return tr('Ready to start');
     case 'active':
-      return '正在推进';
+      return tr('Working');
     case 'paused':
-      return '已暂停';
+      return tr('Paused');
     case 'blocked':
-      return '等待处理';
+      return tr('Needs attention');
+    case 'budget_limited':
+      return tr('Budget reached');
     case 'achieved':
-      return '已达成';
+      return tr('Achieved');
     case 'cancelled':
-      return '已取消';
+      return tr('Cancelled');
     default:
       return status;
   }
 }
 
 function formatElapsed(sec: number): string {
-  if (!Number.isFinite(sec) || sec <= 0) return '0s';
-  if (sec < 60) return String(Math.floor(sec)) + 's';
-  const mins = Math.floor(sec / 60);
-  const rem = Math.floor(sec % 60);
-  if (mins < 60) return String(mins) + 'm ' + String(rem) + 's';
-  const hrs = Math.floor(mins / 60);
-  return String(hrs) + 'h ' + String(mins % 60) + 'm';
+  const seconds = Number.isFinite(sec) ? Math.max(0, Math.floor(sec)) : 0;
+  if (seconds < 60) return tr('{seconds}s', { seconds });
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return tr('{minutes}m {seconds}s', { minutes: mins, seconds: seconds % 60 });
+  return tr('{hours}h {minutes}m', { hours: Math.floor(mins / 60), minutes: mins % 60 });
 }
 
 /**
@@ -80,13 +83,15 @@ export function GoalBar(props: {
   const metricsText = () => {
     const g = props.goal();
     if (!g) return '';
-    return (
-      '第 ' +
-      String(g.iterations) +
-      ' 轮 · 已运行 ' +
-      formatElapsed(g.elapsedSeconds) +
-      (g.tokenBudget ? ' · 预算 ' + String(g.tokenBudget) : '')
-    );
+    const iteration = tr('Iteration {count}', { count: g.iterations });
+    const elapsed = formatElapsed(g.elapsedSeconds);
+    return g.tokenBudget
+      ? tr('{iteration} · Elapsed: {elapsed} · Budget: {budget}', {
+          iteration,
+          elapsed,
+          budget: g.tokenBudget,
+        })
+      : tr('{iteration} · Elapsed: {elapsed}', { iteration, elapsed });
   };
 
   return (
@@ -104,7 +109,7 @@ export function GoalBar(props: {
       >
         <View
           role="button"
-          accessibilityLabel="Toggle goal details"
+          accessibilityLabel={tr('Toggle goal details')}
           onPress={() => expanded.set(!expanded())}
           style={{
             paddingHorizontal: 12,
@@ -123,7 +128,7 @@ export function GoalBar(props: {
             }}
           />
           <Text style={{ fontSize: 12.5, fontWeight: '600', color: token('foreground') }}>
-            {'目标 · ' + goalStatusLabel(props.goal()?.status ?? '')}
+            {tr('Goal · {status}', { status: goalStatusLabel(props.goal()?.status ?? '') })}
           </Text>
           <Text style={{ flex: 1, fontSize: 12, color: token('muted-foreground') }}>
             {shortObjective()}
@@ -158,7 +163,7 @@ export function GoalBar(props: {
               <If when={props.goal()?.status === 'active'}>
                 <View
                   role="button"
-                  accessibilityLabel="Pause goal"
+                  accessibilityLabel={tr('Pause Goal')}
                   onPress={() => {
                     if (!props.busy()) props.onControl('pause');
                   }}
@@ -172,7 +177,7 @@ export function GoalBar(props: {
                   }}
                 >
                   <Text style={{ fontSize: 12.5, fontWeight: '600', color: token('foreground') }}>
-                    暂停
+                    {tr('Pause')}
                   </Text>
                 </View>
               </If>
@@ -180,7 +185,7 @@ export function GoalBar(props: {
               <If when={props.goal()?.status === 'paused' || props.goal()?.status === 'blocked'}>
                 <View
                   role="button"
-                  accessibilityLabel="Resume goal"
+                  accessibilityLabel={tr('Resume Goal')}
                   onPress={() => {
                     if (!props.busy()) props.onControl('resume');
                   }}
@@ -198,7 +203,7 @@ export function GoalBar(props: {
                       color: token('primary-foreground'),
                     }}
                   >
-                    继续推进
+                    {tr('Resume')}
                   </Text>
                 </View>
               </If>
@@ -206,7 +211,7 @@ export function GoalBar(props: {
               <If when={!isTerminal()}>
                 <View
                   role="button"
-                  accessibilityLabel="Cancel goal"
+                  accessibilityLabel={tr('Cancel Goal')}
                   onPress={() => {
                     if (!props.busy()) props.onControl('cancel');
                   }}
@@ -218,7 +223,7 @@ export function GoalBar(props: {
                   }}
                 >
                   <Text style={{ fontSize: 12.5, fontWeight: '600', color: token('destructive') }}>
-                    取消目标
+                    {tr('Cancel Goal')}
                   </Text>
                 </View>
               </If>
@@ -226,7 +231,7 @@ export function GoalBar(props: {
               <If when={isTerminal()}>
                 <View
                   role="button"
-                  accessibilityLabel="Dismiss goal"
+                  accessibilityLabel={tr('Dismiss Goal')}
                   onPress={() => {
                     if (!props.busy()) props.onControl('dismiss');
                   }}
@@ -242,7 +247,7 @@ export function GoalBar(props: {
                   <Text
                     style={{ fontSize: 12.5, fontWeight: '600', color: token('muted-foreground') }}
                   >
-                    收起
+                    {tr('Dismiss')}
                   </Text>
                 </View>
               </If>

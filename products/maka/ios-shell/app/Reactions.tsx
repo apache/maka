@@ -18,6 +18,7 @@
  */
 
 import { Text, View, token } from 'nsh';
+import { tr } from './locale';
 import { glass } from './ui';
 
 export const QUICK_REACTIONS = ['👍', '❤️', '🔥', '🎉', '🤯', '🤔'] as const;
@@ -48,7 +49,7 @@ export function ReactionPickerBar(props: {
         {(item) => (
           <View
             role="button"
-            accessibilityLabel={'React ' + item()}
+            accessibilityLabel={tr('React {emoji}', { emoji: item() })}
             onPress={() => props.onPick(item())}
             style={{
               minWidth: 38,
@@ -64,7 +65,7 @@ export function ReactionPickerBar(props: {
       </Each>
       <View
         role="button"
-        accessibilityLabel="Close reaction picker"
+        accessibilityLabel={tr('Close reaction picker')}
         onPress={props.onDismiss}
         style={{
           minWidth: 34,
@@ -101,7 +102,7 @@ export function ReactionPillsRow(props: {
           {(entry) => (
             <View
               role="button"
-              accessibilityLabel={'Toggle reaction ' + entry().emoji}
+              accessibilityLabel={tr('Toggle reaction {emoji}', { emoji: entry().emoji })}
               onPress={() => props.onToggle(entry().emoji)}
               style={{
                 flexDirection: 'row',

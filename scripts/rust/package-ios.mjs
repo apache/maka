@@ -24,12 +24,15 @@ import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
+import localeManifest from '../../locales.manifest.json' with { type: 'json' };
 import { cargoBuild } from './cargo.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const executable = 'maka-ios-shell';
 const ipaName = 'Maka-ios-arm64.ipa';
 const minimumOS = '15.0';
+const networkUsageMessage = 'Connect to your Maka Host and discover a direct connection.';
 const targets = {
   ios: {
     triple: 'aarch64-apple-ios',
@@ -146,12 +149,13 @@ ${xml(value)}
 `;
 }
 
-const icon = (name) => ({ CFBundlePrimaryIcon: { CFBundleIconFiles: [name] } });
+const icon = (...names) => ({ CFBundlePrimaryIcon: { CFBundleIconFiles: names } });
 
 export function appInfo({ platform, bundleId, appVersion, buildNumber }) {
   validateVersion(appVersion);
   return {
-    CFBundleDevelopmentRegion: 'en',
+    CFBundleDevelopmentRegion: localeManifest.defaultLocale,
+    CFBundleLocalizations: localeManifest.locales.map(({ appleLocalization }) => appleLocalization),
     CFBundleName: 'Maka',
     CFBundleDisplayName: 'Maka',
     CFBundleExecutable: executable,
@@ -162,7 +166,7 @@ export function appInfo({ platform, bundleId, appVersion, buildNumber }) {
     CFBundleVersion: buildNumber,
     CFBundleSupportedPlatforms: [platform],
     CFBundleIcons: icon('AppIcon60'),
-    'CFBundleIcons~ipad': icon('AppIcon76'),
+    'CFBundleIcons~ipad': icon('AppIcon76', 'AppIcon83.5'),
     UIDeviceFamily: [1, 2],
     MinimumOSVersion: minimumOS,
     UIApplicationSceneManifest: { UIApplicationSupportsMultipleScenes: false },
@@ -176,7 +180,7 @@ export function appInfo({ platform, bundleId, appVersion, buildNumber }) {
       },
     ],
     NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
-    NSLocalNetworkUsageDescription: 'Connect to your Maka Host and discover a direct connection.',
+    NSLocalNetworkUsageDescription: networkUsageMessage,
   };
 }
 
@@ -273,24 +277,196 @@ export async function archiveIpa(payload, path) {
   await writeFile(`${path}.sha256`, `${digest.digest('hex')}  ${ipaName}\n`);
 }
 
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function paeth(left, up, upperLeft) {
+  const p = left + up - upperLeft;
+  const a = Math.abs(p - left);
+  const b = Math.abs(p - up);
+  const c = Math.abs(p - upperLeft);
+  return a <= b && a <= c ? left : b <= c ? up : upperLeft;
+}
+
+export function decodeIconPng(png) {
+  if (
+    png.length < 33 ||
+    !png.subarray(0, 8).equals(pngSignature) ||
+    png.readUInt32BE(8) !== 13 ||
+    png.toString('ascii', 12, 16) !== 'IHDR'
+  )
+    throw new Error('Invalid app icon PNG header');
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const colorType = png[25];
+  if (
+    !width ||
+    !height ||
+    png[24] !== 8 ||
+    (colorType !== 2 && colorType !== 6) ||
+    png[26] !== 0 ||
+    png[27] !== 0 ||
+    png[28] !== 0
+  )
+    throw new Error('App icon must be a non-interlaced 8-bit RGB or RGBA PNG');
+
+  const channels = colorType === 6 ? 4 : 3;
+  const idat = [];
+  let ended = false;
+  for (let offset = 8; offset + 12 <= png.length; ) {
+    const size = png.readUInt32BE(offset);
+    const end = offset + 8 + size;
+    const type = png.toString('ascii', offset + 4, offset + 8);
+    if (end + 4 > png.length || crc32(png.subarray(offset + 4, end)) !== png.readUInt32BE(end))
+      throw new Error(`Invalid app icon PNG chunk: ${type}`);
+    if (type === 'IDAT') idat.push(png.subarray(offset + 8, end));
+    if (type === 'tRNS') throw new Error('App icon PNG does not support a transparency key');
+    if (type === 'IEND') {
+      ended = true;
+      break;
+    }
+    offset = end + 4;
+  }
+  if (!ended || !idat.length) throw new Error('Incomplete app icon PNG');
+
+  const stride = width * channels;
+  const length = (stride + 1) * height;
+  const rows = inflateSync(Buffer.concat(idat), { maxOutputLength: length });
+  if (rows.length !== length) throw new Error('Invalid app icon PNG data length');
+  const pixels = Buffer.allocUnsafe(stride * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * (stride + 1);
+    const filter = rows[row];
+    if (filter > 4) throw new Error(`Invalid app icon PNG filter: ${filter}`);
+    for (let x = 0; x < stride; x++) {
+      const i = y * stride + x;
+      const left = x >= channels ? pixels[i - channels] : 0;
+      const up = y ? pixels[i - stride] : 0;
+      const upperLeft = y && x >= channels ? pixels[i - stride - channels] : 0;
+      let prediction = 0;
+      switch (filter) {
+        case 1:
+          prediction = left;
+          break;
+        case 2:
+          prediction = up;
+          break;
+        case 3:
+          prediction = (left + up) >> 1;
+          break;
+        case 4:
+          prediction = paeth(left, up, upperLeft);
+          break;
+      }
+      pixels[i] = rows[row + 1 + x] + prediction;
+    }
+  }
+  return { width, height, channels, pixels };
+}
+
+function pngChunk(type, data) {
+  const chunk = Buffer.allocUnsafe(data.length + 12);
+  chunk.writeUInt32BE(data.length);
+  chunk.write(type, 4, 'ascii');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  return chunk;
+}
+
+function resizeRgbIcon({ pixels, width, height, channels }, size) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const stride = size * 3 + 1;
+  const rows = Buffer.alloc(stride * size);
+  // Average the exact source area covered by each output pixel.
+  for (let y = 0; y < size; y++) {
+    const top = y * height;
+    const bottom = top + height;
+    for (let x = 0; x < size; x++) {
+      const left = x * width;
+      const right = left + width;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let sy = Math.floor(top / size); sy * size < bottom; sy++) {
+        const dy = Math.min(bottom, (sy + 1) * size) - Math.max(top, sy * size);
+        for (let sx = Math.floor(left / size); sx * size < right; sx++) {
+          const weight = dy * (Math.min(right, (sx + 1) * size) - Math.max(left, sx * size));
+          const i = (sy * width + sx) * channels;
+          r += pixels[i] * weight;
+          g += pixels[i + 1] * weight;
+          b += pixels[i + 2] * weight;
+        }
+      }
+      const area = width * height;
+      const i = y * stride + 1 + x * 3;
+      rows[i] = Math.round(r / area);
+      rows[i + 1] = Math.round(g / area);
+      rows[i + 2] = Math.round(b / area);
+    }
+  }
+  return Buffer.concat([
+    pngSignature,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(rows)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+export function appIcons(source) {
+  const image = decodeIconPng(source);
+  const { pixels, channels, width } = image;
+  if (channels === 4) {
+    // The logo stores its background RGB at the top center even where alpha is zero.
+    const topMiddle = Math.floor(width / 2) * channels;
+    const background = [...pixels.subarray(topMiddle, topMiddle + 3)];
+    for (let i = 0; i < pixels.length; i += channels) {
+      const alpha = pixels[i + 3];
+      if (alpha === 255) continue;
+      for (let c = 0; c < 3; c++)
+        pixels[i + c] = Math.round((pixels[i + c] * alpha + background[c] * (255 - alpha)) / 255);
+    }
+  }
+  return [
+    [120, 'AppIcon60@2x'],
+    [180, 'AppIcon60@3x'],
+    [152, 'AppIcon76@2x'],
+    [167, 'AppIcon83.5@2x'],
+  ].map(([size, name]) => [`${name}.png`, resizeRgbIcon(image, size)]);
+}
+
+export async function stageLocalizations(app) {
+  const catalogs = new Map();
+  const directory = join(root, 'products/maka/ios-shell/locales');
+  for (const { tag } of localeManifest.locales) {
+    catalogs.set(tag, JSON.parse(await readFile(join(directory, tag + '.json'), 'utf8')));
+  }
+  for (const { tag, appleLocalization, fallbacks } of localeManifest.locales) {
+    const name = [tag, ...fallbacks].find((locale) =>
+      Object.hasOwn(catalogs.get(locale), networkUsageMessage),
+    );
+    if (!name) throw new Error(`Missing network usage description for ${tag}`);
+    const directory = join(app, `${appleLocalization}.lproj`);
+    await mkdir(directory);
+    await writeFile(
+      join(directory, 'InfoPlist.strings'),
+      plist({
+        NSLocalNetworkUsageDescription: catalogs.get(name)[networkUsageMessage],
+      }),
+    );
+  }
+}
+
 async function stageApp(app, binary, settings) {
   await mkdir(app, { recursive: true });
   await copyFile(binary, join(app, executable));
   await chmod(join(app, executable), 0o755);
   await writeFile(join(app, 'Info.plist'), plist(appInfo(settings)));
-  for (const [size, name] of [
-    [120, 'AppIcon60@2x'],
-    [180, 'AppIcon60@3x'],
-    [152, 'AppIcon76@2x'],
-  ])
-    command('sips', [
-      '-z',
-      String(size),
-      String(size),
-      join(root, 'assets/logo.png'),
-      '--out',
-      join(app, `${name}.png`),
-    ]);
+  await stageLocalizations(app);
+  for (const [name, png] of appIcons(await readFile(join(root, 'assets/logo.png'))))
+    await writeFile(join(app, name), png);
   command('plutil', ['-lint', join(app, 'Info.plist')]);
 }
 

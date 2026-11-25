@@ -18,7 +18,7 @@
  */
 
 import { Scroll, Text, View, signal } from 'nsh';
-import { copy } from './copy';
+import { tr } from './locale';
 import { Action, Panel } from './ui';
 
 export interface TurnRailEntry {
@@ -39,15 +39,15 @@ export function TurnRail(props: {
   return (
     <If when={props.turns().length >= 2}>
       <View class="absolute right-2 top-4">
-        <Action title={copy('Turns', '轮次', '輪次')} onPress={() => open.set(true)} />
+        <Action title={tr('Turns')} onPress={() => open.set(true)} />
       </View>
       <Panel open={open()} close={() => open.set(false)}>
         <View class="flex-1 gap-2 p-4">
-          <Action title={copy('Close', '关闭', '關閉')} onPress={() => open.set(false)} />
+          <Action title={tr('Close')} onPress={() => open.set(false)} />
           <If when={props.activeId()}>
             <Action
               primary
-              title={copy('Current turn', '当前轮次', '目前輪次')}
+              title={tr('Current turn')}
               onPress={() => {
                 const id = props.activeId();
                 if (id) select(id);
