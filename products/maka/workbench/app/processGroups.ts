@@ -147,16 +147,29 @@ export function groupThought(
   return work?.lastThought?.text.trim() || null;
 }
 
-/** Latest active-group thought for a folded running turn, cleared once its answer starts. */
+/** Latest active-group thought for a folded running turn. */
 export function turnThought(
-  turn: TurnPresentation,
   groups: readonly ProcessGroup[],
   row: (id: string) => ThoughtRow | undefined,
 ): string | null {
-  if (turnOutcome(turn) !== null || turn.finalAnswerStarted || turn.answerOutputIds.length > 0)
-    return null;
   const open = groups.findLast((group) => !group.closed);
   return open ? groupThought(open, row) : null;
+}
+
+/** Whether a group's latest recorded or unpersisted step is a thought. */
+export function groupLatestIsThought(
+  group: ProcessGroup,
+  row: (id: string) => ThoughtRow | undefined,
+): boolean {
+  const lastRow = row(group.rowIds.at(-1) ?? '');
+  const work =
+    lastRow && lastRow.position === undefined
+      ? undefined
+      : group.workRowId
+        ? row(group.workRowId)?.work
+        : undefined;
+  if (work) return work.last.kind === 'thought';
+  return Boolean(lastRow && !lastRow.tool && lastRow.field === 'thinking');
 }
 
 export function displayOrder(row: ProcessRow): HistoryOrder | undefined {

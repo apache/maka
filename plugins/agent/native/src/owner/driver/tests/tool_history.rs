@@ -4358,20 +4358,30 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         let run = admitted.facts[0].run;
         let claim = driver.state.claim(run).await?;
         let task = ExternalTaskId::new();
-        let append = |facts: Vec<Fact>| async {
-            let view = driver.state.frontier(run).await?;
-            driver
-                .state
-                .append(
-                    &claim,
-                    (&view).into(),
-                    facts
-                        .into_iter()
-                        .map(|fact| Change::new(fact, at()))
-                        .collect(),
-                    vec![],
+        let session_history = driver
+            .state
+            .session_history(driver.owner.run_owner(), session.clone());
+        let append = |facts: Vec<Fact>| {
+            let claim = &claim;
+            let session_history = &session_history;
+            async move {
+                let view = driver.state.frontier(run).await?;
+                driver
+                    .state
+                    .append(
+                        claim,
+                        (&view).into(),
+                        facts
+                            .into_iter()
+                            .map(|fact| Change::new(fact, at()))
+                            .collect(),
+                        vec![],
+                    )
+                    .await?;
+                Ok::<u64, Box<dyn Error + Send + Sync>>(
+                    session_history.capture().await?.through_sequence,
                 )
-                .await
+            }
         };
         append(vec![
             Fact::ExternalTaskPrepared {
@@ -4392,18 +4402,23 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         ])
         .await?;
 
-        let chat_tail = || async {
-            query(
-                &rig,
-                "history",
-                json!({
-                    "sessionId": session,
-                    "position": {"kind": "tail"},
-                    "includeThinking": true,
-                    "view": "chat",
-                }),
-            )
-            .await
+        let chat = |position: Value, through: Option<u64>, include_thinking: bool| {
+            let rig = &rig;
+            let session = &session;
+            async move {
+                query(
+                    rig,
+                    "history",
+                    json!({
+                        "sessionId": session,
+                        "through": through,
+                        "position": position,
+                        "includeThinking": include_thinking,
+                        "view": "chat",
+                    }),
+                )
+                .await
+            }
         };
         let work_chunk = |page: &Value| -> Option<Value> {
             page["chunks"]
@@ -4415,9 +4430,8 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
                 .cloned()
         };
 
-        let first_page = chat_tail().await?;
+        let first_page = chat(json!({"kind": "tail"}), None, true).await?;
         let first_group = work_chunk(&first_page).ok_or("missing initial work group")?;
-        let expected_t1_id = maka_agent_facts::executor::message_id(run, task, "t1");
         assert_eq!(
             first_group["work"]["last"]["kind"], "thought",
             "{first_group}"
@@ -4427,13 +4441,14 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             "{first_group}"
         );
         assert_eq!(
-            first_group["work"]["lastThought"]["messageId"], expected_t1_id,
+            first_group["work"]["end"]["offset"],
+            "Initial plan.".len() as u64,
             "{first_group}"
         );
         let t1_position = first_group["work"]["lastThought"]["position"].clone();
 
-        // Continuation delta on the same thinking message is readable in O(1) via agent.source tail.
-        append(vec![Fact::ExternalTaskObserved {
+        // Continuation delta on t1 is delivered in the same Chat After follow via tailThought.
+        let cont_fence = append(vec![Fact::ExternalTaskObserved {
             task,
             index: 1,
             model_time_ms: None,
@@ -4443,23 +4458,47 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             },
         }])
         .await?;
-        let after_cont = chat_tail().await?;
-        let source = query(
-            &rig,
-            "source",
-            json!({
-                "sessionId": session,
-                "through": after_cont["through"],
-                "source": {"kind": "row", "position": t1_position},
-                "field": "thinking",
-                "position": {"kind": "tail"},
-            }),
+        let cont_page = chat(
+            json!({"kind": "after", "cursor": first_group["work"]["end"]}),
+            Some(cont_fence),
+            true,
         )
         .await?;
-        assert_eq!(source["source"]["text"], "Initial plan. Checking PR #7270.");
+        assert!(
+            cont_page["chunks"].as_array().unwrap().is_empty(),
+            "{cont_page}"
+        );
+        let expected_t1 = "Initial plan. Checking PR #7270.";
+        assert_eq!(
+            cont_page["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1.len() as u64,
+                "text": expected_t1,
+            }),
+            "{cont_page}"
+        );
 
-        // Following tool keeps lastThought while advancing work.last to tool.
-        append(vec![Fact::ExternalTaskObserved {
+        // Following again from the updated offset produces no redundant tailThought.
+        let updated_end = json!({
+            "position": t1_position,
+            "field": "thinking",
+            "offset": expected_t1.len() as u64,
+        });
+        let idle_page = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(cont_fence),
+            true,
+        )
+        .await?;
+        assert!(
+            idle_page["chunks"].as_array().unwrap().is_empty(),
+            "{idle_page}"
+        );
+        assert!(idle_page["tailThought"].is_null(), "{idle_page}");
+
+        // Following tool returns a refreshed WorkGroup chunk (no tailThought) while preserving lastThought.
+        let tool_fence = append(vec![Fact::ExternalTaskObserved {
             task,
             index: 2,
             model_time_ms: None,
@@ -4470,48 +4509,71 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             },
         }])
         .await?;
-        let after_tool = chat_tail().await?;
+        let after_tool = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(tool_fence),
+            true,
+        )
+        .await?;
+        assert!(after_tool["tailThought"].is_null(), "{after_tool}");
         let tool_group = work_chunk(&after_tool).ok_or("missing work group after tool")?;
         assert_eq!(tool_group["work"]["last"]["kind"], "tool", "{tool_group}");
         assert_eq!(
-            tool_group["work"]["lastThought"]["text"], "Initial plan. Checking PR #7270.",
+            tool_group["work"]["lastThought"]["text"], expected_t1,
             "{tool_group}"
         );
 
-        // Second long CJK thought updates lastThought to a bounded valid UTF-8 tail;
-        // a trailing whitespace-only thought does not overwrite it.
-        let long_cjk = format!("{}结尾思考", "思".repeat(1200));
-        append(vec![
-            Fact::ExternalTaskObserved {
-                task,
-                index: 3,
-                model_time_ms: None,
-                output: Output::ThinkingDelta {
-                    message_id: "t2".into(),
-                    text: long_cjk,
-                },
+        // Whitespace-first thought leaves lastThought on t1; once non-empty CJK text arrives,
+        // Chat After re-summarizes the group with a bounded valid UTF-8 tail (<= 3072 bytes).
+        let blank_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 3,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: "  \n".into(),
             },
-            Fact::ExternalTaskObserved {
-                task,
-                index: 4,
-                model_time_ms: None,
-                output: Output::ThinkingDelta {
-                    message_id: "t3".into(),
-                    text: "  \n".into(),
-                },
-            },
-        ])
+        }])
         .await?;
-        let after_second = chat_tail().await?;
+        let blank_page = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(blank_fence),
+            true,
+        )
+        .await?;
+        let blank_group = work_chunk(&blank_page).ok_or("missing work group after blank t2")?;
+        assert_eq!(blank_group["work"]["last"]["kind"], "tool", "{blank_group}");
+        assert_eq!(
+            blank_group["work"]["lastThought"]["text"], expected_t1,
+            "{blank_group}"
+        );
+
+        let long_cjk = format!("{}结尾思考", "思".repeat(1200));
+        let second_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 4,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: long_cjk,
+            },
+        }])
+        .await?;
+        let after_second = chat(
+            json!({"kind": "after", "cursor": blank_group["work"]["end"]}),
+            Some(second_fence),
+            true,
+        )
+        .await?;
+        assert!(after_second["tailThought"].is_null(), "{after_second}");
         let second_group = work_chunk(&after_second).ok_or("missing work group after t2")?;
-        let expected_t2_id = maka_agent_facts::executor::message_id(run, task, "t2");
+        assert_eq!(
+            second_group["work"]["last"]["kind"], "thought",
+            "{second_group}"
+        );
         let second_text = second_group["work"]["lastThought"]["text"]
             .as_str()
             .ok_or("missing t2 lastThought text")?;
-        assert_eq!(
-            second_group["work"]["lastThought"]["messageId"], expected_t2_id,
-            "{second_group}"
-        );
         assert!(
             second_text.len() <= 3072,
             "tail byte len {}",
@@ -4520,24 +4582,14 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         assert!(second_text.ends_with("结尾思考"), "{second_text}");
 
         // Reading without thinking omits lastThought from the WorkGroup summary.
-        let no_thinking = query(
-            &rig,
-            "history",
-            json!({
-                "sessionId": session,
-                "position": {"kind": "tail"},
-                "includeThinking": false,
-                "view": "chat",
-            }),
-        )
-        .await?;
+        let no_thinking = chat(json!({"kind": "tail"}), None, false).await?;
         let no_thinking_group = work_chunk(&no_thinking).ok_or("missing no-thinking work group")?;
         assert!(
             no_thinking_group["work"]["lastThought"].is_null(),
             "{no_thinking_group}"
         );
 
-        // Finished turns omit lastThought so historical WorkGroups carry no extra payload.
+        // Finished turns omit lastThought and reset work.end.offset to 0.
         append(vec![
             Fact::ExternalTaskClosed {
                 task,
@@ -4551,10 +4603,14 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             },
         ])
         .await?;
-        let finished = chat_tail().await?;
+        let finished = chat(json!({"kind": "tail"}), None, true).await?;
         let finished_group = work_chunk(&finished).ok_or("missing finished work group")?;
         assert!(
             finished_group["work"]["lastThought"].is_null(),
+            "{finished_group}"
+        );
+        assert_eq!(
+            finished_group["work"]["end"]["offset"], 0,
             "{finished_group}"
         );
         Ok::<_, Box<dyn Error + Send + Sync>>(())

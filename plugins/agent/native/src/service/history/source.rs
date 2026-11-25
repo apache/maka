@@ -868,57 +868,23 @@ async fn group(
             }
         }
     }
-    const LAST_THOUGHT_TAIL_BYTES: usize = 3072;
-    let unfinished = members.last().is_some_and(|member| {
-        matches!(
-            member.row.chunk.position,
-            wire::HistoryRowAddress::Live { .. }
-        ) && member
-            .row
-            .chunk
-            .timing
-            .as_ref()
-            .is_some_and(|timing| timing.finished.is_none())
-    });
-    let mut last_thought = None;
-    if unfinished {
-        for member in members.iter().rev() {
-            if member.row.chunk.tool.is_some()
-                || member.row.chunk.field != wire::HistoryField::Thinking
-                || matches!(member.row.body, projection::Body::Empty)
-                || matches!(
-                    &member.row.body,
-                    projection::Body::Text(body)
-                        if body.chunks().all(|text| text.trim().is_empty())
-                )
-            {
-                continue;
-            }
-            let excerpt = display(
-                member,
-                wire::HistoryView::Chat,
-                SourcePosition::Tail,
-                LAST_THOUGHT_TAIL_BYTES,
-                stop,
-            )
-            .await?;
-            let text = excerpt.text.trim_end();
-            if !text.trim().is_empty() {
-                last_thought = Some(Box::new(wire::WorkThought {
-                    position: member.row.chunk.position.clone(),
-                    message_id: member.row.chunk.message_id.clone(),
-                    text: text.to_owned(),
-                }));
-                break;
-            }
-        }
-    }
-    Ok(summarize(members, last_thought))
+    Ok(summarize(members))
 }
-fn summarize(
-    members: Vec<Selected>,
-    last_thought: Option<Box<wire::WorkThought>>,
-) -> Option<Selected> {
+pub(super) fn thought_tail(body: &TextBody) -> Option<String> {
+    const LAST_THOUGHT_TAIL_BYTES: usize = 3072;
+    let total = body.len_bytes();
+    let mut start = total.saturating_sub(LAST_THOUGHT_TAIL_BYTES);
+    let slice = loop {
+        if let Some(slice) = body.slice(start..total) {
+            break slice;
+        }
+        start += 1;
+    };
+    let mut text = slice.to_string();
+    text.truncate(text.trim_end().len());
+    (!text.is_empty()).then_some(text)
+}
+fn summarize(members: Vec<Selected>) -> Option<Selected> {
     enum Seat {
         Tool(usize),
         Thought,
@@ -1025,12 +991,44 @@ fn summarize(
     }
     let image_count = images.len() as u64;
     images.drain(..images.len().saturating_sub(4));
-    let end = &members.last()?.row.chunk;
+    let end_member = members.last()?;
+    let end = &end_member.row.chunk;
+    let unfinished = matches!(end.position, wire::HistoryRowAddress::Live { .. })
+        && end
+            .timing
+            .as_ref()
+            .is_some_and(|timing| timing.finished.is_none());
+    let last_thought = unfinished
+        .then(|| {
+            seats.iter().rev().find_map(|(index, seat)| {
+                matches!(seat, Seat::Thought)
+                    .then(|| &members[*index].row)
+                    .and_then(|row| {
+                        let projection::Body::Text(body) = &row.body else {
+                            return None;
+                        };
+                        Some(Box::new(wire::WorkThought {
+                            position: row.chunk.position.clone(),
+                            text: thought_tail(body)?,
+                        }))
+                    })
+            })
+        })
+        .flatten();
+    let end_offset =
+        if unfinished && end.tool.is_none() && end.field == wire::HistoryField::Thinking {
+            match &end_member.row.body {
+                projection::Body::Text(body) => body.len_bytes() as u64,
+                _ => 0,
+            }
+        } else {
+            0
+        };
     let work = wire::WorkGroup {
         end: wire::Cursor {
             field: end.field,
             position: end.position.clone(),
-            offset: 0,
+            offset: end_offset,
         },
         last: kind(last).unwrap_or(wire::WorkKind::Message),
         first_tool_use_id: members[first]

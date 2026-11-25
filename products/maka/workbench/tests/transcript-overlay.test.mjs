@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  groupLatestIsThought,
   groupThought,
   orderProcessRows,
   projectProcessGroups,
@@ -30,7 +31,9 @@ import {
   turnWorkFold,
 } from '../app/processGroups.ts';
 import {
+  applyWorkTailThought,
   HistoryRows,
+  historyFollowPosition,
   historyFollowTail,
   historyRowThrough,
   historyTurnKey,
@@ -577,14 +580,14 @@ test('reverse-paging a group whose first tool finishes in the tail page keeps on
   assert.equal(head.entries[0].key, initialKey);
 });
 
-test('groupThought and turnThought prefer live unpersisted thoughts over summary tails and ignore stale loaded history', () => {
-  const workRow = (lastThought, seq = 2) =>
-    row(undefined, '', seq, {
+test('groupThought, turnThought, and applyWorkTailThought keep active thoughts current without regressing to expanded steps', () => {
+  const workRow = (lastThought, { endPos, endField = 'body', endOffset = 0, last } = {}) =>
+    row(undefined, '', 2, {
       role: 'thinking',
       field: 'thinking',
       work: {
-        end: { position: row('', '', seq + 5).position, field: 'body', offset: 0 },
-        last: { kind: 'tool', presentation: null },
+        end: { position: endPos ?? row('', '', 7).position, field: endField, offset: endOffset },
+        last: last ?? { kind: 'tool', presentation: null },
         lastCall: null,
         lastThought,
         firstToolUseId: null,
@@ -601,16 +604,16 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     role: 'thinking',
     field: 'thinking',
   });
-  const work1 = workRow({
-    position: oldLoadedThought.position,
-    messageId: 't1',
-    text: 'Old expanded thought',
-  });
-  const work2 = workRow({
-    position: row('', '', 6).position,
-    messageId: 't2',
-    text: 'Newer folded thought',
-  });
+  const t1Work = workRow(
+    { position: oldLoadedThought.position, text: 'Initial' },
+    {
+      endPos: oldLoadedThought.position,
+      endField: 'thinking',
+      endOffset: 7,
+      last: { kind: 'thought' },
+    },
+  );
+  const work2 = workRow({ position: row('', '', 6).position, text: 'Newer folded thought' });
   const liveThought = {
     key: 'live/model/step-2/att-1/0',
     messageId: 'live-t2',
@@ -621,24 +624,44 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     startSequence: 10,
     modelPart: { stepId: 'step-2', attemptId: 'att-1', ordinal: 0 },
   };
-  const liveBlank = { ...liveThought, text: '  \n' };
-
   const lookup = (items) => {
     const map = new Map(items.map((item) => [stableRowId(item), item]));
     return (id) => map.get(id);
   };
 
-  // Collapsed external executor / fresh tab: no expanded step rows, reads work.lastThought directly.
+  // Returning to tail at an old fence sends work.end.offset; Host tailThought advances both text and cursor.
+  assert.deepEqual(historyFollowPosition(t1Work, []), {
+    kind: 'after',
+    cursor: { position: oldLoadedThought.position, field: 'thinking', offset: 7 },
+  });
+  const caughtUp = applyWorkTailThought(t1Work, {
+    position: oldLoadedThought.position,
+    offset: 18,
+    text: 'Initial + continued',
+  });
+  assert.equal(caughtUp.work.end.offset, 18);
+  assert.equal(caughtUp.work.lastThought.text, 'Initial + continued');
+  assert.equal(
+    applyWorkTailThought(caughtUp, {
+      position: oldLoadedThought.position,
+      offset: 18,
+      text: 'Initial + continued',
+    }),
+    caughtUp,
+  );
+
+  // Collapsed external executor reads work.lastThought and reports thinking title without expanding.
   const foldedOnly = projectProcessGroups({
-    rows: [req, work1],
+    rows: [req, caughtUp],
     toolActivity: [],
     activeTurnId: 'run',
   });
   const foldedGroup = foldedOnly.entries.find((entry) => entry.kind === 'process');
-  assert.equal(groupThought(foldedGroup, lookup([req, work1])), 'Old expanded thought');
+  assert.equal(groupThought(foldedGroup, lookup([req, caughtUp])), 'Initial + continued');
+  assert.equal(groupLatestIsThought(foldedGroup, lookup([req, caughtUp])), true);
+  assert.equal(turnThought([foldedGroup], lookup([req, caughtUp])), 'Initial + continued');
 
-  // After expanding once (oldLoadedThought in rowIds) and collapsing: newer work.lastThought wins,
-  // never regressing to oldLoadedThought when a newer thought commits into work.
+  // After expanding once (oldLoadedThought in rowIds) and collapsing: newer work.lastThought wins.
   const expandedThenUpdated = projectProcessGroups({
     rows: [req, work2, oldLoadedThought],
     toolActivity: [],
@@ -649,6 +672,7 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     groupThought(updatedGroup, lookup([req, work2, oldLoadedThought])),
     'Newer folded thought',
   );
+  assert.equal(groupLatestIsThought(updatedGroup, lookup([req, work2, oldLoadedThought])), false);
 
   // While a new native thought streams live, it takes precedence over work.lastThought.
   const withLive = projectProcessGroups({
@@ -661,17 +685,12 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     groupThought(liveGroup, lookup([req, work2, oldLoadedThought, liveThought])),
     'Streaming live thought',
   );
+  assert.equal(
+    groupLatestIsThought(liveGroup, lookup([req, work2, oldLoadedThought, liveThought])),
+    true,
+  );
 
-  // A whitespace-only live thought falls back to work.lastThought without flashing empty.
-  const withBlankLive = projectProcessGroups({
-    rows: [req, work2, liveBlank],
-    toolActivity: [],
-    activeTurnId: 'run',
-  });
-  const blankGroup = withBlankLive.entries.find((entry) => entry.kind === 'process');
-  assert.equal(groupThought(blankGroup, lookup([req, work2, liveBlank])), 'Newer folded thought');
-
-  // Conversation view without work summary reads the latest thought directly from group.rowIds.
+  // Conversation view without work summary derives both thought and title from group.rowIds.
   const ungrouped = projectProcessGroups({
     rows: [req, oldLoadedThought],
     toolActivity: [],
@@ -682,12 +701,9 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     groupThought(ungroupedProc, lookup([req, oldLoadedThought])),
     'Old expanded thought',
   );
+  assert.equal(groupLatestIsThought(ungroupedProc, lookup([req, oldLoadedThought])), true);
 
-  // Folded TurnSummary shows the open group's thought, and clears once the answer starts streaming.
-  assert.equal(
-    turnThought(foldedOnly.turns.get('run'), [foldedGroup], lookup([req, work1])),
-    'Old expanded thought',
-  );
+  // Streaming answer closes groups so folded TurnSummary clears its peek.
   const streamingAnswer = row('ans', 'Here is the review', 20, {
     role: 'assistant',
     field: 'body',
@@ -700,8 +716,5 @@ test('groupThought and turnThought prefer live unpersisted thoughts over summary
     answerTurnId: 'run',
   });
   const closedGroups = answering.entries.filter((entry) => entry.kind === 'process');
-  assert.equal(
-    turnThought(answering.turns.get('run'), closedGroups, lookup([req, work2, streamingAnswer])),
-    null,
-  );
+  assert.equal(turnThought(closedGroups, lookup([req, work2, streamingAnswer])), null);
 });

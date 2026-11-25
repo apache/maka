@@ -16273,6 +16273,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThoughtUpdate',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -17920,9 +17930,6 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/HistoryRowAddress',
                   },
-                  messageId: {
-                    type: ['string', 'null'],
-                  },
                   text: {
                     type: 'string',
                   },
@@ -18066,6 +18073,25 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
+              },
+              HistoryWorkThoughtUpdate: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
             },
           },
@@ -25683,6 +25709,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThoughtUpdate',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -27330,9 +27366,6 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/HistoryRowAddress',
                   },
-                  messageId: {
-                    type: ['string', 'null'],
-                  },
                   text: {
                     type: 'string',
                   },
@@ -27476,6 +27509,25 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
+              },
+              HistoryWorkThoughtUpdate: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
             },
           },

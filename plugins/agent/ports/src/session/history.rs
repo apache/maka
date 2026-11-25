@@ -617,8 +617,16 @@ pub struct WorkGroup {
 #[schemars(rename = "HistoryWorkThought")]
 pub struct WorkThought {
     pub position: HistoryRowAddress,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWorkThoughtUpdate")]
+pub struct WorkThoughtUpdate {
+    pub position: HistoryRowAddress,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
     pub text: String,
 }
 
@@ -700,6 +708,10 @@ pub enum Page {
         chunks: Vec<Chunk>,
         before: Option<Cursor>,
         after: Option<Cursor>,
+        /// Updated bounded thought tail when a `Chat` `After` follow hits only
+        /// continuation deltas on the trailing unfinished thinking row.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail_thought: Option<Box<WorkThoughtUpdate>>,
     },
 }
 

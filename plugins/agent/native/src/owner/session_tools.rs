@@ -849,6 +849,7 @@ impl Owner {
                     chunks,
                     before,
                     after,
+                    ..
                 } => {
                     let before_cursor = before.and_then(|cursor| {
                         encode_cursor(&OpaqueSessionCursor::AgentBefore {

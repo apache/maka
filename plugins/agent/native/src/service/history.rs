@@ -416,7 +416,13 @@ async fn window(
         }
     })?;
     let mut restricted_result_rows = RestrictedToolResultRows::new();
-    if mask_evidence && let wire::Page::Ready { chunks, .. } = &mut page {
+    if mask_evidence
+        && let wire::Page::Ready {
+            chunks,
+            tail_thought,
+            ..
+        } = &mut page
+    {
         let mut positions = std::collections::BTreeSet::new();
         for chunk in chunks.iter() {
             positions.insert(chunk.position.clone());
@@ -436,6 +442,7 @@ async fn window(
                 positions.extend(work.images.iter().map(|image| image.position.clone()));
             }
         }
+        positions.extend(tail_thought.iter().map(|thought| thought.position.clone()));
         let restrictions =
             restrictions(owner, scope, &tree, positions.into_iter().collect()).await?;
         let excerpts = chunks
@@ -518,6 +525,9 @@ async fn window(
                 chunk.folded_work = None;
             }
         }
+        *tail_thought = tail_thought
+            .take()
+            .filter(|thought| !restrictions.contains_key(&thought.position));
     }
     Ok((page, restricted_result_rows))
 }
@@ -593,6 +603,7 @@ async fn tree_window(
                     chunks: Vec::new(),
                     before: None,
                     after: None,
+                    tail_thought: None,
                 });
             }
         },
@@ -607,7 +618,7 @@ async fn tree_window(
     if matches!(view, wire::HistoryView::Turn | wire::HistoryView::Steps) && anchor.is_none() {
         return Err("agent_history_turn_requires_anchor".into());
     }
-    let shape = match view {
+    let mut shape = match view {
         wire::HistoryView::Chat | wire::HistoryView::Turn => source::Shape::Groups {
             cursor: matches!(position, Position::Before { .. } | Position::After { .. }),
         },
@@ -619,6 +630,7 @@ async fn tree_window(
     } else {
         source::Shape::Rows
     };
+    let mut tail_thought_candidate = None;
     if let Some(anchor) = &anchor {
         let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
         if view == wire::HistoryView::Turn {
@@ -642,6 +654,43 @@ async fn tree_window(
         ) && !selected.row.visible
         {
             reverse = true;
+        }
+        if view == wire::HistoryView::Chat
+            && matches!(&position, Position::After { .. })
+            && matches!(
+                selected.row.chunk.position,
+                wire::HistoryRowAddress::Live { .. }
+            )
+            && selected.row.chunk.tool.is_none()
+            && selected.row.chunk.field == wire::HistoryField::Thinking
+            && selected
+                .row
+                .chunk
+                .timing
+                .as_ref()
+                .is_some_and(|timing| timing.finished.is_none())
+            && let projection::Body::Text(body) = &selected.row.body
+        {
+            let total = body.len_bytes() as u64;
+            if total > anchor.offset
+                && let Some(text) = source::thought_tail(body)
+            {
+                let was_empty = usize::try_from(anchor.offset)
+                    .ok()
+                    .and_then(|end| body.slice(0..end))
+                    .is_some_and(|prefix| prefix.chunks().all(|chunk| chunk.trim().is_empty()));
+                if was_empty {
+                    // Thought crossed from empty/whitespace into visible text; re-summarize the
+                    // group once so `work.last` and `work.thoughts` include it too.
+                    shape = source::Shape::Groups { cursor: false };
+                } else {
+                    tail_thought_candidate = Some(Box::new(wire::WorkThoughtUpdate {
+                        position: selected.row.chunk.position.clone(),
+                        offset: total,
+                        text,
+                    }));
+                }
+            }
         }
     }
     let scoped = turn.map(|(run, _)| RunRows::Only { run, start: None });
@@ -835,11 +884,17 @@ async fn tree_window(
     {
         after = None;
     }
+    let tail_thought = if chunks.is_empty() {
+        tail_thought_candidate
+    } else {
+        None
+    };
     Ok(wire::Page::Ready {
         through,
         chunks,
         before,
         after,
+        tail_thought,
     })
 }
 fn fragment_metadata(chunk: &mut wire::Chunk) {

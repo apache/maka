@@ -116,6 +116,7 @@ import {
 import {
   acceptedSend,
   activityMessage,
+  applyWorkTailThought,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -240,7 +241,6 @@ import {
 } from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   groupWork,
-  latestWork,
   TurnPanel,
   liveActivityTitle,
   TurnSummary,
@@ -253,6 +253,7 @@ import type {
   TurnViewState,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import {
+  groupLatestIsThought,
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
@@ -2485,13 +2486,11 @@ export function Conversation(props: ConversationProps) {
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
           const tail = historyFollowTail(rows(), owner.view);
-          const changedIds = [...executorTextChanges];
-          executorTextChanges.clear();
-          const changedRows = changedIds.flatMap((id) => {
+          const changedRows = [...executorTextChanges].flatMap((id) => {
             const row = historyRows().byMessage.get(id);
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
           });
-          const changedThinking = changedIds.filter((id) => id.endsWith('/thinking'));
+          executorTextChanges.clear();
           const windowStart =
             currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
           const snap = overlay.snapshot();
@@ -2514,114 +2513,25 @@ export function Conversation(props: ConversationProps) {
               position = { kind: 'after', cursor: page.after };
             }
           }
+          let tailThought: ConversationHistoryPage['tailThought'] = null;
           let position = initial;
           for (;;) {
             const page = await history(fence, position, owner.view);
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
+            if (page.tailThought) tailThought = page.tailThought;
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
-          }
-          // Continuation deltas on an external executor's active thinking row append to its
-          // existing seat without creating a new visible row after `tail.work.end`.
-          let refreshedThought: {
-            tailKey: string;
-            position: HistoryRowAddress;
-            text?: string;
-            messageKey?: string;
-          } | null = null;
-          if (
-            owner.view === 'chat' &&
-            changedThinking.length > 0 &&
-            tail?.work &&
-            tail.position?.kind === 'live' &&
-            !chunks.some(
-              (chunk) => Boolean(chunk.work) && sameHistoryRow(chunk.position, tail.position!),
-            )
-          ) {
-            const thought = tail.work.lastThought;
-            const thoughtId = thought?.messageId ? `${thought.messageId}/thinking` : null;
-            if (
-              thought &&
-              thoughtId &&
-              changedThinking.includes(thoughtId) &&
-              thought.position.kind === 'live'
-            ) {
-              if (
-                changedRows.some(
-                  (row) => row.messageId === thought.messageId && row.field === 'thinking',
-                )
-              ) {
-                refreshedThought = {
-                  tailKey: tail.key,
-                  position: thought.position,
-                  messageKey: thoughtId,
-                };
-              } else {
-                const page = await host.query('agent', 'source', {
-                  sessionId,
-                  through: fence,
-                  source: { kind: 'row', position: thought.position },
-                  field: 'thinking',
-                  position: { kind: 'tail' },
-                });
-                if (!ownsWindow(owner.identity)) return;
-                if (page.kind === 'ready') {
-                  const text = page.source.text.trimEnd();
-                  if (text.trim()) {
-                    refreshedThought = {
-                      tailKey: tail.key,
-                      position: thought.position,
-                      text,
-                    };
-                  }
-                }
-              }
-            } else {
-              const page = await history(
-                fence,
-                {
-                  kind: 'row',
-                  position: tail.position,
-                  field: tail.field as 'body' | 'thinking',
-                },
-                owner.view,
-              );
-              if (!ownsWindow(owner.identity)) return;
-              chunks.push(
-                ...page.chunks.filter(
-                  (chunk) => Boolean(chunk.work) && sameHistoryRow(chunk.position, tail.position!),
-                ),
-              );
-            }
           }
           batch(() => {
             historyWindow.set({ ...historyWindow()!, through: fence, after: null });
             publishHistory(chunks, fence, false, coveredFrom, windowStart);
-            if (refreshedThought) {
+            if (tailThought && tail?.work) {
               const current = historyRows();
-              const target = current.byKey.get(refreshedThought.tailKey);
-              const nextText =
-                refreshedThought.text ??
-                (refreshedThought.messageKey
-                  ? current.byMessage.get(refreshedThought.messageKey)?.text.trimEnd()
-                  : undefined);
-              if (
-                nextText &&
-                nextText.trim() &&
-                target?.work?.lastThought &&
-                sameHistoryRow(target.work.lastThought.position, refreshedThought.position) &&
-                target.work.lastThought.text !== nextText
-              ) {
-                current.put([
-                  {
-                    ...target,
-                    work: {
-                      ...target.work,
-                      lastThought: { ...target.work.lastThought, text: nextText },
-                    },
-                  },
-                ]);
+              const target = current.byKey.get(tail.key);
+              const next = target && applyWorkTailThought(target, tailThought);
+              if (next && next !== target) {
+                current.put([next]);
                 historyRows.set(current);
               }
             }
@@ -5125,7 +5035,7 @@ export function Conversation(props: ConversationProps) {
                   const tool = latestToolActivity(toolActivity(), runId(), runTurn());
                   if (live.kind === 'working' && !tool) {
                     const open = groups().findLast((group) => !group.closed);
-                    if (open && latestWork(open, currentRow)?.last.kind === 'thought')
+                    if (open && groupLatestIsThought(open, currentRow))
                       return tr('Analyzing the request');
                   }
                   return liveActivityTitle(live, tool);

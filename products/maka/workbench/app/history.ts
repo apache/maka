@@ -368,6 +368,29 @@ export function replaceHistoryMetadata(
     : { ...row, ...next };
 }
 
+/** Apply a Host-bounded tailThought continuation update to the matching work summary row. */
+export function applyWorkTailThought(
+  row: Row,
+  update: NonNullable<ConversationHistoryPage['tailThought']>,
+): Row {
+  if (!row.work || !sameHistoryRow(row.work.end.position, update.position)) return row;
+  if (
+    row.work.end.offset >= update.offset &&
+    row.work.lastThought &&
+    sameHistoryRow(row.work.lastThought.position, update.position) &&
+    row.work.lastThought.text === update.text
+  )
+    return row;
+  return {
+    ...row,
+    work: {
+      ...row.work,
+      end: { ...row.work.end, offset: Math.max(row.work.end.offset, update.offset) },
+      lastThought: { position: update.position, text: update.text },
+    },
+  };
+}
+
 // These are the Desktop transcript's position/fragment rules, independent of
 // either renderer. History cursors use byte offsets; JS never derives them
 // from UTF-16 string lengths.

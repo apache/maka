@@ -42,7 +42,7 @@ import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { groupThought, turnOutcome, turnThought } from './processGroups';
+import { groupLatestIsThought, groupThought, turnOutcome, turnThought } from './processGroups';
 import {
   C,
   captionTextStyle,
@@ -145,7 +145,7 @@ function liveStepRow(value: Row | undefined): boolean {
   return value !== undefined && value.position === undefined;
 }
 
-export function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
+function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
   return liveStepRow(row(group.rowIds.at(-1) ?? '')) ? undefined : groupWork(group, row);
 }
 
@@ -275,14 +275,9 @@ export function TurnSummary(props: {
     wasMarked = marked();
   });
   const peek = computed(() =>
-    marked() && !props.expanded() ? turnThought(props.turn(), props.groups(), props.row) : null,
+    marked() && !props.expanded() ? turnThought(props.groups(), props.row) : null,
   );
   const peeked = computed(() => peek() !== null);
-  let wasPeeked = untracked(peeked);
-  effect(() => {
-    if (peeked() !== wasPeeked) animateDisclosure();
-    wasPeeked = peeked();
-  });
   return (
     // On the desktop the message above ends in its own action row: that row is the gap.
     // Open, the summary heads its work, as close to it as the work's own rows are.
@@ -363,7 +358,7 @@ export function TurnSummary(props: {
           </View>
         </If>
       </Disclosure>
-      <If when={peek() !== null}>
+      <If when={peeked()}>
         <ThinkingPeek text={() => peek() ?? ''} />
       </If>
     </View>
@@ -848,8 +843,8 @@ function GroupHeader(props: TurnPanelProps) {
       return desktop
         ? tr('Analyzing the request')
         : `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
+    if (groupLatestIsThought(props.group(), props.row)) return tr('Analyzing the request');
     const work = latestWork(props.group(), props.row);
-    if (work?.last.kind === 'thought') return tr('Analyzing the request');
     const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
   });
