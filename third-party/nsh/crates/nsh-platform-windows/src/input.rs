@@ -2097,9 +2097,6 @@ fn down(
     }
     let native = matches!(item, Some(Item::Hosted(..) | Item::Input(_)));
     let selects = matches!(item, Some(Item::Text(_) | Item::Area(..)));
-    if selects {
-        crate::text_input::blur_all(surface);
-    }
     let input = &surface.input;
     if input.pointers.borrow().is_empty() {
         input.js_block.set(false);
@@ -3534,7 +3531,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_output_releases_the_field_and_routes_selection_keys() {
+    fn selecting_output_keeps_the_field_focused_and_routes_selection_keys() {
         use nsh_core::{AttributedText, InputConfig, TextEngine};
 
         for area in [false, true] {
@@ -3585,27 +3582,25 @@ mod tests {
                 Modifiers::default(),
             );
             up(&surface, Key::Mouse, Some((10.0, 90.0)), 1.0, false);
-            assert!(crate::text_input::focused_view(&surface).is_none());
-            assert!(key(
-                &surface,
-                KeyEvent::synthetic(
-                    0x41,
-                    true,
-                    false,
-                    Modifiers {
-                        ctrl: true,
-                        ..Default::default()
-                    }
-                )
-            ));
+            assert_eq!(
+                crate::text_input::focused_view(&surface),
+                Some(field.clone())
+            );
+            assert!(
+                crate::text::has_selection(&surface)
+                    || crate::selectable_view::has_selection(&surface)
+            );
             assert!(key(
                 &surface,
                 KeyEvent::synthetic(0x1B, true, false, Modifiers::default())
             ));
+            assert!(
+                !crate::text::has_selection(&surface)
+                    && !crate::selectable_view::has_selection(&surface)
+            );
 
-            // Programmatically refocusing an empty field while output remains
-            // selected keeps Ctrl+C on the output selection until another key
-            // edits or selects in the field.
+            // An empty field selection leaves Ctrl+C to the output until
+            // another key edits or selects in the field.
             down(
                 &surface,
                 Key::Mouse,
@@ -3635,9 +3630,6 @@ mod tests {
                     ),
                 ])),
             );
-            crate::text_input::focus_view(&surface, &field);
-            crate::text_input::disarm(&surface);
-
             // Pressing bare Control before C must not clear the output selection.
             let _ = key(
                 &surface,
@@ -3687,6 +3679,7 @@ mod tests {
                 !crate::text::has_selection(&surface)
                     && !crate::selectable_view::has_selection(&surface)
             );
+            crate::text_input::blur_all(&surface);
         }
     }
 
