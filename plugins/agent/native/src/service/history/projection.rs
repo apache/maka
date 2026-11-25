@@ -1174,6 +1174,7 @@ pub(super) async fn project(
                         .map_or(item.recorded.run, |origin| origin.run),
                     compact.checkpoint.summary_step_id,
                     item.sequence,
+                    Some(stop),
                 )
                 .await
                 .map_err(|error| error.to_string())?;

@@ -436,7 +436,9 @@ impl DriverModel {
         let history = self
             .state
             .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
-        let sample = history.calibration_sample(&source.current).await?;
+        let sample = history
+            .calibration_sample(&source.current, Some(&self.cancellation))
+            .await?;
         let route = preparation::route_identity(&model.provider)?;
         Ok(sample.and_then(|sample| {
             maka_agent_engine::preparation::Calibration::for_route(

@@ -398,6 +398,7 @@ impl Owner {
                     scope: list_scope.clone(),
                     title_query: String::new(),
                 },
+                &scope.cancellation,
             )
             .await
             .map_err(humanize_agent_error)?;

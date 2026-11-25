@@ -244,6 +244,7 @@ pub(super) async fn requests(
             input.after.unwrap_or(0),
             LIMIT + 1,
             scope.identity.agent().is_some(),
+            Some(&scope.cancellation),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -926,7 +927,9 @@ pub(super) async fn observation(
             .capture(&input.session_id)
             .await
             .map_err(|error| error.to_string())?;
-        let session = owner.session_summary(&input.session_id).await?;
+        let session = owner
+            .session_summary(&input.session_id, &scope.cancellation)
+            .await?;
         authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::Observation {
             session,
@@ -1098,7 +1101,9 @@ pub(super) async fn observation(
             }
         }
     }
-    let session = owner.session_summary(&input.session_id).await?;
+    let session = owner
+        .session_summary(&input.session_id, &scope.cancellation)
+        .await?;
     let remembered_backend = if session.backend.is_none() {
         owner.remembered_backend(&input.session_id).await?
     } else {
@@ -1119,7 +1124,7 @@ pub(super) async fn observation(
         None
     } else {
         history
-            .metrics(&cut)
+            .metrics(&cut, Some(&scope.cancellation))
             .await
             .map_err(|error| error.to_string())?
             .map(|basis| ui::SessionMetrics {

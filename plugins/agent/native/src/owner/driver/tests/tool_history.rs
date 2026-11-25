@@ -2133,7 +2133,7 @@ async fn assert_restricted_retry_history(
     reader.finish().await?;
 
     let traces = HistoryDataSource::Snapshot(earlier)
-        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true)
+        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true, None)
         .await?;
     assert!(!traces.run_terminated);
     assert_eq!(traces.requests.len(), 2);
@@ -4553,4 +4553,346 @@ async fn wait_terminal(client: &HostClient, session: &str, run_id: Value) -> Tes
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibling_writes()
+-> TestResult<()> {
+    use maka_agent_state::{
+        recall::{RecallStore, SearchQuery},
+        session_catalog::{Filter, Position as CatalogPosition, SideQuestions},
+        session_history::{
+            navigation::SourceFind,
+            source_tree::{HistoryDataSource, SourceTree},
+        },
+    };
+    use maka_event_log::{
+        StoreError,
+        connection::Query,
+        sessions::{CatalogFilter, CatalogScope},
+        writeback::{Notification, Prepared, Statement},
+    };
+
+    struct SqlWrite<F>(F);
+    impl<F: FnOnce(&rusqlite::Connection) -> Result<bool, StoreError> + Send + 'static> Statement
+        for SqlWrite<F>
+    {
+        type Value = ();
+        type Output = ();
+        fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
+            let changed = (self.0)(c)?;
+            Ok(Prepared {
+                value: (),
+                changed,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+    struct SqlQuery<F>(F);
+    impl<
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, StoreError> + Send + 'static,
+    > Query for SqlQuery<F>
+    {
+        type Output = T;
+        fn execute(self, c: &rusqlite::Connection) -> Result<T, StoreError> {
+            (self.0)(c)
+        }
+    }
+
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let server = MockAiBuilder::new()
+        .scripted(vec![
+            TurnPlan::new()
+                .push_text("Alpha milestone answer.")
+                .with_usage(Usage::new(120, 40)),
+            TurnPlan::new()
+                .push_text("Beta followup answer.")
+                .with_usage(Usage::new(180, 50)),
+            TurnPlan::new()
+                .push_text("Compacted summary.")
+                .with_usage(Usage::new(90, 30)),
+        ])
+        .start()
+        .await?;
+    let boot = model_recovery::bootstrap(&base, server.base_url(), false).await?;
+    model_recovery::attach(&mut rig, &boot).await?;
+
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(60),
+        Box::pin(async {
+            let client = rig.client.as_ref().ok_or("client missing")?;
+            let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
+            let writer = owner.store.data_writer()?;
+            let run_owner = owner.run_owner();
+
+            let conns = model_recovery::call(client, "settings", "connections", json!({"kind": "start"})).await?;
+            let conn_id = model_recovery::call(client, "settings", "create", json!({
+                "expectedCatalogRevision": conns["revision"],
+                "connection": {
+                    "slug": "snapshot-rebuild", "name": "Snapshot Rebuild",
+                    "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration": {"baseUrl": boot.base_url},
+                    "enabled": true, "enabledModelIds": ["llama3.2"],
+                    "modelOverrides": {"llama3.2": {"apiProtocol": "openai-chat-completions"}}
+                }
+            })).await?["connection"]["connectionId"].clone();
+            let backend = json!({"kind": "model", "connectionId": conn_id, "modelId": "llama3.2"});
+
+            let create_session = |title: &str| {
+                let (title, path) = (title.to_owned(), base.join("workspace"));
+                async move {
+                    let r = model_recovery::call(client, "agent", "create", json!({
+                        "title": title, "automaticTitle": false, "labels": [],
+                        "workspace": {"kind": "directory", "path": path}
+                    })).await?;
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("session id")?.to_owned())
+                }
+            };
+            let fork_session = |source: &str, title: &str| {
+                let (owner, source, title) = (owner.clone(), source.to_owned(), title.to_owned());
+                async move {
+                    let rev = owner.session(&source).await?.revision;
+                    let r = model_recovery::call(client, "agent", "fork", json!({
+                        "sessionId": source, "expectedRevision": rev,
+                        "position": {"kind": "end"}, "title": title, "labels": []
+                    })).await?;
+                    assert_eq!(r["kind"], "forked", "{r}");
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("fork id")?.to_owned())
+                }
+            };
+            let poison = |id: SnapshotId, nav: Option<i64>, cat: Option<i64>, phantom: bool, clear_kind: bool| {
+                let writer = writer.clone();
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        let s = id.to_string();
+                        match nav {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_nav_heads SET version=? WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_nav_heads WHERE snapshot=?", [&s])?,
+                        };
+                        if clear_kind {
+                            c.execute("UPDATE agent_history_snapshot_entries SET fact_kind=NULL WHERE snapshot=? AND kind='fact'", [&s])?;
+                        }
+                        if phantom {
+                            c.execute("UPDATE agent_history_snapshot_nav_documents SET label='STALE_V3_LABEL' WHERE snapshot=?", [&s])?;
+                            let doc: i64 = c.query_row("SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=? ORDER BY id LIMIT 1", [&s], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_fields(document,ordinal,field,internal,bytes) VALUES(?,999,'\"body\"',0,22)", [doc])?;
+                            let chunk: i64 = c.query_row("INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body) VALUES(?,999,0,0,'phantom_v3_stale_token') RETURNING id", [doc], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_terms(rowid,grams) VALUES(?,?)", rusqlite::params![chunk, "pha han ant nto tom om_ m_v _v3 v3_ 3_s _st sta tal ale le_ e_t _to tok oke ken"])?;
+                        }
+                        match cat {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_catalog SET summary_json=json_set(summary_json,'$.version',?) WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_catalog WHERE snapshot=?", [&s])?,
+                        };
+                        Ok(true)
+                    })).await
+                }
+            };
+            let find_req = |q: &str, include_internal: bool| SourceFind {
+                after: None, query: q.into(), case_sensitive: true,
+                whole_word: false, include_internal, mask_evidence: false,
+            };
+
+            // Seed primary -> forked_peer + forked_a (+ turn 2 + compact) -> forked_nested (S0 -> S1).
+            let primary = create_session("Primary Source").await?;
+            let sent1 = model_recovery::call(client, "agent", "send", json!({"sessionId": primary, "message": "Alpha milestone prompt", "backend": backend})).await?;
+            let primary_run = model_recovery::completed_message(client, &primary, &sent1["messageId"]).await?;
+            let forked_peer = fork_session(&primary, "Forked Peer").await?;
+            let forked_a = fork_session(&primary, "Forked Base").await?;
+            let sent2 = model_recovery::call(client, "agent", "send", json!({"sessionId": forked_a, "message": "Beta followup prompt", "backend": backend})).await?;
+            model_recovery::completed_message(client, &forked_a, &sent2["messageId"]).await?;
+            let compact_run: RunId = serde_json::from_value(
+                model_recovery::call(client, "agent", "compact", json!({"sessionId": forked_a, "model": {"connectionId": conn_id, "modelId": "llama3.2"}})).await?["execution"]["runId"].clone()
+            )?;
+            assert_eq!(wait_terminal(client, &forked_a, json!(compact_run)).await?["state"]["kind"], "completed");
+            let forked_nested = fork_session(&forked_a, "Forked Nested").await?;
+
+            let peer_history = owner.durable.session_history(run_owner.clone(), forked_peer.clone());
+            let peer_cut = peer_history.capture().await?;
+            let peer_tree = SourceTree::live(&peer_history, &peer_cut).await?;
+            let Some(HistoryDataSource::Snapshot(snap_peer)) = peer_tree.sources().next().map(|(_, s)| s.clone()) else {
+                return Err("forked_peer must adopt a snapshot".into());
+            };
+            let nested_history = owner.durable.session_history(run_owner.clone(), forked_nested.clone());
+            let nested_cut = nested_history.capture().await?;
+            let nested_tree = SourceTree::live(&nested_history, &nested_cut).await?;
+            let nested_snaps: Vec<_> = nested_tree.sources().filter_map(|(_, s)| match s {
+                HistoryDataSource::Snapshot(snap) => Some(snap.clone()),
+                HistoryDataSource::Live { .. } => None,
+            }).collect();
+            assert_eq!(nested_snaps.len(), 2);
+            let (s0, s1) = (nested_snaps[0].clone(), nested_snaps[1].clone());
+            let s1_compact_seq = s1.page(0, 64).await?.items.into_iter()
+                .find(|it| it.recorded.run == compact_run && matches!(it.recorded.fact, Fact::ContextCompacted { .. }))
+                .ok_or("compaction fact missing in s1")?.sequence;
+
+            // 1. Upgrade path: agent.observe rebuilds stale v3 snapshot, triggers FTS5 delete on phantom chunks, and restores labels.
+            poison(snap_peer.id(), Some(3), Some(2), true, false).await?;
+            let fts_hits = |term: &'static str| writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT COUNT(*) FROM agent_history_snapshot_nav_terms WHERE agent_history_snapshot_nav_terms MATCH ?", [term], |r| r.get::<_, i64>(0)).map_err(Into::into)
+            }));
+            assert!(fts_hits("pha").await? > 0);
+            let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_peer})).await?;
+            assert_eq!(obs["metrics"]["contextTokens"], 160, "{obs}");
+            assert_eq!(fts_hits("pha").await?, 0, "Edit::Reset must clear stale FTS5 nav_terms");
+            assert!(peer_tree.find_page(find_req("phantom_v3_stale_token", true), CancellationToken::new()).await?.matches.is_empty());
+            let landmarks = peer_tree.landmarks(16, CancellationToken::new()).await?;
+            assert_eq!(landmarks.len(), 1);
+            assert!(landmarks[0].label.contains("Alpha milestone"), "{}", landmarks[0].label);
+
+            // 2. Nested S0 -> S1 cold rebuild, compaction_duration_ms, and concurrent peer-path rebuilds.
+            poison(s0.id(), Some(3), Some(1), true, false).await?;
+            poison(s1.id(), Some(3), Some(1), true, false).await?;
+            let nested_obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_nested})).await?;
+            assert_eq!(nested_obs["session"]["id"], forked_nested, "{nested_obs}");
+            poison(s1.id(), Some(3), Some(2), false, false).await?;
+            let _ = HistoryDataSource::Snapshot(s1.clone())
+                .compaction_duration_ms(compact_run, compact_run, StepId::new(), s1_compact_seq, None).await?;
+
+            poison(snap_peer.id(), None, Some(1), true, false).await?;
+            let snap_source = HistoryDataSource::Snapshot(snap_peer.clone());
+            let recall = RecallStore::new(writer.clone(), run_owner.clone(), owner.prefix.clone())?;
+            let query = SearchQuery { terms: vec!["Forked".into()], session_id: None, since: None, until: None, exclude: None, limit: None };
+            let (r_m, r_c, r_cal, r_tr, r_f, r_l, r_t, r_r) = tokio::join!(
+                peer_history.metrics(&peer_cut, None),
+                peer_history.current_model_context(&peer_cut, None),
+                peer_history.calibration_sample(&peer_cut, None),
+                snap_source.model_request_traces(primary_run, 0, 24),
+                peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()),
+                peer_tree.landmarks(16, CancellationToken::new()),
+                snap_peer.terminated(primary_run, None),
+                recall.search(query, 0, 0, CancellationToken::new()),
+            );
+            assert!(r_m?.is_some() && r_c?.is_some() && r_cal?.is_some());
+            assert!(!r_tr?.requests.is_empty() && !r_f?.matches.is_empty() && !r_l?.is_empty());
+            assert!(matches!(r_t?, Some((_, Terminal::Completed))));
+            assert!(r_r?.titles.iter().any(|r| r.metadata.id == forked_peer));
+
+            // 3. Pagination stability, filtered non-rebuild, & catalog cancellation:
+            // missing summary_json never causes After(cursor) to skip a Session, and unmatched filters skip stale snapshots.
+            let catalog = owner.canonical_catalog()?;
+            let snap_peer_id = snap_peer.id().to_string();
+            let snap_updated = writer
+                .query(SqlQuery(move |c: &rusqlite::Connection| {
+                    c.query_row(
+                        "SELECT CAST(json_extract(summary_json,'$.summary.updatedAt') AS INTEGER) FROM agent_history_snapshot_catalog WHERE snapshot=?",
+                        [snap_peer_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map_err(Into::into)
+                }))
+                .await?;
+            let between = create_session("Between Recency").await?;
+            let (fp, bw) = (forked_peer.clone(), between.clone());
+            writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 2_000, snap_updated - 2_000, fp])?;
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 1_000, snap_updated - 1_000, bw])?;
+                Ok(true)
+            })).await?;
+            poison(snap_peer.id(), Some(4), None, false, false).await?;
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let err = catalog.clone().with_cancellation(cancelled).record(&forked_peer).await.err().ok_or("cancelled catalog read must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+
+            let filter = Filter {
+                base: CatalogFilter { roots_only: false, archived_only: false, include_archived: true },
+                needs_you_only: false, room: None, side: SideQuestions::Any,
+            };
+            // An unmatched title filter must return 0 rows without rebuilding filtered-out snapshots.
+            let empty_page = catalog
+                .page(
+                    CatalogScope::Owned {
+                        id_prefix: owner.prefix.clone(),
+                        selection: maka_event_log::sessions::CatalogSelection::All,
+                        title_query: "no-such-session-title-xyz".into(),
+                    },
+                    None,
+                    CatalogPosition::Start,
+                    filter.clone(),
+                    8,
+                )
+                .await?;
+            assert!(empty_page.sessions.is_empty());
+            let still_missing = writer
+                .query(SqlQuery({
+                    let id = snap_peer.id().to_string();
+                    move |c: &rusqlite::Connection| {
+                        c.query_row(
+                            "SELECT NOT EXISTS(SELECT 1 FROM agent_history_snapshot_catalog WHERE snapshot=?)",
+                            [id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(Into::into)
+                    }
+                }))
+                .await?;
+            assert!(still_missing, "unmatched filter must not rebuild filtered-out snapshots");
+
+            let (mut seen, mut rev, mut pos) = (Vec::new(), None, CatalogPosition::Start);
+            loop {
+                let page = catalog.page(CatalogScope::Profile, rev.clone(), pos, filter.clone(), 1).await?;
+                rev = Some(page.revision);
+                seen.extend(page.sessions.into_iter().map(|r| r.metadata.id));
+                match page.next_cursor { Some(c) => pos = CatalogPosition::After(c), None => break }
+            }
+            let peer_idx = seen.iter().position(|id| id == &forked_peer).ok_or("forked_peer skipped across pages")?;
+            let between_idx = seen.iter().position(|id| id == &between).ok_or("between missing")?;
+            assert!(peer_idx < between_idx, "forked_peer must sort ahead of between: {seen:?}");
+
+            // 4. Batched writer isolation: cancelling an in-flight Backfill queued in the same Root batch never rolls back sibling writes.
+            poison(snap_peer.id(), Some(3), Some(2), false, true).await?;
+            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let hold = tokio::spawn({
+                let writer = writer.clone();
+                async move { writer.write(SqlWrite(move |_: &rusqlite::Connection| { let _ = entered_tx.send(()); let _ = release_rx.recv(); Ok(false) })).await }
+            });
+            tokio::task::spawn_blocking(move || entered_rx.recv()).await.map_err(|e| e.to_string())??;
+            let stop_search = CancellationToken::new();
+            let search_task = tokio::spawn({
+                let (tree, stop) = (peer_tree.clone(), stop_search.clone());
+                async move { tree.find_page(find_req("Alpha milestone", false), stop).await }
+            });
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let tag = format!("sibling-{}", Uuid::now_v7());
+            let sibling_task = tokio::spawn({
+                let (writer, tag) = (writer.clone(), tag.clone());
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        c.execute("CREATE TABLE IF NOT EXISTS test_sibling_commits(tag TEXT PRIMARY KEY)", [])?;
+                        c.execute("INSERT INTO test_sibling_commits(tag) VALUES(?)", [tag])?;
+                        Ok(true)
+                    })).await
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop_search.cancel();
+            let _ = release_tx.send(());
+
+            hold.await.map_err(|e| e.to_string())??;
+            let err = search_task.await.map_err(|e| e.to_string())?.err().ok_or("cancelled find_page must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+            sibling_task.await.map_err(|e| e.to_string())?.map_err(|e| format!("sibling rolled back: {e}"))?;
+            let committed = writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT EXISTS(SELECT 1 FROM test_sibling_commits WHERE tag=?)", [tag], |r| r.get::<_, bool>(0)).map_err(Into::into)
+            })).await?;
+            assert!(committed, "sibling write must remain committed");
+            assert!(!peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()).await?.matches.is_empty());
+
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }),
+    ))
+    .catch_unwind()
+    .await;
+    server.shutdown().await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
 }

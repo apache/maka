@@ -109,12 +109,19 @@ pub(crate) fn checked_source_cut(
     }
     Ok(())
 }
-fn record(c: &Connection, store: &RecallStore, session: &str) -> Result<Record, StoreError> {
+fn record(
+    c: &Connection,
+    store: &RecallStore,
+    session: &str,
+) -> Result<Record, crate::session_history::snapshot::IndexedReadError> {
     crate::session_catalog::records_in_snapshot(c, &store.catalog()?, &[session.to_owned()])?
         .pop()
-        .ok_or(StoreError::SessionNotFound)
+        .ok_or_else(|| StoreError::SessionNotFound.into())
 }
-pub(super) fn context(c: &Connection, input: ReadContext) -> Result<Context, StoreError> {
+pub(super) fn context(
+    c: &Connection,
+    input: ReadContext,
+) -> Result<Context, crate::session_history::snapshot::IndexedReadError> {
     let ReadContext(store, session, anchor, before, after, cut, exclude, stop) = input;
     check(&stop)?;
     store.session(&session)?;
@@ -123,7 +130,7 @@ pub(super) fn context(c: &Connection, input: ReadContext) -> Result<Context, Sto
         None => crate::session_history::capture_at(c, &store.owner, &session, None)?,
     };
     if cut.session != session {
-        return Err(StoreError::EventConflict);
+        return Err(StoreError::EventConflict.into());
     }
     checked_cut(c, &store, &cut)?;
     let owner = store.key()?;
@@ -253,7 +260,10 @@ fn density(
     };
     Ok((matched, score))
 }
-pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError> {
+pub(super) fn search(
+    c: &Connection,
+    input: Search,
+) -> Result<Batch, crate::session_history::snapshot::IndexedReadError> {
     let Search(store, query, before, after, stop) = input;
     check(&stop)?;
     if let Some(session) = &query.session_id {
@@ -351,7 +361,7 @@ pub(super) fn search(c: &Connection, input: Search) -> Result<Batch, StoreError>
                     {
                         gaps.insert(session.clone(), error.to_string());
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 }
             }
             if gaps.contains_key(&session) {

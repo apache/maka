@@ -198,10 +198,16 @@ impl RecallStore {
             prefix,
         })
     }
-    pub async fn validate_execution(&self, execution: ExecutionIdentity) -> Result<(), StoreError> {
-        self.data
-            .query(VerifyExecution(self.clone(), execution))
-            .await
+    pub async fn validate_execution(
+        &self,
+        execution: ExecutionIdentity,
+        stop: &CancellationToken,
+    ) -> Result<(), StoreError> {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(stop), || {
+            self.data
+                .query(VerifyExecution(self.clone(), execution.clone()))
+        })
+        .await
     }
     pub async fn capture(
         &self,
@@ -261,9 +267,16 @@ impl RecallStore {
         stop: CancellationToken,
     ) -> Result<Batch, StoreError> {
         query.normalize()?;
-        self.data
-            .query(Search(self.clone(), query, before, after, stop))
-            .await
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(&stop), || {
+            self.data.query(Search(
+                self.clone(),
+                query.clone(),
+                before,
+                after,
+                stop.clone(),
+            ))
+        })
+        .await
     }
     pub async fn context(
         &self,
@@ -274,18 +287,19 @@ impl RecallStore {
         exclude: Option<ExcludedTail>,
         stop: CancellationToken,
     ) -> Result<Context, StoreError> {
-        self.data
-            .query(ReadContext(
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(&stop), || {
+            self.data.query(ReadContext(
                 self.clone(),
-                session,
-                anchor,
+                session.clone(),
+                anchor.clone(),
                 window.before,
                 window.after,
-                cut,
-                exclude,
-                stop,
+                cut.clone(),
+                exclude.clone(),
+                stop.clone(),
             ))
-            .await
+        })
+        .await
     }
     pub async fn rebuild(&self, session: String) -> Result<(), StoreError> {
         self.data.write(Rebuild(self.clone(), session)).await
@@ -309,8 +323,8 @@ impl RecallStore {
 }
 struct VerifyExecution(RecallStore, ExecutionIdentity);
 impl Query for VerifyExecution {
-    type Output = ();
-    fn execute(self, c: &Connection) -> Result<(), StoreError> {
+    type Output = crate::session_history::snapshot::IndexedRead<()>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         self.0.session(&self.1.session_id)?;
         let view = crate::sql::load(c, self.1.run_id, &[], false)?;
         if view.spec.owner != self.0.owner
@@ -322,17 +336,25 @@ impl Query for VerifyExecution {
         if view.terminal.is_some() || view.stopped {
             return Err(invalid("Recall Run closed"));
         }
-        let record = crate::session_catalog::records_in_snapshot(
+        let record = match crate::session_catalog::records_in_snapshot(
             c,
             &self.0.catalog()?,
             &[self.1.session_id],
-        )?
-        .pop()
-        .ok_or(StoreError::SessionNotFound)?;
+        ) {
+            Ok(mut records) => records.pop().ok_or(StoreError::SessionNotFound)?,
+            Err(crate::session_history::snapshot::IndexedReadError::NeedsRebuild(snapshots)) => {
+                return Ok(crate::session_history::snapshot::IndexedRead::NeedsRebuild(
+                    snapshots,
+                ));
+            }
+            Err(crate::session_history::snapshot::IndexedReadError::Store(error)) => {
+                return Err(error);
+            }
+        };
         if record.metadata.archived {
             return Err(invalid("Recall Session archived"));
         }
-        Ok(())
+        Ok(crate::session_history::snapshot::IndexedRead::Ready(()))
     }
 }
 struct Capture(RecallStore, String, Option<u64>);
@@ -345,9 +367,9 @@ impl Query for Capture {
 }
 struct Search(RecallStore, SearchQuery, usize, usize, CancellationToken);
 impl Query for Search {
-    type Output = Batch;
-    fn execute(self, c: &Connection) -> Result<Batch, StoreError> {
-        query::search(c, self)
+    type Output = crate::session_history::snapshot::IndexedRead<Batch>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        crate::session_history::snapshot::IndexedRead::from_result(query::search(c, self))
     }
 }
 struct ReadContext(
@@ -361,9 +383,9 @@ struct ReadContext(
     CancellationToken,
 );
 impl Query for ReadContext {
-    type Output = Context;
-    fn execute(self, c: &Connection) -> Result<Context, StoreError> {
-        query::context(c, self)
+    type Output = crate::session_history::snapshot::IndexedRead<Context>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        crate::session_history::snapshot::IndexedRead::from_result(query::context(c, self))
     }
 }
 struct Exclusion(RecallStore, RunId);

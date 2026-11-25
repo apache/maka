@@ -268,7 +268,7 @@ impl SourceTree {
             let count = match &section.source {
                 HistoryDataSource::Snapshot(snapshot) => {
                     snapshot
-                        .navigation_landmark_count(section.after_admission)
+                        .navigation_landmark_count(section.after_admission, stop.clone())
                         .await?
                 }
                 HistoryDataSource::Live { history, cut } => {

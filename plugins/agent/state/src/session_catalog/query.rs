@@ -17,6 +17,10 @@
  * under the License.
  */
 use super::*;
+use crate::session_history::{
+    SessionHistory,
+    snapshot::{IndexedRead, IndexedReadError, Snapshot, catalog as snapshot_catalog},
+};
 use maka_agent_facts::artifact::content_digest;
 use maka_event_log::{sessions::CatalogSelection, workspace_bindings::WorkspaceBinding};
 use maka_sandbox::workspace::BindingRef;
@@ -67,7 +71,9 @@ const BASE: &str = "WITH base AS (
  LEFT JOIN agent_run_specs latest_spec ON latest_spec.run=r.run
  WHERE s.id>=?2 AND s.id<?3 AND substr(s.id,1,length(?2))=?2
  AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
- AND (?4 IS NULL OR s.id=?4)
+ {CANDIDATE_FILTERS}
+), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
+const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
  AND (?5 IS NULL OR json_extract(b.workspace_json,'$.path')=?5)
  AND (?6 IS NULL OR substr(s.id,1,length(?6))=?6)
  AND (?7 IS NULL OR json_extract(b.workspace_json,'$.projectId')=?7)
@@ -80,24 +86,71 @@ const BASE: &str = "WITH base AS (
    OR NOT EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
     AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))))
   OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'))=1
-   AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))
-), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
+   AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))";
 const FILTER: &str =
     "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
 const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
 const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
+static BASE_SQL: LazyLock<String> =
+    LazyLock::new(|| BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS));
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
-    format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16")
+    format!(
+        "{} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16",
+        *BASE_SQL
+    )
+});
+// CROSS JOIN forces SQLite to drive from the small partial index
+// `agent_session_history_historical` instead of scanning `agent_session_history_run`,
+// while reusing the exact selection filters so unmatched snapshots are never rebuilt.
+static STALE_CATALOG_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT s.id, source.run
+FROM (
+    SELECT session, MAX(sequence) AS sequence
+    FROM agent_session_history INDEXED BY agent_session_history_historical
+    WHERE owner=?1 AND historical=1
+      AND session>=?2 AND session<?3 AND substr(session,1,length(?2))=?2
+    GROUP BY session
+) latest
+CROSS JOIN session_control s ON s.id=latest.session
+CROSS JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
+CROSS JOIN agent_session_history source
+  ON source.sequence=latest.sequence AND source.owner=?1 AND source.session=latest.session
+CROSS JOIN agent_history_snapshot_adoptions source_adoption ON source_adoption.run=source.run
+LEFT JOIN agent_history_snapshot_catalog source_summary ON source_summary.snapshot=source_adoption.snapshot
+LEFT JOIN workspace_bindings b ON b.id=json_extract(s.configuration,'$.workspace.id')
+LEFT JOIN agent_catalog_controls k ON k.owner=?1 AND k.session=s.id
+LEFT JOIN agent_rooms room ON room.owner=?1 AND room.session=s.id
+WHERE NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
+  AND (source_summary.snapshot IS NULL
+       OR (typeof(json_extract(source_summary.summary_json,'$.version'))='integer'
+           AND json_extract(source_summary.summary_json,'$.version')!=?16))
+  {CANDIDATE_FILTERS}
+  AND (?11=0 OR json_extract(s.configuration,'$.parentSessionId') IS NULL)
+  AND (?12=0 OR EXISTS(
+      SELECT 1 FROM agent_interaction_pending p
+      JOIN agent_interaction_requests q ON q.request=p.request
+      JOIN agent_run_specs spec ON spec.run=q.run
+      JOIN agent_catalog_runs pending_run ON pending_run.run=q.run
+      WHERE p.session=s.id AND spec.owner=?1 AND pending_run.live=1
+        AND pending_run.admission_sequence>COALESCE(source.sequence,0)
+  ))"
+    )
 });
 static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
+        "{} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)",
+        *BASE_SQL
     )
 });
-static SINGLE_RECORD_SQL: LazyLock<String> =
-    LazyLock::new(|| format!("{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?16"));
+static SINGLE_RECORD_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id=?16",
+        *BASE_SQL
+    )
+});
 static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
     RECORD_BUCKETS.map(|bucket| {
         let slots = (1..=bucket)
@@ -105,7 +158,8 @@ static RECORD_BUCKET_SQL: LazyLock<[String; 4]> = LazyLock::new(|| {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({slots}) ORDER BY unpinned,recency,id"
+            "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({slots}) ORDER BY unpinned,recency,id",
+            *BASE_SQL
         )
     })
 });
@@ -231,6 +285,25 @@ impl Selection {
             filter,
         ))?))
     }
+    fn stale_catalog_sources(&self, c: &Connection) -> Result<Vec<Snapshot>, StoreError> {
+        let mut values = self.values.clone();
+        values.push(i64::from(snapshot_catalog::VERSION).into());
+        let rows: Vec<(String, String)> = c
+            .prepare_cached(&STALE_CATALOG_SQL)?
+            .query_map(params_from_iter(values), |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut stale = Vec::with_capacity(rows.len());
+        for (session, run) in rows {
+            let marker: RunId = serde_json::from_value(Value::String(run))?;
+            let history = SessionHistory::new(
+                self.catalog.data.clone(),
+                self.catalog.owner.clone(),
+                session,
+            );
+            stale.push(history.catalog_source_in_snapshot(c, marker)?);
+        }
+        Ok(stale)
+    }
     fn key(&self, c: &Connection, id: &str) -> Result<Option<Key>, StoreError> {
         let mut values = self.values.clone();
         values.push(id.to_owned().into());
@@ -267,7 +340,8 @@ impl Selection {
         let limit_parameter = values.len();
         let order = if reverse { "DESC" } else { "ASC" };
         let sql = format!(
-            "{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} {position} ORDER BY unpinned {order},recency {order},id {order} LIMIT ?{limit_parameter}"
+            "{} SELECT unpinned,recency,id FROM selected WHERE {FILTER} {position} ORDER BY unpinned {order},recency {order},id {order} LIMIT ?{limit_parameter}",
+            *BASE_SQL
         );
         let mut keys = c
             .prepare_cached(&sql)?
@@ -284,7 +358,7 @@ impl Selection {
         }
         Ok(keys)
     }
-    fn records(&self, c: &Connection, keys: &[Key]) -> Result<Vec<Record>, StoreError> {
+    fn records(&self, c: &Connection, keys: &[Key]) -> Result<Vec<Record>, IndexedReadError> {
         if keys.is_empty() {
             return Ok(vec![]);
         }
@@ -314,24 +388,33 @@ impl Selection {
                 slots.push(format!("?{}", values.len()));
             }
             let sql = format!(
-                "{BASE} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({}) ORDER BY unpinned,recency,id",
+                "{} SELECT {COLUMNS} FROM selected WHERE {FILTER} AND id IN ({}) ORDER BY unpinned,recency,id",
+                *BASE_SQL,
                 slots.join(",")
             );
             c.prepare(&sql)?
                 .query_map(params_from_iter(values), Raw::read)?
                 .collect::<Result<Vec<_>, _>>()?
         };
-        rows.into_iter()
-            .map(|mut raw| {
-                let marker = raw
-                    .source_run
-                    .take()
-                    .map(|run| serde_json::from_value(Value::String(run)))
-                    .transpose()?;
-                let source_unread = raw.source_unread;
-                planned::overlay(c, &self.catalog, raw.decode()?, marker, source_unread)
-            })
-            .collect()
+        let mut records = Vec::with_capacity(rows.len());
+        let mut stale = Vec::new();
+        for mut raw in rows {
+            let marker = raw
+                .source_run
+                .take()
+                .map(|run| serde_json::from_value(Value::String(run)))
+                .transpose()?;
+            let source_unread = raw.source_unread;
+            match planned::overlay(c, &self.catalog, raw.decode()?, marker, source_unread) {
+                Ok(record) => records.push(record),
+                Err(IndexedReadError::NeedsRebuild(snapshots)) => stale.extend(snapshots),
+                Err(IndexedReadError::Store(error)) => return Err(IndexedReadError::Store(error)),
+            }
+        }
+        if !stale.is_empty() {
+            return Err(IndexedReadError::NeedsRebuild(stale));
+        }
+        Ok(records)
     }
     fn pending_count(&self, c: &Connection) -> Result<u64, StoreError> {
         let count: i64 = c
@@ -554,7 +637,7 @@ pub(super) fn revision(
     Selection::new(catalog, scope, filter)?.revision(c, scope, filter)
 }
 
-pub(super) fn page(c: &Connection, read: ReadPage) -> Result<Page, StoreError> {
+pub(super) fn page(c: &Connection, read: ReadPage) -> Result<IndexedRead<Page>, StoreError> {
     if !(1..=256).contains(&read.limit) {
         return Err(invalid("catalog page size must be 1..=256"));
     }
@@ -580,6 +663,13 @@ pub(super) fn page(c: &Connection, read: ReadPage) -> Result<Page, StoreError> {
             actual: revision,
         });
     }
+    // Single-session reads need no cross-session recency sort; selection.records checks that session directly.
+    if !matches!(read.scope, CatalogScope::Session(_)) {
+        let stale = selection.stale_catalog_sources(c)?;
+        if !stale.is_empty() {
+            return Ok(IndexedRead::NeedsRebuild(stale));
+        }
+    }
     let anchor = cursor.map(|id| selection.key(c, id)).transpose()?.flatten();
     let reverse = matches!(read.position, Position::Before(_));
     let operator = if reverse {
@@ -603,22 +693,28 @@ pub(super) fn page(c: &Connection, read: ReadPage) -> Result<Page, StoreError> {
     } else {
         None
     };
-    let sessions = selection.records(c, &keys)?;
+    let sessions = match selection.records(c, &keys) {
+        Ok(sessions) => sessions,
+        Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+            return Ok(IndexedRead::NeedsRebuild(snapshots));
+        }
+        Err(IndexedReadError::Store(error)) => return Err(error),
+    };
     let pending_session_count = selection.pending_count(c)?;
-    Ok(Page {
+    Ok(IndexedRead::Ready(Page {
         revision,
         sessions,
         pending_session_count,
         next_cursor,
         previous_cursor,
-    })
+    }))
 }
 
 pub(crate) fn records_in_snapshot(
     c: &Connection,
     catalog: &SessionCatalog,
     ids: &[String],
-) -> Result<Vec<Record>, StoreError> {
+) -> Result<Vec<Record>, IndexedReadError> {
     let read = ReadPage {
         catalog: catalog.clone(),
         scope: CatalogScope::Profile,
@@ -638,6 +734,7 @@ pub(crate) fn records_in_snapshot(
     };
     let selected = Selection::new(&read.catalog, &read.scope, &read.filter)?;
     let mut records = Vec::new();
+    let mut stale = Vec::new();
     for chunk in ids.chunks(128) {
         for id in chunk {
             catalog.check_session(id)?;
@@ -650,7 +747,14 @@ pub(crate) fn records_in_snapshot(
                 id: id.clone(),
             })
             .collect::<Vec<_>>();
-        records.extend(selected.records(c, &keys)?);
+        match selected.records(c, &keys) {
+            Ok(chunk_records) => records.extend(chunk_records),
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => stale.extend(snapshots),
+            Err(IndexedReadError::Store(error)) => return Err(IndexedReadError::Store(error)),
+        }
+    }
+    if !stale.is_empty() {
+        return Err(IndexedReadError::NeedsRebuild(stale));
     }
     Ok(records)
 }

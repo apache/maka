@@ -92,6 +92,7 @@ impl HistoryDataSource {
     pub async fn terminated(
         &self,
         run: RunId,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
         match self {
             Self::Live { history, cut } => {
@@ -104,7 +105,7 @@ impl HistoryDataSource {
                     ))
                     .await
             }
-            Self::Snapshot(source) => source.terminated(run).await,
+            Self::Snapshot(source) => source.terminated(run, stop).await,
         }
     }
     pub async fn final_attempt(&self, run: RunId) -> Result<Option<ModelAttemptId>, StoreError> {
@@ -369,19 +370,30 @@ impl HistoryDataSource {
         summary_run: RunId,
         summary_step: StepId,
         adopted_sequence: u64,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64, StoreError> {
-        let query = CompactionDuration(
-            self.clone(),
-            run,
-            summary_run,
-            summary_step,
-            adopted_sequence,
-        );
         match self {
-            Self::Live { history, .. } => history.data.query(query).await,
+            Self::Live { history, .. } => {
+                match history
+                    .data
+                    .query(CompactionDuration(
+                        self.clone(),
+                        run,
+                        summary_run,
+                        summary_step,
+                        adopted_sequence,
+                    ))
+                    .await?
+                {
+                    snapshot::IndexedRead::Ready(elapsed) => Ok(elapsed),
+                    snapshot::IndexedRead::NeedsRebuild(_) => Err(invalid(
+                        "live compaction duration unexpectedly requested snapshot rebuild",
+                    )),
+                }
+            }
             Self::Snapshot(snapshot) => {
                 snapshot
-                    .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence)
+                    .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence, stop)
                     .await
             }
         }
@@ -550,8 +562,22 @@ impl CompactionDuration {
     }
 }
 impl Query for CompactionDuration {
-    type Output = u64;
-    fn execute(self, c: &Connection) -> Result<u64, StoreError> {
+    type Output = snapshot::IndexedRead<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if let HistoryDataSource::Snapshot(snapshot) = &self.0 {
+            match snapshot::metrics_metadata::require_ready(c, snapshot) {
+                Ok(()) => {}
+                Err(snapshot::IndexedReadError::NeedsRebuild(snapshots)) => {
+                    return Ok(snapshot::IndexedRead::NeedsRebuild(snapshots));
+                }
+                Err(snapshot::IndexedReadError::Store(error)) => return Err(error),
+            }
+        }
+        self.compute(c).map(snapshot::IndexedRead::Ready)
+    }
+}
+impl CompactionDuration {
+    fn compute(self, c: &Connection) -> Result<u64, StoreError> {
         use maka_agent_facts::context::ModelPurpose;
         let source = match &self.0 {
             HistoryDataSource::Live { history, cut } => {

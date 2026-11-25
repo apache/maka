@@ -44,8 +44,9 @@ pub struct SessionModelMetrics {
 
 use super::{
     snapshot::{
-        Snapshot,
+        IndexedRead, IndexedReadError, Snapshot,
         metrics_metadata::{self, ModelMetadata},
+        run_with_snapshot_rebuild,
     },
     source_tree::{HistoryDataSource, Segment, SourceTree},
 };
@@ -58,6 +59,7 @@ use maka_agent_facts::{
 use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::io::Read;
+use tokio_util::sync::CancellationToken;
 
 mod request_outcome;
 
@@ -85,27 +87,34 @@ impl SessionHistory {
     pub async fn current_model_context(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<CurrentModelContext>, StoreError> {
-        self.data
-            .query(ReadCurrentContext(self.clone(), cut.clone()))
-            .await
+        run_with_snapshot_rebuild(stop, || {
+            self.data
+                .query(ReadCurrentContext(self.clone(), cut.clone()))
+        })
+        .await
     }
 
     pub async fn metrics(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<SessionModelMetrics>, StoreError> {
-        self.data
-            .query(ReadMetrics(self.clone(), cut.clone()))
-            .await
+        run_with_snapshot_rebuild(stop, || {
+            self.data.query(ReadMetrics(self.clone(), cut.clone()))
+        })
+        .await
     }
     pub async fn calibration_sample(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<ModelCalibrationSample>, StoreError> {
-        self.data
-            .query(ReadCalibration(self.clone(), cut.clone()))
-            .await
+        run_with_snapshot_rebuild(stop, || {
+            self.data.query(ReadCalibration(self.clone(), cut.clone()))
+        })
+        .await
     }
 }
 
@@ -319,7 +328,7 @@ impl HistoryDataSource {
         after: u64,
         limit: u32,
     ) -> Result<ModelRequestTracePage, StoreError> {
-        self.model_request_traces_for_reader(run, after, limit, false)
+        self.model_request_traces_for_reader(run, after, limit, false, None)
             .await
     }
 
@@ -329,11 +338,17 @@ impl HistoryDataSource {
         after: u64,
         limit: u32,
         mask_evidence: bool,
+        stop: Option<&CancellationToken>,
     ) -> Result<ModelRequestTracePage, StoreError> {
         let query = ReadRequestTraces(self.clone(), run, after, limit, mask_evidence);
         match self {
-            Self::Live { history, .. } => history.data.query(query).await,
-            Self::Snapshot(snapshot) => snapshot.query_request_traces(query).await,
+            Self::Live { history, .. } => match history.data.query(query).await? {
+                IndexedRead::Ready(page) => Ok(page),
+                IndexedRead::NeedsRebuild(_) => Err(invalid(
+                    "live request traces unexpectedly requested snapshot rebuild",
+                )),
+            },
+            Self::Snapshot(snapshot) => snapshot.query_request_traces(query, stop).await,
         }
     }
 }
@@ -396,9 +411,10 @@ impl Query for ReadMainModelUsage {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct ReadRequestTraces(HistoryDataSource, RunId, u64, u32, bool);
 impl Query for ReadRequestTraces {
-    type Output = ModelRequestTracePage;
+    type Output = IndexedRead<ModelRequestTracePage>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(source, run, after, limit, mask_evidence) = self;
         let mut traces = Vec::new();
@@ -408,7 +424,13 @@ impl Query for ReadRequestTraces {
                 sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
                 cut.through_sequence
             }
-            HistoryDataSource::Snapshot(snapshot) => snapshot_bound(c, snapshot)?,
+            HistoryDataSource::Snapshot(snapshot) => match snapshot_bound(c, snapshot) {
+                Ok(bound) => bound,
+                Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+                    return Ok(IndexedRead::NeedsRebuild(snapshots));
+                }
+                Err(IndexedReadError::Store(error)) => return Err(error),
+            },
         };
         let end = request_outcome::run_end(c, &source, run, through)?;
         match &source {
@@ -589,10 +611,10 @@ impl Query for ReadRequestTraces {
             };
             mask_request_diagnostics(c, owner, &mut traces)?;
         }
-        Ok(ModelRequestTracePage {
+        Ok(IndexedRead::Ready(ModelRequestTracePage {
             requests: traces,
             run_terminated: end.terminated(),
-        })
+        }))
     }
 }
 
@@ -636,83 +658,97 @@ struct RequestMetadata {
     provenance: ContentRef,
 }
 impl Query for ReadMetrics {
-    type Output = Option<SessionModelMetrics>;
+    type Output = IndexedRead<Option<SessionModelMetrics>>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let Some(sample) = select(c, &self.0, &self.1, Selection::LatestSuccess)? else {
-            return Ok(None);
-        };
-        let closed = sample
-            .closed
-            .ok_or_else(|| invalid("successful metrics have no original closure"))?;
-        let context = sample
-            .context
-            .ok_or_else(|| invalid("successful metrics have no original provenance"))?;
-        let context_tokens = if sample.reset {
-            None
-        } else {
-            closed
-                .usage
-                .input_tokens
-                .zip(closed.usage.output_tokens)
-                .and_then(|(input, output)| input.checked_add(output))
-        };
-        Ok(Some(SessionModelMetrics {
-            run: sample.run,
-            step: sample.step,
-            attempt: sample.attempt,
-            model_id: sample.accounting.model_id,
-            binding: sample.accounting.binding,
-            requested_at: sample.requested_at,
-            finished_at: Some(closed.at),
-            model_time_ms: closed.model_time_ms,
-            usage: closed.usage,
-            context_tokens,
-            context_window: context
-                .context
-                .model_context
-                .and_then(|context| context.model_context_window),
-            context_last_known: sample.changed,
-            provenance: sample.provenance,
-        }))
+        IndexedRead::from_result(read_metrics(c, &self.0, &self.1))
     }
 }
+fn read_metrics(
+    c: &Connection,
+    history: &SessionHistory,
+    cut: &HistoryCut,
+) -> Result<Option<SessionModelMetrics>, IndexedReadError> {
+    let Some(sample) = select(c, history, cut, Selection::LatestSuccess)? else {
+        return Ok(None);
+    };
+    let closed = sample
+        .closed
+        .ok_or_else(|| invalid("successful metrics have no original closure"))?;
+    let context = sample
+        .context
+        .ok_or_else(|| invalid("successful metrics have no original provenance"))?;
+    let context_tokens = if sample.reset {
+        None
+    } else {
+        closed
+            .usage
+            .input_tokens
+            .zip(closed.usage.output_tokens)
+            .and_then(|(input, output)| input.checked_add(output))
+    };
+    Ok(Some(SessionModelMetrics {
+        run: sample.run,
+        step: sample.step,
+        attempt: sample.attempt,
+        model_id: sample.accounting.model_id,
+        binding: sample.accounting.binding,
+        requested_at: sample.requested_at,
+        finished_at: Some(closed.at),
+        model_time_ms: closed.model_time_ms,
+        usage: closed.usage,
+        context_tokens,
+        context_window: context
+            .context
+            .model_context
+            .and_then(|context| context.model_context_window),
+        context_last_known: sample.changed,
+        provenance: sample.provenance,
+    }))
+}
 impl Query for ReadCalibration {
-    type Output = Option<ModelCalibrationSample>;
+    type Output = IndexedRead<Option<ModelCalibrationSample>>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let Some(sample) = select(c, &self.0, &self.1, Selection::LatestRequest)? else {
-            return Ok(None);
-        };
-        let Some(closed) = sample
-            .closed
-            .filter(|closed| closed.outcome == Outcome::Success)
-        else {
-            return Ok(None);
-        };
-        let Some(input_tokens) = closed.usage.input_tokens.filter(|input| *input > 0) else {
-            return Ok(None);
-        };
-        let Some(context) = sample.context else {
-            return Ok(None);
-        };
-        let Some(route_identity) = context.route_identity else {
-            return Ok(None);
-        };
-        Ok(Some(ModelCalibrationSample {
-            binding: sample.accounting.binding,
-            model_id: sample.accounting.model_id,
-            input_tokens,
-            original_estimate: context.context.breakdown.estimated_tokens(),
-            route_identity,
-            previous_checkpoint_id: context.context.previous_checkpoint_id,
-        }))
+        IndexedRead::from_result(read_calibration(c, &self.0, &self.1))
     }
+}
+fn read_calibration(
+    c: &Connection,
+    history: &SessionHistory,
+    cut: &HistoryCut,
+) -> Result<Option<ModelCalibrationSample>, IndexedReadError> {
+    let Some(sample) = select(c, history, cut, Selection::LatestRequest)? else {
+        return Ok(None);
+    };
+    let Some(closed) = sample
+        .closed
+        .filter(|closed| closed.outcome == Outcome::Success)
+    else {
+        return Ok(None);
+    };
+    let Some(input_tokens) = closed.usage.input_tokens.filter(|input| *input > 0) else {
+        return Ok(None);
+    };
+    let Some(context) = sample.context else {
+        return Ok(None);
+    };
+    let Some(route_identity) = context.route_identity else {
+        return Ok(None);
+    };
+    Ok(Some(ModelCalibrationSample {
+        binding: sample.accounting.binding,
+        model_id: sample.accounting.model_id,
+        input_tokens,
+        original_estimate: context.context.breakdown.estimated_tokens(),
+        route_identity,
+        previous_checkpoint_id: context.context.previous_checkpoint_id,
+    }))
 }
 fn select(
     c: &Connection,
     history: &SessionHistory,
     cut: &HistoryCut,
     selection: Selection,
-) -> Result<Option<Sample>, StoreError> {
+) -> Result<Option<Sample>, IndexedReadError> {
     sql::validate_cut(c, &history.namespace.owner, &history.namespace.session, cut)?;
     let tree = SourceTree::build_in_snapshot(
         c,
@@ -744,9 +780,9 @@ fn select(
                     if matches!(selection, Selection::LatestRequest) {
                         return Ok(Some(sample));
                     }
-                    return Err(invalid(
-                        "metrics original request context breakdown is missing",
-                    ));
+                    return Err(
+                        invalid("metrics original request context breakdown is missing").into(),
+                    );
                 }
                 let route_identity = raw
                     .get("routeIdentity")
@@ -1075,10 +1111,19 @@ fn counter(value: Option<i64>) -> Result<Option<u64>, StoreError> {
         })
         .transpose()
 }
-fn snapshot_bound(c: &Connection, snapshot: &Snapshot) -> Result<u64, StoreError> {
+fn snapshot_bound(c: &Connection, snapshot: &Snapshot) -> Result<u64, IndexedReadError> {
     metrics_metadata::require_ready(c, snapshot)?;
     let manifest = snapshot.manifest_in_snapshot(c)?;
-    match manifest.origin { SnapshotOrigin::Canonical{cut}=>Ok(cut.through_sequence), SnapshotOrigin::Imported{..}=>c.query_row("SELECT coalesce(max(sequence),0) FROM agent_history_snapshot_entries WHERE snapshot=?",[snapshot.id().to_string()],|r|sql::read_u64(r,0)).map_err(Into::into) }
+    match manifest.origin {
+        SnapshotOrigin::Canonical { cut } => Ok(cut.through_sequence),
+        SnapshotOrigin::Imported { .. } => c
+            .query_row(
+                "SELECT coalesce(max(sequence),0) FROM agent_history_snapshot_entries WHERE snapshot=?",
+                [snapshot.id().to_string()],
+                |r| sql::read_u64(r, 0),
+            )
+            .map_err(IndexedReadError::from),
+    }
 }
 struct CopiedFact {
     run: RunId,
@@ -1138,7 +1183,7 @@ fn copied(
     snapshot: &Snapshot,
     floor: u64,
     selection: Selection,
-) -> Result<Option<Sample>, StoreError> {
+) -> Result<Option<Sample>, IndexedReadError> {
     let bound = snapshot_bound(c, snapshot)?;
     let query = match selection {
         Selection::LatestRequest => {
@@ -1162,10 +1207,10 @@ fn copied(
                     .ok_or_else(|| invalid("metrics copied closure metadata is missing"))?,
             )?;
             let ModelMetadata::Closed { outcome, at, .. } = metadata else {
-                return Err(invalid("metrics copied closure metadata has another kind"));
+                return Err(invalid("metrics copied closure metadata has another kind").into());
             };
             if at.0 < 0 {
-                return Err(invalid("negative original model closure time"));
+                return Err(invalid("negative original model closure time").into());
             }
             if outcome != Outcome::Success {
                 continue;
@@ -1177,9 +1222,7 @@ fn copied(
                 || prepared.attempt != observed.attempt
                 || prepared.admission != observed.admission
             {
-                return Err(invalid(
-                    "metrics copied closure has another original request",
-                ));
+                return Err(invalid("metrics copied closure has another original request").into());
             }
             prepared
         } else {
@@ -1197,9 +1240,7 @@ fn copied(
             || prepared.step != Some(step)
             || prepared.admission != original.admission
         {
-            return Err(invalid(
-                "metrics copied request preparation membership differs",
-            ));
+            return Err(invalid("metrics copied request preparation membership differs").into());
         }
         let ModelMetadata::Prepared {
             accounting,
@@ -1208,7 +1249,7 @@ fn copied(
             &model.ok_or_else(|| invalid("metrics copied request metadata is not complete"))?,
         )?
         else {
-            return Err(invalid("metrics copied request metadata has another kind"));
+            return Err(invalid("metrics copied request metadata has another kind").into());
         };
         accounting.validate().map_err(invalid)?;
         if accounting.purpose != ModelPurpose::Main {
@@ -1245,9 +1286,7 @@ fn copied(
             .transpose()?;
         let source = snapshot.run_in_snapshot(c, original.run)?;
         if source.admission_sequence != original.admission {
-            return Err(invalid(
-                "metrics copied model request has another original Run",
-            ));
+            return Err(invalid("metrics copied model request has another original Run").into());
         }
         return Ok(Some(Sample {
             run: original.run,
@@ -1319,7 +1358,7 @@ fn changes(
     c: &Connection,
     segment: &Segment,
     sample: Option<&Sample>,
-) -> Result<(bool, bool), StoreError> {
+) -> Result<(bool, bool), IndexedReadError> {
     let after = sample.map_or(0, |sample| sample.prepared);
     let run = sample.map(|sample| sample.run.to_string());
     let step = sample.map(|sample| sample.step.to_string());
@@ -1345,87 +1384,88 @@ fn changes(
 
 struct ReadCurrentContext(SessionHistory, HistoryCut);
 impl Query for ReadCurrentContext {
-    type Output = Option<CurrentModelContext>;
+    type Output = IndexedRead<Option<CurrentModelContext>>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        use maka_agent_facts::context::{CheckpointContent, CompactedContext};
-        let tree = SourceTree::build_in_snapshot(
-            c,
-            HistoryDataSource::Live {
-                history: self.0,
-                cut: self.1,
-            },
-        )?;
-        for segment in tree.sections().iter().rev() {
-            let main = match &segment.source {
-                HistoryDataSource::Live { history, cut } => live(
-                    c,
-                    history,
-                    cut,
-                    segment.after_admission,
-                    Selection::LatestRequest,
-                )?,
-                HistoryDataSource::Snapshot(snapshot) => copied(
-                    c,
-                    snapshot,
-                    segment.after_admission,
-                    Selection::LatestRequest,
-                )?,
-            };
-            let checkpoint = latest_checkpoint(c, segment)?;
-            if let Some(item) = checkpoint.filter(|item| {
-                main.as_ref()
-                    .is_none_or(|main| item.sequence > main.prepared)
-            }) {
-                let Fact::ContextCompacted { baseline } = item.recorded.fact else {
-                    return Err(invalid("context marker kind"));
-                };
-                let material: CompactedContext =
-                    metadata(c, &segment.source, item.recorded.run, &baseline)?;
-                material.validate().map_err(invalid)?;
-                let Some(native) = material.native else {
-                    return Ok(None);
-                };
-                let tokens = match material.checkpoint.summary {
-                    CheckpointContent::CodexNative {
-                        estimated_tokens, ..
-                    } => Some(estimated_tokens),
-                    _ => None,
-                };
-                return Ok(Some(CurrentModelContext {
-                    source: segment.source.clone(),
-                    path: segment.path.clone(),
-                    run: material.summary_origin.map_or(item.recorded.run, |o| o.run),
-                    step: material.checkpoint.summary_step_id,
-                    tokens,
-                    continuation: native.continuation,
-                }));
-            }
-            if let Some(main) = main {
-                let tokens = main.closed.as_ref().and_then(|closed| {
-                    closed
-                        .usage
-                        .input_tokens
-                        .zip(closed.usage.output_tokens)
-                        .and_then(|(a, b)| a.checked_add(b))
-                });
-                return Ok(Some(CurrentModelContext {
-                    source: segment.source.clone(),
-                    path: segment.path.clone(),
-                    run: main.run,
-                    step: main.step,
-                    tokens,
-                    continuation: None,
-                }));
-            }
-        }
-        Ok(None)
+        IndexedRead::from_result(read_current_context(c, self.0, self.1))
     }
+}
+fn read_current_context(
+    c: &Connection,
+    history: SessionHistory,
+    cut: HistoryCut,
+) -> Result<Option<CurrentModelContext>, IndexedReadError> {
+    use maka_agent_facts::context::{CheckpointContent, CompactedContext};
+    let tree = SourceTree::build_in_snapshot(c, HistoryDataSource::Live { history, cut })?;
+    for segment in tree.sections().iter().rev() {
+        let main = match &segment.source {
+            HistoryDataSource::Live { history, cut } => live(
+                c,
+                history,
+                cut,
+                segment.after_admission,
+                Selection::LatestRequest,
+            )?,
+            HistoryDataSource::Snapshot(snapshot) => copied(
+                c,
+                snapshot,
+                segment.after_admission,
+                Selection::LatestRequest,
+            )?,
+        };
+        let checkpoint = latest_checkpoint(c, segment)?;
+        if let Some(item) = checkpoint.filter(|item| {
+            main.as_ref()
+                .is_none_or(|main| item.sequence > main.prepared)
+        }) {
+            let Fact::ContextCompacted { baseline } = item.recorded.fact else {
+                return Err(invalid("context marker kind").into());
+            };
+            let material: CompactedContext =
+                metadata(c, &segment.source, item.recorded.run, &baseline)?;
+            material.validate().map_err(invalid)?;
+            let Some(native) = material.native else {
+                return Ok(None);
+            };
+            let tokens = match material.checkpoint.summary {
+                CheckpointContent::CodexNative {
+                    estimated_tokens, ..
+                } => Some(estimated_tokens),
+                _ => None,
+            };
+            return Ok(Some(CurrentModelContext {
+                source: segment.source.clone(),
+                path: segment.path.clone(),
+                run: material.summary_origin.map_or(item.recorded.run, |o| o.run),
+                step: material.checkpoint.summary_step_id,
+                tokens,
+                continuation: native.continuation,
+            }));
+        }
+        if let Some(main) = main {
+            let tokens = main.closed.as_ref().and_then(|closed| {
+                closed
+                    .usage
+                    .input_tokens
+                    .zip(closed.usage.output_tokens)
+                    .and_then(|(a, b)| a.checked_add(b))
+            });
+            return Ok(Some(CurrentModelContext {
+                source: segment.source.clone(),
+                path: segment.path.clone(),
+                run: main.run,
+                step: main.step,
+                tokens,
+                continuation: None,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn latest_checkpoint(
     c: &Connection,
     segment: &super::source_tree::Segment,
-) -> Result<Option<HistoryItem>, StoreError> {
+) -> Result<Option<HistoryItem>, IndexedReadError> {
     match &segment.source {
         HistoryDataSource::Live { history, cut } => {
             let sequence: Option<u64> = c.query_row("SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_kind WHERE owner=? AND session=? AND kind='context_compacted' AND sequence<=? AND admission_sequence>? ORDER BY sequence DESC LIMIT 1", params![serde_json::to_string(&history.namespace.owner)?, history.namespace.session, sql::bind_u64(cut.through_sequence)?, sql::bind_u64(segment.after_admission)?], |row| sql::read_u64(row, 0)).optional()?;
@@ -1433,6 +1473,7 @@ fn latest_checkpoint(
                 .map(|sequence| sql::item(c, &history.namespace, cut, sequence))
                 .transpose()
                 .map(Option::flatten)
+                .map_err(Into::into)
         }
         HistoryDataSource::Snapshot(snapshot) => {
             let raw: Option<String> = c.query_row("SELECT entry_json FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND fact_kind='context_compacted' AND json_extract(entry_json,'$.admission_sequence')>? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![snapshot.id().to_string(),sql::bind_u64(segment.after_admission)?,sql::bind_u64(snapshot_bound(c, snapshot)?)?], |row| row.get(0)).optional()?;
@@ -1447,7 +1488,7 @@ fn latest_checkpoint(
                 ..
             } = serde_json::from_str(&raw)?
             else {
-                return Err(invalid("context marker entry kind"));
+                return Err(invalid("context marker entry kind").into());
             };
             let recorded = snapshot.metadata_in_snapshot(c, run, &body)?;
             Ok(Some(HistoryItem {
