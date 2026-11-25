@@ -478,7 +478,7 @@ async fn execute_observed(
 ) -> Result<Outcome, Error> {
     let observation = journal.observation();
     if observation.retired.is_cancelled() {
-        return Err(Error::ObservationRetired);
+        return fail_without_launch(&observation, owner, Error::ObservationRetired).await;
     }
     let config = &external.commands[&runtime];
     let retained = bridge.clone();

@@ -438,10 +438,6 @@ impl TaskBinding for Publications {
         })
     }
 }
-#[expect(
-    clippy::large_enum_variant,
-    reason = "A connection selects one recovery mode; keep its original recovery payload inline"
-)]
 enum ConnectionMode {
     Start {
         actual: maka_sandbox::Sandbox,
@@ -469,6 +465,17 @@ impl DriverExecutor {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            if let Some(PrivateLaunch::Sealed(seal)) = source.prepared_private.lock().await.as_ref()
+            {
+                let seal = seal.clone();
+                let executor = source.clone();
+                signals.push(Box::pin(async move {
+                    if let Err(error) = executor.record_sealed_launch(&seal).await {
+                        tracing::error!(%error, "Original prelaunch no-launch seal remains unsettled");
+                        std::future::pending::<()>().await;
+                    }
+                }));
+            }
             if let Some(publication) = source.publication.get() {
                 signals.extend(publication.original_cleanup_signals());
             }
@@ -481,8 +488,34 @@ impl DriverExecutor {
         signals
     }
 
+    async fn record_sealed_launch(
+        &self,
+        seal: &Arc<maka_process::isolated::NoLaunchSeal>,
+    ) -> Result<(), maka_process::isolated::Error> {
+        seal.record().await?;
+        let mut slot = self.prepared_private.lock().await;
+        if matches!(
+            slot.as_ref(),
+            Some(PrivateLaunch::Sealed(current)) if Arc::ptr_eq(current, seal)
+        ) {
+            slot.take();
+        }
+        Ok(())
+    }
+
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         if !self.root_observation.is_cancelled() || !self.workers.is_empty() {
+            return Ok(false);
+        }
+        let seal = match self.prepared_private.lock().await.as_ref() {
+            Some(PrivateLaunch::Sealed(seal)) => Some(seal.clone()),
+            Some(PrivateLaunch::Prepared(_)) => return Ok(false),
+            None => None,
+        };
+        if let Some(seal) = seal
+            && let Err(error) = self.record_sealed_launch(&seal).await
+        {
+            tracing::error!(%error, "Original prelaunch no-launch seal remains unconfirmed");
             return Ok(false);
         }
         let cleanups = {
@@ -514,6 +547,7 @@ impl DriverExecutor {
             .is_none_or(|publication| publication.original_cleanup_confirmed());
         Ok(self.retained.lock().await.is_empty()
             && self.workers.is_empty()
+            && self.prepared_private.lock().await.is_none()
             && publication_confirmed)
     }
 
@@ -581,25 +615,17 @@ impl DriverExecutor {
             }
         }
         self.root_observation.cancel();
-        let seal = {
-            let mut slot = self.prepared_private.lock().await;
-            match slot.take() {
-                Some(PrivateLaunch::Prepared(prepared)) => {
-                    // The driver retired before transferring launch custody. The cleanup
-                    // observer can now settle even an admitted task without a binding.
-                    let seal = Arc::new(prepared.owner.into_no_launch_seal());
-                    *slot = Some(PrivateLaunch::Sealed(seal.clone()));
-                    seal
+        let mut slot = self.prepared_private.lock().await;
+        if let Some(current) = slot.take() {
+            *slot = Some(match current {
+                // The driver retired before transferring launch custody. The cleanup
+                // observer can now settle even an admitted task without a binding.
+                PrivateLaunch::Prepared(prepared) => {
+                    PrivateLaunch::Sealed(Arc::new(prepared.owner.into_no_launch_seal()))
                 }
-                Some(PrivateLaunch::Sealed(seal)) => {
-                    *slot = Some(PrivateLaunch::Sealed(seal.clone()));
-                    seal
-                }
-                None => return Ok(()),
-            }
-        };
-        seal.record().await.map_err(isolation_error)?;
-        self.prepared_private.lock().await.take();
+                PrivateLaunch::Sealed(seal) => PrivateLaunch::Sealed(seal),
+            });
+        }
         Ok(())
     }
 
@@ -749,6 +775,9 @@ impl DriverExecutor {
                     .backend
                     .setup_binding()
                     .map_err(RunError::InvalidInput)?;
+                self.backend
+                    .validate_start(&frozen.payload.request)
+                    .map_err(|error| external_error(error, descriptor.clone()))?;
                 let mut slot = self.prepared_private.lock().await;
                 if view.stopped
                     || self.root_observation.is_cancelled()
