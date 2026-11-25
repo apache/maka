@@ -851,7 +851,7 @@ async fn replay_text(
     }
     let parts =
         parts.ok_or_else(|| ModelError::Adapter("accepted Responses parts missing".into()))?;
-    let content = vec![replay::content(value, parts.source).map_err(failure)?];
+    let content = vec![replay::content(value, parts.source, kind == "message").map_err(failure)?];
     additions.insert(0, (expected, content));
     source::object_with_fields(Some(fields.source), additions, budget.clone())
         .await
