@@ -49,7 +49,7 @@ fn original_request(
             "model evidence attempt differs from its immutable original Step",
         ));
     }
-    let (digest,bytes):(String,i64)=c.query_row("SELECT b.content_sha256,length(b.payload) FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",params![view.run.to_string(),original.step.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let (digest,bytes):(String,i64)=c.query_row("SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",params![view.run.to_string(),original.step.to_string()],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let reference = ContentRef {
         digest,
         bytes: u64::try_from(bytes)

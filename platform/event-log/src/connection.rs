@@ -153,6 +153,7 @@ impl OpenOptions {
         )?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.set_prepared_statement_cache_capacity(100);
+        crate::content::register_sql_functions(&connection)?;
         for (name, value) in &self.pragmas {
             connection.pragma_update(None, name, value)?;
         }

@@ -336,7 +336,7 @@ fn register(
     bytes: Option<&[u8]>,
     provenance: Option<ContentBlob>,
 ) -> Result<(PublishedArtifact, bool), StoreError> {
-    let previous:Option<Vec<u8>>=c.query_row("SELECT b.payload FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND (r.artifact=? OR r.operation=?)",params![scope.session,registration.record.artifact.id,registration.operation],|r|r.get(0)).optional()?;
+    let previous:Option<Vec<u8>>=c.query_row("SELECT maka_content_bytes(b.payload,b.encoding) FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND (r.artifact=? OR r.operation=?)",params![scope.session,registration.record.artifact.id,registration.operation],|r|r.get(0)).optional()?;
     if let Some(body) = previous {
         let previous: Registration = serde_json::from_slice(&body)?;
         previous.validate(scope)?;
@@ -384,7 +384,7 @@ impl Statement for Rebuild {
         )?;
         let mut after = String::new();
         loop {
-            let rows=c.prepare_cached("SELECT r.artifact,b.payload FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.owner=? AND r.artifact>? ORDER BY r.artifact LIMIT 128")?.query_map(params![self.0.session,owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+            let rows=c.prepare_cached("SELECT r.artifact,maka_content_bytes(b.payload,b.encoding) FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.owner=? AND r.artifact>? ORDER BY r.artifact LIMIT 128")?.query_map(params![self.0.session,owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
             if rows.is_empty() {
                 break;
             }

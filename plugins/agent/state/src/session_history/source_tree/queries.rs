@@ -38,7 +38,7 @@ impl Query for Latest {
 }
 /// SQL predicate restricting `h.kind = 'cell'` rows to transcript-visible Cell child events.
 pub(crate) const TRANSCRIPT_CELL_SQL: &str = " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
-            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
+            (h.tool_start OR (SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.fact.event.kind') FROM agent_facts f
             JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
             IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))";
 
@@ -281,7 +281,7 @@ impl Query for TerminatedAt {
         else {
             return Ok(None);
         };
-        let row: Option<(u32, Vec<u8>, String)> = c.query_row("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.run=? AND h.step IS NULL AND h.kind='run_terminated' AND h.sequence<=?",params![namespace_id,self.2.to_string(),sql::bind_u64(self.1.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let row: Option<(u32, Vec<u8>, String)> = c.query_row("SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.run=? AND h.step IS NULL AND h.kind='run_terminated' AND h.sequence<=?",params![namespace_id,self.2.to_string(),sql::bind_u64(self.1.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         let Some((version, bytes, digest)) = row else {
             return Ok(None);
         };
@@ -524,7 +524,7 @@ impl Query for ReportedModelAt {
         };
         let row: Option<(u32, Vec<u8>, String)> = c
             .query_row(
-                "SELECT f.schema_version,b.payload,b.content_sha256
+                "SELECT f.schema_version,maka_content_bytes(b.payload,b.encoding),b.content_sha256
              FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_facts f ON f.sequence=h.sequence
              JOIN contents b ON b.id=f.body_content_id

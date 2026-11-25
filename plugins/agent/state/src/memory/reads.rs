@@ -151,7 +151,7 @@ impl Query for PermitsReplay {
                          AND EXISTS(
                              SELECT 1 FROM agent_run_specs t
                              JOIN contents tb ON tb.id=t.spec_content_id
-                             WHERE t.run=?2 AND tb.payload->>'$.memoryAdmission'='enabled'
+                             WHERE t.run=?2 AND maka_content_text(tb.payload,tb.encoding)->>'$.memoryAdmission'='enabled'
                          )
                          AND NOT EXISTS(",
                 stale_tool_inputs_sql!(),

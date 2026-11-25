@@ -135,7 +135,11 @@ mod tests {
     use uuid::Uuid;
 
     fn put_blob(db: &Connection, blob: &ContentBlob) -> i64 {
-        blob.store(db).unwrap()
+        if maka_event_log::content::has_encoding_column(db).unwrap() {
+            blob.store(db).unwrap()
+        } else {
+            blob.store_legacy(db).unwrap()
+        }
     }
 
     fn pin_ref(db: &Connection, run: RunId, r: &ContentRef) {
@@ -469,6 +473,7 @@ mod tests {
 
     fn open_raw_db(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();
+        maka_event_log::content::register_sql_functions(&db).unwrap();
         crate::memory::recall::configure_writer(&db).unwrap();
         db
     }

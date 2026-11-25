@@ -297,6 +297,12 @@ export const exclusionRules = [
     matches: hasExtension('.ico', '.png', '.sqlite'),
   },
   {
+    id: 'binary-compression-dictionaries',
+    justification:
+      'Static schema-only zstd compression dictionary embedded via include_bytes!. Binary dictionary bytes carry no comment position, and modifying them breaks decoding of encoding = 3 rows.',
+    matches: isOneOf('platform/event-log/src/content/dict_v1.bin'),
+  },
+  {
     id: 'no-creative-content',
     justification:
       'Version-control metadata and platform manifests whose content is a list of names or required platform keys. Apache RAT excludes the same kind of file by default.',

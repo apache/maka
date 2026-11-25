@@ -347,18 +347,32 @@ fn dump_failed_run_facts(root: &Path, session_id: &str) -> String {
         if !(name.ends_with(".db") || name.ends_with(".sqlite")) {
             continue;
         }
-        let sql = format!(
-            "SELECT h.run, h.sequence, h.kind, substr(CAST(c.payload AS TEXT), 1, 260) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id = h.namespace_id JOIN agent_facts f ON f.id = h.fact_id JOIN contents c ON c.id = f.body_content_id WHERE ns.session = '{}' ORDER BY h.sequence DESC LIMIT 40;",
-            session_id.replace('\'', "''")
-        );
-        if let Ok(res) = std::process::Command::new("sqlite3")
-            .arg(&path)
-            .arg(&sql)
-            .output()
+        if let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) && maka_event_log::content::register_sql_functions(&conn).is_ok()
+            && let Ok(mut stmt) = conn.prepare(
+                "SELECT h.run, h.sequence, h.kind, substr(maka_content_text(c.payload, c.encoding), 1, 260)
+                 FROM agent_session_history h
+                 JOIN agent_namespaces ns ON ns.id = h.namespace_id
+                 JOIN agent_facts f ON f.id = h.fact_id
+                 JOIN contents c ON c.id = f.body_content_id
+                 WHERE ns.session = ?1
+                 ORDER BY h.sequence DESC LIMIT 40",
+            )
+            && let Ok(rows) = stmt.query_map([session_id], |row| {
+                Ok(format!(
+                    "{}|{}|{}|{}
+",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
         {
-            let s = String::from_utf8_lossy(&res.stdout);
-            if !s.trim().is_empty() {
-                out.push_str(&s);
+            for line in rows.flatten() {
+                out.push_str(&line);
             }
         }
     }
@@ -1184,16 +1198,32 @@ text("H_PY_CELL_DONE:" + str(load("py_tag")) + ":" + r["kind"] + ":" + s["kind"]
             // Verify EVERY fail-closed session has an explicit durable blocker fact in SQLite!
             let db_path = sandbox.root.join("runtime-rust.sqlite");
             let mut unverified_fail_closed = Vec::new();
+            let conn = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("open runtime db for fail-closed check");
+            maka_event_log::content::register_sql_functions(&conn).expect("register content UDFs");
+            let mut stmt = conn
+                .prepare(
+                    "SELECT maka_content_text(c.payload, c.encoding)
+                     FROM agent_facts f
+                     JOIN agent_run_specs s ON s.run = f.run
+                     JOIN contents c ON c.id = f.body_content_id
+                     WHERE s.session = ?1
+                     ORDER BY f.sequence DESC LIMIT 12",
+                )
+                .expect("prepare fail-closed facts query");
             for sid in &fail_closed_sids {
-                let out = std::process::Command::new("sqlite3")
-                    .arg(&db_path)
-                    .arg(format!(
-                        "SELECT CAST(c.payload AS TEXT) FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents c ON c.id=f.body_content_id WHERE s.session='{}' ORDER BY f.sequence DESC LIMIT 12;",
-                        sid
-                    ))
-                    .output()
-                    .expect("query fail-closed facts");
-                let facts = String::from_utf8_lossy(&out.stdout);
+                let facts: String = stmt
+                    .query_map([sid], |row| row.get::<_, String>(0))
+                    .expect("query fail-closed facts")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("read fail-closed facts")
+                    .join(
+                        "
+",
+                    );
                 let has_blocker = facts.contains("original_admission_unknown")
                     || facts.contains("operation_unknown")
                     || facts.contains("code_cell_recovery_unavailable")

@@ -378,7 +378,7 @@ pub(super) fn rebuild(
     // Root runtime_events or a disposable Run/catalog projection.
     let mut run_cursor = String::new();
     loop {
-        let runs:Vec<(String,u32,Vec<u8>)> = c.prepare_cached("SELECT r.run,r.schema_version,b.payload FROM agent_run_specs r JOIN contents b ON b.id=r.spec_content_id WHERE r.owner=? AND r.session=? AND r.run>? ORDER BY r.run LIMIT 32")?.query_map(params![owner,session,run_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
+        let runs:Vec<(String,u32,Vec<u8>)> = c.prepare_cached("SELECT r.run,r.schema_version,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs r JOIN contents b ON b.id=r.spec_content_id WHERE r.owner=? AND r.session=? AND r.run>? ORDER BY r.run LIMIT 32")?.query_map(params![owner,session,run_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
         if runs.is_empty() {
             break;
         }
@@ -397,7 +397,7 @@ pub(super) fn rebuild(
             let mut view = RunView::admitted(run_id, spec.clone())?;
             let mut sequence = 0;
             loop {
-                let facts:Vec<(i64,u32,Vec<u8>)> = c.prepare_cached("SELECT f.sequence,f.schema_version,b.payload FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run,sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
+                let facts:Vec<(i64,u32,Vec<u8>)> = c.prepare_cached("SELECT f.sequence,f.schema_version,maka_content_bytes(b.payload,b.encoding) FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.run=? AND f.sequence>? ORDER BY f.sequence LIMIT 128")?.query_map(params![run,sequence],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
                 if facts.is_empty() {
                     break;
                 }

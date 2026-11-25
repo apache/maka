@@ -38,9 +38,28 @@ fn body_digest(body: &str) -> [u8; 32] {
     Sha256::digest(body.as_bytes()).into()
 }
 
-fn exact(c: &Connection, run: RunId, reference: &ContentRef) -> Result<Vec<u8>, StoreError> {
+fn with_owned_bytes<T>(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+    layout: MessageLayout,
+    consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    if layout == MessageLayout::Current {
+        crate::sql::with_owned_content(c, run, reference, consume)
+    } else {
+        crate::sql::with_owned_content_legacy(c, run, reference, consume)
+    }
+}
+
+fn exact(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+    layout: MessageLayout,
+) -> Result<Vec<u8>, StoreError> {
     let mut out = None;
-    crate::sql::with_owned_content(c, run, reference, |bytes| {
+    with_owned_bytes(c, run, reference, layout, |bytes| {
         out = Some(bytes.to_vec());
         Ok(())
     })?;
@@ -51,14 +70,20 @@ fn tool_return(
     c: &Connection,
     run: RunId,
     reference: &ContentRef,
+    layout: MessageLayout,
 ) -> Result<ToolReturn<ReturnedToolResult>, StoreError> {
     let returned: ToolReturn<StoredToolResult> =
-        serde_json::from_slice(&exact(c, run, reference)?)?;
+        serde_json::from_slice(&exact(c, run, reference, layout)?)?;
     returned.validate().map_err(invalid)?;
     let body = match returned.body {
         StoredToolResult::Inline(body) => *body,
         StoredToolResult::Operation(body) => {
-            let reply = crate::operation::read_reply(c, run, &body.operation)?;
+            let reply = crate::operation::read_reply_with_encoding(
+                c,
+                run,
+                &body.operation,
+                layout == MessageLayout::Current,
+            )?;
             body.resolve(reply).map_err(invalid)?
         }
     };
@@ -76,11 +101,12 @@ fn cell_final(
     evidence: CellFinalEvidence,
     message: &mut Message,
     omit_empty_fields: bool,
+    layout: MessageLayout,
 ) -> Result<(), StoreError> {
     match evidence {
         CellFinalEvidence::Completed { result } => {
             let observation: maka_agent_facts::cells::CellObservation =
-                serde_json::from_slice(&exact(c, run, &result)?)?;
+                serde_json::from_slice(&exact(c, run, &result, layout)?)?;
             let maka_agent_facts::cells::CellObservation::Completed {
                 cell_id,
                 content,
@@ -105,7 +131,7 @@ fn cell_final(
         }
         CellFinalEvidence::Interrupted { report } => {
             let report: maka_agent_facts::cells::CellInterruption =
-                serde_json::from_slice(&exact(c, run, &report)?)?;
+                serde_json::from_slice(&exact(c, run, &report, layout)?)?;
             if report.cell != cell {
                 return Err(StoreError::EventConflict);
             }
@@ -1333,7 +1359,7 @@ fn seal_live_external_segments(
         let deltas: Vec<(i64, String, Vec<u8>)> = match current_ns {
             Some(ns_id) => c
                 .prepare_cached(
-                    "SELECT h.sequence, b.content_sha256, b.payload
+                    "SELECT h.sequence, b.content_sha256, maka_content_bytes(b.payload, b.encoding)
                      FROM agent_session_history h
                      JOIN agent_facts f ON f.sequence = h.sequence
                      JOIN contents b ON b.id = f.body_content_id
@@ -1535,7 +1561,7 @@ pub(crate) fn resolve_body_ref(
     }
     let (run_str, fact_bytes): (String, Vec<u8>) = c
         .prepare_cached(
-            "SELECT h.run, b.payload
+            "SELECT h.run, maka_content_bytes(b.payload, b.encoding)
              FROM agent_session_history h
              JOIN agent_facts f ON f.sequence = h.sequence
              JOIN contents b ON b.id = f.body_content_id
@@ -1580,6 +1606,7 @@ pub(crate) fn resolve_body_ref(
         CellFinalEvidence::Completed { result },
         &mut scratch,
         true,
+        MessageLayout::Current,
     )?;
     if scratch.body.len() != end {
         return Err(invalid(
@@ -1673,7 +1700,7 @@ fn resolve_straddling_tail_end(
     through_sequence: u64,
 ) -> Result<Option<(u64, FactId, u64)>, StoreError> {
     let mut stmt = c.prepare_cached(
-        "SELECT h.sequence, b.payload
+        "SELECT h.sequence, maka_content_bytes(b.payload, b.encoding)
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
@@ -1860,7 +1887,7 @@ pub(crate) fn hydrate_external_segment(
     let mut last_ref: Option<ContentRef> = None;
 
     let mut stmt = c.prepare_cached(
-        "SELECT b.content_sha256, b.payload
+        "SELECT b.content_sha256, maka_content_bytes(b.payload, b.encoding)
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
@@ -1948,7 +1975,7 @@ pub(crate) fn slice_sealed_external_segment(
     let mut last_kept_ts = None;
 
     let mut stmt = c.prepare_cached(
-        "SELECT b.payload
+        "SELECT maka_content_bytes(b.payload, b.encoding)
          FROM agent_session_history h
          JOIN agent_facts f ON f.sequence = h.sequence
          JOIN contents b ON b.id = f.body_content_id
@@ -2219,7 +2246,11 @@ fn project(
     let reference: ContentRef = match preloaded_ref {
         Some(r) => r,
         None => {
-            let sql = "SELECT x.content_sha256,length(x.payload) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?";
+            let sql = if layout == MessageLayout::Current {
+                "SELECT x.content_sha256,COALESCE(x.logical_bytes,length(x.payload)) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?"
+            } else {
+                "SELECT x.content_sha256,length(x.payload) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.id=? AND f.run=?"
+            };
             c.query_row(
                 sql,
                 params![fact.id.to_string(), fact.run.to_string()],
@@ -2353,7 +2384,8 @@ fn project(
 
     match rule {
         Rule::Admission => {
-            let input: RunInput = serde_json::from_slice(&exact(c, fact.run, &spec.input)?)?;
+            let input: RunInput =
+                serde_json::from_slice(&exact(c, fact.run, &spec.input, layout)?)?;
             match input {
                 RunInput::Message {
                     content,
@@ -2448,7 +2480,7 @@ fn project(
         },
         Rule::ExternalPrepared { key, descriptor } => {
             message.role = Role::ToolCall;
-            crate::sql::with_owned_content(c, fact.run, descriptor, |bytes| {
+            with_owned_bytes(c, fact.run, descriptor, layout, |bytes| {
                 document::external_prepared(bytes, fact.run, key, &mut message)
             })?;
             message.references.push(descriptor.clone());
@@ -2456,7 +2488,7 @@ fn project(
         Rule::ExternalReturned(output) => {
             message.role = Role::ToolResult;
             let mut completed_cell = None;
-            crate::sql::with_owned_content(c, fact.run, output, |bytes| {
+            with_owned_bytes(c, fact.run, output, layout, |bytes| {
                 completed_cell = document::external_returned(bytes, &mut message)?;
                 Ok(())
             })?;
@@ -2491,7 +2523,7 @@ fn project(
             );
         }
         Rule::Returned { result, receipt } => {
-            let returned = tool_return(c, fact.run, result)?;
+            let returned = tool_return(c, fact.run, result, layout)?;
             let completed_cell = if receipt.is_none()
                 && let ToolOutput::Cell(reply) = &returned.body.output
                 && let maka_agent_facts::cells::CellReplyState::Completed { result: cell_res } =
@@ -2560,7 +2592,7 @@ fn project(
             message.role = Role::ToolResult;
             message.references.push(result.clone());
             let accepted: AcceptedToolResult =
-                serde_json::from_slice(&exact(c, fact.run, result)?)?;
+                serde_json::from_slice(&exact(c, fact.run, result, layout)?)?;
             match accepted {
                 AcceptedToolResult::RecoveredCell { cell, evidence } => {
                     let completed_digest = match &evidence {
@@ -2578,6 +2610,7 @@ fn project(
                         evidence,
                         &mut message,
                         mode == ProjectionMode::CompactV58,
+                        layout,
                     )?;
                     let body_copy = message.body.clone();
                     insert(c, spec, message, layout, fts_mode)?;
@@ -2592,7 +2625,7 @@ fn project(
                     return Ok(());
                 }
                 AcceptedToolResult::Local { result } => {
-                    let returned = tool_return(c, fact.run, &result)?;
+                    let returned = tool_return(c, fact.run, &result, layout)?;
                     returned
                         .body
                         .projection
@@ -2648,7 +2681,7 @@ fn project(
                 AcceptedToolResult::Rejected { diagnostic }
                 | AcceptedToolResult::OutcomeUnknown { diagnostic } => message.body = diagnostic,
                 AcceptedToolResult::Host { result } => {
-                    let returned = tool_return(c, fact.run, &result)?;
+                    let returned = tool_return(c, fact.run, &result, layout)?;
                     let ToolOutput::Operation(reply) = returned.body.output else {
                         return Err(invalid(
                             "host tool result has no original operation receipt",
@@ -2677,7 +2710,12 @@ fn project(
                         .extend(returned.artifacts.into_iter().map(|a| a.payload));
                 }
                 AcceptedToolResult::ObservedOperation { reply } => {
-                    let reply = crate::operation::read_reply(c, fact.run, &reply)?;
+                    let reply = crate::operation::read_reply_with_encoding(
+                        c,
+                        fact.run,
+                        &reply,
+                        layout == MessageLayout::Current,
+                    )?;
                     field(
                         &mut message,
                         Field::Result,
@@ -2693,7 +2731,7 @@ fn project(
                         false,
                     );
                     if let Some(result) = result {
-                        let returned = tool_return(c, fact.run, &result)?;
+                        let returned = tool_return(c, fact.run, &result, layout)?;
                         returned
                             .body
                             .projection
@@ -2787,7 +2825,12 @@ fn project(
                 } = event
                     && maka_agent_facts::operation::result_reference(reply).is_some()
                 {
-                    let reply = crate::operation::read_reply(c, fact.run, reply)?;
+                    let reply = crate::operation::read_reply_with_encoding(
+                        c,
+                        fact.run,
+                        reply,
+                        layout == MessageLayout::Current,
+                    )?;
                     serde_json::to_string(&CellEvent::ChildObserved {
                         cell: *cell,
                         operation: *operation,
@@ -2802,7 +2845,7 @@ fn project(
                 CellEvent::LocalChildReturned { result, .. }
                 | CellEvent::ChildResultRecorded { result, .. } => {
                     let returned: ToolReturn<StoredCellReturn> =
-                        serde_json::from_slice(&exact(c, fact.run, result)?)?;
+                        serde_json::from_slice(&exact(c, fact.run, result, layout)?)?;
                     returned.validate().map_err(invalid)?;
                     let (compact_receipt, body) = match returned.body {
                         StoredCellReturn::Inline(body) => (
@@ -2815,7 +2858,12 @@ fn project(
                         ),
                         StoredCellReturn::Operation(body) => {
                             let receipt = compact_operation_receipt(&body.operation.reference);
-                            let reply = crate::operation::read_reply(c, fact.run, &body.operation)?;
+                            let reply = crate::operation::read_reply_with_encoding(
+                                c,
+                                fact.run,
+                                &body.operation,
+                                layout == MessageLayout::Current,
+                            )?;
                             let body = body.resolve(reply).map_err(invalid)?;
                             (
                                 receipt,
@@ -2855,7 +2903,7 @@ fn project(
                         .extend(returned.artifacts.into_iter().map(|a| a.payload));
                 }
                 CellEvent::Started { source, .. } => {
-                    let source = String::from_utf8(exact(c, fact.run, source)?)
+                    let source = String::from_utf8(exact(c, fact.run, source, layout)?)
                         .map_err(|error| invalid(format!("Cell source is not UTF-8: {error}")))?;
                     field(&mut message, Field::Body, &source, false);
                 }
@@ -2864,7 +2912,7 @@ fn project(
                         message.role = Role::ToolCall;
                         field(&mut message, Field::ToolName, name, false);
                     }
-                    let input: Value = serde_json::from_slice(&exact(c, fact.run, input)?)?;
+                    let input: Value = serde_json::from_slice(&exact(c, fact.run, input, layout)?)?;
                     field(&mut message, Field::Arguments, &json_text(&input), false);
                 }
                 CellEvent::ChildApprovalRecorded { input, .. } => {
@@ -2876,7 +2924,7 @@ fn project(
                             false,
                         );
                     }
-                    let input: Value = serde_json::from_slice(&exact(c, fact.run, input)?)?;
+                    let input: Value = serde_json::from_slice(&exact(c, fact.run, input, layout)?)?;
                     field(&mut message, Field::Arguments, &json_text(&input), false);
                 }
                 CellEvent::ChildDisplayRecorded { display, .. } => {
@@ -2896,6 +2944,7 @@ fn project(
                         },
                         &mut message,
                         mode == ProjectionMode::CompactV58,
+                        layout,
                     )?;
                     let body_len = message.body.len();
                     let row_id = insert(c, spec, message, layout, fts_mode)?;
@@ -2917,14 +2966,16 @@ fn project(
                         },
                         &mut message,
                         mode == ProjectionMode::CompactV58,
+                        layout,
                     )?;
                 }
                 CellEvent::SessionValuePublished { value, .. } => {
-                    let value: Value = serde_json::from_slice(&exact(c, fact.run, value)?)?;
+                    let value: Value = serde_json::from_slice(&exact(c, fact.run, value, layout)?)?;
                     field(&mut message, Field::Result, &json_text(&value), false);
                 }
                 CellEvent::NotificationQueued { content, .. } => {
-                    let value: Value = serde_json::from_slice(&exact(c, fact.run, content)?)?;
+                    let value: Value =
+                        serde_json::from_slice(&exact(c, fact.run, content, layout)?)?;
                     field(&mut message, Field::Body, &json_text(&value), false);
                 }
                 CellEvent::ChildObserved { reply, .. } => {
@@ -2953,7 +3004,12 @@ fn project(
         }
         Rule::Receipt(reply) => {
             message.role = Role::ToolResult;
-            let reply = crate::operation::read_reply(c, fact.run, reply)?;
+            let reply = crate::operation::read_reply_with_encoding(
+                c,
+                fact.run,
+                reply,
+                layout == MessageLayout::Current,
+            )?;
             field(
                 &mut message,
                 Field::Receipt,
@@ -2967,7 +3023,7 @@ fn project(
         }
         Rule::Compaction(baseline) => {
             let compact: maka_agent_facts::context::CompactedContext =
-                serde_json::from_slice(&exact(c, fact.run, baseline)?)?;
+                serde_json::from_slice(&exact(c, fact.run, baseline, layout)?)?;
             compact.validate().map_err(invalid)?;
             message.role = Role::Compaction;
             message.references.push(baseline.clone());
@@ -3120,13 +3176,17 @@ pub(super) fn index_sources_with_layout(
         return Ok(());
     }
     let bytes: Vec<u8> = c.query_row(
-        "SELECT x.payload FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?",
+        if layout == MessageLayout::Current {
+            "SELECT maka_content_bytes(x.payload, x.encoding) FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?"
+        } else {
+            "SELECT x.payload FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?"
+        },
         [number(sequence)?],
         |r| r.get(0),
     )?;
     let fact: RecordedFact = serde_json::from_slice(&bytes)?;
-    // On legacy pre-v60 schemas (migrations 55/59), resolve consumed queue sources directly
-    // from agent_queue_events / agent_history_queue_requests / agent_queue_content_pins
+    // On legacy pre-v60 schemas (migrations 55/60, strictly pre-v62), resolve consumed queue
+    // sources directly from agent_queue_events / agent_history_queue_requests / agent_queue_content_pins
     // with the exact same strict validation enforced by session_history::sql::sources.
     if layout != MessageLayout::Current {
         let consumed: Option<(i64, Vec<u8>, String)> = c
@@ -3236,8 +3296,9 @@ pub(super) fn index_sources_with_layout(
                             task: *task,
                             steering: *steering,
                         };
-                        let original =
-                            crate::external_steering::read_spec(c, fact.run, &key, descriptor)?;
+                        let original = crate::external_steering::read_spec_legacy(
+                            c, fact.run, &key, descriptor,
+                        )?;
                         if original.consume != cut || original.sources.len() != cut.requests.len() {
                             return Err(invalid(
                                 "External steering differs from original queue prefix",
@@ -3367,27 +3428,26 @@ pub(super) fn rebuild(
 }
 
 pub(crate) fn migrate_external_effect_observations(c: &Connection) -> Result<(), StoreError> {
+    let sessions_sql = "SELECT DISTINCT r.owner, r.session
+         FROM (SELECT DISTINCT run FROM agent_external_effects) e
+         JOIN agent_run_specs r ON r.run = e.run
+         WHERE EXISTS (
+           SELECT 1
+           FROM agent_session_history h
+           JOIN agent_facts f ON f.sequence = h.sequence
+           JOIN contents b ON b.id = f.body_content_id
+           WHERE h.owner = r.owner
+             AND h.session = r.session
+             AND h.run = e.run
+             AND h.kind = 'external_effect'
+             AND h.tool_start = 0
+             AND h.result_source = 0
+             AND CAST(b.payload AS TEXT)->>'$.fact.event.kind' = 'observed'
+             AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind' = 'unknown'
+             AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind' = 'confirmed'
+         )";
     let sessions: Vec<(String, String)> = c
-        .prepare_cached(
-            "SELECT DISTINCT r.owner, r.session
-             FROM (SELECT DISTINCT run FROM agent_external_effects) e
-             JOIN agent_run_specs r ON r.run = e.run
-             WHERE EXISTS (
-               SELECT 1
-               FROM agent_session_history h
-               JOIN agent_facts f ON f.sequence = h.sequence
-               JOIN contents b ON b.id = f.body_content_id
-               WHERE h.owner = r.owner
-                 AND h.session = r.session
-                 AND h.run = e.run
-                 AND h.kind = 'external_effect'
-                 AND h.tool_start = 0
-                 AND h.result_source = 0
-                 AND CAST(b.payload AS TEXT)->>'$.fact.event.kind' = 'observed'
-                 AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind' = 'unknown'
-                 AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind' = 'confirmed'
-             )",
-        )?
+        .prepare_cached(sessions_sql)?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
     for (owner_json, session) in sessions {
@@ -3487,7 +3547,7 @@ pub(super) fn rebuild_session_rows(
         let headers: Vec<(i64, i64, String, Vec<u8>)> = match current_ns {
             Some(ns_id) => c
                 .prepare_cached(
-                    "SELECT h.sequence, r.spec_content_id, b.content_sha256, b.payload
+                    "SELECT h.sequence, r.spec_content_id, b.content_sha256, maka_content_bytes(b.payload, b.encoding)
                      FROM agent_session_history h
                      JOIN agent_facts f ON f.sequence = h.sequence
                      JOIN agent_run_specs r ON r.run = h.run
@@ -3521,10 +3581,15 @@ pub(super) fn rebuild_session_rows(
         }
         for (sequence, spec_id, digest, bytes) in headers {
             if cached_spec.as_ref().is_none_or(|(id, _)| *id != spec_id) {
-                let spec_bytes: Vec<u8> =
-                    c.query_row("SELECT payload FROM contents WHERE id=?", [spec_id], |r| {
-                        r.get(0)
-                    })?;
+                let spec_bytes: Vec<u8> = c.query_row(
+                    if layout == MessageLayout::Current {
+                        "SELECT maka_content_bytes(payload, encoding) FROM contents WHERE id=?"
+                    } else {
+                        "SELECT payload FROM contents WHERE id=?"
+                    },
+                    [spec_id],
+                    |r| r.get(0),
+                )?;
                 let spec: RunSpec = serde_json::from_slice(&spec_bytes)?;
                 if &spec.owner != expected_owner || spec.session_id != session {
                     return Err(StoreError::EventConflict);

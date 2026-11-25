@@ -110,7 +110,7 @@ fn put(c: &Connection, blob: &ContentBlob) -> Result<i64, StoreError> {
 }
 fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
-    c.prepare_cached("SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?")?
+    c.prepare_cached("SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?")?
         .query_row(params![reference.digest, signed(reference.bytes)?], |row| {
             row.get(0)
         })
@@ -153,13 +153,11 @@ pub(crate) fn verify_owned_content(
 ) -> Result<(), StoreError> {
     reference.validate().map_err(invalid)?;
     let owns: bool = c
-        .prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?)")?
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND COALESCE(c.logical_bytes,length(c.payload))=?)",
+        )?
         .query_row(
-            params![
-                run.to_string(),
-                reference.digest,
-                signed(reference.bytes)?
-            ],
+            params![run.to_string(), reference.digest, signed(reference.bytes)?],
             |r| r.get(0),
         )?;
     if !owns {
@@ -173,8 +171,37 @@ pub(crate) fn with_owned_content<T>(
     reference: &ContentRef,
     consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
+    with_owned_content_sql(
+        c,
+        run,
+        reference,
+        "SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND COALESCE(c.logical_bytes,length(c.payload))=?",
+        consume,
+    )
+}
+pub(crate) fn with_owned_content_legacy<T>(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+    consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    with_owned_content_sql(
+        c,
+        run,
+        reference,
+        "SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?",
+        consume,
+    )
+}
+fn with_owned_content_sql<T>(
+    c: &Connection,
+    run: RunId,
+    reference: &ContentRef,
+    sql: &str,
+    consume: impl FnOnce(&[u8]) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
     reference.validate().map_err(invalid)?;
-    let mut statement = c.prepare_cached("SELECT c.payload FROM agent_run_content p JOIN contents c ON c.id=p.content_id WHERE p.run=? AND c.content_sha256=? AND length(c.payload)=?")?;
+    let mut statement = c.prepare_cached(sql)?;
     let mut rows = statement.query(params![
         run.to_string(),
         reference.digest,
@@ -191,7 +218,7 @@ pub(crate) fn with_owned_content<T>(
 }
 
 fn spec(c: &Connection, run: RunId) -> Result<(RunSpec, ContentRef), StoreError> {
-    let (v,digest,bytes):(u32,String,Vec<u8>)=c.prepare_cached("SELECT r.schema_version,c.content_sha256,c.payload FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?")?.query_row([run.to_string()],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?.ok_or_else(||invalid("Run not found"))?;
+    let (v,digest,bytes):(u32,String,Vec<u8>)=c.prepare_cached("SELECT r.schema_version,c.content_sha256,maka_content_bytes(c.payload,c.encoding) FROM agent_run_specs r JOIN contents c ON c.id=r.spec_content_id WHERE r.run=?")?.query_row([run.to_string()],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?.ok_or_else(||invalid("Run not found"))?;
     version(v)?;
     let value: RunSpec = serde_json::from_slice(&bytes)?;
     version(value.schema_version)?;
@@ -877,7 +904,7 @@ fn validate_private_provider_effect(
         .get(attempt)
         .ok_or_else(|| invalid("private provider effect has no original model attempt"))?;
     let (schema,step,purpose): (u32,String,String) = c.query_row(
-        "SELECT json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.step'),json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
+        "SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.schemaVersion'),json_extract(maka_content_text(b.payload,b.encoding),'$.step'),json_extract(maka_content_text(b.payload,b.encoding),'$.accounting.purpose') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
         params![view.run.to_string(),original.step.to_string()],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     )?;
     version(schema)?;
@@ -901,7 +928,7 @@ fn validate_request_lineage(
     crate::store::fallback::validate_codex_fallback(c, view, incoming)?;
     let previous = view.current_step.map(|step| {
         let (schema, original, purpose, recovery): (u32, String, String, Option<String>) = c.query_row(
-            "SELECT json_extract(CAST(b.payload AS TEXT),'$.schemaVersion'),json_extract(CAST(b.payload AS TEXT),'$.step'),json_extract(CAST(b.payload AS TEXT),'$.accounting.purpose'),json_extract(CAST(b.payload AS TEXT),'$.compactionRecovery') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
+            "SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.schemaVersion'),json_extract(maka_content_text(b.payload,b.encoding),'$.step'),json_extract(maka_content_text(b.payload,b.encoding),'$.accounting.purpose'),json_extract(maka_content_text(b.payload,b.encoding),'$.compactionRecovery') FROM agent_request_specs r JOIN contents b ON b.id=r.content_id WHERE r.run=? AND r.step=?",
             params![view.run.to_string(), step.to_string()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
         )?;
         version(schema)?;
@@ -1151,7 +1178,7 @@ pub(crate) fn fact(
     run: RunId,
     id: FactId,
 ) -> Result<Option<RecordedFact>, StoreError> {
-    let raw:Option<(u32,Vec<u8>)>=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_facts f JOIN contents c ON c.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![id.to_string(),run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let raw:Option<(u32,Vec<u8>)>=c.prepare_cached("SELECT f.schema_version,maka_content_bytes(c.payload,c.encoding) FROM agent_facts f JOIN contents c ON c.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![id.to_string(),run.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     raw.map(|(v, bytes)| {
         version(v)?;
         let fact: RecordedFact = serde_json::from_slice(&bytes)?;
@@ -1667,7 +1694,7 @@ pub(crate) fn history(
     after: u64,
     count: u32,
 ) -> Result<Vec<RecordedFact>, StoreError> {
-    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_facts f JOIN contents c ON c.id=f.body_content_id WHERE f.run=? AND f.revision>? ORDER BY f.revision LIMIT ?")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,maka_content_bytes(c.payload,c.encoding) FROM agent_facts f JOIN contents c ON c.id=f.body_content_id WHERE f.run=? AND f.revision>? ORDER BY f.revision LIMIT ?")?;
     let mut rows = statement.query(params![run.to_string(), signed(after)?, limit(count)?])?;
     let mut facts = Vec::new();
     while let Some(row) = rows.next()? {
@@ -1706,7 +1733,7 @@ pub(crate) fn tool_admission_revision(
     Ok(Some(recorded.revision))
 }
 pub(crate) fn request(c: &Connection, run: RunId, step: StepId) -> Result<RequestSpec, StoreError> {
-    let bytes: Vec<u8> = c.prepare_cached("SELECT c.payload FROM agent_request_specs r JOIN contents c ON c.id=r.content_id WHERE r.run=? AND r.step=?")?
+    let bytes: Vec<u8> = c.prepare_cached("SELECT maka_content_bytes(c.payload,c.encoding) FROM agent_request_specs r JOIN contents c ON c.id=r.content_id WHERE r.run=? AND r.step=?")?
         .query_row(params![run.to_string(), step.to_string()], |row| row.get(0))?;
     let request: RequestSpec = serde_json::from_slice(&bytes)?;
     version(request.schema_version)?;
@@ -2124,8 +2151,8 @@ pub(crate) fn cleanup_frontier(
     );
     let (owner, session, revision, control, local, external, backend_kind, backend, turn, schema, has_publication): RunHeaderRow =
         c.prepare_cached("SELECT r.owner,r.session,r.revision,r.control_version,r.local,r.external,
-            json_extract(body.payload,'$.backend.kind'),json_extract(body.payload,'$.backend.descriptor'),
-            json_extract(body.payload,'$.turnId'),r.schema_version,
+            json_extract(maka_content_text(body.payload,body.encoding),'$.backend.kind'),json_extract(maka_content_text(body.payload,body.encoding),'$.backend.descriptor'),
+            json_extract(maka_content_text(body.payload,body.encoding),'$.turnId'),r.schema_version,
             EXISTS(SELECT 1 FROM agent_external_publications publication WHERE publication.run=r.run)
             FROM agent_runs r JOIN agent_run_specs spec ON spec.run=r.run JOIN contents body ON body.id=spec.spec_content_id
             WHERE r.run=?")?.query_row([run.to_string()], |row| Ok((row.get(0)?,row.get(1)?,column_u64(row,2)?,column_u64(row,3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?)))?;
@@ -2163,9 +2190,12 @@ pub(crate) fn cleanup_frontier(
 }
 // Nonempty answer parts are contiguous. The first end at or beyond the page end
 // is the inclusive upper key on (run, end), even when a page cuts through a part.
-const ANSWER_TEXT: &str =
-    "SELECT substr(c.payload,max(?1-p.start,0)+1,min(p.end,?2)-max(p.start,?1))
-    FROM agent_answer_parts p JOIN contents c ON c.id=p.content_id
+// Raw parts (encoding = 0, the common streaming-delta case) slice directly in SQL
+// so pagination avoids per-part read_range_by_id round trips.
+const ANSWER_TEXT: &str = "SELECT p.content_id, c.encoding, max(?1-p.start,0), min(p.end,?2)-max(p.start,?1),
+       CASE WHEN c.encoding = 0 THEN substr(c.payload, max(?1-p.start,0)+1, min(p.end,?2)-max(p.start,?1)) END
+    FROM agent_answer_parts p
+    JOIN contents c ON c.id = p.content_id
     WHERE p.run=?3 AND p.end>?1
       AND p.end<=(SELECT min(end) FROM agent_answer_parts WHERE run=?3 AND end>=?2)
     ORDER BY p.end";
@@ -2197,11 +2227,34 @@ pub(crate) fn work(
         return Err(invalid("answer offset is beyond the captured prefix"));
     }
     let end = offset.saturating_add(u64::from(count)).min(high_water);
-    let mut statement = c.prepare_cached(ANSWER_TEXT)?;
-    let mut rows = statement.query(params![signed(offset)?, signed(end)?, run.to_string()])?;
     let mut bytes = Vec::new();
-    while let Some(row) = rows.next()? {
-        bytes.extend(row.get::<_, Vec<u8>>(0)?);
+    {
+        let mut statement = c.prepare_cached(ANSWER_TEXT)?;
+        let mut rows = statement.query(params![signed(offset)?, signed(end)?, run.to_string()])?;
+        while let Some(row) = rows.next()? {
+            let cid: i64 = row.get(0)?;
+            let encoding: i64 = row.get(1)?;
+            let slice_off = u64::try_from(row.get::<_, i64>(2)?)
+                .map_err(|_| invalid("negative answer slice offset"))?;
+            let slice_len = u64::try_from(row.get::<_, i64>(3)?)
+                .map_err(|_| invalid("negative answer slice length"))?;
+            if slice_len == 0 {
+                continue;
+            }
+            if encoding == maka_event_log::content::ENCODING_RAW {
+                let raw: Vec<u8> = row
+                    .get::<_, Option<Vec<u8>>>(4)?
+                    .ok_or_else(|| invalid("missing raw answer part slice"))?;
+                if raw.len() as u64 != slice_len {
+                    return Err(invalid("raw answer part slice length mismatch"));
+                }
+                bytes.extend(raw);
+            } else {
+                bytes.extend(maka_event_log::content::read_range_by_id(
+                    c, cid, slice_off, slice_len,
+                )?);
+            }
+        }
     }
     if let Err(error) = std::str::from_utf8(&bytes) {
         if error.error_len().is_some() {
@@ -2286,7 +2339,7 @@ pub(crate) fn model_items(
     after: Option<u64>,
     count: u32,
 ) -> Result<Vec<RecordedFact>, StoreError> {
-    let mut statement=c.prepare_cached("SELECT f.schema_version,c.payload FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND i.item_index>? ORDER BY i.item_index LIMIT ?")?;
+    let mut statement=c.prepare_cached("SELECT f.schema_version,maka_content_bytes(c.payload,c.encoding) FROM agent_model_items i JOIN agent_facts f ON f.id=i.fact_id JOIN contents c ON c.id=f.body_content_id WHERE i.run=? AND i.attempt=? AND i.item_index>? ORDER BY i.item_index LIMIT ?")?;
     let mut rows = statement.query(params![
         run.to_string(),
         attempt.to_string(),
@@ -2324,7 +2377,7 @@ mod answer_page_tests {
             .collect();
         maka_event_log::migration::run(&db, &catalog).unwrap();
         db.execute_batch(r#"
-            INSERT INTO contents VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
+            INSERT INTO contents(id,content_sha256,payload) VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
             INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);
             INSERT INTO agent_memories VALUES('owner','personal','m',1,1,'user_recall','suppressed',0,0);
             INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
@@ -2332,14 +2385,53 @@ mod answer_page_tests {
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key)
               VALUES('owner','personal','m',1,'{"kind":"conversation","reference":{"sessionId":"chat","sequence":2,"factId":"f2","itemIndex":0,"start":1,"end":4}}','address');
         "#).unwrap();
+        // Also insert a zstd-compressed answer part (encoding != 0) to verify the non-raw
+        // fallback path alongside raw inline slicing.
+        let compressed_part = "A你B".repeat(120);
+        let compressed_blob = crate::ContentBlob::new(compressed_part.as_bytes().to_vec());
+        let compressed_cid = super::put(&db, &compressed_blob).unwrap();
+        let compressed_enc: i64 = db
+            .query_row(
+                "SELECT encoding FROM contents WHERE id=?",
+                [compressed_cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(compressed_enc, maka_event_log::content::ENCODING_RAW);
         let window = |start: i64, end: i64| {
             let mut body = db.prepare(ANSWER_TEXT).unwrap();
+            let mut rows = body.query(params![start, end, "run"]).unwrap();
             let mut bytes = Vec::new();
-            for chunk in body
-                .query_map(params![start, end, "run"], |r| r.get::<_, Vec<u8>>(0))
-                .unwrap()
-            {
-                bytes.extend(chunk.unwrap());
+            let mut deferred = Vec::new();
+            while let Some(r) = rows.next().unwrap() {
+                let cid: i64 = r.get(0).unwrap();
+                let enc: i64 = r.get(1).unwrap();
+                let off = r.get::<_, i64>(2).unwrap() as u64;
+                let len = r.get::<_, i64>(3).unwrap() as u64;
+                if len == 0 {
+                    continue;
+                }
+                if enc == maka_event_log::content::ENCODING_RAW {
+                    bytes.extend(r.get::<_, Vec<u8>>(4).unwrap());
+                } else {
+                    deferred.push((bytes.len(), cid, off, len));
+                }
+            }
+            drop(rows);
+            let body_steps = body.get_status(StatementStatus::VmStep);
+            drop(body);
+            if !deferred.is_empty() {
+                let mut rebuilt = Vec::new();
+                let mut prev = 0usize;
+                for (pos, cid, off, len) in deferred {
+                    rebuilt.extend_from_slice(&bytes[prev..pos]);
+                    rebuilt.extend(
+                        maka_event_log::content::read_range_by_id(&db, cid, off, len).unwrap(),
+                    );
+                    prev = pos;
+                }
+                rebuilt.extend_from_slice(&bytes[prev..]);
+                bytes = rebuilt;
             }
             let mut evidence = db.prepare(ANSWER_SPANS).unwrap();
             let spans = evidence
@@ -2353,7 +2445,7 @@ mod answer_page_tests {
             crate::memory::recall::mask(&mut text, start as u64, &spans);
             (
                 text,
-                body.get_status(StatementStatus::VmStep),
+                body_steps,
                 evidence.get_status(StatementStatus::VmStep),
             )
         };
@@ -2387,6 +2479,20 @@ mod answer_page_tests {
                 "fixed page cost grew from {small} to {large} VM steps"
             );
         }
+        // Append one compressed part after the raw parts and read across the raw->compressed boundary.
+        let tail_start = 5 * previous;
+        let tail_end = tail_start + compressed_part.len() as i64;
+        db.execute(
+            "INSERT INTO agent_facts VALUES(?1,'f'||?1,'run',?1,1,0,1)",
+            [previous + 1],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agent_answer_parts VALUES('run',?1,?2,?3,?4)",
+            params![previous + 1, tail_start, tail_end, compressed_cid],
+        )
+        .unwrap();
+        assert_eq!(window(tail_start - 1, tail_start + 5).0, "BA你B");
     }
 }
 
@@ -2401,7 +2507,7 @@ pub(crate) fn migrate_retry_streak(c: &Connection) -> Result<(), maka_event_log:
         return Ok(());
     }
     let mut facts = c.prepare(
-        "SELECT c.payload FROM agent_facts f          JOIN contents c ON c.id = f.body_content_id          WHERE f.run = ?          ORDER BY f.revision ASC",
+        "SELECT c.payload FROM agent_facts f JOIN contents c ON c.id = f.body_content_id WHERE f.run = ? ORDER BY f.revision ASC",
     )?;
     let mut update = c.prepare("UPDATE agent_runs SET retry_streak = ? WHERE run = ?")?;
     for run in runs {
@@ -2457,6 +2563,37 @@ pub(crate) fn migrate_retry_streak(c: &Connection) -> Result<(), maka_event_log:
 mod tests {
     use super::MODEL_RECONCILIATION_RUNS_SQL;
     use rusqlite::{Connection, params};
+
+    fn put_legacy_content(db: &Connection, blob: &crate::ContentBlob) -> i64 {
+        if maka_event_log::content::has_encoding_column(db).unwrap() {
+            super::put(db, blob).unwrap()
+        } else {
+            blob.store_legacy(db).unwrap()
+        }
+    }
+
+    fn pin_legacy_content(
+        db: &Connection,
+        run: maka_agent_facts::durable::RunId,
+        reference: &maka_agent_facts::durable::ContentRef,
+    ) {
+        if maka_event_log::content::has_encoding_column(db).unwrap() {
+            super::pin(db, run, reference).unwrap();
+            return;
+        }
+        let cid: i64 = db
+            .query_row(
+                "SELECT id FROM contents WHERE content_sha256=?1 AND length(payload)=?2",
+                params![reference.digest, reference.bytes as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO agent_content_pins(run,content_id) VALUES(?1,?2)",
+            params![run.to_string(), cid],
+        )
+        .unwrap();
+    }
 
     #[test]
     fn model_reconciliation_runs_drives_join_from_candidates_not_due_index() {
@@ -2524,7 +2661,7 @@ mod tests {
             spec.session_id = format!("mig53-{run}");
             spec.budget.retries = 2;
             let spec_blob = ContentBlob::json(&spec).unwrap();
-            let spec_cid = super::put(&db, &spec_blob).unwrap();
+            let spec_cid = put_legacy_content(&db, &spec_blob);
             let owner_json = serde_json::to_string(&spec.owner).unwrap();
             db.execute(
                 "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
@@ -2551,7 +2688,7 @@ mod tests {
                 };
                 view.apply(&recorded).unwrap();
                 let fact_blob = ContentBlob::json(&recorded).unwrap();
-                let cid = super::put(&db, &fact_blob).unwrap();
+                let cid = put_legacy_content(&db, &fact_blob);
                 db.execute(
                     "INSERT INTO agent_facts(id,run,revision,schema_version,at,body_content_id) VALUES(?,?,?,?,?,?)",
                     params![
@@ -2871,15 +3008,15 @@ mod tests {
             };
             let spec_blob = ContentBlob::json(&spec).unwrap();
             let owner_json = serde_json::to_string(&spec.owner).unwrap();
-            let spec_cid = super::put(&db, &spec_blob).unwrap();
-            super::put(&db, &task_blob).unwrap();
+            let spec_cid = put_legacy_content(&db, &spec_blob);
+            put_legacy_content(&db, &task_blob);
             db.execute(
                 "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,?,?,?,?)",
                 params![run.to_string(), SCHEMA_VERSION, owner_json, spec.session_id, spec_cid],
             )
             .unwrap();
-            super::pin(&db, run, spec_blob.reference()).unwrap();
-            super::pin(&db, run, task_blob.reference()).unwrap();
+            pin_legacy_content(&db, run, spec_blob.reference());
+            pin_legacy_content(&db, run, task_blob.reference());
 
             let descriptor_blob = ContentBlob::json(&ExternalEffectDescriptor {
                 schema_version: SCHEMA_VERSION,
@@ -2912,8 +3049,8 @@ mod tests {
                 resources: vec![],
             })
             .unwrap();
-            super::put(&db, &descriptor_blob).unwrap();
-            super::pin(&db, run, descriptor_blob.reference()).unwrap();
+            put_legacy_content(&db, &descriptor_blob);
+            pin_legacy_content(&db, run, descriptor_blob.reference());
 
             let digest = format!("sha256-{}", "a".repeat(64));
             let reference = RecoveryRef {
@@ -3020,7 +3157,7 @@ mod tests {
                 };
                 view.apply(&recorded).unwrap();
                 let fact_blob = ContentBlob::json(&recorded).unwrap();
-                let cid = super::put(&db, &fact_blob).unwrap();
+                let cid = put_legacy_content(&db, &fact_blob);
                 db.execute(
                     "INSERT INTO agent_facts(id,run,revision,schema_version,at,body_content_id) VALUES(?,?,?,?,?,?)",
                     params![

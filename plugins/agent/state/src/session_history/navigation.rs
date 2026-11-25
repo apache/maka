@@ -384,7 +384,7 @@ fn live_row(
         Some(found) => found,
         None if position.item_index == 0 => {
             let (run, admission, fact, bytes): (String, u64, String, Vec<u8>) = c.query_row(
-                "SELECT h.run,h.admission_sequence,h.fact_id,b.payload
+                "SELECT h.run,h.admission_sequence,h.fact_id,maka_content_bytes(b.payload,b.encoding)
                  FROM agent_session_history h
                  JOIN agent_facts f ON f.sequence=h.sequence
                  JOIN contents b ON b.id=f.body_content_id

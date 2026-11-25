@@ -18,7 +18,14 @@
  */
 use super::*;
 use maka_agent_facts::history_snapshot::ARCHIVE_MAGIC;
+use std::collections::HashSet;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
+
+pub(super) struct StagedArchive {
+    inventory: ArchiveInventory,
+    batch: maka_event_log::content::PreparedStreamBatch,
+    frame_count: u64,
+}
 
 struct ArchiveReader<R> {
     input: R,
@@ -49,29 +56,13 @@ impl<R: Read> ArchiveReader<R> {
         Ok(u64::from_be_bytes(bytes))
     }
 }
-struct FrameReader<R> {
-    input: R,
-    hash: Sha256,
-    bytes: u64,
-}
-impl<R: Read> Read for FrameReader<R> {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let count = self.input.read(bytes)?;
-        self.bytes = self
-            .bytes
-            .checked_add(count as u64)
-            .ok_or_else(|| io::Error::other("snapshot frame byte count overflow"))?;
-        self.hash.update(&bytes[..count]);
-        Ok(count)
-    }
-}
-
-pub(super) fn copy(
-    c: &Connection,
-    ingest: &str,
+/// Verify archive framing, object SHA-256 digests, and compress all frames
+/// completely outside SQLite transactions using bounded memory and at most one
+/// temporary spool file.
+pub(super) fn stage(
     expected: &maka_event_log::checkpoints::HistorySnapshot,
     file: &File,
-) -> Result<ArchiveInventory, StoreError> {
+) -> Result<StagedArchive, StoreError> {
     ContentRef {
         digest: format!("sha256:{}", expected.object.digest),
         bytes: expected.object.bytes,
@@ -125,7 +116,9 @@ pub(super) fn copy(
         bytes: i64::MAX as u64,
     })?
     .len() as u64;
-    for ordinal in 0..inventory.objects {
+    let mut batch = maka_event_log::content::PreparedStreamBatch::new();
+    let mut seen_digests = HashSet::new();
+    for _ in 0..inventory.objects {
         let length = input.number()?;
         if length > reference_limit || length > input.expected - input.bytes {
             return Err(invalid("invalid version 1 snapshot reference framing"));
@@ -145,36 +138,13 @@ pub(super) fn copy(
                 "snapshot frame differs from its declared canonical reference",
             ));
         }
-        let mut frame = FrameReader {
-            input: input.by_ref().take(reference.bytes),
-            hash: Sha256::new(),
-            bytes: 0,
-        };
-        let content =
-            maka_event_log::content::put_stream(c, &reference.digest, reference.bytes, &mut frame)?;
-        // The existing-digest path returns without consuming its reader.
-        loop {
-            if frame.read(&mut buffer)? == 0 {
-                break;
-            }
-        }
-        if frame.bytes != reference.bytes
-            || format!("sha256:{}", hex::encode(frame.hash.finalize())) != reference.digest
-        {
-            return Err(invalid(
-                "snapshot frame payload does not match its original reference",
-            ));
-        }
-        let duplicate: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_ingest_frames WHERE ingest=? AND content_id=?)", params![ingest, content], |row| row.get(0))?;
-        if duplicate {
+        if !seen_digests.insert(reference.digest.clone()) {
             return Err(invalid(
                 "snapshot archive repeats an immutable object frame",
             ));
         }
-        c.execute(
-            "INSERT INTO agent_history_snapshot_ingest_frames VALUES(?,?,?)",
-            params![ingest, bind_u64(ordinal)?, content],
-        )?;
+        let mut frame = input.by_ref().take(reference.bytes);
+        batch.push(&reference.digest, reference.bytes, &mut frame)?;
     }
     if input.bytes != input.expected || input.input.read(&mut [0u8; 1])? != 0 {
         return Err(invalid(
@@ -186,5 +156,38 @@ pub(super) fn copy(
             "snapshot archive does not match its original object digest",
         ));
     }
-    Ok(inventory)
+    let frame_count = inventory.objects;
+    Ok(StagedArchive {
+        inventory,
+        batch,
+        frame_count,
+    })
+}
+
+/// Insert pre-verified, pre-compressed frames inside a short SQLite write transaction.
+pub(super) fn install(
+    c: &Connection,
+    ingest: &str,
+    staged: &mut StagedArchive,
+) -> Result<ArchiveInventory, StoreError> {
+    for ordinal in 0..staged.frame_count {
+        let index = usize::try_from(ordinal)
+            .map_err(|_| invalid("snapshot frame ordinal exceeds addressable memory"))?;
+        let content = staged.batch.insert(c, index)?;
+        let duplicate: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_history_snapshot_ingest_frames WHERE ingest=? AND content_id=?)",
+            params![ingest, content],
+            |row| row.get(0),
+        )?;
+        if duplicate {
+            return Err(invalid(
+                "snapshot archive repeats an immutable object frame",
+            ));
+        }
+        c.execute(
+            "INSERT INTO agent_history_snapshot_ingest_frames VALUES(?,?,?)",
+            params![ingest, bind_u64(ordinal)?, content],
+        )?;
+    }
+    Ok(staged.inventory.clone())
 }

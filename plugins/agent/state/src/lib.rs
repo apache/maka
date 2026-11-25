@@ -447,6 +447,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: Some(namespace::migrate_namespace_surrogate_keys),
     },
+    maka_event_log::migration::Migration {
+        version: 64,
+        description: "decode compressed contents in agent views and triggers",
+        sql: include_str!("../migrations/0064_agent_views_content_decode.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -458,7 +465,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=61) {
+        for through in [0, 41].into_iter().chain(46..=63) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -527,6 +534,348 @@ mod migration_tests {
                     .unwrap();
                 assert!(!exists, "migration 61 must drop redundant index {dropped}");
             }
+            for col in ["encoding", "logical_bytes"] {
+                let exists: bool = db
+                    .query_row(
+                        &format!(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('contents') WHERE name='{col}')"
+                        ),
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(exists, "migration 63 must add {col} to contents");
+            }
+            for view in [
+                "agent_history_tool_metadata_source",
+                "agent_memory_cell_accept_source",
+                "agent_memory_cell_code_source",
+                "agent_memory_cell_event_source",
+                "agent_memory_cell_publication_source",
+                "agent_memory_cell_return_source",
+                "agent_memory_failed_terminations",
+                "agent_memory_imported_tool_source",
+                "agent_memory_operation_field_source",
+                "agent_memory_recall_call_source",
+                "agent_memory_selected_readers",
+                "agent_memory_selection_readers",
+                "agent_memory_termination_receipts",
+            ] {
+                let count: i64 = db
+                    .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(count, 0, "migration 64 view {view} must query cleanly");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn compressed_contents_survive_store_reads_views_and_seekable_chunks() {
+        use crate::artifacts::{ArtifactReadScope, ArtifactStore, SessionScope, Upload};
+        use crate::store::{Admission, Change};
+        use maka_agent_facts::{
+            artifact::{Artifact, ArtifactKind, ArtifactSource},
+            durable::{Fact, FactId, RunId, Terminal, UnixMillis},
+            input::{MessageInput, RunInput},
+        };
+        use maka_event_log::{
+            RootStore,
+            root::{RootNamespaces, RootOwner},
+        };
+        use std::io::{Read, Seek, SeekFrom};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: dir.path().join("owners"),
+            control: dir.path().join("control"),
+        };
+        let root_path = dir.path().join("root");
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(super::MIGRATIONS)
+            .copied()
+            .collect();
+        // Seed a pre-v63 database with an uncompressed compressible blob first.
+        let through_62: Vec<_> = catalog
+            .iter()
+            .filter(|m| m.version <= 62)
+            .copied()
+            .collect();
+        let legacy_payload = "legacy-uncompressed-payload-".repeat(120).into_bytes();
+        let legacy_blob = crate::ContentBlob::new(legacy_payload.clone());
+        let legacy_digest = legacy_blob.reference().digest.clone();
+        {
+            let owner = Arc::new(RootOwner::create(&root_path, &namespaces).unwrap());
+            let pre_root = RootStore::open(owner, &through_62).await.unwrap();
+            pre_root.close().await.unwrap();
+            let db =
+                rusqlite::Connection::open(root_path.join(maka_event_log::root::ROOT_DATABASE))
+                    .unwrap();
+            legacy_blob.store_legacy(&db).unwrap();
+        }
+
+        // Reopen through the real RootStore so v63 + v64 migrate forward in place.
+        let owner = Arc::new(RootOwner::open_existing(&root_path, &namespaces).unwrap());
+        let root = RootStore::open(owner, &catalog).await.unwrap();
+        let data = root.data_writer().unwrap();
+        let store = crate::Store::new(
+            data.clone(),
+            crate::DriverDomain::new(data.clone()).unwrap(),
+        )
+        .unwrap();
+        let artifacts = ArtifactStore::new(data.clone());
+
+        // Admit a run with a large compressible user message so new rows land compressed.
+        let (mut spec, mut blobs) = crate::store::stop_tests::spec();
+        let long_text = "compressed-agent-message-segment-".repeat(80);
+        let input_blob = crate::ContentBlob::json(&RunInput::Message {
+            content: MessageInput::from(long_text.as_str()),
+            request_fingerprint: None,
+            source_messages: vec![],
+        })
+        .unwrap();
+        spec.input = input_blob.reference().clone();
+        blobs.push(input_blob);
+        let run = RunId::new();
+        let committed = store
+            .admit(Admission::with_identity(
+                run,
+                spec.clone(),
+                UnixMillis(1_700_000_000_000),
+                blobs,
+            ))
+            .await
+            .unwrap();
+        let claim = store.claim(run).await.unwrap();
+        store
+            .append(
+                &claim,
+                committed.head,
+                vec![Change {
+                    id: FactId::new(),
+                    at: UnixMillis(1_700_000_000_100),
+                    fact: Fact::RunTerminated {
+                        terminal: Terminal::Failed,
+                        diagnostic: Some("failure-diagnostic-".repeat(40)),
+                    },
+                }],
+                vec![],
+            )
+            .await
+            .unwrap();
+        drop(claim);
+
+        // Upload a compressible artifact and read it via both chunk() and with_content().
+        let artifact_bytes = "artifact-chunk-boundary-data-0123456789\n"
+            .repeat(120)
+            .into_bytes();
+        let scope = SessionScope {
+            owner: spec.owner.clone(),
+            session: spec.session_id.clone(),
+        };
+        let artifact_id =
+            maka_agent_facts::artifact::upload_artifact_id(&spec.session_id, "art-compress-1");
+        let uploaded = artifacts
+            .upload(Upload::new(
+                scope.clone(),
+                "op-compress-1".into(),
+                "art-compress-1".into(),
+                Artifact {
+                    id: artifact_id.clone(),
+                    session_id: spec.session_id.clone(),
+                    turn_id: spec.turn_id.clone(),
+                    created_at: 1_700_000_000_200,
+                    name: "notes.txt".into(),
+                    kind: ArtifactKind::File,
+                    size_bytes: artifact_bytes.len() as u64,
+                    mime_type: Some("text/plain".into()),
+                    source: ArtifactSource::UserUpload,
+                    summary: Some(maka_agent_facts::artifact::content_digest(&artifact_bytes)),
+                },
+                artifact_bytes.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(uploaded.payload.bytes, artifact_bytes.len() as u64);
+
+        let read_scope = ArtifactReadScope::Session {
+            scope: scope.clone(),
+        };
+        let chunk = artifacts
+            .chunk(read_scope.clone(), artifact_id.clone(), 137, 250)
+            .await
+            .unwrap()
+            .expect("artifact chunk");
+        assert_eq!(chunk.bytes, &artifact_bytes[137..387]);
+        assert_eq!(chunk.total_bytes, artifact_bytes.len() as u64);
+
+        let full = artifacts
+            .with_content(read_scope, artifact_id, |_art, reader| {
+                let mut buf = Vec::new();
+                reader.read_to_end(&mut buf).unwrap();
+                buf
+            })
+            .await
+            .unwrap()
+            .expect("artifact full read");
+        assert_eq!(full, artifact_bytes);
+
+        // Verify on-disk compression, ContentReader seeking, v64 views, and incremental re-encoding.
+        let db_path = root_path.join(maka_event_log::root::ROOT_DATABASE);
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        maka_event_log::content::register_sql_functions(&db).unwrap();
+
+        let (cid, enc, phys_len, log_len): (i64, i64, i64, Option<i64>) = db
+            .query_row(
+                "SELECT id, encoding, length(payload), logical_bytes FROM contents WHERE content_sha256=?",
+                [&uploaded.payload.digest],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(enc, 1, "compressible artifact must be zstd-encoded");
+        assert_eq!(log_len, Some(artifact_bytes.len() as i64));
+        assert!(phys_len < artifact_bytes.len() as i64);
+
+        let mut reader = maka_event_log::content::open_by_id(&db, cid).unwrap();
+        assert_eq!(reader.len(), artifact_bytes.len() as u64);
+        reader.seek(SeekFrom::Start(50)).unwrap();
+        let mut slice = [0_u8; 64];
+        reader.read_exact(&mut slice).unwrap();
+        assert_eq!(&slice, &artifact_bytes[50..114]);
+        reader.close().unwrap();
+
+        let failed_rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_memory_failed_terminations WHERE run=?",
+                [run.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            failed_rows, 1,
+            "v64 view must decode compressed termination fact"
+        );
+
+        // Pre-v63 blob must actually be recompressed in place by RootStore's background
+        // maintenance worker, shrink physically, record logical_bytes, and remain verbatim readable.
+        let legacy_id: i64 = db
+            .query_row(
+                "SELECT id FROM contents WHERE content_sha256=?",
+                [&legacy_digest],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (legacy_enc, legacy_phys, legacy_logical) = loop {
+            let row: (i64, i64, Option<i64>) = db
+                .query_row(
+                    "SELECT encoding, length(payload), logical_bytes FROM contents WHERE id=?",
+                    [legacy_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            if row.0 != maka_event_log::content::ENCODING_RAW
+                || std::time::Instant::now() >= deadline
+            {
+                break row;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        };
+        assert_ne!(
+            legacy_enc,
+            maka_event_log::content::ENCODING_RAW,
+            "RootStore background maintenance must recompress legacy raw compressible blobs"
+        );
+        assert_eq!(legacy_logical, Some(legacy_payload.len() as i64));
+        assert!(legacy_phys < legacy_payload.len() as i64);
+        assert_eq!(
+            maka_event_log::content::read(&db, &legacy_digest)
+                .unwrap()
+                .as_deref(),
+            Some(legacy_payload.as_slice())
+        );
+        assert!(
+            db.execute("UPDATE contents SET encoding=1 WHERE id=?", [legacy_id])
+                .is_err(),
+            "content_immutable must reject invalid encoding updates"
+        );
+
+        // Large (> 64 KiB) new artifact uses seekable framed zstd (encoding = 2) and supports
+        // cross-frame chunk reads via Artifacts::chunk.
+        let seekable_bytes: Vec<u8> = (0..5000)
+            .flat_map(|i| {
+                format!(
+                    "seekable-artifact-line-{i:05}-compressible-segment
+"
+                )
+                .into_bytes()
+            })
+            .collect();
+        assert!(seekable_bytes.len() > maka_event_log::content::SEEKABLE_FRAME_BYTES * 3);
+        let seekable_art_id =
+            maka_agent_facts::artifact::upload_artifact_id(&spec.session_id, "art-seekable-1");
+        let seekable_uploaded = artifacts
+            .upload(Upload::new(
+                scope.clone(),
+                "op-seekable-1".into(),
+                "art-seekable-1".into(),
+                Artifact {
+                    id: seekable_art_id.clone(),
+                    session_id: spec.session_id.clone(),
+                    turn_id: spec.turn_id.clone(),
+                    created_at: 1_700_000_000_300,
+                    name: "large.log".into(),
+                    kind: ArtifactKind::File,
+                    size_bytes: seekable_bytes.len() as u64,
+                    mime_type: Some("text/plain".into()),
+                    source: ArtifactSource::UserUpload,
+                    summary: Some(maka_agent_facts::artifact::content_digest(&seekable_bytes)),
+                },
+                seekable_bytes.clone(),
+            ))
+            .await
+            .unwrap();
+        let (seek_enc, seek_phys, seek_logical): (i64, i64, Option<i64>) = db
+            .query_row(
+                "SELECT encoding, length(payload), logical_bytes FROM contents WHERE content_sha256=?",
+                [&seekable_uploaded.payload.digest],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(seek_enc, maka_event_log::content::ENCODING_ZSTD_SEEKABLE);
+        assert_eq!(seek_logical, Some(seekable_bytes.len() as i64));
+        assert!(seek_phys < seekable_bytes.len() as i64);
+        let cross_frame_off = (maka_event_log::content::SEEKABLE_FRAME_BYTES - 128) as u64;
+        let seek_chunk = artifacts
+            .chunk(
+                ArtifactReadScope::Session {
+                    scope: scope.clone(),
+                },
+                seekable_art_id,
+                cross_frame_off,
+                512,
+            )
+            .await
+            .unwrap()
+            .expect("seekable artifact chunk");
+        assert_eq!(
+            seek_chunk.bytes,
+            &seekable_bytes[cross_frame_off as usize..cross_frame_off as usize + 512]
+        );
+
+        // Verify recall message index decoded the compressed input blob.
+        let recall_hits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agent_recall_messages m
+                 JOIN agent_namespaces ns ON ns.id = m.namespace_id
+                 WHERE ns.session = ? AND m.body LIKE '%compressed-agent-message-segment%'",
+                [&spec.session_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recall_hits, 1, "recall must index compressed input message");
+        drop(db);
+        root.close().await.unwrap();
     }
 }

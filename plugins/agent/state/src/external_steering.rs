@@ -24,7 +24,7 @@ use maka_event_log::StoreError;
 use serde::{Deserialize, Serialize};
 
 mod sql;
-pub(crate) use sql::{persist, read_original, read_spec, replay};
+pub(crate) use sql::{persist, read_original, read_spec, read_spec_legacy, replay};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

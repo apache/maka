@@ -176,7 +176,7 @@ pub(super) fn imported(
 ) -> Result<(), StoreError> {
     for (part_ordinal, reference) in message.parts.iter().enumerate() {
         reference.validate().map_err(invalid)?;
-        let content:Option<i64>=c.query_row("SELECT b.id FROM contents b JOIN agent_history_snapshot_pins p ON p.content_id=b.id WHERE p.snapshot=? AND b.content_sha256=? AND length(b.payload)=?",params![snapshot.to_string(),reference.digest,bind_u64(reference.bytes)?],|row|row.get(0)).optional()?;
+        let content:Option<i64>=c.query_row("SELECT b.id FROM contents b JOIN agent_history_snapshot_pins p ON p.content_id=b.id WHERE p.snapshot=? AND b.content_sha256=? AND COALESCE(b.logical_bytes,length(b.payload))=?",params![snapshot.to_string(),reference.digest,bind_u64(reference.bytes)?],|row|row.get(0)).optional()?;
         let content = content
             .ok_or_else(|| invalid("imported position part has no actual supplied source bytes"))?;
         let metadata: PartMetadata =

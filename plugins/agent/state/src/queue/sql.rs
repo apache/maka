@@ -127,7 +127,7 @@ fn pin(
     reference.validate().map_err(invalid)?;
     let content_id: i64 = c
         .query_row(
-            "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?",
+            "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
             params![reference.digest, to_sql_integer(reference.bytes)?],
             |r| r.get(0),
         )
@@ -252,7 +252,7 @@ pub(crate) fn stopped_by_user(c: &Connection, run: RunId) -> Result<bool, StoreE
         "SELECT EXISTS(SELECT 1 FROM agent_runs r
          JOIN agent_facts f ON f.id=r.stop_request AND f.run=r.run
          JOIN contents b ON b.id=f.body_content_id
-         WHERE r.run=?1 AND json_extract(b.payload,'$.fact.requester.kind')='user')",
+         WHERE r.run=?1 AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.requester.kind')='user')",
     )?
     .query_row([run.to_string()], |row| row.get(0))?)
 }
@@ -316,7 +316,7 @@ pub(crate) fn deliver_held(
 }
 fn run_head(c: &Connection, run: RunId) -> Result<(RunSpec, Head, bool, bool), StoreError> {
     let row: Option<(Vec<u8>,u32,i64,i64,bool,bool)> = c.query_row(
-        "SELECT c.payload,r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
+        "SELECT maka_content_bytes(c.payload,c.encoding),r.schema_version,r.revision,r.control_version,r.stopped,r.terminal IS NOT NULL FROM agent_run_specs s JOIN contents c ON c.id=s.spec_content_id JOIN agent_runs r ON r.run=s.run WHERE s.run=?",
         [run.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
     let (body, version, revision, control_version, stopped, terminal) =
         row.ok_or_else(|| invalid("steering Run not found"))?;
@@ -453,7 +453,7 @@ fn followup(
     type OriginalRunRow = (u32, Vec<u8>, u32, String, String, i64, i64);
     let row: Option<OriginalRunRow> = c
         .query_row(
-            "SELECT s.schema_version,b.payload,r.schema_version,r.owner,r.session,r.local,r.stopped
+            "SELECT s.schema_version,maka_content_bytes(b.payload,b.encoding),r.schema_version,r.owner,r.session,r.local,r.stopped
          FROM agent_run_specs s JOIN contents b ON b.id=s.spec_content_id
          JOIN agent_runs r ON r.run=s.run
          WHERE s.run=?1 AND s.owner=?2 AND s.session=?3",
@@ -548,7 +548,7 @@ fn previous(
     command: FactId,
     event: &Event,
 ) -> Result<Option<u64>, StoreError> {
-    let row: Option<(i64,Vec<u8>)> = c.query_row("SELECT e.revision,c.payload FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.id=?", params![session,command.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(i64,Vec<u8>)> = c.query_row("SELECT e.revision,maka_content_bytes(c.payload,c.encoding) FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.id=?", params![session,command.to_string()], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     row.map(|(revision, body)| {
         if serde_json::from_slice::<Event>(&body)? != *event {
             return Err(StoreError::EventConflict);
@@ -1081,7 +1081,7 @@ pub(super) fn recover_undelivered_steering(
            AND (r.terminal IS NOT NULL OR EXISTS (
                SELECT 1 FROM agent_facts f JOIN contents b ON b.id=f.body_content_id
                WHERE f.id=r.stop_request AND f.run=r.run
-                 AND json_extract(b.payload,'$.fact.diagnostic')=?2
+                 AND json_extract(maka_content_text(b.payload,b.encoding),'$.fact.diagnostic')=?2
            ))",
         )?
         .query_map(
@@ -1205,7 +1205,7 @@ pub(super) fn resolve(
                     JOIN agent_continuation_successors x ON x.source_run = h.run
                     JOIN agent_run_specs s ON s.run = x.run
                     JOIN contents b ON b.id = s.spec_content_id
-                    WHERE json_extract(b.payload, '$.trigger.kind') = 'checkpoint_handoff'
+                    WHERE json_extract(maka_content_text(b.payload, b.encoding), '$.trigger.kind') = 'checkpoint_handoff'
                 )
                 SELECT run FROM handoff ORDER BY depth DESC LIMIT 1
             ), shared FROM agent_queue_items q WHERE session=? AND message=?",
@@ -1276,6 +1276,11 @@ pub(super) fn ready(
         .collect()
 }
 pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError> {
+    let body = if content::has_encoding_column(c)? {
+        "maka_content_bytes(b.payload,b.encoding)"
+    } else {
+        "b.payload"
+    };
     let mut after = String::new();
     loop {
         let sessions: Vec<String> = c.prepare_cached(
@@ -1285,7 +1290,7 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
             break;
         }
         for session in sessions {
-            replay_queue_events(c, &session, "b.payload")?;
+            replay_queue_events(c, &session, body)?;
             after = session;
         }
     }
@@ -1296,8 +1301,8 @@ pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, Stor
     replay_queue_events(
         c,
         session,
-        "CASE WHEN e.memory_admission IS NULL THEN b.payload
-         ELSE CAST(json_set(b.payload, '$.edit.request.spec.memoryAdmission', e.memory_admission) AS BLOB) END",
+        "CASE WHEN e.memory_admission IS NULL THEN maka_content_bytes(b.payload,b.encoding)
+         ELSE CAST(json_set(maka_content_text(b.payload,b.encoding), '$.edit.request.spec.memoryAdmission', e.memory_admission) AS BLOB) END",
     )
 }
 

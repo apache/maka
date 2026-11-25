@@ -217,7 +217,7 @@ fn contains(c: &Connection, write: &AuxiliaryWrite) -> Result<bool, StoreError> 
     type AuxiliarySourceRow = (String, i64, Option<String>, Option<Vec<u8>>);
     let row: Option<AuxiliarySourceRow> = c
         .query_row(
-            "SELECT e.request,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
+            "SELECT e.request,e.at,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
          LEFT JOIN contents b ON b.id=e.body_content_id WHERE e.id=?",
             [write.id.to_string()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -237,7 +237,7 @@ fn contains(c: &Connection, write: &AuxiliaryWrite) -> Result<bool, StoreError> 
 }
 fn stored_spec(c: &Connection, request: Uuid) -> Result<AuxiliarySpec, StoreError> {
     let (owner,session,key,digest,bytes): (String,String,String,Option<String>,Option<Vec<u8>>) = c.query_row(
-        "SELECT s.owner,s.session,s.source_key,b.content_sha256,b.payload FROM agent_usage_aux_specs s
+        "SELECT s.owner,s.session,s.source_key,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_specs s
          LEFT JOIN contents b ON b.id=s.spec_content_id WHERE s.request=?",
         [request.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional()?.ok_or_else(|| invalid("auxiliary request was not started"))?;
@@ -315,7 +315,7 @@ impl Statement for AuxiliaryWrite {
             AuxiliaryEvent::UsageObserved { .. } | AuxiliaryEvent::Settled { .. } => {
                 let spec = stored_spec(c, self.request)?;
                 let (digest,bytes): (Option<String>,Option<Vec<u8>>) = c.query_row(
-                    "SELECT b.content_sha256,b.payload FROM agent_usage_aux_events e
+                    "SELECT b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
                      LEFT JOIN contents b ON b.id=e.body_content_id WHERE e.request=? ORDER BY e.sequence DESC LIMIT 1",
                     [self.request.to_string()], |r| Ok((r.get(0)?,r.get(1)?)),
                 ).optional()?.ok_or_else(|| invalid("auxiliary request has no Started event"))?;
@@ -361,7 +361,7 @@ fn validate_source(c: &Connection, spec: &AuxiliarySpec) -> Result<(), StoreErro
     match &spec.source {
         AuxiliarySource::Agent { execution, .. } | AuxiliarySource::SessionTitle { execution } => {
             let (owner,session,version,digest,bytes): (String,String,u32,Option<String>,Option<Vec<u8>>) = c.query_row(
-                "SELECT r.owner,r.session,r.schema_version,b.content_sha256,b.payload FROM agent_run_specs r
+                "SELECT r.owner,r.session,r.schema_version,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_run_specs r
                  LEFT JOIN contents b ON b.id=r.spec_content_id WHERE r.run=?",
                 [execution.run_id.to_string()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
             ).optional()?.ok_or_else(|| invalid("auxiliary source Run missing"))?;
@@ -432,7 +432,7 @@ impl Statement for RebuildAuxiliary {
     fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
         let spec = stored_spec(c, self.0)?;
         let (digest, bytes): (String, i64) = c.query_row(
-            "SELECT b.content_sha256,length(b.payload) FROM agent_usage_aux_specs s
+            "SELECT b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)) FROM agent_usage_aux_specs s
              JOIN contents b ON b.id=s.spec_content_id WHERE s.request=?",
             [self.0.to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -451,7 +451,7 @@ impl Statement for RebuildAuxiliary {
         loop {
             type AuxiliaryFactRow = (i64, i64, Option<String>, Option<Vec<u8>>);
             let page: Vec<AuxiliaryFactRow> = c.prepare_cached(
-                "SELECT e.sequence,e.at,b.content_sha256,b.payload FROM agent_usage_aux_events e
+                "SELECT e.sequence,e.at,b.content_sha256,maka_content_bytes(b.payload,b.encoding) FROM agent_usage_aux_events e
                  LEFT JOIN contents b ON b.id=e.body_content_id
                  WHERE e.request=? AND e.sequence>? ORDER BY e.sequence LIMIT 128"
             )?.query_map(params![self.0.to_string(),after], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?

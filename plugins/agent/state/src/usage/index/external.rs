@@ -35,7 +35,7 @@ pub(super) fn index(
     let request = id(record.run, &key);
     match event {
         ExternalEffectEvent::Admitted { .. } | ExternalEffectEvent::Rejected { .. } => {
-            let name:String=c.query_row("SELECT json_extract(CAST(b.payload AS TEXT),'$.name') FROM agent_external_effects e JOIN contents b ON b.content_sha256=json_extract(e.body,'$.descriptor.digest') WHERE e.run=? AND e.operation=? AND e.task=?",params![record.run.to_string(),key.operation.to_string(),key.task.to_string()],|r|r.get(0))?;
+            let name:String=c.query_row("SELECT json_extract(maka_content_text(b.payload,b.encoding),'$.name') FROM agent_external_effects e JOIN contents b ON b.content_sha256=json_extract(e.body,'$.descriptor.digest') WHERE e.run=? AND e.operation=? AND e.task=?",params![record.run.to_string(),key.operation.to_string(),key.task.to_string()],|r|r.get(0))?;
             insert_tool(
                 c,
                 &request,
