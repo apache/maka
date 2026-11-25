@@ -5044,6 +5044,9 @@ export function Conversation(props: ConversationProps) {
                       )
                     : null
                 }
+                waiting={() =>
+                  initial.turnKey === runTurn() && activity().kind === 'waiting_for_user'
+                }
                 images={{
                   sessionId,
                   through: () => latestKnown,
