@@ -34,6 +34,7 @@ futures-util.workspace = true
 jsonschema.workspace = true
 maka-plugin-core.workspace = true
 maka-event-log.workspace = true
+maka-remote-pairing.workspace = true
 maka-config.workspace = true
 maka-fs-tools.workspace = true
 maka-process.workspace = true

@@ -26,7 +26,7 @@ use maka_host_runtime::{
     application::{
         host::{
             AuthenticatedPeerStream, Channel, Client, Configuration, Host, LifecycleMode,
-            LocalCall, OpenChannel, Options, PeerId, VERSION,
+            LocalCall, OpenChannel, Options, PeerId, PeerPairingOptions, VERSION,
             protocol::{Opening, Request, Response, SessionControl},
             websocket::{self, WebSocketListener},
         },
@@ -57,6 +57,11 @@ fn package(id: &str, host: Value) -> Package {
 }
 
 async fn logs_host() -> (tempfile::TempDir, Arc<Host>, Configuration) {
+    let (dir, host, configuration, _) = logs_host_with_store().await;
+    (dir, host, configuration)
+}
+
+async fn logs_host_with_store() -> (tempfile::TempDir, Arc<Host>, Configuration, Arc<RootStore>) {
     let dir = tempfile::tempdir().unwrap();
     private_directory(dir.path()).unwrap();
     let root = Arc::new(
@@ -110,7 +115,7 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>, Configuration) {
         .await
         .unwrap();
     let host = Host::open_with_options(
-        store,
+        store.clone(),
         deployment,
         Default::default(),
         None,
@@ -123,7 +128,7 @@ async fn logs_host() -> (tempfile::TempDir, Arc<Host>, Configuration) {
     .await
     .unwrap();
 
-    (dir, host, configuration)
+    (dir, host, configuration, store)
 }
 
 #[tokio::test]
@@ -691,6 +696,271 @@ async fn websocket_and_native_principals_are_isolated_and_ingress_eof_keeps_othe
         peer_anchor.read::<Response>().await.unwrap(),
         Response::Refreshed(Ok(_))
     ));
+    cancel.cancel();
+    wait_for_server(server).await;
+}
+
+#[tokio::test]
+async fn local_pairing_invite_grants_only_the_redeeming_native_peer_and_can_be_revoked() {
+    use maka_remote_pairing::{DeviceIdentity, RelayEndpoint, SignedPairingTicket};
+
+    let (dir, host, configuration, store) = logs_host_with_store().await;
+    host.set_native_relays(vec![RelayEndpoint {
+        url: "http://127.0.0.1:3340".into(),
+        quic_port: None,
+        cert_sha256: None,
+    }])
+    .unwrap();
+    let host_peer_id = host.device_identity().public_key().to_string();
+    let peer = PeerId::new(DeviceIdentity::generate().unwrap().public_key().to_string()).unwrap();
+    let other = PeerId::new(DeviceIdentity::generate().unwrap().public_key().to_string()).unwrap();
+    let legacy = host.prepare_access("websocket".into()).await.unwrap();
+    let websocket = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+        .await
+        .unwrap();
+    let address = websocket.local_addr().unwrap();
+    let tcp: OpenChannel = Arc::new(move || {
+        Box::pin(
+            async move { Ok(Box::new(tokio::net::TcpStream::connect(address).await?) as Channel) },
+        )
+    });
+    let ws = websocket::channel_opener(tcp, legacy.credential.into());
+    let (socket, local) = local_listener(dir.path());
+    let local_open: OpenChannel = Arc::new({
+        let socket = socket.clone();
+        move || {
+            let socket = socket.clone();
+            Box::pin(async move {
+                Ok(Box::new(
+                    maka_host_runtime::ipc::connect(&socket)
+                        .await
+                        .map_err(io::Error::other)?,
+                ) as Channel)
+            })
+        }
+    });
+    let root_id = host.root_id().to_owned();
+    let epoch = host.epoch();
+    let mut revoked = host.subscribe_revoked_peers();
+    let (sender, ingress) = mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    let server = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            host.serve_with_peers(local, Some(websocket), Some(ingress), cancel)
+                .await
+        }
+    });
+
+    let open = peer_opener(&sender, &peer);
+    let outsider = peer_opener(&sender, &other);
+    assert!(
+        Client::connect_authenticated_peer(open.clone(), None)
+            .await
+            .is_err()
+    );
+    let now = || {
+        u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000).unwrap()
+    };
+    let options = |label: Option<&str>, ttl_secs| PeerPairingOptions {
+        host_name: "Logs fixture".into(),
+        label: label.map(str::to_owned),
+        ttl_secs,
+    };
+    let prepare = |label, ttl| Client::prepare_peer_pairing(&socket, epoch, options(label, ttl));
+    let invite = prepare(Some("My device"), None).await.unwrap();
+    let ticket = SignedPairingTicket::parse_and_verify_uri(&invite.uri, now()).unwrap();
+    let payload = ticket.payload();
+    assert_eq!(payload.root_id, root_id);
+    assert_eq!(payload.host_peer_id, host_peer_id);
+    assert_eq!(payload.expires_at_ms, invite.expires_at_ms);
+    let invite_secret = &payload.invite_secret;
+    for channel in [local_open, ws] {
+        let mut result = opening(
+            &channel,
+            Request::RedeemPeerPairing {
+                invite_secret: invite_secret.clone(),
+                device_label: None,
+            },
+            None,
+        )
+        .await;
+        assert!(matches!(
+            result.read::<Response>().await.unwrap(),
+            Response::PeerPairingReceipt(Err(ref message)) if message == "pairing requires an authenticated native peer"
+        ));
+    }
+
+    let error = Client::redeem_peer_pairing(
+        open.clone(),
+        invite_secret.clone(),
+        Some("界".repeat(43)),
+        &root_id,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.contains("device label must be at most 128 bytes"),
+        "{error}"
+    );
+
+    let receipt = Client::redeem_peer_pairing(
+        open.clone(),
+        invite_secret.clone(),
+        Some("Client label".into()),
+        &root_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(receipt.peer_id, peer.as_str());
+    let devices = Client::list_peer_access(&socket, epoch).await.unwrap();
+    let [device] = devices.as_slice() else {
+        panic!("expected exactly one paired device");
+    };
+    assert_eq!(device.peer_id, peer.as_str());
+    assert_eq!(device.label, "My device");
+
+    let mut connected = Client::connect_authenticated_peer(open.clone(), None)
+        .await
+        .unwrap();
+    finish_log_read(read_call(&connected).await.unwrap()).await;
+    for replay in [open.clone(), outsider.clone()] {
+        assert!(
+            Client::redeem_peer_pairing(replay, invite_secret.clone(), None, &root_id)
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        Client::connect_authenticated_peer(outsider, None)
+            .await
+            .is_err()
+    );
+    for request in [
+        Request::PreparePeerPairing(options(None, None)),
+        Request::ListPeerAccess,
+        Request::RevokePeerAccess {
+            peer_id: peer.as_str().into(),
+        },
+    ] {
+        assert_peer_closed(opening(&open, request, None).await.inner).await;
+    }
+
+    assert!(
+        Client::revoke_peer_access(&socket, epoch, &peer)
+            .await
+            .unwrap()
+    );
+    assert_eq!(revoked.try_recv().unwrap(), peer);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), connected.refresh())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        Client::connect_authenticated_peer(open.clone(), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        Client::list_peer_access(&socket, epoch)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let still_valid = prepare(None, None).await.unwrap();
+    let mut owner = Client::connect(&socket, None).await.unwrap();
+    let source = owner.publication().await.unwrap().source;
+    let mut narrowed = configuration.clone();
+    let Configuration::PublicHost { endpoints, .. } = &mut narrowed;
+    endpoints
+        .get_mut("hostLogs")
+        .unwrap()
+        .grant
+        .methods
+        .remove("watch");
+    let loaded = store
+        .load_application(source.deployment)
+        .await
+        .unwrap()
+        .unwrap();
+    let (loaded, packages, _, _) = loaded.into_parts();
+    let next_source = store
+        .commit_application(
+            source.deployment,
+            source.revision,
+            loaded.input,
+            loaded.remote_exports,
+            packages,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        owner
+            .configure(source, configuration.clone(), narrowed.clone())
+            .await
+            .unwrap_err(),
+        "Host configuration source or persisted authority changed"
+    );
+    let valid_ticket = SignedPairingTicket::parse_and_verify_uri(&still_valid.uri, now()).unwrap();
+    Client::redeem_peer_pairing(
+        open.clone(),
+        valid_ticket.payload().invite_secret.clone(),
+        None,
+        &root_id,
+    )
+    .await
+    .unwrap();
+
+    let blocked = prepare(None, None).await.unwrap();
+    let blocked_ticket = SignedPairingTicket::parse_and_verify_uri(&blocked.uri, now()).unwrap();
+    let blocked_secret = &blocked_ticket.payload().invite_secret;
+    owner
+        .configure(next_source.clone(), configuration.clone(), narrowed.clone())
+        .await
+        .unwrap();
+    assert!(
+        Client::redeem_peer_pairing(open.clone(), blocked_secret.clone(), None, &root_id)
+            .await
+            .is_err()
+    );
+    owner
+        .configure(next_source, narrowed, configuration)
+        .await
+        .unwrap();
+    assert!(
+        Client::redeem_peer_pairing(open.clone(), blocked_secret.clone(), None, &root_id)
+            .await
+            .is_err()
+    );
+
+    for ttl in [0, u64::MAX] {
+        assert!(prepare(None, Some(ttl)).await.is_err());
+    }
+    let issued_after = now();
+    let short = prepare(None, Some(1)).await.unwrap();
+    let short_ticket = SignedPairingTicket::parse_and_verify_uri(&short.uri, issued_after).unwrap();
+    assert!((issued_after + 1_000..=now() + 1_000).contains(&short.expires_at_ms));
+    while let Some(remaining) = short.expires_at_ms.checked_sub(now()) {
+        if remaining == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(remaining)).await;
+    }
+    assert!(
+        Client::redeem_peer_pairing(
+            open,
+            short_ticket.payload().invite_secret.clone(),
+            None,
+            &root_id
+        )
+        .await
+        .is_err()
+    );
+
+    owner.close().await.unwrap();
     cancel.cancel();
     wait_for_server(server).await;
 }

@@ -68,6 +68,7 @@ members = [
     "platform/process",
     "plugins/agent/providers",
     "platform/host-runtime",
+    "platform/remote-pairing",
     "platform/host-js",
     "platform/sandbox",
     "plugins/agent/scheduler/engine",
@@ -179,6 +180,7 @@ maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
+maka-remote-pairing = { path = "platform/remote-pairing" }
 maka-host-js = { path = "platform/host-js" }
 maka-sandbox = { path = "platform/sandbox" }
 maka-scheduler = { path = "plugins/agent/scheduler/engine" }

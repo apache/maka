@@ -51,6 +51,13 @@ static MIGRATIONS: &[Migration] = &[
         configure: None,
         data: None,
     },
+    Migration {
+        version: 4,
+        description: "host peer pairing",
+        sql: include_str!("../migrations/0004_host_peer_pairing.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 pub(crate) fn unsigned(value: i64) -> Result<u64> {

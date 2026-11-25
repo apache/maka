@@ -20,7 +20,7 @@
 use maka_host_runtime::{
     HostError,
     application::host::{
-        Client, Pairing, Status,
+        Client, HostPeerAccess, Pairing, PeerId, PeerPairingInvite, PeerPairingOptions, Status,
         discovery::{self, Discovery},
     },
     ipc::{self, LocalStream},
@@ -136,6 +136,41 @@ impl HostClient {
             RetirementResult::ActiveTasks
         })
     }
+    pub async fn prepare_peer_pairing(
+        &self,
+        options: PeerPairingOptions,
+    ) -> Result<PeerPairingInvite, HostError> {
+        Ok(tokio::time::timeout(
+            Duration::from_secs(15),
+            Client::prepare_peer_pairing(
+                &self.discovery.endpoint,
+                self.discovery.host_epoch,
+                options,
+            ),
+        )
+        .await??)
+    }
+
+    pub async fn list_peer_access(&self) -> Result<Vec<HostPeerAccess>, HostError> {
+        Ok(tokio::time::timeout(
+            Duration::from_secs(15),
+            Client::list_peer_access(&self.discovery.endpoint, self.discovery.host_epoch),
+        )
+        .await??)
+    }
+
+    pub async fn revoke_peer_access(&self, peer_id: &PeerId) -> Result<bool, HostError> {
+        Ok(tokio::time::timeout(
+            Duration::from_secs(15),
+            Client::revoke_peer_access(
+                &self.discovery.endpoint,
+                self.discovery.host_epoch,
+                peer_id,
+            ),
+        )
+        .await??)
+    }
+
     pub async fn prepare_access(&self, principal: String) -> Result<Pairing, HostError> {
         Ok(tokio::time::timeout(
             Duration::from_secs(15),

@@ -626,6 +626,77 @@ impl Client {
             _ => Err("Host configuration response mismatch".into()),
         }
     }
+    pub async fn prepare_peer_pairing(
+        address: &Path,
+        epoch: Uuid,
+        options: super::PeerPairingOptions,
+    ) -> Result<super::PeerPairingInvite> {
+        match control(address, Some(epoch), Request::PreparePeerPairing(options)).await? {
+            Response::PeerPairingInvite(result) => result,
+            _ => Err("Host pairing invite response mismatch".into()),
+        }
+    }
+
+    pub async fn list_peer_access(
+        address: &Path,
+        epoch: Uuid,
+    ) -> Result<Vec<super::HostPeerAccess>> {
+        match control(address, Some(epoch), Request::ListPeerAccess).await? {
+            Response::PeerAccess(result) => result,
+            _ => Err("Host peer access response mismatch".into()),
+        }
+    }
+
+    pub async fn revoke_peer_access(
+        address: &Path,
+        epoch: Uuid,
+        peer_id: &super::PeerId,
+    ) -> Result<bool> {
+        match control(
+            address,
+            Some(epoch),
+            Request::RevokePeerAccess {
+                peer_id: peer_id.as_str().into(),
+            },
+        )
+        .await?
+        {
+            Response::Revoked(result) => result,
+            _ => Err("Host peer revocation response mismatch".into()),
+        }
+    }
+
+    /// The opener must already pin the authenticated server to the ticket's
+    /// Host key. Confirm the handshake SAS on that same transport before
+    /// calling this method. The receipt check is not a substitute for the pin.
+    pub async fn redeem_peer_pairing(
+        open: OpenChannel,
+        invite_secret: String,
+        device_label: Option<String>,
+        expected_root_id: &str,
+    ) -> Result<super::PeerPairingReceipt> {
+        let channel = Target::AuthenticatedPeer(open).open().await?;
+        match control_stream(
+            channel,
+            None,
+            Request::RedeemPeerPairing {
+                invite_secret,
+                device_label,
+            },
+        )
+        .await?
+        {
+            Response::PeerPairingReceipt(result) => {
+                let receipt = result?;
+                if receipt.root_id != expected_root_id {
+                    return Err("Host pairing receipt belongs to another State Root".into());
+                }
+                Ok(receipt)
+            }
+            _ => Err("Host pairing receipt response mismatch".into()),
+        }
+    }
+
     pub async fn prepare_access(
         address: &Path,
         epoch: Uuid,
