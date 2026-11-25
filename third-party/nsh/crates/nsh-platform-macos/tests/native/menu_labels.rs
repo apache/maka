@@ -68,7 +68,7 @@ fn OtherMenus() -> impl IntoElement {
     view().flex_1()
 }
 
-fn shows(view: &NSView, text: &str) -> bool {
+pub(super) fn shows(view: &NSView, text: &str) -> bool {
     view.accessibilityValue()
         .and_then(
             |value: platform::objc2::rc::Retained<platform::objc2::runtime::AnyObject>| {
@@ -76,7 +76,13 @@ fn shows(view: &NSView, text: &str) -> bool {
             },
         )
         .is_some_and(|value| value.to_string() == text)
-        || view.subviews().iter().any(|child| shows(&child, text))
+        // Plain text can be layer-backed and absent from `subviews()`.
+        || view
+            .accessibilityChildren()
+            .iter()
+            .flat_map(|children| children.iter())
+            .filter_map(|child| child.downcast::<NSView>().ok())
+            .any(|child| shows(&child, text))
 }
 
 /// The title of the item of `menu`'s submenus whose action is `action`.
