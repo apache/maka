@@ -489,6 +489,18 @@ fn json_stdout(out: &Output) -> Value {
     })
 }
 
+fn waiting_stdout(out: &Output) -> Value {
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "expected a waiting report: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let waiting: Value = serde_json::from_slice(&out.stdout).expect("waiting report is JSON");
+    assert_eq!(waiting["status"], "waiting", "{waiting}");
+    waiting
+}
+
 fn text_stdout(out: &Output) -> &str {
     assert!(
         out.status.success(),
@@ -594,9 +606,13 @@ async fn run_reports_a_pending_question_and_continues_with_the_answer() {
         .arg(&root)
         .arg("--workspace")
         .arg(&env.workspace)
-        .arg("Ask me first");
-    let waiting = json_stdout(&run_cli(ask, None).await);
-    let session = waiting["sessionId"].as_str().expect("session id");
+        .args(["--no-wait", "Ask me first"]);
+    let receipt = json_stdout(&run_cli(ask, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+
+    let mut wait = session_command(&env, &root, session);
+    wait.arg("--wait");
+    let waiting = waiting_stdout(&run_cli(wait, None).await);
     assert_eq!(
         waiting,
         json!({
@@ -655,13 +671,14 @@ async fn run_reuses_service_host_and_keeps_a_pending_permission_until_stopped() 
     assert!(String::from_utf8_lossy(&out.stderr).contains("prompt must not be empty"));
     assert!(!absent_root.exists());
 
-    let sent_priv = Arc::new(AtomicBool::new(false));
-    let sent_priv_cb = Arc::clone(&sent_priv);
-    let mock = start_mock_ai(move |req, _| {
+    let mock = start_mock_ai(|req, _| {
         if req.raw_body["messages"]
             .to_string()
             .contains("Run privileged")
-            && !sent_priv_cb.swap(true, Ordering::SeqCst)
+            && !req
+                .messages
+                .iter()
+                .any(|message| matches!(message.role, NormalizedRole::Tool))
         {
             let shell_input = json!({
                 "command": "echo privileged",
@@ -711,6 +728,7 @@ async fn run_reuses_service_host_and_keeps_a_pending_permission_until_stopped() 
         "Service Host must stay running after completed maka run"
     );
 
+    // A single-shot run cannot be answered later, so it cancels and fails.
     let mut perm_cmd = env.maka_command();
     perm_cmd
         .args(["run", "--root"])
@@ -718,22 +736,40 @@ async fn run_reuses_service_host_and_keeps_a_pending_permission_until_stopped() 
         .arg("--workspace")
         .arg(&env.workspace)
         .arg("Run privileged shell");
-    let waiting = json_stdout(&run_cli(perm_cmd, None).await);
-    assert_eq!(waiting["status"], "waiting", "{waiting}");
+    let perm_out = run_cli(perm_cmd, None).await;
+    assert_eq!(perm_out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&perm_out.stderr);
+    assert!(
+        stderr.contains("execution blocked by pending interaction(s): permissions("),
+        "{stderr}"
+    );
+    assert!(perm_out.stdout.is_empty());
+    assert!(
+        serve_child.try_wait().unwrap().is_none(),
+        "Service Host must stay running after a failed maka run"
+    );
+
+    let mut start_cmd = env.maka_command();
+    start_cmd
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Run privileged shell"]);
+    let receipt = json_stdout(&run_cli(start_cmd, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+    let mut wait_cmd = session_command(&env, &root, session);
+    wait_cmd.arg("--wait");
+    let waiting = waiting_stdout(&run_cli(wait_cmd, None).await);
     assert_eq!(
         waiting["interactions"][0]["kind"], "permissions",
         "{waiting}"
     );
-    assert!(
-        serve_child.try_wait().unwrap().is_none(),
-        "Service Host must stay running after a waiting maka run"
-    );
 
-    // The Run keeps waiting for the decision instead of being cancelled.
-    let session = waiting["sessionId"].as_str().expect("session id");
-    let mut wait_cmd = session_command(&env, &root, session);
-    wait_cmd.arg("--wait");
-    let still_waiting = json_stdout(&run_cli(wait_cmd, None).await);
+    // A follow-up leaves the Run waiting for the decision instead of cancelling it.
+    let mut wait_again = session_command(&env, &root, session);
+    wait_again.arg("--wait");
+    let still_waiting = waiting_stdout(&run_cli(wait_again, None).await);
     assert_eq!(still_waiting, waiting);
     let status_json: Value = serde_json::from_slice(&env.status(&root).stdout).unwrap();
     assert_eq!(status_json["closing"], false, "{status_json}");

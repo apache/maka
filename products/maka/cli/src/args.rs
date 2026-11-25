@@ -235,7 +235,7 @@ impl Cli {
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
             }
-            Command::Run(args) => command_exit(args.run()),
+            Command::Run(args) => Box::pin(args.run()),
             Command::Application(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
             Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),

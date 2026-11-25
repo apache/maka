@@ -23,6 +23,7 @@ use std::{
     borrow::Cow,
     io::{IsTerminal, Read, Write},
     path::PathBuf,
+    process::ExitCode,
     time::Duration,
 };
 
@@ -58,7 +59,7 @@ pub(super) struct Args {
     /// Workspace directory for a new session (default: current directory).
     #[arg(long, value_name = "DIRECTORY", conflicts_with = "session")]
     workspace: Option<PathBuf>,
-    /// Continue this session instead of creating one.
+    /// Continue this session instead of creating one; exits 3 when it then waits for a decision.
     #[arg(long, value_name = "ID")]
     session: Option<String>,
     /// Wait for the session's current work and print its result without sending a prompt.
@@ -129,6 +130,15 @@ enum Target {
     Run(RunId),
 }
 
+/// What a wait does when the Session stops on a pending interaction.
+#[derive(Clone, Copy)]
+enum OnPending {
+    /// A single-shot run cancels its work and fails, as scripts and CI expect.
+    Fail,
+    /// A Session follow-up leaves the Run waiting and reports what it needs.
+    Report,
+}
+
 /// What a `--wait` finds in the Session.
 enum Current {
     Unfinished { target: Target, through: u64 },
@@ -142,6 +152,7 @@ enum Followed {
         delivered: Option<Box<Work>>,
     },
     Waiting(Vec<Pending>),
+    Blocked(String),
     Cancelled,
     Interrupted,
 }
@@ -170,6 +181,16 @@ enum Report {
     },
 }
 
+impl Report {
+    /// Waiting exits with 3 so scripts need not parse stdout; clap uses 2 for usage errors.
+    fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::Waiting { .. } => ExitCode::from(3),
+            Self::Submitted { .. } | Self::Stopped { .. } => ExitCode::SUCCESS,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Pending {
     kind: InteractionKind,
@@ -196,7 +217,7 @@ fn other_mutation_error<E: Into<HostError>>(error: E) -> MutationError {
 }
 
 impl Args {
-    pub(super) async fn run(self) -> Result<(), HostError> {
+    pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
 
@@ -239,11 +260,13 @@ impl Args {
         match (outcome, host_client.close().await) {
             (Ok(outcome), Ok(())) => match outcome {
                 Outcome::Answer(Some(answer)) if !answer.is_empty() => {
-                    write_stdout(answer, &stop).await
+                    write_stdout(answer, &stop).await?;
+                    Ok(ExitCode::SUCCESS)
                 }
-                Outcome::Answer(_) => Ok(()),
+                Outcome::Answer(_) => Ok(ExitCode::SUCCESS),
                 Outcome::Report(report) => {
-                    write_stdout(serde_json::to_string(&report)?, &stop).await
+                    write_stdout(serde_json::to_string(&report)?, &stop).await?;
+                    Ok(report.exit_code())
                 }
             },
             (Ok(_), Err(cleanup_err)) => Err(cleanup_err.into()),
@@ -266,7 +289,8 @@ async fn execute(
             let backend = default_backend(host).await?;
             let session_id = create_session(host, &workspace, backend).await?;
             // A new Session has no earlier history to skip.
-            submit(host, session_id, prompt, wait.then_some(0), stop).await
+            let after = wait.then_some(0);
+            submit(host, session_id, prompt, after, OnPending::Fail, stop).await
         }
         Action::Send { session_id, prompt } => {
             let after = if wait {
@@ -274,7 +298,7 @@ async fn execute(
             } else {
                 None
             };
-            submit(host, session_id, prompt, after, stop).await
+            submit(host, session_id, prompt, after, OnPending::Report, stop).await
         }
         Action::Answer {
             session_id,
@@ -285,11 +309,12 @@ async fn execute(
                 return Ok(Outcome::Report(Report::Submitted { session_id }));
             }
             let through = observe(host, &session_id).await?.through;
-            follow_target(host, &session_id, Target::Run(run_id), through, stop).await
+            let target = Target::Run(run_id);
+            follow_target(host, &session_id, target, through, OnPending::Report, stop).await
         }
         Action::Wait { session_id } => match current_work(host, &session_id).await? {
             Current::Unfinished { target, through } => {
-                follow_target(host, &session_id, target, through, stop).await
+                follow_target(host, &session_id, target, through, OnPending::Report, stop).await
             }
             Current::Ended(run_id) => {
                 report_result(host, &session_id, run_id, None, None, stop).await
@@ -429,6 +454,7 @@ async fn submit(
     session_id: String,
     prompt: String,
     after: Option<u64>,
+    on_pending: OnPending,
     stop: &CancellationToken,
 ) -> Result<Outcome, HostError> {
     if stop.is_cancelled() {
@@ -484,6 +510,7 @@ async fn submit(
             revision,
         },
         after,
+        on_pending,
         stop,
     )
     .await
@@ -563,6 +590,7 @@ async fn follow_target(
     session_id: &str,
     target: Target,
     after: u64,
+    on_pending: OnPending,
     stop: &CancellationToken,
 ) -> Result<Outcome, HostError> {
     let mut watch = match subscribe(
@@ -577,7 +605,7 @@ async fn follow_target(
         Err(err) => return Err(withdraw(host, session_id, &target, err.to_string()).await),
     };
 
-    let outcome = match follow(host, session_id, &target, &mut watch, stop).await {
+    let outcome = match follow(host, session_id, &target, &mut watch, on_pending, stop).await {
         Ok(Followed::Finished {
             run_id,
             ended,
@@ -587,6 +615,7 @@ async fn follow_target(
             session_id: session_id.to_owned(),
             interactions,
         })),
+        Ok(Followed::Blocked(reason)) => Err(withdraw(host, session_id, &target, reason).await),
         Ok(Followed::Cancelled) => Err("queued message was cancelled before execution".into()),
         Ok(Followed::Interrupted) => {
             Err(withdraw(host, session_id, &target, "interrupted by signal".into()).await)
@@ -666,6 +695,7 @@ async fn follow(
     session_id: &str,
     target: &Target,
     watch: &mut Subscription,
+    on_pending: OnPending,
     stop: &CancellationToken,
 ) -> Result<Followed, HostError> {
     let (message_id, mut run_id) = match target {
@@ -705,6 +735,9 @@ async fn follow(
                 }
             }
             DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
+                if let OnPending::Fail = on_pending {
+                    return Ok(Followed::Blocked(blocked_by(&pending)));
+                }
                 let interactions = tokio::select! {
                     biased;
                     _ = stop.cancelled() => return Ok(Followed::Interrupted),
@@ -752,6 +785,24 @@ async fn follow(
             }
         }
     }
+}
+
+fn blocked_by(pending: &PendingInteractions) -> String {
+    let items: Vec<String> = pending
+        .entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}({})",
+                format_interaction_kind(&entry.kind),
+                entry.request_id
+            )
+        })
+        .collect();
+    format!(
+        "execution blocked by pending interaction(s): {}",
+        items.join(", ")
+    )
 }
 
 /// Pending interactions with their question text, skipping questions already closed.
@@ -1279,6 +1330,19 @@ fn format_interaction_rejection(reason: &InteractionRejection) -> &'static str {
         InteractionRejection::Unavailable => "question unavailable",
         InteractionRejection::InvalidAnswer => "invalid answer",
         InteractionRejection::Unsupported => "unsupported answer",
+    }
+}
+
+fn format_interaction_kind(kind: &InteractionKind) -> &'static str {
+    match kind {
+        InteractionKind::SessionApproval => "session_approval",
+        InteractionKind::ServiceApproval => "service_approval",
+        InteractionKind::Question => "question",
+        InteractionKind::Permissions => "permissions",
+        InteractionKind::Form => "form",
+        InteractionKind::ClientCapability => "client_capability",
+        InteractionKind::ComputerApp => "computer_app",
+        InteractionKind::SystemPermission => "system_permission",
     }
 }
 
