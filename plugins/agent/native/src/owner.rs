@@ -192,11 +192,33 @@ impl Runs {
             || self.retained_cleanup.contains_key(session)
     }
 }
-struct CreationPolicy {
+struct AgentCaller {
+    session_id: String,
     incognito: bool,
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
-    caller: Option<maka_agent_state::CallerFence>,
+    fence: maka_agent_state::CallerFence,
+}
+
+fn cap_permissions(
+    base: WorkspacePermissions,
+    ceiling: &WorkspacePermissions,
+) -> WorkspacePermissions {
+    let access = match (base.access, ceiling.access) {
+        (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
+            WorkspaceAccess::ReadOnly
+        }
+        (WorkspaceAccess::WorkspaceWrite, _) | (_, WorkspaceAccess::WorkspaceWrite) => {
+            WorkspaceAccess::WorkspaceWrite
+        }
+        (WorkspaceAccess::DangerFullAccess, WorkspaceAccess::DangerFullAccess) => {
+            WorkspaceAccess::DangerFullAccess
+        }
+    };
+    WorkspacePermissions {
+        access,
+        request_permissions: base.request_permissions && ceiling.request_permissions,
+    }
 }
 
 fn intersect_tools(
@@ -841,17 +863,12 @@ impl Owner {
             .map_err(|error| error.to_string())
     }
 
-    async fn creation_policy(
+    async fn agent_caller(
         &self,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<CreationPolicy, String> {
+    ) -> Result<Option<AgentCaller>, String> {
         let Some(invocation) = scope.identity.agent() else {
-            return Ok(CreationPolicy {
-                incognito: false,
-                permissions: self.settings.permissions.clone(),
-                tools: None,
-                caller: None,
-            });
+            return Ok(None);
         };
         let store = self.caller_store(scope)?;
         let caller = store
@@ -893,7 +910,8 @@ impl Owner {
             execution: invocation.clone(),
             expected_basis: Some(view.spec.permission_basis),
         };
-        Ok(CreationPolicy {
+        Ok(Some(AgentCaller {
+            session_id: invocation.session_id.clone(),
             incognito: caller.incognito,
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
@@ -902,8 +920,8 @@ impl Owner {
             } else {
                 caller.tools
             },
-            caller: Some(fence),
-        })
+            fence,
+        }))
     }
 
     pub async fn create(
@@ -1031,23 +1049,35 @@ impl Owner {
         if admission.state().await.closing {
             return Ok(creation::PreparedCreation::Rejected(Rejection::Closed));
         }
-        let policy = self.creation_policy(scope).await?;
-        let mut permissions = policy.permissions;
-        if scope.identity.agent().is_none() {
-            let defaults = self
-                .configuration
-                .runtime_policy()
-                .await
-                .map_err(|_| "agent_settings_unavailable")?
-                .policy
-                .chat_defaults;
-            permissions.access = match defaults.sandbox_mode {
-                SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
-                SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
-                SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+        let (incognito, parent_session_id, permissions, tool_ceiling, caller_fence) =
+            match self.agent_caller(scope).await? {
+                None => {
+                    let defaults = self
+                        .configuration
+                        .runtime_policy()
+                        .await
+                        .map_err(|_| "agent_settings_unavailable")?
+                        .policy
+                        .chat_defaults;
+                    let permissions = WorkspacePermissions {
+                        access: match defaults.sandbox_mode {
+                            SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
+                            SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
+                            SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+                        },
+                        request_permissions: self.settings.permissions.request_permissions,
+                    };
+                    (input.incognito, None, permissions, None, None)
+                }
+                Some(caller) => (
+                    input.incognito || caller.incognito,
+                    Some(caller.session_id),
+                    caller.permissions,
+                    caller.tools,
+                    Some(caller.fence),
+                ),
             };
-        }
-        let mut tools = intersect_tools(input.tools, policy.tools);
+        let mut tools = intersect_tools(input.tools, tool_ceiling);
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {
             names
@@ -1111,7 +1141,7 @@ impl Owner {
                 let session = resolve_session(session)?;
                 // A user may start a conversation in the workspace of one they archived;
                 // an Agent may not derive from a conversation that was put away.
-                if (session.archived && scope.identity.agent().is_some())
+                if (session.archived && parent_session_id.is_some())
                     || !self
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
@@ -1164,17 +1194,13 @@ impl Owner {
                 ));
             }
         }
-        let parent_session_id = scope
-            .identity
-            .agent()
-            .map(|source| source.session_id.clone());
         self.prepare_created_session(
             &id,
             operation,
             &selected,
             project,
             scope,
-            policy.caller,
+            caller_fence,
             purpose,
             applied_preset.as_ref().map(|p| presets::CreationFence {
                 scope: self.prefix.clone(),
@@ -1182,7 +1208,7 @@ impl Owner {
                 revision: p.revision,
             }),
             move |binding| StoredSessionConfiguration {
-                incognito: input.incognito || policy.incognito,
+                incognito,
                 parent_session_id,
                 backend,
                 applied_preset,
