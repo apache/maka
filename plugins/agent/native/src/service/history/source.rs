@@ -868,9 +868,57 @@ async fn group(
             }
         }
     }
-    Ok(summarize(members))
+    const LAST_THOUGHT_TAIL_BYTES: usize = 3072;
+    let unfinished = members.last().is_some_and(|member| {
+        matches!(
+            member.row.chunk.position,
+            wire::HistoryRowAddress::Live { .. }
+        ) && member
+            .row
+            .chunk
+            .timing
+            .as_ref()
+            .is_some_and(|timing| timing.finished.is_none())
+    });
+    let mut last_thought = None;
+    if unfinished {
+        for member in members.iter().rev() {
+            if member.row.chunk.tool.is_some()
+                || member.row.chunk.field != wire::HistoryField::Thinking
+                || matches!(member.row.body, projection::Body::Empty)
+                || matches!(
+                    &member.row.body,
+                    projection::Body::Text(body)
+                        if body.chunks().all(|text| text.trim().is_empty())
+                )
+            {
+                continue;
+            }
+            let excerpt = display(
+                member,
+                wire::HistoryView::Chat,
+                SourcePosition::Tail,
+                LAST_THOUGHT_TAIL_BYTES,
+                stop,
+            )
+            .await?;
+            let text = excerpt.text.trim_end();
+            if !text.trim().is_empty() {
+                last_thought = Some(Box::new(wire::WorkThought {
+                    position: member.row.chunk.position.clone(),
+                    message_id: member.row.chunk.message_id.clone(),
+                    text: text.to_owned(),
+                }));
+                break;
+            }
+        }
+    }
+    Ok(summarize(members, last_thought))
 }
-fn summarize(members: Vec<Selected>) -> Option<Selected> {
+fn summarize(
+    members: Vec<Selected>,
+    last_thought: Option<Box<wire::WorkThought>>,
+) -> Option<Selected> {
     enum Seat {
         Tool(usize),
         Thought,
@@ -995,6 +1043,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
             Seat::Tool(index) => tools[*index].0.call.clone().map(Box::new),
             _ => None,
         },
+        last_thought,
         kinds,
         thoughts: shown
             .iter()

@@ -17650,6 +17650,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -17901,6 +17913,22 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  messageId: {
+                    type: ['string', 'null'],
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'text'],
               },
               Role: {
                 description:
@@ -27032,6 +27060,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -27283,6 +27323,22 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  messageId: {
+                    type: ['string', 'null'],
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'text'],
               },
               Role: {
                 description:

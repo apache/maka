@@ -240,6 +240,7 @@ import {
 } from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   groupWork,
+  latestWork,
   TurnPanel,
   liveActivityTitle,
   TurnSummary,
@@ -759,7 +760,6 @@ export function Conversation(props: ConversationProps) {
       state = {
         expanded: signal<boolean | null>(null),
         ran: false,
-        thought: signal<string | null>(null),
       };
       turnStates.set(id, state);
     }
@@ -1340,23 +1340,6 @@ export function Conversation(props: ConversationProps) {
       pendingCount: pendingMessages().length,
       outgoingCount: outgoing().length,
     });
-  // Keep the active turn's latest thought on turnState so folding the turn,
-  // running tools, recycling rows, or switching tabs never collapses its peek.
-  let keptThoughtTurn: string | null = null;
-  effect(() => {
-    const activeTurn = runTurn();
-    if (keptThoughtTurn !== null && keptThoughtTurn !== activeTurn) {
-      turnStates.get(keptThoughtTurn)?.thought.set(null);
-      keptThoughtTurn = null;
-    }
-    if (activeTurn === null) return;
-    keptThoughtTurn = activeTurn;
-    const live = activity();
-    if (live.kind === 'thinking' && live.rowId) {
-      const text = currentRow(live.rowId)?.text.trim() || null;
-      if (text !== null) turnState(activeTurn).thought.set(text);
-    }
-  });
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -2502,11 +2485,13 @@ export function Conversation(props: ConversationProps) {
         const currentWindow = historyWindow();
         if (currentWindow?.after === null) {
           const tail = historyFollowTail(rows(), owner.view);
-          const changedRows = [...executorTextChanges].flatMap((id) => {
+          const changedIds = [...executorTextChanges];
+          executorTextChanges.clear();
+          const changedRows = changedIds.flatMap((id) => {
             const row = historyRows().byMessage.get(id);
             return row && row !== tail && row.position?.kind === 'live' ? [row] : [];
           });
-          executorTextChanges.clear();
+          const changedThinking = changedIds.filter((id) => id.endsWith('/thinking'));
           const windowStart =
             currentWindow.before && rows()[0] ? rootEventSequence(rows()[0]) : undefined;
           const snap = overlay.snapshot();
@@ -2537,9 +2522,109 @@ export function Conversation(props: ConversationProps) {
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
+          // Continuation deltas on an external executor's active thinking row append to its
+          // existing seat without creating a new visible row after `tail.work.end`.
+          let refreshedThought: {
+            tailKey: string;
+            position: HistoryRowAddress;
+            text?: string;
+            messageKey?: string;
+          } | null = null;
+          if (
+            owner.view === 'chat' &&
+            changedThinking.length > 0 &&
+            tail?.work &&
+            tail.position?.kind === 'live' &&
+            !chunks.some(
+              (chunk) => Boolean(chunk.work) && sameHistoryRow(chunk.position, tail.position!),
+            )
+          ) {
+            const thought = tail.work.lastThought;
+            const thoughtId = thought?.messageId ? `${thought.messageId}/thinking` : null;
+            if (
+              thought &&
+              thoughtId &&
+              changedThinking.includes(thoughtId) &&
+              thought.position.kind === 'live'
+            ) {
+              if (
+                changedRows.some(
+                  (row) => row.messageId === thought.messageId && row.field === 'thinking',
+                )
+              ) {
+                refreshedThought = {
+                  tailKey: tail.key,
+                  position: thought.position,
+                  messageKey: thoughtId,
+                };
+              } else {
+                const page = await host.query('agent', 'source', {
+                  sessionId,
+                  through: fence,
+                  source: { kind: 'row', position: thought.position },
+                  field: 'thinking',
+                  position: { kind: 'tail' },
+                });
+                if (!ownsWindow(owner.identity)) return;
+                if (page.kind === 'ready') {
+                  const text = page.source.text.trimEnd();
+                  if (text.trim()) {
+                    refreshedThought = {
+                      tailKey: tail.key,
+                      position: thought.position,
+                      text,
+                    };
+                  }
+                }
+              }
+            } else {
+              const page = await history(
+                fence,
+                {
+                  kind: 'row',
+                  position: tail.position,
+                  field: tail.field as 'body' | 'thinking',
+                },
+                owner.view,
+              );
+              if (!ownsWindow(owner.identity)) return;
+              chunks.push(
+                ...page.chunks.filter(
+                  (chunk) => Boolean(chunk.work) && sameHistoryRow(chunk.position, tail.position!),
+                ),
+              );
+            }
+          }
           batch(() => {
             historyWindow.set({ ...historyWindow()!, through: fence, after: null });
             publishHistory(chunks, fence, false, coveredFrom, windowStart);
+            if (refreshedThought) {
+              const current = historyRows();
+              const target = current.byKey.get(refreshedThought.tailKey);
+              const nextText =
+                refreshedThought.text ??
+                (refreshedThought.messageKey
+                  ? current.byMessage.get(refreshedThought.messageKey)?.text.trimEnd()
+                  : undefined);
+              if (
+                nextText &&
+                nextText.trim() &&
+                target?.work?.lastThought &&
+                sameHistoryRow(target.work.lastThought.position, refreshedThought.position) &&
+                target.work.lastThought.text !== nextText
+              ) {
+                current.put([
+                  {
+                    ...target,
+                    work: {
+                      ...target.work,
+                      lastThought: { ...target.work.lastThought, text: nextText },
+                    },
+                  },
+                ]);
+                historyRows.set(current);
+              }
+            }
           });
         }
         const last = rows().at(-1);
@@ -5034,14 +5119,17 @@ export function Conversation(props: ConversationProps) {
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
                 canFold={() => workFold(turn()) !== 'unavailable'}
-                doing={() =>
-                  initial.turnKey === runTurn()
-                    ? liveActivityTitle(
-                        activity(),
-                        latestToolActivity(toolActivity(), runId(), runTurn()),
-                      )
-                    : null
-                }
+                doing={() => {
+                  if (initial.turnKey !== runTurn()) return null;
+                  const live = activity();
+                  const tool = latestToolActivity(toolActivity(), runId(), runTurn());
+                  if (live.kind === 'working' && !tool) {
+                    const open = groups().findLast((group) => !group.closed);
+                    if (open && latestWork(open, currentRow)?.last.kind === 'thought')
+                      return tr('Analyzing the request');
+                  }
+                  return liveActivityTitle(live, tool);
+                }}
                 images={{
                   sessionId,
                   through: () => latestKnown,

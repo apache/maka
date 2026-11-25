@@ -9009,6 +9009,10 @@ export interface HistoryWorkGroup {
   last: HistoryWorkKind;
   lastCall?: HistoryToolCall | null;
   /**
+   * Tail of the group's latest non-empty thought while its Turn is unfinished.
+   */
+  lastThought?: HistoryWorkThought | null;
+  /**
    * The first step's tool, when it is one.
    */
   firstToolUseId?: string | null;
@@ -9040,6 +9044,11 @@ export interface HistoryToolCall {
    */
   dispatched: boolean;
   externalTarget?: ExternalToolTarget | null;
+}
+export interface HistoryWorkThought {
+  position: HistoryRowAddress;
+  messageId?: string | null;
+  text: string;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

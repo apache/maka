@@ -425,6 +425,11 @@ async fn window(
             }
             if let Some(work) = &chunk.work {
                 positions.extend(work.last_call.iter().map(|call| call.position.clone()));
+                positions.extend(
+                    work.last_thought
+                        .iter()
+                        .map(|thought| thought.position.clone()),
+                );
                 positions.extend(work.images.iter().map(|image| image.position.clone()));
             }
             if let Some(work) = &chunk.folded_work {
@@ -467,6 +472,10 @@ async fn window(
                     .last_call
                     .take()
                     .filter(|call| !restrictions.contains_key(&call.position));
+                work.last_thought = work
+                    .last_thought
+                    .take()
+                    .filter(|thought| !restrictions.contains_key(&thought.position));
                 work.images
                     .retain(|image| !restrictions.contains_key(&image.position));
             }

@@ -42,7 +42,7 @@ import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { turnOutcome } from './processGroups';
+import { groupThought, turnOutcome, turnThought } from './processGroups';
 import {
   C,
   captionTextStyle,
@@ -85,8 +85,6 @@ export type TurnViewState = {
   expanded: Signal<boolean | null>;
   /** Seen running and not yet given its outcome, which arrives a moment after the run ends. */
   ran: boolean;
-  /** Latest non-empty thought for a running turn, preserved across fold, tool calls and recycling. */
-  thought: Signal<string | null>;
 };
 export type GroupViewState = {
   open: Signal<boolean>;
@@ -147,7 +145,7 @@ function liveStepRow(value: Row | undefined): boolean {
   return value !== undefined && value.position === undefined;
 }
 
-function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
+export function latestWork(group: ProcessGroup, row: (id: string) => Row | undefined) {
   return liveStepRow(row(group.rowIds.at(-1) ?? '')) ? undefined : groupWork(group, row);
 }
 
@@ -276,7 +274,15 @@ export function TurnSummary(props: {
     if (wasMarked && !marked()) animateDisclosure();
     wasMarked = marked();
   });
-  const peek = computed(() => (marked() && !props.expanded() ? props.state.thought() : null));
+  const peek = computed(() =>
+    marked() && !props.expanded() ? turnThought(props.turn(), props.groups(), props.row) : null,
+  );
+  const peeked = computed(() => peek() !== null);
+  let wasPeeked = untracked(peeked);
+  effect(() => {
+    if (peeked() !== wasPeeked) animateDisclosure();
+    wasPeeked = peeked();
+  });
   return (
     // On the desktop the message above ends in its own action row: that row is the gap.
     // Open, the summary heads its work, as close to it as the work's own rows are.
@@ -726,20 +732,9 @@ export function TurnPanel(props: TurnPanelProps) {
       (!props.group().closed || props.toolActivity() !== undefined)
     );
   });
-  const written = computed(() => {
-    const ids = props.group().rowIds;
-    for (let at = ids.length - 1; at >= 0; at -= 1) {
-      const row = props.row(ids[at]);
-      if (stepKind(row)?.kind === 'thought') return row?.text.trim() || null;
-    }
-    return null;
-  });
-  const kept = signal<string | null>(null);
-  effect(() => {
-    if (!atWork()) kept.set(null);
-    else if (written() !== null) kept.set(written());
-  });
-  const thought = computed(() => (props.state.open() || !atWork() ? null : (written() ?? kept())));
+  const thought = computed(() =>
+    props.state.open() || !atWork() ? null : groupThought(props.group(), props.row),
+  );
   // The rows under the window glide to their places when it comes and goes.
   const windowed = computed(() => desktop && thought() !== null);
   let wasWindowed = untracked(windowed);
@@ -854,6 +849,7 @@ function GroupHeader(props: TurnPanelProps) {
         ? tr('Analyzing the request')
         : `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
     const work = latestWork(props.group(), props.row);
+    if (work?.last.kind === 'thought') return tr('Analyzing the request');
     const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
   });

@@ -4312,6 +4312,264 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
+    use maka_agent_facts::executor::{Output, Selection, Settings};
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let original = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let mut spec = original.spec.clone();
+        let selection = Selection {
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection": selection, "import": "fixture", "member": 0, "basis": "fixture"
+        }))?;
+        let mut contents = vec![descriptor.clone()];
+        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+            contents.push(ContentBlob::new(
+                driver
+                    .state
+                    .content(original.run, reference.clone())
+                    .await?,
+            ));
+        }
+        spec.turn_id = Uuid::new_v4().to_string();
+        spec.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        spec.backend = BackendSpec::Executor {
+            selection,
+            descriptor: descriptor.reference().clone(),
+        };
+        let admitted = driver
+            .state
+            .admit(Admission::new(spec, at(), contents))
+            .await?;
+        let run = admitted.facts[0].run;
+        let claim = driver.state.claim(run).await?;
+        let task = ExternalTaskId::new();
+        let append = |facts: Vec<Fact>| async {
+            let view = driver.state.frontier(run).await?;
+            driver
+                .state
+                .append(
+                    &claim,
+                    (&view).into(),
+                    facts
+                        .into_iter()
+                        .map(|fact| Change::new(fact, at()))
+                        .collect(),
+                    vec![],
+                )
+                .await
+        };
+        append(vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: descriptor.reference().clone(),
+                live_workspace: true,
+            },
+            Fact::ExternalTaskAdmitted { task },
+            Fact::ExternalTaskObserved {
+                task,
+                index: 0,
+                model_time_ms: None,
+                output: Output::ThinkingDelta {
+                    message_id: "t1".into(),
+                    text: "Initial plan.".into(),
+                },
+            },
+        ])
+        .await?;
+
+        let chat_tail = || async {
+            query(
+                &rig,
+                "history",
+                json!({
+                    "sessionId": session,
+                    "position": {"kind": "tail"},
+                    "includeThinking": true,
+                    "view": "chat",
+                }),
+            )
+            .await
+        };
+        let work_chunk = |page: &Value| -> Option<Value> {
+            page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|chunk| !chunk["work"].is_null())
+                .cloned()
+        };
+
+        let first_page = chat_tail().await?;
+        let first_group = work_chunk(&first_page).ok_or("missing initial work group")?;
+        let expected_t1_id = maka_agent_facts::executor::message_id(run, task, "t1");
+        assert_eq!(
+            first_group["work"]["last"]["kind"], "thought",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["text"], "Initial plan.",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["messageId"], expected_t1_id,
+            "{first_group}"
+        );
+        let t1_position = first_group["work"]["lastThought"]["position"].clone();
+
+        // Continuation delta on the same thinking message is readable in O(1) via agent.source tail.
+        append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 1,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " Checking PR #7270.".into(),
+            },
+        }])
+        .await?;
+        let after_cont = chat_tail().await?;
+        let source = query(
+            &rig,
+            "source",
+            json!({
+                "sessionId": session,
+                "through": after_cont["through"],
+                "source": {"kind": "row", "position": t1_position},
+                "field": "thinking",
+                "position": {"kind": "tail"},
+            }),
+        )
+        .await?;
+        assert_eq!(source["source"]["text"], "Initial plan. Checking PR #7270.");
+
+        // Following tool keeps lastThought while advancing work.last to tool.
+        append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 2,
+            model_time_ms: None,
+            output: Output::ToolStart {
+                tool_call_id: "call-1".into(),
+                name: "run_command".into(),
+                input: json!({"CommandLine": "cargo test"}),
+            },
+        }])
+        .await?;
+        let after_tool = chat_tail().await?;
+        let tool_group = work_chunk(&after_tool).ok_or("missing work group after tool")?;
+        assert_eq!(tool_group["work"]["last"]["kind"], "tool", "{tool_group}");
+        assert_eq!(
+            tool_group["work"]["lastThought"]["text"], "Initial plan. Checking PR #7270.",
+            "{tool_group}"
+        );
+
+        // Second long CJK thought updates lastThought to a bounded valid UTF-8 tail;
+        // a trailing whitespace-only thought does not overwrite it.
+        let long_cjk = format!("{}结尾思考", "思".repeat(1200));
+        append(vec![
+            Fact::ExternalTaskObserved {
+                task,
+                index: 3,
+                model_time_ms: None,
+                output: Output::ThinkingDelta {
+                    message_id: "t2".into(),
+                    text: long_cjk,
+                },
+            },
+            Fact::ExternalTaskObserved {
+                task,
+                index: 4,
+                model_time_ms: None,
+                output: Output::ThinkingDelta {
+                    message_id: "t3".into(),
+                    text: "  \n".into(),
+                },
+            },
+        ])
+        .await?;
+        let after_second = chat_tail().await?;
+        let second_group = work_chunk(&after_second).ok_or("missing work group after t2")?;
+        let expected_t2_id = maka_agent_facts::executor::message_id(run, task, "t2");
+        let second_text = second_group["work"]["lastThought"]["text"]
+            .as_str()
+            .ok_or("missing t2 lastThought text")?;
+        assert_eq!(
+            second_group["work"]["lastThought"]["messageId"], expected_t2_id,
+            "{second_group}"
+        );
+        assert!(
+            second_text.len() <= 3072,
+            "tail byte len {}",
+            second_text.len()
+        );
+        assert!(second_text.ends_with("结尾思考"), "{second_text}");
+
+        // Reading without thinking omits lastThought from the WorkGroup summary.
+        let no_thinking = query(
+            &rig,
+            "history",
+            json!({
+                "sessionId": session,
+                "position": {"kind": "tail"},
+                "includeThinking": false,
+                "view": "chat",
+            }),
+        )
+        .await?;
+        let no_thinking_group = work_chunk(&no_thinking).ok_or("missing no-thinking work group")?;
+        assert!(
+            no_thinking_group["work"]["lastThought"].is_null(),
+            "{no_thinking_group}"
+        );
+
+        // Finished turns omit lastThought so historical WorkGroups carry no extra payload.
+        append(vec![
+            Fact::ExternalTaskClosed {
+                task,
+                outcome: Terminal::Completed,
+                diagnostic: None,
+                final_message: None,
+            },
+            Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            },
+        ])
+        .await?;
+        let finished = chat_tail().await?;
+        let finished_group = work_chunk(&finished).ok_or("missing finished work group")?;
+        assert!(
+            finished_group["work"]["lastThought"].is_null(),
+            "{finished_group}"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "work group lastThought regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
     const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 

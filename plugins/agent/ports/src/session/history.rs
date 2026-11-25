@@ -599,6 +599,9 @@ pub struct WorkGroup {
     pub last: WorkKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_call: Option<Box<ToolCall>>,
+    /// Tail of the group's latest non-empty thought while its Turn is unfinished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_thought: Option<Box<WorkThought>>,
     /// The first step's tool, when it is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_tool_use_id: Option<String>,
@@ -607,6 +610,16 @@ pub struct WorkGroup {
     pub messages: u64,
     pub image_count: u64,
     pub images: Vec<WorkImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWorkThought")]
+pub struct WorkThought {
+    pub position: HistoryRowAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
