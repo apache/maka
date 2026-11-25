@@ -35,12 +35,17 @@ impl Owner {
         .map_err(|error| error.to_string())
     }
 
-    pub(crate) async fn session_summary(&self, id: &str) -> Result<Session, String> {
+    pub(crate) async fn session_summary(
+        &self,
+        id: &str,
+        stop: &tokio_util::sync::CancellationToken,
+    ) -> Result<Session, String> {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
         let record = self
             .canonical_catalog()?
+            .with_cancellation(stop.clone())
             .record(id)
             .await
             .map_err(|error| error.to_string())?

@@ -4773,9 +4773,20 @@ async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibli
             assert!(matches!(r_t?, Some((_, Terminal::Completed))));
             assert!(r_r?.titles.iter().any(|r| r.metadata.id == forked_peer));
 
-            // 3. Pagination stability & catalog cancellation: missing summary_json never causes After(cursor) to skip a Session.
+            // 3. Pagination stability, filtered non-rebuild, & catalog cancellation:
+            // missing summary_json never causes After(cursor) to skip a Session, and unmatched filters skip stale snapshots.
             let catalog = owner.canonical_catalog()?;
-            let snap_updated = catalog.record(&forked_peer).await?.ok_or("peer")?.metadata.updated_at as i64;
+            let snap_peer_id = snap_peer.id().to_string();
+            let snap_updated = writer
+                .query(SqlQuery(move |c: &rusqlite::Connection| {
+                    c.query_row(
+                        "SELECT CAST(json_extract(summary_json,'$.summary.updatedAt') AS INTEGER) FROM agent_history_snapshot_catalog WHERE snapshot=?",
+                        [snap_peer_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map_err(Into::into)
+                }))
+                .await?;
             let between = create_session("Between Recency").await?;
             let (fp, bw) = (forked_peer.clone(), between.clone());
             writer.write(SqlWrite(move |c: &rusqlite::Connection| {
@@ -4793,6 +4804,36 @@ async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibli
                 base: CatalogFilter { roots_only: false, archived_only: false, include_archived: true },
                 needs_you_only: false, room: None, side: SideQuestions::Any,
             };
+            // An unmatched title filter must return 0 rows without rebuilding filtered-out snapshots.
+            let empty_page = catalog
+                .page(
+                    CatalogScope::Owned {
+                        id_prefix: owner.prefix.clone(),
+                        selection: maka_event_log::sessions::CatalogSelection::All,
+                        title_query: "no-such-session-title-xyz".into(),
+                    },
+                    None,
+                    CatalogPosition::Start,
+                    filter.clone(),
+                    8,
+                )
+                .await?;
+            assert!(empty_page.sessions.is_empty());
+            let still_missing = writer
+                .query(SqlQuery({
+                    let id = snap_peer.id().to_string();
+                    move |c: &rusqlite::Connection| {
+                        c.query_row(
+                            "SELECT NOT EXISTS(SELECT 1 FROM agent_history_snapshot_catalog WHERE snapshot=?)",
+                            [id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(Into::into)
+                    }
+                }))
+                .await?;
+            assert!(still_missing, "unmatched filter must not rebuild filtered-out snapshots");
+
             let (mut seen, mut rev, mut pos) = (Vec::new(), None, CatalogPosition::Start);
             loop {
                 let page = catalog.page(CatalogScope::Profile, rev.clone(), pos, filter.clone(), 1).await?;

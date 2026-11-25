@@ -86,7 +86,7 @@ impl Recall {
             }
             RecallStore::new(data, self.owner.clone(), self.prefix.clone())
                 .map_err(failed)?
-                .validate_execution(execution.clone())
+                .validate_execution(execution.clone(), &call.cancellation)
                 .await
                 .map_err(failed)?;
         }

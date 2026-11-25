@@ -927,7 +927,9 @@ pub(super) async fn observation(
             .capture(&input.session_id)
             .await
             .map_err(|error| error.to_string())?;
-        let session = owner.session_summary(&input.session_id).await?;
+        let session = owner
+            .session_summary(&input.session_id, &scope.cancellation)
+            .await?;
         authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::Observation {
             session,
@@ -1099,7 +1101,9 @@ pub(super) async fn observation(
             }
         }
     }
-    let session = owner.session_summary(&input.session_id).await?;
+    let session = owner
+        .session_summary(&input.session_id, &scope.cancellation)
+        .await?;
     let remembered_backend = if session.backend.is_none() {
         owner.remembered_backend(&input.session_id).await?
     } else {

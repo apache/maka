@@ -198,8 +198,12 @@ impl RecallStore {
             prefix,
         })
     }
-    pub async fn validate_execution(&self, execution: ExecutionIdentity) -> Result<(), StoreError> {
-        crate::session_history::snapshot::run_with_snapshot_rebuild(None, || {
+    pub async fn validate_execution(
+        &self,
+        execution: ExecutionIdentity,
+        stop: &CancellationToken,
+    ) -> Result<(), StoreError> {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(stop), || {
             self.data
                 .query(VerifyExecution(self.clone(), execution.clone()))
         })

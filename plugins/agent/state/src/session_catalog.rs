@@ -254,9 +254,6 @@ impl SessionCatalog {
         self.data.prepare(self.control_statement(session, command))
     }
     pub async fn apply(&self, session: String, command: ControlCommand) -> Result<u64, StoreError> {
-        if matches!(command.edit, ControlEdit::MarkRead { .. }) {
-            let _ = self.record(&session).await?;
-        }
         self.data
             .write(self.control_statement(session, command))
             .await
