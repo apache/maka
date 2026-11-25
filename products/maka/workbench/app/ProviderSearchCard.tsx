@@ -23,7 +23,12 @@ import { useHost } from './host';
 import { tr } from './locale';
 import { LoadingIndicator } from './Loading';
 import { providerSearch } from './providerSearch';
-import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
+import {
+  createToolSource,
+  OriginalToolSource,
+  ToolFieldDivider,
+  type ToolSourceRef,
+} from './ToolSource';
 import { C, secondaryTextStyle } from './ui';
 
 export function ProviderSearchCard(props: {
@@ -81,10 +86,11 @@ export function ProviderSearchCard(props: {
         </View>
       }
     >
-      <If when={output}>
-        <OriginalToolSource source={output!} label={tr('Original result')} />
-      </If>
       <OriginalToolSource source={args} label={tr('Original arguments')} />
+      <If when={output}>
+        <ToolFieldDivider />
+        <OriginalToolSource source={output!} label={tr('Original result')} tone="output" />
+      </If>
     </If>
   );
 }

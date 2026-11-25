@@ -446,10 +446,11 @@ mod tests {
         assert!(app.shows("4,000,000"));
     }
 
-    fn headless_fixture(
+    fn headless_fixture_in(
         entry: &str,
         viewport: Size<Points>,
         native_focus_scopes: bool,
+        idiom: nsh_core::platform::Idiom,
     ) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
@@ -473,6 +474,7 @@ mod tests {
             viewport,
             environment: Environment {
                 os: Os::MacOs,
+                idiom,
                 native_focus_scopes,
                 ..Environment::default()
             },
@@ -480,6 +482,19 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap()
+    }
+
+    fn headless_fixture(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+    ) -> nsh_testing::Headless {
+        headless_fixture_in(
+            entry,
+            viewport,
+            native_focus_scopes,
+            Environment::default().idiom,
+        )
     }
 
     #[test]
@@ -565,6 +580,94 @@ mod tests {
             .unwrap();
         app.wait_for("text:The original tool source could not be verified.")
             .unwrap();
+    }
+
+    #[test]
+    fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
+        let mut app = headless_fixture(
+            "tests/fixtures/tool-card-order.tsx",
+            Size::new(px(900.0), px(1400.0)),
+            false,
+        );
+        app.wait_for("text:/const line1 = 1;/").unwrap();
+        app.wait_for(r#"text:/"kind":"changed"/"#).unwrap();
+        app.wait_for("label:Show 4 more lines").unwrap();
+        app.wait_for("label:Copy Script").unwrap();
+        app.wait_for("label:Copy Output").unwrap();
+        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 521")
+            .unwrap();
+        app.wait_for("text:/read arguments timed out/").unwrap();
+
+        let texts = app.screen().texts();
+        let pos = |needle: &str| {
+            texts
+                .iter()
+                .position(|item| item.contains(needle))
+                .unwrap_or_else(|| panic!("expected {needle:?} in {texts:?}"))
+        };
+        assert!(
+            pos("const line1 = 1;") < pos(r#""kind":"changed""#),
+            "script should appear before output: {texts:?}"
+        );
+        assert!(
+            pos("arguments") < pos("Recorded edit · 1 replacement · Recorded line 521"),
+            "edit diff should appear before recorded receipt: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|item| item.contains("const line10 = 10;")),
+            "long script should collapse past 6 lines initially: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"src/ToolCard.tsx")
+                && texts.contains(&"Read lines 1–1 / 10")
+                && !texts.contains(&"File"),
+            "read card should merge path into header instead of rendering a trailing File section: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"read-result-fetches:1"),
+            "read result should load once: {texts:?}"
+        );
+
+        app.press("label:Copy Script").unwrap();
+        app.wait_for("text:Copied").unwrap();
+        assert!(
+            app.screen()
+                .clipboard()
+                .is_some_and(|copied| copied.contains("const line10 = 10;")),
+            "copying a folded script should still copy all lines"
+        );
+
+        app.press("label:Show 4 more lines").unwrap();
+        app.wait_for("text:/const line10 = 10;/").unwrap();
+        app.wait_for("label:Show fewer lines").unwrap();
+
+        app.press("label:Toggle read original").unwrap();
+        app.wait_for("text:Original arguments").unwrap();
+        let raw_texts = app.screen().texts();
+        let raw_pos = |needle: &str| {
+            raw_texts
+                .iter()
+                .position(|item| item.contains(needle))
+                .unwrap_or_else(|| panic!("expected {needle:?} in {raw_texts:?}"))
+        };
+        assert!(raw_pos("Original arguments") < raw_pos("Original result"));
+        assert!(raw_texts.contains(&"read-result-fetches:1"));
+    }
+
+    #[test]
+    fn terminal_tool_cards_preserve_untruncated_long_lines() {
+        let mut app = headless_fixture_in(
+            "tests/fixtures/tool-card-order.tsx",
+            Size::new(px(900.0), px(1400.0)),
+            false,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        app.wait_for("text:/TAIL/").unwrap();
+        let texts = app.screen().texts();
+        assert!(
+            !texts.iter().any(|item| item.contains("more characters")),
+            "terminal mode must not apply desktop CoreText 720-column truncation: {texts:?}"
+        );
     }
 
     #[test]

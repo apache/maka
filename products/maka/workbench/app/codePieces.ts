@@ -103,3 +103,25 @@ export function codePieces(text: string, gutter?: string, wrapWidth?: number): C
   close(start, lines.length);
   return pieces;
 }
+
+export type FoldedCodeLines = {
+  totalLines: number;
+  hiddenLines: number;
+  preview: string;
+};
+
+export function foldCodeLines(
+  text: string,
+  maxCollapsedLines = 8,
+  previewLines = 6,
+): FoldedCodeLines {
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+  const totalLines = lines.length;
+  if (totalLines <= maxCollapsedLines) return { totalLines, hiddenLines: 0, preview: text };
+  return {
+    totalLines,
+    hiddenLines: totalLines - previewLines,
+    preview: lines.slice(0, previewLines).join('\n'),
+  };
+}

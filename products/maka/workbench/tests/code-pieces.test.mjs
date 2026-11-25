@@ -34,9 +34,8 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { codePieces, columns, largestTextSize, lineColumns, pieceLines } = await import(
-  new URL('codePieces.ts', app)
-);
+const { codePieces, columns, foldCodeLines, largestTextSize, lineColumns, pieceLines } =
+  await import(new URL('codePieces.ts', app));
 hooks.deregister();
 
 const numbered = (count) => Array.from({ length: count }, (_, index) => `line ${index + 1}`);
@@ -137,4 +136,19 @@ test('the wrapped line limit follows the measured column, including the note', (
   const text = 'w'.repeat(1500);
   assert.equal(codePieces(text, undefined, 314)[0].text, text);
   assert.match(codePieces(text, undefined, 100)[0].text, / … \d+ more characters$/u);
+});
+
+test('foldCodeLines keeps short inputs intact and folds inputs above the threshold', () => {
+  const eight = numbered(8).join('\n');
+  assert.deepEqual(foldCodeLines(`${eight}\n`), {
+    totalLines: 8,
+    hiddenLines: 0,
+    preview: `${eight}\n`,
+  });
+  const ten = numbered(10).join('\n');
+  assert.deepEqual(foldCodeLines(ten), {
+    totalLines: 10,
+    hiddenLines: 4,
+    preview: numbered(6).join('\n'),
+  });
 });
