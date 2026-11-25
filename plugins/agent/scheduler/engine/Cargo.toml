@@ -27,8 +27,6 @@ jiff.workspace = true
 maka-agent-facts.workspace = true
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
