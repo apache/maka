@@ -65,6 +65,7 @@ export const discoveryMessages = {
     '已選擇 {key} · {label}',
   ],
   'Dossier choice recommended': ['Recommended', '推荐', '推薦'],
+  'Dossier executing': ['Working…', '正在执行…', '正在執行…'],
   'Could not update dossier status.': [
     'Could not update dossier status.',
     '无法更新档案状态。',

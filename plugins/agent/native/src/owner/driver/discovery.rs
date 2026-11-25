@@ -150,6 +150,17 @@ fn hash<T: Hash + ?Sized>(v: &T) -> u64 {
     h.finish()
 }
 
+pub(in crate::owner) fn is_productive_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        crate::owner::discovery::UPSERT
+            | crate::owner::discovery::WORKSPACE_MAP
+            | crate::owner::discovery::WATCH_SCOPE
+            | crate::owner::discovery::STAGE
+            | crate::owner::discovery::REGISTER
+    )
+}
+
 impl Observation {
     pub(in crate::owner) fn new(
         call: &ModelToolCall,
@@ -167,7 +178,7 @@ impl Observation {
         Self {
             read_target,
             output,
-            wrote: success && call.name == crate::owner::discovery::UPSERT,
+            wrote: success && is_productive_write_tool(&call.name),
         }
     }
 }

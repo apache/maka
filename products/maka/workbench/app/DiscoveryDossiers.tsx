@@ -843,7 +843,7 @@ function DossierPane(
                 key: choice.key,
                 resolve: Boolean(choice.resolves),
               });
-              await sendMessage(formatChoiceDispatch(choice));
+              await sendMessage(formatChoiceDispatch(choice), { elevate: !choice.resolves });
               if (alive) await refresh();
             } catch (reason) {
               if (alive) error.set(errorText(reason, 'Could not update dossier status.'));

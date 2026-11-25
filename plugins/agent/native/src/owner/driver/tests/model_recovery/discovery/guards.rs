@@ -461,3 +461,46 @@ async fn discovery_workspace_overwrite_checks_the_destination_and_current_sessio
     );
     f.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discovery_dossier_thread_elevates_in_place_on_same_session_id() {
+    let model = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut f = mail_fixture(&model).await;
+    let (topic, session) = thread(&f).await;
+    // Phase 1: default consultation thread stays read-only (no Write / SendMail).
+    let mut initial = talk(&f, &model, &session).await;
+    finish_text(&mut initial, "Awaiting confirmation.").await;
+    f.quiescent(&session).await;
+
+    // Phase 2: user confirms an execution choice -> elevate the same thread session in-place.
+    let elevated = f
+        .query(
+            "openDossierThread",
+            json!({"topicId": topic, "elevate": true}),
+        )
+        .await;
+    assert_eq!(elevated["sessionId"], session);
+
+    f.query(
+        "send",
+        json!({"sessionId": session, "message": "Proceed with option A", "backend": f.model}),
+    )
+    .await;
+    let (mut socket, req) = next(&model).await;
+    let tools = model_tool_names(&req);
+    assert!(
+        tools.contains(&"Write"),
+        "elevated dossier thread should expose normal workspace write tools: {tools:?}"
+    );
+    assert!(
+        tools.contains(&"SendMail"),
+        "elevated dossier thread should expose normal session connector tools: {tools:?}"
+    );
+    assert!(
+        tools.contains(&"UpdateDiscoveryPreferences") && tools.contains(&"StageArtifact"),
+        "elevated dossier thread should keep dossier helper tools: {tools:?}"
+    );
+    finish_text(&mut socket, "Done.").await;
+    f.quiescent(&session).await;
+    f.close().await;
+}

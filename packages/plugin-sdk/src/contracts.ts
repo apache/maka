@@ -33732,9 +33732,13 @@ export const contracts: {
           mode: 'mutation',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'DossierRead',
+            title: 'DossierThreadOpen',
             type: 'object',
             properties: {
+              elevate: {
+                type: 'boolean',
+                default: false,
+              },
               topicId: {
                 type: 'string',
               },

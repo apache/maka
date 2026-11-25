@@ -216,6 +216,73 @@ impl Owner {
             change,
         })
     }
+
+    /// Seamlessly elevates an existing dossier thread session in-place from read-only
+    /// consultation mode to full normal session permissions on the same `session_id`.
+    pub(super) async fn elevate_dossier_thread(
+        &self,
+        session_id: &str,
+    ) -> Result<NativeMutation<crate::contract::DossierThread>, String> {
+        let Some(record) = self
+            .canonical_catalog()?
+            .record(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(NativeMutation::Returned(crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            }));
+        };
+        if record.metadata.archived {
+            return Ok(NativeMutation::Returned(crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            }));
+        }
+        let configuration: StoredSessionConfiguration =
+            serde_json::from_value(record.metadata.configuration.clone())
+                .map_err(|error| format!("agent_session_configuration_invalid: {error}"))?;
+        if configuration.dossier_elevated || configuration.dossier_seed.is_none() {
+            return Ok(NativeMutation::Returned(crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            }));
+        }
+        let ordered = Arc::new(self.runs.ordered(session_id).await);
+        let writer = self
+            .store
+            .data_writer()
+            .map_err(|error| error.to_string())?;
+        let (_, change) = self
+            .store
+            .prepare_session_metadata(
+                &record.metadata.id,
+                record.metadata.revision,
+                move |configuration: &mut StoredSessionConfiguration| {
+                    configuration.dossier_elevated = true;
+                    if configuration.permissions.access == WorkspaceAccess::ReadOnly {
+                        configuration.permissions.access = WorkspaceAccess::WorkspaceWrite;
+                    }
+                    configuration.permissions.request_permissions = true;
+                    Ok(())
+                },
+                &writer,
+                ConfigurationChange {
+                    ordered,
+                    guard: None,
+                    root: self
+                        .store
+                        .owned_root()
+                        .map_err(|_| "agent_root_unavailable")?,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(NativeMutation::Commit {
+            value: crate::contract::DossierThread {
+                session_id: session_id.to_owned(),
+            },
+            change,
+        })
+    }
 }
 
 struct ConfigurationChange {

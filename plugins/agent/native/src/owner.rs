@@ -125,10 +125,39 @@ pub(crate) fn resolve_session(
         .map_err(|_| "agent_workspace_binding_unavailable".into())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DossierThreadMode {
+    None,
+    /// Initial read-only dossier consultation / staging mode.
+    Restricted,
+    /// User-confirmed execution mode on the same thread session (full normal session permissions).
+    Elevated,
+}
+
+impl DossierThreadMode {
+    pub(super) fn from_config(config: &ResolvedConfiguration) -> Self {
+        if config.dossier_seed.is_none() {
+            Self::None
+        } else if config.dossier_elevated {
+            Self::Elevated
+        } else {
+            Self::Restricted
+        }
+    }
+
+    pub(super) fn is_dossier(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub(super) fn is_restricted(self) -> bool {
+        matches!(self, Self::Restricted)
+    }
+}
+
 /// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
 #[derive(Clone)]
 struct CapturedRun {
-    dossier_thread: bool,
+    dossier_thread: DossierThreadMode,
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     mcp_revision: Option<String>,
     client_mcp: Option<crate::mcp::ClientGeneration>,
@@ -1145,6 +1174,7 @@ impl Owner {
                 applied_preset,
                 compaction_prompt: None,
                 dossier_seed: None,
+                dossier_elevated: false,
                 collaboration_mode: CollaborationMode::Agent,
                 tools,
                 title: input.title,
@@ -1317,14 +1347,16 @@ impl Owner {
     fn select_catalog_tools(
         &self,
         catalog: &crate::tools::Declarations,
-        session: Option<(&str, bool)>,
+        session: Option<(&str, DossierThreadMode)>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|(id, _)| self.bot.is(id));
         let investigation =
             session.is_some_and(|(id, _)| self.scheduler.investigation_profile(id).is_some());
-        let dossier_thread = session.is_some_and(|(_, dossier)| dossier);
+        let dossier_mode = session.map_or(DossierThreadMode::None, |(_, mode)| mode);
+        let dossier_thread = dossier_mode.is_dossier();
+        let dossier_restricted = dossier_mode.is_restricted();
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
@@ -1338,7 +1370,7 @@ impl Owner {
                         *name,
                         discovery::STAGE | discovery::REGISTER | discovery::PENDING
                     ) && dossier_thread))
-                    || (dossier_thread
+                    || (dossier_restricted
                         && !matches!(
                             *name,
                             discovery::STAGE

@@ -4020,6 +4020,7 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: {
         topicId: string;
+        elevate?: boolean;
       };
       output: {
         sessionId: string;

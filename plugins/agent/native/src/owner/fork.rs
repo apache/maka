@@ -324,6 +324,7 @@ impl Owner {
             applied_preset: parent.applied_preset,
             compaction_prompt: parent.compaction_prompt,
             dossier_seed: None,
+            dossier_elevated: false,
             collaboration_mode: CollaborationMode::Agent,
             tools,
             title: input.title,

@@ -51,10 +51,21 @@ pub enum CallerStatus {
 }
 impl CallerFence {
     pub fn completed_local_tool(&self, c: &Connection, name: &str) -> Result<bool, StoreError> {
-        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM agent_tools WHERE run=?1 AND pending=0
-            AND json_extract(body,'$.call.name')=?2 AND json_extract(body,'$.call.provider_executed')=0
-            AND json_extract(body,'$.accepted.outcome.kind')='succeeded')",
-            rusqlite::params![self.execution.run_id.to_string(), name], |r| r.get(0),
+        Ok(c.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM agent_tools WHERE run=?1 AND pending=0
+                AND json_extract(body,'$.call.name')=?2
+                AND json_extract(body,'$.call.provider_executed')=0
+                AND json_extract(body,'$.accepted.outcome.kind')='succeeded'
+            ) OR EXISTS(
+                SELECT 1 FROM agent_cells, json_each(agent_cells.body, '$.children') AS child
+                WHERE agent_cells.run=?1
+                AND json_extract(child.value, '$.name')=?2
+                AND json_extract(child.value, '$.localResult.settlement')='returned'
+                AND json_extract(child.value, '$.localResult.isError')=0
+            )",
+            rusqlite::params![self.execution.run_id.to_string(), name],
+            |r| r.get(0),
         )?)
     }
 

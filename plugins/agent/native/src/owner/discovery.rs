@@ -255,7 +255,7 @@ fn investigation_prompt(
             Language::ZhCn => {
                 "【冷启动专门整理与建图任务（Onboard）】这是该工作区首次全面梳理，目标是建立持久的 WorkspaceMap（通过 UpdateWorkspaceMap）与准确的 WatchScope（通过 UpdateWatchScope），让后续日常巡检既快又准。请按以下步骤高效推进：\n\
 1. 广度普查 + 近期活跃跳点：从上方顶层清单出发（含隐藏点目录和系统应用容器如 Library/Containers、Application Support、AppData），结合只读 Shell 的快速跳点（例如 macOS 用 `mdfind` 查近 14 天活跃文件或按 mtime 排序列目录），直接定位真正高价值的内容根（活跃代码项目、桌面待办脚本、文档/报价/周报目录、即时通讯接收文件目录、本地 AI 工具会话记录等），全程根据现场名称和样本内容自主识别，不要凭空猜测。\n\
-2. 自然防卡死：遇到单链深目录（如多层应用容器下的文档/附件目录）直接钻到具体内容根；遇到超大缓存/归档先让出份额、绝不跑无深度限制的慢速全盘 find；遇到按日期（2026-08/2026-09…）或哈希分桶的重复结构，抽检最新 1–2 份确认用途后，折叠登记为一个稳定父来源并在 recheck_hint 写明复查方法（如“按月分桶，复查只看最新子目录”）。\n\
+2. 自然防卡死：遇到单链深目录（如多层应用容器下的文档/附件目录）直接钻到具体内容根；遇到超大缓存/归档先让出份额、绝不跑无深度限制的慢速全盘 find；探测系统应用容器（如 ~/Library/Containers）或可能受系统隐私锁（TCC）保护的目录时，务必用短超时单次探针，一旦挂起或被取消立刻调用 record_frontier 记明原因并跳过，切勿反复 wait 死等；遇到按日期（2026-08/2026-09…）或哈希分桶的重复结构，抽检最新 1–2 份确认用途后，折叠登记为一个稳定父来源并在 recheck_hint 写明复查方法（如“按月分桶，复查只看最新子目录”）。\n\
 3. 边建图边落盘检查点：及时用 UpdateWorkspaceMap 的 upsert_sources 登记每个核验过的高价值来源（写清 kind、summary、recheck_hint、priority、watch_mode），未探完或受限分支用 record_frontier 记明原因，核心监听根和噪声目录同步提交给 UpdateWatchScope（mark_surveyed）。主要板块已探明、余项已记入 frontier 后，调用 UpdateWorkspaceMap(action=\"mark_ready\") 结束冷启动建图。\n\
 4. 首轮即可交付强发现：整理过程中如果核实到明确紧迫的事项（如临近期限、报错脚本、逾期交付物），当轮可直接用 UpsertDossier 产出首批档案（标题须简洁写清「项目/对象 + 核心问题」，切勿用时间戳/更正/撤回开头），最后用 FinishNoChange 收尾。"
             }
@@ -269,7 +269,7 @@ fn investigation_prompt(
             Language::En => {
                 "[Cold-Start Workspace Onboarding & Mapping (Onboard)] This is a dedicated initial organization run to build a durable WorkspaceMap (via UpdateWorkspaceMap) and accurate WatchScope (via UpdateWatchScope) so all future runs are fast and high-signal:\n\
 1. Broad sweep + recent-activity jump-in: start from the top-level inventory (including dot-dirs and app-data containers like Library/Containers, Application Support, AppData). Use fast read-only Shell jump-ins (e.g. `mdfind` for recently modified files on macOS, or mtime-sorted listings) to jump directly to deep active content roots (active projects, desktop scripts, docs/reports, messaging received files, local AI session histories) and verify them by reading representative samples.\n\
-2. Avoid deep-dir traps naturally: drill all the way through single-child container chains to the real content root; never run unbounded recursive `find` over giant caches; collapse repetitive date/hash buckets (e.g. 2026-08/2026-09/...) into ONE stable parent source with a concise `recheck_hint` (e.g. 'monthly buckets; check newest subdir only').\n\
+2. Avoid deep-dir traps naturally: drill all the way through single-child container chains to the real content root; never run unbounded recursive `find` over giant caches; when probing app containers (e.g. `~/Library/Containers`) or OS privacy-gated paths (macOS TCC), use a short-timeout single probe—if a command hangs or cancels, record it in `frontier` immediately and move on instead of repeatedly polling `wait`; collapse repetitive date/hash buckets (e.g. 2026-08/2026-09/...) into ONE stable parent source with a concise `recheck_hint` (e.g. 'monthly buckets; check newest subdir only').\n\
 3. Checkpoint progress durably: call UpdateWorkspaceMap (`upsert_sources`, `record_frontier`) as you verify areas and sync key includes/exclusions with UpdateWatchScope (`mark_surveyed`). Once primary areas are mapped and remaining blind spots are recorded in `frontier`, call UpdateWorkspaceMap(`action=\"mark_ready\"`).\n\
 4. Deliver strong Day-1 findings: if you verify genuinely urgent issues while mapping, publish initial dossiers right away via UpsertDossier (concise '<Subject>: <Core issue>' title), then end cleanly with FinishNoChange."
             }
@@ -1213,6 +1213,7 @@ impl Owner {
                         )),
                         compaction_prompt: None,
                         dossier_seed: None,
+                        dossier_elevated: false,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: Some(allowed_tools.clone()),

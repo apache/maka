@@ -457,16 +457,19 @@ impl MapValidator {
             return Err("map a concrete content directory below the system root".into());
         }
         let summary = input.summary.trim();
-        if summary.is_empty() || summary.len() > 200 || summary.chars().any(char::is_control) {
-            return Err("provide a concise single-line summary (up to 200 bytes)".into());
+        if summary.is_empty()
+            || summary.chars().count() > 200
+            || summary.chars().any(char::is_control)
+        {
+            return Err("provide a concise single-line summary (up to 200 characters)".into());
         }
         let recheck_hint = input.recheck_hint.trim();
-        if recheck_hint.len() > 200 || recheck_hint.chars().any(char::is_control) {
-            return Err("recheck_hint must be a single line (up to 200 bytes)".into());
+        if recheck_hint.chars().count() > 200 || recheck_hint.chars().any(char::is_control) {
+            return Err("recheck_hint must be a single line (up to 200 characters)".into());
         }
         let evidence = input.evidence.trim();
-        if evidence.len() > 240 || evidence.chars().any(char::is_control) {
-            return Err("evidence must be a single line (up to 240 bytes)".into());
+        if evidence.chars().count() > 240 || evidence.chars().any(char::is_control) {
+            return Err("evidence must be a single line (up to 240 characters)".into());
         }
         if let Some(existing) = map.sources.iter_mut().find(|s| s.path == path) {
             existing.kind = input.kind;
@@ -507,10 +510,12 @@ impl MapValidator {
         let path = self.resolve(&input.path, false)?;
         let reason_text = input.reason.trim();
         if reason_text.is_empty()
-            || reason_text.len() > 200
+            || reason_text.chars().count() > 200
             || reason_text.chars().any(char::is_control)
         {
-            return Err("provide a concise single-line frontier reason (up to 200 bytes)".into());
+            return Err(
+                "provide a concise single-line frontier reason (up to 200 characters)".into(),
+            );
         }
         if let Some(existing) = map.frontier.iter_mut().find(|b| b.path == path) {
             existing.reason = reason_text.to_owned();

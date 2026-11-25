@@ -265,11 +265,12 @@ impl RunAccess {
         use maka_sandbox::Sandbox;
 
         let current = self.live_configuration().await?;
+        let restricted_dossier = current.is_restricted_dossier_thread();
         let workspace = current.workspace;
         let mode = current.permissions.access;
         let root = self.state_root()?;
         let ceiling = self.spec.permission_ceiling.sandbox.clone();
-        let approved = if file_approvals && current.dossier_seed.is_none() {
+        let approved = if file_approvals && !restricted_dossier {
             self.spec.filesystem_approval_ceiling.clone()
         } else {
             None
@@ -1047,22 +1048,23 @@ impl Access for RunAccess {
                     scope: grant.scope,
                 })
                 .collect::<Vec<_>>();
-            // Proactive discovery workers run non-interactively (`approval: Never`).
-            // When the user explicitly approved Web tools in the discovery plan and the
-            // run's network approval ceiling permits egress, grant Web-only access so
-            // read-only WebFetch/WebSearch work while filesystem stays ReadOnly and
-            // Shell remains network-denied.
-            if source == PermissionSource::Web
-                && owner
-                    .scheduler
-                    .investigation_profile(&self.execution.session_id)
-                    .is_some()
-            {
-                let web_allowed = configuration.tools.as_ref().is_some_and(|tools| {
-                    tools
-                        .iter()
-                        .any(|t| matches!(t.as_str(), "WebFetch" | "WebSearch"))
-                });
+            // Proactive discovery workers run non-interactively (`approval: Never`),
+            // and elevated dossier threads were explicitly confirmed by the user.
+            // Grant Web-only access when permitted by the run's network approval ceiling
+            // so WebFetch/WebSearch work without redundant approval prompts.
+            let is_discovery_worker = owner
+                .scheduler
+                .investigation_profile(&self.execution.session_id)
+                .is_some();
+            let is_elevated_dossier =
+                configuration.dossier_seed.is_some() && configuration.dossier_elevated;
+            if source == PermissionSource::Web && (is_discovery_worker || is_elevated_dossier) {
+                let web_allowed = is_elevated_dossier
+                    || configuration.tools.as_ref().is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .any(|t| matches!(t.as_str(), "WebFetch" | "WebSearch"))
+                    });
                 let network = self.spec.network_approval_ceiling().clone();
                 if web_allowed && network != maka_sandbox::Network::Denied {
                     grants.push(PermissionGrant {

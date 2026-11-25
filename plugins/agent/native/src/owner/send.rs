@@ -301,7 +301,7 @@ impl Owner {
             allowed_tools.as_deref(),
         );
         let basis = CapturedRun {
-            dossier_thread: session.configuration.dossier_seed.is_some(),
+            dossier_thread: DossierThreadMode::from_config(&session.configuration),
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -576,7 +576,7 @@ impl Owner {
                 }));
             }
         };
-        let dossier_reply = basis.dossier_thread && origin.is_none();
+        let dossier_reply = basis.dossier_thread.is_dossier() && origin.is_none();
         let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin,

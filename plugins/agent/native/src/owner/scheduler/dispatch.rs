@@ -756,6 +756,7 @@ impl Owner {
                         backend: None,
                         compaction_prompt: None,
                         dossier_seed: None,
+                        dossier_elevated: false,
                         applied_preset: None,
                         collaboration_mode: CollaborationMode::Agent,
                         tools: basis.allowed_tools.clone(),

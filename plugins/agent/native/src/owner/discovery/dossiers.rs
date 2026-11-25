@@ -676,7 +676,7 @@ impl Owner {
     }
     pub(crate) async fn open_dossier_thread(
         self: &Arc<Self>,
-        query: DossierRead,
+        query: DossierThreadOpen,
         operation: &maka_plugin_core::operation::RecoveryRef,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<DossierThread>, String> {
@@ -687,6 +687,9 @@ impl Owner {
             .map_err(reason)?
             .ok_or("discovery_topic_missing")?;
         if let Some(session_id) = dossier.thread_session_id {
+            if query.elevate {
+                return self.elevate_dossier_thread(&session_id).await;
+            }
             return Ok(NativeMutation::Returned(DossierThread { session_id }));
         }
         let (workspace, backend, incognito) = if let Some(session_id) = self.bot.session() {
@@ -720,6 +723,7 @@ impl Owner {
             topic: dossier.topic_id,
             revision: dossier.revision,
             summary: dossier.summary_md,
+            elevated: query.elevate,
         };
         let operation = operation.clone();
         self.resource_work(scope, move |owner, scope| {
@@ -747,6 +751,7 @@ impl Owner {
         session: &str,
         request: &mut maka_agent_state::queue::PreparedRequest,
         summary: String,
+        elevated: bool,
         contents: &mut Vec<maka_agent_state::ContentBlob>,
     ) -> Result<(), String> {
         use maka_agent_facts::input::{QuoteRef, RunInput};
@@ -779,9 +784,24 @@ impl Owner {
             .await
             .map_err(reason)?
             .ok_or("discovery_thread_unbound")?;
+        let execution_note = if elevated {
+            match request.spec.language {
+                Language::ZhCn => {
+                    "\n\n用户已明确确认执行本方案，当前会话已具备常规工作区执行权限，可直接修改工作区文件、运行命令或调用工具落地结果，无需再次向用户做多余的确认弹窗。"
+                }
+                Language::ZhTw => {
+                    "\n\n使用者已明確確認執行此方案，目前會話已具備常規工作區執行權限，可直接修改工作區檔案、執行命令或呼叫工具落地結果，無須再次向使用者重複確認。"
+                }
+                _ => {
+                    "\n\nThe user has explicitly confirmed this action and elevated this thread to normal session permissions. Execute directly using workspace tools without asking for redundant confirmation."
+                }
+            }
+        } else {
+            ""
+        };
         let quote = QuoteRef {
             text: format!(
-                "topic_id: {}\n\n{summary}\n\n{}",
+                "topic_id: {}\n\n{summary}\n\n{}{execution_note}",
                 topic.0,
                 monitoring_prompt(request.spec.language)
             ),

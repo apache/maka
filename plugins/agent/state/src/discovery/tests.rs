@@ -524,3 +524,63 @@ async fn dossier_update_preserves_stable_title_and_merges_artifacts_by_default()
     let after_v4 = s.detail(topic).await.unwrap().unwrap();
     assert!(after_v4.dossier.artifacts.is_empty());
 }
+
+#[tokio::test]
+async fn completed_local_tool_recognizes_code_mode_cell_children() {
+    let (dir, _root, _s) = fixture().await;
+    let run_id = maka_agent_facts::durable::RunId::new();
+    let fence = crate::CallerFence {
+        execution: maka_agent_facts::durable::ExecutionIdentity {
+            session_id: "sess-1".into(),
+            turn_id: "turn-1".into(),
+            run_id,
+        },
+        expected_basis: None,
+    };
+    let conn =
+        rusqlite::Connection::open(dir.path().join("root").join("runtime-rust.sqlite")).unwrap();
+    assert!(!fence.completed_local_tool(&conn, "ListDossiers").unwrap());
+
+    // A failed cell child must NOT satisfy the prerequisite.
+    conn.execute(
+        "INSERT INTO agent_cells(cell, session, run, pending, body) VALUES (?1, ?2, ?3, 0, ?4)",
+        rusqlite::params![
+            "cell-err",
+            "sess-1",
+            run_id.to_string(),
+            json!({
+                "children": {
+                    "op-1": {
+                        "name": "ListDossiers",
+                        "localResult": { "settlement": "failed", "isError": true }
+                    }
+                }
+            })
+            .to_string()
+        ],
+    )
+    .unwrap();
+    assert!(!fence.completed_local_tool(&conn, "ListDossiers").unwrap());
+
+    // A returned, non-error cell child MUST satisfy the prerequisite (Code Mode exec).
+    conn.execute(
+        "INSERT INTO agent_cells(cell, session, run, pending, body) VALUES (?1, ?2, ?3, 0, ?4)",
+        rusqlite::params![
+            "cell-ok",
+            "sess-1",
+            run_id.to_string(),
+            json!({
+                "children": {
+                    "op-2": {
+                        "name": "ListDossiers",
+                        "localResult": { "settlement": "returned", "isError": false }
+                    }
+                }
+            })
+            .to_string()
+        ],
+    )
+    .unwrap();
+    assert!(fence.completed_local_tool(&conn, "ListDossiers").unwrap());
+    assert!(!fence.completed_local_tool(&conn, "OtherTool").unwrap());
+}

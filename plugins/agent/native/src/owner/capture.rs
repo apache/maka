@@ -216,7 +216,7 @@ impl Owner {
         };
         let inspection_only =
             recovery || self.scheduler.investigation_profile(session_id).is_some();
-        if inspection_only || basis.dossier_thread {
+        if inspection_only || basis.dossier_thread.is_restricted() {
             configuration.permissions.access = WorkspaceAccess::ReadOnly;
             configuration.permissions.request_permissions = false;
         }

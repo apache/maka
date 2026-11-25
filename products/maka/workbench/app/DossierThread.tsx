@@ -19,9 +19,15 @@
 import { cleanup, effect, Scroll, signal, Text, View, type JSX, type ScrollRef } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { useHost } from './host';
-import { dossierThreadMessages, mergeHistoryPage } from './history';
+import {
+  dossierThreadActivity,
+  dossierThreadMessages,
+  mergeHistoryPage,
+  type DossierToolStep,
+} from './history';
 import { observeDiscovery } from './discoveryObservation';
 import type { DossierThreadTurn } from './discoveryDossiersCore';
+import { activityTitle } from './toolActivityPresentation';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { motionEnabled, useLiveMessageStyle } from './roomMotion';
@@ -106,7 +112,7 @@ export function DossierThread(props: {
   header(actions: { scrollToLatest(): void; session(): string | null }): JSX.Element;
   renderStream(ctx: {
     turns(): readonly DossierThreadTurn[];
-    sendMessage(message: string): Promise<boolean>;
+    sendMessage(message: string, options?: { elevate?: boolean }): Promise<boolean>;
     sending(): boolean;
     anchorLatest(y: number): void;
     onTurnArrival(): void;
@@ -120,6 +126,10 @@ export function DossierThread(props: {
   const opened = signal<string | null>(null);
   const session = () => props.threadSessionId() ?? opened();
   const turns = signal<DossierThreadTurn[]>([]);
+  const activity = signal<{ steps: DossierToolStep[]; active: boolean }>({
+    steps: [],
+    active: false,
+  });
   const historyError = createText();
   const sendError = createText();
   const awayFromLatest = signal(false);
@@ -144,6 +154,7 @@ export function DossierThread(props: {
     stopWatch = null;
     if (!id) {
       turns.set([]);
+      activity.set({ steps: [], active: false });
       historyError.set('');
       return;
     }
@@ -159,11 +170,11 @@ export function DossierThread(props: {
       if (page.kind !== 'ready') throw new UiError('Could not load conversation history.');
       if (alive && active) {
         through = page.through ?? 0;
-        const recent = dossierThreadMessages(
-          mergeHistoryPage(page.chunks, () => undefined, false, page.through),
-        );
+        const rows = mergeHistoryPage(page.chunks, () => undefined, false, page.through);
+        const recent = dossierThreadMessages(rows);
         const previous = new Set(turns().map((turn) => turn.id));
         turns.set(recent.map((turn) => ({ ...turn, live: live && !previous.has(turn.id) })));
+        activity.set(dossierThreadActivity(rows));
         historyError.set('');
         if (!live && !userInteracted && recent.length > 0) {
           programmaticUntil = Date.now() + 250;
@@ -234,15 +245,18 @@ export function DossierThread(props: {
     }
   };
 
-  const sendMessage = async (raw: string): Promise<boolean> => {
+  const sendMessage = async (raw: string, options?: { elevate?: boolean }): Promise<boolean> => {
     const message = raw.trim();
     if (!alive || !props.ready || sending() || message.length === 0) return false;
     sending.set(true);
     sendError.set('');
     try {
       let sessionId = session();
-      if (sessionId === null) {
-        const thread = await host.mutateAgent('openDossierThread', { topicId });
+      if (sessionId === null || options?.elevate) {
+        const thread = await host.mutateAgent('openDossierThread', {
+          topicId,
+          ...(options?.elevate ? { elevate: true } : {}),
+        });
         sessionId = thread.sessionId;
         if (alive) opened.set(sessionId);
       }
@@ -310,6 +324,53 @@ export function DossierThread(props: {
               },
               session,
             })}
+            <If when={activity().active}>
+              <View
+                style={{
+                  alignSelf: 'flex-start',
+                  maxWidth: '86%',
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 12,
+                  backgroundColor: C.surface,
+                  borderWidth: 0.5,
+                  borderColor: C.line,
+                  gap: 4,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: 3,
+                      backgroundColor: C.accent,
+                    }}
+                  />
+                  <Text style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}>
+                    {tr('Dossier executing')}
+                  </Text>
+                </View>
+                <Each of={activity().steps} key={(step) => step.id}>
+                  {(step: () => DossierToolStep) => (
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        ...captionTextStyle,
+                        fontSize: 11,
+                        color: step().failed ? C.danger : C.muted,
+                      }}
+                    >
+                      {`${step().pending ? '⋯' : step().failed ? '✕' : '✓'} ${activityTitle({
+                        name: step().name,
+                        title: step().title,
+                        presentation: step().presentation,
+                      })}`}
+                    </Text>
+                  )}
+                </Each>
+              </View>
+            </If>
             <If when={historyError()}>
               <Text style={{ ...captionTextStyle, color: C.danger }}>{historyError()}</Text>
             </If>

@@ -191,6 +191,59 @@ export function recentMessages(rows: readonly Row[]) {
   return merged.slice(-6);
 }
 
+export type DossierToolStep = {
+  id: string;
+  name: string;
+  title?: Row['tool'] extends infer T
+    ? T extends { call: infer C }
+      ? C extends { title: infer D }
+        ? D
+        : null
+      : null
+    : null;
+  presentation?: string | null;
+  pending: boolean;
+  failed: boolean;
+};
+
+export function dossierThreadActivity(rows: readonly Row[]): {
+  steps: DossierToolStep[];
+  active: boolean;
+} {
+  let start = 0;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i]!;
+    if (row.role === 'user' && row.field === 'body' && !row.origin && row.text.trim().length > 0) {
+      start = i + 1;
+      break;
+    }
+  }
+  const byId = new Map<string, DossierToolStep>();
+  let active = false;
+  for (let i = start; i < rows.length; i += 1) {
+    const row = rows[i]!;
+    if (row.work) {
+      if (!row.work.closedAt) active = true;
+      continue;
+    }
+    const call = row.tool?.call;
+    if (!call) continue;
+    const result = row.tool?.result;
+    const pending = Boolean(call.pending && !result);
+    const failed = Boolean(result?.isError);
+    if (pending) active = true;
+    byId.set(row.tool!.toolUseId, {
+      id: row.tool!.toolUseId,
+      name: call.name,
+      title: call.title,
+      presentation: call.presentation ?? null,
+      pending,
+      failed,
+    });
+  }
+  return { steps: [...byId.values()].slice(-4), active };
+}
+
 export function dossierThreadMessages(rows: readonly Row[]) {
   const merged: { id: string; role: 'user' | 'assistant'; text: string; at?: number }[] = [];
   for (const row of rows) {

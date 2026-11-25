@@ -379,8 +379,14 @@ impl Owner {
             && matches!(queued.spec.trigger, Trigger::Message { .. })
             && let Some(seed) = current.configuration.dossier_seed
         {
-            self.seed_dossier_input(session, &mut queued, seed, &mut replacements)
-                .await?;
+            self.seed_dossier_input(
+                session,
+                &mut queued,
+                seed,
+                current.configuration.dossier_elevated,
+                &mut replacements,
+            )
+            .await?;
         }
         let (lease, effects) = scope.accept(self.stop.child_token());
         let committed: Result<Option<RunId>, String> = async {

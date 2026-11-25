@@ -44,6 +44,7 @@ const {
   sortDossiers,
   splitArtifactPath,
 } = await import(core.href).finally(() => hooks.deregister());
+const { dossierThreadActivity } = await import(new URL('../app/history.ts', import.meta.url).href);
 
 const dossier = (topicId, fields = {}) => ({
   topicId,
@@ -259,6 +260,91 @@ test('buildDossierStream interleaves turns between revisions chronologically and
       ['turn:t2', true],
       ['rev:2', false],
       ['turn:t3', false],
+    ],
+  );
+});
+
+test('dossierThreadActivity tracks active and completed tool steps after the latest user turn', () => {
+  const rows = [
+    { key: 'u1', role: 'user', field: 'body', text: 'Old question' },
+    {
+      key: 't0',
+      role: 'tool_call',
+      field: 'arguments',
+      text: '',
+      tool: {
+        toolUseId: 'old-tool',
+        call: {
+          name: 'Read',
+          title: null,
+          pending: false,
+          dispatched: true,
+          origin: 'provider',
+          ancestorToolUseIds: [],
+          position: { kind: 'live', sequence: 1, fact: 'f1', itemIndex: 0 },
+        },
+        result: {
+          settlement: 'returned',
+          isError: false,
+          image: false,
+          images: 0,
+          position: { kind: 'live', sequence: 2, fact: 'f2', itemIndex: 0 },
+        },
+      },
+    },
+    { key: 'u2', role: 'user', field: 'body', text: 'Fix PR conflict' },
+    {
+      key: 't1',
+      role: 'tool_call',
+      field: 'arguments',
+      text: '',
+      tool: {
+        toolUseId: 'step-1',
+        call: {
+          name: 'Shell',
+          title: 'git status',
+          pending: false,
+          dispatched: true,
+          origin: 'code_mode',
+          ancestorToolUseIds: [],
+          position: { kind: 'live', sequence: 3, fact: 'f3', itemIndex: 0 },
+        },
+        result: {
+          settlement: 'returned',
+          isError: false,
+          image: false,
+          images: 0,
+          position: { kind: 'live', sequence: 4, fact: 'f4', itemIndex: 0 },
+        },
+      },
+    },
+    {
+      key: 't2',
+      role: 'tool_call',
+      field: 'arguments',
+      text: '',
+      tool: {
+        toolUseId: 'step-2',
+        call: {
+          name: 'ApplyPatch',
+          title: 'Resolve merge markers',
+          pending: true,
+          dispatched: true,
+          origin: 'provider',
+          ancestorToolUseIds: [],
+          position: { kind: 'live', sequence: 5, fact: 'f5', itemIndex: 0 },
+        },
+        result: null,
+      },
+    },
+  ];
+  const state = dossierThreadActivity(rows);
+  assert.equal(state.active, true);
+  assert.deepEqual(
+    state.steps.map((s) => [s.id, s.name, s.pending, s.failed]),
+    [
+      ['step-1', 'Shell', false, false],
+      ['step-2', 'ApplyPatch', true, false],
     ],
   );
 });

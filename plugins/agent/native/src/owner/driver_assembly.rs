@@ -195,7 +195,7 @@ impl Owner {
             _ => String::new(),
         };
         let basis = CapturedRun {
-            dossier_thread: current.configuration.dossier_seed.is_some(),
+            dossier_thread: DossierThreadMode::from_config(&current.configuration),
             mcp_catalog: Some(catalog.clone()),
             mcp_revision: view.spec.mcp_revision.clone(),
             client_mcp: catalog.client_mcp,

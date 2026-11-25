@@ -48,6 +48,7 @@ pub(super) enum Purpose {
         topic: TopicId,
         revision: u64,
         summary: String,
+        elevated: bool,
     },
     Bot {
         guard: Arc<tokio::sync::OwnedMutexGuard<()>>,
@@ -106,6 +107,7 @@ impl Owner {
     {
         let is_room = matches!(purpose, Purpose::Room { .. });
         let mut seed = None;
+        let mut dossier_elevated = false;
         let (reply_format, guard, mutations) = match purpose {
             Purpose::Session {
                 session_create_tool,
@@ -133,8 +135,10 @@ impl Owner {
                 topic,
                 revision,
                 summary,
+                elevated,
             } => {
                 seed = Some(summary);
+                dossier_elevated = elevated;
                 (
                     ReplyFormat::Dossier {
                         store: self.discovery.clone(),
@@ -177,6 +181,13 @@ impl Owner {
                 move |binding| {
                     let mut configuration = configuration(binding);
                     configuration.dossier_seed = seed;
+                    if dossier_elevated {
+                        configuration.dossier_elevated = true;
+                        if configuration.permissions.access == WorkspaceAccess::ReadOnly {
+                            configuration.permissions.access = WorkspaceAccess::WorkspaceWrite;
+                        }
+                        configuration.permissions.request_permissions = true;
+                    }
                     Ok(serde_json::to_value(configuration)?)
                 },
             )

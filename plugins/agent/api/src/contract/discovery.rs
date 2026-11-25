@@ -88,6 +88,14 @@ pub struct DiscoveryLead {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierThreadOpen {
+    pub topic_id: TopicId,
+    #[serde(default)]
+    pub elevate: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossierThread {
     pub session_id: String,
 }
