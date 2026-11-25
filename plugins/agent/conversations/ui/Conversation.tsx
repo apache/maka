@@ -132,9 +132,9 @@ import {
   type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
+  groupStepsFollowCursor,
   senderSession,
   stableRowId,
-  staleStepThoughtCursor,
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -2277,14 +2277,12 @@ export function Conversation(props: ConversationProps) {
           return;
         }
         position = { kind: direction, cursor };
-      } else if (!state.after && state.last && state.through < (row.metadataThrough ?? through)) {
-        position = { kind: 'after', cursor: state.last };
       } else {
-        const staleThought = staleStepThoughtCursor(row, state, through, (stepKey) =>
+        const cursor = groupStepsFollowCursor(row, state, through, (stepKey) =>
           historyRows().byKey.get(stepKey),
         );
-        if (!staleThought) return;
-        position = { kind: 'after', cursor: staleThought };
+        if (!cursor) return;
+        position = { kind: 'after', cursor };
       }
     }
     const window = state;

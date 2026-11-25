@@ -32,6 +32,7 @@ import {
 } from '../app/processGroups.ts';
 import {
   applyWorkTailThought,
+  groupStepsFollowCursor,
   HistoryRows,
   historyFollowPosition,
   historyFollowTail,
@@ -41,7 +42,6 @@ import {
   isReplyWithActions,
   mergeHistoryPage,
   stableRowId,
-  staleStepThoughtCursor,
 } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
@@ -664,21 +664,28 @@ test('groupThought, turnThought, and applyWorkTailThought keep active thoughts c
   assert.equal(toolTailUpdated.work.lastThought.offset, 17);
   assert.equal(toolTailUpdated.work.lastThought.text, 'Initial plus more');
 
-  // If an in-flight steps expand at fence 10 lands behind a fence 11 tailThought, the step loader catches up
-  // from the loaded byte offset and stops once the loaded step covers the confirmed offset.
-  const staleStepsRow = {
-    fragments: [{ offset: 0, text: 'Initial' }],
-    totalBytes: 7,
-  };
+  // If an in-flight steps expand at fence 7 lands after both a thought continuation (fence 8) and a
+  // tool result (fence 9, bumping metadataThrough), follow prioritizes the lagging thought over window.last
+  // so one forward page catches up both the thought suffix and the tool result.
+  const toolLastCursor = { position: toolEndPos, field: 'body', offset: 0 };
+  const updatedWithToolResult = { ...toolTailUpdated, metadataThrough: 9 };
   const loadedSteps = new Map([
-    [historyRowKey(oldLoadedThought.position, 'thinking'), staleStepsRow],
+    [
+      historyRowKey(oldLoadedThought.position, 'thinking'),
+      { fragments: [{ offset: 0, text: 'Initial' }], totalBytes: 7 },
+    ],
   ]);
   assert.deepEqual(
-    staleStepThoughtCursor(toolTailUpdated, { after: null, through: 10 }, 11, (k) =>
-      loadedSteps.get(k),
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 7 },
+      9,
+      (k) => loadedSteps.get(k),
     ),
     { position: oldLoadedThought.position, field: 'thinking', offset: 7 },
   );
+  // Once the thought step already covers the confirmed offset, follow advances from window.last for new tool metadata,
+  // and stops completely once window.through catches up.
   loadedSteps.set(historyRowKey(oldLoadedThought.position, 'thinking'), {
     fragments: [
       { offset: 0, text: 'Initial' },
@@ -686,9 +693,21 @@ test('groupThought, turnThought, and applyWorkTailThought keep active thoughts c
     ],
     totalBytes: 17,
   });
+  assert.deepEqual(
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 7 },
+      9,
+      (k) => loadedSteps.get(k),
+    ),
+    toolLastCursor,
+  );
   assert.equal(
-    staleStepThoughtCursor(toolTailUpdated, { after: null, through: 10 }, 11, (k) =>
-      loadedSteps.get(k),
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 9 },
+      9,
+      (k) => loadedSteps.get(k),
     ),
     null,
   );

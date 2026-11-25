@@ -401,21 +401,29 @@ export function applyWorkTailThought(
   };
 }
 
-/** Return a steps catch-up cursor when a loaded thought step lags the summary's confirmed tailThought. */
-export function staleStepThoughtCursor(
-  row: Pick<Row, 'work'>,
-  window: { after: ConversationHistoryPage['after']; through: number },
+/** Return the next `after` cursor for an open steps window at tail, catching up stale thoughts before `window.last`. */
+export function groupStepsFollowCursor(
+  row: Pick<Row, 'work' | 'metadataThrough'>,
+  window: {
+    after: ConversationHistoryPage['after'];
+    last: ConversationHistoryPage['after'];
+    through: number;
+  },
   through: number,
   lookup: (key: string) => Pick<Row, 'fragments' | 'totalBytes'> | undefined,
 ): NonNullable<ConversationHistoryPage['after']> | null {
+  if (window.after !== null) return null;
   const thought = row.work?.lastThought;
-  if (!thought || window.after !== null || window.through >= through) return null;
-  const loaded = lookup(historyRowKey(thought.position, 'thinking'));
-  if (!loaded) return null;
-  const last = loaded.fragments?.at(-1);
-  const covered = last ? last.offset + messageBytes(last.text) : (loaded.totalBytes ?? 0);
-  if (covered >= thought.offset) return null;
-  return { position: thought.position, field: 'thinking', offset: covered };
+  if (thought && window.through < through) {
+    const loaded = lookup(historyRowKey(thought.position, 'thinking'));
+    if (loaded) {
+      const last = loaded.fragments?.at(-1);
+      const covered = last ? last.offset + messageBytes(last.text) : (loaded.totalBytes ?? 0);
+      if (covered < thought.offset)
+        return { position: thought.position, field: 'thinking', offset: covered };
+    }
+  }
+  return window.last && window.through < (row.metadataThrough ?? through) ? window.last : null;
 }
 
 // These are the Desktop transcript's position/fragment rules, independent of
