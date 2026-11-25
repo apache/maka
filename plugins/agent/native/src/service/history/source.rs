@@ -148,6 +148,19 @@ pub(super) struct Cache {
     pub chat: bool,
     pub reader: Reader,
 }
+impl Cache {
+    pub(super) fn executor_thinking(&self, address: &wire::HistoryRowAddress) -> Option<&TextBody> {
+        let wire::HistoryRowAddress::Live {
+            sequence,
+            fact,
+            item_index: 0,
+        } = address
+        else {
+            return None;
+        };
+        self.executor.as_ref()?.thinking_at(*sequence, *fact)
+    }
+}
 pub(super) fn snapshot_id(
     address: &wire::HistoryRowAddress,
 ) -> Option<maka_agent_facts::history_snapshot::SnapshotId> {
@@ -1009,6 +1022,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
                         };
                         Some(Box::new(wire::WorkThought {
                             position: row.chunk.position.clone(),
+                            offset: body.len_bytes() as u64,
                             text: thought_tail(body)?,
                         }))
                     })

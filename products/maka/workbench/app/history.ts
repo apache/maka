@@ -373,22 +373,49 @@ export function applyWorkTailThought(
   row: Row,
   update: NonNullable<ConversationHistoryPage['tailThought']>,
 ): Row {
-  if (!row.work || !sameHistoryRow(row.work.end.position, update.position)) return row;
+  if (!row.work) return row;
+  const matchesEnd = sameHistoryRow(row.work.end.position, update.position);
+  const matchesLast =
+    row.work.lastThought != null && sameHistoryRow(row.work.lastThought.position, update.position);
+  if (!matchesEnd && !matchesLast) return row;
   if (
-    row.work.end.offset >= update.offset &&
-    row.work.lastThought &&
-    sameHistoryRow(row.work.lastThought.position, update.position) &&
-    row.work.lastThought.text === update.text
+    matchesLast &&
+    row.work.lastThought!.offset >= update.offset &&
+    row.work.lastThought!.text === update.text &&
+    (!matchesEnd || row.work.end.offset >= update.offset)
   )
     return row;
   return {
     ...row,
     work: {
       ...row.work,
-      end: { ...row.work.end, offset: Math.max(row.work.end.offset, update.offset) },
-      lastThought: { position: update.position, text: update.text },
+      end: matchesEnd
+        ? { ...row.work.end, offset: Math.max(row.work.end.offset, update.offset) }
+        : row.work.end,
+      lastThought: {
+        position: update.position,
+        offset: Math.max(matchesLast ? row.work.lastThought!.offset : 0, update.offset),
+        text: update.text,
+      },
     },
   };
+}
+
+/** Return a steps catch-up cursor when a loaded thought step lags the summary's confirmed tailThought. */
+export function staleStepThoughtCursor(
+  row: Pick<Row, 'work'>,
+  window: { after: ConversationHistoryPage['after']; through: number },
+  through: number,
+  lookup: (key: string) => Pick<Row, 'fragments' | 'totalBytes'> | undefined,
+): NonNullable<ConversationHistoryPage['after']> | null {
+  const thought = row.work?.lastThought;
+  if (!thought || window.after !== null || window.through >= through) return null;
+  const loaded = lookup(historyRowKey(thought.position, 'thinking'));
+  if (!loaded) return null;
+  const last = loaded.fragments?.at(-1);
+  const covered = last ? last.offset + messageBytes(last.text) : (loaded.totalBytes ?? 0);
+  if (covered >= thought.offset) return null;
+  return { position: thought.position, field: 'thinking', offset: covered };
 }
 
 // These are the Desktop transcript's position/fragment rules, independent of

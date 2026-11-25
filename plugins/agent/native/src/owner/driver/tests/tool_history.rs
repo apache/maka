@@ -4402,22 +4402,24 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         ])
         .await?;
 
-        let chat = |position: Value, through: Option<u64>, include_thinking: bool| {
+        let chat = |position: Value,
+                    through: Option<u64>,
+                    include_thinking: bool,
+                    thought: Option<Value>| {
             let rig = &rig;
             let session = &session;
             async move {
-                query(
-                    rig,
-                    "history",
-                    json!({
-                        "sessionId": session,
-                        "through": through,
-                        "position": position,
-                        "includeThinking": include_thinking,
-                        "view": "chat",
-                    }),
-                )
-                .await
+                let mut req = json!({
+                    "sessionId": session,
+                    "through": through,
+                    "position": position,
+                    "includeThinking": include_thinking,
+                    "view": "chat",
+                });
+                if let Some(thought) = thought {
+                    req["thought"] = thought;
+                }
+                query(rig, "history", req).await
             }
         };
         let work_chunk = |page: &Value| -> Option<Value> {
@@ -4430,7 +4432,7 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
                 .cloned()
         };
 
-        let first_page = chat(json!({"kind": "tail"}), None, true).await?;
+        let first_page = chat(json!({"kind": "tail"}), None, true, None).await?;
         let first_group = work_chunk(&first_page).ok_or("missing initial work group")?;
         assert_eq!(
             first_group["work"]["last"]["kind"], "thought",
@@ -4438,6 +4440,11 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         );
         assert_eq!(
             first_group["work"]["lastThought"]["text"], "Initial plan.",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["offset"],
+            "Initial plan.".len() as u64,
             "{first_group}"
         );
         assert_eq!(
@@ -4462,6 +4469,11 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             json!({"kind": "after", "cursor": first_group["work"]["end"]}),
             Some(cont_fence),
             true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": "Initial plan.".len() as u64,
+            })),
         )
         .await?;
         assert!(
@@ -4489,6 +4501,7 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             json!({"kind": "after", "cursor": updated_end}),
             Some(cont_fence),
             true,
+            Some(updated_end.clone()),
         )
         .await?;
         assert!(
@@ -4513,6 +4526,7 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             json!({"kind": "after", "cursor": updated_end}),
             Some(tool_fence),
             true,
+            Some(updated_end.clone()),
         )
         .await?;
         assert!(after_tool["tailThought"].is_null(), "{after_tool}");
@@ -4522,12 +4536,55 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             tool_group["work"]["lastThought"]["text"], expected_t1,
             "{tool_group}"
         );
+        assert_eq!(
+            tool_group["work"]["lastThought"]["offset"],
+            expected_t1.len() as u64,
+            "{tool_group}"
+        );
+
+        // Continuing the same thinking message ID after a tool now occupies work.end
+        // still delivers tailThought from the already-projected executor transcript.
+        let after_tool_thought_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 3,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " After tool.".into(),
+            },
+        }])
+        .await?;
+        let after_tool_thought = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(after_tool_thought_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1.len() as u64,
+            })),
+        )
+        .await?;
+        assert!(
+            after_tool_thought["chunks"].as_array().unwrap().is_empty(),
+            "{after_tool_thought}"
+        );
+        let expected_t1_after_tool = "Initial plan. Checking PR #7270. After tool.";
+        assert_eq!(
+            after_tool_thought["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1_after_tool.len() as u64,
+                "text": expected_t1_after_tool,
+            }),
+            "{after_tool_thought}"
+        );
 
         // Whitespace-first thought leaves lastThought on t1; once non-empty CJK text arrives,
         // Chat After re-summarizes the group with a bounded valid UTF-8 tail (<= 3072 bytes).
         let blank_fence = append(vec![Fact::ExternalTaskObserved {
             task,
-            index: 3,
+            index: 4,
             model_time_ms: None,
             output: Output::ThinkingDelta {
                 message_id: "t2".into(),
@@ -4539,19 +4596,24 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
             Some(blank_fence),
             true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
         )
         .await?;
         let blank_group = work_chunk(&blank_page).ok_or("missing work group after blank t2")?;
         assert_eq!(blank_group["work"]["last"]["kind"], "tool", "{blank_group}");
         assert_eq!(
-            blank_group["work"]["lastThought"]["text"], expected_t1,
+            blank_group["work"]["lastThought"]["text"], expected_t1_after_tool,
             "{blank_group}"
         );
 
         let long_cjk = format!("{}结尾思考", "思".repeat(1200));
         let second_fence = append(vec![Fact::ExternalTaskObserved {
             task,
-            index: 4,
+            index: 5,
             model_time_ms: None,
             output: Output::ThinkingDelta {
                 message_id: "t2".into(),
@@ -4563,6 +4625,11 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             json!({"kind": "after", "cursor": blank_group["work"]["end"]}),
             Some(second_fence),
             true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
         )
         .await?;
         assert!(after_second["tailThought"].is_null(), "{after_second}");
@@ -4582,7 +4649,7 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
         assert!(second_text.ends_with("结尾思考"), "{second_text}");
 
         // Reading without thinking omits lastThought from the WorkGroup summary.
-        let no_thinking = chat(json!({"kind": "tail"}), None, false).await?;
+        let no_thinking = chat(json!({"kind": "tail"}), None, false, None).await?;
         let no_thinking_group = work_chunk(&no_thinking).ok_or("missing no-thinking work group")?;
         assert!(
             no_thinking_group["work"]["lastThought"].is_null(),
@@ -4603,7 +4670,7 @@ async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
             },
         ])
         .await?;
-        let finished = chat(json!({"kind": "tail"}), None, true).await?;
+        let finished = chat(json!({"kind": "tail"}), None, true, None).await?;
         let finished_group = work_chunk(&finished).ok_or("missing finished work group")?;
         assert!(
             finished_group["work"]["lastThought"].is_null(),

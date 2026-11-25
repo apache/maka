@@ -91,6 +91,16 @@ impl ExecutorTranscript {
         self.messages.get(&(id.to_owned(), thinking))
     }
 
+    pub fn thinking_at(
+        &self,
+        sequence: u64,
+        fact: FactId,
+    ) -> Option<&maka_agent_facts::model::body::TextBody> {
+        self.messages.iter().find_map(|((_, thinking), entry)| {
+            (*thinking && entry.sequence == sequence && entry.fact == fact).then_some(&entry.body)
+        })
+    }
+
     fn observe(
         &mut self,
         sequence: u64,

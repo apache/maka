@@ -4817,7 +4817,7 @@ export type AgentHistoryPage =
       chunks: AgentHistoryChunk[];
       before: Cursor | null;
       after: Cursor | null;
-      tailThought?: HistoryWorkThoughtUpdate | null;
+      tailThought?: HistoryWorkThought | null;
     };
 export type AgentRoomActor =
   | {
@@ -8777,6 +8777,7 @@ export interface AgentHistoryRead {
   position: HistoryPosition;
   includeThinking?: boolean;
   view?: HistoryView & string;
+  thought?: Cursor | null;
 }
 /**
  * Byte offset in one message field's UTF-8 text, not a bearer capability.
@@ -9048,6 +9049,7 @@ export interface HistoryToolCall {
 }
 export interface HistoryWorkThought {
   position: HistoryRowAddress;
+  offset: number;
   text: string;
 }
 /**
@@ -9117,11 +9119,6 @@ export interface AgentRoomMember {
   archived?: boolean;
   unavailable?: boolean;
   addedAt?: number | null;
-}
-export interface HistoryWorkThoughtUpdate {
-  position: HistoryRowAddress;
-  offset: number;
-  text: string;
 }
 export interface AgentHistorySearch {
   sessionId: string;

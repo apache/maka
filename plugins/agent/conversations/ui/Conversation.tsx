@@ -134,6 +134,7 @@ import {
   replayStartCursor,
   senderSession,
   stableRowId,
+  staleStepThoughtCursor,
   replaceHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -2064,6 +2065,7 @@ export function Conversation(props: ConversationProps) {
     through: number | null,
     position: HistoryPosition,
     view: HistoryListView | 'turn' | 'steps' = 'conversation',
+    thought?: HistoryCursor,
   ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
@@ -2071,6 +2073,7 @@ export function Conversation(props: ConversationProps) {
       position,
       includeThinking: true,
       view,
+      ...(thought ? { thought } : {}),
     });
     if (page.kind !== 'ready') throw new Error('Expected conversation history.');
     if (page.through === null || (through !== null && page.through !== through))
@@ -2277,7 +2280,11 @@ export function Conversation(props: ConversationProps) {
       } else if (!state.after && state.last && state.through < (row.metadataThrough ?? through)) {
         position = { kind: 'after', cursor: state.last };
       } else {
-        return;
+        const staleThought = staleStepThoughtCursor(row, state, through, (stepKey) =>
+          historyRows().byKey.get(stepKey),
+        );
+        if (!staleThought) return;
+        position = { kind: 'after', cursor: staleThought };
       }
     }
     const window = state;
@@ -2513,10 +2520,23 @@ export function Conversation(props: ConversationProps) {
               position = { kind: 'after', cursor: page.after };
             }
           }
+          const thoughtCursor: HistoryCursor | undefined =
+            owner.view === 'chat' && initial.kind === 'after' && tail?.work?.lastThought
+              ? {
+                  position: tail.work.lastThought.position,
+                  field: 'thinking',
+                  offset: tail.work.lastThought.offset,
+                }
+              : undefined;
           let tailThought: ConversationHistoryPage['tailThought'] = null;
           let position = initial;
           for (;;) {
-            const page = await history(fence, position, owner.view);
+            const page = await history(
+              fence,
+              position,
+              owner.view,
+              position === initial ? thoughtCursor : undefined,
+            );
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
             if (page.tailThought) tailThought = page.tailThought;

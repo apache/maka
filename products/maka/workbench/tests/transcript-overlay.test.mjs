@@ -35,11 +35,13 @@ import {
   HistoryRows,
   historyFollowPosition,
   historyFollowTail,
+  historyRowKey,
   historyRowThrough,
   historyTurnKey,
   isReplyWithActions,
   mergeHistoryPage,
   stableRowId,
+  staleStepThoughtCursor,
 } from '../app/history.ts';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
 
@@ -605,7 +607,7 @@ test('groupThought, turnThought, and applyWorkTailThought keep active thoughts c
     field: 'thinking',
   });
   const t1Work = workRow(
-    { position: oldLoadedThought.position, text: 'Initial' },
+    { position: oldLoadedThought.position, offset: 7, text: 'Initial' },
     {
       endPos: oldLoadedThought.position,
       endField: 'thinking',
@@ -613,7 +615,11 @@ test('groupThought, turnThought, and applyWorkTailThought keep active thoughts c
       last: { kind: 'thought' },
     },
   );
-  const work2 = workRow({ position: row('', '', 6).position, text: 'Newer folded thought' });
+  const work2 = workRow({
+    position: row('', '', 6).position,
+    offset: 20,
+    text: 'Newer folded thought',
+  });
   const liveThought = {
     key: 'live/model/step-2/att-1/0',
     messageId: 'live-t2',
@@ -636,18 +642,55 @@ test('groupThought, turnThought, and applyWorkTailThought keep active thoughts c
   });
   const caughtUp = applyWorkTailThought(t1Work, {
     position: oldLoadedThought.position,
-    offset: 18,
+    offset: 19,
     text: 'Initial + continued',
   });
-  assert.equal(caughtUp.work.end.offset, 18);
+  assert.equal(caughtUp.work.end.offset, 19);
+  assert.equal(caughtUp.work.lastThought.offset, 19);
   assert.equal(caughtUp.work.lastThought.text, 'Initial + continued');
+
+  // When a tool occupies work.end, tailThought updates lastThought without disturbing the tool pagination cursor.
+  const toolEndPos = row('', '', 8).position;
+  const toolTailWork = workRow(
+    { position: oldLoadedThought.position, offset: 7, text: 'Initial' },
+    { endPos: toolEndPos, endField: 'body', endOffset: 0 },
+  );
+  const toolTailUpdated = applyWorkTailThought(toolTailWork, {
+    position: oldLoadedThought.position,
+    offset: 17,
+    text: 'Initial plus more',
+  });
+  assert.deepEqual(toolTailUpdated.work.end, { position: toolEndPos, field: 'body', offset: 0 });
+  assert.equal(toolTailUpdated.work.lastThought.offset, 17);
+  assert.equal(toolTailUpdated.work.lastThought.text, 'Initial plus more');
+
+  // If an in-flight steps expand at fence 10 lands behind a fence 11 tailThought, the step loader catches up
+  // from the loaded byte offset and stops once the loaded step covers the confirmed offset.
+  const staleStepsRow = {
+    fragments: [{ offset: 0, text: 'Initial' }],
+    totalBytes: 7,
+  };
+  const loadedSteps = new Map([
+    [historyRowKey(oldLoadedThought.position, 'thinking'), staleStepsRow],
+  ]);
+  assert.deepEqual(
+    staleStepThoughtCursor(toolTailUpdated, { after: null, through: 10 }, 11, (k) =>
+      loadedSteps.get(k),
+    ),
+    { position: oldLoadedThought.position, field: 'thinking', offset: 7 },
+  );
+  loadedSteps.set(historyRowKey(oldLoadedThought.position, 'thinking'), {
+    fragments: [
+      { offset: 0, text: 'Initial' },
+      { offset: 7, text: ' plus more' },
+    ],
+    totalBytes: 17,
+  });
   assert.equal(
-    applyWorkTailThought(caughtUp, {
-      position: oldLoadedThought.position,
-      offset: 18,
-      text: 'Initial + continued',
-    }),
-    caughtUp,
+    staleStepThoughtCursor(toolTailUpdated, { after: null, through: 10 }, 11, (k) =>
+      loadedSteps.get(k),
+    ),
+    null,
   );
 
   // Collapsed external executor reads work.lastThought and reports thinking title without expanding.

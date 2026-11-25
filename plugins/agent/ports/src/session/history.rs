@@ -156,6 +156,24 @@ pub struct Cursor {
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub offset: u64,
 }
+impl Cursor {
+    pub fn validate(
+        &self,
+        through: Option<u64>,
+        include_thinking: bool,
+    ) -> Result<(), CommandError> {
+        const MAX: u64 = 9_007_199_254_740_991;
+        if through.is_none()
+            || self.position.validate().is_err()
+            || matches!(&self.position, HistoryRowAddress::Live { sequence, .. } if through.is_some_and(|cut| *sequence > cut))
+            || self.offset > MAX
+            || (!include_thinking && self.field == HistoryField::Thinking)
+        {
+            return Err(CommandError::Invalid("invalid history read".into()));
+        }
+        Ok(())
+    }
+}
 
 /// Row reveals an exact field; Before/After continue at byte boundaries and
 /// Event addresses the raw event log. Returned chunks retain ascending presentation
@@ -246,14 +264,7 @@ impl Read {
                 }
             }
             Position::Before { cursor } | Position::After { cursor } => {
-                if self.through.is_none()
-                    || cursor.position.validate().is_err()
-                    || matches!(&cursor.position, HistoryRowAddress::Live { sequence, .. } if self.through.is_some_and(|through| *sequence > through))
-                    || cursor.offset > MAX
-                    || (!self.include_thinking && cursor.field == HistoryField::Thinking)
-                {
-                    return Err(invalid());
-                }
+                cursor.validate(self.through, self.include_thinking)?;
             }
             Position::Event { sequence }
                 if *sequence == 0
@@ -617,14 +628,6 @@ pub struct WorkGroup {
 #[schemars(rename = "HistoryWorkThought")]
 pub struct WorkThought {
     pub position: HistoryRowAddress,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "HistoryWorkThoughtUpdate")]
-pub struct WorkThoughtUpdate {
-    pub position: HistoryRowAddress,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub offset: u64,
     pub text: String,
@@ -709,9 +712,9 @@ pub enum Page {
         before: Option<Cursor>,
         after: Option<Cursor>,
         /// Updated bounded thought tail when a `Chat` `After` follow hits only
-        /// continuation deltas on the trailing unfinished thinking row.
+        /// continuation deltas on the active group's tracked unfinished thinking row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        tail_thought: Option<Box<WorkThoughtUpdate>>,
+        tail_thought: Option<Box<WorkThought>>,
     },
 }
 
