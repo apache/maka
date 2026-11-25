@@ -19,13 +19,17 @@
 
 use apply_patch::{PatchOperation, apply_update, parse_patch};
 
-fn update(source: &str, diff: &str) -> String {
+fn try_update(source: &str, diff: &str) -> Result<String, apply_patch::PatchError> {
     let patch = format!("*** Begin Patch\n*** Update File: target\n{diff}\n*** End Patch");
     let operations = parse_patch(&patch).unwrap();
     let [PatchOperation::Update { chunks, .. }] = operations.as_slice() else {
         panic!("expected single update operation");
     };
-    apply_update(source, chunks).unwrap()
+    apply_update(source, chunks)
+}
+
+fn update(source: &str, diff: &str) -> String {
+    try_update(source, diff).unwrap()
 }
 
 #[test]
@@ -64,14 +68,7 @@ fn eof_targets_final_occurrence_and_rejects_backtracking() {
         update("x\ny\nx\n", "@@\n-x\n+z\n*** End of File"),
         "x\ny\nz\n"
     );
-    let operations = parse_patch(
-        "*** Begin Patch\n*** Update File: target\n@@\n-y\n+Y\n@@\n-x\n+X\n*** End of File\n*** End Patch",
-    )
-    .unwrap();
-    let [PatchOperation::Update { chunks, .. }] = operations.as_slice() else {
-        panic!("expected single update operation");
-    };
-    assert!(apply_update("x\ny\n", chunks).is_err());
+    assert!(try_update("x\ny\n", "@@\n-y\n+Y\n@@\n-x\n+X\n*** End of File").is_err());
     assert_eq!(update("a\nb\n", "@@\n-b\n+z\n "), "a\nz\n");
 }
 

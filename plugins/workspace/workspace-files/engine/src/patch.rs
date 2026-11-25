@@ -52,10 +52,10 @@ impl Batch {
     fn parse_envelope(patch: &str) -> Result<Self, ToolError> {
         let operations = parse_patch(patch).map_err(patch_error)?;
         for operation in &operations {
-            let path = operation_path(operation)
+            if operation_path(operation)
                 .to_str()
-                .ok_or_else(|| failed("patch requires a UTF-8 path"))?;
-            if path.is_empty() || path.contains('\0') || path.contains("://") {
+                .is_none_or(|path| path.contains("://"))
+            {
                 return Err(failed("patch requires filesystem paths"));
             }
         }
@@ -73,9 +73,10 @@ pub fn patch_paths(patch: &str) -> Result<Vec<String>, ToolError> {
     let batch = Batch::parse_envelope(patch)?;
     let mut paths = Vec::new();
     for path in batch.paths() {
-        let path = path.to_string_lossy().into_owned();
-        if !paths.contains(&path) {
-            paths.push(path);
+        if let Some(path) = path.to_str()
+            && !paths.iter().any(|seen| seen == path)
+        {
+            paths.push(path.to_owned());
         }
     }
     Ok(paths)

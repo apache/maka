@@ -42,17 +42,18 @@ pub(crate) enum Kind {
 impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
-        let patch_target;
         let target = match self {
             Self::Read | Self::Write | Self::Edit | Self::List => input["path"].as_str(),
             Self::Patch => {
-                let paths = maka_fs_tools::patch_paths(input["patch"].as_str()?).ok()?;
-                patch_target = match paths.as_slice() {
-                    [] => return None,
-                    [only] => only.clone(),
-                    [first, ..] => format!("{first} (+{})", paths.len() - 1),
+                let mut paths = maka_fs_tools::patch_paths(input["patch"].as_str()?)
+                    .ok()?
+                    .into_iter();
+                let first = paths.next()?;
+                let target = match paths.len() {
+                    0 => first,
+                    extra => format!("{first} (+{extra})"),
                 };
-                Some(patch_target.as_str())
+                return self.render_target(&target, false);
             }
             Self::Glob => input["pattern"].as_str(),
             Self::Fetch => input["url"].as_str(),

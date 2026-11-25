@@ -64,36 +64,33 @@ pub(crate) fn file_path(source: &HistorySource, workspace: &str) -> Option<Strin
     let tool = source.tool.as_ref()?;
     let call = tool.call.as_ref()?;
     let key = call.presentation.as_deref()?;
-    let patch = match key {
-        "maka.workspace.Files@1/read"
-        | "maka.workspace.Files@1/write"
-        | "maka.workspace.Files@1/edit" => false,
-        "maka.workspace.Files@1/applyPatch" => true,
-        _ => return None,
-    };
-    if patch
-        && source.role == SourceRole::ToolCall
+    let is_call_args = source.role == SourceRole::ToolCall
         && source.field == SourceField::Arguments
-        && source.position == call.position
-        && selector(source, &["patch"])
-    {
-        let paths = maka_fs_tools::patch_paths(&source.text).ok()?;
-        return match paths.as_slice() {
-            [only] => absolute(only, workspace),
-            _ => None,
-        };
+        && source.position == call.position;
+    if key == "maka.workspace.Files@1/applyPatch" {
+        if !is_call_args {
+            return None;
+        }
+        if selector(source, &["patch"]) {
+            let paths = maka_fs_tools::patch_paths(&source.text).ok()?;
+            return match paths.as_slice() {
+                [only] => absolute(only, workspace),
+                _ => None,
+            };
+        }
+        return selector(source, &["operation", "path"])
+            .then(|| absolute(&source.text, workspace))
+            .flatten();
     }
-    let arguments = source.role == SourceRole::ToolCall
-        && source.field == SourceField::Arguments
-        && source.position == call.position
-        && selector(
-            source,
-            if patch {
-                &["operation", "path"]
-            } else {
-                &["path"]
-            },
-        );
+    if !matches!(
+        key,
+        "maka.workspace.Files@1/read"
+            | "maka.workspace.Files@1/write"
+            | "maka.workspace.Files@1/edit"
+    ) {
+        return None;
+    }
+    let arguments = is_call_args && selector(source, &["path"]);
     let result = source.role == SourceRole::ToolResult
         && source.field == SourceField::Result
         && matches!(
