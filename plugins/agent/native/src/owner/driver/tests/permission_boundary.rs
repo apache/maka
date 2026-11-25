@@ -18,42 +18,21 @@
  */
 
 use super::*;
-use maka_agent_api::contract::WorkspaceAccess;
+use maka_agent_api::contract::{WorkspaceAccess, WorkspacePermissions};
 
-async fn update_permissions(
-    rig: &Rig,
-    session: &str,
-    expected_revision: u64,
-    access: WorkspaceAccess,
-    request_permissions: bool,
-    revoke_grants: bool,
-) -> TestResult<Value> {
+async fn commit_mutation(rig: &Rig, method: &str, input: Value) -> TestResult<Value> {
     let mut call = rig
         .client
         .as_ref()
         .unwrap()
-        .call(
-            "agent",
-            "metadata".into(),
-            json!({
-                "sessionId":session,
-                "expectedRevision":expected_revision,
-                "title":"Permission metadata regression",
-                "labels":[],
-                "permissions":{
-                    "settings":{"access":access,"requestPermissions":request_permissions},
-                    "revokeGrants":revoke_grants,
-                },
-            }),
-            Attachments::new(),
-        )
+        .call("agent", method.into(), input, Attachments::new())
         .await?;
     call.start().await?;
     assert!(matches!(call.receive().await?, Reply::Prepared { .. }));
     let Reply::Mutation { reply, cleanup } =
         call.confirm(json!({"test":"permission-boundary"})).await?
     else {
-        return Err("metadata did not return a mutation receipt".into());
+        return Err(format!("{method} did not return a mutation receipt").into());
     };
     cleanup?;
     let Receipt::Recorded {
@@ -64,11 +43,36 @@ async fn update_permissions(
         cleanup: OperationCleanup::Confirmed,
     } = &reply.receipt
     else {
-        return Err(format!("metadata did not commit: {:?}", reply.receipt).into());
+        return Err(format!("{method} did not commit: {:?}", reply.receipt).into());
     };
     let value = value.clone();
     call.close().await?;
     Ok(value)
+}
+
+async fn update_permissions(
+    rig: &Rig,
+    session: &str,
+    expected_revision: u64,
+    access: WorkspaceAccess,
+    request_permissions: bool,
+    revoke_grants: bool,
+) -> TestResult<Value> {
+    commit_mutation(
+        rig,
+        "metadata",
+        json!({
+            "sessionId":session,
+            "expectedRevision":expected_revision,
+            "title":"Permission metadata regression",
+            "labels":[],
+            "permissions":{
+                "settings":{"access":access,"requestPermissions":request_permissions},
+                "revokeGrants":revoke_grants,
+            },
+        }),
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -418,5 +422,153 @@ async fn external_host_tools_respect_session_sandbox() -> TestResult<()> {
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_keeps_parent_permissions_for_user_and_caps_agent_caller() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        // Rig configures installation settings.permissions as ReadOnly / requestPermissions=false.
+        let parent_id = rig.start().await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let parent = owner.mutable_session(&parent_id).await?;
+        let full_access = WorkspacePermissions {
+            access: WorkspaceAccess::DangerFullAccess,
+            request_permissions: true,
+        };
+        let upgraded = update_permissions(
+            &rig,
+            &parent_id,
+            parent.revision,
+            full_access.access,
+            full_access.request_permissions,
+            false,
+        )
+        .await?;
+        assert_eq!(upgraded["kind"], "committed", "{upgraded}");
+        let parent = owner.mutable_session(&parent_id).await?;
+
+        let user_fork = commit_mutation(
+            &rig,
+            "fork",
+            json!({
+                "sessionId": parent_id,
+                "expectedRevision": parent.revision,
+                "position": {"kind": "end"},
+                "title": "User side question",
+                "labels": [],
+                "side": true,
+            }),
+        )
+        .await?;
+        assert_eq!(user_fork["kind"], "forked", "{user_fork}");
+        let user_fork_id = user_fork["session"]["id"]
+            .as_str()
+            .ok_or("user fork id missing")?;
+        let user_fork_session = owner.mutable_session(user_fork_id).await?;
+        assert_eq!(user_fork_session.configuration.permissions, full_access);
+        assert_eq!(user_fork_session.configuration.parent_session_id, None);
+
+        let caller_created = commit_mutation(
+            &rig,
+            "create",
+            json!({
+                "title": "Lower-privileged agent caller",
+                "labels": [],
+                "workspace": {"kind": "directory", "path": rig.directory.path().join("workspace")},
+            }),
+        )
+        .await?;
+        assert_eq!(caller_created["kind"], "created", "{caller_created}");
+        let caller_id = caller_created["session"]["id"]
+            .as_str()
+            .ok_or("caller session id missing")?
+            .to_owned();
+        let caller = owner.mutable_session(&caller_id).await?;
+        let caller_ceiling = WorkspacePermissions {
+            access: WorkspaceAccess::WorkspaceWrite,
+            request_permissions: false,
+        };
+        let caller_updated = update_permissions(
+            &rig,
+            &caller_id,
+            caller.revision,
+            caller_ceiling.access,
+            caller_ceiling.request_permissions,
+            false,
+        )
+        .await?;
+        assert_eq!(caller_updated["kind"], "committed", "{caller_updated}");
+
+        rig.assemble(&caller_id).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let target = maka_plugin_core::contract::ServiceTarget::Export {
+            name: "agent".into(),
+        };
+        let request = owner
+            .services
+            .select_method(&target, "sessionCreate")?
+            .request_with_work(
+                maka_capabilities::call::Identity::Agent {
+                    execution: driver.access.execution().clone(),
+                    operation_id: None,
+                },
+                CancellationToken::new(),
+                driver.access.custody().clone(),
+            )?;
+        let completed = request
+            .begin_mutation_target(
+                &target,
+                "sessionCreate".into(),
+                json!({
+                    "title": "Agent fork of full-access session",
+                    "forkFrom": {"sessionId": parent_id, "expectedRevision": parent.revision},
+                }),
+                Uuid::new_v4(),
+                json!({"test": "agent-fork-ceiling"}),
+                Attachments::new(),
+            )?
+            .await?
+            .completion()
+            .await;
+        completed.cleanup?;
+        request.finish().await?;
+        let Receipt::Recorded {
+            outcome:
+                OperationOutcome::Returned {
+                    result: OperationResult::Success { value: agent_fork },
+                },
+            cleanup: OperationCleanup::Confirmed,
+        } = completed.reply.receipt
+        else {
+            return Err(format!("agent fork did not commit: {:?}", completed.reply.receipt).into());
+        };
+        assert_eq!(agent_fork["kind"], "forked", "{agent_fork}");
+        let agent_fork_id = agent_fork["session"]["id"]
+            .as_str()
+            .ok_or("agent fork id missing")?;
+        let agent_fork_session = owner.mutable_session(agent_fork_id).await?;
+        assert_eq!(agent_fork_session.configuration.permissions, caller_ceiling);
+        assert_eq!(
+            agent_fork_session
+                .configuration
+                .parent_session_id
+                .as_deref(),
+            Some(caller_id.as_str())
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&outcome, Ok(Ok(Ok(())))),
+        "fork permissions regression: {outcome:?}"
+    );
+    assert!(
+        cleanup.is_empty(),
+        "fork permissions fixture cleanup: {cleanup:?}"
+    );
     Ok(())
 }

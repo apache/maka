@@ -290,28 +290,29 @@ impl Owner {
         } else {
             self.mcp_projects.base.clone()
         };
-        let policy = self.creation_policy(scope).await?;
-        let tools = intersect_tools(parent.tools, policy.tools).map(|names| {
+        let (incognito, parent_session_id, tools, permissions, caller_fence) =
+            match self.agent_caller(scope).await? {
+                None => (
+                    parent.incognito,
+                    None,
+                    parent.tools,
+                    parent.permissions,
+                    None,
+                ),
+                Some(caller) => (
+                    parent.incognito || caller.incognito,
+                    Some(caller.session_id),
+                    intersect_tools(parent.tools, caller.tools),
+                    cap_permissions(parent.permissions, &caller.permissions),
+                    Some(caller.fence),
+                ),
+            };
+        let tools = tools.map(|names| {
             names
                 .into_iter()
                 .filter(|name| catalog.tools.contains(name))
                 .collect()
         });
-        // A user fork keeps the access the user already gave the parent; only an
-        // agent's fork is capped by the calling session.
-        let ceiling = match scope.identity.agent() {
-            None => parent.permissions.clone(),
-            Some(_) => policy.permissions,
-        };
-        let access = match (parent.permissions.access, ceiling.access) {
-            (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
-                WorkspaceAccess::ReadOnly
-            }
-            (WorkspaceAccess::WorkspaceWrite, _) | (_, WorkspaceAccess::WorkspaceWrite) => {
-                WorkspaceAccess::WorkspaceWrite
-            }
-            _ => WorkspaceAccess::DangerFullAccess,
-        };
         let (candidate, workspace_statement) = self
             .store
             .prepare_creation_workspace(&self.prefix, |_| &parent.workspace, None, &writer)
@@ -320,11 +321,8 @@ impl Owner {
         let workspace = candidate.reference();
         let stamp = candidate.stamp();
         let configuration = StoredSessionConfiguration {
-            incognito: parent.incognito || policy.incognito,
-            parent_session_id: scope
-                .identity
-                .agent()
-                .map(|source| source.session_id.clone()),
+            incognito,
+            parent_session_id,
             backend: parent.backend,
             applied_preset: parent.applied_preset,
             compaction_prompt: parent.compaction_prompt,
@@ -335,11 +333,7 @@ impl Owner {
             pinned: false,
             labels: input.labels,
             workspace,
-            permissions: WorkspacePermissions {
-                access,
-                request_permissions: parent.permissions.request_permissions
-                    && ceiling.request_permissions,
-            },
+            permissions,
             boundary_revision: 0,
         };
 
@@ -410,7 +404,7 @@ impl Owner {
                             statement,
                             planned,
                             source: self.data_source.clone(),
-                            caller: policy.caller,
+                            caller: caller_fence,
                             session_create_tool,
                         })
                     })
@@ -470,7 +464,7 @@ impl Owner {
                             statement,
                             planned,
                             source: self.data_source.clone(),
-                            caller: policy.caller,
+                            caller: caller_fence,
                             session_create_tool,
                         })
                     })
