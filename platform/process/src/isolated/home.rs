@@ -527,7 +527,7 @@ pub(super) fn seed(
     owner.home_seed = SeedState::Failed;
     #[cfg(target_os = "macos")]
     {
-        let input = owner.home_capture.input.clone();
+        let input = owner.home_capture().input;
         ensure_home_anchor(&input)?;
         ensure_fresh(&input, &input.home, Path::new(""))?;
         seed_entries(&input, entries)?;
