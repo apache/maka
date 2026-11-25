@@ -21,7 +21,7 @@ import net from 'node:net';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -31,9 +31,11 @@ const antigravity =
   args.length === 7 &&
   args.slice(0, 6).join(' ') ===
     'acp --process-per-session --dangerously-skip-permissions --agent maka --add-dir' &&
-  args[6] === managedAgent;
+  normalize(args[6]) === managedAgent;
 if (!antigravity && args.join(' ') !== 'app-server --listen stdio://')
-  throw Error('Unexpected external agent invocation');
+  throw Error(
+    `Unexpected external agent invocation: ${JSON.stringify(args)} (profile ${managedAgent})`,
+  );
 if (antigravity) {
   const profile = await readFile(join(managedAgent, '.agents', 'agents', 'maka.md'), 'utf8');
   if (!profile.startsWith('---\nname: maka\n')) throw Error('Missing Maka agent definition');
@@ -74,7 +76,9 @@ if (antigravity && !process.env.FAKE_ACP_WORKER) {
       });
       sessions.set(id, worker);
       worker.stdout.pipe(process.stdout, { end: false });
-      worker.on('exit', () => sessions.delete(id));
+      worker.on('exit', () => {
+        if (sessions.get(id) === worker) sessions.delete(id);
+      });
     }
     sessions.get(id).stdin.write(JSON.stringify(frame) + '\n');
   }

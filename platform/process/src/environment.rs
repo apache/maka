@@ -49,6 +49,11 @@ pub(super) fn inherit(
             let Some(name) = name.to_str() else {
                 return false;
             };
+            // cmd.exe stores per-drive working directories as =C: pseudovariables.
+            #[cfg(windows)]
+            if name.starts_with('=') {
+                return false;
+            }
             let upper = name.to_ascii_uppercase();
             !["KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL"]
                 .iter()

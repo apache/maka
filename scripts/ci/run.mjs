@@ -196,7 +196,7 @@ async function withArchiveResources(listing, resources, create) {
   return await create();
 }
 
-const helperSuites = new Set(['root', 'windows-shell', 'macos-agent-execution', 'desktop']);
+const helperSuites = new Set(['root', 'windows-shell', 'agent-execution', 'desktop']);
 
 function skipsHelperBuild(extra) {
   const separator = extra.indexOf('--');
@@ -422,13 +422,13 @@ export function executor(
         'windows-skills',
         'windows-nsh',
         'macos-host',
-        'macos-agent-execution',
+        'agent-execution',
         'windows-shell',
       ].includes(id)
     ) {
       await nextest(id, true, filter, extra);
       if (
-        ['windows-shell', 'macos-agent-execution', 'desktop'].includes(id) &&
+        ['windows-shell', 'agent-execution', 'desktop'].includes(id) &&
         !skipsHelperBuild(extra)
       ) {
         await buildRuntimeHelpers(id, extra);
@@ -559,7 +559,7 @@ export function executor(
         await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
-    } else if (id === 'macos-agent-execution' || id === 'desktop') {
+    } else if (id === 'agent-execution' || id === 'desktop') {
       await nextest(id, false, filter ?? suites[id].filter, [
         '--no-tests=fail',
         '--test-threads',

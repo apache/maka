@@ -39,6 +39,12 @@ pub fn background(executable: &Path, args: &[&str]) -> io::Result<()> {
         .to_str()
         .ok_or_else(|| io::Error::other("helper executable must be UTF-8"))?;
     let application = wide(executable)?;
+    // Pin CWD to the helper's own directory so detached read-preparation helpers
+    // never inherit an ephemeral task workspace and block its deletion on Windows.
+    let cwd =
+        wide(dunce::simplified(executable.parent().ok_or_else(|| {
+            io::Error::other("helper executable has no parent")
+        })?))?;
     let line = std::iter::once(path)
         .chain(args.iter().copied())
         .map(quote)
@@ -63,7 +69,7 @@ pub fn background(executable: &Path, args: &[&str]) -> io::Result<()> {
             0,
             CREATE_NO_WINDOW,
             ptr::null(),
-            ptr::null(),
+            cwd.as_ptr(),
             &startup,
             &mut process,
         ))?;

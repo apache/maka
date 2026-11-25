@@ -36,7 +36,6 @@ use std::{
 pub struct Command {
     #[cfg(target_os = "macos")]
     pub(crate) private_stdio: bool,
-    #[cfg(unix)]
     pub(crate) external_owner: Option<PathBuf>,
     pub(crate) executable: PathBuf,
     pub(crate) args: Vec<Argument>,
@@ -91,7 +90,8 @@ impl WorkingDirectory {
 /// conversion off Command makes forgetting the sandbox a compile-time error.
 pub(crate) struct Prepared(Command);
 
-#[cfg_attr(windows, derive(serde::Serialize, serde::Deserialize))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(unix, serde(untagged))]
 pub(crate) enum Argument {
     Quoted(OsString),
     #[cfg(windows)]
@@ -139,7 +139,6 @@ impl Command {
 
     fn with_directory(executable: PathBuf, cwd: WorkingDirectory) -> Self {
         Self {
-            #[cfg(unix)]
             external_owner: None,
             #[cfg(target_os = "macos")]
             private_stdio: false,
@@ -479,17 +478,24 @@ impl Command {
     pub fn env(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
         let key = key.as_ref();
         #[cfg(windows)]
-        self.environment.retain(|existing, _| {
-            existing.to_string_lossy().to_uppercase() != key.to_string_lossy().to_uppercase()
-        });
+        self.remove_env(key);
         self.environment
             .insert(key.to_owned(), value.as_ref().to_owned());
         self
     }
+    pub(crate) fn remove_env(&mut self, key: &OsStr) {
+        #[cfg(unix)]
+        self.environment.remove(key);
+        #[cfg(windows)]
+        {
+            let key = key.to_string_lossy().to_uppercase();
+            self.environment
+                .retain(|existing, _| existing.to_string_lossy().to_uppercase() != key);
+        }
+    }
 }
 
 impl Prepared {
-    #[cfg(unix)]
     pub(crate) fn take_external_owner(&mut self) -> Option<PathBuf> {
         self.0.external_owner.take()
     }

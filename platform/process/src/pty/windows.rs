@@ -203,6 +203,10 @@ impl PtyChild {
         Ok(true)
     }
 
+    pub(crate) async fn root_exited(&self) -> io::Result<()> {
+        wait_process(&self.process).await.map(|_| ())
+    }
+
     /// Cancellation-safe wait; exit code 259 is valid after the handle signals.
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.status {

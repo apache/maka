@@ -322,7 +322,7 @@ fn write_scopes(account: &Account, root: &std::path::Path) {
         std::fs::write(b.join("file"), "b").unwrap();
     }
     for (cap, allowed, denied) in [(&first, &a, &b), (&second, &b, &a)] {
-        let token = WriteToken::new(base.as_handle(), std::slice::from_ref(cap)).unwrap();
+        let token = WriteToken::new(base.as_handle(), std::slice::from_ref(cap), &[]).unwrap();
         let _identity = Impersonation::new(token.as_handle());
         assert_eq!(
             std::fs::read_to_string(root.join("outside")).unwrap(),
@@ -378,7 +378,7 @@ fn write_scopes(account: &Account, root: &std::path::Path) {
         acl::set(&file, cap.sid(), Scope::Subtree, None).unwrap();
     }
     {
-        let token = WriteToken::new(base.as_handle(), std::slice::from_ref(&first)).unwrap();
+        let token = WriteToken::new(base.as_handle(), std::slice::from_ref(&first), &[]).unwrap();
         let _identity = Impersonation::new(token.as_handle());
         assert_eq!(
             std::fs::write(moved.join("file"), "escaped")
@@ -507,8 +507,11 @@ impl Account {
         let mut child = PROCESS_INFORMATION::default();
         let ok = if restricted {
             let base = self.token()?;
-            let token =
-                WriteToken::new(base.as_handle(), std::slice::from_ref(&desktop.capability))?;
+            let token = WriteToken::new(
+                base.as_handle(),
+                std::slice::from_ref(&desktop.capability),
+                &[],
+            )?;
             let mut environment = Vec::new();
             for (name, value) in [
                 ("SystemRoot", system.as_str()),

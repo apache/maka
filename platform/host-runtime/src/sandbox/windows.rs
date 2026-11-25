@@ -133,6 +133,7 @@ pub struct Removed(Uuid);
 pub struct ExecutionAccount {
     pub id: Uuid,
     pub capability: Uuid,
+    pub read_group_sid: String,
     pub account: Account,
     pub password: Password,
     pub job: Arc<ExecutionJob>,
@@ -344,6 +345,7 @@ impl Installation {
         Ok(ExecutionAccount {
             id,
             capability,
+            read_group_sid: configured.read_group_sid,
             account,
             password,
             job,

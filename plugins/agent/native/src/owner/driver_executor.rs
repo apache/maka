@@ -994,6 +994,7 @@ impl ExternalPorts for DriverExecutor {
                     &agent.helper,
                     &actual,
                     &privacy,
+                    &agent.isolated_runtime(&self.state_root),
                     self.cancellation.child_token(),
                 )
                 .await
@@ -1388,7 +1389,7 @@ impl ExecutorAccess for ExecutionAuthority {
     fn prepare_private_task<'a>(
         &'a self,
         context: &'a Context,
-        selected: &'a maka_process::Command,
+        selected: &'a mut maka_process::Command,
     ) -> BoxFuture<'a, Result<maka_process::isolated::TaskOwner, Error>> {
         Box::pin(async move {
             self.validate(context).await?;
@@ -1433,10 +1434,14 @@ impl ExecutorAccess for ExecutionAuthority {
                 }
                 None => prepared.owner,
             };
-            owner
-                .bind_command(selected, context.scope().sandbox_floor())
-                .await
-                .map_err(|error| Error::IsolationUnavailable(error.to_string()))?;
+            maka_agent_authority::executor::bind_program(
+                &mut owner,
+                selected,
+                context.scope().sandbox_floor(),
+                context,
+            )
+            .await
+            .map_err(|error| Error::IsolationUnavailable(error.to_string()))?;
             let mut options = tokio::fs::OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]

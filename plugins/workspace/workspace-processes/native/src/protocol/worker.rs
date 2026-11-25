@@ -41,7 +41,15 @@ pub(super) async fn run(
     mut close_receive: mpsc::Receiver<oneshot::Sender<Result<Written, String>>>,
 ) -> HandlerResult {
     let result:HandlerResult=async {
-    let setup=match &role { Role::Runtime(_)=>None,Role::Setup(access)=>Some((access.clone(),isolated.home_capture())) };
+    let setup = match &role {
+        Role::Runtime(_) => None,
+        Role::Setup(access) => {
+            let home = isolated.home_capture().cloned().ok_or_else(|| HandlerError::Unknown {
+                diagnostic: "setup task has no private HOME".into(),
+            })?;
+            Some((access.clone(), home))
+        }
+    };
     let mut ticket=context.scope().resources.reserve().map_err(diagnostic)?;
     ticket.start();
     let mut process=match isolated.spawn_pipe(command).await {
@@ -99,10 +107,7 @@ pub(super) async fn run(
     let (end,(),pipes)=tokio::join!(lifecycle,report(write(process.stdin,input,&finished),&failure,&fault),output);
     let (status,physical)=match end {
         LifecycleEnd::Wait(status)=>{
-            #[cfg(unix)]
             let physical=process.child.local_resources_closed();
-            #[cfg(not(unix))]
-            let physical=status.is_ok();
             (status,physical)
         },
         LifecycleEnd::Failed(diagnostic)=>(Err(diagnostic),false),

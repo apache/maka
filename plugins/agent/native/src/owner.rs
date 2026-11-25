@@ -308,6 +308,20 @@ impl Owner {
         Ok(())
     }
 
+    fn isolated_runtime(
+        &self,
+        _state_root: &std::path::Path,
+    ) -> maka_process::isolated::SandboxRuntime {
+        let runtime = maka_process::isolated::SandboxRuntime::default();
+        #[cfg(target_os = "linux")]
+        let runtime = runtime.with_network_helper(self.helper.clone());
+        #[cfg(windows)]
+        let runtime = runtime.with_backend(Arc::new(
+            maka_host_runtime::sandbox::windows::Backend::new(_state_root, &self.helper),
+        ));
+        runtime
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }

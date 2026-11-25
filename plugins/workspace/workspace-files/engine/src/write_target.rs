@@ -32,7 +32,6 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod delete;
-#[cfg(unix)]
 mod publication;
 #[cfg(windows)]
 mod windows;
@@ -43,7 +42,6 @@ pub(crate) enum ReadMode {
     None,
     Required,
     Preview,
-    #[cfg(unix)]
     Permissions,
 }
 fn identity(metadata: &Metadata) -> Identity {
@@ -113,9 +111,16 @@ impl Target {
                 }
                 let mut options = file_options(false);
                 options.read(!matches!(read, ReadMode::None));
-                #[cfg(unix)]
                 if matches!(read, ReadMode::Permissions) {
                     options.write(false);
+                    #[cfg(windows)]
+                    {
+                        use cap_std::fs::OpenOptionsExt;
+                        use windows_sys::Win32::{
+                            Foundation::GENERIC_READ, Storage::FileSystem::FILE_WRITE_ATTRIBUTES,
+                        };
+                        options.access_mode(GENERIC_READ | FILE_WRITE_ATTRIBUTES);
+                    }
                 }
                 let file = parent
                     .open_with(&name, &options)

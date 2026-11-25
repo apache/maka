@@ -234,8 +234,13 @@ fn export(
     let output = std::path::absolute(output)?;
     // All source validation precedes filesystem effects. Existing output,
     // including an empty directory or a symlink, is never replaced.
-    std::fs::create_dir(&output)?;
-    maka_event_log::root::private_directory(&output)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&output)?;
+    }
+    #[cfg(windows)]
+    maka_event_log::root::windows::create_private_directory(&output)?;
     let package_directory = output.join("packages");
     std::fs::create_dir(&package_directory)?;
     let mut references = BTreeMap::new();

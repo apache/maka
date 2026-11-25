@@ -70,7 +70,7 @@ tempfile.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Security"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes"] }
 
 [[test]]
 name = "integration"

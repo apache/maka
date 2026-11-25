@@ -19,7 +19,7 @@
 
 use super::Error;
 use std::{fs::File, path::PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use {
     super::candidate::{
         Observation, ObservedKind, capture_error, directory_at, ensure, observe_at, observe_file,
@@ -34,16 +34,26 @@ use {
     },
 };
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use std::{
+    io,
+    path::{Component, Path},
+    sync::Arc,
+};
+#[cfg(windows)]
+use windows::freeze;
+
 /// Custody of the HOME created by this original owner, never host HOME or a
 /// descriptor-derived credential grant. Retain before consuming TaskOwner.
 #[derive(Clone)]
 pub struct HomeCapture {
-    #[cfg(target_os = "macos")]
     input: Arc<HomeInput>,
 }
-#[cfg(target_os = "macos")]
 struct HomeInput {
     resource: File,
+    #[cfg(unix)]
     resource_path: PathBuf,
     home: File,
     initial: Vec<(PathBuf, File)>,
@@ -52,14 +62,12 @@ struct HomeInput {
 /// A selected protected tree, not an atomic cut or proof that escaped writers
 /// have died. Files are exact COW clones, accessed only through read-only FDs.
 pub struct FrozenHome {
-    #[cfg(target_os = "macos")]
     input: Arc<HomeInput>,
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     container: File,
-    #[cfg(target_os = "macos")]
     directory: File,
-    #[cfg(not(target_os = "macos"))]
-    _private: (),
+    #[cfg(windows)]
+    entries: Arc<[super::SnapshotFile]>,
 }
 
 pub struct HomeEntry {
@@ -75,15 +83,18 @@ pub enum HomeEntryKind {
 }
 
 pub struct HomeEntries {
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
+    entries: Arc<[super::SnapshotFile]>,
+    #[cfg(windows)]
+    next: usize,
     directory: File,
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     records:
         serde_json::StreamDeserializer<'static, serde_json::de::IoRead<BufReader<File>>, Record>,
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     failed: bool,
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -91,7 +102,7 @@ struct Record {
     mode: u32,
     kind: Kind,
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Kind {
@@ -102,13 +113,12 @@ enum Kind {
 
 pub(super) enum SeedState {
     Fresh,
-    #[cfg(target_os = "macos")]
     Seeded,
     Failed,
 }
 
 impl HomeCapture {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub(super) fn from_resource(path: &Path) -> Result<Self, Error> {
         let resource = super::evidence::open_resource(path)?;
         let home = directory_at(&resource, OsStr::new("home"))?;
@@ -128,44 +138,24 @@ impl HomeCapture {
             }),
         })
     }
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn from_resource(_: &std::path::Path) -> Result<Self, Error> {
-        Err(unavailable())
-    }
-
     /// Compare two already held capabilities. This cannot mint either one.
     pub fn owns(&self, frozen: &FrozenHome) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            Arc::ptr_eq(&self.input, &frozen.input)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = frozen;
-            false
-        }
+        Arc::ptr_eq(&self.input, &frozen.input)
     }
 
     /// Requires the original group's closure and drained streams. AuthACK,
     /// current Root authority and profile publication remain broker decisions.
     pub async fn freeze(&self) -> Result<FrozenHome, Error> {
-        #[cfg(target_os = "macos")]
-        {
-            let input = self.input.clone();
-            tokio::task::spawn_blocking(move || freeze(input))
-                .await
-                .map_err(io::Error::other)?
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(unavailable())
-        }
+        let input = self.input.clone();
+        tokio::task::spawn_blocking(move || freeze(input))
+            .await
+            .map_err(io::Error::other)?
     }
 }
 impl FrozenHome {
     /// Streaming metadata and owned read-only file handles; call off-executor.
     pub fn entries(&self) -> Result<HomeEntries, Error> {
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         {
             let records = read_file(&self.container, OsStr::new("inventory.jsonl"))?;
             Ok(HomeEntries {
@@ -174,16 +164,18 @@ impl FrozenHome {
                 failed: false,
             })
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(unavailable())
-        }
+        #[cfg(windows)]
+        Ok(HomeEntries {
+            directory: self.directory.try_clone()?,
+            entries: self.entries.clone(),
+            next: 0,
+        })
     }
 }
 impl Iterator for HomeEntries {
     type Item = Result<HomeEntry, Error>;
     fn next(&mut self) -> Option<Self::Item> {
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         {
             if self.failed {
                 return None;
@@ -225,33 +217,27 @@ impl Iterator for HomeEntries {
             }
             Some(entry)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
         {
-            None
+            let entry = self.entries.get(self.next)?;
+            self.next += 1;
+            Some(windows::entry(&self.directory, entry))
         }
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn unavailable() -> Error {
-    Error::CaptureUnsupported("private HOME custody unavailable on this platform".into())
-}
-#[cfg(target_os = "macos")]
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-#[cfg(target_os = "macos")]
 fn unsupported(message: &str) -> Error {
     Error::CaptureUnsupported(message.into())
 }
-#[cfg(target_os = "macos")]
 fn valid_mode(mode: u32) -> Result<(), Error> {
     if mode & !0o777 != 0 {
         return Err(unsupported("HOME entry contains special permission bits"));
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
 fn valid_path(path: &Path) -> Result<(), Error> {
     if path.as_os_str().is_empty()
         || path
@@ -262,7 +248,7 @@ fn valid_path(path: &Path) -> Result<(), Error> {
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn read_file(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(openat(
         parent,
@@ -272,7 +258,7 @@ fn read_file(parent: &File, name: &OsStr) -> io::Result<File> {
     )?
     .into())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn parent_directory(root: &File, relative: &Path) -> io::Result<File> {
     let mut parent = root.try_clone()?;
     for part in relative.components() {
@@ -283,7 +269,7 @@ fn parent_directory(root: &File, relative: &Path) -> io::Result<File> {
     }
     Ok(parent)
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn observed(parent: &File, name: &OsStr, path: &Path) -> Result<Observation, Error> {
     let raw = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|e| capture_error(path, e.into()))?;
@@ -298,7 +284,7 @@ fn observed(parent: &File, name: &OsStr, path: &Path) -> Result<Observation, Err
     Ok(observed)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn freeze(input: Arc<HomeInput>) -> Result<FrozenHome, Error> {
     let owner = directory_at(&input.resource, OsStr::new("owner"))?;
     let closure: super::Closure =
@@ -335,7 +321,11 @@ fn freeze(input: Arc<HomeInput>) -> Result<FrozenHome, Error> {
     )?
     .into();
     let mut records = BufWriter::new(inventory);
+    #[cfg(target_os = "linux")]
+    let before = super::candidate::inventory(&input.home)?;
     freeze_directory(&input.home, &directory, Path::new(""), &mut records)?;
+    #[cfg(target_os = "linux")]
+    super::candidate::ensure_inventory(&before, &input.home)?;
     records.flush()?;
     fchmod(records.get_ref(), Mode::RUSR)?;
     fchmod(&directory, Mode::RUSR | Mode::XUSR)?;
@@ -359,7 +349,7 @@ fn freeze(input: Arc<HomeInput>) -> Result<FrozenHome, Error> {
     }
     Ok(frozen)
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn freeze_directory(
     source: &File,
     destination: &File,
@@ -400,18 +390,7 @@ fn freeze_directory(
             ObservedKind::File => {
                 let file = read_file(source, name).map_err(|e| capture_error(&path, e))?;
                 ensure(&observed, &observe_file(&file)?, &path)?;
-                match rustix::fs::fclonefileat(
-                    &file,
-                    destination,
-                    name,
-                    rustix::fs::CloneFlags::NOOWNERCOPY,
-                ) {
-                    Ok(()) => {}
-                    Err(rustix::io::Errno::XDEV | rustix::io::Errno::OPNOTSUPP) => {
-                        return Err(unsupported("HOME snapshot requires exact physical COW"));
-                    }
-                    Err(error) => return Err(error.into()),
-                }
+                super::fs::freeze_file(&file, destination, name, &path)?;
                 let cloned = read_file(destination, name)?;
                 let selected = observe_file(&cloned)?;
                 if selected.kind != ObservedKind::File
@@ -446,7 +425,7 @@ fn freeze_directory(
 
 /// Resolve link components ourselves so a symlink followed by `..` cannot
 /// defeat a merely lexical prefix check. Missing suffixes stay tree-relative.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn validate_link(root: &File, relative: &Path) -> Result<(), Error> {
     use std::{collections::VecDeque, ffi::OsString, os::unix::ffi::OsStringExt};
     let mut pending: VecDeque<OsString> = relative
@@ -525,23 +504,34 @@ pub(super) fn seed(
         ));
     }
     owner.home_seed = SeedState::Failed;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        let input = owner.home_capture.input.clone();
-        ensure_home_anchor(&input)?;
-        ensure_fresh(&input, &input.home, Path::new(""))?;
-        seed_entries(&input, entries)?;
-        ensure_home_anchor(&input)?;
+        let input = &owner
+            .home_capture
+            .as_ref()
+            .ok_or_else(|| unsupported("live task has no private HOME"))?
+            .input;
+        ensure_home_anchor(input)?;
+        ensure_fresh(input, &input.home, Path::new(""))?;
+        seed_entries(input, entries)?;
+        ensure_home_anchor(input)?;
         owner.home_seed = SeedState::Seeded;
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        let _ = entries;
-        Err(unavailable())
+        windows::seed(
+            owner
+                .home_capture
+                .as_ref()
+                .ok_or_else(|| unsupported("live task has no private HOME"))?,
+            entries,
+        )?;
+        owner.home_seed = SeedState::Seeded;
+        Ok(())
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn ensure_home_anchor(input: &HomeInput) -> Result<(), Error> {
     let current = directory_at(&input.resource, OsStr::new("home"))?;
     if super::snapshot::identity(&current.metadata()?)
@@ -551,7 +541,7 @@ fn ensure_home_anchor(input: &HomeInput) -> Result<(), Error> {
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn ensure_fresh(input: &HomeInput, directory: &File, relative: &Path) -> Result<(), Error> {
     use std::os::unix::ffi::OsStrExt;
     let scan = directory_at(directory, OsStr::new("."))?;
@@ -578,7 +568,7 @@ fn ensure_fresh(input: &HomeInput, directory: &File, relative: &Path) -> Result<
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn seed_entries(
     input: &HomeInput,
     entries: impl IntoIterator<Item = Result<HomeEntry, Error>>,
@@ -655,11 +645,10 @@ fn seed_entries(
                     return Err(unsupported("HOME seed symlink must be relative"));
                 }
                 rustix::fs::symlinkat(&target, &parent, name)?;
-                rustix::fs::chmodat(
+                super::fs::seed_link_mode(
                     &parent,
                     name,
                     Mode::from_bits_truncate(entry.mode as _),
-                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
                 )?;
             }
         }
@@ -671,7 +660,7 @@ fn seed_entries(
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn validate_seed_links(root: &File, directory: &File, relative: &Path) -> Result<(), Error> {
     use std::os::unix::ffi::OsStrExt;
     let scan = directory_at(directory, OsStr::new("."))?;

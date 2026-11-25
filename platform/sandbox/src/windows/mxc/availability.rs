@@ -17,51 +17,24 @@
  * under the License.
  */
 
-use flatbuffers::FlatBufferBuilder;
-use mxc_sdk::mxc_common::{models::ContainerPolicy, ui_policy::resolve_ui_restrictions};
-use mxc_sdk::process_container_common::{
-    PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE, ProcessSecurityEnvironmentApi,
-    SecurityEnvironmentStartupInfo, job_object::to_job_object_uilimit_mask,
-};
-use mxc_sdk::process_security_environment_spec::process_security_environment_layout::{
-    EndpointPolicyT, FilterAction, NetworkPolicyT, ProcessSecurityEnvironmentT, SchemaVersionT,
-    finish_process_security_environment_buffer,
-};
+use mxc_sdk::v1;
 use std::sync::OnceLock;
 
-/// Probe creation and startup attributes, rather than API presence or an OS
-/// version guess. This grants no paths or network and launches no process.
+fn capabilities() -> Option<&'static v1::ProbeFacts> {
+    static PROBE: OnceLock<Option<v1::ProbeFacts>> = OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            v1::probe(None)
+                .ok()
+                .and_then(|result| result.tier.map(|_| result.probes))
+        })
+        .as_ref()
+}
+
 pub fn is_available() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE.get_or_init(|| {
-        let policy = ContainerPolicy::default();
-        let mut egress = EndpointPolicyT::default();
-        egress.default_action = FilterAction::deny;
-        let mut network = NetworkPolicyT::default();
-        network.egress = Some(Box::new(egress));
-        let mut specification = ProcessSecurityEnvironmentT::default();
-        specification.version = SchemaVersionT { major: 1, minor: 0 };
-        specification.disallow_win32k_system_calls = policy.ui.disable;
-        specification.ui_restrictions = u64::from(to_job_object_uilimit_mask(
-            &resolve_ui_restrictions(&policy.ui, &policy.base_process_ui),
-        ));
-        specification.network_policy = Some(Box::new(network));
-        let mut builder = FlatBufferBuilder::new();
-        let specification = specification.pack(&mut builder);
-        finish_process_security_environment_buffer(&mut builder, specification);
-        ProcessSecurityEnvironmentApi::load()
-            .and_then(|api| {
-                api.create(
-                    builder.finished_data(),
-                    PROCESS_SECURITY_ENVIRONMENT_FLAG_NONE,
-                )
-            })
-            .and_then(|environment| {
-                let startup =
-                    SecurityEnvironmentStartupInfo::new(Default::default(), environment.raw(), &[]);
-                environment.close();
-                startup.map(drop)
-            })
-            .is_ok()
-    })
+    capabilities().is_some()
+}
+
+pub(super) fn supports_deny_paths() -> bool {
+    capabilities().is_some_and(|facts| facts.base_container_supports_deny_paths)
 }

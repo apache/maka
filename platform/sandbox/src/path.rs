@@ -20,6 +20,14 @@
 use crate::Error;
 use std::{borrow::Cow, cmp::Ordering, path::Path};
 
+/// Resolve an existing filesystem path to the spelling used by policy rules.
+pub fn canonical_policy_path(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    let resolved = std::fs::canonicalize(path)?;
+    Ok(policy_path_from_resolved(&resolved)
+        .map_err(std::io::Error::other)?
+        .into_owned())
+}
+
 /// Translate a Host-resolved path without reopening it or changing its identity.
 /// This is not a resolver for raw user input.
 pub fn policy_path_from_resolved(path: &Path) -> Result<Cow<'_, Path>, Error> {

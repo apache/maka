@@ -168,6 +168,32 @@ fn verify(
     control: &Control,
     retiring: &CancellationToken,
 ) -> Result<(), Error> {
+    let program = program(dir, release, receipt)?;
+    for file in [program.executable, program.helper] {
+        let mut source = File::from_std(file.source);
+        let file_bytes = source.metadata()?.len();
+        let actual = copy(&mut source, None, control, retiring, file_bytes)?;
+        if actual != hex::encode(file.sha256) {
+            return Err(Error::Integrity);
+        }
+        #[cfg(unix)]
+        {
+            use cap_std::fs::PermissionsExt;
+            if source.metadata()?.permissions().mode() & 0o777 != 0o700 {
+                return Err(Error::Integrity);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn program(
+    dir: &Dir,
+    release: &Release,
+    receipt: &Receipt,
+) -> Result<maka_process::isolated::InstalledProgram, Error> {
+    use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+    use maka_process::isolated::{InstalledProgram, ProgramFile};
     if receipt.version != VERSION
         || receipt.source != release.url
         || receipt.files.len() != 2
@@ -179,25 +205,6 @@ fn verify(
     {
         return Err(Error::Integrity);
     }
-    for name in [release.server, release.helper] {
-        control.check(retiring)?;
-        if !dir.symlink_metadata(name)?.is_file() {
-            return Err(Error::Integrity);
-        }
-        let mut file = dir.open(name)?;
-        let file_bytes = file.metadata()?.len();
-        let actual = copy(&mut file, None, control, retiring, file_bytes)?;
-        if receipt.files.get(name) != Some(&actual) {
-            return Err(Error::Integrity);
-        }
-        #[cfg(unix)]
-        {
-            use cap_std::fs::PermissionsExt;
-            if file.metadata()?.permissions().mode() & 0o777 != 0o700 {
-                return Err(Error::Integrity);
-            }
-        }
-    }
     if release.platform == "darwin-arm64"
         && (receipt.archive_bytes != 111_725_488
             || receipt.files.get(release.server).map(String::as_str)
@@ -207,7 +214,36 @@ fn verify(
     {
         return Err(Error::Integrity);
     }
-    Ok(())
+    let open = |name| {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let source = dir.open_with(name, &options)?;
+        let metadata = source.metadata()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return Err(Error::Integrity);
+        }
+        let mut sha256 = [0u8; 32];
+        hex::decode_to_slice(
+            receipt.files.get(name).ok_or(Error::Integrity)?,
+            &mut sha256,
+        )
+        .map_err(|_| Error::Integrity)?;
+        Ok::<_, Error>(ProgramFile {
+            name,
+            source: source.into_std(),
+            sha256,
+        })
+    };
+    Ok(InstalledProgram {
+        executable: open(release.server)?,
+        helper: open(release.helper)?,
+        helper_env: "ANTIGRAVITY_HARNESS_PATH",
+    })
 }
 
 fn digest(text: &str) -> bool {
@@ -289,8 +325,7 @@ mod tests {
     use std::io::Cursor;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    fn archive(dir: &Dir, staging: &str, names: &[&str]) -> (u64, String) {
-        prepare(dir, staging).unwrap();
+    fn zip(names: &[&str], content: &[u8]) -> Vec<u8> {
         let mut writer = ZipWriter::new(Cursor::new(vec![]));
         for name in names {
             writer
@@ -299,9 +334,14 @@ mod tests {
                     SimpleFileOptions::default().last_modified_time(zip::DateTime::default()),
                 )
                 .unwrap();
-            writer.write_all(b"test executable").unwrap();
+            writer.write_all(content).unwrap();
         }
-        let bytes = writer.finish().unwrap().into_inner();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn archive(dir: &Dir, staging: &str, names: &[&str]) -> (u64, String) {
+        prepare(dir, staging).unwrap();
+        let bytes = zip(names, b"test executable");
         let hash = hex::encode(Sha256::digest(&bytes));
         dir.write(format!("{staging}/download.zip"), &bytes)
             .unwrap();
@@ -354,6 +394,61 @@ mod tests {
             Err(Error::Integrity)
         ));
         assert_eq!(installed.read(release.server).unwrap(), b"tampered");
+    }
+
+    #[tokio::test]
+    async fn published_files_require_a_scoped_receipt() {
+        use futures_util::future::BoxFuture;
+        use maka_capabilities::{
+            call::{Identity, Issuer},
+            storage::Directories,
+        };
+        use maka_plugin_core::storage::{
+            Mutation, Namespace, Page, Record, Scan, Store, StoreError,
+        };
+
+        struct EmptyStore;
+        impl Store for EmptyStore {
+            fn read(&self, _: String) -> BoxFuture<'_, Result<Option<Record>, StoreError>> {
+                Box::pin(async { Ok(None) })
+            }
+            fn scan(&self, _: Scan) -> BoxFuture<'_, Result<Page, StoreError>> {
+                unreachable!()
+            }
+            fn batch(&self, _: Vec<Mutation>) -> BoxFuture<'_, Result<Vec<Record>, StoreError>> {
+                unreachable!()
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let call = Issuer::default()
+            .issue(Identity::Native, CancellationToken::new())
+            .unwrap();
+        let dirs = Directories::open(temp.path()).unwrap();
+        let ns = Namespace::new("maka.agent.acp", maka_plugin_core::scope::Scope::Profile).unwrap();
+        let data = dirs.bind(&ns, call).unwrap();
+        let release = Release::for_platform("linux", "x86_64").unwrap();
+        let root = data.read_only().await.unwrap().location();
+        let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let (bytes, hash) = archive(&dir, "release", &[release.server, release.helper]);
+        let stop = CancellationToken::new();
+        publish(
+            &dir,
+            &release,
+            "release",
+            bytes,
+            hash,
+            &Control {
+                cancellation: stop.clone(),
+            },
+            &stop,
+        )
+        .unwrap();
+        let executable = root.join(release.destination()).join(release.server);
+        assert!(matches!(
+            super::super::open_program(&EmptyStore, &data, &executable, release).await,
+            Err(Error::Integrity)
+        ));
     }
 
     #[test]

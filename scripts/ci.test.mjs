@@ -199,7 +199,7 @@ test('the embedded external protocol fixture cannot be classified as documentati
   assert.equal(plan.full, false);
   assert.equal(plan.suites.root.filter, 'package(=maka-cli)');
   assert.ok(plan.suites.desktop);
-  assert.ok(plan.suites['macos-agent-execution']);
+  assert.ok(plan.suites['agent-execution']);
   assert.match(plan.suites.root.reason, /external_codex_cli/);
 });
 
@@ -227,17 +227,23 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS-only external_jobs run on native-macos without duplicating Linux recovery suites', () => {
+test('external_jobs run on both native workers and the Linux workspace suite', () => {
   const plan = full();
   assert.equal(
     plan.workers.find((worker) => worker.id === 'native-macos-agent'),
     undefined,
   );
   const worker = plan.workers.find((worker) => worker.id === 'native-macos');
-  assert.ok(worker.suites.includes('macos-agent-execution'));
+  assert.ok(worker.suites.includes('agent-execution'));
+  assert.ok(
+    plan.workers
+      .find((worker) => worker.id === 'native-windows')
+      .suites.includes('agent-execution'),
+  );
+  assert.ok(plan.suites.root);
   assert.ok(!worker.suites.includes('macos-nsh'));
-  assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
-  assert.equal(plan.suites['macos-agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
+  assert.ok(!suites['agent-execution'].cargoArgs.includes('--workspace'));
+  assert.equal(plan.suites['agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
 });
 
 test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
@@ -290,6 +296,8 @@ test('Windows process, sandbox and account-guard regressions are selected from t
   const packages = [
     ['maka-host-runtime', 'platform/host-runtime'],
     ['maka-process', 'platform/process'],
+    ['maka-cli', 'products/maka/cli'],
+    ['maka-agent-native', 'plugins/agent/native'],
     ['maka-sandbox', 'platform/sandbox'],
   ].map(([name, path]) => ({
     name,
@@ -307,6 +315,8 @@ test('Windows process, sandbox and account-guard regressions are selected from t
   for (const path of [
     'platform/host-runtime/src/sandbox/windows/guards.rs',
     'platform/process/tests/integration/conpty.rs',
+    'products/maka/cli/tests/integration/sandbox/windows/isolated.rs',
+    'plugins/agent/native/src/executor/external/claude/interactive.rs',
     'platform/sandbox/src/lib.rs',
   ]) {
     const plan = createPlan({
@@ -325,9 +335,17 @@ test('Windows process, sandbox and account-guard regressions are selected from t
       plan.suites['windows-shell'].filter,
       /native_task_namespace_can_be_denied_by_policy/,
     );
+    assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::policy::tests::/);
+    assert.ok(
+      plan.suites['windows-shell'].filter.includes(
+        '(binary_id(=maka-cli::integration) & test(sandbox::isolated::))',
+      ),
+    );
     assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
     for (const pkg of [
       'maka-process',
+      'maka-cli',
+      'maka-agent-native',
       'maka-settings-native',
       'maka-host-runtime',
       'maka-sandbox',
@@ -919,7 +937,7 @@ test('frontend workbench edits stay scoped to UI/product consumers and skip unre
   assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
   assert.doesNotMatch(plan.suites.root.filter, /package\(=maka-agent-native\)/);
   assert.equal(plan.suites.bridge, undefined);
-  assert.equal(plan.suites['macos-agent-execution'], undefined);
+  assert.equal(plan.suites['agent-execution'], undefined);
   assert.equal(plan.suites['windows-skills'], undefined);
   assert.equal(plan.suites.nsh, undefined);
   assert.equal(plan.suites.termina, undefined);

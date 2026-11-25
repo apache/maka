@@ -157,7 +157,7 @@ impl ExecutorPublication {
                     basis: permission_basis,
                     root: SourceIdentity {
                         device: identity.device,
-                        inode: identity.inode,
+                        inode: identity.inode.into(),
                     },
                     changes,
                     contents: contents

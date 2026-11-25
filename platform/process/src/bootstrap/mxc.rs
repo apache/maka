@@ -267,11 +267,16 @@ async fn helper(executable: PathBuf, endpoint: uuid::Uuid) -> io::Result<crate::
         std::env::var_os("SystemRoot").ok_or_else(|| io::Error::other("SystemRoot is missing"))?;
     let mut command = Command::new(executable, PathBuf::from(&system));
     command.env_clear().env("SystemRoot", system);
-    for name in ["SystemDrive", "LOCALAPPDATA"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
+    if let Some(drive) = std::env::var_os("SystemDrive") {
+        command.env("SystemDrive", drive);
     }
+    // Only the SDK runner needs the account's Packages location. The outer
+    // detached task helper starts with a cleared environment.
+    let local = tokio::task::spawn_blocking(dirs::data_local_dir)
+        .await
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("LocalAppData known folder is unavailable"))?;
+    command.env("LOCALAPPDATA", local);
     command
         .arg(HELPER)
         .arg(endpoint.to_string())

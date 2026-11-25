@@ -61,7 +61,11 @@ impl SourceRead {
             use maka_sandbox::filesystem::{Access, Policy, Rule};
             let policy = Policy {
                 default: Access::Read,
-                rules: vec![Rule::subtree(&private, Access::Deny)],
+                rules: vec![Rule::subtree(
+                    maka_sandbox::policy_path_from_resolved(&private)
+                        .map_err(|_| Failure::Unavailable)?,
+                    Access::Deny,
+                )],
                 deny_globs: vec![],
             }
             .compile()

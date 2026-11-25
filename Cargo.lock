@@ -8656,6 +8656,7 @@ dependencies = [
 name = "maka-acp-native"
 version = "0.3.0"
 dependencies = [
+ "dunce",
  "futures-util",
  "hex",
  "maka-agent-api",
@@ -8668,6 +8669,7 @@ dependencies = [
  "maka-host-runtime",
  "maka-interactions-api",
  "maka-plugin-core",
+ "maka-process",
  "maka-workspace-api",
  "serde",
  "serde_json",
@@ -8859,6 +8861,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8994,6 +8997,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "crossterm",
+ "dunce",
  "flate2",
  "futures-util",
  "hex",
@@ -9018,6 +9022,7 @@ dependencies = [
  "maka-computer-use",
  "maka-config",
  "maka-event-log",
+ "maka-external-agent",
  "maka-fs-tools",
  "maka-host-js",
  "maka-host-runtime",
@@ -9327,12 +9332,15 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "dunce",
  "futures-util",
  "hex",
+ "libc",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
  "maka-plugin-core",
+ "maka-process",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -9751,9 +9759,11 @@ name = "maka-process"
 version = "0.3.0"
 dependencies = [
  "alacritty_terminal",
+ "dirs",
  "dunce",
  "libc",
  "maka-agent-facts",
+ "maka-event-log",
  "maka-network",
  "maka-plugin-core",
  "maka-sandbox",
@@ -9762,6 +9772,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -9938,8 +9949,6 @@ version = "0.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
- "dunce",
- "flatbuffers",
  "globset",
  "hex",
  "libc",
@@ -10799,8 +10808,9 @@ dependencies = [
 
 [[package]]
 name = "mxc-sdk"
-version = "1.0.1"
-source = "git+https://github.com/microsoft/mxc?rev=05a430bc17a3e1b3fa2131524fc52e4319e07298#05a430bc17a3e1b3fa2131524fc52e4319e07298"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6f702443261f9e5d12f607f16f591e99ea3ff6fd886281e041b700cbbb2b5de"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -10810,6 +10820,7 @@ dependencies = [
  "flatbuffers",
  "getrandom 0.2.17",
  "libc",
+ "native-tls",
  "nix 0.29.0",
  "same-file",
  "semver",
@@ -10822,6 +10833,7 @@ dependencies = [
  "tokio",
  "tracelogging",
  "unicode-general-category",
+ "ureq",
  "url",
  "uuid",
  "widestring",
@@ -11321,9 +11333,9 @@ dependencies = [
 
 [[package]]
 name = "notify"
-version = "8.2.1"
+version = "8.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82f812702fbc75d35416d3f884e04925be7e9498f4eceea2e24ba34559284674"
+checksum = "c41a04a5f59df9322cc657286dd2d79f90816119b22c5f847607c850110205ab"
 dependencies = [
  "bitflags 2.13.2",
  "inotify",
@@ -19258,14 +19270,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
+ "der 0.8.2",
  "flate2",
  "log",
+ "native-tls",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "ureq-proto",
  "utf8-zero",
+ "webpki-root-certs",
  "webpki-roots 1.0.11",
 ]
 

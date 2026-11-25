@@ -142,3 +142,7 @@ async fn shell_diagnostics_preserve_output_exit_and_enforce_policy_before_effect
         assert_eq!(std::fs::read(cwd.join("result")).unwrap(), b"allowed");
     }
 }
+
+#[cfg(windows)]
+#[path = "sandbox/windows/isolated.rs"]
+mod isolated;

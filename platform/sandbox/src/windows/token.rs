@@ -58,7 +58,7 @@ pub struct WriteToken(OwnedHandle);
 impl WriteToken {
     /// Restrict the runner's own primary token. The runner must already be
     /// running as the provisioned execution account, not the Host identity.
-    pub fn current(capabilities: &[WriteCapability]) -> io::Result<Self> {
+    pub fn current(capabilities: &[WriteCapability], disabled_sids: &[String]) -> io::Result<Self> {
         let mut handle = ptr::null_mut();
         success(unsafe {
             OpenProcessToken(
@@ -68,13 +68,17 @@ impl WriteToken {
             )
         })?;
         let base = unsafe { OwnedHandle::from_raw_handle(handle) };
-        Self::new(base.as_handle(), capabilities)
+        Self::new(base.as_handle(), capabilities, disabled_sids)
     }
 
     /// The base needs TOKEN_QUERY, TOKEN_DUPLICATE and TOKEN_ADJUST_DEFAULT;
     /// process launch additionally needs TOKEN_ASSIGN_PRIMARY. A read-only
     /// execution still uses a capability, but grants it no workspace writes.
-    pub fn new(base: BorrowedHandle<'_>, capabilities: &[WriteCapability]) -> io::Result<Self> {
+    pub fn new(
+        base: BorrowedHandle<'_>,
+        capabilities: &[WriteCapability],
+        disabled_sids: &[String],
+    ) -> io::Result<Self> {
         if capabilities.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -85,6 +89,17 @@ impl WriteToken {
             .iter()
             .map(|cap| sid(cap.sid()))
             .collect::<io::Result<Vec<_>>>()?;
+        let disabled_allocs = disabled_sids
+            .iter()
+            .map(|value| sid(value))
+            .collect::<io::Result<Vec<_>>>()?;
+        let disabled: Vec<_> = disabled_allocs
+            .iter()
+            .map(|entry| SID_AND_ATTRIBUTES {
+                Sid: entry.0,
+                Attributes: 0,
+            })
+            .collect();
         let logon = information(base, TokenLogonSid)?;
         let user = information(base, TokenUser)?;
         if logon.len() * size_of::<usize>() < size_of::<TOKEN_GROUPS>()
@@ -116,8 +131,14 @@ impl WriteToken {
             CreateRestrictedToken(
                 base.as_raw_handle(),
                 DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
-                0,
-                ptr::null(),
+                disabled.len().try_into().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "too many disabled SIDs")
+                })?,
+                if disabled.is_empty() {
+                    ptr::null()
+                } else {
+                    disabled.as_ptr()
+                },
                 0,
                 ptr::null(),
                 restrictions.len().try_into().map_err(|_| {
