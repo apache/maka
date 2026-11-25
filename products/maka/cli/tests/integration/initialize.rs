@@ -542,3 +542,59 @@ fn public_init_times_out_unfinished_input_without_leaving_a_reader_or_root() {
     // A detached worker still reading inherited stdin would keep this pipe open.
     assert!(input.write_all(b" ").is_err());
 }
+
+#[test]
+fn status_names_a_stopped_host_instead_of_leaking_os_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("root");
+    let init = Command::new(crate::maka_executable())
+        .args(["host", "init", "--root"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let root_id = serde_json::from_slice::<serde_json::Value>(&init.stdout).unwrap()["rootId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let stopped = Command::new(crate::maka_executable())
+        .args(["host", "status", "--root"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success());
+    let stderr = String::from_utf8_lossy(&stopped.stderr);
+    assert!(stderr.contains("no Host is running"), "{stderr}");
+    assert!(stderr.contains(root.to_str().unwrap()), "{stderr}");
+    assert!(!stderr.contains("os error"), "{stderr}");
+
+    let missing = Command::new(crate::maka_executable())
+        .args(["host", "status", "--root"])
+        .arg(directory.path().join("missing"))
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("does not exist or is not initialized"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("os error"), "{stderr}");
+
+    let observed = Command::new(crate::maka_executable())
+        .args(["host", "status", "--root-id", &root_id])
+        .output()
+        .unwrap();
+    assert!(
+        observed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    let observed: serde_json::Value = serde_json::from_slice(&observed.stdout).unwrap();
+    assert_eq!(observed["kind"], "not_installed");
+}
