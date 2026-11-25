@@ -1133,7 +1133,9 @@ mod tests {
             ["sess-02"]
         );
         // Once answered it leaves the lists and the count again.
-        data.write(ClearPending { session: "sess-02" }).await.unwrap();
+        data.write(ClearPending { session: "sess-02" })
+            .await
+            .unwrap();
         assert_eq!(
             pages(SideQuestions::Hidden, 32).await,
             vec![vec!["sess-06", "sess-04", "sess-03", "sess-01"]]
