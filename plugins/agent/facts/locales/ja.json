@@ -89,6 +89,7 @@
     "ability_send_user": "SendUser（ユーザーに話しかける）",
     "ability_sleep": "sleep（このターンを終了して待機する）",
     "ability_discovery_memory": "DiscoveryMemory（調査記録、通知判断、およびユーザーフィードバック）",
+    "ability_discovery_dossiers": "{tools}（ユーザーの求めに応じて現在の発見ファイルを読む）",
     "ability_scheduled_task": "ScheduledTask（定期的な起動や 1 回限りのフォローアップを予約）",
     "ability_goals": "{tools}（ゴール）",
     "ability_recall": "Recall ツール群（過去の会話を検索）",

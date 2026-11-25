@@ -89,6 +89,7 @@
     "ability_send_user": "SendUser(사용자에게 메시지 보내기)",
     "ability_sleep": "sleep(턴 종료 및 대기)",
     "ability_discovery_memory": "DiscoveryMemory(조사 기록, 알림 결정 및 사용자 피드백)",
+    "ability_discovery_dossiers": "{tools}(사용자 요청 시 현재 발견 파일 읽기)",
     "ability_scheduled_task": "ScheduledTask(정기 깨우기 또는 일회성 후속 확인 예약)",
     "ability_goals": "{tools}(목표)",
     "ability_recall": "Recall 도구(이전 대화 검색)",

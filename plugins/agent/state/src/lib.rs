@@ -23,6 +23,7 @@ pub mod artifacts;
 pub mod cells;
 pub mod computer;
 pub mod diagnostics;
+pub mod discovery;
 pub mod external_effects;
 pub mod external_publication;
 pub mod external_steering;
@@ -404,6 +405,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 57,
+        description: "owner-scoped discovery dossiers, cursors, watches, pending actions and preferences",
+        sql: include_str!("../migrations/0057_discovery_dossiers.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -415,7 +423,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=53) {
+        for through in [0, 41].into_iter().chain(46..=56) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();
@@ -439,6 +447,16 @@ mod migration_tests {
                 )
                 .unwrap();
             assert_eq!(identities, 0);
+            for table in [
+                "discovery_dossiers",
+                "discovery_source_cursors",
+                "discovery_watches",
+                "discovery_pending_actions",
+                "discovery_preferences",
+            ] {
+                db.prepare(&format!("SELECT owner FROM {table} LIMIT 0"))
+                    .unwrap();
+            }
         }
     }
 }

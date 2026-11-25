@@ -407,42 +407,41 @@ pub(super) struct ScheduleMutation {
     pub(super) id: String,
     pub(super) approval: Result<Option<PreparedBackgroundGrant>, String>,
 }
-impl ScheduleMutation {
-    fn read(
+impl Scheduler {
+    fn read_plan(
         &self,
         connection: &rusqlite::Connection,
+        writer: &DataWriter,
         id: &str,
     ) -> Result<Option<Saved>, StoreError> {
-        self.scheduler
-            .storage
-            .read_in_transaction(connection, &task_key(id), &self.writer)?
+        self.storage
+            .read_in_transaction(connection, &task_key(id), writer)?
             .map(|record| decode_saved(record, id))
             .transpose()
             .map(Option::flatten)
     }
-    fn catalog(
+    fn mutation_catalog(
         &self,
         connection: &rusqlite::Connection,
+        writer: &DataWriter,
         saved: Option<Saved>,
     ) -> Result<Catalog, StoreError> {
-        let record =
-            self.scheduler
-                .storage
-                .read_in_transaction(connection, "index", &self.writer)?;
+        let record = self
+            .storage
+            .read_in_transaction(connection, "index", writer)?;
         let revision = record.as_ref().map(|record| record.revision);
         let index: Index = record
             .and_then(|record| record.data.value().cloned())
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or(Index { ids: vec![] });
-        let record =
-            self.scheduler
-                .storage
-                .read_in_transaction(connection, "ready", &self.writer)?;
+        let record = self
+            .storage
+            .read_in_transaction(connection, "ready", writer)?;
         let ready_revision = record.as_ref().map(|record| record.revision);
         let mut plans = BTreeMap::new();
         if let Some(saved) = saved {
-            plans.insert(self.id.clone(), saved);
+            plans.insert(saved.plan.task.id.clone(), saved);
         }
         let ready = if let Some(value) = record.as_ref().and_then(|record| record.data.value()) {
             serde_json::from_value(value.clone())?
@@ -450,7 +449,7 @@ impl ScheduleMutation {
             let mut ready = ReadyIndex::default();
             for id in &index.ids {
                 if !plans.contains_key(id) {
-                    let saved = self.read(connection, id)?.ok_or_else(|| {
+                    let saved = self.read_plan(connection, writer, id)?.ok_or_else(|| {
                         StoreError::InvalidTransition("scheduler_task_missing".into())
                     })?;
                     plans.insert(id.clone(), saved);
@@ -467,6 +466,8 @@ impl ScheduleMutation {
             ready,
         })
     }
+}
+impl ScheduleMutation {
     fn apply(
         &self,
         connection: &rusqlite::Connection,
@@ -513,7 +514,9 @@ impl ScheduleMutation {
         if let Some(plan) = &mut plan {
             plan.edit_revision = revision;
         }
-        let catalog = self.catalog(connection, saved)?;
+        let catalog = self
+            .scheduler
+            .mutation_catalog(connection, &self.writer, saved)?;
         let (mutations, _, _) = prepare_commit(&catalog, &self.id, plan.as_ref())
             .map_err(StoreError::InvalidTransition)?;
         Ok((
@@ -544,7 +547,9 @@ impl Statement for ScheduleMutation {
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<ScheduleCompletion>, StoreError> {
-        let saved = self.read(connection, &self.id)?;
+        let saved = self
+            .scheduler
+            .read_plan(connection, &self.writer, &self.id)?;
         let (result, mutations) = self.apply(connection, saved)?;
         let (changed, notification, index_revision) = if mutations.is_empty() {
             (false, Notification::NONE, None)
@@ -664,5 +669,118 @@ mod wake_tests {
             None,
             "do not spin on an already processed deadline"
         );
+    }
+}
+
+impl Scheduler {
+    /// Called on the Root writer while the discovery fire owns the scheduler gate.
+    pub(in crate::owner) fn dossier_schedule_ops(
+        &self,
+        c: &rusqlite::Connection,
+        writer: &DataWriter,
+        target: &ScheduledTarget,
+        worker: &str,
+        prior: &[String],
+        links: &mut Vec<String>,
+        ops: Vec<super::super::discovery::ScheduleOp>,
+        at: i64,
+    ) -> Result<Vec<Mutation>, StoreError> {
+        use super::super::discovery::ScheduleOp;
+        use std::collections::{BTreeMap, BTreeSet};
+        let invalid = |s: &str| StoreError::InvalidTransition(s.into());
+        let mut edits = BTreeMap::new();
+        for op in ops {
+            let id = op.task_id().to_owned();
+            if !links.contains(&id) || edits.insert(id, op).is_some() {
+                return Err(invalid("discovery_schedule_not_linked_or_duplicate"));
+            }
+        }
+        let mut catalog = if edits.is_empty() {
+            None
+        } else {
+            Some(self.mutation_catalog(c, writer, None)?)
+        };
+        let mut writes = Vec::new();
+        let mut cancelled = BTreeSet::new();
+        for id in links.iter() {
+            let existing = prior.contains(id);
+            let op = edits.remove(id);
+            if existing && op.is_none() {
+                continue;
+            }
+            let saved = self
+                .read_plan(c, writer, id)?
+                .ok_or_else(|| invalid("scheduler_task_missing"))?;
+            let plan = &saved.plan;
+            let destination = plan.task.effect.target();
+            let worker_reminder = matches!(&plan.task.created_by,Creator::Agent{session_id}
+                if session_id == &destination.session_id && (existing || session_id == worker))
+                && destination.workspace == target.workspace
+                && destination.binding == target.binding;
+            if !matches!(plan.task.schedule, TaskSchedule::Once { .. })
+                || (destination != target && !worker_reminder)
+            {
+                return Err(invalid("discovery_schedule_outside_topic_scope"));
+            }
+            let Some(op) = op else {
+                continue;
+            };
+            if plan.pending.is_some() {
+                return Err(invalid("scheduler_trigger_pending"));
+            }
+            let catalog = catalog.as_mut().expect("schedule edits have an index");
+            let next = match op {
+                ScheduleOp::Update { intent_body, .. } => {
+                    if plan.task.intent.body() == intent_body.trim() {
+                        continue;
+                    }
+                    let mut next = plan
+                        .update(
+                            maka_scheduler::command::Update {
+                                intent_body: Some(intent_body),
+                                ..Default::default()
+                            },
+                            at,
+                        )
+                        .map_err(|e| StoreError::InvalidTransition(e.to_string()))?;
+                    next.edit_revision += 1;
+                    next.validate()
+                        .map_err(|e| StoreError::InvalidTransition(e.to_string()))?;
+                    Some(next)
+                }
+                ScheduleOp::Cancel { .. } => {
+                    cancelled.insert(id.clone());
+                    None
+                }
+            };
+            catalog.ready.update(id, Some(plan), next.as_ref());
+            writes.push(Mutation {
+                key: task_key(id),
+                expected_revision: Some(saved.revision),
+                data: next
+                    .as_ref()
+                    .map(value)
+                    .transpose()
+                    .map_err(StoreError::InvalidTransition)?
+                    .unwrap_or(Data::Deleted),
+            });
+        }
+        if let Some(mut catalog) = catalog
+            && !writes.is_empty()
+        {
+            links.retain(|id| !cancelled.contains(id));
+            catalog.ids.retain(|id| !cancelled.contains(id));
+            writes.push(Mutation {
+                key: "index".into(),
+                expected_revision: catalog.revision,
+                data: value(&Index { ids: catalog.ids }).map_err(StoreError::InvalidTransition)?,
+            });
+            writes.push(Mutation {
+                key: "ready".into(),
+                expected_revision: catalog.ready_revision,
+                data: value(&catalog.ready).map_err(StoreError::InvalidTransition)?,
+            });
+        }
+        Ok(writes)
     }
 }

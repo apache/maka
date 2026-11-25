@@ -89,6 +89,7 @@
     "ability_send_user": "SendUser（對使用者說話）",
     "ability_sleep": "sleep（結束本輪並等待）",
     "ability_discovery_memory": "DiscoveryMemory（調查紀錄、通知決策和使用者回饋）",
+    "ability_discovery_dossiers": "{tools}（應使用者詢問查閱目前的發現檔案）",
     "ability_scheduled_task": "ScheduledTask（安排定時喚醒或一次性複查）",
     "ability_goals": "{tools}（目標）",
     "ability_recall": "Recall 系列（檢索歷史對話）",

@@ -89,6 +89,7 @@
     "ability_send_user": "SendUser (обращение к пользователю)",
     "ability_sleep": "sleep (завершение хода и ожидание)",
     "ability_discovery_memory": "DiscoveryMemory (записи исследований, решения об уведомлениях и обратная связь пользователя)",
+    "ability_discovery_dossiers": "{tools} (просмотр текущих досье обнаружений по запросу пользователя)",
     "ability_scheduled_task": "ScheduledTask (планирование пробуждения или разовой повторной проверки)",
     "ability_goals": "{tools} (цели)",
     "ability_recall": "инструменты Recall (поиск по прошлым диалогам)",
