@@ -16,7 +16,17 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, effect, Scroll, signal, Text, View, type JSX, type ScrollRef } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type JSX,
+  type ScrollRef,
+} from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { useHost } from './host';
 import {
@@ -124,7 +134,7 @@ export function DossierThread(props: {
   const draft = signal('');
   const sending = signal(false);
   const opened = signal<string | null>(null);
-  const session = () => props.threadSessionId() ?? opened();
+  const session = computed(() => props.threadSessionId() ?? opened());
   const turns = signal<DossierThreadTurn[]>([]);
   const activity = signal<{ steps: DossierToolStep[]; active: boolean }>({
     steps: [],
@@ -135,12 +145,24 @@ export function DossierThread(props: {
   const awayFromLatest = signal(false);
   const canSend = () => props.ready && !sending() && draft().trim().length > 0;
   let scroll: ScrollRef | undefined;
-  let atEnd = true;
+  let stickToBottom = false;
+  let initialAnchored = false;
   let userInteracted = false;
   let programmaticUntil = 0;
   let latestAnchorY: number | null = null;
+  let lastScrollY = 0;
+  let lastContentHeight = 0;
+  let lastTurnsJson = '[]';
+  let lastActivityJson = '{"steps":[],"active":false}';
   let alive = true;
   let stopWatch: (() => void) | null = null;
+
+  const pinToBottom = (animated = false) => {
+    stickToBottom = true;
+    awayFromLatest.set(false);
+    programmaticUntil = Date.now() + (animated ? 400 : 300);
+    scroll?.scrollToEnd({ animated: animated && motionEnabled() });
+  };
 
   cleanup(() => {
     alive = false;
@@ -153,8 +175,14 @@ export function DossierThread(props: {
     stopWatch?.();
     stopWatch = null;
     if (!id) {
-      turns.set([]);
-      activity.set({ steps: [], active: false });
+      if (lastTurnsJson !== '[]') {
+        lastTurnsJson = '[]';
+        turns.set([]);
+      }
+      if (lastActivityJson !== '{"steps":[],"active":false}') {
+        lastActivityJson = '{"steps":[],"active":false}';
+        activity.set({ steps: [], active: false });
+      }
       historyError.set('');
       return;
     }
@@ -172,15 +200,22 @@ export function DossierThread(props: {
         through = page.through ?? 0;
         const rows = mergeHistoryPage(page.chunks, () => undefined, false, page.through);
         const recent = dossierThreadMessages(rows);
-        const previous = new Set(turns().map((turn) => turn.id));
-        turns.set(recent.map((turn) => ({ ...turn, live: live && !previous.has(turn.id) })));
-        activity.set(dossierThreadActivity(rows));
+        const nextTurnsJson = JSON.stringify(recent);
+        if (nextTurnsJson !== lastTurnsJson) {
+          lastTurnsJson = nextTurnsJson;
+          const previous = new Set(turns().map((turn) => turn.id));
+          turns.set(recent.map((turn) => ({ ...turn, live: live && !previous.has(turn.id) })));
+        }
+        const nextActivity = dossierThreadActivity(rows);
+        const nextActivityJson = JSON.stringify(nextActivity);
+        if (nextActivityJson !== lastActivityJson) {
+          lastActivityJson = nextActivityJson;
+          activity.set(nextActivity);
+        }
         historyError.set('');
-        if (!live && !userInteracted && recent.length > 0) {
-          programmaticUntil = Date.now() + 250;
-          atEnd = true;
-          awayFromLatest.set(false);
-          scroll?.scrollToEnd({ animated: false });
+        if (recent.length > 0 && ((!live && !userInteracted) || stickToBottom)) {
+          initialAnchored = true;
+          pinToBottom(false);
         }
       }
     };
@@ -216,30 +251,30 @@ export function DossierThread(props: {
   });
 
   const scrollToLatest = (animated = true) => {
-    atEnd = true;
-    awayFromLatest.set(false);
-    programmaticUntil = Date.now() + 300;
-    if (latestAnchorY !== null && turns().length === 0) {
+    initialAnchored = true;
+    if (latestAnchorY !== null && turns().length === 0 && !activity().active) {
+      stickToBottom = false;
+      awayFromLatest.set(false);
+      programmaticUntil = Date.now() + (animated ? 400 : 300);
       scroll?.scrollTo({
         y: Math.max(0, latestAnchorY - 16),
         animated: animated && motionEnabled(),
       });
     } else {
-      scroll?.scrollToEnd({ animated: animated && motionEnabled() });
+      pinToBottom(animated);
     }
   };
 
   const anchorLatest = (y: number) => {
     latestAnchorY = y;
-    if (userInteracted) return;
-    if (turns().length > 0) {
-      programmaticUntil = Date.now() + 250;
-      atEnd = true;
-      awayFromLatest.set(false);
-      scroll?.scrollToEnd({ animated: false });
+    if (initialAnchored || userInteracted || sending()) return;
+    if (turns().length > 0 || activity().active) {
+      initialAnchored = true;
+      pinToBottom(false);
     } else if (props.hasHistory() && y > 20) {
-      programmaticUntil = Date.now() + 250;
-      atEnd = true;
+      initialAnchored = true;
+      stickToBottom = false;
+      programmaticUntil = Date.now() + 300;
       awayFromLatest.set(false);
       scroll?.scrollTo({ y: Math.max(0, y - 16), animated: false });
     }
@@ -250,6 +285,9 @@ export function DossierThread(props: {
     if (!alive || !props.ready || sending() || message.length === 0) return false;
     sending.set(true);
     sendError.set('');
+    initialAnchored = true;
+    userInteracted = false;
+    pinToBottom(false);
     try {
       let sessionId = session();
       if (sessionId === null || options?.elevate) {
@@ -273,9 +311,7 @@ export function DossierThread(props: {
       if (result.sessionId !== sessionId || (result.kind !== 'started' && result.kind !== 'queued'))
         throw new UiError('Host returned an unexpected send result.');
       if (alive) {
-        atEnd = true;
-        awayFromLatest.set(false);
-        scroll?.scrollToEnd({ animated: false });
+        pinToBottom(false);
       }
       return true;
     } catch (reason) {
@@ -296,31 +332,53 @@ export function DossierThread(props: {
   return (
     <>
       {props.header({ scrollToLatest: () => scrollToLatest(true), session })}
-      <View style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <View style={{ flex: 1, minWidth: 0, minHeight: 0, position: 'relative' }}>
         <Scroll
           ref={(node) => {
             scroll = node;
           }}
-          style={{ flex: 1, minHeight: 0 }}
+          style={{ flex: 1, minWidth: 0, minHeight: 0 }}
           onScroll={({ offset, contentSize, size }) => {
             const distanceFromBottom = contentSize.height - offset.y - size.height;
             const pastLatest =
-              latestAnchorY !== null && turns().length === 0 && offset.y < latestAnchorY - 120;
-            atEnd = distanceFromBottom <= 32;
-            if (Date.now() > programmaticUntil) {
-              userInteracted = true;
+              latestAnchorY !== null &&
+              turns().length === 0 &&
+              !activity().active &&
+              offset.y < latestAnchorY - 120;
+            const contentGrew =
+              contentSize.height !== lastContentHeight && Math.abs(offset.y - lastScrollY) < 4;
+            const scrolledUp = offset.y < lastScrollY - 4;
+            lastScrollY = offset.y;
+            lastContentHeight = contentSize.height;
+            if (Date.now() <= programmaticUntil) return;
+            if (contentGrew && stickToBottom) {
+              pinToBottom(false);
+              return;
+            }
+            userInteracted = true;
+            initialAnchored = true;
+            if (distanceFromBottom <= 48) {
+              stickToBottom = true;
+              awayFromLatest.set(false);
+            } else if (scrolledUp || distanceFromBottom > 140) {
+              stickToBottom = false;
               awayFromLatest.set(pastLatest || distanceFromBottom > 140);
             }
           }}
         >
-          <View style={{ ...readingColumn, paddingVertical: 18, gap: 14 }}>
+          <View
+            onLayout={() => {
+              if (stickToBottom) pinToBottom(false);
+            }}
+            style={{ ...readingColumn, paddingVertical: 18, gap: 14 }}
+          >
             {props.renderStream({
               turns,
               sendMessage,
               sending,
               anchorLatest,
               onTurnArrival: () => {
-                if (atEnd) scroll?.scrollToEnd({ animated: false });
+                if (stickToBottom) pinToBottom(false);
               },
               session,
             })}
@@ -377,31 +435,40 @@ export function DossierThread(props: {
           </View>
         </Scroll>
         <If when={awayFromLatest()}>
-          <Button
-            accessibilityLabel={tr('Dossier back to latest')}
-            onPress={() => scrollToLatest(true)}
+          <View
             style={{
               position: 'absolute',
-              right: 24,
+              left: 0,
+              right: 0,
               bottom: 12,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              paddingHorizontal: 11,
-              paddingVertical: 6,
-              borderRadius: 16,
-              backgroundColor: C.raised,
-              borderWidth: 1,
-              borderColor: C.line,
+              alignItems: 'flex-end',
+              paddingHorizontal: 20,
+              pointerEvents: 'box-none',
             }}
-            hoverStyle={{ backgroundColor: C.surface }}
-            focusStyle={quietFocusStyle()}
           >
-            <Icon name="latest" size={12} color={C.text} />
-            <Text style={{ ...captionTextStyle, fontSize: 12, color: C.text, fontWeight: '500' }}>
-              {tr('Dossier back to latest')}
-            </Text>
-          </Button>
+            <Button
+              accessibilityLabel={tr('Dossier back to latest')}
+              onPress={() => scrollToLatest(true)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 5,
+                paddingHorizontal: 11,
+                paddingVertical: 6,
+                borderRadius: 16,
+                backgroundColor: C.raised,
+                borderWidth: 1,
+                borderColor: C.line,
+              }}
+              hoverStyle={{ backgroundColor: C.surface }}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon name="latest" size={12} color={C.text} />
+              <Text style={{ ...captionTextStyle, fontSize: 12, color: C.text, fontWeight: '500' }}>
+                {tr('Dossier back to latest')}
+              </Text>
+            </Button>
+          </View>
         </If>
       </View>
       <View style={{ ...readingColumn, paddingVertical: 12, flexShrink: 0, gap: 6 }}>

@@ -745,7 +745,8 @@ function DossierPane(
   }
   let alive = true,
     reading = false,
-    dirty = false;
+    dirty = false,
+    lastDetailKey = '';
   cleanup(() => {
     alive = false;
   });
@@ -759,7 +760,18 @@ function DossierPane(
         try {
           const value = await host.query('agent', 'dossier', { topicId });
           if (alive) {
-            detail.set(value);
+            // Ignore background watch polls that only bump lastCheckedAt without changing visible dossier content.
+            const key = value
+              ? JSON.stringify({
+                  ...value,
+                  lastCheckedAt: 0,
+                  updatedAt: 0,
+                })
+              : 'null';
+            if (key !== lastDetailKey) {
+              lastDetailKey = key;
+              detail.set(value);
+            }
             readError.set(value ? '' : message('Dossier unavailable'));
           }
         } catch (reason) {
@@ -912,13 +924,14 @@ function DossierPane(
                               : '';
                           return `${props.relative(rev().at)} · ${stage}${suffix}`;
                         };
-                        const markdownRow = () => ({
+                        const summaryText = computed(() => rev().summaryMd);
+                        const markdownRow = computed(() => ({
                           key: `${topicId}/${rev().revision}`,
                           field: 'body',
                           role: 'assistant',
-                          text: rev().summaryMd,
+                          text: summaryText(),
                           prefix: true,
-                        });
+                        }));
                         return (
                           <View
                             onLayout={
@@ -963,9 +976,9 @@ function DossierPane(
                               </If>
                               <MarkdownBody
                                 row={markdownRow}
-                                text={() => rev().summaryMd}
+                                text={summaryText}
                                 sourceId={`dossier/${topicId}/${rev().revision}`}
-                                sessionId={scope()}
+                                sessionId={null}
                                 interactiveBlocks={false}
                                 userScroll={() => {}}
                                 openLink={async (target, restoreFocus) => {
