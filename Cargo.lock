@@ -9270,6 +9270,7 @@ dependencies = [
  "clap",
  "maka-agent-api",
  "maka-agent-facts",
+ "maka-agent-ports",
  "maka-agent-state",
  "maka-app-client",
  "maka-capabilities",
@@ -9282,6 +9283,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml 1.1.8+spec-1.1.0",
  "uuid",
 ]
 
