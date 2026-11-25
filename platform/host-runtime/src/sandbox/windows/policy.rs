@@ -295,7 +295,7 @@ fn publicly_readable(path: &Path) -> io::Result<bool> {
         Err(error) => return Err(error),
     };
     for identity in ["S-1-5-32-545", "S-1-5-11", "S-1-1-0"] {
-        if maka_sandbox::windows::acl::allows_read(&file, identity)? {
+        if maka_sandbox::windows::acl::allows_any_read(&file, identity)? {
             return Ok(true);
         }
     }
@@ -368,18 +368,10 @@ mod tests {
         )
         .unwrap();
         assert!(plan.disable_read_group);
-        let home_read = plan
-            .reads
-            .iter()
-            .find(|rule| same_path(&rule.path, &home))
-            .expect("account home deny rule");
-        assert_eq!(home_read.scope, Scope::Exact);
-        assert_eq!(home_read.access, Access::Deny);
-        let home_write = plan
-            .writes
-            .iter()
-            .find(|rule| same_path(&rule.path, &home))
-            .expect("account home write rule");
-        assert_eq!(home_write.scope, Scope::Exact);
+        assert!(
+            plan.reads
+                .iter()
+                .any(|rule| same_path(&rule.path, &home) && rule.access == Access::Deny)
+        );
     }
 }

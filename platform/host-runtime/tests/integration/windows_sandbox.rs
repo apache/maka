@@ -112,7 +112,7 @@ fn interrupted_setup_and_removal_recover_without_replacing_accounts_or_live_leas
             }],
         )
         .unwrap();
-    let token = WriteToken::current(&[WriteCapability::new(online.capability)]).unwrap();
+    let token = WriteToken::current(&[WriteCapability::new(online.capability)], &[]).unwrap();
     {
         let _identity = Impersonation::new(&token);
         std::fs::write(work.join("file"), "before recovery").unwrap();
@@ -204,7 +204,7 @@ fn verify_write_surface_reuse(installation: &Installation, root: &std::path::Pat
     assert_ne!(first.account.sid(), readonly.account.sid());
     assert_ne!(first.capability, readonly.capability);
     let capability = first.capability;
-    let token = WriteToken::current(&[WriteCapability::new(capability)]).unwrap();
+    let token = WriteToken::current(&[WriteCapability::new(capability)], &[]).unwrap();
     for execution in [first, peer, readonly] {
         installation.settle(execution.id).unwrap();
         drop(execution);
@@ -255,7 +255,7 @@ fn verify_write_surface_reuse(installation: &Installation, root: &std::path::Pat
     }
     installation.settle(replacement.id).unwrap();
     let replacement_token =
-        WriteToken::current(&[WriteCapability::new(replacement.capability)]).unwrap();
+        WriteToken::current(&[WriteCapability::new(replacement.capability)], &[]).unwrap();
     let name = format!("account-{}", replacement.account.name());
     drop(replacement);
     // A refresh can crash between retiring its old record and publishing the

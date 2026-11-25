@@ -39,7 +39,8 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         DELETE, FILE_ALL_ACCESS, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+        FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, READ_CONTROL,
+        WRITE_DAC, WRITE_OWNER,
     },
     System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
 };
@@ -105,10 +106,7 @@ pub fn manageable_by(file: &File, identity: &str) -> io::Result<bool> {
     Ok(mask & windows_sys::Win32::Foundation::GENERIC_ALL != 0 || mask & required == required)
 }
 
-/// Observe an identity's existing read/execute grant without changing the DACL.
-/// Used only to reuse completed preparation, not to publish partial propagation
-/// as ready or to override a command's explicit deny policy.
-pub fn allows_read(file: &File, identity: &str) -> io::Result<bool> {
+fn effective_rights(file: &File, identity: &str) -> io::Result<Option<u32>> {
     let sid = super::sid(identity)?;
     let mut acl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
@@ -126,7 +124,7 @@ pub fn allows_read(file: &File, identity: &str) -> io::Result<bool> {
     })?;
     let _descriptor = LocalMemory(descriptor);
     if acl.is_null() {
-        return Ok(true);
+        return Ok(None);
     }
     let trustee = TRUSTEE_W {
         TrusteeForm: TRUSTEE_IS_SID,
@@ -136,8 +134,28 @@ pub fn allows_read(file: &File, identity: &str) -> io::Result<bool> {
     };
     let mut mask = 0;
     checked(unsafe { GetEffectiveRightsFromAclW(acl, &trustee, &mut mask) })?;
+    Ok(Some(mask))
+}
+
+/// Observe an identity's existing read/execute grant without changing the DACL.
+/// Used only to reuse completed preparation, not to publish partial propagation
+/// as ready or to override a command's explicit deny policy.
+pub fn allows_read(file: &File, identity: &str) -> io::Result<bool> {
+    let Some(mask) = effective_rights(file, identity)? else {
+        return Ok(true);
+    };
     let read = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
     Ok(mask & read == read)
+}
+
+/// Observe whether an identity holds any data/list/metadata read permission on
+/// the pinned object, including read-only grants without execute rights.
+pub fn allows_any_read(file: &File, identity: &str) -> io::Result<bool> {
+    let Some(mask) = effective_rights(file, identity)? else {
+        return Ok(true);
+    };
+    let any_read = FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL;
+    Ok(mask & any_read != 0)
 }
 
 /// Replace this identity's explicit standard allow/deny entries, preserving

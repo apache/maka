@@ -52,7 +52,7 @@ async fn write_restriction_is_present_at_foreground_pipe_and_conpty_startup() {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(&work).unwrap();
         acl::set(&directory, capability.sid(), Scope::Subtree, Some(Permission::Write)).unwrap();
-        let token = Arc::new(WriteToken::current(std::slice::from_ref(&capability)).unwrap());
+        let token = Arc::new(WriteToken::current(std::slice::from_ref(&capability), &[]).unwrap());
         let executable = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         let command = |terminal| {
