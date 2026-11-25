@@ -1449,11 +1449,20 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     let mut command =
         maka_process::Command::private_task(installation.join(program.executable.name));
     command.args(["-e", r#"
-        const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+        const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), assert = require('node:assert/strict');
         assert.equal(fs.readFileSync('document', 'utf8'), 'original');
         assert.throws(() => fs.readFileSync(process.argv[1]), e => ['EACCES','EPERM','ENOENT'].includes(e.code));
         const helper = process.env.ANTIGRAVITY_HARNESS_PATH;
-        assert.equal(require('node:child_process').execFileSync(helper, ['-p', '42'], {encoding:'utf8'}).trim(), '42');
+        // Use file-backed stdout in TMP rather than libuv's default stdio:'pipe':
+        // Windows NPFS ignores TokenDefaultDacl for CreateNamedPipeW(..., NULL), so
+        // WRITE_RESTRICTED tokens (Account backend) reject libuv's pipe client open.
+        const helperOut = path.join(os.tmpdir(), 'helper.out');
+        const fd = fs.openSync(helperOut, 'w');
+        const helperRun = require('node:child_process').spawnSync(helper, ['-p', '42'], { stdio: ['ignore', fd, 'inherit'] });
+        fs.closeSync(fd);
+        assert.equal(helperRun.error, undefined);
+        assert.equal(helperRun.status, 0);
+        assert.equal(fs.readFileSync(helperOut, 'utf8').trim(), '42');
         assert.throws(() => fs.writeFileSync(path.join(path.dirname(helper), 'extra'), ''), e => ['EACCES','EPERM','EROFS'].includes(e.code));
         assert.ok(process.env.HTTP_PROXY);
         fs.writeFileSync('document', 'candidate');
