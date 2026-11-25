@@ -139,7 +139,6 @@ fn keyed_fires_freeze_payload_and_remember_the_last_key_across_false_checks() {
             at,
             Ok(ScriptOutcome {
                 triggered,
-                dedupe_key: Some(key.into()),
                 payload: Some(payload.clone()),
                 state_update: StateUpdate::Set(json!(key).to_string()),
             }),
@@ -154,7 +153,7 @@ fn keyed_fires_freeze_payload_and_remember_the_last_key_across_false_checks() {
         }
     }
     assert_eq!(plan.task.fire_count, 2);
-    assert_eq!(plan.last_dedupe_key(), Some("e2"));
+    assert_eq!(plan.last_dedupe_key.as_deref(), Some("e2"));
 }
 
 #[test]
@@ -186,15 +185,27 @@ fn script_errors_back_off_from_completion_and_success_restores_the_schedule() {
         plan.record_condition(at, Err("unavailable".into()))
             .unwrap();
         plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
-        assert_eq!(plan.consecutive_errors(), n as u32 + 1);
+        assert_eq!(plan.consecutive_errors, n as u32 + 1);
         assert_eq!(plan.task.last_error.as_deref(), Some("unavailable"));
         at += delay * 1000;
         assert_eq!(plan.task.next_fire_at, Some(at));
     }
     plan.record_condition(at, Ok(false.into())).unwrap();
-    assert_eq!(plan.consecutive_errors(), 0);
+    assert_eq!(plan.consecutive_errors, 0);
     assert_eq!(plan.task.last_error, None);
     assert_eq!(plan.task.next_fire_at, Some(at - 123 + 60_000));
+
+    let mut fast = script_plan(1);
+    let mut at = 2_050;
+    for delay in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1800, 1800] {
+        fast.record_condition(at, Err("unavailable".into()))
+            .unwrap();
+        at += delay * 1000;
+        assert_eq!(fast.task.next_fire_at, Some(at));
+    }
+    fast.record_condition(at, Ok(false.into())).unwrap();
+    assert_eq!(fast.consecutive_errors, 0);
+    assert_eq!(fast.task.next_fire_at, Some(at - 50 + 1_000));
 
     let mut long = script_plan(3600);
     long.record_condition(2_000, Err("offline".into())).unwrap();
@@ -214,7 +225,10 @@ fn editing_script_source_rearms_checks_and_resets_backoff() {
     plan.record_condition(
         2_000,
         Ok(ScriptOutcome {
-            dedupe_key: Some("seen".into()),
+            payload: Some(ScriptPayload {
+                dedupe_key: Some("seen".into()),
+                ..Default::default()
+            }),
             state_update: StateUpdate::Set("1".into()),
             ..true.into()
         }),
@@ -238,12 +252,41 @@ fn editing_script_source_rearms_checks_and_resets_backoff() {
         .unwrap();
     assert_eq!(
         (
-            edited.consecutive_errors(),
-            edited.last_dedupe_key(),
+            edited.consecutive_errors,
+            edited.last_dedupe_key.as_deref(),
             edited.script_state()
         ),
         (0, None, Some("1"))
     );
+    let interval = edited
+        .update(
+            Update {
+                schedule: Some(Schedule::Interval {
+                    every_seconds: 60,
+                    start_at: 4_000,
+                    cadence: Default::default(),
+                }),
+                ..Default::default()
+            },
+            3_200,
+        )
+        .unwrap();
+    assert_eq!(interval.script_state(), None);
+    let back_to_script = interval
+        .update(
+            Update {
+                schedule: Some(Schedule::Script {
+                    source: "console.log(true)".into(),
+                    every_seconds: 1,
+                    start_at: 4_000,
+                }),
+                ..Default::default()
+            },
+            3_300,
+        )
+        .unwrap();
+    assert_eq!(back_to_script.script_state(), None);
+
     edited.record_condition(4_000, Ok(true.into())).unwrap();
     assert!(edited.pending.is_some());
 }

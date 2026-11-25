@@ -27,24 +27,29 @@ pub(crate) const DRAIN: Duration = Duration::from_secs(2);
 pub(crate) struct Tail {
     bytes: VecDeque<u8>,
     limit: usize,
-    pub truncated: bool,
+    pub prefix_dropped: bool,
+    pub reached_eof: bool,
 }
 
 impl Tail {
     fn push(&mut self, bytes: &[u8]) {
         let overflow = (self.bytes.len() + bytes.len()).saturating_sub(self.limit);
         if overflow > 0 {
-            self.truncated = true;
+            self.prefix_dropped = true;
             self.bytes.drain(..overflow.min(self.bytes.len()));
         }
         self.bytes
             .extend(&bytes[bytes.len().saturating_sub(self.limit)..]);
     }
 
+    pub fn truncated(&self) -> bool {
+        self.prefix_dropped || !self.reached_eof
+    }
+
     pub fn text(&mut self) -> String {
         let mut start = 0;
         // A byte tail can begin inside a valid UTF-8 code point.
-        if self.truncated {
+        if self.prefix_dropped {
             while start < self.bytes.len() && self.bytes[start] & 0xc0 == 0x80 {
                 start += 1;
             }
@@ -55,7 +60,7 @@ impl Tail {
         while !text.is_char_boundary(start) {
             start += 1;
         }
-        self.truncated |= start > 0;
+        self.prefix_dropped |= start > 0;
         text[start..].to_owned()
     }
 }
@@ -72,7 +77,8 @@ pub(crate) async fn capture(
     let mut tail = Tail {
         bytes: VecDeque::new(),
         limit,
-        truncated: false,
+        prefix_dropped: false,
+        reached_eof: false,
     };
     let deadline = async {
         exited.cancelled().await;
@@ -83,9 +89,12 @@ pub(crate) async fn capture(
     loop {
         tokio::select! {
             biased;
-            _ = &mut deadline => { tail.truncated = true; break; }
+            _ = &mut deadline => break,
             read = pipe.read(&mut buffer) => match read {
-                Ok(0) => break,
+                Ok(0) => {
+                    tail.reached_eof = true;
+                    break;
+                }
                 Ok(n) => {
                     tail.push(&buffer[..n]);
                     if let Some((observer, stream)) = &observer {
@@ -94,14 +103,75 @@ pub(crate) async fn capture(
                         let event = crate::PipeEvent::Output { stream: *stream, bytes: buffer[..n].to_vec() };
                         tokio::select! {
                             biased;
-                            _ = &mut deadline => { tail.truncated = true; break; }
+                            _ = &mut deadline => break,
                             _ = observer.send(event) => {}
                         }
                     }
                 },
-                Err(_) => { tail.truncated = true; break; }
+                Err(_) => break,
             }
         }
     }
     tail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct FailAfter {
+        chunk: Option<&'static [u8]>,
+    }
+
+    impl AsyncRead for FailAfter {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(bytes) = self.chunk.take() {
+                buf.put_slice(bytes);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "pipe failed",
+                )))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_distinguishes_prefix_overflow_from_incomplete_reads() {
+        let mut overflow = capture(
+            io::Cursor::new(b"dropped-line\n{\"trigger\":true}\n"),
+            CancellationToken::new(),
+            20,
+            None,
+        )
+        .await;
+        assert_eq!(overflow.text(), "ne\n{\"trigger\":true}\n");
+        assert!(overflow.prefix_dropped);
+        assert!(overflow.reached_eof);
+        assert!(overflow.truncated());
+
+        let mut failed = capture(
+            FailAfter {
+                chunk: Some(b"checking\ntrue\n"),
+            },
+            CancellationToken::new(),
+            64,
+            None,
+        )
+        .await;
+        assert_eq!(failed.text(), "checking\ntrue\n");
+        assert!(!failed.prefix_dropped);
+        assert!(!failed.reached_eof);
+        assert!(failed.truncated());
+    }
 }

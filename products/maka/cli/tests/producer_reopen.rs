@@ -338,7 +338,7 @@ impl Model {
                 );
                 scheduled_tool(
                     "test-script",
-                    json!({"action":"test_script","state":{"cursor":7},
+                    json!({"mode":"test_script","state":{"cursor":7},
                     "source":r#"const {cursor} = JSON.parse(Deno.env.get("MAKA_AUTOMATION_STATE"));
                         console.error("preview"); console.log("checking");
                         console.log(JSON.stringify({trigger:true,dedupeKey:"dry",summary:"Sample",data:cursor,state:cursor+1}));"#}),

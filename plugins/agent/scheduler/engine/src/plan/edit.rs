@@ -49,6 +49,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                 next.condition_matched = false;
                 next.last_dedupe_key = None;
                 next.consecutive_errors = 0;
+                if !matches!(schedule, Schedule::Script { .. }) {
+                    next.script_state = None;
+                }
             }
             next.task.schedule = schedule;
         }

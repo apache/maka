@@ -1400,7 +1400,7 @@ async fn scheduler_dry_run_rejects_oversize_state_without_saving_a_task() {
     tool(
         turn,
         "ScheduledTask",
-        json!({"request":{"action":"test_script",
+        json!({"request":{"mode":"test_script",
         "source":"console.log(true)", "state":"x".repeat(65_535)}}),
     );
     let (turn, body) = next(&mut server).await;

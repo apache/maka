@@ -18,10 +18,15 @@
  */
 
 use super::*;
-use maka_process::{ProcessOutcome, ShellExecutor, Termination};
+use maka_agent_facts::tools::ToolError;
+use maka_process::{PipeResult, ProcessOutcome, ShellExecutor, Termination};
 use maka_sandbox::Sandbox;
 use maka_scheduler::plan::{ScriptOutcome, StateUpdate};
 use std::time::Instant;
+
+// A protocol result can contain multiple bounded JSON fields with escaped
+// strings. Retain it independently of the ordinary shell diagnostic tail.
+const SCRIPT_STDOUT_LIMIT: usize = 1024 * 1024;
 
 pub(super) struct Check {
     pub id: String,
@@ -54,7 +59,8 @@ impl Owner {
             prev_state,
             self.stop.child_token(),
         )
-        .await?
+        .await
+        .map_err(reason)?
         .result
     }
 
@@ -65,35 +71,38 @@ impl Owner {
         source: String,
         prev_state: Option<&str>,
         cancellation: CancellationToken,
-    ) -> Result<ScriptExecution, String> {
-        let sandbox = self.capture_sandbox(config, ceiling).await?;
+    ) -> Result<ScriptExecution, ToolError> {
+        let sandbox = self
+            .capture_sandbox(config, ceiling)
+            .await
+            .map_err(failed)?;
         let (path, directory, _) = workspace::open_workspace_observation(
             &self.workspace_roots,
             &config.workspace,
             &self.managed_worktrees,
         )
         .await
-        .map_err(reason)?;
+        .map_err(failed)?;
         let executor = tokio::task::spawn_blocking(move || {
-            ShellExecutor::from_directory(path, directory.into_std_file(), sandbox).map_err(reason)
+            ShellExecutor::from_directory(path, directory.into_std_file(), sandbox)
         })
         .await
-        .map_err(reason)??;
+        .map_err(failed)??;
         let network = self
             .configuration
             .network_configuration()
             .await
-            .map_err(reason)?;
+            .map_err(failed)?;
         let route =
             maka_network::Policy::from_host_settings(&network.proxy, network.password.as_deref())
-                .map_err(reason)?;
+                .map_err(failed)?;
         let executor = executor.with_network_route(route);
         #[cfg(target_os = "linux")]
         let executor = executor.with_network_helper(self.helper.clone());
         #[cfg(windows)]
         let executor =
             executor.with_backend(Arc::new(maka_host_runtime::sandbox::windows::Backend::new(
-                self.store.owned_root().map_err(reason)?.canonical_path(),
+                self.store.owned_root().map_err(failed)?.canonical_path(),
                 &self.helper,
             )));
         run_script(
@@ -113,23 +122,28 @@ impl Owner {
         source: String,
         state: Option<Value>,
         cancellation: CancellationToken,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, ToolError> {
         let start = Instant::now();
-        let execution = async {
-            let state = state
-                .as_ref()
-                .map(maka_scheduler::plan::compact_script_state)
-                .transpose()?;
-            self.check_automation(config, ceiling, source, state.as_deref(), cancellation)
-                .await
-        }
-        .await;
-        let execution = execution.unwrap_or_else(|error| ScriptExecution {
-            result: Err(error),
-            stdout: String::new(),
-            stderr: String::new(),
-        });
-        execution.report(start.elapsed())
+        let state = match state
+            .as_ref()
+            .map(maka_scheduler::plan::compact_script_state)
+            .transpose()
+        {
+            Ok(state) => state,
+            Err(error) => {
+                return ScriptExecution {
+                    result: Err(error.into()),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }
+                .report(start.elapsed())
+                .map_err(failed);
+            }
+        };
+        let execution = self
+            .check_automation(config, ceiling, source, state.as_deref(), cancellation)
+            .await?;
+        execution.report(start.elapsed()).map_err(failed)
     }
 }
 
@@ -170,34 +184,38 @@ fn diagnostic(text: &str) -> &str {
     &text[text.ceil_char_boundary(text.len().saturating_sub(8192))..]
 }
 
+fn failed(error: impl std::fmt::Display) -> ToolError {
+    ToolError::Failed(error.to_string())
+}
+
 async fn run_script(
     executor: ShellExecutor,
     executable: std::path::PathBuf,
     source: String,
     prev_state: Option<&str>,
     cancellation: CancellationToken,
-) -> Result<ScriptExecution, String> {
+) -> Result<ScriptExecution, ToolError> {
     let args = [maka_js_runtime::automation::WORKER.to_owned()];
     let mut env = BTreeMap::new();
     if let Some(state) = prev_state {
         env.insert("MAKA_AUTOMATION_STATE".into(), state.to_owned());
     }
-    let command = executor
-        .command_program(executable, &args, &env)
-        .map_err(reason)?;
+    let command = executor.command_program(executable, &args, &env)?;
     let output = command
-        .run_with_input(source.into_bytes(), 30_000, cancellation)
-        .await
-        .map_err(reason)?;
+        .run_with_input(
+            source.into_bytes(),
+            SCRIPT_STDOUT_LIMIT,
+            30_000,
+            cancellation,
+        )
+        .await?;
+    interpret_output(output)
+}
+
+fn interpret_output(output: PipeResult) -> Result<ScriptExecution, ToolError> {
     let result = match output.outcome {
         ProcessOutcome::Exited(status) if status.success() => {
-            // A truncated first line might end in what looks like a valid result.
-            let complete = if output.stdout_truncated {
-                output.stdout.split_once('\n').map_or("", |(_, rest)| rest)
-            } else {
-                &output.stdout
-            };
-            parse_stdout(complete)
+            parse_captured_stdout(&output.stdout, output.stdout_eof, output.stdout_truncated)
         }
         ProcessOutcome::Exited(status) => {
             let stderr = diagnostic(output.stderr.trim());
@@ -214,13 +232,30 @@ async fn run_script(
         ProcessOutcome::Interrupted {
             reason: Termination::Cancelled,
             ..
-        } => Err("Script check cancelled".into()),
+        } => return Err(failed("Script check cancelled")),
     };
     Ok(ScriptExecution {
         result,
         stdout: output.stdout,
         stderr: output.stderr,
     })
+}
+
+fn parse_captured_stdout(
+    stdout: &str,
+    reached_eof: bool,
+    truncated: bool,
+) -> Result<ScriptOutcome, String> {
+    if !reached_eof {
+        return Err("Script stdout did not reach EOF".into());
+    }
+    // A truncated first line might end in what looks like a valid result.
+    let complete = if truncated {
+        stdout.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        stdout
+    };
+    parse_stdout(complete)
 }
 
 fn parse_stdout(stdout: &str) -> Result<ScriptOutcome, String> {
@@ -275,7 +310,6 @@ mod tests {
             parsed,
             ScriptOutcome {
                 triggered: true,
-                dedupe_key: Some("e2".into()),
                 payload: Some(ScriptPayload {
                     summary: Some("已完成".into()),
                     data: Some(json!({"n":2})),
@@ -339,5 +373,50 @@ mod tests {
                 "{line}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn captured_stdout_requires_eof_and_skips_truncated_first_line() {
+        let incomplete = parse_captured_stdout("checking\ntrue\n", false, true).unwrap_err();
+        assert!(incomplete.contains("EOF"), "{incomplete}");
+
+        let truncated_only_line = parse_captured_stdout("true\n", true, true).unwrap_err();
+        assert!(
+            truncated_only_line.contains("true, false"),
+            "{truncated_only_line}"
+        );
+
+        let complete_tail = parse_captured_stdout(
+            "partial-prefix\n{\"trigger\":true,\"summary\":\"ok\"}\n",
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(complete_tail.triggered);
+        assert_eq!(
+            complete_tail.payload.and_then(|p| p.summary),
+            Some("ok".into())
+        );
+    }
+
+    #[test]
+    fn cancelled_script_returns_tool_error_instead_of_dry_run_report() {
+        let error = interpret_output(PipeResult {
+            outcome: ProcessOutcome::Interrupted {
+                reason: Termination::Cancelled,
+                signal_applied: true,
+            },
+            stdout: "checking\n".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stdout_eof: true,
+            stderr_truncated: false,
+        })
+        .err()
+        .expect("cancelled script must fail as a tool error");
+        assert!(
+            matches!(error, ToolError::Failed(ref msg) if msg == "Script check cancelled"),
+            "{error:?}"
+        );
     }
 }

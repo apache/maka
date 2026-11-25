@@ -103,12 +103,6 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     pub fn script_state(&self) -> Option<&str> {
         self.script_state.as_deref()
     }
-    pub fn last_dedupe_key(&self) -> Option<&str> {
-        self.last_dedupe_key.as_deref()
-    }
-    pub fn consecutive_errors(&self) -> u32 {
-        self.consecutive_errors
-    }
     pub fn validate(&self) -> Result<(), Error> {
         crate::task::text(&self.task.id)?;
         if self
@@ -296,10 +290,16 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
                     StateUpdate::Clear => self.script_state = None,
                 }
                 let fire = outcome.triggered
-                    && match outcome.dedupe_key {
+                    && match outcome
+                        .payload
+                        .as_ref()
+                        .and_then(|payload| payload.dedupe_key.as_deref())
+                    {
                         Some(key) => {
-                            let changed = self.last_dedupe_key.as_ref() != Some(&key);
-                            self.last_dedupe_key = Some(key);
+                            let changed = self.last_dedupe_key.as_deref() != Some(key);
+                            if changed {
+                                self.last_dedupe_key = Some(key.to_owned());
+                            }
                             changed
                         }
                         None => !self.condition_matched,
@@ -356,7 +356,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             && let crate::schedule::Schedule::Script { every_seconds, .. } = self.task.schedule
         {
             let delay = every_seconds
-                .saturating_mul(1 << (self.consecutive_errors - 1).min(5))
+                .saturating_mul(2u32.saturating_pow(self.consecutive_errors - 1))
                 .min(every_seconds.max(1800));
             after
                 .checked_add(i64::from(delay) * 1000)

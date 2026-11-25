@@ -145,6 +145,7 @@
     "create_automation": "自動化を作成",
     "create_automation_titled": "自動化を作成 · {title}",
     "list_automations": "自動化一覧を表示",
+    "test_automation_script": "自動化スクリプトをテスト",
     "pause_automation": "自動化を一時停止",
     "resume_automation": "自動化を再開",
     "delete_automation": "自動化を削除",

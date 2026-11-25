@@ -145,6 +145,7 @@
     "create_automation": "자동화 생성",
     "create_automation_titled": "자동화 생성 · {title}",
     "list_automations": "자동화 목록 보기",
+    "test_automation_script": "자동화 스크립트 테스트",
     "pause_automation": "자동화 일시 중지",
     "resume_automation": "자동화 재개",
     "delete_automation": "자동화 삭제",

@@ -27,7 +27,8 @@ const MAX_CONCURRENT_SCRIPTS: usize = 3;
 
 #[derive(Default)]
 struct ScriptChecks {
-    running: BTreeSet<String>,
+    // Task IDs holding a concurrency slot, including a popped completed check until settled.
+    in_flight: BTreeSet<String>,
     jobs: FuturesUnordered<BoxFuture<'static, scripts::Check>>,
     completed: Option<scripts::Check>,
 }
@@ -41,7 +42,7 @@ impl ScriptChecks {
             Result<maka_scheduler::plan::ScriptOutcome, String>,
         >,
     ) {
-        if self.running.len() >= MAX_CONCURRENT_SCRIPTS || !self.running.insert(id.to_owned()) {
+        if self.in_flight.len() >= MAX_CONCURRENT_SCRIPTS || !self.in_flight.insert(id.to_owned()) {
             return;
         }
         let id = id.to_owned();
@@ -57,6 +58,12 @@ impl ScriptChecks {
                 result,
             }
         }));
+    }
+
+    fn finish_completed(&mut self) {
+        if let Some(checked) = self.completed.take() {
+            self.in_flight.remove(&checked.id);
+        }
     }
 }
 impl CapturedRun {
@@ -442,8 +449,7 @@ impl Owner {
                     .commit(&mut catalog, &checked.id, Some(plan), None)
                     .await?;
             }
-            scripts.running.remove(&checked.id);
-            scripts.completed = None;
+            scripts.finish_completed();
         }
         for id in catalog
             .ready
@@ -924,9 +930,12 @@ mod tests {
         }
         scripts.start("fourth", 1, || panic!("fourth concurrent check started"));
         release.send(()).unwrap();
-        let completed = scripts.jobs.next().await.unwrap();
-        assert_eq!(completed.id, "first");
-        scripts.running.remove(&completed.id);
+        scripts.completed = scripts.jobs.next().await;
+        assert_eq!(scripts.completed.as_ref().unwrap().id, "first");
+        scripts.start("fourth", 1, || {
+            panic!("slot released before completed check settled")
+        });
+        scripts.finish_completed();
         scripts.start("fourth", 1, || tokio::spawn(async { Ok(true.into()) }));
         assert_eq!(scripts.jobs.next().await.unwrap().id, "fourth");
     }

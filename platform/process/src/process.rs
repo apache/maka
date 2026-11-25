@@ -28,9 +28,14 @@ use std::{io, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) enum Mode {
+    Shell,
+    Protocol { input: Vec<u8>, stdout_limit: usize },
+}
+
 pub(crate) async fn run(
     plan: crate::Command,
-    input: Option<Vec<u8>>,
+    mode: Mode,
     timeout_ms: Option<u64>,
     cancellation: CancellationToken,
     observer: Option<tokio::sync::mpsc::Sender<PipeEvent>>,
@@ -55,13 +60,12 @@ pub(crate) async fn run(
         let _ = observer.try_send(PipeEvent::Started);
     }
     let exited = CancellationToken::new();
-    let owns_tree = input.is_some();
-    // A protocol result can contain multiple bounded JSON fields with escaped
-    // strings. Retain it independently of the ordinary shell diagnostic tail.
-    let stdout_limit = if input.is_some() {
-        1024 * 1024
-    } else {
-        tail::TAIL_BYTES
+    let (input, owns_tree, stdout_limit) = match mode {
+        Mode::Shell => (None, false, tail::TAIL_BYTES),
+        Mode::Protocol {
+            input,
+            stdout_limit,
+        } => (Some(input), true, stdout_limit),
     };
     let lifecycle = async {
         let outcome = settle(&mut child, timeout_ms, cancellation, owns_tree).await;

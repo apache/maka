@@ -127,7 +127,6 @@ impl<'de> Deserialize<'de> for StateUpdate {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScriptOutcome {
     pub triggered: bool,
-    pub dedupe_key: Option<String>,
     pub payload: Option<ScriptPayload>,
     pub state_update: StateUpdate,
 }
@@ -161,11 +160,10 @@ impl<'de> Deserialize<'de> for ScriptOutcome {
         let payload = ScriptPayload {
             summary: output.summary,
             data: output.data,
-            dedupe_key: output.dedupe_key.clone(),
+            dedupe_key: output.dedupe_key,
         };
         Ok(Self {
             triggered: output.trigger,
-            dedupe_key: output.dedupe_key,
             payload: (payload != ScriptPayload::default()).then_some(payload),
             state_update: output.state,
         })
