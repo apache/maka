@@ -142,6 +142,7 @@ pub struct Options {
     pub code_mode: bool,
     pub responses: bool,
     pub usage_limits: bool,
+    pub no_connections: bool,
 }
 
 impl Fixture {
@@ -452,44 +453,48 @@ pub(crate) async fn configure(
             .await
             .unwrap(),
     );
-    let provider_name = if options.responses {
-        "openai-responses-compatible"
-    } else if options.usage_limits {
-        "new-api"
+    let selection = if options.no_connections {
+        Value::Null
     } else {
-        "openai-compatible"
+        let provider_name = if options.responses {
+            "openai-responses-compatible"
+        } else if options.usage_limits {
+            "new-api"
+        } else {
+            "openai-compatible"
+        };
+        let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":provider_name});
+        let vision = options.images;
+        let overrides = json!({
+            "fixture-model":{"contextWindow":200000,"vision":vision,"codeMode":options.code_mode},
+            "fixture-model-alt":{"contextWindow":200000,"vision":vision,"codeMode":false}
+        });
+        let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
+        let CatalogMutationResult::Committed {connection:Some(connection),..} = config.create_connection(serde_json::from_value(json!({
+            "expectedCatalogRevision":0,"connection":{"slug":"nsh-fixture","name":"NSH fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":enabled_models,"modelOverrides":overrides}
+        })).unwrap()).await.unwrap() else { panic!("create fixture connection") };
+        let maka_config::oauth::enrollment::LoginPreparation::Ready(login) = config.prepare_oauth_login(serde_json::from_value(json!({
+            "expectedCredential":null,"attemptId":Uuid::new_v4(),"target":{"kind":"existing","expected":{"connectionId":connection.connection_id,"revision":connection.revision,"provider":provider,"slug":"nsh-fixture","configuration":{"baseUrl":base}},"configuration":{"baseUrl":base}},
+            "authentication":{"method":"api-key","input":{"apiKey":PROVIDER_KEY}}
+        })).unwrap()).await.unwrap() else { panic!("fixture credential") };
+        assert!(login.claim().await.unwrap());
+        assert!(matches!(
+            login
+                .complete(
+                    maka_agent_facts::provider::Credential {
+                        secret: PROVIDER_KEY.into(),
+                        refresh_at: None
+                    },
+                    1
+                )
+                .await
+                .unwrap(),
+            maka_config::oauth::enrollment::LoginCompletion::Committed(_)
+        ));
+        assert!(matches!(config.set_default_target(serde_json::from_value(json!({"expectedCatalogRevision":config.catalog().await.unwrap().revision,"target":{"connectionId":connection.connection_id,"modelId":"fixture-model"}})).unwrap()).await.unwrap(), CatalogMutationResult::Committed {..}));
+        let connection = config.catalog().await.unwrap().connections.remove(0);
+        json!({"connectionId":connection.connection_id,"modelId":"fixture-model"})
     };
-    let provider = json!({"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":provider_name});
-    let vision = options.images;
-    let overrides = json!({
-        "fixture-model":{"contextWindow":200000,"vision":vision,"codeMode":options.code_mode},
-        "fixture-model-alt":{"contextWindow":200000,"vision":vision,"codeMode":false}
-    });
-    let enabled_models = json!(["fixture-model", "fixture-model-alt"]);
-    let CatalogMutationResult::Committed {connection:Some(connection),..} = config.create_connection(serde_json::from_value(json!({
-        "expectedCatalogRevision":0,"connection":{"slug":"nsh-fixture","name":"NSH fixture","provider":provider,"configuration":{"baseUrl":base},"enabled":true,"enabledModelIds":enabled_models,"modelOverrides":overrides}
-    })).unwrap()).await.unwrap() else { panic!("create fixture connection") };
-    let maka_config::oauth::enrollment::LoginPreparation::Ready(login) = config.prepare_oauth_login(serde_json::from_value(json!({
-        "expectedCredential":null,"attemptId":Uuid::new_v4(),"target":{"kind":"existing","expected":{"connectionId":connection.connection_id,"revision":connection.revision,"provider":provider,"slug":"nsh-fixture","configuration":{"baseUrl":base}},"configuration":{"baseUrl":base}},
-        "authentication":{"method":"api-key","input":{"apiKey":PROVIDER_KEY}}
-    })).unwrap()).await.unwrap() else { panic!("fixture credential") };
-    assert!(login.claim().await.unwrap());
-    assert!(matches!(
-        login
-            .complete(
-                maka_agent_facts::provider::Credential {
-                    secret: PROVIDER_KEY.into(),
-                    refresh_at: None
-                },
-                1
-            )
-            .await
-            .unwrap(),
-        maka_config::oauth::enrollment::LoginCompletion::Committed(_)
-    ));
-    assert!(matches!(config.set_default_target(serde_json::from_value(json!({"expectedCatalogRevision":config.catalog().await.unwrap().revision,"target":{"connectionId":connection.connection_id,"modelId":"fixture-model"}})).unwrap()).await.unwrap(), CatalogMutationResult::Committed {..}));
-    let connection = config.catalog().await.unwrap().connections.remove(0);
-    let selection = json!({"connectionId":connection.connection_id,"modelId":"fixture-model"});
     assert!(matches!(
         config
             .set_message_predictions(

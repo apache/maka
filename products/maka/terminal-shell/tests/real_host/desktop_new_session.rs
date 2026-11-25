@@ -2985,8 +2985,89 @@ async fn desktop_renders_provider_citation_markers_as_clean_inline_chips() {
     fixture.finish().await;
 }
 
+async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
+    let fixture = Fixture::open_with_configuration(
+        Options {
+            no_connections: true,
+            ..Options::default()
+        },
+        |configuration, directory| {
+            configuration["agent"]["external"] = json!({
+                "commands": {
+                    "antigravity": {
+                        "executable": directory.join("missing-antigravity"),
+                    }
+                }
+            });
+        },
+    )
+    .await;
+
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.control("Add a model connection").await;
+    desktop.new_draft().await;
+    desktop.control("Add a model connection").await;
+
+    desktop.press("Add a model connection").await;
+    desktop.control("Enable Antigravity").await;
+    desktop.press("Enable Antigravity").await;
+    desktop
+        .control("I understand and accept the external agent permissions")
+        .await;
+    desktop
+        .press("I understand and accept the external agent permissions")
+        .await;
+    desktop.press("Confirm permissions and enable").await;
+    desktop.control("Disable Antigravity").await;
+
+    desktop.press("Close settings").await;
+    desktop.control("Focus message composer").await;
+    desktop
+        .until(
+            "enabled external agent did not clear the missing-connection prompt",
+            || {
+                desktop
+                    .controls("Add a model connection")
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await;
+
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.control("Focus message composer").await;
+    let external = desktop
+        .wait(
+            "externalAgents query failed",
+            desktop
+                .client
+                .query("agent", "externalAgents", json!({"inspect": true})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(external["state"]["kind"], "enabled");
+    assert!(
+        desktop.controls("Add a model connection").is_empty(),
+        "new conversation home screen should not ask for a model connection when an external agent is enabled"
+    );
+
+    desktop.press("Open settings").await;
+    desktop.control("Disable Antigravity").await;
+    desktop.press("Disable Antigravity").await;
+    desktop.control("Enable Antigravity").await;
+
+    desktop.press("Close settings").await;
+    desktop.control("Add a model connection").await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    "desktop_external_agent_satisfies_new_session_connection_prompt",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
@@ -3014,6 +3095,9 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
+        "desktop_external_agent_satisfies_new_session_connection_prompt" => {
+            runtime.block_on(desktop_external_agent_satisfies_new_session_connection_prompt())
+        }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
         }
