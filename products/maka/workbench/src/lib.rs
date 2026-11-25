@@ -446,11 +446,12 @@ mod tests {
         assert!(app.shows("4,000,000"));
     }
 
-    fn headless_fixture_in(
+    fn headless_fixture_with_locales(
         entry: &str,
         viewport: Size<Points>,
         native_focus_scopes: bool,
         idiom: nsh_core::platform::Idiom,
+        locales: Option<Vec<String>>,
     ) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
@@ -467,6 +468,7 @@ mod tests {
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
+            locales,
             ..Default::default()
         })
         .unwrap();
@@ -482,6 +484,15 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap()
+    }
+
+    fn headless_fixture_in(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+        idiom: nsh_core::platform::Idiom,
+    ) -> nsh_testing::Headless {
+        headless_fixture_with_locales(entry, viewport, native_focus_scopes, idiom, None)
     }
 
     fn headless_fixture(
@@ -2226,6 +2237,50 @@ mod tests {
         app.press("text:Discard changes").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
         app.wait_for("label:Disable Codex").unwrap();
+    }
+
+    #[test]
+    fn number_formatting_keeps_line_numbers_ungrouped_across_locales() {
+        let mut app = headless_fixture_with_locales(
+            "tests/fixtures/number-formatting.tsx",
+            Size::new(px(900.0), px(1400.0)),
+            false,
+            Environment::default().idiom,
+            Some(vec!["en".into(), "de".into()]),
+        );
+        app.wait_for("text:Read lines 1234–1235 / 12,345").unwrap();
+        app.wait_for("text:Recorded edit · 1,234 replacements · Recorded lines 1234–1235")
+            .unwrap();
+        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 1234")
+            .unwrap();
+        app.wait_for("text:Lines 1234–1235").unwrap();
+        app.wait_for("text:Line 1234").unwrap();
+        let en_texts = app.screen().texts();
+        assert!(
+            en_texts.contains(&"1234\n1235"),
+            "expected ungrouped code gutter in English: {en_texts:?}"
+        );
+        assert!(
+            !en_texts.contains(&"1,234\n1,235"),
+            "code gutter must never group line numbers: {en_texts:?}"
+        );
+
+        app.press("label:Switch to German").unwrap();
+        app.wait_for("text:Gelesene Zeilen 1234–1235 / 12.345")
+            .unwrap();
+        app.wait_for(
+            "text:Aufgezeichnete Bearbeitung · 1.234 Ersetzungen · Aufgezeichnete Zeilen 1234–1235",
+        )
+        .unwrap();
+        app.wait_for("text:Aufgezeichnete Bearbeitung · 1 Ersetzung · Aufgezeichnete Zeile 1234")
+            .unwrap();
+        app.wait_for("text:Zeilen 1234–1235").unwrap();
+        app.wait_for("text:Zeile 1234").unwrap();
+        let de_texts = app.screen().texts();
+        assert!(
+            de_texts.contains(&"1234\n1235"),
+            "expected ungrouped code gutter in German: {de_texts:?}"
+        );
     }
 }
 

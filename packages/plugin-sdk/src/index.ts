@@ -28,6 +28,7 @@ export {
   SUPPORTED_LOCALES,
   createI18n,
   formatMessage,
+  formatNumber,
   negotiateLocale,
   negotiateSingleLocale,
   normalizeLocaleTag,

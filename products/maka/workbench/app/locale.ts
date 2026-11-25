@@ -117,7 +117,7 @@ export function applyLanguagePreference(
 
 /**
  * Render selects one immutable catalog and formats ICU placeholders/plurals for the active locale.
- * Numeric values and `#` are locale-formatted automatically; pass identifiers or dimensions as `string`.
+ * Numeric values and `#` are locale-formatted automatically; pass identifiers, line numbers, or dimensions as `string`.
  */
 export function tr(key: MessageKey, values?: Readonly<Record<string, string | number>>): string {
   const locale = currentLocale();

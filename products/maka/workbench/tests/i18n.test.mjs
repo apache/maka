@@ -35,6 +35,7 @@ const {
   createI18n,
   extractIcuParams,
   formatMessage,
+  formatNumber,
   negotiateLocale,
   normalizeLocaleTag,
   pluralCategory,
@@ -107,6 +108,13 @@ test('CLDR plural rules and ICU formatting cover CJK, French, and 4-form Russian
   assert.equal(formatMessage('{n} items', 'en', { n: -0 }), '0 items');
   assert.equal(formatMessage('{n} items', 'en', { n: Number.NaN }), 'NaN items');
   assert.equal(formatMessage('{n} items', 'en', { n: Number.POSITIVE_INFINITY }), 'Infinity items');
+  assert.equal(formatNumber(1_234, 'en'), '1,234');
+  assert.equal(formatNumber(1_234, 'de'), '1.234');
+  assert.equal(formatNumber(1_234, 'fr'), '1\u202f234');
+  assert.equal(formatNumber(1_234, 'zh-CN'), '1,234');
+  assert.equal(formatNumber(-0, 'en'), '0');
+  assert.equal(formatNumber(Number.NaN, 'en'), 'NaN');
+  assert.equal(formatNumber(Number.POSITIVE_INFINITY, 'en'), 'Infinity');
 });
 
 test('zh-HK overlay inherits from zh-TW and never falls back to zh-CN simplified', () => {

@@ -186,7 +186,8 @@ function intlLocaleTag(locale: string): string {
   return base.join('-');
 }
 
-function formatLocalizedNumber(locale: string, value: number): string {
+/** Locale-aware default grouping and decimal formatting shared by ICU interpolation and UI counters. */
+export function formatNumber(value: number, locale: string): string {
   if (!Number.isFinite(value)) return String(value);
   const normalized = value === 0 ? 0 : value;
   const tag = intlLocaleTag(locale);
@@ -510,11 +511,11 @@ function evalNodes(
           break;
         }
         const val = values[node.name];
-        out += typeof val === 'number' ? formatLocalizedNumber(locale, val) : String(val);
+        out += typeof val === 'number' ? formatNumber(val, locale) : String(val);
         break;
       }
       case 'hash':
-        out += activeCount !== undefined ? formatLocalizedNumber(locale, activeCount) : '#';
+        out += activeCount !== undefined ? formatNumber(activeCount, locale) : '#';
         break;
       case 'plural': {
         const raw = values?.[node.name];
@@ -539,7 +540,7 @@ function evalNodes(
 
 /**
  * Format an ICU MessageFormat string for locale. Numeric values and `#` are locale-formatted
- * automatically; pass pre-formatted strings or identifiers as `string` to keep them verbatim.
+ * automatically; pass pre-formatted strings, identifiers, or line numbers as `string` to keep them verbatim.
  * Static strings skip parsing completely.
  */
 export function formatMessage(

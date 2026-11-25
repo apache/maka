@@ -17,11 +17,11 @@
  * under the License.
  */
 
+import { formatNumber } from '../../../../packages/plugin-sdk/src/index.js';
 import { currentLocale } from './locale';
 
 const MAX_FORMATTER_CACHE = 64;
 const compactCache = new Map<string, Intl.NumberFormat>();
-const groupedCache = new Map<string, Intl.NumberFormat>();
 const decimalCache = new Map<string, Intl.NumberFormat>();
 
 function getFormatter(
@@ -45,12 +45,7 @@ function normalizeNumber(value: number): number | null {
 }
 
 export function formatCount(value: number): string {
-  const normalized = normalizeNumber(value);
-  if (normalized === null) return String(value);
-  const locale = currentLocale();
-  return getFormatter(groupedCache, locale, locale, { maximumFractionDigits: 20 }).format(
-    normalized,
-  );
+  return formatNumber(value, currentLocale());
 }
 
 export function formatCompactCount(value: number): string {
