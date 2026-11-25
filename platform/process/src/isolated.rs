@@ -32,7 +32,7 @@ pub use evidence::{
 mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod publication;
 #[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
@@ -225,7 +225,7 @@ pub struct TaskOwner {
     helper_executable: PathBuf,
     read_ceiling: Policy,
     bound_command: Option<BoundCommand>,
-    home_capture: HomeCapture,
+    home_capture: Option<HomeCapture>,
     home_seed: home::SeedState,
     snapshot: Option<SnapshotProof>,
     live_workspace: Option<PathBuf>,
@@ -336,7 +336,7 @@ impl NoLaunchSeal {
         let resource = self.owner.resource.clone();
         let frozen = self.snapshot.clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             {
                 let pinned = evidence::pin(&resource)?;
                 if frozen.get().is_none() {
@@ -352,7 +352,7 @@ impl NoLaunchSeal {
                     },
                 )
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
                 let _ = (resource, frozen);
                 Err(io::Error::new(
@@ -446,7 +446,7 @@ impl TaskOwner {
         privacy: Option<&Policy>,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
-        if !cfg!(target_os = "macos") {
+        if !(cfg!(target_os = "macos") || cfg!(target_os = "linux") && privacy.is_none()) {
             return Err(Error::IsolationUnavailable(
                 "this platform has no proven persistent native task boundary".into(),
             ));
@@ -547,7 +547,15 @@ impl TaskOwner {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     let metadata = std::fs::symlink_metadata(&namespace)?;
-                    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    #[cfg(unix)]
+                    let wrong_owner_or_mode = {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.uid() != rustix::process::geteuid().as_raw()
+                            || metadata.mode() & 0o022 != 0
+                    };
+                    #[cfg(not(unix))]
+                    let wrong_owner_or_mode = false;
+                    if !metadata.is_dir() || wrong_owner_or_mode {
                         return Err(io::Error::other(
                             "private task namespace is not an owned directory",
                         ));
@@ -696,11 +704,16 @@ impl TaskOwner {
             .await?;
             (None, Sandbox::Disabled)
         };
-        let home_resource = resource.clone();
-        let home_capture =
-            tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
-                .await
-                .map_err(io::Error::other)??;
+        let home_capture = if privacy.is_some() {
+            let home_resource = resource.clone();
+            Some(
+                tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
+                    .await
+                    .map_err(io::Error::other)??,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             resource,
             helper_executable,
@@ -784,8 +797,8 @@ impl TaskOwner {
     }
 
     /// Retain original HOME custody before consuming this owner in spawn.
-    pub fn home_capture(&self) -> HomeCapture {
-        self.home_capture.clone()
+    pub fn home_capture(&self) -> Option<&HomeCapture> {
+        self.home_capture.as_ref()
     }
 
     /// Stream a broker-authorized immutable profile into this fresh HOME.
@@ -1271,7 +1284,7 @@ async fn write_json_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
     file.sync_all().await
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
     use std::io::Write;
@@ -1294,7 +1307,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
             Mode::RUSR | Mode::WUSR,
         )?
         .into();
-        let written = (|| {
+        let written: io::Result<()> = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
             publication::rename_without_replace(owner, &pending, name)?;
@@ -1308,7 +1321,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
     owner.sync_all()?;
     Ok(())
 }
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn publish_proof(_: &Path, _: &str, _: &impl Serialize) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

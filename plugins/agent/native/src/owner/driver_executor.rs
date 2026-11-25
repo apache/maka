@@ -928,6 +928,15 @@ impl ExternalPorts for DriverExecutor {
                 content.text.push_str(&note);
             }
             let live_workspace = self.backend.service_binding().is_none();
+            #[cfg(target_os = "linux")]
+            if live_workspace
+                && selection.settings.runtime.as_deref()
+                    != Some(maka_agent_api::executor::NativeRuntime::Antigravity.as_str())
+            {
+                return Err(RunError::IsolationUnavailable(
+                    "only Antigravity supports native live tasks on Linux".into(),
+                ));
+            }
             let request = Request {
                 task_id: task,
                 language: view.spec.language,

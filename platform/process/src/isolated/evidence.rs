@@ -17,14 +17,14 @@
  * under the License.
  */
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::ChildExited;
 use super::{BaselineReader, Descriptor, Error, SnapshotProof, TaskReceipt};
 #[cfg(unix)]
 use super::{Closure, Started};
 use std::{fs::File, io, path::PathBuf};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod watch {
     use super::*;
     use notify::{Config, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -229,13 +229,13 @@ mod watch {
         }
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use watch::EvidenceWatch;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub struct EvidenceWatch {
     _private: (),
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 impl EvidenceWatch {
     pub async fn open(_: &Descriptor, _: EvidenceInterest) -> Result<Self, Error> {
         Err(Error::IsolationUnavailable(
@@ -304,7 +304,7 @@ pub(super) fn pin(path: &std::path::Path) -> io::Result<Pinned> {
         path: path.to_owned(),
     })
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn snapshot(pinned: &Pinned) -> io::Result<Option<SnapshotProof>> {
     let proof: Option<SnapshotProof> = read_json(open_regular(&pinned.owner, "snapshot.json")?)?;
     if proof
@@ -355,7 +355,7 @@ fn read_closure(pinned: &Pinned) -> io::Result<Option<Closure>> {
     }
     Ok(Some(closure))
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn read_cleanup(pinned: &Pinned) -> io::Result<Option<CleanupEvidence>> {
     let Some(closure) = read_closure(pinned)? else {
         return Ok(None);
@@ -386,14 +386,14 @@ pub(super) fn group_closed(resource: &std::path::Path) -> io::Result<bool> {
 }
 pub async fn cleanup_evidence(descriptor: &Descriptor) -> Result<Option<CleanupEvidence>, Error> {
     let path = descriptor.resource_ref.clone();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         tokio::task::spawn_blocking(move || read_cleanup(&pin(&path)?))
             .await
             .map_err(io::Error::other)?
             .map_err(Error::Io)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = path;
         Err(Error::IsolationUnavailable(
@@ -401,7 +401,7 @@ pub async fn cleanup_evidence(descriptor: &Descriptor) -> Result<Option<CleanupE
         ))
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn ready(pinned: &Pinned, interest: EvidenceInterest) -> io::Result<bool> {
     match interest {
         EvidenceInterest::Cleanup => Ok(read_closure(pinned)?.is_some()),
@@ -453,7 +453,7 @@ impl ClosedEvidence {
 /// The caller must select the descriptor from its admitted original resource
 /// receipt and independently validate the original native protocol identities.
 pub async fn closed_evidence(descriptor: &Descriptor) -> Result<Option<ClosedEvidence>, Error> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Err(Error::IsolationUnavailable(
             "native task evidence is unavailable on this platform".into(),
         ));
@@ -638,4 +638,48 @@ pub(super) fn read_json<T: serde::de::DeserializeOwned>(file: File) -> io::Resul
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    #[tokio::test]
+    async fn original_closure_wakes_registered_observer() -> Result<(), Error> {
+        let namespace = maka_sandbox::native_task_namespace()?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&namespace)?;
+        let resource = tempfile::Builder::new()
+            .prefix("maka-native-task-")
+            .tempdir_in(namespace)?;
+        let path = resource.path();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir(path.join("owner"))?;
+        super::super::write_json_new(&path.join("owner/snapshot.json"), &()).await?;
+        let descriptor = Descriptor {
+            resource_ref: path.to_owned(),
+        };
+        let mut watch = EvidenceWatch::open(&descriptor, EvidenceInterest::Cleanup).await?;
+        assert!(cleanup_evidence(&descriptor).await?.is_none());
+
+        let pinned = pin(path)?;
+        let closure = Closure::NeverLaunched {
+            resource: path.to_owned(),
+            snapshot: snapshot_identity(&pinned.owner)?,
+        };
+        super::super::publish_proof(path, "closure.json", &closure)?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), watch.changed())
+            .await
+            .map_err(io::Error::other)??;
+        watch.wait().await?;
+        watch.close().await?;
+        assert!(matches!(
+            cleanup_evidence(&descriptor).await?,
+            Some(CleanupEvidence::NeverLaunched { snapshot: None })
+        ));
+        Ok(())
+    }
 }

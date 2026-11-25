@@ -42,7 +42,7 @@ unicode-width = "0.2.2"
 libc.workspace = true
 rustix = { version = "1.1.5", features = ["pty", "termios", "fs", "process", "net"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 notify = "8.2.1"
 
 [target.'cfg(windows)'.dependencies]

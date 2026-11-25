@@ -36,7 +36,15 @@ pub mod launch;
 
 /// Address of the private native-task namespace. This does not grant access.
 pub fn native_task_namespace() -> std::io::Result<std::path::PathBuf> {
-    Ok(dunce::canonicalize(std::env::temp_dir())?.join("maka-native-tasks"))
+    #[cfg(target_os = "linux")]
+    let directory = {
+        // SAFETY: geteuid reads the current process identity without pointers.
+        let uid = unsafe { libc::geteuid() };
+        format!("maka-native-tasks-{uid}")
+    };
+    #[cfg(not(target_os = "linux"))]
+    let directory = "maka-native-tasks";
+    Ok(dunce::canonicalize(std::env::temp_dir())?.join(directory))
 }
 #[cfg(target_os = "linux")]
 mod linux;

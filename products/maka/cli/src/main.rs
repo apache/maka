@@ -51,6 +51,38 @@ mod wsl_stdio;
 
 fn main() -> std::process::ExitCode {
     #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(
+            maka_process::native_task_namespace::HELPER,
+        ))
+    {
+        let mut args = std::env::args_os().skip(2);
+        let result = match (
+            args.next()
+                .and_then(|pid| pid.to_str().and_then(|pid| pid.parse().ok())),
+            args.next(),
+        ) {
+            // SAFETY: this private role runs before starting any thread.
+            (Some(owner), Some(executable)) => unsafe {
+                maka_process::native_task_namespace::run(
+                    owner,
+                    std::path::Path::new(&executable),
+                    args.collect(),
+                )
+            },
+            _ => Err(std::io::Error::other(
+                "invalid native task namespace arguments",
+            )),
+        };
+        match result {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("native task namespace: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(maka_wsl_bridge::HELPER))
     {
         return wsl_stdio::entry();

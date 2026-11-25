@@ -308,7 +308,17 @@ pub async fn serve_front() -> io::Result<()> {
         .await
         .map_err(io::Error::other)?;
     let temp = tempfile::Builder::new().prefix("maka-agy-").tempdir()?;
+    #[cfg(not(target_os = "linux"))]
     let mut cmd = maka_process::Command::new(launch.executable, &profile);
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut command = maka_process::Command::new(std::env::current_exe()?, &profile);
+        command
+            .arg(maka_process::native_task_namespace::HELPER)
+            .arg(std::process::id().to_string())
+            .arg(launch.executable);
+        command
+    };
     for arg in launch.args {
         cmd.arg(arg);
     }

@@ -31,6 +31,8 @@ pub mod lifetime;
 pub mod pipe;
 pub use command::Command;
 #[cfg(target_os = "linux")]
+pub mod native_task_namespace;
+#[cfg(target_os = "linux")]
 pub mod network_namespace;
 mod output;
 pub mod system;

@@ -321,7 +321,10 @@ impl ProfileBroker {
             .await
             .map_err(persistence)??;
         }
-        let capture = task.home_capture();
+        let capture = task
+            .home_capture()
+            .expect("managed profile task has a private home")
+            .clone();
         Ok((
             task,
             SeededProfile {
