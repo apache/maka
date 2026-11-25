@@ -80,6 +80,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
   reload ordering. Scoped lookups also enforce upstream window isolation.
+  On Windows, selecting output keeps an input focused only in the same window.
+  Copy prefers the focused RichEditor's document selection, then the output.
 - **Localization and TUI:** Maka's CJK locale and international formatting
   support and bandless selection and focus marks remain local extensions.
 - **Native lifecycle:** terminal surfaces keep host ownership of windows and
@@ -87,6 +89,11 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   termination. Stopping an engine revokes its input and frame receipts.
 
 ## Maintenance and verification
+
+Local test adjustments: `mouse.test.mjs` expects pointer metadata
+(`pointerType`, pressure and tilt). AppKit's `menu_labels`, `menu_lifetime`
+and `text_view_selection` find layer-backed text through accessibility (#2997);
+selection drags use accessibility frames converted to window coordinates.
 
 Compare retained changes against each recorded upstream baseline. Remove local
 patches when upstream supplies the same behavior; migrate all product, plugin,

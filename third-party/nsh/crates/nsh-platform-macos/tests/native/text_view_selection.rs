@@ -83,9 +83,18 @@ fn find_all(view: &NSView, matches: &dyn Fn(&NSView) -> bool, out: &mut Vec<Reta
     if matches(view) {
         out.push(view.retain());
     }
-    for child in view.subviews().iter() {
+    for child in view
+        .accessibilityChildren()
+        .iter()
+        .flat_map(|children| children.iter())
+        .filter_map(|child| child.downcast::<NSView>().ok())
+    {
         find_all(&child, matches, out);
     }
+}
+
+fn window_frame(window: &NSWindow, view: &NSView) -> NSRect {
+    window.convertRectFromScreen(view.accessibilityFrame())
 }
 
 fn find_text_view(root: &NSView, needle: &str) -> Option<Retained<NSView>> {
@@ -235,15 +244,12 @@ pub(super) fn run() {
 
     // 1. Exact repro: drag from inside the blockquote slightly past its right
     //    and bottom edge. The top-left `•` must never be selected or copied.
-    let q_bounds = quote_view.bounds();
-    let start = quote_view.convertPoint_toView(
-        NSPoint::new(q_bounds.size.width * 0.25, q_bounds.size.height * 0.5),
-        None,
+    let q = window_frame(&window, &quote_view);
+    let start = NSPoint::new(
+        q.origin.x + q.size.width * 0.25,
+        q.origin.y + q.size.height * 0.5,
     );
-    let end = quote_view.convertPoint_toView(
-        NSPoint::new(q_bounds.size.width + 20.0, q_bounds.size.height + 10.0),
-        None,
-    );
+    let end = NSPoint::new(q.origin.x + q.size.width + 20.0, q.origin.y - 10.0);
     drag_window_points(&window, &app, start, end);
 
     let sel = SELECTED.lock().unwrap().clone();
@@ -296,10 +302,10 @@ pub(super) fn run() {
 
     // 2. Drag from the blockquote down into the second list item: omits `•`
     //    and preserves Markdown list structure in `selectedText`.
-    let s_bounds = second_view.bounds();
-    let end_second = second_view.convertPoint_toView(
-        NSPoint::new(s_bounds.size.width * 0.8, s_bounds.size.height * 0.5),
-        None,
+    let s = window_frame(&window, &second_view);
+    let end_second = NSPoint::new(
+        s.origin.x + s.size.width * 0.8,
+        s.origin.y + s.size.height * 0.5,
     );
     drag_window_points(&window, &app, start, end_second);
     let across = SELECTED.lock().unwrap().clone();
@@ -315,15 +321,12 @@ pub(super) fn run() {
 
     // 3. Drag inside the code block past its bottom/right edge: floating
     //    `RunAction` button in `codeBlockHeader` must never be selected.
-    let c_bounds = code_view.bounds();
-    let c_start = code_view.convertPoint_toView(
-        NSPoint::new(c_bounds.size.width * 0.1, c_bounds.size.height * 0.5),
-        None,
+    let c = window_frame(&window, &code_view);
+    let c_start = NSPoint::new(
+        c.origin.x + c.size.width * 0.1,
+        c.origin.y + c.size.height * 0.5,
     );
-    let c_end = code_view.convertPoint_toView(
-        NSPoint::new(c_bounds.size.width + 20.0, c_bounds.size.height + 12.0),
-        None,
-    );
+    let c_end = NSPoint::new(c.origin.x + c.size.width + 20.0, c.origin.y - 12.0);
     drag_window_points(&window, &app, c_start, c_end);
     let code_sel = SELECTED.lock().unwrap().clone();
     assert!(

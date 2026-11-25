@@ -17,7 +17,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use nsh_core::{
     EventKind, EventPayload, PayloadValue, ROOT_ID,
-    keymap::{Key, Keymap, Keystroke, Modifiers},
+    keymap::{Key, KeyFocus, Keymap, Keystroke, Modifiers},
     platform::Os,
 };
 use windows::Win32::UI::{
@@ -47,14 +47,26 @@ pub(crate) fn clear(surface: &Surface) {
 /// held, repeats one). A binding passing the key through fires and leaves
 /// it to the window.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
-    key_in_phase(surface, event, false)
+    key_in_phase(surface, event, Phase::Ordinary)
 }
 
 pub(crate) fn fallback_key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
-    key_in_phase(surface, event, true)
+    key_in_phase(surface, event, Phase::Fallback)
 }
 
-fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool {
+/// Before copying a selection around a field, let the focused editor's
+/// own binding take it. App-level shortcuts don't get this priority.
+pub(crate) fn scoped_copy(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    key_in_phase(surface, event, Phase::ScopedCopy)
+}
+
+enum Phase {
+    Ordinary,
+    Fallback,
+    ScopedCopy,
+}
+
+fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, phase: Phase) -> bool {
     let Some(table) = surface.keymap.table.borrow().clone() else {
         return false;
     };
@@ -68,20 +80,30 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
     if keystroke.key == Key::Escape && crate::text_input::composing_focused(surface) {
         return false;
     }
-    let editing = crate::text_input::focused(surface).is_some();
-    let control = crate::keyboard::focused_control(surface).is_some()
+    let mut focus = KeyFocus::default();
+    focus.editing = crate::text_input::focused(surface).is_some();
+    focus.control = crate::keyboard::focused_control(surface).is_some()
         || crate::input::focused_control(surface).is_some();
     let path = surface.focus_path();
     let window = surface.input_root().id();
-    let found = if fallback {
-        table.find_fallback_at_with(window, keystroke, editing, control, event.repeat, |id| {
-            path.contains(&id)
-        })
-    } else {
-        table.find_at_with(window, keystroke, editing, control, event.repeat, |id| {
-            path.contains(&id)
-        })
-    };
+    let found = table.find_eligible(
+        window,
+        keystroke,
+        focus,
+        event.repeat,
+        |binding| match phase {
+            Phase::ScopedCopy => {
+                !binding.fallback
+                    && !binding.pass_through
+                    && binding.for_focus
+                    && path.first().is_some_and(|id| binding.within == Some(*id))
+            }
+            Phase::Ordinary | Phase::Fallback => {
+                binding.fallback == matches!(phase, Phase::Fallback)
+                    && binding.within.is_none_or(|id| path.contains(&id))
+            }
+        },
+    );
     if let Some(id) = found.fired() {
         surface.event(
             ROOT_ID,
@@ -182,7 +204,11 @@ mod tests {
                     binding.window = window;
                     set(&surface, Arc::new(Keymap::new(vec![binding])));
                     assert_eq!(
-                        key_in_phase(&surface, &event, fallback),
+                        if fallback {
+                            fallback_key(&surface, &event)
+                        } else {
+                            key(&surface, &event)
+                        },
                         expected,
                         "vk={vk} fallback={fallback} for_focus={for_focus} within={within:?} window={window:?}"
                     );

@@ -1148,7 +1148,9 @@ pub(crate) fn bind(
 
 /// Whether `index` is within the list's current data.
 fn in_range(cx: *mut JsContext, list: NodeId, index: u32) -> Result<bool, JsValue> {
-    let items = lists(cx).map.borrow()[&list].items;
+    let Some(items) = lists(cx).map.borrow().get(&list).map(|d| d.items) else {
+        return Ok(false);
+    };
     // SAFETY: the items getter, called untracked; the result is freed.
     let each = reactive::untracked_with(cx, || unsafe {
         qjs::JS_Call(cx, items, UNDEFINED, 0, ptr::null_mut())
@@ -1186,6 +1188,11 @@ fn make_cell(cx: *mut JsContext, list: NodeId, slot: u32, first: u32) -> Result<
             if qjs::JS_IsException(content) {
                 return Err(content);
             }
+        }
+        // Rendering the row can dispose the list and free its props.
+        if !lists(cx).map.borrow().contains_key(&list) {
+            unsafe { qjs::JS_FreeValue(cx, content) };
+            return Ok(());
         }
         let r = if has(cx, props, "separator") {
             // SAFETY: a placeholder for the separator once made.
@@ -2033,6 +2040,50 @@ mod tests {
         check("separators.dispose(); separators.cleaned === 4");
         check(
             "separators.color.set('black'); separators.colors.join() === 'green,green,green,green'",
+        );
+    }
+
+    #[test]
+    fn binding_a_batch_stops_building_cells_after_the_list_is_disposed() {
+        let host = Host::with_options(HostOptions::default()).unwrap();
+        host.with_raw(|raw| {
+            // SAFETY: the host owns the live context for this closure.
+            let cx = unsafe { rquickjs::Ctx::from_raw(std::ptr::NonNull::new_unchecked(raw)) };
+            crate::reactive::install_globals(&cx);
+        });
+        host.eval_source(
+            r#"
+            import { List } from "nsh";
+            globalThis.builtRows = [];
+            __nsh_reactive.createRoot(dispose => {
+                List({
+                    each: ["first", "second"],
+                    children: item => {
+                        builtRows.push(item());
+                        dispose();
+                        return null;
+                    },
+                });
+            });
+            "#,
+        )
+        .unwrap();
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        let list = ops
+            .into_iter()
+            .find_map(|op| match op {
+                Op::Create {
+                    id,
+                    tag: nsh_core::Tag::List,
+                } => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        host.bind_list(list, &[(0, 0), (1, 1)]);
+        assert!(
+            host.eval_script("bind-disposed-list", "builtRows.join() === 'first'")
+                .unwrap()
         );
     }
 
