@@ -44,6 +44,7 @@ export interface ActiveHostInfo {
   hostName: string;
   epoch: string;
   session: string;
+  generation: number;
   endpoints: string[];
   pathSummary: PathSummary | null;
   transport: 'quic' | 'websocket';
@@ -96,6 +97,7 @@ export interface ParsedTicketInfo {
 }
 
 export interface SubscriptionHandle {
+  rootId: string;
   subscriptionId: string;
   generation: number;
 }
@@ -568,17 +570,23 @@ export function setFilter(filter: HostViewFilter): Promise<HostStateSnapshot> {
   return host.call('ios.setFilter', { filter }) as Promise<HostStateSnapshot>;
 }
 
-let anchorSession: string | undefined;
+let hostState: HostStateSnapshot | undefined;
 
-export function setAnchorSession(session: string | undefined) {
-  anchorSession = session;
+export function setHostSnapshot(snapshot: HostStateSnapshot) {
+  hostState = snapshot;
+}
+
+function connection(rootId: string | undefined): ActiveHostInfo | undefined {
+  if (rootId === undefined) return hostState?.active ?? undefined;
+  const entry = hostState?.connections?.[rootId];
+  return entry?.status === 'connected' ? entry.connection : undefined;
 }
 
 export async function hostQuery<T = unknown>(
   endpoint: string,
   method: string,
   input: Record<string, unknown> = {},
-  targetAnchor = anchorSession,
+  targetAnchor = hostState?.active?.session,
   rootId?: string,
 ): Promise<T> {
   const res = (await host.call('ios.hostQuery', {
@@ -593,24 +601,75 @@ export async function hostQuery<T = unknown>(
   return res.value;
 }
 
+export interface MutationProgress {
+  rootId: string;
+  generation: number;
+  progressId: string;
+  value: unknown;
+}
+
+type ProgressListener = (progress: MutationProgress) => void;
+const progressListeners = new Map<string, ProgressListener>();
+let nextProgressId = 0;
+
+function progressKey(rootId: string, generation: number, progressId: string) {
+  return JSON.stringify([rootId, generation, progressId]);
+}
+
+host.on('ios.mutationProgress', (data) => {
+  const progress = data as MutationProgress & { credit: number };
+  try {
+    if (connection(progress.rootId)?.generation === progress.generation) {
+      progressListeners.get(
+        progressKey(progress.rootId, progress.generation, progress.progressId),
+      )?.(progress);
+    }
+  } finally {
+    // Return credit even if the event belongs to a Host or call that has since ended.
+    host.post('ios.ackMutationProgress', progress.credit);
+  }
+});
+
 export async function hostMutate<T = unknown>(
   endpoint: string,
   method: string,
   input: Record<string, unknown> = {},
-  { rootId, secret, progressId }: { rootId?: string; secret?: string; progressId?: string } = {},
-): Promise<T> {
-  const res = (await host.call('ios.hostMutate', {
-    anchorSession: rootId ? undefined : anchorSession,
+  {
     rootId,
-    endpoint,
-    method,
-    input,
     secret,
     progressId,
-  })) as {
-    value: T;
-  };
-  return res.value;
+    onProgress,
+  }: {
+    rootId?: string;
+    secret?: string;
+    progressId?: string;
+    onProgress?: ProgressListener;
+  } = {},
+): Promise<T> {
+  const target = onProgress ? connection(rootId) : undefined;
+  let key: string | undefined;
+  if (onProgress) {
+    if (!target) throw new Error('remote Host is not connected');
+    progressId ??= 'mutation:' + String(++nextProgressId);
+    key = progressKey(target.rootId, target.generation, progressId);
+    if (progressListeners.has(key)) throw new Error('mutation progress ID is already in use');
+    progressListeners.set(key, onProgress);
+  }
+  try {
+    const res = (await host.call('ios.hostMutate', {
+      anchorSession: rootId ? undefined : hostState?.active?.session,
+      rootId,
+      generation: target?.generation,
+      endpoint,
+      method,
+      input,
+      secret,
+      progressId: onProgress ? progressId : undefined,
+    })) as { value: T };
+    return res.value;
+  } finally {
+    if (key !== undefined) progressListeners.delete(key);
+  }
 }
 
 export function subscribe(
@@ -623,25 +682,15 @@ export function subscribe(
   return host.call('ios.subscribe', {
     subscriptionId,
     rootId,
-    anchorSession: rootId ? undefined : anchorSession,
+    anchorSession: rootId ? undefined : hostState?.active?.session,
     endpoint,
     method,
     input,
   }) as Promise<SubscriptionHandle>;
 }
 
-export function unsubscribe(subscriptionId: string, rootId?: string): Promise<{ cancelled: boolean }> {
-  return host.call('ios.unsubscribe', { subscriptionId, rootId }) as Promise<{ cancelled: boolean }>;
-}
-
-export interface MutationProgress {
-  rootId: string;
-  progressId: string;
-  value: unknown;
-}
-
-export function onMutationProgress(listener: (progress: MutationProgress) => void): () => void {
-  return host.on('ios.mutationProgress', (data) => listener(data as MutationProgress));
+export function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: boolean }> {
+  return host.call('ios.unsubscribe', handle) as Promise<{ cancelled: boolean }>;
 }
 
 export function onHostState(listener: (state: HostStateSnapshot) => void): () => void {

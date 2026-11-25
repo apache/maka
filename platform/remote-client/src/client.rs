@@ -602,6 +602,23 @@ impl RemoteCallHandle {
         attachments: Attachments,
         on_progress: impl FnMut(Value),
     ) -> Result<Value, RemoteClientError> {
+        let mut on_progress = on_progress;
+        self.mutate_with_progress(endpoint, method, input, attachments, |value| {
+            on_progress(value);
+            std::future::ready(())
+        })
+        .await
+    }
+
+    /// Like [Self::mutate_with], with an async callback for each progress frame.
+    pub async fn mutate_with_progress<F: Future<Output = ()>>(
+        &self,
+        endpoint: &str,
+        method: &str,
+        input: Value,
+        attachments: Attachments,
+        on_progress: impl FnMut(Value) -> F,
+    ) -> Result<Value, RemoteClientError> {
         let mut reader = self
             .open_call_channel(endpoint, method, input, &attachments)
             .await?;
@@ -659,12 +676,12 @@ impl RemoteCallHandle {
     }
 }
 
-async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin>(
+async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin, F: Future<Output = ()>>(
     reader: &mut BufReader<S>,
     endpoint: &str,
     method: &str,
     reference: Value,
-    mut on_progress: impl FnMut(Value),
+    mut on_progress: impl FnMut(Value) -> F,
 ) -> Result<Value, RemoteClientError> {
     let recovery = json!({
         "kind": "maka_remote_mutation",
@@ -677,7 +694,7 @@ async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin>(
         write_frame(reader.get_mut(), &WireControl::Confirm { recovery }).await?;
         loop {
             match read_frame::<_, WireReply>(reader).await? {
-                WireReply::Progress { value } => on_progress(value),
+                WireReply::Progress { value } => on_progress(value).await,
                 reply @ (WireReply::Mutation { .. }
                 | WireReply::Aborted { .. }
                 | WireReply::BindingRetired { .. }) => {
@@ -1003,7 +1020,9 @@ mod tests {
         let mut channel = BufReader::new(client);
         let reference = json!({"operation":Uuid::new_v4()});
         let (result, ()) = tokio::join!(
-            confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {}),
+            confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {
+                std::future::ready(())
+            }),
             async {
                 let confirm: Value = read_frame(&mut BufReader::new(host)).await.unwrap();
                 assert_eq!(confirm["kind"], "confirm");
@@ -1029,7 +1048,10 @@ mod tests {
                     "setup",
                     "discoverModels",
                     reference.clone(),
-                    |value| progress.push(value)
+                    |value| {
+                        progress.push(value);
+                        std::future::ready(())
+                    }
                 ),
                 async {
                     let mut host = BufReader::new(host);
@@ -1070,7 +1092,9 @@ mod tests {
             let mut channel = BufReader::new(client);
             let reference = json!({"operation":Uuid::new_v4()});
             let (result, ()) = tokio::join!(
-                confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {}),
+                confirm_mutation(&mut channel, "agent", "send", reference.clone(), |_| {
+                    std::future::ready(())
+                }),
                 async {
                     let mut host = BufReader::new(host);
                     let _: Value = read_frame(&mut host).await.unwrap();

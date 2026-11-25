@@ -25,7 +25,7 @@ use nsh_engine::{HostCall, HostChannel};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc, Mutex as SyncMutex,
@@ -41,6 +41,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
+const PROGRESS_WINDOW: usize = 8;
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
     "ios.beginPairing",
@@ -53,6 +54,7 @@ pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.setFilter",
     "ios.hostQuery",
     "ios.hostMutate",
+    "ios.ackMutationProgress",
     "ios.subscribe",
     "ios.unsubscribe",
 ];
@@ -100,11 +102,20 @@ struct ConnectHost {
 struct Rpc {
     root_id: Option<RootId>,
     anchor_session: Option<String>,
+    generation: Option<u64>,
     endpoint: String,
     method: String,
     input: Value,
     subscription_id: Option<String>,
     progress_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubscriptionHandle {
+    root_id: RootId,
+    subscription_id: String,
+    generation: u64,
 }
 
 type RootId = String;
@@ -168,6 +179,8 @@ struct State {
     generation: u64,
     pairing: Option<Attempt>,
     pending: Option<Pending>,
+    redeeming: BTreeMap<u64, RootId>,
+    unacked_progress: BTreeSet<u64>,
     // The legacy pairing screen also uses cancelPairing for manual WebSocket admission.
     manual: Option<RootId>,
     active_root: Option<RootId>,
@@ -279,9 +292,9 @@ impl HostBridge {
                 bridge.runtime.clone().spawn(async move {
                     if name == "ios.subscribe" {
                         match bridge.open_subscription(data).await {
-                            Ok((id, generation, start)) => {
+                            Ok((root, id, generation, start)) => {
                                 call.reply(Ok(
-                                    json!({ "subscriptionId": id, "generation": generation }),
+                                    json!({ "rootId": root, "subscriptionId": id, "generation": generation }),
                                 ));
                                 let _ = start.send(());
                             }
@@ -447,28 +460,29 @@ impl Bridge {
                 Ok(json!({"value": value}))
             }
             "ios.hostMutate" => self.mutate(data).await,
+            "ios.ackMutationProgress" => {
+                let credit: u64 = decode(data)?;
+                self.state.lock().await.unacked_progress.remove(&credit);
+                Ok(Value::Null)
+            }
             "ios.unsubscribe" => {
-                let id = field(&data, "subscriptionId")?;
+                let SubscriptionHandle {
+                    root_id,
+                    subscription_id,
+                    generation,
+                } = decode(data)?;
                 let mut state = self.state.lock().await;
-                let root = match optional_root(&data)? {
-                    Some(root) => Some(root.to_owned()),
-                    None => {
-                        let mut matching = state
-                            .connections
-                            .iter()
-                            .filter(|(_, active)| active.subscriptions.contains_key(id));
-                        let root = matching.next().map(|(root, _)| root.clone());
-                        if matching.next().is_some() {
-                            return Err(
-                                "rootId is required for an ambiguous subscription ID".into()
-                            );
-                        }
-                        root
+                let task = state.connections.get_mut(&root_id).and_then(|host| {
+                    if host
+                        .subscriptions
+                        .get(&subscription_id)
+                        .is_some_and(|(id, _)| *id == generation)
+                    {
+                        host.subscriptions.remove(&subscription_id)
+                    } else {
+                        None
                     }
-                };
-                let task = root
-                    .and_then(|root| state.connections.get_mut(&root))
-                    .and_then(|active| active.subscriptions.remove(id));
+                });
                 if let Some((_, task)) = &task {
                     task.abort();
                 }
@@ -489,21 +503,12 @@ impl Bridge {
         let attachments = credential_attachments(&rpc, secret)?;
         let (root, id, calls, receipt_scope) = self.calls(&rpc).await?;
         let result = calls
-            .mutate_with(
+            .mutate_with_progress(
                 &rpc.endpoint,
                 &rpc.method,
                 rpc.input,
                 attachments,
-                |value| {
-                    if let Some(progress_id) = &rpc.progress_id {
-                        self.emit(
-                            "ios.mutationProgress",
-                            json!({
-                                "rootId": root, "progressId": progress_id, "value": value,
-                            }),
-                        );
-                    }
-                },
+                |value| self.emit_progress(&root, id, rpc.progress_id.as_deref(), value),
             )
             .await;
         if let Err(RemoteClientError::MutationUncertain { reference, .. }) = &result
@@ -514,6 +519,31 @@ impl Bridge {
         let value = result.map_err(error)?;
         self.check_active(&root, id).await?;
         Ok(json!({"value": value}))
+    }
+
+    async fn emit_progress(
+        &self,
+        root: &str,
+        generation: u64,
+        progress_id: Option<&str>,
+        value: Value,
+    ) {
+        let Some(progress_id) = progress_id else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        // A shared window bounds the NSH queue even across reconnects and concurrent calls.
+        // Progress is advisory when JS falls behind; never wait for credit on the receipt path.
+        if state.unacked_progress.len() == PROGRESS_WINDOW
+            || state.current(root, generation).is_none()
+        {
+            return;
+        }
+        let credit = state.next_generation();
+        state.unacked_progress.insert(credit);
+        self.emit("ios.mutationProgress", json!({
+            "rootId": root, "generation": generation, "progressId": progress_id, "value": value, "credit": credit,
+        }));
     }
 
     async fn new_pairing(&self) -> (u64, CancellationToken) {
@@ -619,13 +649,15 @@ impl Bridge {
                 .cancel
                 .child_token();
             let id = state.start_admission(&root, cancel.clone());
+            state.redeeming.insert(id, root.clone());
             self.emit("ios.hostState", self.snapshot(&state));
             (pending, root, id, cancel)
         };
         let pairing_id = pending.id;
         let result = self
-            .confirm_pairing(pending, &root, id, &cancel, &confirm.sas)
+            .confirm_pairing(pending, id, &cancel, &confirm.sas)
             .await;
+        self.state.lock().await.redeeming.remove(&id);
         self.finish_admission(&root, id, &cancel, &result).await;
         self.finish_pairing(pairing_id).await;
         result
@@ -634,7 +666,6 @@ impl Bridge {
     async fn confirm_pairing(
         &self,
         pending: Pending,
-        root: &str,
         id: u64,
         cancel: &CancellationToken,
         sas: &str,
@@ -644,13 +675,31 @@ impl Bridge {
             .await
             .ok_or("pairing cancelled")?
             .map_err(error)?;
-        // Once a receipt is acknowledged the invite has been spent. Save the
-        // authenticated profile even if the user cancels subsequent admission.
         let profile = redeemed.profile().clone();
         let name = profile.host_name().to_owned();
-        let edit = self.profile_edits.lock().await;
-        if !self.state.lock().await.admitting(root, id) {
-            return Err("pairing was superseded".into());
+        self.save_redeemed(id, profile, pending.credential).await?;
+        if cancel.is_cancelled() {
+            return Err("pairing saved; connection cancelled".into());
+        }
+        let (_, connection) = cancel
+            .run_until_cancelled(redeemed.admit())
+            .await
+            .ok_or("pairing saved; connection cancelled")?
+            .map_err(error)?;
+        self.install(id, name, connection, "quic", None).await
+    }
+
+    async fn save_redeemed(
+        &self,
+        id: u64,
+        profile: HostProfile,
+        credential: Option<Arc<RelayCredential>>,
+    ) -> Result<(), String> {
+        // Redeem spends the invite. Save even after cancellation, unless unpaired.
+        let root = profile.root_id().to_owned();
+        let _edit = self.profile_edits.lock().await;
+        if !self.state.lock().await.redeeming.contains_key(&id) {
+            return Err("Host was removed during pairing".into());
         }
         let saved = self.saved.clone();
         let to_save = profile.clone();
@@ -661,23 +710,17 @@ impl Bridge {
         {
             let mut state = self.state.lock().await;
             state.profiles.insert(root.to_owned(), profile);
-            match pending.credential {
+            match credential {
                 Some(credential) => {
                     state.credentials.insert(root.to_owned(), credential);
                 }
                 None => {
-                    state.credentials.remove(root);
+                    state.credentials.remove(&root);
                 }
             }
             self.emit("ios.hostState", self.snapshot(&state));
         }
-        drop(edit);
-        let (_, connection) = cancel
-            .run_until_cancelled(redeemed.admit())
-            .await
-            .ok_or("pairing saved; connection cancelled")?
-            .map_err(error)?;
-        self.install(id, name, connection, "quic", None).await
+        Ok(())
     }
 
     async fn connect(&self, request: ConnectHost) -> Result<Value, String> {
@@ -790,6 +833,9 @@ impl Bridge {
             .map_err(error)?
             .map_err(error)?;
         let mut state = self.state.lock().await;
+        state
+            .redeeming
+            .retain(|_, pairing_root| *pairing_root != root);
         state.profiles.remove(&root);
         state.credentials.remove(&root);
         state.uncertain.retain(|scope, _| scope.root != root);
@@ -857,7 +903,7 @@ impl Bridge {
                 subscriptions: BTreeMap::new(),
                 info: json!({
                     "rootId": connection.root_id(), "hostName": name, "epoch": connection.epoch(),
-                    "session": connection.session(), "endpoints": endpoints,
+                    "session": connection.session(), "generation": id, "endpoints": endpoints,
                     "pathSummary": path_summary(connection.path_summary()), "transport": transport,
                 }),
             });
@@ -1027,6 +1073,9 @@ impl Bridge {
                 rpc.anchor_session
                     .as_ref()
                     .is_none_or(|session| active.info["session"] == *session)
+                    && rpc
+                        .generation
+                        .is_none_or(|generation| generation == active.id)
             })
             .ok_or_else(|| match &rpc.root_id {
                 Some(root) if !state.connections.contains_key(root) => {
@@ -1053,7 +1102,7 @@ impl Bridge {
     async fn open_subscription(
         &self,
         data: Value,
-    ) -> Result<(String, u64, oneshot::Sender<()>), String> {
+    ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let rpc = read_only_rpc(data)?;
         let (root, active, calls, _) = self.calls(&rpc).await?;
         let id = rpc.subscription_id.ok_or("missing subscription ID")?;
@@ -1109,7 +1158,7 @@ impl Bridge {
         {
             replaced.abort();
         }
-        Ok((id, generation, start))
+        Ok((root, id, generation, start))
     }
 }
 
@@ -1121,8 +1170,18 @@ fn optional_root(data: &Value) -> Result<Option<&str>, String> {
     }
 }
 
+fn contains_secret(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key("secret") || fields.values().any(contains_secret)
+        }
+        Value::Array(items) => items.iter().any(contains_secret),
+        _ => false,
+    }
+}
+
 fn read_only_rpc(data: Value) -> Result<Rpc, String> {
-    if data.get("secret").is_some() || data["input"].get("secret").is_some() {
+    if data.get("secret").is_some() || contains_secret(&data["input"]) {
         return Err("only credential mutations accept a secret attachment".into());
     }
     let rpc: Rpc = decode(data)?;
@@ -1133,10 +1192,21 @@ fn read_only_rpc(data: Value) -> Result<Rpc, String> {
 }
 
 fn credential_attachments(rpc: &Rpc, secret: Option<String>) -> Result<Attachments, String> {
-    if rpc.input.get("secret").is_some() {
+    if contains_secret(&rpc.input) {
         return Err("secret belongs in the request attachment, not JSON input".into());
     }
-    let required = match (rpc.endpoint.as_str(), rpc.method.as_str()) {
+    let operation = (rpc.endpoint.as_str(), rpc.method.as_str());
+    if matches!(
+        operation,
+        (
+            "settings",
+            "saveCredential" | "saveUsageCredential" | "updateNetwork"
+        ) | ("web", "saveKey")
+    ) && !rpc.input.is_object()
+    {
+        return Err("credential mutation input must be a JSON object".into());
+    }
+    let required = match operation {
         ("settings", "saveCredential" | "saveUsageCredential") | ("web", "saveKey") => true,
         ("settings", "updateNetwork") => {
             match rpc.input.get("credential").and_then(Value::as_str) {
@@ -1212,6 +1282,100 @@ mod tests {
     fn input(listener: &TcpListener) -> Value {
         json!({"endpoint": format!("ws://{}/runtime-host", listener.local_addr().unwrap()),
                "bearer":"fixture", "rootId":"root", "clientInstance":"test"})
+    }
+
+    #[tokio::test]
+    async fn reserved_secret_fields_and_non_object_credential_inputs_fail_before_host_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let attached =
+            HostBridge::attach(HostChannel::new(), dir.path().into(), Handle::current()).unwrap();
+        let bridge = &attached.bridge;
+        for input in [
+            json!({"nested":{"secret":"not-on-wire"}}),
+            json!({"nested":[{"secret":null}]}),
+        ] {
+            for call in ["ios.hostQuery", "ios.subscribe", "ios.hostMutate"] {
+                let args = json!({"endpoint":"web","method":"saveKey","input":input});
+                let error = if call == "ios.subscribe" {
+                    bridge.open_subscription(args).await.unwrap_err()
+                } else {
+                    bridge.dispatch(call, args).await.unwrap_err()
+                };
+                assert!(error.contains("secret"), "{error}");
+            }
+        }
+        for (endpoint, method) in [
+            ("web", "saveKey"),
+            ("settings", "saveCredential"),
+            ("settings", "saveUsageCredential"),
+            ("settings", "updateNetwork"),
+        ] {
+            let error = bridge
+                .dispatch(
+                    "ios.hostMutate",
+                    json!({
+                        "endpoint":endpoint, "method":method, "input":[], "secret":"attachment"
+                    }),
+                )
+                .await
+                .unwrap_err();
+            assert!(error.contains("must be a JSON object"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redeemed_profile_waiting_to_save_survives_disconnect_but_not_remove() {
+        for unpair in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let attached =
+                HostBridge::attach(HostChannel::new(), dir.path().into(), Handle::current())
+                    .unwrap();
+            let bridge = &attached.bridge;
+            let profile: HostProfile = serde_json::from_value(json!({
+                "rootId":"root", "hostName":"Paired Host", "hostPeerId":bridge.peer_id,
+                "relays":[], "directEndpoints":[],
+            }))
+            .unwrap();
+            let cancel = CancellationToken::new();
+            let id = {
+                let mut state = bridge.state.lock().await;
+                let id = state.start_admission("root", cancel.clone());
+                state.redeeming.insert(id, "root".into());
+                id
+            };
+            let edit = bridge.profile_edits.lock().await;
+            let remove = bridge.dispatch("ios.removeHost", json!({"rootId":"root"}));
+            tokio::pin!(remove);
+            if unpair {
+                assert!(futures_util::poll!(&mut remove).is_pending());
+            }
+            // This is the post-redeem path: the invite is spent and a profile is ready.
+            let save = bridge.save_redeemed(id, profile, None);
+            tokio::pin!(save);
+            assert!(futures_util::poll!(&mut save).is_pending());
+            if !unpair {
+                bridge
+                    .dispatch("ios.disconnectHost", json!({"rootId":"root"}))
+                    .await
+                    .unwrap();
+            }
+            drop(edit);
+            if unpair {
+                remove.await.unwrap();
+                assert!(save.await.unwrap_err().contains("removed"));
+            } else {
+                save.await.unwrap();
+            }
+            assert!(cancel.is_cancelled());
+            let stored = SavedHosts::load(&bridge.profile_path).unwrap();
+            assert_eq!(stored.get("root").is_some(), !unpair);
+            let snapshot = bridge.dispatch("ios.bootstrap", json!({})).await.unwrap();
+            assert!(snapshot["active"].is_null());
+            assert_eq!(
+                snapshot["hosts"].as_array().unwrap().len(),
+                usize::from(!unpair)
+            );
+        }
     }
 
     #[tokio::test]
@@ -1387,6 +1551,149 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_js_progress_is_bounded_and_old_calls_cannot_emit_after_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let attached =
+            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let bridge = &attached.bridge;
+        let bundle = nsh_engine::Bundle::source(
+            r#"
+            import { host } from 'nsh';
+            let progress = [];
+            host.on('ios.mutationProgress', event => progress.push(event));
+            host.on('test.mutate', async (data) => {
+                try {
+                    const reply = await host.call('ios.hostMutate', data);
+                    host.post('test.reply', {reply, progress});
+                } catch (error) {
+                    host.post('test.reply', {error: String(error), progress});
+                } finally {
+                    progress = [];
+                }
+            });
+        "#
+            .to_owned(),
+        )
+        .with_capabilities_json(Some(r#"{"host":true}"#))
+        .unwrap();
+        let (send, mut replies) = tokio::sync::mpsc::unbounded_channel();
+        channel.handle("test.reply", move |mut call| {
+            send.send(call.take_data()).unwrap()
+        });
+        let mut engine = nsh_engine::EngineConfig::new(bundle);
+        engine.host = channel.clone();
+        engine.runtime = Some(Handle::current());
+        let _app = nsh_testing::Headless::start(engine).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let connect = async |session| {
+                let (snap, anchor) = tokio::join!(
+                    bridge.dispatch("ios.connectWebSocket", input(&listener)),
+                    admit_anchor(&listener, "root", session),
+                );
+                (snap.unwrap()["active"]["generation"].clone(), anchor)
+            };
+            let start = |generation| {
+                channel
+                    .send(
+                        "test.mutate",
+                        json!({
+                            "rootId":"root", "generation":generation, "endpoint":"agent",
+                            "method":"write", "input":{}, "progressId":"shared",
+                        }),
+                    )
+                    .unwrap();
+            };
+            let old_session = Uuid::new_v4();
+            let (old_generation, _old_anchor) = connect(old_session).await;
+            start(old_generation.clone());
+            let (_, mut old_call) = open_rpc(&listener, old_session).await;
+            let old_ref = prepare_mutation(&mut old_call).await;
+
+            let session = Uuid::new_v4();
+            let (generation, _anchor) = connect(session).await;
+            assert_ne!(old_generation, generation);
+            send_frame(&mut old_call, json!({"kind":"progress","value":"stale"})).await;
+            finish_mutation(&mut old_call, old_ref).await;
+            let old = replies.recv().await.unwrap();
+            assert!(old["error"].as_str().unwrap().contains("Host changed"));
+            assert_eq!(old["progress"], json!([]));
+
+            start(generation.clone());
+            let (_, mut call) = open_rpc(&listener, session).await;
+            let reference = prepare_mutation(&mut call).await;
+            for i in 0..PROGRESS_WINDOW * 4 {
+                send_frame(&mut call, json!({"kind":"progress","value":i})).await;
+            }
+            finish_mutation(&mut call, reference).await;
+            let response = replies.recv().await.unwrap();
+            assert_eq!(response["reply"]["value"], "done");
+            let progress = response["progress"].as_array().unwrap();
+            assert_eq!(progress.len(), PROGRESS_WINDOW);
+            for (i, event) in progress.iter().enumerate() {
+                assert_eq!(event["rootId"], "root");
+                assert_eq!(event["generation"], generation);
+                assert_eq!(event["progressId"], "shared");
+                assert_eq!(event["value"], i);
+            }
+
+            bridge
+                .dispatch("ios.ackMutationProgress", progress[0]["credit"].clone())
+                .await
+                .unwrap();
+            start(generation);
+            let (_, mut call) = open_rpc(&listener, session).await;
+            prepare_mutation(&mut call).await;
+            send_frame(&mut call, json!({"kind":"progress","value":"one credit"})).await;
+            send_frame(&mut call, json!({"kind":"progress","value":"no credit"})).await;
+            send_frame(
+                &mut call,
+                json!({"kind":"aborted","reason":"mutation failed"}),
+            )
+            .await;
+            let response = replies.recv().await.unwrap();
+            assert!(
+                response["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("mutation failed")
+            );
+            let progress = response["progress"].as_array().unwrap();
+            assert_eq!(progress.len(), 1);
+            assert_eq!(progress[0]["value"], "one credit");
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn prepare_mutation(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> Value {
+        let reference = json!({"operation":Uuid::new_v4()});
+        send_frame(ws, json!({"kind":"prepared","reference":reference})).await;
+        assert_eq!(read_frame(ws).await["kind"], "confirm");
+        reference
+    }
+
+    async fn finish_mutation(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        reference: Value,
+    ) {
+        send_frame(
+            ws,
+            json!({
+                "kind":"mutation","cleanup":{"Ok":null},
+                "reply":{"reference":reference,"receipt":{"kind":"recorded","outcome":{
+                    "kind":"returned","result":{"kind":"success","value":"done"},
+                }}},
+            }),
+        )
+        .await;
     }
 
     async fn admit_anchor(

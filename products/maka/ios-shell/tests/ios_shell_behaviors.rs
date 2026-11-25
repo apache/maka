@@ -427,7 +427,10 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
             assert_eq!(snapshot["ok"]["value"]["settings"]["source"], "custom");
             assert_eq!(snapshot["ok"]["value"]["credential"]["configured"], false);
         }
+        let a_handle = replies[2]["ok"].clone();
         let b_watch = replies[3]["ok"]["generation"].clone();
+        assert_eq!(a_handle["rootId"], a_id);
+        assert_eq!(replies[3]["ok"]["rootId"], b_id);
         assert_ne!(b_watch, replies[2]["ok"]["generation"]);
         let mut watched_roots = vec![items.recv().await.unwrap(), items.recv().await.unwrap()];
         watched_roots.sort_by(|a, b| a["rootId"].as_str().cmp(&b["rootId"].as_str()));
@@ -453,6 +456,10 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         assert_eq!(state["connections"][&b_id]["connection"]["session"], b_session);
         driver.call("ios.connectHost", json!({"rootId":a_id})).await;
         assert_eq!(a.sas().await.0, peers[0]);
+        let a_new = driver.call("ios.subscribe", watch(&a_id)).await;
+        assert_eq!(driver.call("ios.unsubscribe", a_handle.clone()).await["cancelled"], false);
+        assert_eq!(items.recv().await.unwrap()["rootId"], a_id);
+        assert_eq!(driver.call("ios.unsubscribe", a_new).await["cancelled"], true);
         assert!(a.host.revoke_peer_access(peers.remove(0)).await.unwrap());
         loop {
             let state = states.recv().await.unwrap();
@@ -463,6 +470,11 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         }
         let removed = driver.call("ios.removeHost", json!({"rootId":a_id})).await;
         assert!(removed["connections"].get(&a_id).is_none());
+        assert_eq!(driver.call("ios.unsubscribe", a_handle).await["cancelled"], false);
+        let missing_root = driver.batch(json!([["ios.unsubscribe", {
+            "subscriptionId":"shared","generation":b_watch
+        }]])).await;
+        assert!(missing_root[0]["error"].as_str().unwrap().contains("rootId"));
         let saved = driver.call("ios.hostQuery", query(&b_id)).await;
         assert_eq!(saved["value"]["credential"]["configured"], true);
         assert!(!std::fs::read_to_string(support.path().join("hosts.json")).unwrap().contains(secret));
@@ -867,7 +879,7 @@ async fn switching_sessions_releases_pagination_and_keeps_localized_approval_act
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
         call.reply(Ok(
-            json!({"subscriptionId":data["subscriptionId"],"generation":1}),
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
         ));
     });
     channel.handle("ios.unsubscribe", |call| {
@@ -1049,7 +1061,7 @@ async fn drawer_rename_and_delete_confirmations_cannot_cross_hosts() {
         channel.handle("ios.subscribe", |mut call| {
             let data = call.take_data();
             call.reply(Ok(
-                json!({"subscriptionId":data["subscriptionId"],"generation":1}),
+                json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
             ));
         });
         channel.handle("ios.unsubscribe", |call| {
@@ -1145,7 +1157,7 @@ async fn room_reactions_round_trip_to_host_even_for_older_messages() {
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
         call.reply(Ok(
-            json!({"subscriptionId":data["subscriptionId"],"generation":1}),
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
         ));
     });
     channel.handle("ios.unsubscribe", |call| {
