@@ -129,9 +129,19 @@ enum Target {
     Run(RunId),
 }
 
+/// What a `--wait` finds in the Session.
+enum Current {
+    Unfinished { target: Target, through: u64 },
+    Ended(RunId),
+}
+
 enum Followed {
-    Finished { run_id: RunId, ended: Option<u64> },
-    Waiting(PendingInteractions),
+    Finished {
+        run_id: RunId,
+        ended: Option<u64>,
+        delivered: Option<Box<Work>>,
+    },
+    Waiting(Vec<Pending>),
     Cancelled,
     Interrupted,
 }
@@ -256,11 +266,15 @@ async fn execute(
             let backend = default_backend(host).await?;
             let session_id = create_session(host, &workspace, backend).await?;
             // A new Session has no earlier history to skip.
-            submit(host, session_id, prompt, 0, wait, stop).await
+            submit(host, session_id, prompt, wait.then_some(0), stop).await
         }
         Action::Send { session_id, prompt } => {
-            let through = observe(host, &session_id).await?.through;
-            submit(host, session_id, prompt, through, wait, stop).await
+            let after = if wait {
+                Some(observe(host, &session_id).await?.through)
+            } else {
+                None
+            };
+            submit(host, session_id, prompt, after, stop).await
         }
         Action::Answer {
             session_id,
@@ -273,23 +287,35 @@ async fn execute(
             let through = observe(host, &session_id).await?.through;
             follow_target(host, &session_id, Target::Run(run_id), through, stop).await
         }
-        Action::Wait { session_id } => {
-            let (target, through) = current_target(host, &session_id).await?;
-            follow_target(host, &session_id, target, through, stop).await
-        }
+        Action::Wait { session_id } => match current_work(host, &session_id).await? {
+            Current::Unfinished { target, through } => {
+                follow_target(host, &session_id, target, through, stop).await
+            }
+            Current::Ended(run_id) => {
+                report_result(host, &session_id, run_id, None, None, stop).await
+            }
+        },
         Action::Stop { session_id } => {
             let run = observe(host, &session_id)
                 .await?
                 .run
                 .ok_or("session has no active run")?;
-            let _: Stopped = mutate(
+            let stopped: Stopped = mutate(
                 host,
                 "agent",
                 "stop",
                 json!({ "sessionId": session_id, "runId": run.run_id }),
             )
             .await?;
-            settle(host, &session_id, run.run_id).await?;
+            // The Run ended before the stop reached it.
+            if !stopped.requested {
+                return Err("session has no active run".into());
+            }
+            tokio::select! {
+                biased;
+                _ = stop.cancelled() => return Err("interrupted by signal".into()),
+                res = settle(host, &session_id, run.run_id) => res?,
+            }
             Ok(Outcome::Report(Report::Stopped { session_id }))
         }
     }
@@ -397,12 +423,12 @@ async fn observe(host: &HostClient, session_id: &str) -> Result<Observation, Hos
     query(host, "agent", "observe", json!({ "sessionId": session_id })).await
 }
 
+/// Queues `prompt`; with `after`, follows it from that history cut.
 async fn submit(
     host: &HostClient,
     session_id: String,
     prompt: String,
-    after: u64,
-    wait: bool,
+    after: Option<u64>,
     stop: &CancellationToken,
 ) -> Result<Outcome, HostError> {
     if stop.is_cancelled() {
@@ -437,9 +463,9 @@ async fn submit(
         }
     };
 
-    if !wait {
+    let Some(after) = after else {
         return Ok(Outcome::Report(Report::Submitted { session_id }));
-    }
+    };
     if stop.is_cancelled() {
         return Err(cancel_with_reason(
             host,
@@ -508,23 +534,28 @@ async fn answer_question(
     }
 }
 
-/// The latest unfinished work: the last runnable queued message, the active
-/// Run, or else the most recent Run.
-async fn current_target(host: &HostClient, session_id: &str) -> Result<(Target, u64), HostError> {
+/// The latest unfinished work: the last runnable queued message or the active
+/// Run. An idle Session reports its most recent Run.
+async fn current_work(host: &HostClient, session_id: &str) -> Result<Current, HostError> {
     // Read the queue first: a message admitted between the two reads is then
     // visible as the observed Run instead of being skipped.
     let queue: Queue = query(host, "agent", "queue", json!({ "sessionId": session_id })).await?;
     let observation = observe(host, session_id).await?;
-    let target = queue
+    let unfinished = queue
         .entries
         .into_iter()
         .rev()
         .find(|entry| !matches!(entry.kind, QueueKind::Held))
         .map(|entry| Target::Message(entry.message_id))
-        .or_else(|| observation.run.map(|run| Target::Run(run.run_id)))
-        .or(observation.latest_run_id.map(Target::Run))
-        .ok_or("session has no work to wait for")?;
-    Ok((target, observation.through))
+        .or_else(|| observation.run.map(|run| Target::Run(run.run_id)));
+    match (unfinished, observation.latest_run_id) {
+        (Some(target), _) => Ok(Current::Unfinished {
+            target,
+            through: observation.through,
+        }),
+        (None, Some(run_id)) => Ok(Current::Ended(run_id)),
+        (None, None) => Err("session has no work to wait for".into()),
+    }
 }
 
 async fn follow_target(
@@ -547,12 +578,15 @@ async fn follow_target(
     };
 
     let outcome = match follow(host, session_id, &target, &mut watch, stop).await {
-        Ok(Followed::Finished { run_id, ended }) => tokio::select! {
-            biased;
-            _ = stop.cancelled() => Err("interrupted by signal".into()),
-            res = read_result(host, session_id, run_id, ended) => res.map(Outcome::Answer),
-        },
-        Ok(Followed::Waiting(pending)) => report_waiting(host, session_id, pending).await,
+        Ok(Followed::Finished {
+            run_id,
+            ended,
+            delivered,
+        }) => report_result(host, session_id, run_id, ended, delivered, stop).await,
+        Ok(Followed::Waiting(interactions)) => Ok(Outcome::Report(Report::Waiting {
+            session_id: session_id.to_owned(),
+            interactions,
+        })),
         Ok(Followed::Cancelled) => Err("queued message was cancelled before execution".into()),
         Ok(Followed::Interrupted) => {
             Err(withdraw(host, session_id, &target, "interrupted by signal".into()).await)
@@ -642,15 +676,15 @@ async fn follow(
     };
     // Checked after subscribing: a Run that ends later still delivers Ended.
     if let Some(run_id) = run_id {
-        let Work::Delivered { execution, .. } =
-            work(host, session_id, WorkTarget::Run { run_id }, None).await?
-        else {
+        let delivered = work(host, session_id, WorkTarget::Run { run_id }, None).await?;
+        let Work::Delivered { execution, .. } = &delivered else {
             return Err("agent.work did not return delivered execution".into());
         };
         if is_terminal(&execution.state) {
             return Ok(Followed::Finished {
                 run_id,
                 ended: None,
+                delivered: Some(Box::new(delivered)),
             });
         }
     }
@@ -671,7 +705,15 @@ async fn follow(
                 }
             }
             DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
-                return Ok(Followed::Waiting(pending));
+                let interactions = tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => return Ok(Followed::Interrupted),
+                    interactions = describe_interactions(host, session_id, pending) => interactions?,
+                };
+                // Empty when every question was answered or closed since this page.
+                if !interactions.is_empty() {
+                    return Ok(Followed::Waiting(interactions));
+                }
             }
             DeliveryPage::Events { events, .. } => {
                 if let Some(run_id) = run_id
@@ -682,6 +724,7 @@ async fn follow(
                     return Ok(Followed::Finished {
                         run_id,
                         ended: Some(ended.sequence),
+                        delivered: None,
                     });
                 }
             }
@@ -694,12 +737,14 @@ async fn follow(
             let target = WorkTarget::Message {
                 message_id: message_id.to_owned(),
             };
-            match work(host, session_id, target, None).await? {
+            let delivered = work(host, session_id, target, None).await?;
+            match &delivered {
                 Work::Cancelled | Work::Missing => return Ok(Followed::Cancelled),
                 Work::Delivered { execution, .. } if is_terminal(&execution.state) => {
                     return Ok(Followed::Finished {
                         run_id: execution.run_id,
                         ended: None,
+                        delivered: Some(Box::new(delivered)),
                     });
                 }
                 Work::Delivered { execution, .. } => run_id = Some(execution.run_id),
@@ -709,11 +754,12 @@ async fn follow(
     }
 }
 
-async fn report_waiting(
+/// Pending interactions with their question text, skipping questions already closed.
+async fn describe_interactions(
     host: &HostClient,
     session_id: &str,
     pending: PendingInteractions,
-) -> Result<Outcome, HostError> {
+) -> Result<Vec<Pending>, HostError> {
     let mut interactions = Vec::with_capacity(pending.entries.len());
     for entry in pending.entries {
         let questions = if matches!(entry.kind, InteractionKind::Question) {
@@ -739,21 +785,39 @@ async fn report_waiting(
             questions,
         });
     }
-    Ok(Outcome::Report(Report::Waiting {
-        session_id: session_id.to_owned(),
-        interactions,
-    }))
+    Ok(interactions)
 }
 
+async fn report_result(
+    host: &HostClient,
+    session_id: &str,
+    run_id: RunId,
+    ended: Option<u64>,
+    delivered: Option<Box<Work>>,
+    stop: &CancellationToken,
+) -> Result<Outcome, HostError> {
+    tokio::select! {
+        biased;
+        _ = stop.cancelled() => Err("interrupted by signal".into()),
+        res = read_result(host, session_id, run_id, ended, delivered) => res.map(Outcome::Answer),
+    }
+}
+
+/// Reads the ended Run's answer, starting from `delivered` when it was already fetched.
 async fn read_result(
     host: &HostClient,
     session_id: &str,
     run_id: RunId,
     ended: Option<u64>,
+    delivered: Option<Box<Work>>,
 ) -> Result<Option<String>, HostError> {
+    let delivered = match delivered {
+        Some(delivered) => *delivered,
+        None => work(host, session_id, WorkTarget::Run { run_id }, None).await?,
+    };
     let Work::Delivered {
         execution, answer, ..
-    } = work(host, session_id, WorkTarget::Run { run_id }, None).await?
+    } = delivered
     else {
         return Err("agent.work did not return delivered execution".into());
     };

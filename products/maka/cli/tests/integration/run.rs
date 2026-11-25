@@ -627,7 +627,7 @@ async fn run_reports_a_pending_question_and_continues_with_the_answer() {
 }
 
 #[tokio::test]
-async fn run_reuses_service_host_and_stops_on_pending_interaction() {
+async fn run_reuses_service_host_and_keeps_a_pending_permission_until_stopped() {
     let mut env = TestEnv::new();
 
     let absent_root = env.base_dir().join("absent-root-prompt");
@@ -726,7 +726,7 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
     );
     assert!(
         serve_child.try_wait().unwrap().is_none(),
-        "Service Host must stay running after stopped maka run"
+        "Service Host must stay running after a waiting maka run"
     );
 
     // The Run keeps waiting for the decision instead of being cancelled.
@@ -755,6 +755,46 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
     assert!(env.retire(&root).status.success());
     assert!(serve_child.wait().unwrap().success());
     let _ = drain.join();
+}
+
+#[tokio::test]
+async fn run_wait_reports_the_failure_of_an_ended_run() {
+    let mock = start_mock_ai(|_, _| {
+        TurnPlan::http_error(HttpErrorSpec::new(
+            400,
+            "invalid_request_error",
+            "simulated model failure",
+        ))
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-wait-failed", &mock.base_url(), "danger-full-access");
+
+    let mut start = env.maka_command();
+    start
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Fail on the model request"]);
+    let receipt = json_stdout(&run_cli(start, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+
+    // The first wait may follow the Run; the second finds it already ended.
+    for _ in 0..2 {
+        let mut wait = session_command(&env, &root, session);
+        wait.arg("--wait");
+        let out = run_cli(wait, None).await;
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("run failed: ") && stderr.contains("simulated model failure"),
+            "{stderr}"
+        );
+    }
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
 }
 
 #[tokio::test]
@@ -943,6 +983,69 @@ async fn run_sigterm_cancels_in_flight_run() {
     assert!(
         stderr_text.contains("interrupted by signal"),
         "{stderr_text}"
+    );
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_sigterm_detaches_a_wait_without_cancelling_the_run() {
+    let mut mock = MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("test-model")],
+            ..Default::default()
+        })
+        .interactive(4)
+        .start()
+        .await
+        .expect("start interactive mock-ai server");
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-sigterm-wait", &mock.base_url(), "danger-full-access");
+
+    let mut start = env.maka_command();
+    start
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Hold until released"]);
+    let receipt = json_stdout(&run_cli(start, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+    let turn = tokio::time::timeout(Duration::from_secs(15), mock.next_turn())
+        .await
+        .expect("model request did not arrive")
+        .expect("interactive turn handle");
+
+    let mut wait = tokio::process::Command::from(session_command(&env, &root, session));
+    wait.arg("--wait")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = wait.spawn().expect("spawn maka run --wait");
+    // Give the wait time to attach to the Session.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let pid = child.id().expect("child pid");
+    // SAFETY: `pid` is a live child process spawned by this test.
+    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    assert_eq!(rc, 0, "failed to send SIGTERM");
+    let out = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .expect("maka run --wait did not exit promptly on SIGTERM")
+        .expect("wait child");
+    assert_eq!(out.status.code(), Some(1), "expected exit 1 on SIGTERM");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("interrupted by signal"), "{stderr}");
+
+    // Detaching left the Run running: releasing the model completes it.
+    turn.reply_text("released reply");
+    let mut wait_again = session_command(&env, &root, session);
+    wait_again.arg("--wait");
+    assert_eq!(
+        text_stdout(&run_cli(wait_again, None).await),
+        "released reply\n"
     );
 
     wait_for_root_released(&root, Duration::from_secs(10)).await;
