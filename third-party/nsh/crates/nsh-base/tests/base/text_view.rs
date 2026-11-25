@@ -451,6 +451,51 @@ fn a_link_press_reports_the_modifier_keys_held() {
     .unwrap();
 }
 
+/// A paragraph with a link to a page, one to a heading of the document and
+/// one around emphasis, to a path of the app's.
+#[component]
+fn LinkDestinations() -> impl IntoElement {
+    text_view().markdown(
+        "See [the guide](https://example.com/guide), [the notes](#notes) or [*this*](/this).",
+    )
+}
+
+#[test]
+fn each_link_of_a_paragraph_carries_its_url_to_the_platform() {
+    let mut core = nsh_core::Core::new(nsh_core::ApproxTextEngine, Size::new(px(400.0), px(200.0)));
+    core.mount_root(&nsh_core::element::Root::of::<LinkDestinations>());
+    let batch = core.commit().expect("initial batch");
+    let text = batch
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::Text { text, .. } if text.text.starts_with("See") => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the paragraph");
+    // Each link's characters and where they go (the web draws them as an
+    // `<a href>`): the URL as written, whatever it is.
+    let links: Vec<_> = text
+        .links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                &text.text[l.start as usize..l.end as usize],
+                text.link_href(i),
+            )
+        })
+        .collect();
+    assert_eq!(
+        links,
+        [
+            ("the guide", Some("https://example.com/guide")),
+            ("the notes", Some("#notes")),
+            ("this", Some("/this")),
+        ]
+    );
+}
+
 /// An image at the end of a paragraph that wraps in a narrow column.
 #[component]
 fn WrappedInlineImage() -> impl IntoElement {

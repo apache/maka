@@ -1,6 +1,6 @@
 ---
 title: TUI
-description: "Run Rust and TSX NSH apps in a terminal: the Cell layout, keyboard and mouse input, the terminal's colors, how components and popups look on the grid, detecting the terminal in app code, testing, and embedding AppView in a ratatui app."
+description: "Run TSX and Rust NSH apps in a terminal: the Cell layout, keyboard and mouse input, the terminal's colors, how components and popups look on the grid, detecting the terminal in app code, testing, and embedding AppView in a ratatui app."
 order: 16.5
 group: platforms
 ---
@@ -272,26 +272,6 @@ surfaces, a view in the image role whose background is a color (a color swatch) 
 Most apps need no change: desktop behavior applies, and the layout rules above fit a desktop design to the grid.
 Where the terminal should get a layout of its own, the idiom says so:
 
-```rust tabs
-use nsh_core::{platform::Idiom, prelude::*};
-
-#[component]
-pub fn Shell() -> impl IntoElement {
-    // The terminal gets one compact column; windows get a sidebar.
-    view()
-        .flex_1()
-        .child(if idiom() == Idiom::Terminal { compact_layout() } else { sidebar_layout() })
-}
-
-fn compact_layout() -> AnyElement {
-    view().flex_1().flex_col().into_element()
-}
-
-fn sidebar_layout() -> AnyElement {
-    view().flex_1().flex_row().into_element()
-}
-```
-
 ```tsx tabs
 import { View, platform } from "nsh";
 
@@ -310,6 +290,26 @@ function CompactLayout() {
 
 function SidebarLayout() {
   return <View class="flex-1 flex-row" />;
+}
+```
+
+```rust tabs
+use nsh_core::{platform::Idiom, prelude::*};
+
+#[component]
+pub fn Shell() -> impl IntoElement {
+    // The terminal gets one compact column; windows get a sidebar.
+    view()
+        .flex_1()
+        .child(if idiom() == Idiom::Terminal { compact_layout() } else { sidebar_layout() })
+}
+
+fn compact_layout() -> AnyElement {
+    view().flex_1().flex_col().into_element()
+}
+
+fn sidebar_layout() -> AnyElement {
+    view().flex_1().flex_row().into_element()
 }
 ```
 

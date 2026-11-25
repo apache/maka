@@ -64,7 +64,9 @@ test('files dragged in reach the nearest file drop receiver with their bytes', {
         await new Promise((r) => setTimeout(r, 100));
         check(sent.length === 1, 'moving onto a child enters nothing new');
         check(fire(child, 'drop', files()), 'the drop on a child goes to its receiver');
-        for (let i = 0; i < 50 && sent.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+        // The bytes are read with real I/O while the page runs on virtual time,
+        // so give the read plenty of (virtual) polls before giving up.
+        for (let i = 0; i < 500 && sent.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
         const drop = sent[1];
         check(drop?.id === 2 && drop.kind === 'drop' && drop.text === 'hello\u4f60', 'the bytes arrive in order');
         check(drop.info.files.map((f) => f.name + ':' + f.size + ':' + f.read).join() === 'a.txt:5:true,b.bin:3:true', 'names and sizes');
@@ -76,9 +78,9 @@ test('files dragged in reach the nearest file drop receiver with their bytes', {
       } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
     </script>`);
     const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
-      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=5000',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=20000',
       '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000, maxBuffer: 1024 * 1024 });
     assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

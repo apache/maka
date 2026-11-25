@@ -722,9 +722,6 @@ pub(crate) struct Mounter {
     offscreen: crate::canvas::Offscreen,
     /// The engine's sounds and players ([`crate::audio`]).
     audio: crate::audio::Speaker,
-    /// The engine's speech recognition session ([`crate::speech`]): it
-    /// ends with the mounter, as the engine stops.
-    speech: crate::speech::Listener,
     /// What the app may reach (web view navigations check it).
     access: std::sync::Arc<nsh_engine::Access>,
     control: EngineControl,
@@ -909,7 +906,6 @@ impl Mounter {
             ),
             offscreen: Default::default(),
             audio: Default::default(),
-            speech: Default::default(),
             control,
             access,
             shared,
@@ -2289,9 +2285,6 @@ impl Mounter {
                     &self.control,
                 );
             }
-            (Command::Speech(command), _) if id == nsh_core::ROOT_ID => {
-                crate::speech::command(&self.speech, &self.control, &command);
-            }
             (Command::Audio(command), _) if id == nsh_core::ROOT_ID => {
                 use nsh_core::image::loader::AssetBase as Base;
                 let base = self.images.asset_base().map(|base| match base {
@@ -2859,15 +2852,15 @@ impl Mounter {
             self.touch_listeners = self.touch_listeners.saturating_sub(1);
         }
         let on = self.touch_listeners > 0;
-        if on && self.touch_trackers.is_empty() {
+        // Ensure the root view and every modal still carry a tracker while
+        // touches are listened to. Gating this on `touch_trackers.is_empty()`
+        // left a modal opened after the first tracker set (the root's tracker
+        // outlives every modal) without one, so a modal reopened later never
+        // delivered its JS touch gestures. `add_touch_tracker` dedupes by
+        // node, so re-ensuring here each time is idempotent.
+        if on {
             self.add_touch_tracker(nsh_core::ROOT_ID);
-            let modals: Vec<NodeId> = self
-                .views
-                .iter()
-                .flatten()
-                .filter(|s| matches!(s.native, Native::Modal(_)))
-                .map(|s| s.native.view().tag() as NodeId)
-                .collect();
+            let modals: Vec<NodeId> = self.modal_attached.iter().map(|&(id, _)| id).collect();
             for modal in modals {
                 self.add_touch_tracker(modal);
             }
@@ -3917,6 +3910,9 @@ impl Mounter {
         {
             view.setUserInteractionEnabled(true);
         }
+        if wants_touch || wants_pinch || wants_rotation {
+            view.setMultipleTouchEnabled(true);
+        }
         if let Some(nsh) = slot.native.nsh() {
             nsh.set_target(&target);
             nsh.set_events(events);
@@ -4336,7 +4332,8 @@ impl Mounter {
                     // already on screen (new content, or a header that turned
                     // large in place) would keep its offset: its content
                     // under the header, read as scrolled, the title collapsed.
-                    let at_top = scroll.contentOffset().y <= -scroll.adjustedContentInset().top;
+                    let at_top =
+                        scroll.contentOffset().y <= -scroll.adjustedContentInset().top + 0.5;
                     scroll.setContentInsetAdjustmentBehavior(
                         UIScrollViewContentInsetAdjustmentBehavior::Automatic,
                     );
@@ -4346,7 +4343,21 @@ impl Mounter {
                         scroll.setContentOffset(offset);
                     }
                 }
+            } else if let Some(scroll) = first_scroll_view(&screen.view)
+                && scroll.contentInsetAdjustmentBehavior()
+                    != UIScrollViewContentInsetAdjustmentBehavior::Never
+            {
+                let at_top = scroll.contentOffset().y <= -scroll.adjustedContentInset().top + 0.5;
+                scroll.setContentInsetAdjustmentBehavior(
+                    UIScrollViewContentInsetAdjustmentBehavior::Never,
+                );
+                if at_top {
+                    let mut offset = scroll.contentOffset();
+                    offset.y = -scroll.contentInset().top;
+                    scroll.setContentOffset(offset);
+                }
             }
+            screen.controller.follow_large_title();
         }
         for (id, follows) in follows {
             self.following_scroll.retain(|&other| other != id);
@@ -4562,6 +4573,10 @@ impl Mounter {
     fn wait_for(&mut self, id: NodeId, awaited: &objc2_ui_kit::UIViewController) {
         if !self.waiting_modals.contains(&id) {
             self.waiting_modals.push(id);
+        }
+        // Presented once that modal is gone: its dismissal's end does so.
+        if crate::navigation::held_under_system_ui(awaited) {
+            return;
         }
         let Some(coordinator) = awaited.transitionCoordinator() else {
             return Self::present_waiting(&self.shared);
@@ -6458,6 +6473,7 @@ fn key_modifiers(flags: isize) -> nsh_core::keymap::Modifiers {
         alt: has(19),
         shift: has(17),
         cmd: has(20),
+        alt_graph: false,
     }
 }
 

@@ -1578,7 +1578,8 @@ impl WebItem {
         }
     }
 
-    /// True when the app may show `url` at the top level.
+    /// True when the app may show `url` at the top level (with the web
+    /// view's `allowOrigin`).
     fn allows(&self, url: &str) -> bool {
         // Pages the app gave as HTML, and the empty document.
         if url.starts_with("data:")
@@ -1595,7 +1596,12 @@ impl WebItem {
             return false;
         };
         let access = surface.native.access.borrow().clone();
-        access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview(url))
+        let origin = self
+            .props
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.allow_origin.clone());
+        access.is_none_or(|a: Arc<nsh_engine::Access>| a.allows_webview_with(url, origin.as_ref()))
     }
 
     /// Whether the page may capture `media` (`webview.media`): never

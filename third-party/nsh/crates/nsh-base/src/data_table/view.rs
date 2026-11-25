@@ -1665,6 +1665,15 @@ fn title_content(
                 .number_of_lines(1)
                 .flex_1()
                 .min_w(px(0.0))
+                // A terminal has no header band to set the titles apart:
+                // bold does, as a TUI table's header is.
+                .map(|t| {
+                    if crate::terminal::is_terminal() {
+                        t.font_weight(FontWeight::BOLD)
+                    } else {
+                        t
+                    }
+                })
                 .map(move |t| match align {
                     DataTableAlign::Start => t.text_left(),
                     DataTableAlign::Center => t.text_center(),

@@ -9,7 +9,7 @@ group: start
 
 **nshm**（NSH 模块）为 Native Shell 应用提供组件、模块和类，就像 crate 为 Rust 程序提供代码。它有两种：
 
-- **Rust nshm** 是一个 Rust crate，发布在 crates.io 或 Git 上。应用可以在 Rust 和 TSX 中使用它：同一份实现，在每个平台上都是原生的。
+- **Rust nshm** 是一个 Rust crate，发布在 crates.io 或 Git 上。应用可以在 TSX 和 Rust 中使用它：同一份实现，在每个平台上都是原生的。
 - **TSX nshm** 是用版本标签发布的 Git 仓库里的 TSX。它被打进应用的 bundle，所以只用 TSX nshm 的应用不需要 Rust，nshm 也随应用的包和 OTA 更新一起发布。
 
 例如 [nsh-omarchy](https://github.com/huacnlee/nsh-omarchy) 为应用带来 [Omarchy](https://omarchy.org) 的风格：按钮、输入框、菜单、对话框、表格和图表，并随系统的 Omarchy 主题实时切换。
@@ -19,7 +19,38 @@ nsh add nsh-omarchy                  # 来自 crates.io
 nsh add github:huacnlee/nsh-omarchy  # 或来自 GitHub
 ```
 
-然后用应用所写的语言使用它，Rust 或 TSX 均可。**Rust 应用**中，它的组件就是 crate 里的函数：
+然后用应用所写的语言使用它。**TSX 应用**中，只要 nshm 向 TSX 导出了组件、模块或类，`nsh add` 安装后就能直接使用：按它的标识导入即可，这里是 `nsh-omarchy`。不需要升级 NSH，也不需要自己写 Rust 代码来扩展，`nsh` 会用这个 crate 构建应用的宿主。
+
+```tsx
+// App.tsx
+import { mount, signal, View } from "nsh";
+import { Body, Button, Omarchy, Panel, Switch, Toaster, toast } from "nsh-omarchy";
+
+function App() {
+  // 使用系统当前的 Omarchy 主题绘制，并跟随它的变化。
+  Omarchy.followSystem();
+  const notify = signal(true);
+  const saved = signal(0);
+  const save = () => {
+    saved.set(saved() + 1);
+    toast({ title: "Settings saved" });
+  };
+  return (
+    <View class="flex-1 gap-4 p-6 bg-background">
+      <Panel title="Settings">
+        <Switch label="Notifications" checked={notify()} onChange={({ checked }) => notify.set(checked)} />
+        <Button label="Save" variant="primary" onPress={save} />
+      </Panel>
+      <Body>{`Saved ${saved()} times`}</Body>
+      <Toaster />
+    </View>
+  );
+}
+
+mount(() => <App />);
+```
+
+**Rust 应用**中，它的组件就是 crate 里的函数：
 
 ```rust
 // src/lib.rs：应用的根组件
@@ -52,37 +83,6 @@ pub fn App() -> impl IntoElement {
         .child(nsh_omarchy::body(move || format!("Saved {} times", saved.get())))
         .child(nsh_omarchy::toaster())
 }
-```
-
-**TSX 应用**中，只要 nshm 向 TSX 导出了组件、模块或类，`nsh add` 安装后就能直接使用：按它的标识导入即可，这里是 `nsh-omarchy`。不需要升级 NSH，也不需要自己写 Rust 代码来扩展，`nsh` 会用这个 crate 构建应用的宿主。
-
-```tsx
-// App.tsx
-import { mount, signal, View } from "nsh";
-import { Body, Button, Omarchy, Panel, Switch, Toaster, toast } from "nsh-omarchy";
-
-function App() {
-  // 使用系统当前的 Omarchy 主题绘制，并跟随它的变化。
-  Omarchy.followSystem();
-  const notify = signal(true);
-  const saved = signal(0);
-  const save = () => {
-    saved.set(saved() + 1);
-    toast({ title: "Settings saved" });
-  };
-  return (
-    <View class="flex-1 gap-4 p-6 bg-background">
-      <Panel title="Settings">
-        <Switch label="Notifications" checked={notify()} onChange={({ checked }) => notify.set(checked)} />
-        <Button label="Save" variant="primary" onPress={save} />
-      </Panel>
-      <Body>{`Saved ${saved()} times`}</Body>
-      <Toaster />
-    </View>
-  );
-}
-
-mount(() => <App />);
 ```
 
 nshm 让功能不必成为 NSH 的一部分，也能交到需要它的应用手中：它按自己的节奏发布，只有安装它的应用才承担它的体积、构建时间和依赖。
@@ -122,6 +122,8 @@ nsh remove nsh-omarchy     # 从 nsh.json、nsh.lock 和应用的 crate 中移�
 
 应用有自己的 crate 时，Rust nshm 还会加入该 crate 的 `[dependencies]`，应用的 Rust 代码可以直接使用。只要应用的 nshm 里有 Rust nshm，nsh 就会像对带 crate 的应用一样用它构建宿主，因此开发机和 CI 需要 Rust 工具链（[用 Rust 开发](./rust.md)）。nshm 全是 TSX 的应用只需 `nsh` 即可构建。
 
+Rust 只来自 nshm 的应用，宿主用运行它的那个 nsh 构建：正式版用 crates.io 上它那个版本的 crate，nightly 用它自己那个提交的 crate，在源码目录里构建的 `nsh` 用该目录里的 crate。`nsh-extra` 与 nsh 一起发布，所以按版本要求依赖它的应用拿到的就是同一个 nsh 的 `nsh-extra`（有自己 crate 的应用，则是该 crate 所用 nsh 的那一份），并记录在 `nsh.lock` 中。nsh 的版本不满足版本要求时会报错，并同时指出两者。写了 `"path"`、`"github"` 或 `"git"` 的条目按原样使用。
+
 有自己 crate 的应用也可以只在 `Cargo.toml` 里依赖 Rust nshm，和依赖其他 crate 一样，来自 crates.io、Git（仓库子目录里的 crate 也可以）或本地路径。`nsh` 会在该 crate 的依赖（直接或间接）里找出 Rust nshm，像 `"dependencies"` 里的一样链接：它们的 `#[native_module]` 入口在应用启动时运行，启用该 crate 打开的 feature，`nsh run`、`nsh test` 和打包都一样，TSX 也按标识导入它们。同时列在 `"dependencies"` 里的只链接一次。
 
 包含多个模块的 crate 把每个模块放在一个 Cargo feature 后面，应用只开启自己用到的，也只承担这些模块的体积、权限和商店声明。`--features` 用来开启它们，条目随之写成对象形式：
@@ -145,8 +147,10 @@ nsh add nsh-extra --features camera
 | Feature | TSX | 作用 |
 |---|---|---|
 | `camera` | `Camera` | 在 iOS 和 Android 上用系统相机拍一张照片 |
+| `location` | `Location` | 在用户允许后读取设备位置，支持 macOS、iOS 和 Web |
 | `photos` | `Photos` | 在用户允许后读取 iOS 上用户最近的照片 |
 | `push` | `Push` | 在 iOS 上接收任意推送服务发来的远程通知，在 Android 上通过该服务的绑定接收 |
+| `speech` | `Speech` | 在 macOS、iOS、Android、Windows 和 Web 上把用户说的话随说随转成文字 |
 
 ```tsx
 import { Camera } from "nsh-extra";
@@ -159,6 +163,38 @@ if (await Camera.available()) {
 ```
 
 用户取消时 `takePhoto` 返回 `null`；用户不允许应用使用相机时，它以错误码 `EACCES` 拒绝。应用可以在同一次点按里关掉 sheet 并请求拍照：相机会在 sheet 关好之后出现。没有相机可用的地方（桌面、Web、模拟器）`available()` 为 `false`，`takePhoto` 以 `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` 拒绝。开启这个 feature 后，打包的应用会带上它需要的条目：iOS 上的相机用途说明（应用可以在 `ios.infoPlist` 里写自己的 `NSCameraUsageDescription` 文案），Android 上对相机应用的查询声明。
+
+### Location
+
+`Location` 在用户允许后读取设备的位置：用 `current` 读一次，或用 `watch` 在位置变化时持续收到，形式和浏览器的 `navigator.geolocation` 一致。macOS 和 iOS 用 CoreLocation 读取，Web 用浏览器的 `navigator.geolocation`；应用第一次读取时，系统或浏览器会询问用户。只在应用使用期间读取，不支持后台定位。
+
+```sh
+nsh add nsh-extra --features location
+```
+
+```tsx
+import { Location } from "nsh-extra";
+
+if (await Location.available()) {
+  const position = await Location.current({ accuracy: "high", timeout: 10_000 });
+  showOnMap(position.coords.latitude, position.coords.longitude, position.coords.accuracy);
+
+  const stop = Location.watch(
+    (position) => moveMarker(position.coords),
+    (error) => showError(error.code),
+    { distanceFilter: 10 },
+  );
+  // 之后调用 stop()；启动它的组件销毁时也会停止。
+}
+```
+
+- `available()` 在打包时开启了该 feature 的 macOS、iOS 应用，以及有 `navigator.geolocation` 的浏览器中为 `true`；在 Android、Windows、Linux、终端、headless 运行，以及以裸二进制运行的 Apple 应用（`nsh run --target macos`，没有 `Info.plist`，系统不会询问）中为 `false`。
+- `authorization()` 不询问用户，直接给出当前允许的范围：`"notDetermined"`、`"whenInUse"`、`"always"`、`"denied"` 或 `"restricted"`。Web 只有 `"whenInUse"`（已允许）、`"denied"` 和 `"notDetermined"`（会询问）。`requestAuthorization()` 询问用户并给出回答；读取时会自动询问，只在想自己决定询问时机时才需要先调用。
+- `current({ accuracy, timeout })` 给出一个 `Position`（`coords.latitude`、`longitude`、以米为单位的 `accuracy`、`altitude`、`altitudeAccuracy`、`heading`、`speed`，设备不知道的为 `null`；以及自 epoch 起的毫秒数 `timestamp`）。`accuracy` 可以是 `"best"`、`"high"`、`"balanced"`（默认）或 `"low"`。
+- `watch(listener, onError?, { accuracy, distanceFilter })` 每有新位置就调用 `listener`，返回一个停止它的函数。`onError` 收到使 watch 结束的错误。
+- 读取失败时得到一个 `Error`，其 `code` 为 `"EACCES"`（用户不允许）、`"ETIMEDOUT"`（`timeout` 内没有结果）、`"ERR_POSITION_UNAVAILABLE"`（设备找不到位置）或 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"`（这里读不到位置）；选项超出范围时抛出 `RangeError`。
+
+该 feature 会在 iOS 和 macOS 应用的 `Info.plist` 中加入 `NSLocationWhenInUseUsageDescription`，并为沙盒化的 macOS 应用加入定位 entitlement。Rust 代码使用 `nsh_extra::location`：`available()`、`authorization().await`、`request_authorization().await`、`current(LocationRequest).await`，以及 `watch(LocationRequest)`，它的 `next().await` 给出每个位置（丢弃即停止）。
 
 ### Photos
 
@@ -277,6 +313,110 @@ function closeConversation(threadId: string) {
 - 声明了 `"capabilities"` 的应用用 [`"notifications": true`](./sandbox-and-capabilities.md#notifications) 授予 `Push`，与 `Notifications` 用的是同一项能力。token、投递和它们的显示方式属于整个应用，所以除 `available()` 外的每个函数都先检查这项能力。
 
 开启这个 feature 后，打包的 iOS 应用会带上 `remote-notification` 后台模式。`aps-environment` entitlement 来自应用签名所用的描述文件（[iOS 真机](./packaging.md#ios-真机)）。Android 上它不添加任何条目：推送服务的 SDK 自带它的 manifest 所需。Rust 代码（比如某个推送服务 SDK 的绑定）使用 `nsh_extra::push`：`on_event` 收到同样的事件，并带 token 的原始字节；`set_foreground_presentation_decider` 在原生侧决定每条通知怎么显示；iOS 的启动参数从 `nsh_platform_ios::on_application_event` 取得（[应用事件](./ios.md#应用事件)）。绑定实现 `PushProvider`（向它的服务注册设备），在自己的 `#[native_module]` 入口里用 `set_provider` 设上，再用 `provide_token`、`provide_registration_failure`、`provide_notification` 和 `provide_background` 报告服务送来的内容。点按绑定发出的通知会以 intent 的 extras 携带 payload 打开应用，`press` 收到的 `payload` 就是这些 extras（Android 不告诉是哪条通知，所以没有 `id` 和 `threadId`）。
+
+### Speech
+
+`Speech` 把用户说的话变成文字（听写）：应用开始一个会话，系统监听麦克风，转写文本随说话逐步到达。macOS 和 iOS 使用系统的 Speech 框架识别，Android 使用设备上的语音识别服务（`SpeechRecognizer`），Windows 使用系统的听写（`Windows.Media.SpeechRecognition`），Web 使用浏览器的 Web Speech API；系统或浏览器会向用户请求一次麦克风权限（Apple 平台上还有语音识别权限）。Windows 的听写使用用户的联机语音识别，由用户在“设置 > 隐私和安全性 > 语音”中打开；关闭时会话以 `"not-allowed"` 结束。Linux 上没有识别器，终端应用（TUI 宿主，在任何操作系统上）也没有；用 GPUI 嵌入的应用在 macOS 和 Windows 上使用平台的识别器。显示麦克风按钮前先检查 `Speech.available()`：没有识别器的地方，会话会立即以 `"unavailable"` 结束。
+
+```sh
+nsh add nsh-extra --features speech
+```
+
+```ts
+const Speech: {
+  available(): Promise<boolean>;
+  start(options?: SpeechOptions): SpeechSession;
+};
+
+interface SpeechOptions {
+  /** 说话的语言，BCP 47 标签（"en-US"、"zh-CN"）；省略时为用户的语言。 */
+  lang?: string;
+  /** 用户说话时就报告结果（true，默认），或者只报告最终结果。 */
+  interim?: boolean;
+}
+
+interface SpeechSession {
+  on(event: "start", listener: () => void): () => void;
+  on(event: "result", listener: (result: SpeechResult) => void): () => void;
+  on(event: "end", listener: (end: SpeechEnd) => void): () => void;
+  /** 到目前为止的完整转写。 */
+  readonly text: string;
+  readonly ended: boolean;
+  stop(): void;
+  abort(): void;
+}
+
+interface SpeechResult { text: string; isFinal: boolean }
+interface SpeechEnd { text: string; error?: SpeechErrorCode }
+
+type SpeechErrorCode =
+  | "not-allowed" | "no-speech" | "audio-capture" | "network"
+  | "language-not-supported" | "unavailable" | "failed";
+```
+
+```tsx
+import { signal } from "nsh";
+import { Speech, type SpeechSession } from "nsh-extra";
+
+const transcript = signal("");
+let session: SpeechSession | null = null;
+
+function toggle() {
+  if (session && !session.ended) {
+    session.stop();
+    return;
+  }
+  session = Speech.start({ lang: "en-US" });
+  session.on("result", ({ text }) => transcript.set(text));
+  session.on("end", ({ text, error }) => {
+    if (error) console.warn("dictation ended:", error);
+    else transcript.set(text);
+  });
+}
+```
+
+- `start` 立即返回会话。会话按顺序报告：麦克风打开、识别器开始监听时 `start`；转写每次变化时 `result`（`text` 始终是到目前为止的完整转写，应用照原样显示即可）；最后一次 `end`，之后不再有事件。`stop()` 停止监听，让识别器处理完已听到的内容：最后一个 `isFinal: true` 的结果，然后 `end`。`abort()` 立即结束会话，不带错误。麦克风只有一个，所以同一时间只运行一个会话：开始新会话会结束正在运行的会话。同一个应用在同一个视图里开始的新会话像 `abort()` 一样结束它，不带错误；进程里另一个应用或视图（嵌入应用的另一个 `AppView`）开始的会话以 `"audio-capture"` 结束它，因为麦克风被拿走了。
+- `end` 带有最后的转写，会话失败时还带有 `error`，名称与 Web Speech API 一致：`"not-allowed"`（用户或系统不允许使用麦克风或语音识别，或应用在后台）、`"no-speech"`（没有听到说话）、`"audio-capture"`（无法使用麦克风）、`"network"`（识别器需要网络）、`"language-not-supported"`（识别器不认识 `lang`）、`"unavailable"`（这里没有识别器，或暂时不可用）和 `"failed"`。
+- 选项类型不对时 `start` 抛出 `TypeError`，`lang` 不是语言标签时抛出 `RangeError`。
+- macOS 和 iOS 上、有语音识别服务的 Android 设备上、有听写语言和麦克风的 Windows 上、支持 Web Speech API 的浏览器里（Chrome、Edge 等基于 Chromium 的浏览器，以及 Safari），以及应用给模块设置了自己的识别器的地方，`available()` 为 `true`。Linux 上和终端应用里为 `false`。
+- 在 Web 上，页面需要安全上下文（HTTPS，开发时也可以是 `localhost`）才能使用麦克风；用 iframe 嵌入应用的页面需要允许麦克风（`allow="microphone"`）。Chrome 使用它的在线服务识别，所以连接断开时报告 `"network"`。
+- 声明了 `"capabilities"` 的应用用 [`"speech": true`](./sandbox-and-capabilities.md#speech) 授予 `Speech`。没有授予时 `start` 抛出一个 `Error`，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"speech"`。
+
+开启这个 feature 后，打包的应用会带上它需要的条目：iOS 和 macOS 上的麦克风和语音识别用途说明（应用可以在 `ios.infoPlist` / `macos.infoPlist` 里写自己的文案），macOS 上的音频输入 entitlement，Android 上的 `RECORD_AUDIO` 权限和对语音识别服务的查询声明。在 Web 上，模块通过 wasm-bindgen 调用浏览器，所以 `nsh` 会用 `wasm-bindgen` CLI 构建应用的 Web 运行时（[在 Rust 中使用浏览器 API](./web.md#在-rust-中使用浏览器-api)）；站点本身不需要任何声明。
+
+Rust 代码使用 `nsh_extra::speech`：`available().await`，以及 `recognize(SpeechRequest)` 返回的会话，它的 `next().await` 给出每个 `SpeechEvent`（`stop()`、`abort()`；丢弃它即中止）。用自己的方式识别语音的应用（自己的引擎或服务，比如嵌入 NSH 的应用）用 `set_backend` 给模块一个 `SpeechBackend`：之后每个会话都交给它，而不是系统的识别器。
+
+```rust
+use nsh_extra::speech::{self, SpeechEvent, SpeechRequest};
+
+async fn dictate() -> String {
+    let mut recognition = speech::recognize(SpeechRequest::default());
+    let mut text = String::new();
+    while let Some(event) = recognition.next().await {
+        match event {
+            SpeechEvent::Result { text: heard, .. } => text = heard,
+            SpeechEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+    text
+}
+```
+
+在 `nsh test`（以及 `nsh_testing::Headless`）中，会话运行在模块的模拟识别器上，它的名称是 `"nsh-extra/speech"`：会话立即开始监听，就像用户允许了麦克风；测试通过 [`app.fake`](./testing-and-trace.md)（Rust 中是 `Headless::call_fake`）调用这个模拟识别器，代替用户说话：
+
+| 方法 | `args` | 作用和回答 |
+|---|---|---|
+| `hear` | `[text]` | 用户说出 `text`，即到目前为止的完整转写：正在运行的会话把它报告为非最终的 `result`（`interim: false` 时先留到结束）。resolve 为 `null`；没有会话运行时以 `no speech session listens` 拒绝。 |
+| `end` | `[]` 或 `[error]` | 结束正在运行的会话：带 `error`（上面的错误码之一）时会话失败，否则像用户停下时一样：转写作为最终的 `result`，然后 `end`（什么都没听到时为 `"no-speech"`）。resolve 为 `null`；没有会话运行或 `error` 不是错误码时拒绝。 |
+| `requests` | `[]` | resolve 为应用开始的会话，按顺序：`[{ lang, interim }]`，用户的语言时 `lang` 为 `null`。 |
+
+```tsx
+await app.press("label:Dictate");
+await app.fake("nsh-extra/speech", "hear", ["hello"]);
+await app.waitFor("text:hello");
+await app.fake("nsh-extra/speech", "end");
+```
 
 ## 应用自己的 Rust：`ext/`
 
@@ -465,6 +605,7 @@ fn main() {
 - 用 `rustc-link-lib`，不要用 `rustc-link-arg`：链接参数只作用于本 crate 自己的目标。
 - 静态库的隐私清单条目写进应用的 `ios.privacyManifest`。
 - NSH 不嵌入动态 framework，优先使用 SDK 的静态版本。
+- 许可证要求用户能替换的库（LGPL，例如 libmpv）只能动态链接，由应用自己携带；NSH 的打包没有对应设置。像上面那样在 nshm 的 `build.rs` 里链接它（`rustc-link-lib=framework=…`、`rustc-link-search=framework=…`）。可执行文件的运行路径写在应用的 `.cargo/config.toml` 里（在 `[target.aarch64-apple-darwin]` 下写 `rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/../Frameworks", "-C", "link-arg=-Wl,-rpath,<framework 所在目录>"]`），因为 crate 的 `rustc-link-arg` 到不了 `nsh run`、`nsh check`、`nsh test`。`nsh package --target macos` 之后，把 framework 复制到应用的 `Contents/Frameworks/`，用 `install_name_tool -delete_rpath` 去掉开发时的运行路径，再按先 framework、后应用的顺序，用打包时的身份重新签名（`codesign --force --sign <身份> --options runtime --entitlements <应用的 entitlements>`，ad hoc 包用 `--sign -`），最后用 `codesign --verify --deep --strict` 检查。
 - 在 Linux 和 Windows 上，同样由 `build.rs` 链接 SDK（Linux 上是 `.a` 和 `.so`，Windows 上是 `.lib`）。NSH 同样不会把共享库（`.so`、`.dll`）放进包里；请优先使用 SDK 的静态版本。
 
 ### TSX nshm
@@ -515,4 +656,4 @@ nshm 可以提供自己的 target，例如 NSH 不构建的平台：在 `nsh.jso
 
 ## 安全
 
-nshm 的构建脚本和过程宏会在应用构建时执行，它的代码（无论 Rust 还是 TSX）以应用的权限运行。应用依赖图里的任何 crate 还能通过 `[package.metadata.nsh]` 给打包的应用加系统权限、清单组件、Java 库和 Android 库（连同其中的原生代码）以及 entitlements。请像审查应用自己的代码一样审查它的源码和 `nsh.lock` 的变更。
+nshm 的构建脚本和过程宏会在应用构建时执行，它的代码（无论 TSX 还是 Rust）以应用的权限运行。应用依赖图里的任何 crate 还能通过 `[package.metadata.nsh]` 给打包的应用加系统权限、清单组件、Java 库和 Android 库（连同其中的原生代码）以及 entitlements。请像审查应用自己的代码一样审查它的源码和 `nsh.lock` 的变更。

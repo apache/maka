@@ -36,6 +36,7 @@ pub mod notifications;
 mod package;
 pub mod permissions;
 pub mod picker;
+pub mod proxy;
 mod selectable_view;
 mod shader;
 mod svg;

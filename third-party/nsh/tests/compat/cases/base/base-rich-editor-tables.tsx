@@ -1,11 +1,12 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the rich text
-// editor's tables in `nsh/base` without a view: the extensions (`TableKit`,
+// editor's tables in `nsh/base`: the extensions (`TableKit`,
 // `RichTable`, `RichTableRow`, `RichTableHeader`, `RichTableCell`), the
 // table commands (`insertTable`, `addRowAfter`, `mergeCells`, ...), cell
 // selections (`{ type: "cell" }`) and GFM tables in Markdown. Each line
 // shows one result; its script checks each.
 import { Text, View, signal } from "nsh";
 import {
+  RichEditor,
   RichTable,
   RichTableCell,
   RichTableHeader,
@@ -68,6 +69,11 @@ const shapeOf = (doc: NodeJSON): string => {
 
 function App() {
   const lines = signal<string[]>([]);
+  const preview = createRichEditor({
+    extensions: [StarterKit, TableKit],
+    format: "markdown",
+    content: "| Task | Destination | Status |\n| --- | --- | --- |\n| Confirm registration | InternationalConferenceAuditorium | Ready |",
+  });
 
   const run = () => {
     const out: string[] = [];
@@ -159,6 +165,7 @@ function App() {
   return (
     <View style={{ flex: 1, paddingTop: 60, paddingLeft: 20, gap: 4 }}>
       <View onPress={run}><Text>RunTables</Text></View>
+      <RichEditor editor={preview} editable={false} style={{ width: 140, height: 80, flexShrink: 0 }} />
       {() => lines().map((line) => <Text>{line}</Text>)}
     </View>
   );

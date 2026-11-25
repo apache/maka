@@ -45,7 +45,6 @@ mod menus;
 mod net;
 mod pointer;
 mod selection;
-mod speech;
 mod windows;
 
 pub use audio::AudioCall;
@@ -55,7 +54,7 @@ mod stub;
 use std::{
     io::Write,
     sync::{
-        Arc, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -347,6 +346,14 @@ const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 /// not loaded: no `onLoad` comes, nor an error unless the test fails the
 /// image ([`Headless::fail_images`]), and `Image.getSize` /
 /// `Image.prefetch` fail.
+///
+/// The native modules of the app's sets answer with their fakes
+/// ([`nsh_core::fake`]), which may stand in process-wide: an app whose sets
+/// give fakes waits to start until the apps running with other fakes are
+/// dropped, so two such apps never overlap in one process (two `#[test]`s
+/// that each launch theirs take turns). Apps started with the same fakes,
+/// clones of one registry, run together and share them. A thread holding an
+/// app with fakes must not start one with others: it would wait for itself.
 pub struct Headless {
     engine: Engine,
     batches: Receiver<MountBatch>,
@@ -389,9 +396,9 @@ pub struct Headless {
     failing_images: Vec<stub::Url>,
     /// The URLs that fail to open ([`Headless::fail_open_urls`]).
     failing_url_opens: Vec<stub::Url>,
-    /// The recognizer the test speaks into; `None` when the config gave
-    /// its own (`EngineConfig::speech`).
-    speech: Option<speech::FakeSpeech>,
+    /// The stand-ins the app's sets give headless runs, by name, installed
+    /// when the app started ([`Headless::call_fake`]).
+    fakes: Vec<(&'static str, Arc<dyn nsh_core::fake::Fake>)>,
     /// The speaker the app plays to; `None` when the config gave its own
     /// (`EngineConfig::audio`).
     audio: Option<audio::FakeAudio>,
@@ -431,6 +438,79 @@ pub struct Headless {
     /// The page's history, for an app started at a page's address
     /// ([`Headless::start_at_page`]).
     history: Option<browser::History>,
+    /// The app's turn to have its fakes installed, while its sets give
+    /// any; last, so it ends after the engine stopped.
+    _fakes_turn: Option<FakesTurn>,
+}
+
+/// The fakes installed for the headless apps running in the process, and
+/// how many apps run with them; `None` while none does.
+struct FakesInUse {
+    fakes: Vec<Arc<dyn nsh_core::fake::Fake>>,
+    apps: usize,
+}
+
+static FAKES_IN_USE: Mutex<Option<FakesInUse>> = Mutex::new(None);
+/// Signalled when the last app with the fakes in use is gone.
+static FAKES_FREED: Condvar = Condvar::new();
+
+/// A headless app's turn to have `fakes` installed
+/// ([`Headless`]): taken before they install, given back when the app is
+/// dropped.
+struct FakesTurn;
+
+impl FakesTurn {
+    /// Waits until no app runs with other fakes than `fakes` (the same
+    /// instances, in the same order), then counts the app among those
+    /// running with them; `true` with it when no app ran with them, so
+    /// they are installed now (an app joining others shares their state).
+    /// `None` for no fakes: such an app needs no turn.
+    fn take(fakes: &[(&'static str, Arc<dyn nsh_core::fake::Fake>)]) -> Option<(FakesTurn, bool)> {
+        if fakes.is_empty() {
+            return None;
+        }
+        let same = |in_use: &FakesInUse| {
+            in_use.fakes.len() == fakes.len()
+                && in_use
+                    .fakes
+                    .iter()
+                    .zip(fakes)
+                    .all(|(a, (_, b))| Arc::ptr_eq(a, b))
+        };
+        let mut state = FAKES_IN_USE.lock().unwrap_or_else(|e| e.into_inner());
+        let first = loop {
+            match &mut *state {
+                None => {
+                    *state = Some(FakesInUse {
+                        fakes: fakes.iter().map(|(_, fake)| fake.clone()).collect(),
+                        apps: 1,
+                    });
+                    break true;
+                }
+                Some(in_use) if same(in_use) => {
+                    in_use.apps += 1;
+                    break false;
+                }
+                Some(_) => {
+                    state = FAKES_FREED.wait(state).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+        };
+        Some((FakesTurn, first))
+    }
+}
+
+impl Drop for FakesTurn {
+    fn drop(&mut self) {
+        let mut state = FAKES_IN_USE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(in_use) = &mut *state {
+            in_use.apps -= 1;
+            if in_use.apps == 0 {
+                *state = None;
+                FAKES_FREED.notify_all();
+            }
+        }
+    }
 }
 
 impl Headless {
@@ -469,10 +549,30 @@ impl Headless {
         M: TextEngine + 'static,
         F: FnOnce() -> M + Send + 'static,
     {
-        let speech = config.speech.is_none().then(speech::FakeSpeech::default);
-        if let Some(speech) = &speech {
-            config.speech = Some(Arc::new(speech.clone()));
+        // Before the app runs: its modules answer with their fakes, never
+        // with the machine's devices (a microphone), once no app runs with
+        // other fakes (they may stand in process-wide).
+        let fakes: Vec<_> = config
+            .ui_sets
+            .iter()
+            .flat_map(nsh_core::element::Registry::fakes)
+            .collect();
+        for (n, (name, _)) in fakes.iter().enumerate() {
+            assert!(
+                fakes[..n].iter().all(|(other, _)| other != name),
+                "two fakes are named `{name}`, by two UI sets"
+            );
         }
+        // Installed by the first app with them: one joining an app that runs
+        // shares their state (its sessions), which a reset would take away.
+        let fakes_turn = FakesTurn::take(&fakes).map(|(turn, first)| {
+            if first {
+                for (_, fake) in &fakes {
+                    fake.install();
+                }
+            }
+            turn
+        });
         let audio = config.audio.is_none().then(audio::FakeAudio::default);
         if let Some(audio) = &audio {
             config.audio = Some(Arc::new(audio.clone()));
@@ -540,7 +640,7 @@ impl Headless {
             save_path: None,
             failing_images: Vec::new(),
             failing_url_opens: Vec::new(),
-            speech,
+            fakes,
             audio,
             step: "open".to_owned(),
             applied: 0,
@@ -560,6 +660,7 @@ impl Headless {
             host_posts: None,
             windows,
             history: None,
+            _fakes_turn: fakes_turn,
         })
     }
 
@@ -1012,36 +1113,30 @@ impl Headless {
         Ok(())
     }
 
-    /// What the app's speech recognition sessions (`Speech.start`) asked
-    /// for so far, in order. Headless apps recognize speech: a session
-    /// listens at once (its `start`), and the test speaks for the user
-    /// ([`Headless::hear`]).
-    pub fn speech_requests(&self) -> Vec<nsh_core::speech::SpeechRequest> {
-        self.speech
-            .as_ref()
-            .map(speech::FakeSpeech::requests)
-            .unwrap_or_default()
-    }
-
-    /// The user says `text` (the whole transcript so far) to the session
-    /// listening, which reports it as a result that is not final; then
-    /// waits until the app is quiet. Fails when no session listens.
-    pub fn hear(&mut self, text: &str) -> Result<(), String> {
-        self.fake_speech()?.hear(text)?;
-        self.done()
-    }
-
-    /// Ends the session listening: with `error` (`no-speech`,
-    /// `not-allowed`, ...), or (`None`) as when the user stops talking: the
-    /// transcript as the final result, then the end (`no-speech` when
-    /// nothing was heard). Then waits until the app is quiet. The app's
-    /// `stop()` ends it the same way.
-    pub fn end_speech(
+    /// Calls `method` of the fake named `name` with `args` (JSON): a
+    /// stand-in a native module of the app's sets gives headless runs in
+    /// place of a device ([`nsh_core::fake`]; `"nsh-extra/speech"`'s
+    /// `hear` speaks for the user). Its answer, once the app is quiet
+    /// after it. Fails when no set gives that fake (the app does not turn
+    /// the module on) or the fake refuses the call.
+    pub fn call_fake(
         &mut self,
-        error: Option<nsh_core::speech::SpeechError>,
-    ) -> Result<(), String> {
-        self.fake_speech()?.end(error)?;
-        self.done()
+        name: &str,
+        method: &str,
+        args: &[nsh_core::JsonValue],
+    ) -> Result<nsh_core::JsonValue, String> {
+        self.catch_up();
+        let fake = self
+            .fakes
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, fake)| fake.clone())
+            .ok_or_else(|| {
+                format!("no module of the app gives the fake {name:?}: is the module turned on?")
+            })?;
+        let answer = fake.call(method, args)?;
+        self.done()?;
+        Ok(answer)
     }
 
     /// What the app asked of the speaker so far (`Sound`, `AudioPlayer`),
@@ -1063,12 +1158,6 @@ impl Headless {
             .ok_or_else(|| "the app plays sound with EngineConfig::audio".to_owned())?
             .end()?;
         self.done()
-    }
-
-    fn fake_speech(&self) -> Result<speech::FakeSpeech, String> {
-        self.speech
-            .clone()
-            .ok_or_else(|| "the app recognizes speech with EngineConfig::speech".to_owned())
     }
 
     /// Sends the app's `nsh/host` calls (the root's `Command::HostCall`) to
@@ -2095,23 +2184,65 @@ impl Headless {
     /// text field that listens to presses takes the focus first, as a tap
     /// in it does.
     pub fn press(&mut self, selector: &str) -> Result<(), String> {
+        self.press_with(selector, None)
+    }
+
+    /// [`Headless::press`] with the pointer at `at` in the view `selector`
+    /// names (its top left corner), else where a tap lands (`None`).
+    pub(crate) fn press_with(
+        &mut self,
+        selector: &str,
+        offset: Option<Point<Points>>,
+    ) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
-        self.step(format!("press({selector})"));
+        self.step(match offset {
+            Some(at) => format!("press({selector}, {}, {})", at.x.0, at.y.0),
+            None => format!("press({selector})"),
+        });
         self.input_with(InputModality::Pointer);
         let pick = self.screen.pressable(&parsed);
         let mut id = self.picked(pick, selector, "pressable view")?;
         let mut routed = None;
-        // A real finger lands where the view is drawn: a view drawn over it
-        // there takes the press, so the step fails as the user would. The
-        // finger goes on the part of the view that is visible — a view
-        // across a scroll view's fold is pressed on the half left visible,
-        // its laid-out center lying below the fold, on the bar under it; a
-        // view nothing of which is on screen (a target scrolled out of
-        // view) keeps its laid-out center, which a press still reaches as
-        // before. A view that takes no pointer (in a `pointerEvents: none`
-        // subtree, as a data table's cells under its hit layer) is pressed
-        // where it is, by the view a pointer there reaches.
-        if let Some(target) = self.screen.bounds_in_root(id) {
+        // Where on the page the finger lands, when the test gives a point.
+        let mut page = None;
+        if let Some(offset) = offset {
+            let named = match self.screen.resolve(&parsed)[..] {
+                [named] => named,
+                _ => id,
+            };
+            let Some(bounds) = self.screen.bounds_in_root(named) else {
+                return Err(format!(
+                    "`{selector}` has no bounds to place a press at {}, {}; {}",
+                    offset.x.0,
+                    offset.y.0,
+                    self.on_screen()
+                ));
+            };
+            let point = bounds.origin + offset;
+            page = Some(point);
+            // A real finger lands where the view is drawn, so what covers
+            // that point takes the press, as it does at the middle.
+            if let Some((to, inside)) = self.screen.routed_press(id, point) {
+                (id, routed) = (to, Some(inside));
+            } else if let Some(cover) = self.screen.covering(id, point) {
+                return Err(format!(
+                    "{}; {}",
+                    failure::covered(selector, &self.screen.selector_of(cover)),
+                    self.on_screen()
+                ));
+            }
+        } else if let Some(target) = self.screen.bounds_in_root(id) {
+            // A real finger lands where the view is drawn: a view drawn over
+            // it there takes the press, so the step fails as the user would.
+            // The finger goes on the part of the view that is visible — a
+            // view across a scroll view's fold is pressed on the half left
+            // visible, its laid-out center lying below the fold, on the bar
+            // under it; a view nothing of which is on screen (a target
+            // scrolled out of view) keeps its laid-out center, which a press
+            // still reaches as before. A view that takes no pointer (in a
+            // `pointerEvents: none` subtree, as a data table's cells under
+            // its hit layer) is pressed where it is, by the view a pointer
+            // there reaches.
             let point = self
                 .screen
                 .press_point(&parsed, id)
@@ -2134,14 +2265,15 @@ impl Headless {
                 ));
             }
         }
-        let at = self
-            .screen
-            .canvas_node(&parsed)
-            .and_then(|(canvas, center)| {
-                self.screen
-                    .bounds_in_root(canvas)
-                    .map(|b| b.origin + center)
-            });
+        let at = page.or_else(|| {
+            self.screen
+                .canvas_node(&parsed)
+                .and_then(|(canvas, center)| {
+                    self.screen
+                        .bounds_in_root(canvas)
+                        .map(|b| b.origin + center)
+                })
+        });
         self.activate_window_of(id);
         // The finger, as platforms report it to the views around it that
         // listen to touches (an overlay's `onPressOutside` among them).
@@ -2156,7 +2288,10 @@ impl Headless {
         {
             self.move_focus(Some(id));
         }
-        let inside = routed.or_else(|| self.screen.press_point(&parsed, id));
+        let inside = routed.or_else(|| match page {
+            Some(page) => self.screen.bounds_in_root(id).map(|b| page - b.origin),
+            None => self.screen.press_point(&parsed, id),
+        });
         let payload = self.press_payload(id, inside);
         for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
             self.send(id, kind, payload.clone());
@@ -4423,6 +4558,37 @@ mod tests {
                     focused.get()
                 )
             }))
+    }
+
+    /// Four inputs, the second disabled and the third not `focusable`.
+    #[component]
+    fn InputStops() -> impl IntoElement {
+        view()
+            .child(input().test_id("first"))
+            .child(input().test_id("disabled").disabled(true))
+            .child(input().test_id("unfocusable").focusable(false))
+            .child(input().test_id("last"))
+    }
+
+    #[test]
+    fn tab_passes_over_disabled_and_unfocusable_inputs() {
+        let mut config = EngineConfig::new(crate::windowed_root::<InputStops>());
+        config.environment.os = Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (first, last) = (id(&app, "id:first"), id(&app, "id:last"));
+        let focus = |app: &Headless| app.screen().focused();
+        app.press_key("tab").unwrap();
+        assert_eq!(focus(&app), Some(first));
+        app.press_key("tab").unwrap();
+        assert_eq!(focus(&app), Some(last));
+        app.press_key("shift+tab").unwrap();
+        assert_eq!(focus(&app), Some(first));
     }
 
     /// A page with two buttons and a dialog over it, open at first, with

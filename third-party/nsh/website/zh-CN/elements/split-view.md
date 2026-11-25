@@ -9,51 +9,6 @@ demo: el-split-view
 
 分栏视图把应用的导航分成几栏显示：侧边栏（分区或列表）、可选的内容栏（侧边栏所选内容中的条目）和详情栏。每一栏都是一个独立的 [`NavStack`](./nav-stack.md)，因此每一栏保留自己的页面，各自推入和弹出。在 iOS、iPadOS 和 Mac Catalyst 上，这些栏属于 `UISplitViewController`：在 iPadOS 26 上侧边栏浮在内容之上，从边缘轻扫或按系统的侧边栏按钮即可呼出，窗口旋转和改变大小时由系统安排各栏。其他平台上各栏并排显示，拖动边缘即可调整宽度。空间紧凑时（手机、窄窗口）一次只显示一栏。显示哪些栏由 `columnVisibility` 决定，这个值由应用持有。
 
-```rust tabs
-use nsh_base::{ColumnVisibility, button, nav_page, nav_stack, split_view, theme};
-use nsh_core::prelude::*;
-
-const MESSAGES: [&str; 2] = ["Welcome", "Release notes"];
-
-/// A message of the inbox: a press shows it in the detail.
-fn row(
-    title: &'static str,
-    selected: Signal<&'static str>,
-    visibility: Signal<ColumnVisibility>,
-) -> impl IntoElement {
-    button()
-        .on_press(move || {
-            selected.set(title);
-            // Where one column shows, the message comes in front.
-            if horizontal_size_class() == SizeClass::Compact {
-                visibility.set(ColumnVisibility::DetailOnly);
-            }
-        })
-        .px_4()
-        .py_3()
-        .child(text(title).text_color(move || theme().foreground()))
-}
-
-fn mail() -> impl IntoElement {
-    let visibility = signal(ColumnVisibility::Automatic);
-    let selected = signal(MESSAGES[0]);
-    split_view()
-        .flex_1()
-        .column_visibility(move || Some(visibility.get()))
-        .on_column_visibility_change(move |next: &ColumnVisibility| visibility.set(*next))
-        .sidebar(nav_stack().child(nav_page().title("Inbox").child(
-            view()
-                .flex_1()
-                .children(MESSAGES.map(|title| row(title, selected, visibility))),
-        )))
-        .detail(nav_stack().child(
-            nav_page()
-                .title(move || SharedString::from(selected.get()))
-                .child(text(move || format!("{} …", selected.get())).p_4()),
-        ))
-}
-```
-
 ```tsx tabs
 import { horizontalSizeClass, mount, signal, Text, View } from "nsh";
 import { Button, type ColumnVisibility, createNavStack, NavPage, NavStack, SplitView } from "nsh/base";
@@ -109,6 +64,51 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{ColumnVisibility, button, nav_page, nav_stack, split_view, theme};
+use nsh_core::prelude::*;
+
+const MESSAGES: [&str; 2] = ["Welcome", "Release notes"];
+
+/// A message of the inbox: a press shows it in the detail.
+fn row(
+    title: &'static str,
+    selected: Signal<&'static str>,
+    visibility: Signal<ColumnVisibility>,
+) -> impl IntoElement {
+    button()
+        .on_press(move || {
+            selected.set(title);
+            // Where one column shows, the message comes in front.
+            if horizontal_size_class() == SizeClass::Compact {
+                visibility.set(ColumnVisibility::DetailOnly);
+            }
+        })
+        .px_4()
+        .py_3()
+        .child(text(title).text_color(move || theme().foreground()))
+}
+
+fn mail() -> impl IntoElement {
+    let visibility = signal(ColumnVisibility::Automatic);
+    let selected = signal(MESSAGES[0]);
+    split_view()
+        .flex_1()
+        .column_visibility(move || Some(visibility.get()))
+        .on_column_visibility_change(move |next: &ColumnVisibility| visibility.set(*next))
+        .sidebar(nav_stack().child(nav_page().title("Inbox").child(
+            view()
+                .flex_1()
+                .children(MESSAGES.map(|title| row(title, selected, visibility))),
+        )))
+        .detail(nav_stack().child(
+            nav_page()
+                .title(move || SharedString::from(selected.get()))
+                .child(text(move || format!("{} …", selected.get())).p_4()),
+        ))
+}
 ```
 
 `SplitView` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh_base::split_view()`，以及 `ColumnVisibility`。在 Rust 中每一栏是一个接收它的栈的设置方法（`.sidebar(..)`、`.content(..)`、`.detail(..)`）；在 TSX 中每一栏是一个接收 `<NavStack>` 的属性。

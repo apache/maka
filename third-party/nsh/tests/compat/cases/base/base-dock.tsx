@@ -1,7 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `DockArea`
 // of `nsh/base` on a phone (390 wide: the compact presentation). The
 // center shows one tab group at a time, its tab bar listing every center
-// panel; a tab of another group shows that group. The docks are drawers
+// panel; a tab of another group shows that group. For screen readers the
+// frame showing the panel is the tab panel (`"tabpanel"`) its tabs
+// control. The docks are drawers
 // (`drawerClass`), one presented at a time and none at first, whatever
 // the layout's `open` says: the ref presents one (`toggleDock`), a press
 // on its backdrop (`backdropClass`) dismisses it, and each change is

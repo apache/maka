@@ -137,6 +137,7 @@ fn keystroke(event: &KeyEvent) -> Option<Keystroke> {
         alt: m.alt,
         shift: m.shift,
         cmd: m.meta,
+        alt_graph: false,
     };
     Some(Keystroke {
         modifiers,

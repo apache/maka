@@ -39,6 +39,7 @@ fn existing_attachment_literals_and_engines_remain_compatible() {
         no_wrap: false,
         shadow: None,
         links: Vec::new(),
+        link_hrefs: Vec::new(),
         test_ids: Vec::new(),
         copy_texts: Vec::new(),
         writing_direction: None,

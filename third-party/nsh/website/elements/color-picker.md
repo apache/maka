@@ -15,6 +15,59 @@ own elements in between (a row per channel with its letter, the space picked wit
 and styles each of them: the parts draw the colors of the channels, and every size, radius, border and shadow is the
 app's.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { type ColorChannel, ColorArea, ColorField, ColorPicker, ColorSlider, ColorSwatch } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const thumb = "rounded-full border-2 border-white";
+
+function Channel(props: { channel: ColorChannel; letter: string }) {
+  return (
+    <View class="flex-row items-center gap-2">
+      <Text class="w-[14px] text-sm text-muted-foreground">{props.letter}</Text>
+      <ColorSlider
+        colorSpace="oklch"
+        channel={props.channel}
+        accessibilityLabel={props.letter}
+        class="flex-1 h-[18px] justify-center px-2"
+        trackClass="h-[10px] rounded-full"
+        thumbClass={`size-4 ${thumb}`}
+        fillThumb
+      />
+      <ColorField
+        colorSpace="oklch"
+        channel={props.channel}
+        accessibilityLabel={props.letter}
+        class="w-16 h-7 px-2 rounded-md border border-border text-sm text-right"
+      />
+    </View>
+  );
+}
+
+function App() {
+  const primary = signal("oklch(54.6% 0.215 262.9)");
+  return (
+    <ColorPicker value={primary()} format="oklch" onChange={({ formatted }) => primary.set(formatted)} class="gap-3">
+      <ColorArea accessibilityLabel="Saturation and brightness" class="h-40" panelClass="rounded-lg" thumbClass={`size-[18px] ${thumb}`} fillThumb />
+      <Channel channel="lightness" letter="L" />
+      <Channel channel="chroma" letter="C" />
+      <Channel channel="hue" letter="H" />
+      <View class="flex-row items-center gap-2">
+        <ColorSwatch class="size-7 rounded-md" />
+        <Text class="font-mono text-sm">{`--primary: ${primary()}`}</Text>
+      </View>
+    </ColorPicker>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{
     ColorChannel, ColorPickerEvent, ColorSpace, color_area, color_field, color_picker,
@@ -78,59 +131,6 @@ fn primary(color: Signal<Hsla>) -> impl IntoElement {
         .child(channel(ColorChannel::Hue, "H"))
         .child(color_swatch().size(px(28.0)).rounded_md())
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { type ColorChannel, ColorArea, ColorField, ColorPicker, ColorSlider, ColorSwatch } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const thumb = "rounded-full border-2 border-white";
-
-function Channel(props: { channel: ColorChannel; letter: string }) {
-  return (
-    <View class="flex-row items-center gap-2">
-      <Text class="w-[14px] text-sm text-muted-foreground">{props.letter}</Text>
-      <ColorSlider
-        colorSpace="oklch"
-        channel={props.channel}
-        accessibilityLabel={props.letter}
-        class="flex-1 h-[18px] justify-center px-2"
-        trackClass="h-[10px] rounded-full"
-        thumbClass={`size-4 ${thumb}`}
-        fillThumb
-      />
-      <ColorField
-        colorSpace="oklch"
-        channel={props.channel}
-        accessibilityLabel={props.letter}
-        class="w-16 h-7 px-2 rounded-md border border-border text-sm text-right"
-      />
-    </View>
-  );
-}
-
-function App() {
-  const primary = signal("oklch(54.6% 0.215 262.9)");
-  return (
-    <ColorPicker value={primary()} format="oklch" onChange={({ formatted }) => primary.set(formatted)} class="gap-3">
-      <ColorArea accessibilityLabel="Saturation and brightness" class="h-40" panelClass="rounded-lg" thumbClass={`size-[18px] ${thumb}`} fillThumb />
-      <Channel channel="lightness" letter="L" />
-      <Channel channel="chroma" letter="C" />
-      <Channel channel="hue" letter="H" />
-      <View class="flex-row items-center gap-2">
-        <ColorSwatch class="size-7 rounded-md" />
-        <Text class="font-mono text-sm">{`--primary: ${primary()}`}</Text>
-      </View>
-    </ColorPicker>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `ColorPicker`, `ColorArea`, `ColorSlider`, `ColorField`, `ColorSwatch` and `ColorEyeDropper` come from [`nsh/base`](../modules/nsh-base.md),

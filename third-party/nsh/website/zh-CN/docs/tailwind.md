@@ -10,6 +10,12 @@ demo: guide-tailwind
 
 NSH 的样式遵循 Tailwind CSS 4。在 Rust 中，Tailwind 的工具类是名称和取值都相同的类型化样式方法（`.p_4()` 即 `p-4`，`.rounded_2xl()` 即 `rounded-2xl`，`ZINC.shade(900)` 即 `zinc-900`）；在 TSX 中，每个元素都可以直接在 `class` 中写这些类，它们会以 Tailwind 4 的默认主题为准，在原生层解析。下面每个示例先给出类型化方法，再给出类名：
 
+```tsx tabs
+<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-lg active:scale-[0.98] dark:bg-zinc-800">
+  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Tailwind on native views</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_core::element::palette::ZINC;
 
@@ -30,17 +36,18 @@ view()
     )
 ```
 
-```tsx tabs
-<View class="flex-row items-center gap-3 rounded-2xl bg-white p-4 shadow-lg active:scale-[0.98] dark:bg-zinc-800">
-  <Text class="text-base font-semibold text-zinc-900 dark:text-white">Tailwind on native views</Text>
-</View>
-```
-
 类型化方法生成的样式规则与类名编译出的完全相同，无需解析字符串。对于类名，整个过程不生成 CSS，也不在 JavaScript 中运行任何代码：字符串被直接交给核心，核心对每个不同的类字符串只解析一次（并缓存），把它转换为样式规则后应用。依赖状态的变体（按下、深色模式、窗口宽度）会在相应状态变化时由核心重新应用；按下和聚焦状态在原生层跟踪，因此 `active:` 的反馈（Rust 中的 `.active(..)`）无需与你的代码往返。
 
 类名和 [`style` 属性](./styling.md) 产生的是同样的原生样式，两者可以组合使用；本页介绍类名特有的部分及其类型化写法。[Tailwind 参考](../modules/tailwind-reference.md) 列出了所有支持的工具类。
 
 ## class 与 classList
+
+```tsx tabs
+<View
+  class="rounded-lg px-4 py-2 transition-colors"
+  classList={{ "bg-indigo-600": selected(), "bg-zinc-200": !selected(), "opacity-50": busy() }}
+/>
+```
 
 ```rust tabs
 view()
@@ -50,13 +57,6 @@ view()
     .transition_colors()
     .bg(move || if selected.get() { INDIGO.shade(600) } else { ZINC.shade(200) })
     .style_when(busy, |s| s.opacity(0.5))
-```
-
-```tsx tabs
-<View
-  class="rounded-lg px-4 py-2 transition-colors"
-  classList={{ "bg-indigo-600": selected(), "bg-zinc-200": !selected(), "opacity-50": busy() }}
-/>
 ```
 
 - **`class`** 是一个类名字符串，可以是动态的：``class={`h-6 rounded bg-${color()}-500`}`` 可以正常工作，因为类名在运行时解析。
@@ -107,6 +107,13 @@ Rust 组件（`nsh/base` 的以及应用自己 crate 中的组件）在 TSX 中�
 
 变体可以组合：`dark:active:bg-zinc-700`、`md:landscape:flex-row`。在 Rust 中，`.active(..)` 样式里的 `AdaptiveColor` 就相当于 `dark:active:`。
 
+```tsx tabs
+<View class="group flex-row items-center gap-3 rounded-xl bg-white p-3 active:bg-zinc-50">
+  <Text class="flex-1 text-zinc-900">Settings</Text>
+  <Text class="text-zinc-300 transition-transform group-active:translate-x-1">›</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .group()
@@ -126,14 +133,13 @@ view()
     )
 ```
 
+任何元素上的 `disabled`（Rust 中的 `.disabled(..)`）都会应用 `disabled:` 类（`.disabled_style(..)`），并移除按下事件处理器。禁用期间，元素会跳过自身的 `hover:`、`active:`、`focus:`、`focus-visible:` 和 `focus-within:` 类。`checked:` 等表示控件取值的类仍随控件的值变化。
+
 ```tsx tabs
-<View class="group flex-row items-center gap-3 rounded-xl bg-white p-3 active:bg-zinc-50">
-  <Text class="flex-1 text-zinc-900">Settings</Text>
-  <Text class="text-zinc-300 transition-transform group-active:translate-x-1">›</Text>
+<View disabled={saving()} onPress={save} class="rounded-lg bg-emerald-500 px-4 py-2 active:bg-emerald-600 disabled:opacity-40">
+  <Text class="font-medium text-white">Save</Text>
 </View>
 ```
-
-任何元素上的 `disabled`（Rust 中的 `.disabled(..)`）都会应用 `disabled:` 类（`.disabled_style(..)`），并移除按下事件处理器。禁用期间，元素会跳过自身的 `hover:`、`active:`、`focus:`、`focus-visible:` 和 `focus-within:` 类。`checked:` 等表示控件取值的类仍随控件的值变化。
 
 ```rust tabs
 view()
@@ -146,12 +152,6 @@ view()
     .active(|s| s.bg(EMERALD.shade(600)))
     .disabled_style(|s| s.opacity(0.4))
     .child(text("Save").font_weight(FontWeight::MEDIUM).text_color(white()))
-```
-
-```tsx tabs
-<View disabled={saving()} onPress={save} class="rounded-lg bg-emerald-500 px-4 py-2 active:bg-emerald-600 disabled:opacity-40">
-  <Text class="font-medium text-white">Save</Text>
-</View>
 ```
 
 断点比较的是窗口（NSH 渲染所在的表面）而不是设备：在 iPad 分屏或可调整大小的窗口中，它们跟随窗口宽度变化，`window()` 也是如此。
@@ -218,6 +218,16 @@ Tailwind 主题影响你的类名。类型化方法保持 Tailwind 的默认刻�
 
 应用的主题（`nsh.json` 中的 `"theme"`）保存它的设计令牌：shadcn/ui 的颜色（`background`、`foreground`、`primary`、`muted-foreground`、`border`、`ring`、`chart-1`、`sidebar` 等）、`radius`、字体 `font-sans` 和 `font-mono`，以及应用自己添加的令牌。类名像 Tailwind 引用 CSS `@theme` 变量那样引用它们，Rust 组件用 `nsh_base` 的 `theme()` 读取，TSX 用 `nsh` 的 `token()` 读取，所以 TSX 页面和 Rust 组件使用同一套主题：
 
+```tsx tabs
+<View class="rounded-(--radius) border border-border bg-card p-4">
+  <Text class="text-card-foreground">Balance</Text>
+  <Text class="text-muted-foreground">Updated just now</Text>
+  <View class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
+    <Text class="text-primary-foreground">Continue</Text>
+  </View>
+</View>
+```
+
 ```rust tabs
 use nsh_base::theme;
 
@@ -240,23 +250,13 @@ view()
     )
 ```
 
-```tsx tabs
-<View class="rounded-(--radius) border border-border bg-card p-4">
-  <Text class="text-card-foreground">Balance</Text>
-  <Text class="text-muted-foreground">Updated just now</Text>
-  <View class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
-    <Text class="text-primary-foreground">Continue</Text>
-  </View>
-</View>
-```
-
 token 的名称就是主题文件中 CSS 变量去掉 `--` 后的名称：`muted-foreground`、`radius`、`chart-1`。在 Rust 中，shadcn 的令牌是 `theme()` 的方法（`primary()`、`muted_foreground()`、`radius()`、`font_mono()`），所有令牌也都可以用 `theme().color("up")`、`theme().number("radius-card")` 或 `theme().font("font-display")` 读取。
 
 | 写法 | 取值 | 示例 |
 |---|---|---|
 | 任意颜色类里的颜色名 | 主题颜色，也可带不透明度 | `bg-primary`、`text-muted-foreground/70`、`bg-up/30`、`border-t-border`、`ring-ring`、`from-accent`、`placeholder:text-muted-foreground` |
-| `(--name)`，Tailwind 4 的变量简写 | 主题颜色或数值 | `bg-(--primary)`、`rounded-(--radius)`、`p-(--gap-card)` |
-| `(color:--name)`、`(length:--name)`、`(number:--name)`、`(family-name:--name)` | 同上，在一个类可以接受多种值时标明类型 | `text-(color:--up)`、`text-(length:--text-title)`、`font-(family-name:--font-mono)` |
+| `(--name)`，Tailwind 4 的变量简写 | 主题颜色或数值；数值是以点为单位的长度，给 `scale`、`scale-x`、`scale-y` 时是倍数 | `bg-(--primary)`、`rounded-(--radius)`、`p-(--gap-card)`、`active:scale-(--press-scale)` |
+| `(color:--name)`、`(length:--name)`、`(number:--name)`、`(family-name:--name)` | 同上，在一个类可以接受多种值时标明类型 | `text-(color:--up)`、`text-(length:--text-title)`、`ring-(length:--ring-width)`、`font-(family-name:--font-mono)` |
 | `font-sans`、`font-mono` | 主题设置的字体 | `font-mono` |
 
 - **应用自己的令牌。** 主题文件中的每个名称都是 token，就像 CSS `@theme` 中的每个变量：`"up": "#16a34a"` 生成 `bg-up`、`text-up` 和 `bg-up/30`；`"radius-card": "14px"` 生成 `rounded-(--radius-card)`；`"font-display": "Pacifico"` 生成 `font-(family-name:--font-display)`。长度的单位是点；`(number:--name)` 传入不带单位的数值。
@@ -265,6 +265,7 @@ token 的名称就是主题文件中 CSS 变量去掉 `--` 后的名称：`muted
 - **你的 Tailwind 颜色优先。** `"tailwind"` 的 `colors` 或 Tailwind 调色板里的名称就是那个颜色，所以 Tailwind 主题里没有 `primary` 这个颜色时，`bg-primary` 是主题 token。
 - **主题可以在运行时改变。** 嵌入原生应用的 NSH 应用拿到宿主的主题时，以及主题每次变化时，引用 token 的类、读取 `theme()` 的 Rust 绑定和读取 `token()` 的 TSX 代码都会更新，其中类和绑定在原生侧更新。宿主主题里没有的 token 使用应用自己 `"theme"` 中的值（再没有则用默认主题的值）。只想加上自己品牌的宿主给出主题覆盖，即用同样的文件格式写出其品牌要改的 token（[iOS](./ios.md#主题覆盖)、[Android](./android.md#主题覆盖)，桌面端为 `AppView::set_theme_overrides`）。
 - **应用可以换一个主题。** `nsh` 的 [`setTheme(theme)`](../modules/nsh.md#settheme) 在应用运行时把一个同样格式的主题设为应用的主题，取代它的 `"theme"`，在每个平台和 `nsh test` 里都一样；`setTheme(null)` 恢复应用自己的主题。`token()` 立即读到新的 token。主题要整个读得懂：有读不懂的值时抛出列出该值的 `TypeError`，正在显示的主题保持不变。请从应用自己的主题文件出发构造新主题，这样类名引用的每个 token 都还有值。Rust 应用用 `set_tokens(theme.into())` 设置一个 `nsh_base::Theme` 的 token。
+- **运行时调整密度和缩放。** Tailwind 的命名尺寸（`h-9`、`text-sm`、`gap-2`）和 bundle 的 `rem` 在构建时就固定了。要让用户在运行时缩放控件或文字，把需要跟着变的尺寸写成应用 `"theme"` 里的数字 token（`"control-h": "36px"`、`"text-body": "14px"`、`"icon": "16px"`），在组件的类名里引用它们（`h-(--control-h)`、`text-(length:--text-body)`、`size-(--icon)`），再用 `setTheme` 修改：引用它们的类名都会立即重新解析。
 - **与其他类名一样检查。** 既不是默认主题、也不是应用 `"theme"` 中 token 的名称，在构建时会报告为未知类（`unknown class 'bg-chart-up'`）。要使用只有宿主或运行时设置的主题提供的 token，在应用的 `"theme"` 里也给它一个值：应用单独运行时显示这个值。
 
 引用 token 的类和其他类一样，每套主题只解析一次：绘制时的开销与调色板颜色相同。

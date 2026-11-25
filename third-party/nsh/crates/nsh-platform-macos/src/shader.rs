@@ -598,7 +598,7 @@ fn ui_changed_in(surface: &Rc<Surface>, view: &NshView, backdrops_only: bool) {
     if !backdrops_only {
         for mark in surface.shaders.overlays.borrow().iter() {
             if let Some(mark) = mark.upgrade()
-                && view.ns().isDescendantOf(&mark.host)
+                && view.is_within(&mark.host)
             {
                 mark.dirty.set(true);
             }
@@ -622,7 +622,7 @@ fn ui_changed_in(surface: &Rc<Surface>, view: &NshView, backdrops_only: bool) {
         // surface, for a screen's) again.
         let inside = !backdrops_only
             && shader.reads_children()
-            && (is_screen(shader.role) || view.ns().isDescendantOf(v.ns()));
+            && (is_screen(shader.role) || view.is_within(v.ns()));
         // A backdrop already due needs no look; one that is not is due
         // when the view draws under the reader where it reads (what draws
         // over it, it holds, or draws elsewhere is not in its picture).

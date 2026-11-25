@@ -9,6 +9,29 @@ demo: el-sheet
 
 Sheet 是位于屏幕一侧边缘的面板，背后的背景层覆盖其余部分：筛选条件、分享面板、侧边抽屉。按下背景层、Escape、Android 返回键和 VoiceOver 的退出手势会关闭它。它显示在所在窗口中一切内容之上，在每种设备上都一样，自己不绘制任何东西：面板和背景层都属于应用。
 
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Sheet } from "nsh/base";
+
+function Filters() {
+  const open = signal(false);
+  return (
+    <>
+      <View onPress={() => open.set(true)}><Text>Filters</Text></View>
+      <Sheet
+        open={open()}
+        onOpenChange={(e) => open.set(e.open)}
+        popupClass="gap-3 rounded-t-2xl bg-white p-6"
+        backdropClass="bg-black/40"
+      >
+        <Text class="font-semibold">Filters</Text>
+        <View onPress={() => open.set(false)}><Text>Done</Text></View>
+      </Sheet>
+    </>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{SheetEvent, sheet};
 use nsh_core::prelude::*;
@@ -30,29 +53,6 @@ fn filters(open: Signal<bool>) -> impl IntoElement {
                 .child(text("Filters").font_weight(FontWeight::SEMIBOLD))
                 .child(view().on_press(move || open.set(false)).child(text("Done"))),
         )
-}
-```
-
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Sheet } from "nsh/base";
-
-function Filters() {
-  const open = signal(false);
-  return (
-    <>
-      <View onPress={() => open.set(true)}><Text>Filters</Text></View>
-      <Sheet
-        open={open()}
-        onOpenChange={(e) => open.set(e.open)}
-        popupClass="gap-3 rounded-t-2xl bg-white p-6"
-        backdropClass="bg-black/40"
-      >
-        <Text class="font-semibold">Filters</Text>
-        <View onPress={() => open.set(false)}><Text>Done</Text></View>
-      </Sheet>
-    </>
-  );
 }
 ```
 

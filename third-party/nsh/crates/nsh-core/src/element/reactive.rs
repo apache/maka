@@ -287,8 +287,11 @@ pub struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
+        // One runtime per engine: its id is the engine's.
+        let mut data = RustData::default();
+        data.ambient.engine_id = Some(super::EngineId::next());
         Self {
-            graph: Box::new(UnsafeCell::new(r::Graph::new(RustData::default()))),
+            graph: Box::new(UnsafeCell::new(r::Graph::new(data))),
         }
     }
 }

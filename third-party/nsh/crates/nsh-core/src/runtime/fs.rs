@@ -524,6 +524,79 @@ impl Roots {
     }
 }
 
+/// The local files the user handed the app in its run: pasted into an
+/// input or dropped on a view whose handler got them (`onPaste`'s and
+/// `onFileDrop`'s `uris`). Each is readable at its exact path, as the user
+/// chose it, whatever `capabilities.fs.read` declares: the path as the
+/// event named it and its resolved form, and what that names (a file's
+/// contents, a folder's own listing), never what is beside or below it.
+/// Never written; forgotten when the VM goes.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct UserFiles(std::cell::RefCell<Vec<(PathBuf, PathBuf)>>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::element::Local for UserFiles {}
+
+/// The most files [`UserFiles`] keeps: the oldest go first.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_USER_FILES: usize = 4096;
+
+/// Lets the app read the local files `uris` name (`file:` URLs) at their
+/// exact paths for the rest of the VM's run: the user pasted or dropped
+/// them, as a file chosen in a picker. `nsh-js` calls it as it hands a
+/// paste or a drop to the app's handler, never for a drag that only
+/// entered. Other URLs, and files that do not exist, are skipped.
+#[doc(hidden)]
+pub fn grant_user_files(locals: &crate::element::Locals, uris: &[String]) {
+    #[cfg(target_arch = "wasm32")]
+    let _ = (locals, uris);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if uris.is_empty() {
+            return;
+        }
+        let files = locals.get::<UserFiles>();
+        let mut files = files.0.borrow_mut();
+        for uri in uris {
+            let Some(path) = crate::access::file_url_path(uri) else {
+                continue;
+            };
+            let path = lexical(&path);
+            let Ok(real) = crate::access::canonicalize(&path) else {
+                continue;
+            };
+            if real.parent().is_none() || real.file_name().is_none() {
+                continue;
+            }
+            files.retain(|(given, _)| *given != path);
+            files.push((path, real));
+        }
+        let over = files.len().saturating_sub(MAX_USER_FILES);
+        files.drain(..over);
+    }
+}
+
+/// The user's file `requested` names, by its path as it was granted or its
+/// resolved one: its folder (resolved) and its name in it.
+#[cfg(not(target_arch = "wasm32"))]
+fn user_file(sys: &System, requested: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !requested.is_absolute() {
+        return None;
+    }
+    let requested = lexical(requested);
+    let files = sys.locals.get::<UserFiles>();
+    let files = files.0.borrow();
+    let (_, real) = files
+        .iter()
+        .rev()
+        .find(|(given, real)| *given == requested || *real == requested)?;
+    Some((
+        real.parent()?.to_path_buf(),
+        PathBuf::from(real.file_name()?),
+    ))
+}
+
 /// A capability-checked path in the host's private virtual filesystem.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -620,6 +693,33 @@ fn grant(sys: &System, path: &str, write: bool) -> Result<Grant, JsError> {
                 name,
                 path: path.to_owned(),
             });
+        }
+    }
+    // A file the user pasted or dropped: read at its exact path, still
+    // within the host's grant when the host narrows the app's.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !write && available {
+        let data = sys.data_dir.clone().unwrap_or_default();
+        if let Ok(requested) = requested_path(sys, path, &data)
+            && let Some((folder, name)) = user_file(sys, &requested)
+        {
+            let real = folder.join(&name);
+            let hosted = access.granted.as_ref().is_none_or(|host| {
+                let roots_of = sys.locals.get::<Roots>();
+                host.fs.read.iter().any(|r| {
+                    roots_of
+                        .get(sys, r)
+                        .is_some_and(|root| in_root(&real, &root).is_some())
+                })
+            });
+            if hosted {
+                return Ok(Grant {
+                    within: vec![(folder, name.clone())],
+                    write,
+                    name: name.display().to_string(),
+                    path: path.to_owned(),
+                });
+            }
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -1488,6 +1588,100 @@ pub(crate) mod confined {
 
 #[cfg(test)]
 mod tests {
+    /// A pasted or dropped file is readable at its exact path, by the path
+    /// as the event named it or its resolved form; nothing beside it, no
+    /// write, and only within the host's grant when the host narrows.
+    #[cfg(unix)]
+    #[test]
+    fn pasted_files_are_readable_at_their_exact_paths() {
+        use std::{os::unix::fs::symlink, sync::Arc};
+
+        use crate::{
+            access::{Access, Capabilities, TrustedPaths},
+            element::{Quotas, System},
+        };
+        let base = std::env::temp_dir().join(format!("nsh-fs-pasted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let desk = base.join("desk");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(desk.join("folder/inner")).unwrap();
+        std::fs::write(desk.join("a b.txt"), "pasted").unwrap();
+        std::fs::write(desk.join("secret.txt"), "beside").unwrap();
+        symlink(&desk, base.join("link")).unwrap();
+        let mut declared = Capabilities::default();
+        declared.fs.read = vec!["${dataDir}".into()];
+        declared.fs.write = vec!["${dataDir}".into()];
+        let sys = |granted: Option<Capabilities>| {
+            System::new(
+                Arc::new(Access {
+                    declared: declared.clone(),
+                    granted,
+                }),
+                Some(data.clone()),
+                TrustedPaths::default(),
+                Quotas::default(),
+            )
+        };
+        let app = sys(None);
+        let file = base.join("link/a b.txt");
+        let file = file.to_str().unwrap();
+        let real = crate::access::canonicalize(&desk.join("a b.txt")).unwrap();
+        let real = real.to_str().unwrap();
+        let denied = |r: Result<super::Grant, crate::element::JsError>| match r {
+            Err(e) => assert_eq!(e.code(), Some(crate::element::codes::ACCESS_DENIED)),
+            Ok(_) => panic!("granted"),
+        };
+        denied(super::grant(&app, file, false));
+        let url = |path: &str| crate::platform::clipboard::file_url(path);
+        super::grant_user_files(
+            &app.locals,
+            &[
+                url(file),
+                url(desk.join("folder").to_str().unwrap()),
+                url(desk.join("missing.txt").to_str().unwrap()),
+                "https://example.com/a.txt".into(),
+            ],
+        );
+        for path in [file, real] {
+            let grant = super::grant(&app, path, false).unwrap();
+            let (dir, relative) = grant.open(true).unwrap();
+            assert_eq!(dir.read_to_string(&relative).unwrap(), "pasted");
+        }
+        // A folder's own listing, nothing in it, nothing beside the file.
+        assert!(super::grant(&app, desk.join("folder").to_str().unwrap(), false).is_ok());
+        denied(super::grant(
+            &app,
+            desk.join("folder/inner").to_str().unwrap(),
+            false,
+        ));
+        denied(super::grant(
+            &app,
+            desk.join("secret.txt").to_str().unwrap(),
+            false,
+        ));
+        denied(super::grant(
+            &app,
+            desk.join("missing.txt").to_str().unwrap(),
+            false,
+        ));
+        denied(super::grant(&app, &format!("{file}/../secret.txt"), false));
+        denied(super::grant(&app, file, true));
+        // Another VM's user files are its own.
+        denied(super::grant(&sys(None), file, false));
+        // A host that narrows the app's files narrows these too.
+        let mut host = Capabilities::default();
+        host.fs.read = vec!["${dataDir}".into()];
+        let narrowed = sys(Some(host.clone()));
+        super::grant_user_files(&narrowed.locals, &[url(file)]);
+        denied(super::grant(&narrowed, file, false));
+        host.fs.read.push(desk.to_str().unwrap().into());
+        let wider = sys(Some(host));
+        super::grant_user_files(&wider.locals, &[url(file)]);
+        assert!(super::grant(&wider, file, false).is_ok());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_path_is_inside_a_root_by_its_components() {

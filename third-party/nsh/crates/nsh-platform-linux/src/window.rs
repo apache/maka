@@ -533,11 +533,17 @@ fn open(surface: &Rc<Surface>, view: &NshView, open: &OpenWindow) {
         return;
     }
     // Presented over the main window by its insertion, earlier in the
-    // batch: it leaves the surface's modals.
-    crate::navigation::release(surface, id);
+    // batch: it leaves the main window first, so the surface's focus
+    // scoping as it leaves the modals no longer reaches it.
     if view.parent().is_some() {
         view.unparent();
     }
+    crate::navigation::release(surface, id);
+    // A modal presented after it in the main window turned its `can-focus`
+    // off (`ScreenNav::scope_focus`), which only resets the children of a
+    // window's root, never the root: GTK would refuse a click's focus to
+    // every field in this window.
+    view.set_can_focus(true);
     let options = &open.options;
     let window = gtk::Window::new();
     window.add_css_class("nsh-window");
@@ -851,6 +857,18 @@ pub(crate) fn batch_applied(surface: &Rc<Surface>) {
     for id in ready {
         show_first(surface, id);
     }
+}
+
+/// Whether a window of the app's own is still opening, hidden until its
+/// first frame ([`batch_applied`], or [`FIRST_FRAME`] after it opened).
+/// Its views are not drawn until it shows, so they have no place on screen
+/// to act on: the test agent waits for it (`nsh_testing::agent::Native::opening`).
+#[cfg(any(feature = "dev", test))]
+pub(crate) fn opening(surface: &Surface) -> bool {
+    surface
+        .windows
+        .try_borrow()
+        .is_ok_and(|windows| windows.values().any(|w| w.pending.is_some()))
 }
 
 /// Shows window `id` the first time, unless it showed or was hidden.
@@ -2638,9 +2656,62 @@ mod tests {
         }
     }
 
+    /// A window of the app's own is opening until the commit after the one
+    /// that opened it is mounted, or until its wait for that runs out.
+    #[test]
+    fn a_new_window_is_opening_until_its_first_frame() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            assert!(!opening(&surface));
+            let view = NshView::new(40, nsh_core::ViewKind::View);
+            open(&surface, &view, &OpenWindow::default());
+            assert!(opening(&surface));
+            // The commit that opened it.
+            batch_applied(&surface);
+            assert!(opening(&surface));
+            batch_applied(&surface);
+            assert!(!opening(&surface));
+            // Without another commit, it shows after `FIRST_FRAME`.
+            let second = NshView::new(41, nsh_core::ViewKind::View);
+            open(&surface, &second, &OpenWindow::default());
+            batch_applied(&surface);
+            assert!(opening(&surface));
+            assert!(crate::gtk_test::wait_until(|| !opening(&surface)));
+            assert!(removed(&surface, &view));
+            assert!(removed(&surface, &second));
+        });
+    }
+
     /// Window Model v2 keeps the host window hidden: the performance
     /// monitor measures and shows in the app's `<Window>`, and goes back
     /// to the host window when the last one closes.
+    /// Two app windows mount as modals of the main window first: the one
+    /// presented second scopes the first one's focus out, and the first,
+    /// moved into a window of its own, still takes a click's focus in its
+    /// fields (GTK refuses `grab_focus` under a `can-focus` off root).
+    #[test]
+    fn a_window_presented_under_another_takes_its_fields_focus() {
+        crate::gtk_test::run(|| {
+            let surface = crate::gtk_test::surface();
+            let first = NshView::new(40, nsh_core::ViewKind::Modal);
+            let second = NshView::new(41, nsh_core::ViewKind::Modal);
+            crate::navigation::present(&surface, &first);
+            crate::navigation::present(&surface, &second);
+            assert!(!first.can_focus(), "scoped out under the second");
+            let field = gtk::Text::new();
+            field.set_parent(&first);
+            open(&surface, &first, &OpenWindow::default());
+            let window = surface.windows.borrow()[&40].window.clone();
+            window.present();
+            assert!(first.can_focus());
+            let focused = field.grab_focus();
+            open(&surface, &second, &OpenWindow::default());
+            assert!(removed(&surface, &first));
+            assert!(removed(&surface, &second));
+            assert!(focused, "a click focuses a field in the first window");
+        });
+    }
+
     #[test]
     fn the_fps_monitor_follows_the_apps_window() {
         crate::gtk_test::run(|| {

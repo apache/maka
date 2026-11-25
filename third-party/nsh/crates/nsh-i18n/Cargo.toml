@@ -16,11 +16,12 @@ workspace = true
 # Reading an app's translations (`locales/`) with rust-i18n: the toolchain's
 # part (the bundler, the CLI). Without it the crate is the language data
 # alone, which the runtime formats with.
-build = ["dep:serde_json", "dep:rust-i18n-support"]
+build = ["dep:serde_json", "dep:rust-i18n-support", "dep:jiff-tzdb"]
 
 [dependencies]
 serde_json = { workspace = true, optional = true }
 rust-i18n-support = { workspace = true, features = ["codegen"], optional = true }
+jiff-tzdb = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

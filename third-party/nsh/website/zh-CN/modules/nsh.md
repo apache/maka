@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[分享面板](#share)、[语音识别](#speech)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
+`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、`setTheme`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[分享面板](#share)、[声音](#sound)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -401,12 +401,12 @@ CSS 的环境变量让内容避开系统界面，可用于任何视图的内边�
 
 动画 API 在 UI 线程上执行动画。你创建一个**动画值**（animated value），把它（或由它派生的值）绑定到样式属性上，然后启动动画；此后每一帧都在原生侧计算，不需要运行应用的代码。引擎线程或 JS 线程再忙也不会让动画卡顿，动画的每一帧也不消耗应用任何开销。Rust 代码使用 `nsh_core::prelude` 中的 `animated_value()`、`motion()`、`Animation`、`Spring`、`Timing`、`KeyframeTiming`、`MotionPreset` 和 `Easing`，用元素的 `.bind_*` 方法绑定动画值；TSX 从 `nsh` 导入它们。
 
-```rust tabs
-use nsh_core::{element::LayoutAnimation, prelude::*}; // animated_value、motion、Animation、Spring、Timing、Keyframe、KeyframeTiming、MotionPreset、MotionSpec、Easing、animate_layout
-```
-
 ```tsx tabs
 import { Animated, createAnimatedValue, createMotion, motions, Easing, LayoutAnimation, AnimatedNode, AnimatedValue } from "nsh";
+```
+
+```rust tabs
+use nsh_core::{element::LayoutAnimation, prelude::*}; // animated_value、motion、Animation、Spring、Timing、Keyframe、KeyframeTiming、MotionPreset、MotionSpec、Easing、animate_layout
 ```
 
 教程见[动画](../docs/animation.md)。
@@ -435,28 +435,6 @@ function createAnimatedValue(value?: number): AnimatedValue;
 
 创建一个初始值为 `value`（默认 `0`）的动画值。Rust：`animated_value(value)`，一个由创建它的组件持有的 `Copy` 句柄。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let x = animated_value(0.0);
-    let right = stored(false);
-    let toggle = move || {
-        let to_right = !right.get();
-        right.replace(to_right);
-        let _ = x.spring(if to_right { 200.0 } else { 0.0 }, Spring::default());
-    };
-    view()
-        .flex_1()
-        .p_6()
-        .pt_12()
-        .gap_4()
-        .child(view().size(px(60.0)).rounded(px(12.0)).bg(rgb(0x6366f1)).bind_translate_x(&x))
-        .child(text("Move").on_press(toggle))
-}
-```
-
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
@@ -482,6 +460,28 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let x = animated_value(0.0);
+    let right = stored(false);
+    let toggle = move || {
+        let to_right = !right.get();
+        right.replace(to_right);
+        let _ = x.spring(if to_right { 200.0 } else { 0.0 }, Spring::default());
+    };
+    view()
+        .flex_1()
+        .p_6()
+        .pt_12()
+        .gap_4()
+        .child(view().size(px(60.0)).rounded(px(12.0)).bg(rgb(0x6366f1)).bind_translate_x(&x))
+        .child(text("Move").on_press(toggle))
+}
 ```
 
 > [!NOTE]
@@ -520,6 +520,12 @@ class AnimatedValue extends AnimatedNode {
 
 每个动画方法都返回一个 Promise，resolve 为 `{ finished }`：动画完成时为 `true`，被停止（`stop`、`set` 或同一个值上的另一个动画）时为 `false`。在 Rust 中返回 `AnimationEnd`，在任务中 await 它得到同样的 `bool`。
 
+```tsx tabs
+const opacity = createAnimatedValue(1);
+const { finished } = await opacity.timing(0, { duration: 200 });
+if (finished) visible.set(false);
+```
+
 ```rust tabs
 let opacity = animated_value(1.0);
 spawn(async move {
@@ -527,12 +533,6 @@ spawn(async move {
         visible.set(false);
     }
 });
-```
-
-```tsx tabs
-const opacity = createAnimatedValue(1);
-const { finished } = await opacity.timing(0, { duration: 200 });
-if (finished) visible.set(false);
 ```
 
 ### AnimatedNode
@@ -567,6 +567,14 @@ type Extrapolation = "extend" | "clamp" | "identity";
 | `add`、`sub`、`mul`、`div` | `add`、`sub`、`mul`、`div` | 与另一个节点或常量做算术运算。 |
 | `mod(b)` | `modulo(b)` | 取模，`b` 为正时结果不会为负（比如把角度保持在 0..360）。 |
 
+```tsx tabs
+const scroll = createAnimatedValue(0);
+const header = scroll.diffClamp(0, 44);
+
+<Scroll scrollValue={scroll} style={{ flex: 1 }}>{/* rows */}</Scroll>
+<View style={{ height: 44, transform: [{ translateY: header.mul(-1) }] }} />
+```
+
 ```rust tabs
 let scroll_y = animated_value(0.0);
 let header = scroll_y.diff_clamp(0.0, 44.0);
@@ -578,23 +586,15 @@ view()
 ```
 
 ```tsx tabs
-const scroll = createAnimatedValue(0);
-const header = scroll.diffClamp(0, 44);
-
-<Scroll scrollValue={scroll} style={{ flex: 1 }}>{/* rows */}</Scroll>
-<View style={{ height: 44, transform: [{ translateY: header.mul(-1) }] }} />
+const progress = createAnimatedValue(0);
+const rotate = progress.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+const color = progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: ["#22c55e", "#eab308", "#ef4444"] });
 ```
 
 ```rust tabs
 let progress = animated_value(0.0);
 let rotate = progress.interpolate(&[0.0, 1.0], &[0.0, 360.0]); // 角度，供 bind_rotate 使用
 let color = progress.interpolate_colors(&[0.0, 0.5, 1.0], &[rgb(0x22c55e), rgb(0xeab308), rgb(0xef4444)]);
-```
-
-```tsx tabs
-const progress = createAnimatedValue(0);
-const rotate = progress.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-const color = progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: ["#22c55e", "#eab308", "#ef4444"] });
 ```
 
 ### 关键帧
@@ -620,17 +620,17 @@ interface KeyframeTiming {
 
 它们的播放方式与 CSS 关键帧一致：缓动作用于一段（关键帧的缓动决定从它开始的那一段，时间参数的缓动决定其余各段）；关键帧缺省的 offset 均匀分布，第一个为 0、最后一个为 1；每次迭代先跳到它的第一个关键帧，没有 offset 为 0 的关键帧时，值从当前位置出发；在 `delay` 期间，值停在第一个关键帧上（CSS `animation-fill-mode: backwards`）；反向的迭代倒着播放各段，曲线也随之反转；值停在最后一次迭代结束的位置。
 
+```tsx tabs
+const y = createAnimatedValue(0);
+y.keyframes([0, { offset: 0.3, value: -20, easing: "easeIn" }, 0], { duration: 600, iterations: 3 });
+```
+
 ```rust tabs
 let y = animated_value(0.0);
 y.keyframes(
     [Keyframe::new(0.0), Keyframe::at(0.3, -20.0).ease(Easing::EaseIn), Keyframe::new(0.0)],
     KeyframeTiming::new(600.0).iterations(Some(3)),
 );
-```
-
-```tsx tabs
-const y = createAnimatedValue(0);
-y.keyframes([0, { offset: 0.3, value: -20, easing: "easeIn" }, 0], { duration: 600, iterations: 3 });
 ```
 
 ### createMotion
@@ -680,16 +680,16 @@ interface Motion {
 
 当用户要求减少动态效果（`reduceMotion()`）时，`play`、`animation` 和 `enter` 会立即落在动效的终点，不产生移动，除非设置了 `ignoreReduceMotion`（在选项或动效上）。
 
+```tsx tabs
+const card = createMotion({ enter: "fadeInUp", delay: 80 });
+<View onPress={() => card.play("pulse")} style={{ width: 120, height: 120, borderRadius: 16, backgroundColor: "#0969da", ...card.style }} />
+```
+
 ```rust tabs
 let card = motion().entering(MotionPreset::FadeInUp.spec().timing(|t| t.delay(80.0)));
 view().size(px(120.0)).rounded(px(16.0)).bg(rgb(0x0969da)).bind_motion(&card).on_press(move || {
     card.play(MotionPreset::Pulse);
 })
-```
-
-```tsx tabs
-const card = createMotion({ enter: "fadeInUp", delay: 80 });
-<View onPress={() => card.play("pulse")} style={{ width: 120, height: 120, borderRadius: 16, backgroundColor: "#0969da", ...card.style }} />
 ```
 
 ### motions
@@ -718,13 +718,6 @@ interface MotionPreset extends MotionSpec {
 
 设置 `spring` 后，每个通道从当前所在的位置以弹簧运动到它的关键帧终点，而不是逐帧经过各关键帧：打断另一个动效时，会从那个动效留下的值和速度继续，而关键帧动效会从第一帧重新开始。第一个关键帧仍是 `enter` 让视图起步的位置；`delay` 在弹簧开始前等待，`direction: "reverse"` 让弹簧运动到第一个关键帧，中间的关键帧以及 `duration`、`easing`、`iterations` 不参与。刚度、阻尼和质量与 `Animated.spring` 的相同（默认 170、26、1）。Rust：在 `MotionSpec` 上调用 `.spring(Spring { stiffness, damping, ..Spring::default() })`。用户要求减少动态效果时，弹簧动效和其他动效一样立即落在终点。
 
-```rust tabs
-let spring = Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() };
-let sheet = motion().entering(MotionPreset::SlideInUp.spec().spring(spring));
-// 还在上升时就被收起：从当前位置掉头，保留原有的速度。
-let _ = sheet.play(MotionPreset::SlideOutDown.spec().spring(spring));
-```
-
 ```tsx tabs
 const spring = { stiffness: 620, damping: 36 };
 const sheet = createMotion({ enter: "slideInUp", spring });
@@ -733,14 +726,21 @@ sheet.play("slideOutDown", { spring });
 ```
 
 ```rust tabs
-let rise = MotionSpec::new(KeyframeTiming::new(400.0))
-    .values(MotionChannel::Opacity, [0.0, 1.0])
-    .track(MotionChannel::TranslateY, [Keyframe::at(0.0, 24.0).ease(Easing::EaseOut), Keyframe::at(1.0, 0.0)]);
-card.play(rise);
+let spring = Spring { stiffness: 620.0, damping: 36.0, ..Spring::default() };
+let sheet = motion().entering(MotionPreset::SlideInUp.spec().spring(spring));
+// 还在上升时就被收起：从当前位置掉头，保留原有的速度。
+let _ = sheet.play(MotionPreset::SlideOutDown.spec().spring(spring));
 ```
 
 ```tsx tabs
 card.play({ duration: 400, keyframes: [{ opacity: 0, translateY: 24, easing: "easeOut" }, { opacity: 1, translateY: 0 }] });
+```
+
+```rust tabs
+let rise = MotionSpec::new(KeyframeTiming::new(400.0))
+    .values(MotionChannel::Opacity, [0.0, 1.0])
+    .track(MotionChannel::TranslateY, [Keyframe::at(0.0, 24.0).ease(Easing::EaseOut), Keyframe::at(1.0, 0.0)]);
+card.play(rise);
 ```
 
 ### Animated
@@ -795,6 +795,20 @@ interface CompositeAnimation {
 | `stop()` | `stop()` | 停在当前位置。 |
 | `reset()` | `reset()` | 停止，并把各个值恢复到启动时的值。 |
 
+```tsx tabs
+const ys = [0, 1, 2, 3].map(() => createAnimatedValue(0));
+const hop = Animated.stagger(
+  80,
+  ys.map((y) =>
+    Animated.sequence([
+      Animated.timing(y, { toValue: -36, duration: 220, easing: Easing.out(Easing.quad) }),
+      Animated.spring(y, { toValue: 0, stiffness: 300, damping: 12 }),
+    ]),
+  ),
+);
+hop.start(({ finished }) => console.log(finished ? "done" : "stopped"));
+```
+
 ```rust tabs
 let ys: Vec<AnimatedValue> = (0..4).map(|_| animated_value(0.0)).collect();
 let hop = Animation::stagger(
@@ -808,20 +822,6 @@ let hop = Animation::stagger(
 );
 let run = hop.start();
 spawn(async move { log::info!("{}", if run.await { "done" } else { "stopped" }) });
-```
-
-```tsx tabs
-const ys = [0, 1, 2, 3].map(() => createAnimatedValue(0));
-const hop = Animated.stagger(
-  80,
-  ys.map((y) =>
-    Animated.sequence([
-      Animated.timing(y, { toValue: -36, duration: 220, easing: Easing.out(Easing.quad) }),
-      Animated.spring(y, { toValue: 0, stiffness: 300, damping: 12 }),
-    ]),
-  ),
-);
-hop.start(({ finished }) => console.log(finished ? "done" : "stopped"));
 ```
 
 ### Easing
@@ -872,16 +872,16 @@ const Easing: {
 
 这些曲线都是“in”形式（开始时慢）。`Easing.out(curve)` 把它反转，`Easing.inOut(curve)` 让它对称，`Easing.in(curve)` 保持原样；在 Rust 中这就是 `Easing::Curve` 的 `EaseMode`。
 
-```rust tabs
-let _ = value.timing(1.0, 600.0, Easing::Curve(Curve::Back(1.70158), EaseMode::Out));
-let _ = value.timing_with(1.0, Timing { easing: Easing::Bezier(0.2, 0.0, 0.0, 1.0), ..Timing::default() });
-let _ = value.timing_with(1.0, Timing { easing: Easing::EaseOut, ..Timing::default() });
-```
-
 ```tsx tabs
 value.timing(1, { duration: 600, easing: Easing.out(Easing.back()) });
 value.timing(1, { easing: Easing.bezier(0.2, 0, 0, 1) });
 value.timing(1, { easing: "easeOut" });
+```
+
+```rust tabs
+let _ = value.timing(1.0, 600.0, Easing::Curve(Curve::Back(1.70158), EaseMode::Out));
+let _ = value.timing_with(1.0, Timing { easing: Easing::Bezier(0.2, 0.0, 0.0, 1.0), ..Timing::default() });
+let _ = value.timing_with(1.0, Timing { easing: Easing::EaseOut, ..Timing::default() });
 ```
 
 ### LayoutAnimation
@@ -930,18 +930,6 @@ interface LayoutAnimationAnimation {
 | `easeInEaseOut(onEnd?)`、`linear(onEnd?)`、`spring(onEnd?)` | `animate_layout(LayoutAnimation::…)` | `configureNext(Presets.…)` 的简写。 |
 | `Types`、`Properties` | `LayoutCurve`、`LayoutProperty` | 这些名称的常量形式。 |
 
-```rust tabs
-let open = signal(false);
-let toggle = move || {
-    animate_layout(LayoutAnimation::SPRING);
-    open.update(|o| *o = !*o);
-};
-
-view()
-    .child(text("Details").on_press(toggle))
-    .child(when(move || open.get(), || text("Shown with a spring.")))
-```
-
 ```tsx tabs
 const open = signal(false);
 const toggle = () => {
@@ -957,19 +945,31 @@ const toggle = () => {
 </View>
 ```
 
+```rust tabs
+let open = signal(false);
+let toggle = move || {
+    animate_layout(LayoutAnimation::SPRING);
+    open.update(|o| *o = !*o);
+};
+
+view()
+    .child(text("Details").on_press(toggle))
+    .child(when(move || open.get(), || text("Shown with a spring.")))
+```
+
 ## Device
 
 设备 API 向应用提供设备及其环境的信息。Rust 代码调用 `nsh_core::prelude` 中的函数（`window()`、`dark()`、`font_scale()`、`locale()`、`locale_settings()`、`lifecycle()`、`os()`、`idiom()`、`pixel_ratio()`、`set_color_scheme()` 等）；TSX 从 `nsh` 导入它们。窗口尺寸、配色方案、字体缩放、像素密度、区域设置、语言与地区设置和应用状态是响应式的：在绑定（Rust 中传给元素的闭包，TSX 中的 JSX）、`computed` 或 `effect` 中读取它们，平台报告变化（旋转、窗口缩放、切换深色模式、修改文字大小、语言或地区设置、移到另一个时区、移到另一种像素密度的屏幕、离开应用再回来）时，读取它们的地方会随之更新。
+
+```tsx tabs
+import { colorScheme, fontScale, lifecycle, locale, localeSettings, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
+```
 
 ```rust tabs
 use nsh_core::{
     platform::{Appearance, HourCycle, Idiom, Lifecycle, LocaleSettings, MeasurementSystem, Os, TemperatureUnit, TimeZone, Weekday},
     prelude::*, // window、dark、font_scale、locale、locale_settings、lifecycle、os、idiom、pixel_ratio、set_color_scheme……
 };
-```
-
-```tsx tabs
-import { colorScheme, fontScale, lifecycle, locale, localeSettings, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
 ```
 
 教程见[设备与环境](../docs/device-and-environment.md)。
@@ -982,16 +982,16 @@ const windowSize: Accessor<Size>;
 
 界面的尺寸（点）：窗口，或嵌入时的 `NshAppView` / `NshView`。响应式。Rust：`window() -> Size<Points>`。
 
-```rust tabs
-let wide = move || window().width >= px(600.0);
-
-view().style_when(wide, |s| s.flex_row())
-```
-
 ```tsx tabs
 const wide = () => windowSize().width >= 600;
 
 <View style={{ flexDirection: wide() ? "row" : "column" }}>{/* ... */}</View>
+```
+
+```rust tabs
+let wide = move || window().width >= px(600.0);
+
+view().style_when(wide, |s| s.flex_row())
 ```
 
 ### horizontalSizeClass / verticalSizeClass
@@ -1020,14 +1020,14 @@ const colorScheme: Accessor<"light" | "dark">;
 
 显示的外观：系统的外观，除非应用设置了自己的（`nsh.json` 的 `"appearance"`、[`setColorScheme`](#setcolorscheme)）。响应式。Rust：`dark() -> bool`；主题颜色（`AdaptiveColor`）和 `.dark(…)` 样式变体无需读取它就会跟随。Tailwind 的 `dark:` 变体也跟随它（见 [Tailwind](../docs/tailwind.md)）。
 
-```rust tabs
-view().flex_1().bg(move || if dark() { black() } else { white() })
-```
-
 ```tsx tabs
 const dark = () => colorScheme() === "dark";
 
 <View style={{ flex: 1, backgroundColor: dark() ? "#000" : "#fff" }} />
+```
+
+```rust tabs
+view().flex_1().bg(move || if dark() { black() } else { white() })
 ```
 
 ### fontScale
@@ -1082,6 +1082,13 @@ const lifecycle: Accessor<"active" | "inactive" | "background">;
 
 在 effect 中读取它，即可暂停无人可见的工作，并在应用回来时恢复：
 
+```tsx tabs
+effect(() => {
+  if (lifecycle() === "background") feed.pause();
+  else feed.resume();
+});
+```
+
 ```rust tabs
 effect(move || {
     if lifecycle() == Lifecycle::Background {
@@ -1089,13 +1096,6 @@ effect(move || {
     } else {
         feed.resume();
     }
-});
-```
-
-```tsx tabs
-effect(() => {
-  if (lifecycle() === "background") feed.pause();
-  else feed.resume();
 });
 ```
 
@@ -1107,17 +1107,17 @@ const wakeCount: Accessor<number>;
 
 应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。睡眠可能让 `lifecycle()` 保持不变（笔记本合上再打开、应用一直在前台），但网络连接和定时器并没有挺过这次睡眠。响应式：读取它的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接。macOS、Windows 和 Linux 统计唤醒；在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。Rust：`wake_count() -> u32`。
 
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
+
 ```rust tabs
 effect(move || {
     if wake_count() > 0 {
         feed.reconnect();
     }
-});
-```
-
-```tsx tabs
-effect(() => {
-  if (wakeCount() > 0) feed.reconnect();
 });
 ```
 
@@ -1129,17 +1129,17 @@ const network: Accessor<NetworkState>;
 
 设备现在怎样连到网络：`online`（只有系统确知没有路由时才为 false）、路由所走链路的 `kind`（`"wifi"`、`"cellular"`、`"wired"`、`"other"`，离线为 `"none"`，平台不报告时为 `"unknown"`，按在线处理）、这条链路是否 `expensive` 或 `constrained`（低数据模式、流量节省程序），以及在 iOS 上用户是否允许应用使用蜂窝数据（`cellularData`：用户决定之前为 `"unknown"`，另有 `"restricted"`、`"notRestricted"`）。响应式：读取它的 effect 会在路由变化时重新运行，离线时失败的请求就在这里重试。iOS 和 macOS 跟随系统的路径监视器，Android 跟随默认网络，Web 读取 `navigator.onLine` 和 `navigator.connection`；Windows、Linux、GPUI 和终端报告 `"unknown"`（[网络](../docs/device-and-environment.md#网络)）。Rust：`network() -> Network`（`network().online()`、`.kind`、`.expensive`、`.constrained`、`.cellular_data`）。
 
+```tsx tabs
+effect(() => {
+  if (network().online && sync.failedOffline()) sync.retry();
+});
+```
+
 ```rust tabs
 effect(move || {
     if network().online() && sync.failed_offline() {
         sync.retry();
     }
-});
-```
-
-```tsx tabs
-effect(() => {
-  if (network().online && sync.failedOffline()) sync.retry();
 });
 ```
 
@@ -1232,12 +1232,12 @@ interface Platform {
 | `catalyst` | `is_catalyst() -> bool` | 应用运行在 Mac Catalyst 下，无论是 Mac 形态还是 iPad 形态（`os` 为 `"ios"`）。 |
 | `select(spec)` | `match os() { … }` | 当前平台对应的值（见下文）。 |
 
-```rust tabs
-let columns = if is_desktop() { 3 } else { 1 };
-```
-
 ```tsx tabs
 const columns = platform.desktop ? 3 : 1;
+```
+
+```rust tabs
+let columns = if is_desktop() { 3 } else { 1 };
 ```
 
 #### platform.select
@@ -1260,6 +1260,13 @@ interface PlatformSelectSpec<T> {
 
 依次返回 `platform.name`（在 NSH 之外构建的平台）对应的值，否则当前操作系统（`ios`、`android`、`web` 等）对应的值，否则按 `platform.desktop` 取 `desktop` 或 `mobile`，否则 `native`（除 Web 外的所有平台），否则 `default`，都没有则返回 `undefined`。Rust 代码对 `os()` 做 `match`（配合 `platform_name()` 和 `is_desktop()`）。
 
+```tsx tabs
+const shadow = platform.select({
+  ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.15)" },
+  android: { elevation: 4 },
+});
+```
+
 ```rust tabs
 use nsh_core::platform::Os;
 
@@ -1276,13 +1283,6 @@ let card = match os() {
 };
 ```
 
-```tsx tabs
-const shadow = platform.select({
-  ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.15)" },
-  android: { elevation: 4 },
-});
-```
-
 > [!TIP]
 > 对于只有某个平台才有的属性，优先使用 TSX 元素和组件的 `ios={{…}}` / `android={{…}}` 属性，而不是按 `platform` 分支（见[平台专有代码](../docs/platform-specific.md)）。
 
@@ -1294,12 +1294,12 @@ const pixelRatio: Accessor<number>;
 
 每个点对应的设备像素数（大多数 iPhone 上为 `3`）。响应式：surface 移动到另一种像素密度的屏幕上时（Mac Catalyst 或外接显示器），以及 Android 的显示大小设置改变像素密度时，它会变化。桌面平台上它是宿主显示器的缩放比例；窗口自己的比例在 `currentWindow().state()?.scaleFactor` 中。Rust：`pixel_ratio() -> f32`，取整到设备像素的长度用 `round_to_nearest_pixel(points)`；在 TSX 中这个长度是 `Math.round(x * pixelRatio()) / pixelRatio()`。
 
-```rust tabs
-let hairline = move || px(1.0 / pixel_ratio());
-```
-
 ```tsx tabs
 const hairline = () => 1 / pixelRatio();
+```
+
+```rust tabs
+let hairline = move || px(1.0 / pixel_ratio());
 ```
 
 ### openUrl
@@ -1314,18 +1314,6 @@ interface OpenUrlResult {
 
 在应用之外打开 `url`：网页在浏览器中打开，`mailto:` 链接在邮件应用中打开，`tel:` 链接在电话应用中打开，其他应用注册的 scheme（`maps:`、宿主应用自己的 `lb://` 链接）交给对应的应用。结果是 `{ opened }`，表示是否有应用打开了它：没有应用处理该 scheme 时为 `false`。Rust：`nsh_core::prelude` 的 `open_url(url)`，返回可在任务中等待（或直接丢弃）的回答，即同样的 `bool`。
 
-```rust tabs
-button()
-    .child(text("联系我们"))
-    .on_press(|| {
-        spawn(async {
-            if !open_url("mailto:help@example.com").await {
-                log::warn!("no mail app");
-            }
-        });
-    })
-```
-
 ```tsx tabs
 <Button
   onPress={async () => {
@@ -1337,6 +1325,18 @@ button()
 >
   <Text>联系我们</Text>
 </Button>
+```
+
+```rust tabs
+button()
+    .child(text("联系我们"))
+    .on_press(|| {
+        spawn(async {
+            if !open_url("mailto:help@example.com").await {
+                log::warn!("no mail app");
+            }
+        });
+    })
 ```
 
 - URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址和文件路径（Windows 上的 `C:/…`），会让 Promise 以 `TypeError` reject。`openUrl` 从不抛出：所有失败都以 reject 报告。
@@ -1351,15 +1351,15 @@ button()
 
 视图的 `direction` 样式（`"ltr"`、`"rtl"` 或默认的 `"inherit"`）设置其自身子树的方向；Rust 中为 `.direction(LayoutDirection::..)`。
 
-```rust tabs
-view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).child(text("Second"))
-```
-
 ```tsx tabs
 <View style={{ direction: "rtl", flexDirection: "row", gap: 8 }}>
   <Text>First</Text>
   <Text>Second</Text>
 </View>
+```
+
+```rust tabs
+view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).child(text("Second"))
 ```
 
 ### 相关内容
@@ -1383,12 +1383,12 @@ interface RegisteredFont {
 
 Pan responder 是构建在手势响应者系统之上的拖动手势：元素认领一次手势的触摸，然后独自接收这些触摸和手势状态，手势状态会帮你跟踪各触点的中心、移动距离和速度。Rust 代码用 `.claim_touches(TouchClaim::…)` 认领触摸，用 `.on_responder_*` 监听，其 `ResponderEvent` 带有 `PanGesture`，都在 `nsh_core::prelude` 中；TSX 从 `nsh` 导入 `PanResponder`，它的 `onPanResponder…` 回调接收触摸事件和手势状态。
 
-```rust tabs
-use nsh_core::prelude::*; // TouchClaim、ClaimRequest、ResponderEvent、PanGesture
-```
-
 ```tsx tabs
 import { PanResponder, type PanResponderGestureState } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // TouchClaim、ClaimRequest、ResponderEvent、PanGesture
 ```
 
 > [!TIP]
@@ -1405,37 +1405,6 @@ interface PanResponderInstance {
 ```
 
 创建一个 pan responder。把它的 `panHandlers` 展开到需要接收手势的视图上。在 Rust 中，由视图自己认领触摸并监听：
-
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let pos = signal((0.0_f32, 0.0_f32));
-    let start = stored((0.0_f32, 0.0_f32));
-    view().flex_1().child(
-        view()
-            .size(px(64.0))
-            .rounded(px(32.0))
-            .bg(rgb(0x6366f1))
-            .style_with(move |s| {
-                let (x, y) = pos.get();
-                s.translate_x(px(x)).translate_y(px(y))
-            })
-            .claim_touches(TouchClaim::on_start())
-            .on_responder_grant(move |_: &ResponderEvent| {
-                start.replace(pos.get_untracked());
-            })
-            .on_responder_move(move |e: &ResponderEvent| {
-                let (x, y) = start.get();
-                pos.set((x + e.gesture.delta.x.0, y + e.gesture.delta.y.0));
-            })
-            .on_responder_release(move |e: &ResponderEvent| {
-                log::info!("released at {:.0} pt/s", e.gesture.vx);
-            }),
-    )
-}
-```
 
 ```tsx tabs
 import { mount, signal, View } from "nsh";
@@ -1472,6 +1441,37 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let pos = signal((0.0_f32, 0.0_f32));
+    let start = stored((0.0_f32, 0.0_f32));
+    view().flex_1().child(
+        view()
+            .size(px(64.0))
+            .rounded(px(32.0))
+            .bg(rgb(0x6366f1))
+            .style_with(move |s| {
+                let (x, y) = pos.get();
+                s.translate_x(px(x)).translate_y(px(y))
+            })
+            .claim_touches(TouchClaim::on_start())
+            .on_responder_grant(move |_: &ResponderEvent| {
+                start.replace(pos.get_untracked());
+            })
+            .on_responder_move(move |e: &ResponderEvent| {
+                let (x, y) = start.get();
+                pos.set((x + e.gesture.delta.x.0, y + e.gesture.delta.y.0));
+            })
+            .on_responder_release(move |e: &ResponderEvent| {
+                log::info!("released at {:.0} pt/s", e.gesture.vx);
+            }),
+    )
+}
 ```
 
 ### 回调
@@ -1530,6 +1530,15 @@ Rust：`PanGesture`，位置为 `Point<Points>`。
 
 当 pan responder 作为响应者时，外层的原生滚动视图不会滚动（`onShouldBlockNativeResponder` 默认为 `true`）。如果要让横向滑动与纵向滚动共存，只在横向移动时成为响应者：
 
+```tsx tabs
+const swipe = PanResponder.create({
+  onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy),
+  onPanResponderMove: (_, g) => offset.set(g.dx),
+  onPanResponderRelease: (_, g) => (Math.abs(g.dx) > 120 ? remove() : offset.set(0)),
+  onPanResponderTerminate: () => offset.set(0),
+});
+```
+
 ```rust tabs
 view()
     .claim_touches(TouchClaim::on_move().ask(|request: &ClaimRequest| {
@@ -1545,28 +1554,19 @@ view()
     .on_responder_terminate(move |_: &ResponderEvent| offset.set(0.0))
 ```
 
-```tsx tabs
-const swipe = PanResponder.create({
-  onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 10 && Math.abs(g.dx) > Math.abs(g.dy),
-  onPanResponderMove: (_, g) => offset.set(g.dx),
-  onPanResponderRelease: (_, g) => (Math.abs(g.dx) > 120 ? remove() : offset.set(0)),
-  onPanResponderTerminate: () => offset.set(0),
-});
-```
-
 对于由平台识别的拖动，`TouchClaim::on_pan(PanActivation::horizontal(10.0, 10.0))` 在手指移动时于主线程上决定。底层的响应者属性（`onStartShouldSetResponder`、`onResponderGrant`、`onTouchStart` 等）也可以直接用在任何元素上；见[元素](../elements/index.md)。
 
 ## Clipboard
 
 剪贴板 API 读写系统剪贴板：各平台都能读写文本（iOS 上是 `UIPasteboard`，Android 上是 `ClipboardManager`，桌面上是 `NSPasteboard`、GDK 和 Win32 剪贴板，Web 上是 `navigator.clipboard`）；iOS、桌面和 Web 还能读写图片，桌面和 Mac Catalyst 还能读到在文件管理器里复制的文件。Rust 代码调用 `nsh_core::prelude` 中的函数（`set_clipboard`、`clipboard_string` 等）；TSX 从 `nsh` 导入 `Clipboard`。
 
+```tsx tabs
+import { Clipboard } from "nsh";
+```
+
 ```rust tabs
 use nsh_core::prelude::*; // set_clipboard、clipboard_string、clipboard_image……
 use nsh_core::element::ClipboardImage;
-```
-
-```tsx tabs
-import { Clipboard } from "nsh";
 ```
 
 ```ts
@@ -1623,21 +1623,6 @@ writeText(text: string): Promise<ClipboardWrite>;
 
 结果表示这次写入的情况：系统剪贴板接收时为 `"written"`（Windows、macOS、Web），被拒绝时为 `"failed"`（剪贴板被其他应用占用、浏览器拒绝），平台无法确认时为 `"requested"`（iOS、Android、Linux、GPUI 宿主、终端）。NSH 不会读回剪贴板来确认。只在 `"written"` 时显示“已复制”，`"failed"` 时保留手动复制入口。Rust 中返回 `ClipboardWrite`；不关心结果时直接丢弃，写入照常进行。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn copy_button(code: Signal<String>) -> impl IntoElement {
-    let copied = signal(false);
-    view()
-        .role(AccessibilityRole::Button)
-        .on_press(move || {
-            set_clipboard(code.get());
-            copied.set(true);
-        })
-        .child(text(move || if copied.get() { "已复制" } else { "复制" }))
-}
-```
-
 ```tsx tabs
 import { signal, Text, View } from "nsh";
 import { Clipboard } from "nsh";
@@ -1652,6 +1637,21 @@ const copied = signal(false);
 >
   <Text>{copied() ? "已复制" : "复制"}</Text>
 </View>;
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn copy_button(code: Signal<String>) -> impl IntoElement {
+    let copied = signal(false);
+    view()
+        .role(AccessibilityRole::Button)
+        .on_press(move || {
+            set_clipboard(code.get());
+            copied.set(true);
+        })
+        .child(text(move || if copied.get() { "已复制" } else { "复制" }))
+}
 ```
 
 ### Clipboard.write
@@ -1672,6 +1672,12 @@ Android 是 HTML 剪贴项，Windows 是 `HTML Format`。GPUI 和终端写入文
 `RichEditor` 的复制）经由页面的 copy 事件完成，和浏览器复制选区一样。`Clipboard.readText` 读回的是文本；HTML 由粘贴读取
 （`onPaste` 的 `html`）。
 
+```tsx tabs
+import { Clipboard } from "nsh";
+
+await Clipboard.write({ text: "Hello world", html: "<p>Hello <b>world</b></p>" });
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -1679,12 +1685,6 @@ let mut item = ClipboardItem::default();
 item.text = "Hello world".into();
 item.html = Some("<p>Hello <b>world</b></p>".into());
 set_clipboard_item(item);
-```
-
-```tsx tabs
-import { Clipboard } from "nsh";
-
-await Clipboard.write({ text: "Hello world", html: "<p>Hello <b>world</b></p>" });
 ```
 
 ### Clipboard.readText
@@ -1695,6 +1695,11 @@ readText(): Promise<string>;
 
 返回剪贴板上的文本，没有文本时返回 `""`。Rust：`clipboard_string()`。在 iOS 上，读取剪贴板可能会显示系统的粘贴提示（“某应用从……粘贴”）；在 Android 10 及以上，只有前台应用才能读取。请在用户要求粘贴时再读取，而不是每进入一个页面就读。
 
+```tsx tabs
+const pasted = await Clipboard.readText();
+if (pasted) code.set(pasted.trim());
+```
+
 ```rust tabs
 spawn(async move {
     let pasted = clipboard_string().await;
@@ -1702,11 +1707,6 @@ spawn(async move {
         code.set(pasted.trim().to_string());
     }
 });
-```
-
-```tsx tabs
-const pasted = await Clipboard.readText();
-if (pasted) code.set(pasted.trim());
 ```
 
 ### Clipboard.hasText
@@ -1717,14 +1717,14 @@ hasText(): Promise<boolean>;
 
 返回剪贴板上是否有文本，但不读取它：iOS 上不会出现粘贴提示。Rust：`clipboard_has_string()`。可以用它决定是否显示“粘贴”按钮。在 Web 上，浏览器只能通过读取来判断，因此可能会请求用户授权。
 
-```rust tabs
-let can_paste = signal(false);
-spawn(async move { can_paste.set(clipboard_has_string().await) });
-```
-
 ```tsx tabs
 const canPaste = signal(false);
 Clipboard.hasText().then((has) => canPaste.set(has));
+```
+
+```rust tabs
+let can_paste = signal(false);
+spawn(async move { can_paste.set(clipboard_has_string().await) });
 ```
 
 ### Clipboard.readImage
@@ -1734,6 +1734,30 @@ readImage(): Promise<ClipboardImage | null>;
 ```
 
 返回剪贴板上的图片，没有时为 `null`：粘贴的截图，或在浏览器、图片编辑器里复制的图片。Rust：`clipboard_image()`，没有时为 `None`。`url` 是图片（PNG，或剪贴板自带的 JPEG、GIF、WebP、BMP）的 URL，[`Image`](../elements/image.md) 能把它作为 `src` 显示，`fetch` 能读取它：用 `fetch(url)` 拿到它的字节用于上传。`size`（`width` 和 `height`）是解码后的像素尺寸。和 `readText` 一样，在用户要求粘贴时再读。可读取的图片最大 48 MB（编码后），这样图片能放进应用的内存；更大的图片会以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝（消息给出图片大小和上限），此时 `hasImage` 返回 `true`。Rust：`clipboard_image()` 对它返回 `None`。
+
+```tsx tabs
+import { Image, signal, View } from "nsh";
+import { Clipboard, type ClipboardImage } from "nsh";
+
+const attachments = signal<ClipboardImage[]>([]);
+
+async function paste() {
+  const image = await Clipboard.readImage();
+  if (image) attachments.set([...attachments(), image]);
+}
+
+async function upload(image: ClipboardImage) {
+  const body = new FormData();
+  body.append("file", await (await fetch(image.url)).blob(), "screenshot.png");
+  await fetch("https://example.com/upload", { method: "POST", body });
+}
+
+<View class="flex-row gap-2">
+  <Each of={attachments()}>
+    {(image) => <Image src={image().url} style={{ width: 64, height: 64, borderRadius: 8 }} />}
+  </Each>
+</View>;
+```
 
 ```rust tabs
 use base64::Engine as _;
@@ -1769,31 +1793,16 @@ async fn upload(image: &ClipboardImage) -> Result<HttpResponse, String> {
 }
 ```
 
-```tsx tabs
-import { Image, signal, View } from "nsh";
-import { Clipboard, type ClipboardImage } from "nsh";
-
-const attachments = signal<ClipboardImage[]>([]);
-
-async function paste() {
-  const image = await Clipboard.readImage();
-  if (image) attachments.set([...attachments(), image]);
-}
-
-async function upload(image: ClipboardImage) {
-  const body = new FormData();
-  body.append("file", await (await fetch(image.url)).blob(), "screenshot.png");
-  await fetch("https://example.com/upload", { method: "POST", body });
-}
-
-<View class="flex-row gap-2">
-  <Each of={attachments()}>
-    {(image) => <Image src={image().url} style={{ width: 64, height: 64, borderRadius: 8 }} />}
-  </Each>
-</View>;
-```
-
 聊天类应用要让用户把截图粘贴进输入框，可以在输入框有焦点时绑定粘贴快捷键，剪贴板有图片时取图片：
+
+```tsx tabs
+import { keymap } from "nsh";
+
+keymap.bind("mod+v", async () => {
+  if (await Clipboard.hasImage()) return paste();
+  insertText(await Clipboard.readText());
+}, { when: "always" });
+```
 
 ```rust tabs
 use nsh_core::keymap::When;
@@ -1807,15 +1816,6 @@ on_key_with("mod+v", KeyOptions { when: When::Always, ..KeyOptions::default() },
         }
     });
 });
-```
-
-```tsx tabs
-import { keymap } from "nsh";
-
-keymap.bind("mod+v", async () => {
-  if (await Clipboard.hasImage()) return paste();
-  insertText(await Clipboard.readText());
-}, { when: "always" });
 ```
 
 ### Clipboard.hasImage
@@ -1834,12 +1834,12 @@ writeImage(src: string): Promise<void>;
 
 把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Web 上图片以 PNG 放到剪贴板，这是浏览器写入的图片格式；其他格式的图片同时原样放上去：作为 HTML（`<img>`，粘贴时在 `html` 里），在 Chromium 系浏览器中还作为原图，`readImage` 读回的就是它，所以 GIF 保留动画。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
 
-```rust tabs
-set_clipboard_image(image.url.clone());
-```
-
 ```tsx tabs
 await Clipboard.writeImage(image.url);
+```
+
+```rust tabs
+set_clipboard_image(image.url.clone());
 ```
 
 ### Clipboard.readFiles
@@ -1850,17 +1850,17 @@ readFiles(): Promise<string[]>;
 
 返回在文件管理器（访达、资源管理器、Files）里复制的文件和文件夹的 `file:` URL，按原顺序，没有时为 `[]`：与[文件拖放](../elements/view.md#桌面文件拖放)给出的 URL 相同。Rust：`clipboard_files()`。解析 URL 得到路径。
 
+```tsx tabs
+const files = await Clipboard.readFiles();
+const names = files.map((url) => decodeURIComponent(new URL(url).pathname.split("/").pop()!));
+```
+
 ```rust tabs
 let paths: Vec<std::path::PathBuf> = clipboard_files()
     .await
     .iter()
     .filter_map(|file| url::Url::parse(file).ok()?.to_file_path().ok())
     .collect();
-```
-
-```tsx tabs
-const files = await Clipboard.readFiles();
-const names = files.map((url) => decodeURIComponent(new URL(url).pathname.split("/").pop()!));
 ```
 
 > [!NOTE]
@@ -1883,13 +1883,13 @@ const names = files.map((url) => decodeURIComponent(new URL(url).pathname.split(
 `URL.createObjectURL(file)` 交给 [`Image`](../elements/image.md) 显示，用 `fetch` 和 `FormData` 上传。Rust 代码调用
 `nsh_core::prelude` 的 `pick_images`；TSX 从 `nsh` 导入 `Picker`。
 
+```tsx tabs
+import { Picker, type PickedImage } from "nsh";
+```
+
 ```rust tabs
 use nsh_core::picker::{PickRequest, PickedFile};
 use nsh_core::prelude::*; // pick_images
-```
-
-```tsx tabs
-import { Picker, type PickedImage } from "nsh";
 ```
 
 ```ts
@@ -1966,36 +1966,6 @@ pickImages(options?: PickImagesOptions): Promise<PickedImage[]>;
 
 聊天输入框附加一张照片，编辑消息时显示它，发送时上传：
 
-```rust tabs
-use nsh_core::geometry::{DevicePixels, Percentage};
-use nsh_core::picker::{PickRequest, PickedFile};
-use nsh_core::prelude::*;
-
-fn attach_button(attached: Signal<Option<PickedFile>>) -> impl IntoElement {
-    view()
-        .role(AccessibilityRole::Button)
-        .accessibility_label("Choose a photo")
-        .on_press(move || {
-            let mut request = PickRequest::new(false, 1);
-            request.max_dimension = Some(DevicePixels(2048));
-            request.quality = Some(Percentage(0.85));
-            let picked = pick_images(request);
-            spawn(async move {
-                if let Some(file) = picked.await.into_iter().next() {
-                    attached.set(Some(file));
-                }
-            });
-        })
-        .child(text("Photo"))
-}
-
-async fn upload(file: &PickedFile) -> Result<HttpResponse, String> {
-    let request = HttpRequest::post("https://example.com/upload", file.data.to_vec())
-        .header("Content-Type", file.mime.as_str());
-    fetch(request).await
-}
-```
-
 ```tsx tabs
 import { Image, signal, Text, View } from "nsh";
 import { Picker } from "nsh";
@@ -2026,7 +1996,42 @@ async function send(text: string) {
 </View>;
 ```
 
+```rust tabs
+use nsh_core::geometry::{DevicePixels, Percentage};
+use nsh_core::picker::{PickRequest, PickedFile};
+use nsh_core::prelude::*;
+
+fn attach_button(attached: Signal<Option<PickedFile>>) -> impl IntoElement {
+    view()
+        .role(AccessibilityRole::Button)
+        .accessibility_label("Choose a photo")
+        .on_press(move || {
+            let mut request = PickRequest::new(false, 1);
+            request.max_dimension = Some(DevicePixels(2048));
+            request.quality = Some(Percentage(0.85));
+            let picked = pick_images(request);
+            spawn(async move {
+                if let Some(file) = picked.await.into_iter().next() {
+                    attached.set(Some(file));
+                }
+            });
+        })
+        .child(text("Photo"))
+}
+
+async fn upload(file: &PickedFile) -> Result<HttpResponse, String> {
+    let request = HttpRequest::post("https://example.com/upload", file.data.to_vec())
+        .header("Content-Type", file.mime.as_str());
+    fetch(request).await
+}
+```
+
 一次选多张：
+
+```tsx tabs
+const images = await Picker.pickImages({ multiple: true, limit: 9, maxDimension: 2048 });
+photos.set([...photos(), ...images.map((image) => URL.createObjectURL(image.file))]);
+```
 
 ```rust tabs
 let picked = pick_images(PickRequest::new(true, 9));
@@ -2034,11 +2039,6 @@ spawn(async move {
     let files = picked.await;
     photos.update(|list| list.extend(files));
 });
-```
-
-```tsx tabs
-const images = await Picker.pickImages({ multiple: true, limit: 9, maxDimension: 2048 });
-photos.set([...photos(), ...images.map((image) => URL.createObjectURL(image.file))]);
 ```
 
 ### Picker.pickFiles
@@ -2106,13 +2106,13 @@ iOS 上是 `UIActivityViewController`，Android 上是 `Intent.ACTION_SEND` 的�
 （`NSSharingServicePicker`），浏览器里是 `navigator.share`。Rust 代码调用 `nsh_core::prelude` 的 `share`；TSX 从 `nsh`
 导入 `Share`。
 
+```tsx tabs
+import { Share, type ShareResult } from "nsh";
+```
+
 ```rust tabs
 use nsh_core::share::{ShareAction, ShareRequest};
 use nsh_core::prelude::*; // share, share_available
-```
-
-```tsx tabs
-import { Share, type ShareResult } from "nsh";
 ```
 
 ```ts
@@ -2181,6 +2181,31 @@ iOS 上，应用说明了写入相册的理由时，面板才提供把图片存�
 
 一个旅行计划应用从分享按钮分享行程：
 
+```tsx tabs
+import { Share, Text, View, type ViewRef } from "nsh";
+
+function ShareButton(props: { trip: string }) {
+  let button: ViewRef | undefined;
+  const share = async () => {
+    try {
+      const { action } = await Share.show({
+        title: "Weekend in Kyoto",
+        url: `https://example.com/trips/${props.trip}`,
+        anchor: button,
+      });
+      if (action === "shared") console.log("shared");
+    } catch (e) {
+      console.warn("cannot share", e);
+    }
+  };
+  return (
+    <View ref={button} role="button" accessibilityLabel="Share" onPress={share}>
+      <Text>Share</Text>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 use nsh_core::share::{ShareAction, ShareRequest};
@@ -2206,31 +2231,6 @@ fn share_button(trip: &'static str) -> impl IntoElement {
             });
         })
         .child(text("Share"))
-}
-```
-
-```tsx tabs
-import { Share, Text, View, type ViewRef } from "nsh";
-
-function ShareButton(props: { trip: string }) {
-  let button: ViewRef | undefined;
-  const share = async () => {
-    try {
-      const { action } = await Share.show({
-        title: "Weekend in Kyoto",
-        url: `https://example.com/trips/${props.trip}`,
-        anchor: button,
-      });
-      if (action === "shared") console.log("shared");
-    } catch (e) {
-      console.warn("cannot share", e);
-    }
-  };
-  return (
-    <View ref={button} role="button" accessibilityLabel="Share" onPress={share}>
-      <Text>Share</Text>
-    </View>
-  );
 }
 ```
 
@@ -2518,156 +2518,16 @@ UrlScheme.on("change", ({ url }) => tab.set(tabOf(url)));
 `change` 只在 Web 上出现。Rust 代码 await `nsh_core::prelude` 的 `next_app_url_change()`，得到带有 `url` 和 `reason` 的
 `AppUrlChange`。
 
-## Speech
-
-语音 API 把用户说的话变成文字（听写）：应用开始一个会话，平台监听麦克风，转写文本随说话逐步到达。macOS 和 iOS 使用系统的
-Speech 框架识别；系统会向用户请求一次麦克风和语音识别的权限。在其他平台上，会话会立即以错误 `"unavailable"` 结束，所以
-显示麦克风按钮前先检查 `Speech.available()`。Rust 代码调用 `nsh_core::prelude` 的 `recognize_speech`；TSX 从 `nsh` 导入
-`Speech`。
-
-```rust tabs
-use nsh_core::speech::{SpeechEvent, SpeechRequest};
-```
-
-```tsx tabs
-import { Speech, type SpeechSession } from "nsh";
-```
-
-```ts
-const Speech: {
-  available(): Promise<boolean>;
-  start(options?: SpeechOptions): SpeechSession;
-};
-
-interface SpeechOptions {
-  /** The language spoken, a BCP 47 tag ("en-US", "zh-CN"); the user's when left out. */
-  lang?: string;
-  /** Results while the user speaks (true, the default), or only the final one. */
-  interim?: boolean;
-}
-
-interface SpeechSession {
-  on(event: "start", listener: () => void): () => void;
-  on(event: "result", listener: (result: SpeechResult) => void): () => void;
-  on(event: "end", listener: (end: SpeechEnd) => void): () => void;
-  /** The whole transcript so far. */
-  readonly text: string;
-  readonly ended: boolean;
-  stop(): void;
-  abort(): void;
-}
-
-interface SpeechResult { text: string; isFinal: boolean }
-interface SpeechEnd { text: string; error?: SpeechErrorCode }
-
-type SpeechErrorCode =
-  | "not-allowed" | "no-speech" | "audio-capture" | "network"
-  | "language-not-supported" | "unavailable" | "failed";
-```
-
-| TSX | Rust |
-|---|---|
-| `await Speech.available()` | `speech_available().await -> bool` |
-| `Speech.start(options)` | `recognize_speech(request) -> SpeechRecognition` |
-| `session.on("result", ...)` | `recognition.next().await -> Option<SpeechEvent>` |
-| `session.stop()` / `abort()` | `recognition.stop()` / `abort()` （drop 它即中止） |
-
-### Speech.start
-
-开始一个会话并立即返回它。会话依次报告：麦克风打开、识别器开始监听时的 `start`；每次转写变化时的 `result`（`text` 始终是
-到目前为止的完整转写，应用照原样显示即可）；以及一次 `end`，之后不再有任何事件。`stop()` 停止监听，让识别器把听到的内容
-识别完：最后一个 `isFinal: true` 的结果，然后是 `end`。`abort()` 立即结束会话，不带错误，并丢弃尚未报告的内容。同一时间只运行
-一个会话：开始另一个会中止正在运行的会话。在 iOS 和 macOS 上，整个进程共用一个麦克风：嵌入在同一应用中的另一个应用开始会话时，
-你的会话以 `error: "audio-capture"` 结束。
-
-`end` 带有最后的转写，会话失败时还带有 `error`，名称与 Web Speech API 一致：
-
-| `error` | 何时 |
-|---|---|
-| `"not-allowed"` | 用户或系统不允许使用麦克风或语音识别。 |
-| `"no-speech"` | 没有听到说话。 |
-| `"audio-capture"` | 无法使用麦克风。 |
-| `"network"` | 识别器需要网络但无法连接。 |
-| `"language-not-supported"` | 识别器不认识 `lang`。 |
-| `"unavailable"` | 这个平台不识别语音，或此刻不能识别。 |
-| `"failed"` | 识别器因其他原因失败。 |
-
-选项类型不对时 `start` 抛出 `TypeError`，`lang` 不是语言标签时抛出 `RangeError`。
-
-```tsx
-import { signal, Speech, type SpeechSession } from "nsh";
-
-const transcript = signal("");
-let session: SpeechSession | null = null;
-
-function toggle() {
-  if (session && !session.ended) {
-    session.stop();
-    return;
-  }
-  session = Speech.start({ lang: "en-US" });
-  session.on("result", ({ text }) => transcript.set(text));
-  session.on("end", ({ text, error }) => {
-    if (error) console.warn("dictation ended:", error);
-    else transcript.set(text);
-  });
-}
-```
-
-```rust
-use nsh_core::prelude::*;
-use nsh_core::speech::{SpeechEvent, SpeechRequest};
-
-async fn dictate() -> String {
-    let mut recognition = recognize_speech(SpeechRequest::default());
-    let mut text = String::new();
-    while let Some(event) = recognition.next().await {
-        match event {
-            SpeechEvent::Result { text: heard, .. } => text = heard,
-            SpeechEvent::End { .. } => break,
-            _ => {}
-        }
-    }
-    text
-}
-```
-
-### Speech.available
-
-在可以运行会话的地方 resolve 为 `true`：macOS 和 iOS，以及嵌入应用自己识别语音的地方。
-
-### Info.plist
-
-在 macOS 和 iOS 上，系统会显示应用为什么需要麦克风和语音识别。应用可能使用语音时（它的 `capabilities` 授予了 `speech`，
-或者没有声明 capabilities），`nsh package` 和 `nsh run` 会把 `NSMicrophoneUsageDescription` 和
-`NSSpeechRecognitionUsageDescription` 写入应用的 Info.plist。
-
-### 嵌入 NSH 的应用
-
-嵌入 NSH、并且用自己的方式识别语音（自己的引擎或服务）的应用可以自己回答会话：在 Rust 中，把 `SpeechBackend`
-（`nsh_core::speech`）交给引擎（`EngineConfig::speech`），它会收到每个会话的 `SpeechRequest` 和一个可以从任意线程报告事件的
-`SpeechSink`，并返回 core 用来停止和中止会话的 `SpeechControl`。这时不使用平台的识别器。
-
-### 测试
-
-`nsh test` 在无界面运行时用一个模拟识别器运行会话：会话立即开始，`app.hear(text)` 把 `text` 报告为到目前为止的转写，
-`app.endSpeech(error?)` 结束会话，`app.speechRequests()` 列出应用开始的会话。见[测试](../docs/testing-and-trace.md)。
-
-> [!NOTE]
-> 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"speech": true` 授予语音。没有授予时 `Speech.start` 抛出一个
-> `Error`，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"speech"`，`resource` 为 `""`。在 Rust 中，会话以
-> `not-allowed` 结束，拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
-
 ## Sound
 
 两个原语负责出声，各管一类音频。`Sound` 是短音效（点击、提示、告警）：一次解码进内存，之后可以播放任意多次、彼此叠加，调用后一帧之内开始发声——提前加载，在事件处理里播放。`AudioPlayer` 播放长音频（语音消息、音乐、录音），边播边从源读取，具备播放器的状态：位置、时长、暂停、跳转、速率和循环。macOS 和 iOS 用 AVFoundation 播放（音效用 `AVAudioEngine`，播放器用 `AVPlayer`；iOS 上音频会话为 `ambient`，与其他应用的声音混音并遵循静音开关），Windows 用 XAudio2 和 Media Foundation，Android 用 `SoundPool` 和 `MediaPlayer`，Linux 的音效用 GStreamer、播放器用 GTK 的媒体流（播放器的速率保持为 1），Web 用 Web Audio API 和音频元素（页面上用户第一次操作之后才出声）。在平台可能不出声的地方先检查 `Sound.available()`；那里 `load` 和 `play()` 以 `"unavailable"` 失败。Rust 代码调用 `nsh_core::prelude` 的 `load_sound` 和 `audio_player`；TSX 从 `nsh` 导入 `Sound` 和 `AudioPlayer`。
 
-```rust tabs
-use nsh_core::prelude::*; // load_sound, audio_player, Sound, AudioPlayer
-```
-
 ```tsx tabs
 import { AudioPlayer, Sound } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // load_sound, audio_player, Sound, AudioPlayer
 ```
 
 ```ts
@@ -2781,12 +2641,12 @@ async fn play_message(url: &str) {
 
 存储 API 把应用的数据保存在设备上：以字符串为键、字符串为值，应用下次启动时数据仍在。适合保存设置、草稿、用户上次打开的标签页、服务器返回内容的缓存——任何需要比应用进程活得更久的状态。Rust 代码使用 `nsh_core::storage::Storage`，TSX 从 `nsh` 导入 `Storage`；两者读写同一份数据，因此同时有 Rust 入口和 TSX 入口的应用看到的是同一份数据。
 
-```rust tabs
-use nsh_core::storage::Storage;
-```
-
 ```tsx tabs
 import { Storage } from "nsh";
+```
+
+```rust tabs
+use nsh_core::storage::Storage;
 ```
 
 ```ts
@@ -2836,12 +2696,12 @@ getItem(key: string): Promise<string | null>;
 
 返回 `key` 的值，没有值时返回 `null`。Rust：`Storage::get_item(key)`，没有值时为 `None`。
 
-```rust tabs
-let theme = Storage::get_item("theme").unwrap_or_else(|| "system".into());
-```
-
 ```tsx tabs
 const theme = (await Storage.getItem("theme")) ?? "system";
+```
+
+```rust tabs
+let theme = Storage::get_item("theme").unwrap_or_else(|| "system".into());
 ```
 
 ### Storage.setItem
@@ -2852,15 +2712,15 @@ setItem(key: string, value: string): Promise<void>;
 
 把 `key` 设为 `value`，替换原有的值。如果存储会超过 5 MB，或在 Web 上浏览器拒绝保存这个值，则 Promise 以一个 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝，值不会被保存。Rust：`Storage::set_item(key, value)`，此时返回 `Err(StorageFull)`。值都是字符串：结构化数据保存为 JSON（Rust 用 `serde_json::to_string`，TSX 用 `JSON.stringify`），再读回（`serde_json::from_str`、`JSON.parse`）。
 
+```tsx tabs
+Storage.setItem("draft", JSON.stringify({ title: title(), body: body() }));
+```
+
 ```rust tabs
 let draft = serde_json::json!({ "title": title.get(), "body": body.get() });
 if let Err(full) = Storage::set_item("draft", draft.to_string()) {
     log::warn!("{full}");
 }
-```
-
-```tsx tabs
-Storage.setItem("draft", JSON.stringify({ title: title(), body: body() }));
 ```
 
 ### Storage.removeItem
@@ -2897,6 +2757,13 @@ on(event: "change", listener: (change: { key: string | null; value: string | nul
 
 用它让设置在多个标签页和窗口之间保持一致：
 
+```tsx tabs
+const theme = signal(await Storage.getItem("theme"));
+Storage.on("change", ({ key, value }) => {
+  if (key === null || key === "theme") theme.set(value);
+});
+```
+
 ```rust tabs
 let theme = signal(Storage::get_item("theme"));
 Storage::on_change(move |change| {
@@ -2906,34 +2773,9 @@ Storage::on_change(move |change| {
 });
 ```
 
-```tsx tabs
-const theme = signal(await Storage.getItem("theme"));
-Storage.on("change", ({ key, value }) => {
-  if (key === null || key === "theme") theme.set(value);
-});
-```
-
 ### 把 signal 保存在设备上
 
 应用启动时读取保存的值，之后每当 signal 变化就写回去：
-
-```rust tabs
-use nsh_core::{storage::Storage, prelude::*};
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let saved = Storage::get_item("count").and_then(|n| n.parse().ok());
-    let count = signal(saved.unwrap_or(0_u32));
-    effect(move || {
-        if let Err(full) = Storage::set_item("count", count.get().to_string()) {
-            log::warn!("{full}");
-        }
-    });
-    view()
-        .on_press(move || count.update(|n| *n += 1))
-        .child(text(move || format!("按了 {} 次", count.get())))
-}
-```
 
 ```tsx tabs
 import { effect, mount, signal, Text, View } from "nsh";
@@ -2959,16 +2801,34 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::{storage::Storage, prelude::*};
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let saved = Storage::get_item("count").and_then(|n| n.parse().ok());
+    let count = signal(saved.unwrap_or(0_u32));
+    effect(move || {
+        if let Err(full) = Storage::set_item("count", count.get().to_string()) {
+            log::warn!("{full}");
+        }
+    });
+    view()
+        .on_press(move || count.update(|n| *n += 1))
+        .child(text(move || format!("按了 {} 次", count.get())))
+}
+```
+
 ## host
 
 `host` 连接嵌入 NSH 的应用：`NshAppView` / `NshView` 所在的原生应用，或在 Web 上运行播放器的页面。应用按名字调用宿主的函数（参数是 JSON），并监听宿主发来的事件。Rust 代码调用 `nsh_core::prelude` 的 `host_call`、`host_call_with`、`host_post` 和 `on_host_event`；TSX 从 `nsh` 导入 `host`。两者连到同一个宿主，名字、能力和错误码都相同，所以应用只写一份调用，由各个宿主各自应答。
 
-```rust tabs
-use nsh_core::prelude::*; // host_call, host_call_with, host_post, on_host_event, HostCallOptions, HostError
-```
-
 ```tsx tabs
 import { host } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // host_call, host_call_with, host_post, on_host_event, HostCallOptions, HostError
 ```
 
 ```ts
@@ -3049,13 +2909,13 @@ post(name: string, data?: unknown): void;
 
 把 `data` 交给宿主的函数 `name`，不等待应答：宿主处理 `name` 的 handler 像收到调用一样收到它。没有嵌入应用，或宿主没有处理 `name` 的 handler 时，投递被丢弃。有宿主时，未获授权的名字或不合法的名字会抛出（`ERR_ACCESS_DENIED`、`TypeError`）。Rust 的 `host_post(name, data)` 没有返回值：无论应用运行在哪里都会检查名字，被拒绝的投递会记录日志并丢弃。
 
+```tsx tabs
+host.post("analytics.track", { event: "signup" });
+```
+
 ```rust tabs
 // use serde_json::json;
 host_post("analytics.track", json!({ "event": "signup" }));
-```
-
-```tsx tabs
-host.post("analytics.track", { event: "signup" });
 ```
 
 ### host.on
@@ -3177,12 +3037,12 @@ nsh.send("conversation.open", Map.of("id", "43"));
 
 快捷键 API 绑定应用的键盘快捷键：一个按键组合（如 `"mod+k"`）和它要运行的函数。Rust 代码调用 `nsh_core::prelude` 中的 `on_key`、`on_key_with` 和 `key_label`；TSX 从 `nsh` 导入 `keymap`。两者接受同样的按键组合，遵循同样的规则。
 
-```rust tabs
-use nsh_core::prelude::*; // on_key、on_key_with、KeyOptions、key_label
-```
-
 ```tsx tabs
 import { keymap } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // on_key、on_key_with、KeyOptions、key_label
 ```
 
 ```ts
@@ -3221,18 +3081,6 @@ bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: K
 
 按下 `keystroke` 时运行 `handler`，并返回一个移除该绑定的函数。处理函数收到 `{ keystroke }`：你写下的按键组合字符串，大小写保持原样。Rust：`on_key(keystroke, handler)`，其处理函数直接收到按键组合。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let open = signal(false);
-    on_key("mod+k", move |_| open.set(true));
-    on_key("escape", move |_| open.set(false));
-    text(move || if open.get() { "搜索…" } else { "按 ⌘K" })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { keymap } from "nsh";
@@ -3245,13 +3093,19 @@ keymap.bind("escape", () => open.set(false), { scope: "app" });
 mount(() => <Window id="main"><Text>{open() ? "搜索…" : "按 ⌘K"}</Text></Window>);
 ```
 
-传入一个对象可以一次绑定多个按键组合；返回的函数会把它们全部移除。在 Rust 中，每个按键组合调用一次 `on_key`：
-
 ```rust tabs
-on_key("mod+s", move |_| save());
-on_key("mod+shift+p", move |_| open_palette());
-on_key("f5", move |_| refresh());
+use nsh_core::prelude::*;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let open = signal(false);
+    on_key("mod+k", move |_| open.set(true));
+    on_key("escape", move |_| open.set(false));
+    text(move || if open.get() { "搜索…" } else { "按 ⌘K" })
+}
 ```
+
+传入一个对象可以一次绑定多个按键组合；返回的函数会把它们全部移除。在 Rust 中，每个按键组合调用一次 `on_key`：
 
 ```tsx tabs
 const unbind = keymap.bind({
@@ -3261,20 +3115,26 @@ const unbind = keymap.bind({
 });
 ```
 
+```rust tabs
+on_key("mod+s", move |_| save());
+on_key("mod+shift+p", move |_| open_palette());
+on_key("f5", move |_| refresh());
+```
+
 组件渲染时创建的绑定会随组件一起移除，所以一个屏幕的快捷键与这个屏幕同生共死：
+
+```tsx tabs
+function Editor() {
+  keymap.bind("mod+enter", send);
+  return <Input multiline />;
+}
+```
 
 ```rust tabs
 #[component]
 fn Editor() -> impl IntoElement {
     on_key("mod+enter", move |_| send());
     input().multiline(true)
-}
-```
-
-```tsx tabs
-function Editor() {
-  keymap.bind("mod+enter", send);
-  return <Input multiline />;
 }
 ```
 
@@ -3288,12 +3148,12 @@ label(keystroke: string): string;
 
 返回 `keystroke` 在应用所运行的平台上，菜单和提示中的显示方式：对 `"mod+shift+l"`，在 macOS 和 iOS 上（以及 Mac、iPhone、iPad 上的浏览器里）是 `"⇧⌘L"`，在 Windows、Linux 和其他浏览器里是 `"Ctrl+Shift+L"`。Rust：`key_label(keystroke)`。用它来显示应用的快捷键，显示的就是实际可用的按键：
 
-```rust tabs
-text(format!("搜索 {}", key_label("mod+k")))
-```
-
 ```tsx tabs
 <Text>搜索 {keymap.label("mod+k")}</Text>
+```
+
+```rust tabs
+text(format!("搜索 {}", key_label("mod+k")))
 ```
 
 按键组合无效时，它和 `bind` 一样抛出 `TypeError`；`key_label` 和 `on_key` 以同样的信息 panic。
@@ -3338,6 +3198,13 @@ iOS 与 macOS 一致（`mod` 是 Command），Android 与 Windows、Linux 一致
 | `"always"` | 在文本输入框中也触发，先于输入框看到按键 |
 | `"notEditing"` | 文本输入框拥有焦点时从不触发 |
 
+```tsx tabs
+// 在消息输入框中也能发送。
+keymap.bind("mod+enter", send, { when: "always" });
+// 只在用户没有输入时。
+keymap.bind("mod+e", archive, { when: "notEditing" });
+```
+
 ```rust tabs
 use nsh_core::keymap::When;
 
@@ -3345,13 +3212,6 @@ use nsh_core::keymap::When;
 on_key_with("mod+enter", KeyOptions { when: When::Always, ..KeyOptions::default() }, move |_| send());
 // 只在用户没有输入时。
 on_key_with("mod+e", KeyOptions { when: When::NotEditing, ..KeyOptions::default() }, move |_| archive());
-```
-
-```tsx tabs
-// 在消息输入框中也能发送。
-keymap.bind("mod+enter", send, { when: "always" });
-// 只在用户没有输入时。
-keymap.bind("mod+e", archive, { when: "notEditing" });
 ```
 
 在 iOS 和 Android 上，输入法正在组字时用到的按键（选候选词、上屏）仍归输入法。在 GPUI 后端上，拥有键盘焦点的原生组件按文本输入框对待，因为它可能是文本编辑器。它先看到每个按键：它自己处理的按键不会到达绑定，它放过的按键交给在编辑文本时也会触发的绑定。
@@ -3362,29 +3222,25 @@ keymap.bind("mod+e", archive, { when: "notEditing" });
 
 按住一个键只触发一次绑定，直到松开为止；设置 `repeat: true` 后，每次自动重复都会再次触发（例如在列表中逐项移动）：
 
-```rust tabs
-on_key_with("alt+down", KeyOptions { repeat: true, ..KeyOptions::default() }, move |_| next_item());
-```
-
 ```tsx tabs
 keymap.bind("alt+down", nextItem, { repeat: true });
 ```
 
-设置 `passThrough: true` 后，绑定照常运行，按键也照常传下去，就像没有绑定一样：Tab 仍会移动焦点，文本输入框仍会输入字符。弹出层要在 Tab 离开时关闭，就这样绑定 Tab，焦点随后移到下一个控件：
-
 ```rust tabs
-on_key_with("tab", KeyOptions { pass_through: true, ..KeyOptions::default() }, move |_| close());
+on_key_with("alt+down", KeyOptions { repeat: true, ..KeyOptions::default() }, move |_| next_item());
 ```
+
+设置 `passThrough: true` 后，绑定照常运行，按键也照常传下去，就像没有绑定一样：Tab 仍会移动焦点，文本输入框仍会输入字符。弹出层要在 Tab 离开时关闭，就这样绑定 Tab，焦点随后移到下一个控件：
 
 ```tsx tabs
 keymap.bind("tab", close, { passThrough: true });
 ```
 
-键盘焦点在能按下的视图（有 `onPress`）上时，不带修饰键的回车或空格（可以带 Shift）会按下这个视图，应用里这两个键的其他绑定都让给它：对话框里代表主操作的回车，不会抢在用户移过去焦点的按钮之前执行。视图自己的回车或空格用 `forFocus: true` 绑定：在视图有焦点时绑上，它就在按下之前拿到这两个键。下面这个卡片按空格翻开关，按回车打开：
-
 ```rust tabs
-on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, move |_| flip());
+on_key_with("tab", KeyOptions { pass_through: true, ..KeyOptions::default() }, move |_| close());
 ```
+
+键盘焦点在能按下的视图（有 `onPress`）上时，不带修饰键的回车或空格（可以带 Shift）会按下这个视图，应用里这两个键的其他绑定都让给它：对话框里代表主操作的回车，不会抢在用户移过去焦点的按钮之前执行。视图自己的回车或空格用 `forFocus: true` 绑定：在视图有焦点时绑上，它就在按下之前拿到这两个键。下面这个卡片按空格翻开关，按回车打开：
 
 ```tsx tabs
 <View
@@ -3392,6 +3248,10 @@ on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, mo
   onFocus={() => (unbind = keymap.bind("space", flip, { forFocus: true }))}
   onBlur={() => unbind?.()}
 />
+```
+
+```rust tabs
+on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, move |_| flip());
 ```
 
 按键归最新的对话框：焦点留在被对话框盖住的视图上时（菜单项打开对话框，菜单关闭时把焦点还给触发器），回车和空格交给对话框的绑定，这个视图的 `forFocus` 绑定和按下都要等对话框关闭后才生效。
@@ -3413,12 +3273,12 @@ effect(() => {
 
 `nativeComponent` 和 `nativeModule` 在运行时按名称把你的应用与宿主应用提供的能力连接起来。嵌入了 NSH 的 iOS 或 Android 应用可以按名称注册自己的视图（地图、图表、相机预览等）；`nativeComponent` 为其中一个视图生成带类型的组件。由于 NSH 使用真正的原生视图渲染，这样的组件和其他视图一样位于视图层级中：由 NSH 布局，随父视图裁剪和滚动，层叠关系也正确。用 Rust 嵌入 NSH 的应用还可以注册函数、类和 Rust 组件；`nativeModule` 把它们作为一个带类型的对象交给你。两种方式下应用都用标准的 `nsh build` 构建：宿主在运行应用时接上它提供的内容。Rust 代码用 `nsh_core::prelude` 中的 `native(name)` 放置已注册的视图，用 `.prop(name, value)` 设置它的属性（一个 JSON 值，或给出 JSON 值的信号或闭包），或用 `.bind_prop(name, &value)` 把属性绑定到动画值，用 `.on_native_event(…)` 接收它的事件，并通过 `ElementRef` 调用它的命令；TSX 从 `nsh` 导入它们。
 
-```rust tabs
-use nsh_core::prelude::*; // native、NativeEvent、element_ref
-```
-
 ```tsx tabs
 import { nativeComponent, nativeModule } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // native、NativeEvent、element_ref
 ```
 
 原生侧的注册方法见[原生组件](../docs/native-components.md)，以及 [iOS 嵌入](../docs/ios.md) / [Android 嵌入](../docs/android.md)。
@@ -3458,12 +3318,12 @@ type NativeEventHandlers<E> = { [K in keyof E & string as `on${Capitalize<K>}`]?
 
 它的 `ref` 拿到一个 `NativeComponentRef`；`ref.command(name, args)` 调用原生组件的 `name` 命令，参数 `args` 为任意 JSON 值。Rust：`ElementRef::command(name, args)`。
 
-```rust tabs
-map.command("zoomTo", json!({ "level": 3 }));
-```
-
 ```tsx tabs
 map.command("zoomTo", { level: 3 });
+```
+
+```rust tabs
+map.command("zoomTo", json!({ "level": 3 }));
 ```
 
 #### 没有注册时
@@ -3473,37 +3333,6 @@ map.command("zoomTo", { level: 3 });
 ### 示例
 
 这里的徽标是宿主应用的原生视图，注册名为 `embed.badge`。NSH 负责布局，向它发送 `text` 和 `color`，接收它的 `tap` 事件，并调用它的 `pulse` 命令：
-
-```rust tabs
-use nsh_core::prelude::*;
-use serde_json::json;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let taps = signal(0_u64);
-    let badge = element_ref();
-    view()
-        .flex_1()
-        .p_5()
-        .gap_4()
-        .child(
-            native("embed.badge")
-                .prop("text", json!("Tap the native badge"))
-                .prop("color", json!("#8250df"))
-                .element_ref(&badge)
-                .on_native_event(move |e: &NativeEvent| {
-                    if &*e.name == "tap" {
-                        taps.set(e.data["count"].as_u64().unwrap_or(0));
-                        badge.command("pulse", json!(null));
-                    }
-                })
-                .self_start()
-                .rounded(px(8.0))
-                .overflow_hidden(),
-        )
-        .child(text(move || format!("Tapped {}×", taps.get())))
-}
-```
 
 ```tsx tabs
 import { mount, type NativeComponentRef, signal, View } from "nsh";
@@ -3539,6 +3368,37 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+use serde_json::json;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let taps = signal(0_u64);
+    let badge = element_ref();
+    view()
+        .flex_1()
+        .p_5()
+        .gap_4()
+        .child(
+            native("embed.badge")
+                .prop("text", json!("Tap the native badge"))
+                .prop("color", json!("#8250df"))
+                .element_ref(&badge)
+                .on_native_event(move |e: &NativeEvent| {
+                    if &*e.name == "tap" {
+                        taps.set(e.data["count"].as_u64().unwrap_or(0));
+                        badge.command("pulse", json!(null));
+                    }
+                })
+                .self_start()
+                .rounded(px(8.0))
+                .overflow_hidden(),
+        )
+        .child(text(move || format!("Tapped {}×", taps.get())))
+}
 ```
 
 ### nativeModule
@@ -3621,12 +3481,12 @@ nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry(), trading]);
 
 无障碍 API 读取用户的无障碍设置（屏幕阅读器是否在运行、是否要求减弱动态效果），并与屏幕阅读器交互。Rust 代码调用 `nsh_core::prelude` 中的 `screen_reader()`、`reduce_motion()` 和 `announce_for_accessibility()`，用 `ElementRef` 移动焦点；TSX 从 `nsh` 导入 `screenReaderEnabled()`、`reduceMotion()`、`announce()` 和 `setAccessibilityFocus()`。这些设置是响应式的：在绑定、`computed` 或 `effect` 中读取它们，用户修改设置时，读取它们的地方会随之更新。元素的无障碍属性（`accessibilityLabel`、`role` 等）见[元素](../elements/index.md)；教程见[无障碍](../docs/accessibility.md)。
 
-```rust tabs
-use nsh_core::prelude::*; // screen_reader、reduce_motion、announce_for_accessibility、element_ref
-```
-
 ```tsx tabs
 import { announce, reduceMotion, screenReaderEnabled, setAccessibilityFocus } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*; // screen_reader、reduce_motion、announce_for_accessibility、element_ref
 ```
 
 ### screenReaderEnabled
@@ -3637,15 +3497,15 @@ const screenReaderEnabled: Accessor<boolean>;
 
 屏幕阅读器（VoiceOver、TalkBack）是否正在运行。响应式：用户开启或关闭屏幕阅读器时，读取它的地方会更新。Rust：`screen_reader() -> bool`，同样是响应式的。
 
-```rust tabs
-when(move || !screen_reader(), || text("Swipe for the next photo"))
-    .otherwise(move || text("Next photo").on_press(next))
-```
-
 ```tsx tabs
 <If when={!screenReaderEnabled()} else={<Text onPress={next}>Next photo</Text>}>
   <Text>Swipe for the next photo</Text>
 </If>
+```
+
+```rust tabs
+when(move || !screen_reader(), || text("Swipe for the next photo"))
+    .otherwise(move || text("Next photo").on_press(next))
 ```
 
 ### reduceMotion
@@ -3656,6 +3516,13 @@ const reduceMotion: Accessor<boolean>;
 
 用户是否要求减少动画（iOS 的“减弱动态效果”，Android 的“移除动画”）。响应式。Rust：`reduce_motion() -> bool`。Tailwind 的 `motion-reduce:` 变体也会跟随它。
 
+```tsx tabs
+const open = () => {
+  if (reduceMotion()) panel.set(0);
+  else panel.spring(0);
+};
+```
+
 ```rust tabs
 let open = move || {
     if reduce_motion() {
@@ -3663,13 +3530,6 @@ let open = move || {
     } else {
         let _ = panel.spring(0.0, Spring::default());
     }
-};
-```
-
-```tsx tabs
-const open = () => {
-  if (reduceMotion()) panel.set(0);
-  else panel.spring(0);
 };
 ```
 
@@ -3689,25 +3549,6 @@ function setAccessibilityFocus(node: ViewRef): void;
 
 把屏幕阅读器的焦点移到 `node`（某个元素的 `ref`）。Rust：`ElementRef::set_accessibility_focus()`。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-#[component]
-fn Saved() -> impl IntoElement {
-    let note = element_ref();
-    let save = move || {
-        announce_for_accessibility("Saved");
-        note.set_accessibility_focus();
-    };
-    // 设置变化时再次运行，直到组件移除。
-    effect(|| log::info!("screen reader {}", screen_reader()));
-    view()
-        .gap_2()
-        .child(text("Save").role(AccessibilityRole::Button).on_press(save))
-        .child(text("Your changes are kept on this device.").element_ref(&note))
-}
-```
-
 ```tsx tabs
 import { effect, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
@@ -3726,6 +3567,25 @@ function Saved() {
       <Text ref={note}>Your changes are kept on this device.</Text>
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+#[component]
+fn Saved() -> impl IntoElement {
+    let note = element_ref();
+    let save = move || {
+        announce_for_accessibility("Saved");
+        note.set_accessibility_focus();
+    };
+    // 设置变化时再次运行，直到组件移除。
+    effect(|| log::info!("screen reader {}", screen_reader()));
+    view()
+        .gap_2()
+        .child(text("Save").role(AccessibilityRole::Button).on_press(save))
+        .child(text("Your changes are kept on this device.").element_ref(&note))
 }
 ```
 

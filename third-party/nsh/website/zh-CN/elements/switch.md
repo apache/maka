@@ -9,6 +9,33 @@ demo: el-switch
 
 开关用来打开或关闭一项设置，改变立即生效。它负责行为：按压、键盘激活、禁用状态，以及屏幕阅读器读到的开关角色和它的值。外观由应用决定：`Switch` 没有自己的颜色、尺寸、动效或文字。它由一条轨道、轨道里的滑块以及之后的子元素（标签）组成，应用为每个部件设置样式，部件上的 `checked:` 和 `disabled:` 类跟随开关的状态。
 
+```tsx tabs
+import { mount, signal, Text } from "nsh";
+import { Switch } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const on = signal(false);
+  return (
+    <Switch
+      checked={on()}
+      onChange={({ checked }) => on.set(checked)}
+      class="flex-row items-center gap-3"
+      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
+      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+    >
+      <Text>Wi-Fi</Text>
+    </Switch>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{switch, theme};
 use nsh_core::prelude::*;
@@ -39,33 +66,6 @@ fn wifi() -> impl IntoElement {
         })
         .child(text("Wi-Fi"))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text } from "nsh";
-import { Switch } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const on = signal(false);
-  return (
-    <Switch
-      checked={on()}
-      onChange={({ checked }) => on.set(checked)}
-      class="flex-row items-center gap-3"
-      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
-      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
-    >
-      <Text>Wi-Fi</Text>
-    </Switch>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Switch` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：按压时通过 `onChange` 报告下一个值，开关显示应用传回的 `checked`。在 Rust 中，`switch()` 创建一个开关，每个属性对应一个设置方法（`.checked(..)`、`.track_style(..)`），每个事件对应一个监听方法（`.on_change(..)`），开关自身用类型化的样式方法，标签用 `.child(..)`；部件的样式接受跟随开关的状态方法（`.checked(..)`、`.disabled_style(..)`）。

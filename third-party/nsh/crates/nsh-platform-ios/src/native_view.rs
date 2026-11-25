@@ -71,12 +71,17 @@ define_class!(
     pub(crate) struct NshView;
 
     impl NshView {
-        /// Sets this class's ivars for subclasses (`TextView`) too.
+        /// Sets this class's ivars for subclasses (`TextView`, `CanvasView`) too.
         #[unsafe(method_id(initWithFrame:))]
         fn init_with_frame(this: objc2::rc::Allocated<Self>, frame: CGRect) -> Retained<Self> {
             let this = this.set_ivars(NshViewIvars::default());
             // SAFETY: UIView's designated initializer.
-            unsafe { msg_send![super(this), initWithFrame: frame] }
+            let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+            // UIKit defaults `multipleTouchEnabled` to false and drops a second
+            // finger hitting the view before `TouchTracker` sees it, breaking
+            // multi-finger `onTouch` streams (e.g. pinch-to-zoom on a canvas).
+            view.setMultipleTouchEnabled(true);
+            view
         }
 
         #[unsafe(method_id(hitTest:withEvent:))]
@@ -162,15 +167,20 @@ define_class!(
         }
 
         /// A `focusable` view is a stop of the keyboard focus (`focusable`,
-        /// or taking presses), as Tab and `ref.focus()` move it there.
+        /// or taking presses), as Tab and `ref.focus()` move it there. A
+        /// transparent one takes it too ([`crate::keyboard::shown`]), as on
+        /// the other platforms: a popup coming in from `opacity: 0` has the
+        /// item it asked for focused as it opens. Tab passes over it.
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder(&self) -> bool {
-            self.is_focus_stop() && crate::keyboard::visible(self)
+            self.is_focus_stop() && crate::keyboard::shown(self)
         }
 
         /// The same stop is a UIKit focus item, so the system's own Tab
         /// traversal reaches it from the window's initial focus (where
-        /// available) and the focus engine stays on the responder.
+        /// available) and the focus engine follows the responder where it
+        /// is visible: the engine passes over a transparent one, as Tab
+        /// does.
         #[unsafe(method(canBecomeFocused))]
         fn can_become_focused(&self) -> bool {
             self.is_focus_stop() && crate::keyboard::visible(self)
@@ -821,8 +831,9 @@ fn is_element(a: &Accessibility, pressable: bool) -> bool {
 /// Roles of groups whose elements stay VoiceOver's own: a semantic
 /// group, which VoiceOver names by its label as it moves into it. A
 /// dialog is one (UIKit has no dialog trait): its title is said as the
-/// focus enters it, and its controls stay reachable. So is a list: a
-/// labelled list names its items, which are reached one by one.
+/// focus enters it, and its controls stay reachable, and so is a tab's
+/// panel (UIKit has no tab panel trait either). So is a list: a labelled
+/// list names its items, which are reached one by one.
 fn is_container(a: &Accessibility) -> bool {
     matches!(
         a.role,
@@ -837,6 +848,7 @@ fn is_container(a: &Accessibility) -> bool {
             | AccessibilityRole::Tablist
             | AccessibilityRole::Dialog
             | AccessibilityRole::AlertDialog
+            | AccessibilityRole::TabPanel
     )
 }
 
@@ -873,6 +885,9 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
             | AccessibilityRole::Option => UIAccessibilityTraitButton,
             AccessibilityRole::Link => UIAccessibilityTraitLink,
             AccessibilityRole::Search => UIAccessibilityTraitSearchField,
+            // UIKit has no text field trait: a native text field is one by
+            // its class, and a view given the role keeps no trait of its own.
+            AccessibilityRole::Textbox => UIAccessibilityTraitNone,
             AccessibilityRole::Image => UIAccessibilityTraitImage,
             AccessibilityRole::KeyboardKey => UIAccessibilityTraitKeyboardKey,
             AccessibilityRole::Text => UIAccessibilityTraitStaticText,
@@ -1031,6 +1046,8 @@ mod tests {
             adjustable
         );
         assert_eq!(traits_of(AccessibilityRole::Adjustable, &[]), adjustable);
+        // UIKit has no text field trait to give a text box.
+        assert_eq!(traits_of(AccessibilityRole::Textbox, &[]), 0);
         // Without them every role keeps its traits.
         assert_eq!(traits_of(AccessibilityRole::Image, &[]), image);
         assert_eq!(
@@ -1089,6 +1106,10 @@ mod tests {
         ));
         assert!(is_container(
             &props(AccessibilityRole::AlertDialog, &[]).accessibility
+        ));
+        // A tab's panel keeps its content reachable.
+        assert!(is_container(
+            &props(AccessibilityRole::TabPanel, &[]).accessibility
         ));
         assert!(!is_container(
             &props(AccessibilityRole::Button, &[]).accessibility

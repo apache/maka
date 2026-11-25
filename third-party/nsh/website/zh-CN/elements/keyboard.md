@@ -10,35 +10,6 @@ demo: el-keyboard
 
 `env(keyboard-inset-height)` 是软键盘覆盖在界面上的高度，键盘隐藏时为 0。把它用作视图的底部内边距或外边距，可以让内容保持在键盘之上：键盘显示或隐藏时，视图按键盘高度让出空间，变化在原生侧随键盘一起动画。它用于滚动视图之外的内容，例如聊天界面底部的消息栏；[滚动视图](./scroll.md)或 [List](./list.md) 中的输入框会在原生侧滚动到可见位置。与它配套的还有隐藏键盘的 `Keyboard.dismiss()`，以及用于自定义布局的键盘高度。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn chat() -> impl IntoElement {
-    let draft = signal(String::new());
-    view()
-        .flex_1()
-        .bg(white())
-        .pb_keyboard()
-        .child(scroll().flex_1().child(text("Messages…").p_4()))
-        .child(
-            view()
-                .flex_row()
-                .gap_2()
-                .p_2()
-                .border_t_1()
-                .border_color(rgb(0xe5e5e5))
-                .child(
-                    input()
-                        .value(draft)
-                        .on_change(move |v: &str| draft.set(v.to_owned()))
-                        .placeholder("Message")
-                        .flex_1()
-                        .p_2(),
-                ),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
@@ -70,6 +41,35 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn chat() -> impl IntoElement {
+    let draft = signal(String::new());
+    view()
+        .flex_1()
+        .bg(white())
+        .pb_keyboard()
+        .child(scroll().flex_1().child(text("Messages…").p_4()))
+        .child(
+            view()
+                .flex_row()
+                .gap_2()
+                .p_2()
+                .border_t_1()
+                .border_color(rgb(0xe5e5e5))
+                .child(
+                    input()
+                        .value(draft)
+                        .on_change(move |v: &str| draft.set(v.to_owned()))
+                        .placeholder("Message")
+                        .flex_1()
+                        .p_2(),
+                ),
+        )
+}
+```
+
 完整的键盘高度适用于延伸到屏幕底部的视图，界面的内容通常如此。如果它下方还有东西，例如标签栏，就用一个长度减去它：`calc(env(keyboard-inset-height) + -49px)` 让视图保持在 49 pt 的标签栏之上，`calc(env(keyboard-inset-height) + 12px)` 在键盘上方增加间距。内边距至少为 0。
 
 ## 内边距或外边距
@@ -80,6 +80,12 @@ mount(() => (
 | `marginBottom: "env(keyboard-inset-height)"`（Tailwind `mb-[env(keyboard-inset-height)]`，Rust `.mb_keyboard()`） | 整个视图（包括背景）在键盘顶部结束。 |
 
 键盘高度只与同一声明中的长度相加，因此视图用 `calc()` 把它和自己的间距组合起来。在 Rust 中，`.pb_keyboard_plus(px(..))` 和 `.mb_keyboard_plus(px(..))` 加上一个长度。
+
+```tsx tabs
+<View class="flex-1 gap-3 p-4 mb-[calc(env(keyboard-inset-height)+-49px)]">
+  <Input placeholder="E-mail" keyboardType="email-address" class="rounded-lg border border-neutral-300 px-3 py-2" />
+</View>
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -94,17 +100,24 @@ fn sign_in() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<View class="flex-1 gap-3 p-4 mb-[calc(env(keyboard-inset-height)+-49px)]">
-  <Input placeholder="E-mail" keyboardType="email-address" class="rounded-lg border border-neutral-300 px-3 py-2" />
-</View>
-```
-
 这里视图下方 49 pt 的标签栏已经遮住了一部分键盘高度。要关闭让位，就在样式中去掉这个变量，例如根据一个信号加条件。
 
 ## 隐藏键盘
 
 `nsh` 的 `Keyboard.dismiss()` 让获得焦点的输入框失去焦点，从而隐藏键盘。没有输入框获得焦点时，它不做任何改变。Rust 组件调用 `dismiss_keyboard()`。
+
+```tsx tabs
+import { Text, Keyboard } from "nsh";
+import { Button } from "nsh/base";
+
+function Done() {
+  return (
+    <Button onPress={() => Keyboard.dismiss()} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
+      <Text class="text-center font-semibold text-white">Done</Text>
+    </Button>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::button;
@@ -121,19 +134,6 @@ fn done() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text, Keyboard } from "nsh";
-import { Button } from "nsh/base";
-
-function Done() {
-  return (
-    <Button onPress={() => Keyboard.dismiss()} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
-      <Text class="text-center font-semibold text-white">Done</Text>
-    </Button>
-  );
-}
-```
-
 > [!TIP]
 > 要在用户拖动滚动视图时隐藏键盘，请在[滚动视图](./scroll.md)或 [List](./list.md) 上设置 `keyboardDismissMode="on-drag"` 或 `"interactive"`。
 
@@ -144,26 +144,6 @@ function Done() {
 | `keyboardFrame()` | `keyboard_height()`、`keyboard_duration()` | 软键盘覆盖在 NSH 界面上的高度，单位为点（隐藏时为 0），以及其显示或隐藏动画的时长，单位为毫秒。 |
 
 两者都是响应式的：读取它们的 effect、JSX 表达式或样式闭包会在键盘显示、隐藏或改变高度时重新运行。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn message_bar() -> impl IntoElement {
-    view()
-        .flex_row()
-        .p_2()
-        .pb(move || {
-            // The home indicator's inset only matters while the keyboard is hidden.
-            let home = if keyboard_height() > Points::ZERO {
-                Points::ZERO
-            } else {
-                safe_area().bottom
-            };
-            px(8.0) + home
-        })
-        .child(input().placeholder("Message").flex_1())
-}
-```
 
 ```tsx tabs
 import { View, keyboardFrame, safeArea } from "nsh";
@@ -183,6 +163,26 @@ function MessageBar() {
       <Input placeholder="Message" style={{ flex: 1 }} />
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn message_bar() -> impl IntoElement {
+    view()
+        .flex_row()
+        .p_2()
+        .pb(move || {
+            // The home indicator's inset only matters while the keyboard is hidden.
+            let home = if keyboard_height() > Points::ZERO {
+                Points::ZERO
+            } else {
+                safe_area().bottom
+            };
+            px(8.0) + home
+        })
+        .child(input().placeholder("Message").flex_1())
 }
 ```
 

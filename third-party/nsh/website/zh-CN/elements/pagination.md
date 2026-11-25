@@ -9,24 +9,6 @@ demo: el-pagination
 
 分页用于在一组内容的各页之间移动，比如搜索结果、表格的行、归档列表。它依次显示上一页、当前页附近的页码（第一页和最后一页总会显示，每段被省略的页显示一个省略号）、应用的子元素和下一页。它负责行为：显示哪些页、按压、键盘、两端时禁用上一页和下一页、导航地标，以及让屏幕阅读器知道当前页。外观由应用决定：各项没有自己的颜色、尺寸或文字，由应用设置样式或自己绘制。
 
-```rust tabs
-use nsh_base::{pagination, theme};
-use nsh_core::prelude::*;
-
-fn results() -> impl IntoElement {
-    let page = signal(1u32);
-    pagination()
-        .page(move || page.get())
-        .total_pages(24)
-        .accessibility_label("Search results")
-        .previous_accessibility_label("Previous")
-        .next_accessibility_label("Next")
-        .item_class("min-w-9 h-9 px-2 items-center justify-center rounded-md hover:bg-accent selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
-        .gap_1()
-        .on_change(move |p: &u32| page.set(*p))
-}
-```
-
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Pagination } from "nsh/base";
@@ -53,6 +35,24 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{pagination, theme};
+use nsh_core::prelude::*;
+
+fn results() -> impl IntoElement {
+    let page = signal(1u32);
+    pagination()
+        .page(move || page.get())
+        .total_pages(24)
+        .accessibility_label("Search results")
+        .previous_accessibility_label("Previous")
+        .next_accessibility_label("Next")
+        .item_class("min-w-9 h-9 px-2 items-center justify-center rounded-md hover:bg-accent selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
+        .gap_1()
+        .on_change(move |p: &u32| page.set(*p))
+}
 ```
 
 `Pagination` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。Rust 中 `pagination()` 创建一个分页，每个 prop 有一个 setter（`.page(..)`、`.total_pages(..)`），`.on_change(..)` 接收用户选择的页，行用带类型的样式方法设置，应用的内容用 `.child(..)` 放入。

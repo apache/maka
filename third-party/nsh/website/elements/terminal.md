@@ -90,6 +90,7 @@ default).
 | Method | Description |
 |---|---|
 | `write(data)` | Shows the program's output. |
+| `write_bytes(data)` | *(Rust)* Feeds raw output bytes (`&[u8]`) directly to the emulator without requiring valid UTF-8 chunk boundaries. |
 | `reset()` | Clears the screen and the scrollback. |
 | `text()` | The text of every line, as a promise. |
 | `focus()` | Takes the keyboard focus, showing the software keyboard on phones. |

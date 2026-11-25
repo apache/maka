@@ -450,12 +450,13 @@ fn install_css() {
          font-weight: 600; padding: 6px 14px; border-radius: 999px; }
          .nsh-dev-error { background: rgba(30, 31, 34, 0.98); color: white; }
          .nsh-dev-error label { color: white; }
-         .nsh-dev-error .nsh-dev-title { font-size: 16px; font-weight: 700; color: #ff6b6b; }
-         .nsh-dev-error .nsh-dev-copy { background: rgba(255, 255, 255, 0.12); background-image: none; \
-         border: none; box-shadow: none; color: white; font-size: 13px; font-weight: 600; \
-         padding: 4px 14px; border-radius: 6px; min-width: 52px; }
-         .nsh-dev-error .nsh-dev-copy:hover { background: rgba(255, 255, 255, 0.2); }
-         .nsh-dev-error .nsh-dev-message { font-family: monospace; font-size: 12px; }
+         .nsh-dev-error .nsh-dev-title { font-size: 14px; font-weight: 700; color: #ff6b6b; }
+         .nsh-dev-error .nsh-dev-copy { background: none; border: none; box-shadow: none; \
+         min-height: 0; padding: 2px 6px; border-radius: 4px; }
+         .nsh-dev-error .nsh-dev-copy label { color: rgba(255, 255, 255, 0.7); font-size: 11px; \
+         font-weight: 600; }
+         .nsh-dev-error .nsh-dev-copy:hover { background: rgba(255, 255, 255, 0.12); }
+         .nsh-dev-error .nsh-dev-message { font-family: monospace; font-size: 11px; }
          .nsh-dev-error .nsh-dev-hint { font-size: 11px; opacity: 0.7; }
          .nsh-dev-error .nsh-dev-message selection { background: rgba(255, 255, 255, 0.35); }",
     );
@@ -528,7 +529,7 @@ fn shown(view: &AppView) -> bool {
 }
 
 /// Shows `title` and `message` over the whole app; a click dismisses it
-/// (unless it selected text to copy), its Copy button copies them. `prose` wraps the message to the
+/// (unless it selected text to copy); the Copy button beside the title copies them. `prose` wraps the message to the
 /// view; otherwise its lines are kept (code frames, stack traces) and it
 /// scrolls sideways. A hidden window shows with it.
 fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) {
@@ -552,7 +553,23 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
     let heading = gtk::Label::new(Some(title));
     heading.add_css_class("nsh-dev-title");
     heading.set_xalign(0.0);
-    content.append(&heading);
+    // Beside the title, not in a corner, where a custom title bar puts its
+    // close button. The default arrow, as over any button.
+    let copy = gtk::Button::with_label("Copy");
+    copy.add_css_class("nsh-dev-copy");
+    copy.set_valign(gtk::Align::Center);
+    copy.set_cursor_from_name(Some("default"));
+    let error = format!("{title}\n\n{message}");
+    copy.connect_clicked(move |button| {
+        if let Some(display) = gdk::Display::default() {
+            display.clipboard().set_text(&error);
+        }
+        button.set_label("Copied");
+    });
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.append(&heading);
+    header.append(&copy);
+    content.append(&header);
 
     let text = gtk::Label::new(Some(message));
     text.add_css_class("nsh-dev-message");
@@ -587,8 +604,16 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(ui);
     let label = text.clone();
-    click.connect_released(move |_, n_press, _, _| {
+    let button = copy.clone();
+    click.connect_released(move |gesture, n_press, x, y| {
+        // The Copy button's own click copies, it does not dismiss.
+        let on_copy = gesture.widget().is_some_and(|scroll| {
+            scroll
+                .pick(x, y, gtk::PickFlags::DEFAULT)
+                .is_some_and(|hit| hit == button || hit.is_ancestor(&button))
+        });
         if n_press == 1
+            && !on_copy
             && label.selection_bounds().is_none()
             && let Some(ui) = weak.upgrade()
         {
@@ -597,26 +622,9 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
     });
     scroll.add_controller(click);
 
-    // Beside the text, not in it: its clicks do not reach the dismissing
-    // gesture above.
-    let copy = gtk::Button::with_label("Copy");
-    copy.add_css_class("nsh-dev-copy");
-    copy.set_halign(gtk::Align::End);
-    copy.set_valign(gtk::Align::Start);
-    copy.set_margin_top(14);
-    copy.set_margin_end(24);
-    let error = format!("{title}\n\n{message}");
-    copy.connect_clicked(move |button| {
-        if let Some(display) = gdk::Display::default() {
-            display.clipboard().set_text(&error);
-        }
-        button.set_label("Copied");
-    });
-
     let layer = gtk::Overlay::new();
     layer.add_css_class("nsh-dev-error");
     layer.set_child(Some(&scroll));
-    layer.add_overlay(&copy);
     view.overlay().add_overlay(&layer);
     ui.borrow_mut().error = Some(layer.upcast());
 }

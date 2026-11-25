@@ -322,7 +322,7 @@ pub(crate) fn clippy() -> anyhow::Result<()> {
             "-p",
             "nsh-extra",
             "--features",
-            "nsh-extra/camera",
+            "nsh-extra/camera,nsh-extra/speech",
             "--target",
             "aarch64-linux-android",
             "--all-targets",

@@ -1826,6 +1826,8 @@ struct WebIvars {
     /// here: the only files this web view may open (its pages can link to
     /// each other, never to a file outside it).
     file: RefCell<Option<String>>,
+    /// The web view's `allowOrigin`, from its latest props.
+    allow_origin: RefCell<Option<nsh_core::access::WebOrigin>>,
     /// `evaluate()`'s requests in this web view.
     evaluations: Rc<nsh_platform_apple::web_evaluation::Evaluations>,
 }
@@ -1874,6 +1876,7 @@ define_class!(
             let ivars = self.ivars();
             let allowed = navigation_allowed(
                 ivars.access.as_deref(),
+                ivars.allow_origin.borrow().as_ref(),
                 ivars.file.borrow().as_deref(),
                 main,
                 &url,
@@ -2032,6 +2035,7 @@ impl WebHandler {
             navigation: Cell::default(),
             downloading: RefCell::default(),
             file: RefCell::new(None),
+            allow_origin: RefCell::default(),
             evaluations,
         });
         // SAFETY: NSObject's designated initializer.
@@ -2055,6 +2059,11 @@ impl WebHandler {
     /// The core asked (or stopped asking) this view to hold downloads.
     fn set_defer_downloads(&self, defer: bool) {
         self.ivars().defer_downloads.set(defer);
+    }
+
+    /// The web view's `allowOrigin`: its next navigations are checked with it.
+    fn set_allow_origin(&self, origin: Option<nsh_core::access::WebOrigin>) {
+        *self.ivars().allow_origin.borrow_mut() = origin;
     }
 
     fn failed(&self, navigation: Option<&AnyObject>, err: &AnyObject) {
@@ -2121,9 +2130,11 @@ fn describe(object: &AnyObject) -> String {
 /// Whether a web view may navigate to `url`: a frame inside the page, a
 /// file in the folder of the `file://` page the app itself loaded there
 /// (`folder`, which the `webview` grant, made of web hosts, can't name),
-/// and what the grant allows. Never a file outside that folder.
+/// and what the grant allows, with the web view's `allowOrigin` (`origin`).
+/// Never a file outside that folder.
 fn navigation_allowed(
     access: Option<&Access>,
+    origin: Option<&nsh_core::access::WebOrigin>,
     folder: Option<&str>,
     main: bool,
     url: &str,
@@ -2136,7 +2147,7 @@ fn navigation_allowed(
             local_file_path(url).is_some_and(|path| path.starts_with(dir) && !has_dot_segment(path))
         });
     }
-    access.is_none_or(|a| a.allows_webview(url))
+    access.is_none_or(|a| a.allows_webview_with(url, origin))
 }
 
 fn is_file_url(url: &str) -> bool {
@@ -2289,7 +2300,7 @@ impl WebHost {
         // A download's redirects take the grant its navigations do.
         let grant = access.clone();
         let allows: web_download::Allows =
-            Rc::new(move |url: &str| navigation_allowed(grant.as_deref(), None, true, url));
+            Rc::new(move |url: &str| navigation_allowed(grant.as_deref(), None, None, true, url));
         let download = web_download::Transport::new(surface.mtm, emit, allows);
         let handler = WebHandler::new(
             surface.mtm,
@@ -2448,6 +2459,8 @@ impl WebHost {
     fn set(&mut self, p: &WebProps) {
         self.scrolls = p.scrollable;
         self.handler.set_defer_downloads(p.defer_downloads);
+        // Before the source loads: it applies to that navigation.
+        self.handler.set_allow_origin(p.allow_origin.clone());
         if self.props.is_none() && self.web.is_none() {
             // The core keeps `incognito` and the URL schemes from changing
             // once it is made.
@@ -2498,6 +2511,11 @@ impl WebHost {
                 web,
                 setAllowsBackForwardNavigationGestures: Bool::new(p.back_forward_gestures)
             ];
+            // `zoomable`: pinch (trackpad) magnification; off is WebKit's
+            // default. The core keeps it from changing once it is made.
+            if first {
+                let _: () = msg_send![web, setAllowsMagnification: Bool::new(p.zoomable)];
+            }
             let prefs: Retained<AnyObject> = msg_send![&config, defaultWebpagePreferences];
             let _: () =
                 msg_send![&prefs, setAllowsContentJavaScript: Bool::new(p.javascript_enabled)];
@@ -2918,8 +2936,9 @@ mod tests {
     fn a_web_view_opens_only_files_in_the_folder_it_was_given() {
         let dir = "/tmp/opened/7f/";
         let native = Policy::default().access();
-        let go =
-            |loaded: Option<&str>, url: &str| navigation_allowed(Some(&native), loaded, true, url);
+        let go = |loaded: Option<&str>, url: &str| {
+            navigation_allowed(Some(&native), None, loaded, true, url)
+        };
         for url in [
             "file:///tmp/opened/7f/a.pdf",
             "file:///tmp/opened/7f/a.pdf#page=2",
@@ -2946,7 +2965,7 @@ mod tests {
             "a web view that loaded no file (the mail reader)"
         );
         assert!(
-            !navigation_allowed(None, None, true, "file:///tmp/a.pdf"),
+            !navigation_allowed(None, None, None, true, "file:///tmp/a.pdf"),
             "nothing known of the app"
         );
         // Not a file: the grant decides, unrestricted or not.
@@ -2967,22 +2986,30 @@ mod tests {
         ] {
             assert!(!go(Some(dir), url), "not a web page: {url}");
             assert!(
-                !navigation_allowed(Some(&app), Some(dir), true, url),
+                !navigation_allowed(Some(&app), None, Some(dir), true, url),
                 "{url}"
             );
         }
         assert!(!navigation_allowed(
             Some(&app),
+            None,
             Some(dir),
             true,
             "https://evil.example/a"
         ));
         assert!(
-            navigation_allowed(Some(&app), Some(dir), true, "file:///tmp/opened/7f/a.pdf"),
+            navigation_allowed(
+                Some(&app),
+                None,
+                Some(dir),
+                true,
+                "file:///tmp/opened/7f/a.pdf"
+            ),
             "a JS app's own file page"
         );
         assert!(!navigation_allowed(
             Some(&app),
+            None,
             None,
             true,
             "file:///tmp/opened/7f/a.pdf"
@@ -2990,11 +3017,12 @@ mod tests {
         assert!(navigation_allowed(
             Some(&app),
             None,
+            None,
             true,
             "https://example.com/a"
         ));
         assert!(
-            navigation_allowed(Some(&app), None, false, "file:///etc/passwd"),
+            navigation_allowed(Some(&app), None, None, false, "file:///etc/passwd"),
             "a frame inside the page"
         );
     }
@@ -3013,14 +3041,20 @@ mod tests {
             "blob:https://example.com/9f2",
             "blob:http://example.com:6711/uuid",
         ] {
-            assert!(navigation_allowed(Some(&app), None, true, url), "{url}");
+            assert!(
+                navigation_allowed(Some(&app), None, None, true, url),
+                "{url}"
+            );
         }
         for url in [
             "blob:https://evil.example/uuid",
             "blob:null/uuid",
             "blob:file:///etc/passwd",
         ] {
-            assert!(!navigation_allowed(Some(&app), None, true, url), "{url}");
+            assert!(
+                !navigation_allowed(Some(&app), None, None, true, url),
+                "{url}"
+            );
         }
         // Nothing granted: a blob naming a host is still refused.
         let denied = Access {
@@ -3030,6 +3064,7 @@ mod tests {
         assert!(!navigation_allowed(
             Some(&denied),
             None,
+            None,
             true,
             "blob:https://example.com/uuid"
         ));
@@ -3037,11 +3072,13 @@ mod tests {
         assert!(navigation_allowed(
             Some(&app),
             None,
+            None,
             true,
             "https://example.com/a"
         ));
         assert!(!navigation_allowed(
             Some(&app),
+            None,
             None,
             true,
             "https://evil.example/a"

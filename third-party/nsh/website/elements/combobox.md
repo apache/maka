@@ -20,6 +20,53 @@ the highlighted row and what screen readers hear. With `multiple`, a choice togg
 list stays open, so several are picked in one go. The look is the app's: it styles the field, the popup, the list,
 the rows, the sections' headers, the input and the footer, or draws the rows itself.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Combobox } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const TAGS = [
+  { value: "bug", title: "Bug" },
+  { value: "design", title: "Design" },
+  { value: "docs", title: "Docs" },
+  { value: "perf", title: "Performance" },
+  { value: "security", title: "Security" },
+];
+
+function App() {
+  const tags = signal<string[]>([]);
+  return (
+    <Combobox
+      items={TAGS}
+      multiple
+      placeholder={tags().length ? `${tags().length} tags` : "Add tags"}
+      value={tags()}
+      onChange={({ value }) => tags.set(value)}
+      accessibilityLabel="Tags"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      class="h-9 w-48 flex-row items-center rounded-md border border-input px-3"
+      inputClass="flex-1 text-sm placeholder:text-muted-foreground"
+      itemClass="group rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
+      triggerButton={<Text class="px-1 text-muted-foreground">⌄</Text>}
+      renderItem={(item) => (
+        <View class="flex-row justify-between">
+          <Text>{item.title}</Text>
+          <Text class="opacity-0 group-selected:opacity-100">✓</Text>
+        </View>
+      )}
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SelectEntry, SelectItem, combobox, theme};
 use nsh_core::prelude::*;
@@ -71,53 +118,6 @@ fn tag_picker() -> impl IntoElement {
         .item_class("rounded-md focus:bg-accent selected:font-medium disabled:opacity-50")
         .render_item(|item: &SelectEntry| view().px_2().py_1p5().child(text(item.title.clone()).text_sm()))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Combobox } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const TAGS = [
-  { value: "bug", title: "Bug" },
-  { value: "design", title: "Design" },
-  { value: "docs", title: "Docs" },
-  { value: "perf", title: "Performance" },
-  { value: "security", title: "Security" },
-];
-
-function App() {
-  const tags = signal<string[]>([]);
-  return (
-    <Combobox
-      items={TAGS}
-      multiple
-      placeholder={tags().length ? `${tags().length} tags` : "Add tags"}
-      value={tags()}
-      onChange={({ value }) => tags.set(value)}
-      accessibilityLabel="Tags"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      class="h-9 w-48 flex-row items-center rounded-md border border-input px-3"
-      inputClass="flex-1 text-sm placeholder:text-muted-foreground"
-      itemClass="group rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
-      triggerButton={<Text class="px-1 text-muted-foreground">⌄</Text>}
-      renderItem={(item) => (
-        <View class="flex-row justify-between">
-          <Text>{item.title}</Text>
-          <Text class="opacity-0 group-selected:opacity-100">✓</Text>
-        </View>
-      )}
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Combobox` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `combobox()` makes

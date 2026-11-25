@@ -32,14 +32,18 @@
 //!   attributes Tailwind's `data-*:` variants read (as shadcn's calendar):
 //!   `data-range-start`, `data-range-end` and `data-range-middle` on a
 //!   complete range's days (a half range's start is `selected:` alone),
-//!   `data-today`, `data-outside` on the days of the months
-//!   around (`group-*:` inside, under `group`). So a drawing is made once
-//!   per item: the keys, a pick and the focus draw nothing again, and a
-//!   turn of the months draws the days it brings once each (a day's
-//!   drawing is kept by its month and date, so with several months the
-//!   ones still shown keep theirs). Without `renderItem` an item shows its
-//!   number, and Previous / Next `‹` / `›`, as `gpui-base`'s default
-//!   labels.
+//!   `data-range-preview-start`, `data-range-preview-end` and
+//!   `data-range-preview-middle` on the days from a half range's start to
+//!   the day the mouse or the keyboard is on (the range a pick there makes,
+//!   as React Aria's range calendar highlights it; none before the start,
+//!   where a pick starts again), `data-today`, `data-outside` on the days
+//!   of the months around (`group-*:` inside, under `group`). So a drawing
+//!   is made once per item: the keys, the mouse, a pick and the focus draw
+//!   nothing again, and a turn of the months draws the days it brings once
+//!   each (a day's drawing is kept by its month and date, so with several
+//!   months the ones still shown keep theirs). Without `renderItem` an item
+//!   shows its number, and Previous / Next `‹` / `›`, as `gpui-base`'s
+//!   default labels.
 //! - **Layout**: the grid fills the width it is given, as a table's
 //!   columns do: the months share the body, and the weekdays, the days and
 //!   the months and years to pick share their rows equally (`flex: 1`), so
@@ -542,8 +546,10 @@ pub enum CalendarItemKind {
 /// takes no press; the weekdays and the months' titles are labels, never
 /// disabled), `focus-visible:` (the day with the keyboard), and on the days the `data-*`
 /// attributes `data-range-start`, `data-range-end`, `data-range-middle`,
-/// `data-today` and `data-outside` (`group-selected:`,
-/// `group-data-range-start:`, ... inside, under `group` in `itemClass`).
+/// `data-range-preview-start`, `data-range-preview-end`,
+/// `data-range-preview-middle`, `data-today` and `data-outside`
+/// (`group-selected:`, `group-data-range-start:`, ... inside, under `group`
+/// in `itemClass`).
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
 pub struct CalendarEntry {
@@ -630,6 +636,9 @@ pub struct CalendarProps {
     /// weekdays and the months' titles are labels, never disabled),
     /// `focus-visible:` with the keyboard on it; on the days `data-range-start:`,
     /// `data-range-end:`, `data-range-middle:` (a range's days),
+    /// `data-range-preview-start:`, `data-range-preview-end:`,
+    /// `data-range-preview-middle:` (while a range is half picked, the days
+    /// from its start to the day the mouse or the keyboard is on),
     /// `data-today:` and `data-outside:` (a day of the months around); with `group`, the
     /// content follows them (`group-selected:`, `group-data-today:`, ...).
     pub item_class: Prop<Option<SharedString>>,
@@ -753,6 +762,12 @@ pub(crate) struct Grid {
     today: NaiveDate,
     /// The day the keyboard is on while the days have the focus.
     cursor: Signal<Option<NaiveDate>>,
+    /// The day a half range's preview reaches to ([`Marks::of`]): the
+    /// enabled day the mouse moved over or the keyboard moved to, whichever
+    /// came last. It stays when the mouse leaves the days: the keyboard's
+    /// day is not the user's aim unless the keyboard moves (a date picker
+    /// opening on the desktops puts it on today).
+    reach: Signal<Option<NaiveDate>>,
     /// The day to give the focus to once it is made.
     focus_to: Signal<Option<NaiveDate>>,
     /// The days' stop of Tab as each day reads it ([`Grid::is_stop`]).
@@ -789,6 +804,7 @@ impl Grid {
             year_page: signal(0),
             today,
             cursor: signal(None),
+            reach: signal(None),
             focus_to: signal(None),
             stop_lit: stored(std::array::from_fn(|_| signal(None))),
             days_focused: signal(false),
@@ -1111,6 +1127,14 @@ pub(crate) fn calendar_view(grid: Grid, changed: Rc<dyn Fn(Date)>) -> Vec<AnyEle
     effect(move || {
         if !grid.days_focused.get() {
             untracked(|| grid.cursor.set(None));
+        }
+    });
+    // A move of the keyboard takes a half range's preview to its day, as
+    // the mouse does to the day it moves over: the later one wins, and the
+    // preview stays where it was left (React Aria's highlighted range).
+    effect(move || {
+        if let Some(day) = grid.cursor.get() {
+            untracked(|| grid.reach.set(Some(day)));
         }
     });
 
@@ -1740,30 +1764,63 @@ struct Marks {
     end: bool,
     /// A day inside a complete range, not an end (`data-range-middle`).
     middle: bool,
+    /// The range a pick would make of a half one, as [`Marks::start`],
+    /// [`Marks::end`] and [`Marks::middle`] mark a complete one
+    /// (`data-range-preview-start`, `-end`, `-middle`).
+    preview: Span,
+}
+
+/// Where a day is in a range: its start, its end (a range of one day is
+/// both), or a day between them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Span {
+    start: bool,
+    end: bool,
+    middle: bool,
+}
+
+impl Span {
+    fn of(day: NaiveDate, start: NaiveDate, end: NaiveDate) -> Self {
+        Self {
+            start: day == start,
+            end: day == end,
+            middle: day > start && day < end,
+        }
+    }
 }
 
 impl Marks {
-    fn of(value: &Date, day: NaiveDate) -> Self {
+    /// What `value` makes of `day`; while a range is half picked, the range
+    /// a pick of `reach()`'s day would end it with (read only then, so the
+    /// mouse and the keyboard change no day's marks otherwise).
+    fn of(value: &Date, day: NaiveDate, reach: impl FnOnce() -> Option<NaiveDate>) -> Self {
         match *value {
             Date::Single(v) => Self {
                 selected: v == Some(day),
                 ..Self::default()
             },
             Date::Range(Some(start), Some(end)) => {
-                let inside = day >= start && day <= end;
-                let (start, end) = (day == start, day == end);
+                let span = Span::of(day, start, end);
                 Self {
-                    selected: inside,
-                    start,
-                    end,
-                    middle: inside && !start && !end,
+                    selected: day >= start && day <= end,
+                    start: span.start,
+                    end: span.end,
+                    middle: span.middle,
+                    ..Self::default()
                 }
             }
-            // Half a range: its start is selected, and no range shows.
-            Date::Range(start, _) => Self {
-                selected: start == Some(day),
+            // Half a range: its start is selected, and the range a pick
+            // makes previews up to the day reached; a pick before the start
+            // starts again, so none shows there.
+            Date::Range(Some(start), None) => Self {
+                selected: day == start,
+                preview: reach()
+                    .filter(|reach| *reach >= start)
+                    .map(|reach| Span::of(day, start, reach))
+                    .unwrap_or_default(),
                 ..Self::default()
             },
+            Date::Range(None, _) => Self::default(),
         }
     }
 }
@@ -1796,11 +1853,12 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     let label = computed(move || iso(date.get()));
     let disabled = computed(move || grid.disabled(date.get()));
     let is_stop = computed(move || own.get() && grid.is_stop(date.get()));
-    // What the value makes of the day: a pick checks every day, and
+    // What the value makes of the day: a pick (or, while a range is half
+    // picked, a move of the mouse or the keyboard) checks every day, and
     // changes the states of those it changed only.
     let marks = computed(move || {
         let date = date.get();
-        grid.shown.with(|v| Marks::of(v, date))
+        grid.shown.with(|v| Marks::of(v, date, || grid.reach.get()))
     });
     let entry = computed(move || {
         let (date, page) = (date.get(), page.get());
@@ -1860,6 +1918,9 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
     .project_data("range-start", move || marks.get().start)
     .project_data("range-end", move || marks.get().end)
     .project_data("range-middle", move || marks.get().middle)
+    .project_data("range-preview-start", move || marks.get().preview.start)
+    .project_data("range-preview-end", move || marks.get().preview.end)
+    .project_data("range-preview-middle", move || marks.get().preview.middle)
     .project_data("today", move || entry.with(|e| e.today))
     .project_data("outside", move || entry.with(|e| e.outside))
     .column(grid)
@@ -1902,6 +1963,16 @@ fn day(grid: Grid, cell: Cell, changed: Rc<dyn Fn(Date)>) -> AnyElement {
             return;
         }
         grid.days_focused.set(false);
+    })
+    // Where a half range's preview reaches: a move rather than an entry,
+    // so a cell whose date changed under a still mouse (a pick of a day of
+    // the months around turns them) is taken at its date on the next move.
+    // A disabled day takes no pick, so the preview stays where it was.
+    .on_mouse_move(move |_: &MouseEvent| {
+        let day = date.get_untracked();
+        if grid.reach.get_untracked() != Some(day) && !disabled.get_untracked() {
+            grid.reach.set(Some(day));
+        }
     })
     .on_press(move || grid.pick(date.get_untracked(), &*changed))
     .into_element()
@@ -1981,6 +2052,34 @@ mod tests {
             Date::Range(Some(b), None).picked(a),
             Date::Range(Some(a), None)
         );
+    }
+
+    #[test]
+    fn a_half_range_previews_from_its_start_to_the_day_reached() {
+        let (start, reach) = (d(2026, 10, 20), d(2026, 10, 23));
+        let half = Date::Range(Some(start), None);
+        let marks = |day, reach: Option<NaiveDate>| Marks::of(&half, day, || reach);
+        let span = |start, end, middle| Span { start, end, middle };
+        assert_eq!(marks(start, Some(reach)).preview, span(true, false, false));
+        assert!(marks(start, Some(reach)).selected);
+        assert_eq!(
+            marks(d(2026, 10, 21), Some(reach)).preview,
+            span(false, false, true)
+        );
+        assert!(!marks(d(2026, 10, 21), Some(reach)).selected);
+        assert_eq!(marks(reach, Some(reach)).preview, span(false, true, false));
+        assert_eq!(marks(d(2026, 10, 24), Some(reach)).preview, Span::default());
+        // On the start: a range of one day. Before it: a pick starts again.
+        assert_eq!(marks(start, Some(start)).preview, span(true, true, false));
+        assert_eq!(marks(start, Some(d(2026, 10, 19))).preview, Span::default());
+        assert_eq!(marks(start, None).preview, Span::default());
+        // A complete range previews nothing and never reads the reach.
+        let whole = Date::Range(Some(start), Some(reach));
+        let m = Marks::of(&whole, d(2026, 10, 21), || unreachable!());
+        assert!(m.selected && m.middle && m.preview == Span::default());
+        // Ends the wrong way round select nothing between them.
+        let inverted = Date::Range(Some(reach), Some(start));
+        assert!(!Marks::of(&inverted, start, || None).selected);
     }
 
     #[test]

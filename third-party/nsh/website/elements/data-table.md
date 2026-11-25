@@ -17,24 +17,6 @@ labels, and a cell or a title can be drawn by the app.
 colors, borders and selection feedback through `classes` and `styles`. Rust makes one with
 `nsh_base::data_table()`, TSX with `<DataTable>` from `nsh/base`.
 
-```rust tabs
-use nsh_base::{DataTableColumn, data_table};
-use nsh_core::prelude::*;
-
-fn column(key: &str, title: &str) -> DataTableColumn {
-    let mut column = DataTableColumn::default();
-    column.key = key.into();
-    column.title = Some(title.into());
-    column
-}
-
-fn table() -> impl IntoElement {
-    data_table()
-        .columns(vec![column("name", "Name"), column("city", "City")])
-        .flex_1()
-}
-```
-
 ```tsx tabs
 import { mount } from "nsh";
 import { DataTable, type DataTableColumn } from "nsh/base";
@@ -61,6 +43,24 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{DataTableColumn, data_table};
+use nsh_core::prelude::*;
+
+fn column(key: &str, title: &str) -> DataTableColumn {
+    let mut column = DataTableColumn::default();
+    column.key = key.into();
+    column.title = Some(title.into());
+    column
+}
+
+fn table() -> impl IntoElement {
+    data_table()
+        .columns(vec![column("name", "Name"), column("city", "City")])
+        .flex_1()
+}
 ```
 
 The table fills the box the app gives it (`flex-1`, a height) and scrolls inside: vertically through the rows and

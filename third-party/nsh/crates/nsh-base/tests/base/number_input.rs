@@ -283,6 +283,19 @@ fn the_buttons_step_and_leave_the_focus_in_the_field() {
 }
 
 #[test]
+fn the_buttons_step_an_unfocused_field_without_focusing_it() {
+    let mut app = start(controlled(Some(1.0)));
+    app.press("More").unwrap();
+    app.wait_for("text:Value 2").unwrap();
+    app.press("Less").unwrap();
+    app.wait_for("text:Value 1").unwrap();
+    // Only a click in the field focuses it.
+    assert!(!app.shows("Events focus"));
+    focus(&mut app);
+    app.wait_for("text:Events focus").unwrap();
+}
+
+#[test]
 fn controls_on_the_right_step_the_same() {
     let mut props = controlled(Some(1.0));
     props.controls_right = true;

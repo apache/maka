@@ -1,6 +1,6 @@
 ---
 title: 列表
-description: 用 Rust 和 TSX 渲染长列表和无限列表：复用、行标识、多列、吸顶标题、倒置的聊天列表、横向列表、页面中的列表、加载更多、可见性，以及滚动到指定条目。
+description: 用 TSX 和 Rust 渲染长列表和无限列表：复用、行标识、多列、吸顶标题、倒置的聊天列表、横向列表、页面中的列表、加载更多、可见性，以及滚动到指定条目。
 order: 40
 group: ui
 demo: guide-lists
@@ -9,28 +9,6 @@ demo: guide-lists
 # 列表
 
 列表（Rust 中的 `virtual_list(..)`，TSX 中 `nsh` 的 `List`）在原生滚动视图上渲染长数据，但只创建屏幕附近的行。哪些行存在、放在哪里、多列布局、吸顶标题以及哪些条目可见，全部由原生计算；只有当原生端要一个单元格时，你的代码才去填充内容。一百万条的列表，开销和三十条的差不多。
-
-```rust tabs
-use std::rc::Rc;
-
-use nsh_core::prelude::*;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let titles: Rc<Vec<String>> = Rc::new((1..=10_000).map(|i| format!("Item {i}")).collect());
-    virtual_list(titles.len(), move |at| {
-        let titles = titles.clone();
-        view()
-            .p_4()
-            .border_b_1()
-            .border_b_color(rgb(0xeaeef2))
-            .child(text(move || titles[at.index()].clone()).text_size(px(16.0)))
-    })
-    .estimated_item_size(px(52.0))
-    .flex_1()
-    .bg(white())
-}
-```
 
 ```tsx tabs
 import { List, mount, Text, View } from "nsh";
@@ -57,6 +35,28 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use std::rc::Rc;
+
+use nsh_core::prelude::*;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let titles: Rc<Vec<String>> = Rc::new((1..=10_000).map(|i| format!("Item {i}")).collect());
+    virtual_list(titles.len(), move |at| {
+        let titles = titles.clone();
+        view()
+            .p_4()
+            .border_b_1()
+            .border_b_color(rgb(0xeaeef2))
+            .child(text(move || titles[at.index()].clone()).text_size(px(16.0)))
+    })
+    .estimated_item_size(px(52.0))
+    .flex_1()
+    .bg(white())
+}
+```
+
 在 Rust 中，`virtual_list(count, row)` 接收行数（一个值、一个 signal 或一个闭包）和一个根据位置（`at.index()`）构建行的函数；行按这个索引读取你的数据。在 TSX 中，`each` 接收条目，行函数拿到条目。和[滚动视图](./scrolling.md)一样，列表本身是视口，需要父元素给出尺寸（`.flex_1()`、`flex: 1` 或一个高度）。
 
 ## 复用是如何工作的
@@ -66,6 +66,17 @@ mount(() => (
 由此得出两条规则：
 
 **在用到的地方读取位置。** 在行函数开头复制出来的值，只属于这个单元格第一次显示的那一行。
+
+```tsx tabs
+// 错误：单元格被复用后，`title` 仍是第一个条目的标题。
+{(item) => {
+  const title = item().title;
+  return <Text>{title}</Text>;
+}}
+
+// 正确：文本跟随单元格当前的条目。
+{(item) => <Text>{item().title}</Text>}
+```
 
 ```rust tabs
 // 错误：单元格被复用后，`title` 仍是第一行的标题。
@@ -81,18 +92,26 @@ virtual_list(count, move |at| {
 })
 ```
 
-```tsx tabs
-// 错误：单元格被复用后，`title` 仍是第一个条目的标题。
-{(item) => {
-  const title = item().title;
-  return <Text>{title}</Text>;
-}}
-
-// 正确：文本跟随单元格当前的条目。
-{(item) => <Text>{item().title}</Text>}
-```
-
 **把每个条目的状态放在数据里，而不是行里。** 在行内创建的 signal 属于单元格，会跟着它去到下一个条目。"这一行是否展开 / 选中 / 点赞" 应该存放在条目中，或存放在以 id 为键的集合里：
+
+```tsx tabs
+const liked = signal<Set<number>>(new Set());
+const toggle = (id: number) =>
+  liked.update((s) => {
+    const next = new Set(s);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+<List each={posts()} estimatedItemSize={64} style={{ flex: 1 }}>
+  {(post) => (
+    <View style={{ flexDirection: "row", padding: 16 }}>
+      <Text style={{ flex: 1 }}>{post().title}</Text>
+      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
+    </View>
+  )}
+</List>
+```
 
 ```rust tabs
 let liked = signal(HashSet::<u32>::new());
@@ -119,25 +138,6 @@ virtual_list(move || posts.with(Vec::len), move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-const liked = signal<Set<number>>(new Set());
-const toggle = (id: number) =>
-  liked.update((s) => {
-    const next = new Set(s);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
-
-<List each={posts()} estimatedItemSize={64} style={{ flex: 1 }}>
-  {(post) => (
-    <View style={{ flexDirection: "row", padding: 16 }}>
-      <Text style={{ flex: 1 }}>{post().title}</Text>
-      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
-    </View>
-  )}
-</List>
-```
-
 各行可以高度不同。在测量之前，列表假定行高为预估尺寸（默认 50 点）；传入接近典型行高的值，滚动条和跳转到远处条目从一开始就会比较准确。
 
 ## 修改数据
@@ -146,7 +146,7 @@ const toggle = (id: number) =>
 
 在 TSX 中，传入新数组即可改变条目：`posts.set([...posts(), ...more])`。列表会**按条目标识**（`===`）比较新旧数组，或者按 `keyExtractor` 返回的键比较。
 
-两种方式下，留下的行无论挪到哪里，都保留自己的单元格、内容和测量结果（例如条目更新后排到最前），它经过的那些行也一样：其中获得焦点的输入框、打开的菜单都保持原样。只有新条目才会新建行。在屏幕上可见的行之上插入行时，可见行保持原位，不会跳动。
+两种方式下，留下的行无论挪到哪里，都保留自己的单元格、内容和测量结果（例如条目更新后排到最前），它经过的那些行也一样：其中获得焦点的输入框、打开的菜单都保持原样。只有新条目才会新建行。在屏幕上可见的行之上插入行时，可见行保持原位，不会跳动。顶部只露出一部分的行算作在它们之上，所以紧接在它后面插入行时，正在阅读的行同样保持原位。
 
 - 在 TSX 中用不可变的方式更新：新数组，未改变的条目对象原样复用。原地修改数组（`push`）不会被察觉。
 - 改动过的条目应是一个新对象（`{ ...post, title }`），这样它的行才会显示变化。
@@ -197,6 +197,18 @@ const toggle = (id: number) =>
 
 `numColumns`（`.columns(n)`）把条目排成每行若干列；内容内边距添加在内容四周，并设置行间距和列间距。网格中各行的高度可以不同：每行与其中最高的条目一样高。列表显示期间 `numColumns` 可以改变（窗口变宽时列数增加）：第一个可见条目保持在顶部；`estimatedItemSize` 改变时也是如此。
 
+```tsx tabs
+<List
+  each={photos}
+  numColumns={3}
+  estimatedItemSize={120}
+  style={{ flex: 1 }}
+  contentStyle={{ padding: 12, gap: 8 }}
+>
+  {(photo) => <Image src={photo().thumb} style={{ aspectRatio: 1, borderRadius: 8 }} />}
+</List>
+```
+
 ```rust tabs
 let count = photos.len();
 virtual_list(count, move |at| {
@@ -211,21 +223,32 @@ virtual_list(count, move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-<List
-  each={photos}
-  numColumns={3}
-  estimatedItemSize={120}
-  style={{ flex: 1 }}
-  contentStyle={{ padding: 12, gap: 8 }}
->
-  {(photo) => <Image src={photo().thumb} style={{ aspectRatio: 1, borderRadius: 8 }} />}
-</List>
-```
-
 ## 吸顶标题
 
 `stickyHeaderIndices` 列出的条目在内容滚过时吸附在视口顶部，直到下一个吸顶条目把它推出去。分组列表就是一个由标题条目和普通行组成的列表，标题的索引设为吸顶。吸附在每一帧滚动时由原生完成。
+
+```tsx tabs
+type Row = { header: string } | { name: string };
+
+const rows: Row[] = [];
+const headers: number[] = [];
+for (const [letter, names] of groups) {
+  headers.push(rows.length);
+  rows.push({ header: letter });
+  for (const name of names) rows.push({ name });
+}
+
+<List each={rows} stickyHeaderIndices={headers} estimatedItemSize={44} style={{ flex: 1 }}>
+  {(row) => (
+    <If
+      when={"header" in row()}
+      else={<Text style={{ padding: 12 }}>{(row() as { name: string }).name}</Text>}
+    >
+      <Text style={{ padding: 6, backgroundColor: "#eaeef2", fontWeight: "700" }}>{(row() as { header: string }).header}</Text>
+    </If>
+  )}
+</List>
+```
 
 ```rust tabs
 #[derive(Clone, PartialEq)]
@@ -261,34 +284,22 @@ virtual_list(count, move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-type Row = { header: string } | { name: string };
-
-const rows: Row[] = [];
-const headers: number[] = [];
-for (const [letter, names] of groups) {
-  headers.push(rows.length);
-  rows.push({ header: letter });
-  for (const name of names) rows.push({ name });
-}
-
-<List each={rows} stickyHeaderIndices={headers} estimatedItemSize={44} style={{ flex: 1 }}>
-  {(row) => (
-    <If
-      when={"header" in row()}
-      else={<Text style={{ padding: 12 }}>{(row() as { name: string }).name}</Text>}
-    >
-      <Text style={{ padding: 6, backgroundColor: "#eaeef2", fontWeight: "700" }}>{(row() as { header: string }).header}</Text>
-    </If>
-  )}
-</List>
-```
-
 同一个单元格可能这会儿显示标题、过一会儿显示名字，所以行用 [`when` / `<If>`](../elements/control-flow.md) 决定渲染什么，它会在行改变时切换。吸顶标题要求单列且列表不倒置。
 
 `stickyHeaderOffset`（Rust 中为 `.sticky_header_offset(..)`）让标题吸附在距顶部这么多点的位置，如同 CSS `position: sticky` 的 `top`：在 56 点高的半透明栏下，`stickyHeaderOffset={56}`（`.sticky_header_offset(px(56.0))`）让每个标题停在栏的下方，行则继续在栏下滚动，下一个标题从那里把它推出去。负值会让标题的一部分移出视口。
 
 偏移量可以是[动画值](./animation.md#动画值)（Rust 中为 `.bind_sticky_header_offset(&node)`）：标题在 UI 线程上逐帧跟随它，因此始终停在移动的栏下方。对于内容向下滚动时隐藏、向上滚动时重新出现的栏（[`diffClamp`](./animation.md#算术运算与-diffclamp)），标题无论栏在哪里都吸附在它的下边缘：
+
+```tsx tabs
+const scroll = createAnimatedValue(0);
+const hidden = scroll.diffClamp(0, 56);
+const shown = hidden.mul(-1).add(56);
+
+<View style={{ flex: 1, overflow: "hidden" }}>
+  <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
+  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, hidden.mul(-1)] }}>…</View>
+</View>
+```
 
 ```rust tabs
 let offset = animated_value(0.0);
@@ -303,20 +314,77 @@ view().flex_1().overflow_hidden().child(
 ).child(view().absolute().top_0().left_0().right_0().h(px(56.0)).bind_translate_y(&hidden.mul(-1.0)))
 ```
 
-```tsx tabs
-const scroll = createAnimatedValue(0);
-const hidden = scroll.diffClamp(0, 56);
-const shown = hidden.mul(-1).add(56);
-
-<View style={{ flex: 1, overflow: "hidden" }}>
-  <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
-  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, hidden.mul(-1)] }}>…</View>
-</View>
-```
-
 ## 聊天：倒置列表
 
 `inverted` 让列表从末尾开始排版：第 0 项在底部，列表初始滚动到末尾，并在条目变化时保持与末尾的距离。把最新的消息放在最前面；添加消息时插到前面，用 `onLoadMore` 加载更早的消息时追加到后面（倒置列表的"末尾"是顶部）。从一条旧消息打开的聊天用 [`onLoadMoreAtStart`](#在开头加载onloadmoreatstart) 加载更新的消息；设置它后，列表在底部时保持与底部的距离，向上滚动后条目变化时屏幕上的消息保持原位。
+
+```tsx tabs
+import { List, mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+type Message = { id: number; text: string; mine: boolean };
+
+function Chat() {
+  let next = 0;
+  const message = (text: string, mine: boolean): Message => ({ id: next++, text, mine });
+  const messages = signal(Array.from({ length: 30 }, (_, i) => message(`Message ${30 - i}`, i % 3 === 0)));
+  const draft = signal("");
+  const send = () => {
+    if (!draft().trim()) return;
+    messages.update((m) => [message(draft(), true), ...m]); // 最新的在最前
+    draft.set("");
+  };
+  const loadOlder = () => messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older ${i}`, false))]);
+  return (
+    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
+      <List
+        each={messages()}
+        inverted
+        estimatedItemSize={44}
+        style={{ flex: 1 }}
+        contentStyle={{ padding: 12, gap: 6 }}
+        keyboardDismissMode="interactive"
+        onLoadMore={loadOlder}
+        loadMoreThreshold={0.5}
+      >
+        {(m) => (
+          <View
+            style={{
+              alignSelf: m().mine ? "flex-end" : "flex-start",
+              maxWidth: "75%",
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 14,
+              backgroundColor: m().mine ? "#0969da" : "#eaeef2",
+            }}
+          >
+            <Text style={{ color: m().mine ? "#ffffff" : "#1f2328" }}>{m().text}</Text>
+          </View>
+        )}
+      </List>
+      <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
+        <Input
+          value={draft()}
+          onChange={({ value }) => draft.set(value)}
+          onSubmit={send}
+          multiline
+          submitBehavior="submit"
+          returnKeyType="send"
+          placeholder="Message"
+          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
+        />
+      </View>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <Chat />
+  </Window>
+));
+```
 
 ```rust tabs
 #[derive(Clone, PartialEq)]
@@ -408,74 +476,6 @@ pub fn chat() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { List, mount, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-type Message = { id: number; text: string; mine: boolean };
-
-function Chat() {
-  let next = 0;
-  const message = (text: string, mine: boolean): Message => ({ id: next++, text, mine });
-  const messages = signal(Array.from({ length: 30 }, (_, i) => message(`Message ${30 - i}`, i % 3 === 0)));
-  const draft = signal("");
-  const send = () => {
-    if (!draft().trim()) return;
-    messages.update((m) => [message(draft(), true), ...m]); // 最新的在最前
-    draft.set("");
-  };
-  const loadOlder = () => messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older ${i}`, false))]);
-  return (
-    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
-      <List
-        each={messages()}
-        inverted
-        estimatedItemSize={44}
-        style={{ flex: 1 }}
-        contentStyle={{ padding: 12, gap: 6 }}
-        keyboardDismissMode="interactive"
-        onLoadMore={loadOlder}
-        loadMoreThreshold={0.5}
-      >
-        {(m) => (
-          <View
-            style={{
-              alignSelf: m().mine ? "flex-end" : "flex-start",
-              maxWidth: "75%",
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              borderRadius: 14,
-              backgroundColor: m().mine ? "#0969da" : "#eaeef2",
-            }}
-          >
-            <Text style={{ color: m().mine ? "#ffffff" : "#1f2328" }}>{m().text}</Text>
-          </View>
-        )}
-      </List>
-      <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
-        <Input
-          value={draft()}
-          onChange={({ value }) => draft.set(value)}
-          onSubmit={send}
-          multiline
-          submitBehavior="submit"
-          returnKeyType="send"
-          placeholder="Message"
-          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
-        />
-      </View>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <Chat />
-  </Window>
-));
-```
-
 在倒置列表上调用 `scroll_to_end(..)` / `scrollToEnd()` 会滚动到它的开头，也就是最新的消息。
 
 ### 底部对齐
@@ -484,6 +484,12 @@ mount(() => (
 
 列表增长时，各行在内容中的位置不变，所以追加一条消息不会移动其他行：列表只放置新行并滚动一次。通过 `onLoadMoreAtStart` 在前面插入的旧消息也不会移动可见的行。
 
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
+
 ```rust tabs
 virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .keys(move || messages.with(|m| m.iter().map(|m| m.id).collect::<Vec<_>>()))
@@ -491,15 +497,15 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .flex_1()
 ```
 
-```tsx tabs
-<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
-  {(m) => <Bubble message={m()} />}
-</List>
-```
-
 ### 让非倒置列表跟随末尾
 
 按阅读顺序排列（最早的在前）的列表也可以跟随末尾：在 Rust 中用 `.follow_end(px(40.0))`，在 TSX 中用 `maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }}`，当用户停在末尾（或距离末尾不超过 40 点）时，列表会随内容增长停留在末尾：流式写入最后一项的回复、追加的新消息、键盘让列表变矮。用户往上滚得更远时，可见内容保持不动，新内容在其下方增长。在可见条目之上插入的条目从不会移动它们，无论是否设置该选项。
+
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
 
 ```rust tabs
 virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
@@ -508,15 +514,24 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .flex_1()
 ```
 
-```tsx tabs
-<List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>
-  {(m) => <Bubble message={m()} />}
-</List>
-```
-
 ## 横向列表
 
 `horizontal` 让列表横向排列；单元格按列表的高度排版。配合吸附可以做出任意长度的轮播：
+
+```tsx tabs
+<List
+  each={cards}
+  horizontal
+  estimatedItemSize={232}
+  snapToInterval={232}
+  decelerationRate="fast"
+  scrollbar={false}
+  style={{ height: 140 }}
+  contentStyle={{ paddingHorizontal: 16, gap: 12 }}
+>
+  {(card) => <View style={{ width: 220, height: 140, borderRadius: 14, backgroundColor: card().color }} />}
+</List>
+```
 
 ```rust tabs
 let count = cards.len();
@@ -538,26 +553,21 @@ virtual_list(count, move |at| {
 .h(px(140.0))
 ```
 
-```tsx tabs
-<List
-  each={cards}
-  horizontal
-  estimatedItemSize={232}
-  snapToInterval={232}
-  decelerationRate="fast"
-  scrollbar={false}
-  style={{ height: 140 }}
-  contentStyle={{ paddingHorizontal: 16, gap: 12 }}
->
-  {(card) => <View style={{ width: 220, height: 140, borderRadius: 14, backgroundColor: card().color }} />}
-</List>
-```
-
 在从右到左布局中，横向列表从右侧开始向左排列。
 
 ## 页面中的列表：viewport="parent"
 
 页面常常整体滚动：一个标题、几张卡片，然后是一个长列表，下面可能还有另一个列表。给列表设置 `viewport="parent"`（Rust 中是 `.viewport(ListViewport::Parent)`），并把它和页面的其他内容一起放进 `Scroll`：列表以完整的长度排在页面中，由页面的滚动视图和其他内容一起滚动。它仍然只创建页面视口附近的行并复用单元格，因此一个页面可以容纳多个长列表。
+
+```tsx tabs
+<Scroll style={{ flex: 1 }}>
+  <Header />
+  <List viewport="parent" each={items} estimatedItemSize={56} contentStyle={{ gap: 6 }}>
+    {(item) => <Row item={item()} />}
+  </List>
+  <Footer />
+</Scroll>
+```
 
 ```rust tabs
 scroll()
@@ -572,16 +582,6 @@ scroll()
     .child(footer())
 ```
 
-```tsx tabs
-<Scroll style={{ flex: 1 }}>
-  <Header />
-  <List viewport="parent" each={items} estimatedItemSize={56} contentStyle={{ gap: 6 }}>
-    {(item) => <Row item={item()} />}
-  </List>
-  <Footer />
-</Scroll>
-```
-
 - 列表的长度就是它所有行的长度：它的高度（横向时是宽度）由内容决定，和普通视图一样；内边距、边框和外边距也和视图上的效果相同。
 - 它的行跟随沿其方向最近的外层滚动视图，或者它所在的屏幕。
 - 页面会像浏览器一样保持你正在阅读的内容不动：完全位于视口顶部以上的行改变尺寸时，页面随之移动同样的距离；列表开头在视口内时，变高的行会把下面的内容往下推。
@@ -593,6 +593,35 @@ scroll()
 ## 加载更多：onLoadMore
 
 当视口距离末尾不到 `loadMoreThreshold` 个视口时（默认 1：提前一屏），触发 `onLoadMore`（`.on_load_more(..)`）。追加下一页数据；新的末尾临近时会再次触发。
+
+```tsx tabs
+const posts = signal<Post[]>([]);
+let loading = false;
+let page = 0;
+
+const loadMore = async () => {
+  if (loading) return;
+  loading = true;
+  try {
+    const next: Post[] = await (await fetch(`https://api.example.com/posts?page=${++page}`)).json();
+    posts.set([...posts(), ...next]);
+  } finally {
+    loading = false;
+  }
+};
+loadMore();
+
+<List
+  each={posts()}
+  estimatedItemSize={72}
+  style={{ flex: 1 }}
+  onLoadMore={loadMore}
+  loadMoreThreshold={0.5}
+  footer={<Text style={{ padding: 16, textAlign: "center", color: "#8c959f" }}>Loading…</Text>}
+>
+  {(post) => <PostRow post={post()} />}
+</List>
+```
 
 ```rust tabs
 let posts = signal(Vec::<Post>::new());
@@ -625,35 +654,6 @@ virtual_list(move || posts.with(Vec::len), move |at| post_row(posts, at))
     .flex_1()
 ```
 
-```tsx tabs
-const posts = signal<Post[]>([]);
-let loading = false;
-let page = 0;
-
-const loadMore = async () => {
-  if (loading) return;
-  loading = true;
-  try {
-    const next: Post[] = await (await fetch(`https://api.example.com/posts?page=${++page}`)).json();
-    posts.set([...posts(), ...next]);
-  } finally {
-    loading = false;
-  }
-};
-loadMore();
-
-<List
-  each={posts()}
-  estimatedItemSize={72}
-  style={{ flex: 1 }}
-  onLoadMore={loadMore}
-  loadMoreThreshold={0.5}
-  footer={<Text style={{ padding: 16, textAlign: "center", color: "#8c959f" }}>Loading…</Text>}
->
-  {(post) => <PostRow post={post()} />}
-</List>
-```
-
 像上面那样防止重复加载：在一页数据返回之前，末尾可能会被再次报告。
 
 ## 在开头加载：onLoadMoreAtStart
@@ -661,34 +661,6 @@ loadMore();
 列表也可以从数据的中间打开：从搜索结果或引用跳到一条旧消息的聊天，显示的是它附近的一页，更新的消息还没有加载。当视口距离开头不到 `loadMoreAtStartThreshold` 个视口时（默认 1），触发 `onLoadMoreAtStart`（`.on_load_more_at_start(..)`）。开头是第 0 项所在的一侧：普通列表的顶部，倒置列表的底部。把这一页插到前面：新内容到达时，屏幕上的行保持原位（倒置列表离开底部后也是如此）；下一次接近开头时会再次触发，如果新的一页插入后仍在开头附近，则立即再次触发。
 
 只有在用户滚动到开头，或滚动命令（包括 `initialScrollIndex`）把列表带到那里之后才会触发：从最新一项打开的列表不会请求任何内容，而用 `initialScrollIndex` 打开在开头附近的列表会立刻请求它之前的一页。
-
-```rust tabs
-let messages = signal(page_around(target)); // 最新的在前，结尾是一条旧消息
-let loading = stored(false);
-
-let load_newer = move |_: &()| {
-    if loading.replace(true) {
-        return;
-    }
-    let newest = messages.with(|m| m[0].id);
-    spawn(async move {
-        if let Ok(response) = fetch(format!("https://api.example.com/messages?after={newest}")).await {
-            let newer = parse_messages(&response.text());
-            messages.update(|m| {
-                m.splice(0..0, newer);
-            });
-        }
-        loading.replace(false);
-    });
-};
-
-virtual_list(move || messages.with(Vec::len), move |at| message_row(messages, at))
-    .inverted(true)
-    .on_load_more(load_older)
-    .on_load_more_at_start(load_newer)
-    .load_more_at_start_threshold(0.5)
-    .flex_1()
-```
 
 ```tsx tabs
 const messages = signal<Message[]>(pageAround(target)); // 最新的在前，结尾是一条旧消息
@@ -718,6 +690,34 @@ const loadNewer = async () => {
 </List>
 ```
 
+```rust tabs
+let messages = signal(page_around(target)); // 最新的在前，结尾是一条旧消息
+let loading = stored(false);
+
+let load_newer = move |_: &()| {
+    if loading.replace(true) {
+        return;
+    }
+    let newest = messages.with(|m| m[0].id);
+    spawn(async move {
+        if let Ok(response) = fetch(format!("https://api.example.com/messages?after={newest}")).await {
+            let newer = parse_messages(&response.text());
+            messages.update(|m| {
+                m.splice(0..0, newer);
+            });
+        }
+        loading.replace(false);
+    });
+};
+
+virtual_list(move || messages.with(Vec::len), move |at| message_row(messages, at))
+    .inverted(true)
+    .on_load_more(load_older)
+    .on_load_more_at_start(load_newer)
+    .load_more_at_start_threshold(0.5)
+    .flex_1()
+```
+
 加载到最新的消息后就停止加载：之后新消息会像在任何聊天中一样出现在开头。
 
 ## 可见性
@@ -731,6 +731,19 @@ const loadNewer = async () => {
 | `minimumViewTime` | `.minimum_view_time(Duration)` | 条目保持可见多少毫秒后才被报告。 |
 
 不设阈值时，只要有一个像素可见就算可见。
+
+```tsx tabs
+<List
+  each={videos}
+  estimatedItemSize={300}
+  style={{ flex: 1 }}
+  keyExtractor={(v) => v.slug}
+  viewabilityConfig={{ itemVisibleThreshold: 0.6, minimumViewTime: 250 }}
+  onViewableItemsChange={({ viewableItems }) => playing.set(viewableItems[0]?.key ?? null)}
+>
+  {(v) => <VideoCard video={v()} />}
+</List>
+```
 
 ```rust tabs
 let playing = signal(None::<usize>);
@@ -748,19 +761,6 @@ virtual_list(count, move |at| video_card(videos.clone(), at))
     .flex_1()
 ```
 
-```tsx tabs
-<List
-  each={videos}
-  estimatedItemSize={300}
-  style={{ flex: 1 }}
-  keyExtractor={(v) => v.slug}
-  viewabilityConfig={{ itemVisibleThreshold: 0.6, minimumViewTime: 250 }}
-  onViewableItemsChange={({ viewableItems }) => playing.set(viewableItems[0]?.key ?? null)}
->
-  {(v) => <VideoCard video={v()} />}
-</List>
-```
-
 ## 从代码滚动
 
 给列表设置 ref（Rust 中用 `element_ref()` 和 `.element_ref(&list)`，TSX 中用 `ref`）：
@@ -772,14 +772,6 @@ virtual_list(count, move |at| video_card(videos.clone(), at))
 | `scroll_to_end(animated)` | `scrollToEnd({ animated? })` | 滚动到内容末尾（倒置列表则是开头）。 |
 | `scroll_to(point, animated)` | `scrollTo({ x?, y?, animated? })` | 滚动到某个偏移，与滚动视图相同。 |
 
-```rust tabs
-let list = element_ref();
-
-virtual_list(count, row).estimated_item_size(px(48.0)).flex_1().element_ref(&list)
-
-list.scroll_to_index(120, percentage(0.5), px(0.0), true);
-```
-
 ```tsx tabs
 import { List, type ListRef } from "nsh";
 
@@ -790,6 +782,14 @@ let list!: ListRef;
 list.scrollToIndex({ index: 120, viewPosition: 0.5 });
 ```
 
+```rust tabs
+let list = element_ref();
+
+virtual_list(count, row).estimated_item_size(px(48.0)).flex_1().element_ref(&list)
+
+list.scroll_to_index(120, percentage(0.5), px(0.0), true);
+```
+
 滚动到索引（以及滚动到末尾）由原生根据当时已知的尺寸计算：已测量的行用实测值，其余用预估尺寸。之后在目标附近的行被测量时，列表会持续跟随目标，因此能准确落位，直到用户自己滚动或数据变化为止。要让列表一打开就停在某个条目，请用 `initialScrollIndex`（`.initial_scroll_index(..)`），停在末尾则用 `initialScrollAtEnd`（`.initial_scroll_at_end()`），而不是在第一帧之后再滚动。
 
 <a id="keeping-a-reading-position"></a>
@@ -797,23 +797,6 @@ list.scrollToIndex({ index: 120, viewPosition: 0.5 });
 ### 记住阅读位置
 
 `measureScrollPosition()`（`measure_scroll_position()`）在本轮改动排版后给出视口起点落在哪一行：`{ index, offset }`，即那一行和视口起点在行内多深，用的是列表自己排行的位置（已测量的行按实测尺寸，其余按预估尺寸）。在列表滚动时读取并保存；`scrollToIndex({ index, viewOffset: -offset })` 能把视口起点放回原处，无论是同一个列表还是重新创建的列表（它会随该行被测量而跟随）。没有条目的列表返回 `null`。它沿列表主轴、从第 0 项所在的一侧算起（倒置列表是底部）；视口起点在第一行之前的列表头里时，`index` 为 0，`offset` 为负。
-
-```rust tabs
-let list = element_ref();
-let reading = signal(None::<ListScrollPosition>);
-
-virtual_list(count, row)
-    .estimated_item_size(px(48.0))
-    .on_scroll(move |_| {
-        spawn(async move { reading.set(list.measure_scroll_position().await) });
-    })
-    .element_ref(&list)
-
-// 之后，在重新创建的列表里：
-if let Some(at) = reading.get() {
-    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
-}
-```
 
 ```tsx tabs
 let list!: ListRef;
@@ -833,11 +816,63 @@ let reading: { index: number; offset: number } | null = null;
 if (reading) list.scrollToIndex({ index: reading.index, viewOffset: -reading.offset, animated: false });
 ```
 
+```rust tabs
+let list = element_ref();
+let reading = signal(None::<ListScrollPosition>);
+
+virtual_list(count, row)
+    .estimated_item_size(px(48.0))
+    .on_scroll(move |_| {
+        spawn(async move { reading.set(list.measure_scroll_position().await) });
+    })
+    .element_ref(&list)
+
+// 之后，在重新创建的列表里：
+if let Some(at) = reading.get() {
+    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
+}
+```
+
 <a id="a-settings-style-list"></a>
 
 ## 设置风格的列表
 
 列表的外观属于应用自己：列表负责摆放和复用行，行、分隔线和表面都是你的视图。分组的设置风格列表就是一个带内边距、分隔线、首尾行圆角的列表。把它写成自己的组件，在应用中需要列出设置的地方使用：
+
+```tsx tabs
+import { List, Text, View } from "nsh";
+
+type Setting = { id: string; label: string };
+
+function SettingsList(props: { each: Setting[]; onSelect: (s: Setting) => void }) {
+  return (
+    <View class="flex-1 bg-neutral-100 dark:bg-neutral-950">
+      <List
+        each={props.each}
+        estimatedItemSize={48}
+        style={{ flex: 1 }}
+        contentStyle={{ padding: 16 }}
+        separator={() => (
+          <View class="bg-white dark:bg-neutral-900">
+            <View class="ml-4 h-px bg-neutral-200 dark:bg-neutral-800" />
+          </View>
+        )}
+      >
+        {(s, i) => (
+          <View
+            onPress={() => props.onSelect(s())}
+            role="button"
+            class="h-12 justify-center bg-white px-4 active:bg-neutral-200 dark:bg-neutral-900"
+            classList={{ "rounded-t-xl": i() === 0, "rounded-b-xl": i() === props.each.length - 1 }}
+          >
+            <Text>{s().label}</Text>
+          </View>
+        )}
+      </List>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use std::rc::Rc;
@@ -877,41 +912,6 @@ pub fn settings_list(settings: Rc<Vec<Setting>>, on_select: impl Fn(&Setting) + 
         })
         .flex_1(),
     )
-}
-```
-
-```tsx tabs
-import { List, Text, View } from "nsh";
-
-type Setting = { id: string; label: string };
-
-function SettingsList(props: { each: Setting[]; onSelect: (s: Setting) => void }) {
-  return (
-    <View class="flex-1 bg-neutral-100 dark:bg-neutral-950">
-      <List
-        each={props.each}
-        estimatedItemSize={48}
-        style={{ flex: 1 }}
-        contentStyle={{ padding: 16 }}
-        separator={() => (
-          <View class="bg-white dark:bg-neutral-900">
-            <View class="ml-4 h-px bg-neutral-200 dark:bg-neutral-800" />
-          </View>
-        )}
-      >
-        {(s, i) => (
-          <View
-            onPress={() => props.onSelect(s())}
-            role="button"
-            class="h-12 justify-center bg-white px-4 active:bg-neutral-200 dark:bg-neutral-900"
-            classList={{ "rounded-t-xl": i() === 0, "rounded-b-xl": i() === props.each.length - 1 }}
-          >
-            <Text>{s().label}</Text>
-          </View>
-        )}
-      </List>
-    </View>
-  );
 }
 ```
 

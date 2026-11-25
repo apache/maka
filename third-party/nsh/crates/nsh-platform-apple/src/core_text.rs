@@ -1,9 +1,14 @@
 use std::{ptr::NonNull, sync::OnceLock};
 
 use nsh_core::TextAlign;
-use objc2_core_foundation::{CFRange, CFRetained, CFString, CGFloat, CGPoint};
+use objc2_core_foundation::{
+    CFAttributedString, CFDictionary, CFMutableAttributedString, CFRange, CFRetained, CFString,
+    CFType, CGAffineTransform, CGFloat, CGPoint,
+};
 use objc2_core_graphics::{CGColor, CGContext, CGLineCap};
-use objc2_core_text::{CTLine, CTRun, kCTRunDelegateAttributeName};
+use objc2_core_text::{
+    CTFont, CTFontSymbolicTraits, CTLine, CTRun, kCTFontAttributeName, kCTRunDelegateAttributeName,
+};
 
 struct CFStringKey(CFRetained<CFString>);
 // SAFETY: CFStrings are immutable and thread-safe.
@@ -62,6 +67,128 @@ pub unsafe fn is_attachment_run(run: &CTRun) -> bool {
     // SAFETY: caller guarantees `run` is valid; `kCTRunDelegateAttributeName` is
     // an immutable CoreText key.
     unsafe { run.attributes().contains_ptr_key(key.cast()) }
+}
+
+/// The angle synthesized italics lean by: CSS's for `oblique` (14°), the
+/// slant browsers and Android give italic text in a font without an
+/// italic face.
+const OBLIQUE_ANGLE: CGFloat = 14.0;
+
+/// `font` leaning by [`OBLIQUE_ANGLE`]: a shear in its matrix, which
+/// `CTLineDraw` draws its glyphs with, their advances unchanged
+/// (`CTRunDraw` draws in the context's text matrix: set the run's,
+/// `CTRunGetTextMatrix`, first).
+pub fn oblique(font: &CTFont) -> CFRetained<CTFont> {
+    let skew = CGAffineTransform {
+        a: 1.0,
+        b: 0.0,
+        c: OBLIQUE_ANGLE.to_radians().tan(),
+        d: 1.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
+    // SAFETY: a valid font; size 0 keeps its size; a live matrix.
+    unsafe { font.copy_with_attributes(0.0, &skew, None) }
+}
+
+/// The italic face of `font`'s family, if it has one.
+pub fn italic_face(font: &CTFont) -> Option<CFRetained<CTFont>> {
+    let italic = CTFontSymbolicTraits::TraitItalic;
+    // SAFETY: a valid font; size 0 and a null matrix keep its own.
+    unsafe { font.copy_with_symbolic_traits(0.0, std::ptr::null(), italic, italic) }
+}
+
+/// The font of italic text in `font`: its italic face, or `font` leaning
+/// ([`oblique`]) where its family has none (CJK fonts, a family shipped
+/// without italics), as CSS synthesizes one (`font-synthesis: style`).
+pub fn italic(font: &CTFont) -> CFRetained<CTFont> {
+    italic_face(font).unwrap_or_else(|| oblique(font))
+}
+
+/// Whether text in `font` comes out slanted: an italic face, or a shear in
+/// its matrix.
+fn slanted(font: &CTFont) -> bool {
+    // SAFETY: a valid font.
+    unsafe {
+        font.symbolic_traits()
+            .contains(CTFontSymbolicTraits::TraitItalic)
+            || font.matrix().c != 0.0
+    }
+}
+
+/// Whether `font` has a glyph for every character of `range` in `text`
+/// (CoreText maps line breaks and tabs in every font).
+fn covers(font: &CTFont, text: &CFString, range: CFRange) -> bool {
+    let len = match usize::try_from(range.length) {
+        Ok(len) if len > 0 => len,
+        _ => return true,
+    };
+    let mut chars = vec![0_u16; len];
+    let mut glyphs = vec![0_u16; len];
+    // SAFETY: `range` lies within the string; both buffers hold its length.
+    unsafe {
+        text.characters(range, chars.as_mut_ptr());
+        font.glyphs_for_characters(
+            NonNull::from(&mut chars[..]).cast(),
+            NonNull::from(&mut glyphs[..]).cast(),
+            range.length,
+        )
+    }
+}
+
+/// Slants the characters of `range` in `string` that CoreText takes from
+/// another font than `font`, the range's italic font ([`italic`]), where
+/// that font has no italic face: CJK text in the system font's italic,
+/// whose fallback fonts are upright, and a family list's fallbacks without
+/// one, upright in its cascade list (CoreText ignores a matrix there). Each
+/// such run gets its font leaning ([`oblique`]). Text `font` has every
+/// character of costs one lookup of its glyphs; call it for italic text
+/// only.
+pub fn slant_fallbacks(string: &CFMutableAttributedString, range: CFRange, font: &CTFont) {
+    let attributed: &CFAttributedString = string;
+    let Some(text) = attributed.string() else {
+        return;
+    };
+    if covers(font, &text, range) {
+        return;
+    }
+    // The fonts CoreText typesets the range in: its runs' fonts.
+    // SAFETY: a valid string and a range within it.
+    let Some(part) = (unsafe { CFAttributedString::with_substring(None, Some(attributed), range) })
+    else {
+        return;
+    };
+    // SAFETY: a valid attributed string; the line's own run array (of
+    // CTRuns) and attribute dictionaries, whose font values are CTFonts;
+    // ranges within the string.
+    unsafe {
+        let line = CTLine::with_attributed_string(&part);
+        let runs = line.glyph_runs();
+        for i in 0..runs.count() {
+            let run = &*runs.value_at_index(i).cast::<CTRun>();
+            let attributes = run.attributes();
+            let attributes: &CFDictionary<CFString, CFType> = attributes.cast_unchecked();
+            let Some(fallback) = attributes
+                .get(kCTFontAttributeName)
+                .and_then(|f| f.downcast::<CTFont>().ok())
+            else {
+                continue;
+            };
+            if slanted(&fallback) {
+                continue;
+            }
+            let at = run.string_range();
+            CFMutableAttributedString::set_attribute(
+                Some(string),
+                CFRange {
+                    location: range.location + at.location,
+                    length: at.length,
+                },
+                Some(kCTFontAttributeName),
+                Some(oblique(&fallback).as_ref()),
+            );
+        }
+    }
 }
 
 /// Returns `(left, width)` relative to the line's origin for glyph `range` in
@@ -498,5 +625,182 @@ mod tests {
             unsafe { truncated_line_x(&long_ltr, TextAlign::Auto, false, false, narrow) };
         assert!((rtl_clip_x + rtl_w - narrow).abs() < 0.1, "{rtl_clip_x}");
         assert!(ltr_clip_x.abs() < 0.01, "{ltr_clip_x}");
+    }
+
+    /// The system font (SF, with an italic face) at 16 pt.
+    fn system_font() -> CFRetained<CTFont> {
+        // SAFETY: a UI font type and a positive size.
+        unsafe {
+            CTFont::new_ui_font_for_language(objc2_core_text::CTFontUIFontType::System, 16.0, None)
+        }
+        .expect("the system font")
+    }
+
+    /// PingFang SC, a CJK font without an italic face, at 16 pt.
+    fn ping_fang() -> CFRetained<CTFont> {
+        let name = CFString::from_static_str("PingFangSC-Regular");
+        // SAFETY: valid font name and positive size.
+        unsafe { CTFont::with_name(&name, 16.0, std::ptr::null()) }
+    }
+
+    fn lean() -> CGFloat {
+        OBLIQUE_ANGLE.to_radians().tan()
+    }
+
+    /// `text` set in `font` throughout, as an italic span is.
+    fn set_in(text: &str, font: &CTFont) -> (CFRetained<CFMutableAttributedString>, CFRange) {
+        let attr = CFMutableAttributedString::new(None, 0).expect("CFMutableAttributedString::new");
+        let s = Some(&*attr);
+        let range = CFRange {
+            location: 0,
+            length: text.encode_utf16().count() as CFIndex,
+        };
+        // SAFETY: a valid mutable attributed string; the range covers it;
+        // a CTFont for the font key.
+        unsafe {
+            CFMutableAttributedString::replace_string(
+                s,
+                CFRange {
+                    location: 0,
+                    length: 0,
+                },
+                Some(&CFString::from_str(text)),
+            );
+            CFMutableAttributedString::set_attribute(
+                s,
+                range,
+                Some(kCTFontAttributeName),
+                Some(font.as_ref()),
+            );
+        }
+        (attr, range)
+    }
+
+    /// The typeset runs of `string`: each one's text, its font's shear and
+    /// whether that font is an italic face.
+    fn typeset(string: &CFMutableAttributedString) -> Vec<(String, CGFloat, bool)> {
+        let attributed: &CFAttributedString = string;
+        let text = attributed.string().expect("a string").to_string();
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: a valid attributed string; the line's own run array (of
+        // CTRuns) and attribute dictionaries, whose font values are CTFonts.
+        unsafe {
+            let line = CTLine::with_attributed_string(attributed);
+            let runs = line.glyph_runs();
+            (0..runs.count())
+                .map(|i| {
+                    let run = &*runs.value_at_index(i).cast::<CTRun>();
+                    let attributes = run.attributes();
+                    let attributes: &CFDictionary<CFString, CFType> = attributes.cast_unchecked();
+                    let font = attributes
+                        .get(kCTFontAttributeName)
+                        .and_then(|f| f.downcast::<CTFont>().ok())
+                        .expect("a font");
+                    let at = run.string_range();
+                    let (start, end) = (at.location as usize, (at.location + at.length) as usize);
+                    (
+                        String::from_utf16_lossy(&utf16[start..end]),
+                        font.matrix().c,
+                        font.symbolic_traits()
+                            .contains(CTFontSymbolicTraits::TraitItalic),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn italic_is_the_italic_face_or_the_font_leaning() {
+        let face = italic(&system_font());
+        let leaning = italic(&ping_fang());
+        // SAFETY: valid fonts.
+        unsafe {
+            assert!(
+                face.symbolic_traits()
+                    .contains(CTFontSymbolicTraits::TraitItalic)
+            );
+            assert_eq!(face.matrix().c, 0.0);
+            assert!(italic_face(&ping_fang()).is_none());
+            assert!((leaning.matrix().c - lean()).abs() < 1e-9);
+            assert_eq!(leaning.size(), 16.0);
+            assert_eq!(
+                leaning.family_name().to_string(),
+                ping_fang().family_name().to_string()
+            );
+        }
+    }
+
+    /// The system font's italic face falls back to upright PingFang for
+    /// CJK: those runs lean, the face's own runs keep their shapes.
+    #[test]
+    fn cjk_in_the_system_italic_leans() {
+        let font = italic(&system_font());
+        let (string, range) = set_in("Italic 斜体中文 ABC", &font);
+        assert!(
+            typeset(&string)
+                .iter()
+                .any(|(text, c, _)| text == "斜体中文" && *c == 0.0),
+            "upright before"
+        );
+        slant_fallbacks(&string, range, &font);
+        let runs = typeset(&string);
+        for &(ref text, c, face) in &runs {
+            if text.contains('斜') {
+                assert!(!face && (c - lean()).abs() < 1e-9, "{runs:?}");
+            } else {
+                assert!(face && c == 0.0, "{runs:?}");
+            }
+        }
+        assert!(runs.iter().any(|(text, ..)| text == "斜体中文"), "{runs:?}");
+    }
+
+    /// The fonts CoreText falls back to from a leaning font lean with it
+    /// (Hangul from PingFang's lean): their runs are left as set.
+    #[test]
+    fn fallbacks_of_a_leaning_font_lean_with_it() {
+        let font = italic(&ping_fang());
+        let (string, range) = set_in("苹方 한글", &font);
+        let runs = typeset(&string);
+        assert!(
+            runs.iter()
+                .any(|(text, c, _)| text == "한글" && (c - lean()).abs() < 1e-9),
+            "{runs:?}"
+        );
+        slant_fallbacks(&string, range, &font);
+        let mut effective = CFRange {
+            location: 0,
+            length: 0,
+        };
+        // SAFETY: a valid string, a location within it, a live out range.
+        unsafe { string.attribute(0, Some(kCTFontAttributeName), &mut effective) };
+        assert_eq!((effective.location, effective.length), (0, range.length));
+    }
+
+    /// Text the font has every character of, line breaks included, is
+    /// left as it was set: one font throughout.
+    #[test]
+    fn text_the_italic_face_has_is_left_as_set() {
+        let font = italic(&system_font());
+        let whole = |s: &str| CFRange {
+            location: 0,
+            length: s.encode_utf16().count() as CFIndex,
+        };
+        let latin = "Italic text,\nits second line\r\nand a third";
+        assert!(covers(&font, &CFString::from_str(latin), whole(latin)));
+        assert!(!covers(
+            &font,
+            &CFString::from_static_str("Italic 斜体"),
+            whole("Italic 斜体")
+        ));
+        let (string, range) = set_in(latin, &font);
+        slant_fallbacks(&string, range, &font);
+        let mut effective = CFRange {
+            location: 0,
+            length: 0,
+        };
+        // SAFETY: a valid string, a location within it, a live out range.
+        let set = unsafe { string.attribute(0, Some(kCTFontAttributeName), &mut effective) };
+        assert!(set.is_some_and(|f| std::ptr::eq((&*f as *const CFType).cast::<CTFont>(), &*font)));
+        assert_eq!((effective.location, effective.length), (0, range.length));
     }
 }

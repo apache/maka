@@ -22,6 +22,49 @@ The select owns the behavior: the value (the app's, or its own), the open state,
 sections, the highlighted row and what screen readers hear. The look is the app's: it styles the trigger, the popup,
 the list, the rows, the sections' headers and the search field, or draws the rows itself.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Select } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const FRUITS = [
+  { value: "apple", title: "Apple" },
+  { value: "banana", title: "Banana" },
+  { value: "blueberry", title: "Blueberry" },
+  { value: "grapes", title: "Grapes", disabled: true },
+  { value: "pineapple", title: "Pineapple" },
+];
+
+function App() {
+  const fruit = signal<string | null>(null);
+  const title = () => FRUITS.find((f) => f.value === fruit())?.title;
+  return (
+    <Select
+      items={FRUITS}
+      value={fruit()}
+      onChange={({ value }) => fruit.set(value)}
+      accessibilityLabel="Fruit"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      itemClass="rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground disabled:opacity-50"
+      trigger={
+        <View class="h-9 w-48 flex-row items-center justify-between rounded-md border border-input px-3 hover:bg-accent active:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <Text class={fruit() ? "text-foreground" : "text-muted-foreground"}>{title() ?? "Pick a fruit"}</Text>
+          <Text class="text-muted-foreground">▾</Text>
+        </View>
+      }
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SelectEntry, SelectItem, select, theme};
 use nsh_core::prelude::*;
@@ -89,49 +132,6 @@ fn fruit_select() -> impl IntoElement {
                 .child(text(item.title.clone()).text_sm())
         })
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Select } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const FRUITS = [
-  { value: "apple", title: "Apple" },
-  { value: "banana", title: "Banana" },
-  { value: "blueberry", title: "Blueberry" },
-  { value: "grapes", title: "Grapes", disabled: true },
-  { value: "pineapple", title: "Pineapple" },
-];
-
-function App() {
-  const fruit = signal<string | null>(null);
-  const title = () => FRUITS.find((f) => f.value === fruit())?.title;
-  return (
-    <Select
-      items={FRUITS}
-      value={fruit()}
-      onChange={({ value }) => fruit.set(value)}
-      accessibilityLabel="Fruit"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      itemClass="rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground disabled:opacity-50"
-      trigger={
-        <View class="h-9 w-48 flex-row items-center justify-between rounded-md border border-input px-3 hover:bg-accent active:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <Text class={fruit() ? "text-foreground" : "text-muted-foreground"}>{title() ?? "Pick a fruit"}</Text>
-          <Text class="text-muted-foreground">▾</Text>
-        </View>
-      }
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Select` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `select()` makes one

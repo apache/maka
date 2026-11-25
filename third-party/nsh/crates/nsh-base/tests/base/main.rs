@@ -59,6 +59,7 @@ mod term_input;
 mod terminal;
 mod text_view;
 mod time_field;
+mod toast;
 mod toggle;
 mod toolbar;
 mod tree;

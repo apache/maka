@@ -24,7 +24,9 @@ use crate::{
 pub(crate) trait Driver: Send {
     /// Names the step the batches that come next belong to (`--trace`).
     fn step(&mut self, name: &str);
-    fn press(&mut self, selector: &str) -> Result<(), String>;
+    /// Presses `selector` at `at` in the view it names (its top left
+    /// corner), else where a tap lands.
+    fn press(&mut self, selector: &str, at: Option<Point<Points>>) -> Result<(), String>;
     fn long_press(&mut self, selector: &str) -> Result<(), String>;
     fn type_text(&mut self, selector: &str, text: &str) -> Result<(), String>;
     fn submit(&mut self, selector: &str) -> Result<(), String>;
@@ -164,19 +166,16 @@ pub(crate) trait Driver: Send {
     fn picks(&mut self) -> Result<Vec<nsh_core::picker::Pick>, String> {
         Err(headless_only("`picks()`"))
     }
-    /// What the app's speech sessions asked for, in order.
-    fn speech_requests(&mut self) -> Result<Vec<nsh_core::speech::SpeechRequest>, String> {
-        Err(headless_only("`speechRequests()`"))
-    }
-    /// The user says `text` to the session listening.
-    fn hear(&mut self, text: &str) -> Result<(), String> {
-        let _ = text;
-        Err(headless_only("speaking for the user"))
-    }
-    /// Ends the session listening, with `error` or as the user stops.
-    fn end_speech(&mut self, error: Option<nsh_core::speech::SpeechError>) -> Result<(), String> {
-        let _ = error;
-        Err(headless_only("ending a speech session"))
+    /// Calls `method` of the fake a native module gives headless runs
+    /// (`nsh_core::fake`), named `name`, with `args`; its answer.
+    fn call_fake(
+        &mut self,
+        name: &str,
+        method: &str,
+        args: &[nsh_core::JsonValue],
+    ) -> Result<nsh_core::JsonValue, String> {
+        let _ = (method, args);
+        Err(headless_only(&format!("the fake {name:?}")))
     }
     /// What the app asked of the speaker, in order.
     fn audio_calls(&mut self) -> Result<Vec<crate::headless::AudioCall>, String> {
@@ -241,8 +240,8 @@ impl Driver for Headless {
     fn step(&mut self, name: &str) {
         Headless::step(self, name);
     }
-    fn press(&mut self, selector: &str) -> Result<(), String> {
-        Headless::press(self, selector)
+    fn press(&mut self, selector: &str, at: Option<Point<Points>>) -> Result<(), String> {
+        self.press_with(selector, at)
     }
     fn long_press(&mut self, selector: &str) -> Result<(), String> {
         Headless::long_press(self, selector)
@@ -399,15 +398,13 @@ impl Driver for Headless {
         self.catch_up();
         Ok(Headless::picks(self))
     }
-    fn speech_requests(&mut self) -> Result<Vec<nsh_core::speech::SpeechRequest>, String> {
-        self.catch_up();
-        Ok(Headless::speech_requests(self))
-    }
-    fn hear(&mut self, text: &str) -> Result<(), String> {
-        Headless::hear(self, text)
-    }
-    fn end_speech(&mut self, error: Option<nsh_core::speech::SpeechError>) -> Result<(), String> {
-        Headless::end_speech(self, error)
+    fn call_fake(
+        &mut self,
+        name: &str,
+        method: &str,
+        args: &[nsh_core::JsonValue],
+    ) -> Result<nsh_core::JsonValue, String> {
+        Headless::call_fake(self, name, method, args)
     }
     fn audio_calls(&mut self) -> Result<Vec<crate::headless::AudioCall>, String> {
         self.catch_up();
@@ -599,6 +596,9 @@ impl Remote {
 fn step_name(step: &TestStep) -> Option<String> {
     Some(match step {
         TestStep::Press { selector } => format!("press({selector})"),
+        TestStep::PressAt { selector, x, y } => {
+            format!("press({selector}, {}, {})", Points(*x), Points(*y))
+        }
         TestStep::LongPress { selector } => format!("longPress({selector})"),
         TestStep::Type { selector, text } => format!("type({selector}, {text:?})"),
         TestStep::Submit { selector } => format!("submit({selector})"),
@@ -683,9 +683,16 @@ impl Driver for Remote {
     fn step(&mut self, name: &str) {
         *self.step.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
     }
-    fn press(&mut self, selector: &str) -> Result<(), String> {
-        self.action(TestStep::Press {
-            selector: selector.into(),
+    fn press(&mut self, selector: &str, at: Option<Point<Points>>) -> Result<(), String> {
+        self.action(match at {
+            Some(at) => TestStep::PressAt {
+                selector: selector.into(),
+                x: at.x.0,
+                y: at.y.0,
+            },
+            None => TestStep::Press {
+                selector: selector.into(),
+            },
         })
     }
     fn long_press(&mut self, selector: &str) -> Result<(), String> {
@@ -933,6 +940,9 @@ impl Driver for Remote {
             color: nsh_core::Color(span.color),
             font_size: nsh_core::Points(span.font_size),
             font_weight: span.font_weight,
+            line_height: nsh_core::Points(span.line_height),
+            letter_spacing: nsh_core::Points(span.letter_spacing),
+            font_family: span.font_family.as_deref().map(nsh_core::FontFamily::new),
             italic: span.italic,
             decoration: nsh_core::TextDecoration {
                 underline: span.underline,

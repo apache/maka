@@ -16,10 +16,11 @@ use serde_json::{Value, json};
 
 use crate::rich_editor::{
     commands::Dispatch,
+    extensions::history::close_history,
     model::{Attrs, Mark, MarkType, Node, NodeType, utf16_len},
     state::{
         EditorState, EditorStateConfig, KeyEvent, Plugin, PluginKey, PluginSpec, PluginState,
-        Transaction,
+        Transaction, TransactionOrigin,
     },
     transform::{BoxStep, can_join, find_wrapping},
 };
@@ -254,6 +255,7 @@ struct Undoable {
     from: usize,
     to: usize,
     text: String,
+    already_inserted: bool,
 }
 
 struct InputRules {
@@ -288,7 +290,7 @@ impl PluginSpec for InputRules {
         text: &str,
         dispatch: &mut dyn FnMut(Transaction),
     ) -> bool {
-        run(self, state, from, to, text, dispatch)
+        run(self, state, from, to, text, true, dispatch)
     }
 
     // Enter runs the rules too, with a line break as the typed text (as
@@ -308,7 +310,9 @@ impl PluginSpec for InputRules {
         };
         let pos = cursor.pos;
         let mut fired = None;
-        if !run(self, state, pos, pos, "\n", &mut |tr| fired = Some(tr)) {
+        if !run(self, state, pos, pos, "\n", false, &mut |tr| {
+            fired = Some(tr)
+        }) {
             return false;
         }
         let Some(mut tr) = fired else {
@@ -325,9 +329,26 @@ impl PluginSpec for InputRules {
 /// Marks `tr` as a rule's change that [`undo_input_rule`] can take back,
 /// for the plugin `key`: the text typed at `from..to` that fired it.
 pub(crate) fn mark_rule(tr: &mut Transaction, key: &str, from: usize, to: usize, text: &str) {
+    mark_rule_with(tr, key, from, to, text, false);
+}
+
+fn mark_rule_with(
+    tr: &mut Transaction,
+    key: &str,
+    from: usize,
+    to: usize,
+    text: &str,
+    already_inserted: bool,
+) {
     tr.set_meta(
         INPUT_RULE_META,
-        json!({ "key": key, "from": from, "to": to, "text": text }),
+        json!({
+            "key": key,
+            "from": from,
+            "to": to,
+            "text": text,
+            "alreadyInserted": already_inserted,
+        }),
     );
 }
 
@@ -351,22 +372,9 @@ pub(crate) fn record_rule(key: &str, tr: &Transaction, value: &PluginState) -> P
                 from: pos("from"),
                 to: pos("to"),
                 text: meta["text"].as_str().unwrap_or_default().to_owned(),
+                already_inserted: meta["alreadyInserted"].as_bool().unwrap_or(false),
             })),
         });
-    }
-    // A plugin's transaction appended after the rule's (the trailing node)
-    // keeps it undoable while it changes nothing up to the rule's end.
-    if tr.is_appended()
-        && !tr.selection_set()
-        && let Some(state) = value.downcast_ref::<InputRulesState>()
-        && let Some(undoable) = &state.undoable
-        && tr.mapping.maps.iter().all(|map| {
-            let mut untouched = true;
-            map.for_each(|start, _, _, _| untouched &= start >= undoable.to);
-            untouched
-        })
-    {
-        return value.clone();
     }
     if tr.selection_set() || tr.doc_changed() {
         Arc::new(InputRulesState::default())
@@ -388,6 +396,7 @@ fn run(
     from: usize,
     to: usize,
     text: &str,
+    split_insert: bool,
     dispatch: &mut dyn FnMut(Transaction),
 ) -> bool {
     let Ok(start) = state.doc().resolve(from) else {
@@ -418,16 +427,77 @@ fn run(
         if len < text_len {
             continue;
         }
-        let Some(mut tr) = (rule.handler)(state, &found, from - (len - text_len), to) else {
+        let Some(mut rule_tr) = (rule.handler)(state, &found, from - (len - text_len), to) else {
             continue;
         };
-        if rule.undoable {
-            mark_rule(&mut tr, plugin.key.name(), from, to, text);
+        if split_insert && !text.is_empty() {
+            let mut input_tr = state.tr();
+            input_tr.insert_text(text, Some(from), Some(to));
+            input_tr.set_origin(TransactionOrigin::Input);
+            if let Some(mut convert_tr) = build_conversion_tr(state, &input_tr, &rule_tr) {
+                close_history(&mut convert_tr);
+                if rule.undoable {
+                    mark_rule_with(
+                        &mut convert_tr,
+                        plugin.key.name(),
+                        from,
+                        from + text_len,
+                        text,
+                        true,
+                    );
+                }
+                dispatch(input_tr);
+                dispatch(convert_tr);
+                return true;
+            }
         }
-        dispatch(tr);
+        close_history(&mut rule_tr);
+        if rule.undoable {
+            mark_rule(&mut rule_tr, plugin.key.name(), from, to, text);
+        }
+        dispatch(rule_tr);
         return true;
     }
     false
+}
+
+/// Builds the second transaction of a two-step input rule (Tiptap's
+/// `applyRule`): starts from `input_tr`'s post-insertion document, undoes
+/// `input_tr`'s insertion steps, and replays `rule_tr`'s steps and metadata.
+fn build_conversion_tr(
+    state: &EditorState,
+    input_tr: &Transaction,
+    rule_tr: &Transaction,
+) -> Option<Transaction> {
+    let mut tr = Transaction::new(
+        input_tr.doc().clone(),
+        state.schema().clone(),
+        input_tr.selection(),
+        input_tr.stored_marks().map(<[_]>::to_vec),
+        state.revision() + 1,
+    );
+    for (step, doc) in input_tr.steps.iter().zip(input_tr.docs.iter()).rev() {
+        tr.step(step.invert(doc)).ok()?;
+    }
+    for step in &rule_tr.steps {
+        tr.step(step.clone()).ok()?;
+    }
+    if rule_tr.selection_set() {
+        tr.set_selection(rule_tr.selection());
+    }
+    if rule_tr.stored_marks_set() {
+        tr.set_stored_marks(rule_tr.stored_marks().map(<[_]>::to_vec));
+    }
+    for (key, value) in rule_tr.meta_entries() {
+        tr.set_meta(key, value.clone());
+    }
+    if rule_tr.scrolled_into_view() {
+        tr.scroll_into_view();
+    }
+    if let Some(origin) = rule_tr.origin() {
+        tr.set_origin(origin.clone());
+    }
+    Some(tr)
 }
 
 // Gives each input rules plugin a key of its own.
@@ -461,16 +531,18 @@ pub fn undo_input_rule(state: &EditorState, dispatch: Dispatch<'_>) -> bool {
             for (step, doc) in undoable.steps.iter().rev() {
                 let _ = tr.step(step.invert(doc));
             }
-            if undoable.text.is_empty() {
-                let _ = tr.delete(undoable.from, undoable.to);
-            } else {
-                let marks = tr
-                    .doc()
-                    .resolve(undoable.from)
-                    .map(|pos| pos.marks())
-                    .unwrap_or_default();
-                let node = state.schema().text(&undoable.text, marks);
-                let _ = tr.replace_with(undoable.from, undoable.to, node.into());
+            if !undoable.already_inserted {
+                if undoable.text.is_empty() {
+                    let _ = tr.delete(undoable.from, undoable.to);
+                } else {
+                    let marks = tr
+                        .doc()
+                        .resolve(undoable.from)
+                        .map(|pos| pos.marks())
+                        .unwrap_or_default();
+                    let node = state.schema().text(&undoable.text, marks);
+                    let _ = tr.replace_with(undoable.from, undoable.to, node.into());
+                }
             }
             dispatch(tr);
         }
@@ -724,18 +796,19 @@ mod tests {
     // else an insertion.
     fn type_text(state: &EditorState, text: &str) -> EditorState {
         let (from, to) = (state.selection().from(), state.selection().to());
-        let mut out = None;
-        let handled = state.plugins().iter().any(|plugin| {
-            plugin.handle_text_input(state, from, to, text, &mut |tr| out = Some(tr))
-        });
-        let tr = if handled {
-            out.unwrap()
+        let mut trs = Vec::new();
+        let handled = state
+            .plugins()
+            .iter()
+            .any(|plugin| plugin.handle_text_input(state, from, to, text, &mut |tr| trs.push(tr)));
+        if handled {
+            trs.into_iter()
+                .fold(state.clone(), |s, tr| s.apply(tr).unwrap())
         } else {
             let mut tr = state.tr();
             tr.insert_text(text, Some(from), Some(to));
-            tr
-        };
-        state.apply(tr).unwrap()
+            state.apply(tr).unwrap()
+        }
     }
 
     fn type_all(state: &EditorState, text: &str) -> EditorState {
@@ -803,5 +876,78 @@ mod tests {
         assert_eq!(state.doc().text_content(), "a\u{2014}b\u{2026}");
         let state = type_all(&new_state(), "\"q\"");
         assert_eq!(state.doc().text_content(), "\u{201C}q\u{201D}");
+    }
+
+    #[test]
+    fn history_undo_after_input_rule_restores_typed_text_first() {
+        use crate::rich_editor::extensions::history::{HistoryOptions, history, undo};
+        let schema = starter::schema();
+        let plugins = vec![
+            starter::input_rules(&schema),
+            history(HistoryOptions::default()),
+        ];
+        let state = EditorState::create(EditorStateConfig::new(schema).plugins(plugins)).unwrap();
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), 1, None));
+        let state = state.apply(tr).unwrap();
+
+        let state = type_all(&state, "* ");
+        assert_eq!(state.doc().child(0).ty().name(), "bulletList");
+
+        // First Mod+Z undoes only the rule conversion, leaving `* `.
+        let mut out = None;
+        assert!(undo(&state, Some(&mut |tr| out = Some(tr))));
+        let undone1 = state.apply(out.unwrap()).unwrap();
+        assert_eq!(undone1.doc().child(0).ty().name(), "paragraph");
+        assert_eq!(undone1.doc().child(0).text_content(), "* ");
+
+        // Second Mod+Z undoes the typed text back to the empty paragraph.
+        let mut out = None;
+        assert!(undo(&undone1, Some(&mut |tr| out = Some(tr))));
+        let undone2 = undone1.apply(out.unwrap()).unwrap();
+        assert_eq!(undone2.doc().child(0).ty().name(), "paragraph");
+        assert_eq!(undone2.doc().child(0).text_content(), "");
+    }
+
+    #[test]
+    fn appended_transaction_clears_undo_input_rule() {
+        use crate::rich_editor::extensions::trailing_node::{TrailingNodeOptions, trailing_node};
+        let schema = starter::schema();
+        let plugins = vec![
+            starter::input_rules(&schema),
+            trailing_node(TrailingNodeOptions::default()),
+        ];
+        let state = EditorState::create(EditorStateConfig::new(schema).plugins(plugins)).unwrap();
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), 1, None));
+        let state = state.apply(tr).unwrap();
+
+        // `* ` wraps into a bulletList, then TrailingNode appends a trailing
+        // paragraph; the appended transaction clears the input-rule undo record.
+        let state = type_all(&state, "* ");
+        assert_eq!(state.doc().child(0).ty().name(), "bulletList");
+        assert_eq!(state.doc().child_count(), 2);
+        assert!(!undo_input_rule(&state, None));
+
+        // Rules that do not trigger an appended transaction remain undoable.
+        let plain = type_all(&state_with_trailing(), "a --");
+        assert_eq!(plain.doc().text_content(), "a \u{2014}");
+        let mut out = None;
+        assert!(undo_input_rule(&plain, Some(&mut |tr| out = Some(tr))));
+        let undone = plain.apply(out.unwrap()).unwrap();
+        assert_eq!(undone.doc().text_content(), "a --");
+    }
+
+    fn state_with_trailing() -> EditorState {
+        use crate::rich_editor::extensions::trailing_node::{TrailingNodeOptions, trailing_node};
+        let schema = starter::schema();
+        let plugins = vec![
+            starter::input_rules(&schema),
+            trailing_node(TrailingNodeOptions::default()),
+        ];
+        let state = EditorState::create(EditorStateConfig::new(schema).plugins(plugins)).unwrap();
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::create(state.doc(), 1, None));
+        state.apply(tr).unwrap()
     }
 }

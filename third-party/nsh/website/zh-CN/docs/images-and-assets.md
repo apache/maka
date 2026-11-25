@@ -1,6 +1,6 @@
 ---
 title: 图片与资源
-description: 用 Rust 和 TSX 显示图片：应用的资源与 @2x 文件、SVG 图片、远程 URL、缩放模式、占位图、模糊、着色、加载事件，以及读取图片尺寸和预取图片。
+description: 用 TSX 和 Rust 显示图片：应用的资源与 @2x 文件、SVG 图片、远程 URL、缩放模式、占位图、模糊、着色、加载事件，以及读取图片尺寸和预取图片。
 order: 36
 group: ui
 ---
@@ -8,13 +8,6 @@ group: ui
 # 图片与资源
 
 图片元素（Rust 中的 `image(..)`，TSX 中的 `<Image>`）显示一张位图或一幅 SVG 图：随应用一起发布的文件，或从 URL 下载的图片。图片在主线程之外读取和解码，按视图实际显示的尺寸降采样后缓存；主线程只负责显示解码结果。
-
-```rust tabs
-const LOGO: ImageAsset = asset!("logo@2x.png");
-
-image(LOGO)
-image("https://picsum.photos/seed/nsh/600/400").w_full().h(px(200.0)).rounded(px(12.0))
-```
 
 ```tsx tabs
 import { Image } from "nsh";
@@ -24,11 +17,24 @@ import logo from "./assets/logo@2x.png";
 <Image src="https://picsum.photos/seed/nsh/600/400" style={{ width: "100%", height: 200, borderRadius: 12 }} />
 ```
 
+```rust tabs
+const LOGO: ImageAsset = asset!("logo@2x.png");
+
+image(LOGO)
+image("https://picsum.photos/seed/nsh/600/400").w_full().h(px(200.0)).rounded(px(12.0))
+```
+
 元素的属性列在 [image](../elements/image.md) 中。
 
 ## 应用内的图片
 
 Rust crate 把文件放在它的 `assets/` 目录中：`asset!("logo@2x.png")`（路径相对于 `assets/`）是一个 `ImageAsset`，即 `{ url, size, scales }`，在 crate 编译时读取；在 crate 的 `#[native_module]` 函数中调用 `registry.assets(assets!())` 会把该目录中的每个文件随应用发布。在 TSX 中，像导入模块一样导入图片文件：导入得到一个 `ImageAsset`，即 `{ url, size, scales? }`，打包器会把文件随应用一起发布：
+
+```tsx tabs
+import logo from "./assets/logo@2x.png";
+
+logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
+```
 
 ```rust tabs
 const LOGO: ImageAsset = asset!("logo@2x.png");
@@ -39,12 +45,6 @@ const LOGO: ImageAsset = asset!("logo@2x.png");
 fn native(registry: &mut Registry) {
     registry.assets(assets!());
 }
-```
-
-```tsx tabs
-import logo from "./assets/logo@2x.png";
-
-logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
 ```
 
 支持的文件：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`，以及 `.svg`（[SVG 图片](#svg-图片)）。
@@ -69,16 +69,16 @@ assets/
 └── logo@3x.png    192×192
 ```
 
-```rust tabs
-const LOGO: ImageAsset = asset!("logo.png");
-
-// LOGO.size：64 × 64 点，LOGO.scales：[1.0, 2.0, 3.0]
-```
-
 ```tsx tabs
 import logo from "./assets/logo.png";
 
 logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
+```
+
+```rust tabs
+const LOGO: ImageAsset = asset!("logo.png");
+
+// LOGO.size：64 × 64 点，LOGO.scales：[1.0, 2.0, 3.0]
 ```
 
 - 对不带后缀的图片，`asset!` 和打包器会查找它的 `@1.5x`、`@2x`、`@3x` 和 `@4x` 同名文件。`scales` 列出它们，其中 1 表示指定的文件本身；没有同名文件的图片没有 scales（在 TSX 中导入为 `{ url, size }`）。打包器发布找到的同名文件，`assets!()` 发布整个目录。
@@ -137,15 +137,15 @@ view().items_start().child(image(src)) // 100 × 50 点
 
 给元素一个 URL：在 Rust 中是字符串（会变化的 URL 用闭包），在 TSX 中是 URL 字符串：
 
+```tsx tabs
+<Image src={user().avatarUrl} style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "#eaeef2" }} />
+```
+
 ```rust tabs
 image(move || user.with(|u| u.avatar_url.clone()))
     .size(px(48.0))
     .rounded(px(24.0))
     .bg(rgb(0xeaeef2))
-```
-
-```tsx tabs
-<Image src={user().avatarUrl} style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: "#eaeef2" }} />
 ```
 
 - **为远程图片指定尺寸。** 加载完成前无法得知它们的尺寸，所以如果没有宽和高（或其中一边加宽高比），它们的高度会塌缩为 0。
@@ -206,12 +206,12 @@ nsh.setCacheOptions(NshCacheOptions.builder()
 | `"none"`（`ResizeMode::Center`） | 自然尺寸，放在 `objectPosition` 处（默认居中） |
 | `"scale-down"`（`ResizeMode::ScaleDown`） | 自然尺寸，比框大时缩小到放得下 |
 
-```rust tabs
-image(photo).object_fit(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
-```
-
 ```tsx tabs
 <Image src={photo} style={{ width: 140, height: 140, objectFit: "contain", backgroundColor: "#eaeef2" }} />
+```
+
+```rust tabs
+image(photo).object_fit(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
 ```
 
 Tailwind 类 `object-cover`、`object-contain`、`object-fill`、`object-none` 和 `object-scale-down` 设置的是同一个样式。
@@ -220,12 +220,12 @@ Tailwind 类 `object-cover`、`object-contain`、`object-fill`、`object-none` �
 
 缩放后的图片在框中的位置由 `objectPosition` 样式决定（Rust 中为 `.object_position(..)` 和 `.object_top()` 等），即 CSS 的 `object-position`，默认居中。覆盖整个框的图片围绕这个位置裁剪，完整放入的图片在留白中按它移动。它接受关键字（`"top"`、`"left bottom"`）、百分比与长度（`"25% 75%"`、`"10px 0"`），以及带偏移的边（`"right 10px bottom 20%"`）。聊天气泡里的长图可以这样显示顶部：
 
-```rust tabs
-image(photo).object_fit(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
-```
-
 ```tsx tabs
 <Image src={photo} style={{ width: 220, height: 160, borderRadius: 16, objectPosition: "top" }} />
+```
+
+```rust tabs
+image(photo).object_fit(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
 ```
 
 Tailwind 类与 Tailwind 相同：`object-top`、`object-bottom`、`object-left`、`object-right`、`object-center`、`object-top-left`、`object-top-right`、`object-bottom-left`、`object-bottom-right`，以及任意值（`object-[25%_75%]`）。
@@ -234,23 +234,23 @@ Tailwind 类与 Tailwind 相同：`object-top`、`object-bottom`、`object-left`
 
 图片也是视图：它们支持圆角（也可按角设置）、边框、阴影、不透明度和变换。圆角会裁剪图片。
 
-```rust tabs
-image(avatar).size(px(90.0)).rounded(px(45.0)).border(px(3.0)).border_color(rgb(0x8250df))
-```
-
 ```tsx tabs
 <Image src={avatar} style={{ width: 90, height: 90, borderRadius: 45, borderWidth: 3, borderColor: "#8250df" }} />
+```
+
+```rust tabs
+image(avatar).size(px(90.0)).rounded(px(45.0)).border(px(3.0)).border_color(rgb(0x8250df))
 ```
 
 - **着色**（Rust 中的 `.tint_color(..)`，TSX 中的 `tintColor` 样式）会给图片的不透明像素重新着色：适合随主题变色的单色图标。
 - **滤镜**（`.grayscale(..)`、`.sepia(..)`、`.blur(..)`；TSX 中的 `filter`）在两个平台上都可用于图片（[滤镜](./styling.md#滤镜与混合)）。
 
-```rust tabs
-image(ICON).size(px(24.0)).tint_color(AdaptiveColor::rgb(0x0969da, 0x58a6ff))
-```
-
 ```tsx tabs
 <Image src={icon} style={{ width: 24, height: 24, tintColor: active() ? "#0969da" : "#6e7781" }} />
+```
+
+```rust tabs
+image(ICON).size(px(24.0)).tint_color(AdaptiveColor::rgb(0x0969da, 0x58a6ff))
 ```
 
 ## 占位图、淡入与模糊
@@ -261,15 +261,6 @@ image(ICON).size(px(24.0)).tint_color(AdaptiveColor::rgb(0x0969da, 0x58a6ff))
 | `fadeDuration` | `.fade_duration(ms)` | 加载完成的图片淡入所用的毫秒数。iOS 默认 0，Android 默认 300 |
 | `blurRadius` | `.blur_radius(px(..))` | 按此半径（点）模糊图片，在解码时一次性应用 |
 
-```rust tabs
-image(move || format!("https://picsum.photos/seed/{}/300/300", id.get()))
-    .placeholder(PLACEHOLDER)
-    .fade_duration(250.0)
-    .size(px(100.0))
-    .rounded(px(12.0))
-image(cover).blur_radius(px(16.0)).absolute().inset_0()
-```
-
 ```tsx tabs
 <Image
   src={`https://picsum.photos/seed/${id()}/300/300`}
@@ -278,6 +269,15 @@ image(cover).blur_radius(px(16.0)).absolute().inset_0()
   style={{ width: 100, height: 100, borderRadius: 12 }}
 />
 <Image src={cover} blurRadius={16} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }} />
+```
+
+```rust tabs
+image(move || format!("https://picsum.photos/seed/{}/300/300", id.get()))
+    .placeholder(PLACEHOLDER)
+    .fade_duration(250.0)
+    .size(px(100.0))
+    .rounded(px(12.0))
+image(cover).blur_radius(px(16.0)).absolute().inset_0()
 ```
 
 ## 动图
@@ -294,16 +294,6 @@ image(cover).blur_radius(px(16.0)).absolute().inset_0()
 | `onError` | `.on_error(..)` | `{ message }`（Rust 中为 `&str`） | 加载或解码失败 |
 | `onLoadEnd` | `.on_load_end(..)` | | 在 `onLoad` 或 `onError` 之后 |
 
-```rust tabs
-let status = signal(SharedString::from("loading…"));
-
-image(url)
-    .on_load(move |size: &Size<DevicePixels>| status.set(format!("{}×{}", size.width.0, size.height.0).into()))
-    .on_error(move |message: &str| status.set(message.to_owned().into()))
-    .w(px(90.0))
-    .h(px(60.0))
-```
-
 ```tsx tabs
 const status = signal("loading…");
 
@@ -315,6 +305,16 @@ const status = signal("loading…");
 />
 ```
 
+```rust tabs
+let status = signal(SharedString::from("loading…"));
+
+image(url)
+    .on_load(move |size: &Size<DevicePixels>| status.set(format!("{}×{}", size.width.0, size.height.0).into()))
+    .on_error(move |message: &str| status.set(message.to_owned().into()))
+    .w(px(90.0))
+    .h(px(60.0))
+```
+
 加载事件报告的是源图的尺寸，而不是解码时的尺寸。
 
 带有[像素密度变体](#像素密度)的图片会加载其中一个文件，加载事件报告的是该文件的像素尺寸：在 3× 屏幕上，`logo@3x.png` 报告 192×192，而 `Image.getSize(logo)` resolve 为导入文件的 64×64。像素比变化、图片加载另一个变体时，这次加载同样会触发事件：先是 `onLoadStart`，然后是带有新文件尺寸的 `onLoad`（或 `onError`），最后是 `onLoadEnd`。
@@ -323,6 +323,13 @@ const status = signal("loading…");
 
 不在屏幕上的图片也可以测量尺寸和提前加载：Rust 中是 `image_size(..)` 和 `prefetch_image(..)`，TSX 中是 `Image.getSize` 和 `Image.prefetch`（就在渲染元素的那个 `Image` 上）：
 
+```tsx tabs
+import { Image } from "nsh";
+
+const size = await Image.getSize("https://example.com/photo.jpg");   // { width, height } in pixels
+await Image.prefetch("https://example.com/next.jpg");                // once the bytes are in memory
+```
+
 ```rust tabs
 spawn(async move {
     // Ok(ImageSize { width, height })，单位为像素。
@@ -330,13 +337,6 @@ spawn(async move {
     // 字节进入内存后为 Ok(())。
     let loaded = prefetch_image("https://example.com/next.jpg").await;
 });
-```
-
-```tsx tabs
-import { Image } from "nsh";
-
-const size = await Image.getSize("https://example.com/photo.jpg");   // { width, height } in pixels
-await Image.prefetch("https://example.com/next.jpg");                // once the bytes are in memory
 ```
 
 | Rust | TSX | 返回值 |
@@ -348,6 +348,14 @@ await Image.prefetch("https://example.com/next.jpg");                // once the
 
 一个常见用法是按宽高比确定远程图片的尺寸：
 
+```tsx tabs
+function RemoteImage(props: { url: string }) {
+  const ratio = signal(1);
+  Image.getSize(props.url).then((s) => ratio.set(s.width / s.height));
+  return <Image src={props.url} style={{ width: "100%", aspectRatio: ratio() }} />;
+}
+```
+
 ```rust tabs
 fn remote_image(url: &'static str) -> impl IntoElement {
     let ratio = signal(1.0_f32);
@@ -357,14 +365,6 @@ fn remote_image(url: &'static str) -> impl IntoElement {
         }
     });
     image(url).w_full().aspect_ratio(ratio)
-}
-```
-
-```tsx tabs
-function RemoteImage(props: { url: string }) {
-  const ratio = signal(1);
-  Image.getSize(props.url).then((s) => ratio.set(s.width / s.height));
-  return <Image src={props.url} style={{ width: "100%", aspectRatio: ratio() }} />;
 }
 ```
 
@@ -395,6 +395,12 @@ const list = await (await fetch(cities)).json();
 
 `fetch` 通过 `asset:/` URL 读取应用随附的文件，TSX 和 Rust 中都一样，在每个平台上都是如此。导入的图片带有它的 URL（`url`），Rust crate 的文件则由 `asset!`（`FileAsset::uri`）和 `assets!()` 给出：
 
+```tsx tabs
+import flag from "./images/flag.png";
+
+const bytes = await (await fetch(flag.url)).bytes();
+```
+
 ```rust tabs
 const GREETING: FileAsset = asset!("locales/en.txt");
 
@@ -409,12 +415,6 @@ fn Greeting() -> impl IntoElement {
     });
     text(move || greeting.get())
 }
-```
-
-```tsx tabs
-import flag from "./images/flag.png";
-
-const bytes = await (await fetch(flag.url)).bytes();
 ```
 
 引擎在自身线程之外从应用的文件中读取该文件（`nsh run` 期间从开发服务器读取），无需任何能力授权：这些是应用自己的文件。Web 应用会从页面提供资源的位置下载页面未预加载的文件。响应状态为 `200`，带有文件的字节、`Content-Length` 以及由扩展名给出的 `Content-Type`（`image/png`、`application/json` 等），无论文件以何种方式到达，其 `url` 都是所请求的 `asset:/` URL（不含片段）；应用没有随附的文件会以指明该文件的网络错误拒绝。URL 以文件在应用文件中的路径来指明它，在每个平台上都一样：scheme 不区分大小写，与 URL 的 scheme 一样；查询或片段不改变所指的文件（`asset:/locales/en.json?v=2` 读取 `locales/en.json`）。请求以 `GET`（或 `HEAD`）读取文件：路径离开应用文件的 URL（`..`、绝对路径）和使用其他方法的请求都会以同样的方式拒绝，且不会读取或下载任何内容。

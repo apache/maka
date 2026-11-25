@@ -274,6 +274,49 @@ fn sink_text(app: &mut Headless, text: &str) {
     app.wait(Duration::from_millis(50)).unwrap();
 }
 
+/// The platform moved the sink's own caret to UTF-16 offset `at` of its
+/// text, without a key (an input method that types a pair of brackets and
+/// puts its caret between them). Sent to every node, as [`compose`] is.
+fn sink_caret(app: &mut Headless, at: u32) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("start", PayloadValue::Number(f64::from(at))),
+                ("end", PayloadValue::Number(f64::from(at))),
+            ]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+/// What AppKit reports as an input method types `text` with its caret at
+/// UTF-16 offset `at`: the caret first, then the text, in one turn.
+fn sink_caret_then_text(app: &mut Headless, at: u32, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("start", PayloadValue::Number(f64::from(at))),
+                ("end", PayloadValue::Number(f64::from(at))),
+            ]),
+        );
+    }
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::ChangeText,
+            EventPayload::Text {
+                text: text.to_owned(),
+                count: 0,
+            },
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
 #[test]
 fn typing_inserts_text_into_the_document() {
     let mut app = start(paragraphs(&[""]));
@@ -281,6 +324,84 @@ fn typing_inserts_text_into_the_document() {
     see(&mut app, &doc("Hello"));
     see(&mut app, "Sel 6-6");
     see(&mut app, "Hello");
+}
+
+#[test]
+fn the_caret_follows_an_input_method_that_moves_it_between_a_pair() {
+    let mut app = start(paragraphs(&["你好"]));
+    app.type_text("id:editor", "").unwrap();
+    keys(&mut app, &["end"]);
+    see(&mut app, "Sel 3-3");
+    // The input method types both halves, then puts its caret between them.
+    sink_text(&mut app, "（）");
+    see(&mut app, &doc("你好（）"));
+    see(&mut app, "Sel 5-5");
+    sink_caret(&mut app, 1);
+    see(&mut app, "Sel 4-4");
+    // What it types next goes in there, with the caret after it.
+    sink_text(&mut app, "（中）");
+    see(&mut app, &doc("你好（中）"));
+    see(&mut app, "Sel 5-5");
+    sink_caret(&mut app, 2);
+    sink_text(&mut app, "（中文）");
+    see(&mut app, &doc("你好（中文）"));
+    see(&mut app, "Sel 6-6");
+    // A Backspace between them deletes before the caret.
+    sink_text(&mut app, "（中）");
+    see(&mut app, &doc("你好（中）"));
+    see(&mut app, "Sel 5-5");
+}
+
+#[test]
+fn a_caret_reported_before_its_text_is_read_against_that_text() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "").unwrap();
+    sink_text(&mut app, "（）");
+    sink_caret(&mut app, 1);
+    see(&mut app, "Sel 2-2");
+    // AppKit: the caret the insertion leaves, then the insertion's text.
+    sink_caret_then_text(&mut app, 2, "（中）");
+    see(&mut app, &doc("（中）"));
+    see(&mut app, "Sel 3-3");
+    sink_caret_then_text(&mut app, 3, "（中文）");
+    see(&mut app, &doc("（中文）"));
+    see(&mut app, "Sel 4-4");
+}
+
+#[test]
+fn a_caret_reported_a_turn_before_its_text_waits_for_it() {
+    let mut app = start(paragraphs(&[""]));
+    app.type_text("id:editor", "").unwrap();
+    sink_text(&mut app, "（）");
+    sink_caret(&mut app, 1);
+    see(&mut app, "Sel 2-2");
+    // The insertion's caret, then its text in a later turn.
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("start", PayloadValue::Number(2.0)),
+                ("end", PayloadValue::Number(2.0)),
+            ]),
+        );
+    }
+    app.wait(Duration::from_millis(10)).unwrap();
+    sink_text(&mut app, "（中）");
+    see(&mut app, &doc("（中）"));
+    see(&mut app, "Sel 3-3");
+}
+
+#[test]
+fn a_sink_caret_past_what_the_sink_holds_is_left_alone() {
+    let mut app = start(paragraphs(&["ab"]));
+    app.type_text("id:editor", "").unwrap();
+    keys(&mut app, &["end"]);
+    // Reported before the text it belongs to.
+    sink_caret(&mut app, 1);
+    sink_text(&mut app, "c");
+    see(&mut app, &doc("abc"));
+    see(&mut app, "Sel 4-4");
 }
 
 #[test]

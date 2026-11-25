@@ -1,6 +1,6 @@
 ---
 title: Goals and design principles
-description: "Native Shell's goals: native views and interaction, app-owned design, shared components, and Rust and TSX on one engine."
+description: "Native Shell's goals: native views and interaction, app-owned design, shared components, and TSX and Rust on one engine."
 order: 1.5
 group: start
 ---
@@ -54,7 +54,7 @@ An independently distributed styled library would belong to the application/comm
 
 ## Rust and TSX on one engine
 
-Rust apps, TSX screens and mixed projects share primitives, base components, signals and layout. Rust provides compiled application logic and reusable native components. TSX supports rapid iteration and modules delivered at run time ([Building with Rust](./rust.md)).
+TSX apps, TSX apps extended with Rust and apps written in Rust share primitives, base components, signals and layout. TSX carries an app's screens, state and logic with rapid iteration, and the same modules can be delivered at run time. Rust provides compiled logic and reusable native components through [nshm](./nshm.md), or a whole app ([Building with Rust](./rust.md)).
 
 The engine updates bindings that depend on changed signals and batches view operations. Text layout, native animations and input belong to the engine and its platform backends ([Architecture](./architecture.md)). Performance is evaluated with reproducible application workloads ([Performance](./performance.md)).
 

@@ -224,17 +224,28 @@ pub(super) fn payload(host: &Bindings, payload: &EventPayload) -> Result<Value, 
                     host.new_file(&data, &file.mime, &file.name, None)?.0[0] as u32,
                 ));
             }
+            let too_large = paste
+                .too_large
+                .iter()
+                .map(|file| {
+                    object([
+                        ("name", Value::string(&file.name)?),
+                        ("type", Value::string(&file.mime)?),
+                        ("size", number(file.len as f64)),
+                    ])
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             object([
                 ("text", Value::string(&paste.text)?),
                 ("html", Value::string(&paste.html)?),
                 ("files", Value::array(files)?),
+                ("tooLarge", Value::array(too_large)?),
                 ("uris", strings(&paste.uris)?),
             ])?
         }
         EventPayload::Picked { id, .. }
         | EventPayload::FileRequest { id, .. }
         | EventPayload::CanvasImage { id, .. }
-        | EventPayload::Speech { id, .. }
         | EventPayload::Audio { id, .. } => object([("id", number(*id))])?,
         EventPayload::Native { name, data } => object([
             ("name", Value::string(name)?),

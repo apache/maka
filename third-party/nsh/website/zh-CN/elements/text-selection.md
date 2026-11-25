@@ -10,6 +10,24 @@ demo: el-text-selection
 
 设置了 `selectable` 的 [`View`](./view.md) 让其中的文字一起选择，就像网页一样：一个选区可以从一段文字中的某处延伸到另一段文字中的某处，按阅读顺序跨越视图、[`Text`](./text.md) 元素和 [`TextView`](./text-view.md)。让聊天记录可选择后，选区可以从一条消息开始、在下一条结束；复制会把选中的文字放到剪贴板，并排的文字用制表符连接，其他用换行连接。Rust 用 `view().selectable(true)` 设置，TSX 用 `<View selectable>`；单段文字能否被选择由它的 `userSelect` 样式决定。
 
+```tsx tabs
+import { Text, View } from "nsh";
+import { TextView } from "nsh/base";
+
+function ReleaseNotes(props: { notes: string }) {
+  return (
+    <View selectable class="gap-3 p-4">
+      <Text class="font-semibold">Release notes</Text>
+      <TextView markdown={props.notes} />
+      <View class="flex-row gap-2">
+        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
+        <Text>October 21</Text>
+      </View>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::text_view;
 use nsh_core::prelude::*;
@@ -31,29 +49,22 @@ fn release_notes(notes: &'static str) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text, View } from "nsh";
-import { TextView } from "nsh/base";
-
-function ReleaseNotes(props: { notes: string }) {
-  return (
-    <View selectable class="gap-3 p-4">
-      <Text class="font-semibold">Release notes</Text>
-      <TextView markdown={props.notes} />
-      <View class="flex-row gap-2">
-        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
-        <Text>October 21</Text>
-      </View>
-    </View>
-  );
-}
-```
-
 视图的布局和外观是应用的样式，内容是它的子元素。选区本身是平台的：视图不为它绘制任何东西。
 
 ## 聊天记录
 
 放在一个可选择视图中的聊天记录像一个页面一样选择：拖动从一条回复开始、在另一条结束，复制会取得其间每条消息的文字。
+
+```tsx tabs
+import { Scroll, View } from "nsh";
+import { TextView } from "nsh/base";
+
+<Scroll class="flex-1">
+  <View selectable class="gap-4 p-4">
+    <Each of={replies}>{(reply) => <TextView markdown={reply()} />}</Each>
+  </View>
+</Scroll>
+```
 
 ```rust tabs
 use nsh_base::text_view;
@@ -70,31 +81,9 @@ fn transcript(replies: Signal<Vec<SharedString>>) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Scroll, View } from "nsh";
-import { TextView } from "nsh/base";
-
-<Scroll class="flex-1">
-  <View selectable class="gap-4 p-4">
-    <Each of={replies}>{(reply) => <TextView markdown={reply()} />}</Each>
-  </View>
-</Scroll>
-```
-
 ## 读取选中的文字
 
 在可选择视图上设置 `onSelectionChange`（Rust 中为 `.on_text_selection_change(..)`），每次选区变化时都会收到选中的文字：`{ text, start, bounds, pageBounds }`，即复制会得到的内容、它在整个视图文字中的起始位置，以及它在视图中和所在根视图中的外框（macOS 和 Windows；锚定在 `pageBounds` 的 `Overlay` 就是选区上方的操作栏）；不再有选中内容时（点击别处、按 Escape、另一个视图开始选择）收到 `""`。只在文字或外框变化时报告。可选择视图嵌套时由外层视图报告，因为选区只有一个。设置了 `selectable` 的 [`TextView`](./text-view.md) 也以同样方式报告自己的选区（`onSelectionChange`，Rust 中为 `.on_selection_change(..)`）。聊天应用可以用它引用读者在回答中选中的部分：
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
-    view()
-        .selectable(true)
-        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
-        .child(nsh_base::text_view().markdown(markdown))
-}
-```
 
 ```tsx tabs
 import { signal, View } from "nsh";
@@ -107,11 +96,37 @@ const quote = signal("");
 </View>
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
+    view()
+        .selectable(true)
+        .on_text_selection_change(move |e: &TextSelectionEvent| quote.set(e.text.clone()))
+        .child(nsh_base::text_view().markdown(markdown))
+}
+```
+
 在可选择视图（或它里面的视图）的 ref 上调用 `clearSelection()` 会清除选区，效果和点击别处一样：高亮消失，`onSelectionChange` 收到 `""`。选区上方的操作栏在完成操作后调用它即可。Rust 中为 `ElementRef::clear_selection`。
 
 ### 读取为 Markdown 或 HTML
 
 设置了 `selectable` 的 `TextView` 可以通过 ref 在需要时读取选区：`selectedText({ format })` 返回选中的文字（`"plain"`，默认值，与复制得到的相同），或把选中的那部分文档按 `"markdown"`、`"html"` 返回。内容由选区覆盖的节点重新生成，所以周围的强调、链接、列表项和代码块都会保留（有序列表保留编号，表格的行保留表头）。选中全部时，若文档本来就是这种格式，则原样返回源文。没有选中内容时返回 `""`。Rust 中为 `TextViewApi::selected_text`，传入 `TextSelectionOptions::format(TextSelectionFormat::Markdown)`。
+
+```tsx tabs
+import { signal } from "nsh";
+import { TextView, type TextViewRef } from "nsh/base";
+
+let doc: TextViewRef | undefined;
+const quote = signal("");
+
+<TextView
+  ref={(r) => (doc = r)}
+  selectable
+  markdown={reply}
+  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextSelectionFormat, TextSelectionOptions, TextView, TextViewApi, text_view};
@@ -130,21 +145,6 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
             }
         })
 }
-```
-
-```tsx tabs
-import { signal } from "nsh";
-import { TextView, type TextViewRef } from "nsh/base";
-
-let doc: TextViewRef | undefined;
-const quote = signal("");
-
-<TextView
-  ref={(r) => (doc = r)}
-  selectable
-  markdown={reply}
-  onSelectionChange={async () => quote.set((await doc?.selectedText({ format: "markdown" })) ?? "")}
-/>
 ```
 
 它读取的是该视图持有的选区：可选择视图嵌套时选区由外层视图持有，内层 `TextView` 的 ref 返回 `""`。

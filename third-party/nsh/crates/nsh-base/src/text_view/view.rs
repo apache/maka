@@ -11,8 +11,8 @@ use nsh_core::{
     ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     element::{
-        Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
-        ScrollIntent, Style, StyleRefinement, TsTypes,
+        Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Reactive,
+        Renderer, Ret, ScrollIntent, Style, StyleRefinement, TsTypes,
     },
     geometry::Length,
     keymap::Modifiers,
@@ -2645,6 +2645,10 @@ impl Cx {
                     .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
                     .when_some(hint, |t, hint| t.child(hint))
+                    // Where it goes, as data for the platform (the web
+                    // draws its characters as an `<a href>`), as a `Link`
+                    // carries its `href`.
+                    .__link_href(Reactive::Static(Some(url.clone())))
                     .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
             }

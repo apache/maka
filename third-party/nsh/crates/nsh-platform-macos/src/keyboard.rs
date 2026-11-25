@@ -62,7 +62,8 @@ use std::{
 
 use block2::RcBlock;
 use nsh_core::{
-    EventKind, EventPayload, KeyEvent, ROOT_ID, element::SharedString, platform::InputModality,
+    EventKind, EventPayload, KeyEvent, ROOT_ID, ViewKind, element::SharedString,
+    platform::InputModality,
 };
 use objc2::{rc::Retained, runtime::AnyObject};
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow};
@@ -185,10 +186,126 @@ pub(crate) fn key_down(surface: &Surface, event: &NSEvent) -> bool {
     surface.control(|c| c.set_input_modality(InputModality::Keyboard));
     let mut key = key_event(event, Phase::Down);
     let captured = captures(surface, &view, event);
-    key.default_prevented = captured;
+    // A typing key under a `captureKeys="text"` rule moves into its input
+    // before any default: the input then receives this very event.
+    let typed_into = !captured
+        && types_text(event)
+        && text_target(surface, &view).is_some_and(|input| move_into(surface, &input, event));
+    key.default_prevented = captured || typed_into;
     remember(surface, event);
     notify(surface, &view, EventKind::KeyDown, key);
-    captured
+    if typed_into {
+        type_into(surface, event);
+    }
+    captured || typed_into
+}
+
+/// Whether `event` types text into an input (`captureKeys="text"`): a key
+/// that types a character, or a dead key that composes one, with no
+/// Command or Control held. An input method composes from these same keys.
+/// Option types characters on a Mac (`å`, and the U.S. layout's dead keys
+/// such as Option+E), as AltGr does elsewhere, so it does not stop the
+/// key. Named keys (Return, Tab, Escape, arrows, function keys), modifier
+/// keys and Space, which activates the focused button, stay where they
+/// are.
+fn types_text(event: &NSEvent) -> bool {
+    let held = NSEventModifierFlags::Command | NSEventModifierFlags::Control;
+    if event.modifierFlags().intersects(held) {
+        return false;
+    }
+    let code = event.keyCode();
+    if code == SPACE || modifier_name(code).is_some() || named_name(code).is_some() {
+        return false;
+    }
+    if printable(event.characters()).is_some() {
+        return true;
+    }
+    // A dead key types nothing yet: its characters are empty while the key
+    // itself names the accent it composes.
+    event.characters().is_some_and(|c| c.length() == 0)
+        && printable(event.charactersIgnoringModifiers()).is_some()
+}
+
+/// The text input a typing key moves into: the first enabled `Input`
+/// inside the nearest enabled logical ancestor of `view` (itself included)
+/// whose `captureKeys` rule is `"text"`. `None` when no rule applies or the
+/// rule's view holds no enabled input.
+fn text_target(surface: &Surface, view: &NshView) -> Option<NshView> {
+    let mut current = Some(key_start(surface, view));
+    while let Some(view) = current {
+        let rule = {
+            let state = view.state();
+            !state.props.accessibility.state.disabled && state.props.key_capture.types_into_input()
+        };
+        if rule {
+            return first_input(&view);
+        }
+        current = key_ancestor(surface, &view);
+    }
+    None
+}
+
+/// The first visible, enabled `Input` in `view`'s subtree, in tree order.
+fn first_input(view: &NshView) -> Option<NshView> {
+    for child in view.child_views() {
+        {
+            let state = child.state();
+            if state.style.hidden || state.props.accessibility.state.disabled {
+                continue;
+            }
+            if state.kind == ViewKind::Input {
+                drop(state);
+                return Some(child);
+            }
+        }
+        if let Some(input) = first_input(&child) {
+            return Some(input);
+        }
+    }
+    None
+}
+
+/// Focuses `input` for `event`'s key: whether its editor is now the first
+/// responder of the event's window.
+fn move_into(surface: &Surface, input: &NshView, event: &NSEvent) -> bool {
+    crate::text_input::focus(input);
+    let Some(window) = event.window(surface.mtm) else {
+        return false;
+    };
+    window
+        .firstResponder()
+        .and_then(|r| r.downcast::<NSView>().ok())
+        .is_some_and(|editor| {
+            &*editor == input.ns() || editor.isDescendantOf(input.ns()) || editing(input, &editor)
+        })
+}
+
+/// Whether `editor` is the field editor a line input's field uses (it is
+/// the window's, outside the input's view while the field edits).
+fn editing(input: &NshView, editor: &NSView) -> bool {
+    let Some(delegate) = editor
+        .downcast_ref::<objc2_app_kit::NSTextView>()
+        .and_then(|text| text.delegate())
+    else {
+        return false;
+    };
+    delegate
+        .downcast::<NSView>()
+        .is_ok_and(|field| field.isDescendantOf(input.ns()))
+}
+
+/// Hands `event` to the window's first responder, the editor
+/// [`move_into`] focused: its `keyDown:` interprets the key through the
+/// input context, so a dead key or an input method composes in the input
+/// as if it had had the focus.
+fn type_into(surface: &Surface, event: &NSEvent) {
+    let Some(window) = event.window(surface.mtm) else {
+        return;
+    };
+    if let Some(responder) = window.firstResponder() {
+        // SAFETY: the responder's own key handling, on the main thread.
+        let _: () = unsafe { objc2::msg_send![&*responder, keyDown: event] };
+    }
 }
 
 /// A key came up: reports its `KeyUp` to the focused view, with the
@@ -215,12 +332,28 @@ pub(crate) fn key_up(surface: &Surface, event: &NSEvent) -> bool {
 /// keys of AppKit have no `keyDown`/`keyUp` of their own.
 pub(crate) fn flags_changed(surface: &Surface, event: &NSEvent) {
     // The monitor sees every window of the application: only the surface
-    // whose window got the transition tracks it (one tracker per surface,
-    // shared by that surface's windows).
-    let Some(window) = event.window(surface.mtm) else {
-        return;
-    };
-    if crate::window::root_in(surface, &window).is_none() {
+    // whose window got the transition reports it (one tracker per surface,
+    // shared by that surface's windows). The flags are the physical
+    // keyboard's, whichever window got them, so a release in a window this
+    // surface does not own still drops the codes held here: the key is no
+    // longer down, and keeping it would turn the next press into a
+    // release. Nothing is reported, as for a release made while the app
+    // was inactive: the window that had the focus heard it.
+    let own = event
+        .window(surface.mtm)
+        .is_some_and(|window| crate::window::root_in(surface, &window).is_some());
+    if !own {
+        // Caps Lock's state is the physical keyboard's too: left stale, the
+        // next press here would be read from a wrong baseline (a press as
+        // a release, or the reverse). No `seen`/`remember`: both steps are
+        // idempotent, so the monitor's and the responder's deliveries of
+        // one event cannot account it twice.
+        let flags = event.modifierFlags();
+        reconcile(surface, flags, None);
+        surface
+            .keyboard
+            .caps
+            .set(flags.contains(NSEventModifierFlags::CapsLock));
         return;
     }
     // The monitor reports it first; the responder then gets the same event
@@ -746,4 +879,65 @@ fn seen(surface: &Surface, event: &NSEvent) -> bool {
 
 fn remember(surface: &Surface, event: &NSEvent) {
     surface.keyboard.last.set(Some(Mark::of(event)));
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_foundation::NSPoint;
+
+    use super::*;
+
+    /// A key event of virtual key `code` typing `chars` (the key alone
+    /// types `bare`) with `flags` held.
+    fn key(code: u16, chars: &str, bare: &str, flags: NSEventModifierFlags) -> Retained<NSEvent> {
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0.0, 0.0),
+            flags,
+            0.0,
+            0,
+            None,
+            &NSString::from_str(chars),
+            &NSString::from_str(bare),
+            false,
+            code,
+        )
+        .expect("a key event")
+    }
+
+    /// `captureKeys="text"` (#2933): which keys move into the input.
+    #[test]
+    fn typing_keys_are_characters_and_dead_keys() {
+        let none = NSEventModifierFlags::empty();
+        let option = NSEventModifierFlags::Option;
+        // Letters, Shift included, and Option's characters type.
+        assert!(types_text(&key(0, "a", "a", none)));
+        assert!(types_text(&key(14, "E", "e", NSEventModifierFlags::Shift)));
+        assert!(types_text(&key(0, "å", "a", option)));
+        // A dead key (Option+E on the U.S. layout) types nothing yet.
+        assert!(types_text(&key(14, "", "e", option)));
+        // Shortcuts, named keys, Space and modifier keys stay.
+        assert!(!types_text(&key(
+            0,
+            "a",
+            "a",
+            NSEventModifierFlags::Command
+        )));
+        assert!(!types_text(&key(
+            0,
+            "\u{1}",
+            "a",
+            NSEventModifierFlags::Control
+        )));
+        assert!(!types_text(&key(53, "\u{1b}", "\u{1b}", none)));
+        assert!(!types_text(&key(36, "\r", "\r", none)));
+        assert!(!types_text(&key(48, "\t", "\t", none)));
+        assert!(!types_text(&key(SPACE, " ", " ", none)));
+        assert!(!types_text(&key(
+            123,
+            "\u{f702}",
+            "\u{f702}",
+            NSEventModifierFlags::Function
+        )));
+    }
 }

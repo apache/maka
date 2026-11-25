@@ -10,6 +10,36 @@ demo: el-overlay
 
 浮层把它的子元素显示在所在根视图中一切内容之上：窗口，或包住它的对话框。父元素的尺寸、`overflow: hidden` 和滚动视图都不会裁剪它。除此之外，它就待在你写它的地方：它读取周围的 context，它的处理函数属于它所在的组件，并随父元素一起移除。弹出框、菜单、工具提示和 sheet 都建立在它之上；[`nsh/base`](../modules/nsh-base.md) 已经提供了它们（[Popover](./popover.md)、[Menu](./menu.md)、[Tooltip](./tooltip.md)、[Sheet](./sheet.md)），要构建你自己的弹出层，就用浮层。
 
+```tsx tabs
+import { Overlay, signal, Text, View, type ViewRef } from "nsh";
+
+function MoreButton() {
+  const open = signal(false);
+  let anchor: ViewRef | undefined;
+  return (
+    <View>
+      <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
+        <Text>More</Text>
+      </View>
+      <If when={open()}>
+        <Overlay
+          anchor={anchor}
+          placement="bottom"
+          align="start"
+          offset={6}
+          margin={8}
+          onPressOutside={() => open.set(false)}
+          onCancel={() => open.set(false)}
+          class="rounded-lg bg-white p-3 shadow-lg"
+        >
+          <Text>Shown above everything</Text>
+        </Overlay>
+      </If>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -40,36 +70,6 @@ fn more_button() -> impl IntoElement {
                 .shadow_lg()
                 .child(text("Shown above everything"))
         }))
-}
-```
-
-```tsx tabs
-import { Overlay, signal, Text, View, type ViewRef } from "nsh";
-
-function MoreButton() {
-  const open = signal(false);
-  let anchor: ViewRef | undefined;
-  return (
-    <View>
-      <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
-        <Text>More</Text>
-      </View>
-      <If when={open()}>
-        <Overlay
-          anchor={anchor}
-          placement="bottom"
-          align="start"
-          offset={6}
-          margin={8}
-          onPressOutside={() => open.set(false)}
-          onCancel={() => open.set(false)}
-          class="rounded-lg bg-white p-3 shadow-lg"
-        >
-          <Text>Shown above everything</Text>
-        </Overlay>
-      </If>
-    </View>
-  );
 }
 ```
 

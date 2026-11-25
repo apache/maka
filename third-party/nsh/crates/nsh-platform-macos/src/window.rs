@@ -1860,34 +1860,46 @@ fn send(surface: &Surface, id: NodeId, event: WindowEvent) {
 }
 
 /// The root view of a window of the app's own was resized (it fills the
-/// window's content view): the core lays the root out at its size.
-pub(crate) fn resized(surface: &Surface, view: &NshView) {
+/// window's content view): the core lays the root out at its size, which
+/// is applied before this returns unless the engine is late, as for the
+/// host's root ([`Surface::await_layout`]): AppKit's full screen and zoom
+/// animations otherwise grow the window around its old content.
+pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
     let id = view.id();
-    let size = {
+    // The window's content (the container the root fills), whatever set
+    // the root's own frame.
+    let Some(bounds) = surface
+        .windows
+        .borrow()
+        .get(&id)
+        .map(|w| w.container.bounds())
+    else {
+        return;
+    };
+    // Outside the borrow: this resizes the root again, which comes back
+    // here and may wait for the layout ([`Surface::await_layout`]).
+    if view.ns().frame() != bounds {
+        view.ns().setFrame(bounds);
+    }
+    let size = Size::new(
+        Points(bounds.size.width as f32),
+        Points(bounds.size.height as f32),
+    );
+    {
         let windows = surface.windows.borrow();
         let Some(w) = windows.get(&id) else {
             return;
         };
-        // The window's content (the container the root fills), whatever
-        // set the root's own frame.
-        let bounds = w.container.bounds();
-        if view.ns().frame() != bounds {
-            view.ns().setFrame(bounds);
-        }
-        let size = Size::new(
-            Points(bounds.size.width as f32),
-            Points(bounds.size.height as f32),
-        );
         if w.reported.replace(Some(size)) == Some(size) {
             return;
         }
-        size
-    };
+    }
     view.state_mut().frame = Bounds::new(point(Points(0.0), Points(0.0)), size);
     surface.control(|c| c.set_root_size(id, size, EdgeInsets::default()));
     crate::navigation::window_resized(surface, view);
     // The primary window's size is the app's `windowSize()`.
     surface.window_environment();
+    surface.await_layout(id, size);
 }
 
 /// The displays changed: the windows of the app's own read their state
@@ -1916,7 +1928,10 @@ thread_local! {
 }
 
 /// Whether the app runs in the background: it never activates, and AppKit
-/// gives none of its windows the keyboard.
+/// gives none of its windows the keyboard. Costly: AppKit asks Launch
+/// Services for the policy on every call (a round trip to another process,
+/// 0.5 ms and more), so checks that run per batch ask it last, after
+/// [`background_key`] (only ever set in such an app).
 fn in_background(mtm: MainThreadMarker) -> bool {
     NSApplication::sharedApplication(mtm).activationPolicy()
         == objc2_app_kit::NSApplicationActivationPolicy::Prohibited
@@ -1931,7 +1946,7 @@ fn background_key() -> Option<Retained<NSWindow>> {
 pub(crate) fn app_key_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
     NSApplication::sharedApplication(mtm)
         .keyWindow()
-        .or_else(|| in_background(mtm).then(background_key).flatten())
+        .or_else(|| background_key().filter(|_| in_background(mtm)))
 }
 
 /// Whether `window` has the keyboard (`WindowState.focused`): it is the
@@ -1946,8 +1961,8 @@ pub(crate) fn has_key_window(surface: &Surface) -> bool {
 
 pub(crate) fn is_key(window: &NSWindow) -> bool {
     window.isKeyWindow()
-        || (in_background(MainThreadMarker::from(window))
-            && background_key().is_some_and(|k| &*k == window))
+        || (background_key().is_some_and(|k| &*k == window)
+            && in_background(MainThreadMarker::from(window)))
 }
 
 /// `window` was made key (shown, focused, pressed). In a background app
@@ -1981,7 +1996,7 @@ pub(crate) fn became_key(surface: &Surface, window: &NSWindow) {
 /// window that would be key, the main window becomes it, as AppKit gives
 /// the keyboard to the next window.
 fn lost_key(surface: &Surface, window: &NSWindow) {
-    if !in_background(surface.mtm) || background_key().as_deref() != Some(window) {
+    if background_key().as_deref() != Some(window) || !in_background(surface.mtm) {
         return;
     }
     BACKGROUND_KEY.with(|k| k.borrow_mut().take());
@@ -2348,13 +2363,13 @@ pub(crate) fn root_in(surface: &Surface, window: &NSWindow) -> Option<NshView> {
 /// window of the app's own; `None` for another surface's view (or one in
 /// no window's tree).
 pub(crate) fn root_containing(surface: &Surface, view: &NshView) -> Option<NshView> {
-    if view.ns().isDescendantOf(surface.root.ns()) {
+    if view.is_within(surface.root.ns()) {
         return Some(surface.root.clone());
     }
     let windows = surface.windows.try_borrow().ok()?;
     windows
         .values()
-        .find(|w| view.ns().isDescendantOf(w.view.ns()))
+        .find(|w| view.is_within(w.view.ns()))
         .map(|w| w.view.clone())
 }
 

@@ -14,6 +14,49 @@ demo: el-select
 
 选择框负责行为：值（应用持有的，或它自己保存的）、打开状态、键盘、输入跳转、搜索、分组、高亮的行以及屏幕阅读器听到的内容。外观由应用决定：应用为触发元素、弹出层、列表、行、分组标题和搜索框设置样式，或者自己绘制行。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Select } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const FRUITS = [
+  { value: "apple", title: "苹果" },
+  { value: "banana", title: "香蕉" },
+  { value: "blueberry", title: "蓝莓" },
+  { value: "grapes", title: "葡萄", disabled: true },
+  { value: "pineapple", title: "菠萝" },
+];
+
+function App() {
+  const fruit = signal<string | null>(null);
+  const title = () => FRUITS.find((f) => f.value === fruit())?.title;
+  return (
+    <Select
+      items={FRUITS}
+      value={fruit()}
+      onChange={({ value }) => fruit.set(value)}
+      accessibilityLabel="水果"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      itemClass="rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground disabled:opacity-50"
+      trigger={
+        <View class="h-9 w-48 flex-row items-center justify-between rounded-md border border-input px-3 hover:bg-accent active:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <Text class={fruit() ? "text-foreground" : "text-muted-foreground"}>{title() ?? "选择水果"}</Text>
+          <Text class="text-muted-foreground">▾</Text>
+        </View>
+      }
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SelectEntry, SelectItem, select, theme};
 use nsh_core::prelude::*;
@@ -81,49 +124,6 @@ fn fruit_select() -> impl IntoElement {
                 .child(text(item.title.clone()).text_sm())
         })
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Select } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const FRUITS = [
-  { value: "apple", title: "苹果" },
-  { value: "banana", title: "香蕉" },
-  { value: "blueberry", title: "蓝莓" },
-  { value: "grapes", title: "葡萄", disabled: true },
-  { value: "pineapple", title: "菠萝" },
-];
-
-function App() {
-  const fruit = signal<string | null>(null);
-  const title = () => FRUITS.find((f) => f.value === fruit())?.title;
-  return (
-    <Select
-      items={FRUITS}
-      value={fruit()}
-      onChange={({ value }) => fruit.set(value)}
-      accessibilityLabel="水果"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      itemClass="rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground disabled:opacity-50"
-      trigger={
-        <View class="h-9 w-48 flex-row items-center justify-between rounded-md border border-input px-3 hover:bg-accent active:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <Text class={fruit() ? "text-foreground" : "text-muted-foreground"}>{title() ?? "选择水果"}</Text>
-          <Text class="text-muted-foreground">▾</Text>
-        </View>
-      }
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Select` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`select()` 创建一个选择框，每个属性有一个设置方法（`.items(..)`、`.value(..)`、`.item_style(..)`），每个事件有一个监听方法（`.on_change(..)`）；`SelectItem::new(value, title)` 创建一个条目，可再用 `.disabled(..)` 和 `.group(..)`。

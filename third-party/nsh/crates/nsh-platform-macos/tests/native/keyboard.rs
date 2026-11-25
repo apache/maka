@@ -577,6 +577,109 @@ pub(super) fn run() {
         EVENTS.lock().unwrap()
     );
 
+    // The keyboard is global: a modifier released in a window this surface
+    // does not own (another AppView's window, a host window, a panel) while
+    // the app stays active still leaves the surface's held set. Pressing it
+    // again here is a KeyDown, not the release of a press that never ended.
+    let count = |prefix: &str| {
+        EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.starts_with(prefix))
+            .count()
+    };
+    let downs = count("down key=Shift ");
+    let ups = count("up key=Shift ");
+    send_flags(&window, &first, 56, NSEventModifierFlags::Shift);
+    until("the Shift press before the foreign release", || {
+        count("down key=Shift ") == downs + 1
+    });
+    // SAFETY: The window is created on the process main thread.
+    let foreign = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            NSRect::new(NSPoint::new(100.0, 100.0), NSSize::new(200.0, 100.0)),
+            NSWindowStyleMask::Titled,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    // SAFETY: This scope retains the window until after it closes.
+    unsafe {
+        foreign.setReleasedWhenClosed(false);
+    }
+    foreign.orderFront(None);
+    // Drives `flags_changed` directly with an event of a foreign window
+    // (the monitor would deliver it there for every window).
+    let release = event(
+        &foreign,
+        NSEventType::FlagsChanged,
+        "",
+        "",
+        56,
+        NSEventModifierFlags::empty(),
+        false,
+    );
+    // SAFETY: `flagsChanged:` is the responder method, on the main thread,
+    // with a valid event.
+    let _: () = unsafe { msg_send![&*first, flagsChanged: &*release] };
+    pump(60);
+    assert_eq!(
+        (count("down key=Shift "), count("up key=Shift ")),
+        (downs + 1, ups),
+        "a release in a foreign window reports nothing here: {:?}",
+        EVENTS.lock().unwrap()
+    );
+    send_flags(&window, &first, 56, NSEventModifierFlags::Shift);
+    until("the Shift press after the foreign release", || {
+        count("down key=Shift ") == downs + 2
+    });
+    assert_eq!(
+        count("up key=Shift "),
+        ups,
+        "the second press is not a release: {:?}",
+        EVENTS.lock().unwrap()
+    );
+    send_flags(&window, &first, 56, NSEventModifierFlags::empty());
+    until("the Shift release", || count("up key=Shift ") == ups + 1);
+
+    // Caps Lock is the keyboard's state too: turned on in the foreign
+    // window it reports nothing here, so the press that turns it off in
+    // the own window is a KeyDown (it read as a KeyUp from a stale state).
+    let caps_downs = count("down key=CapsLock ");
+    let caps_ups = count("up key=CapsLock ");
+    let caps_on = event(
+        &foreign,
+        NSEventType::FlagsChanged,
+        "",
+        "",
+        57,
+        NSEventModifierFlags::CapsLock,
+        false,
+    );
+    // SAFETY: `flagsChanged:` is the responder method, on the main thread,
+    // with a valid event.
+    let _: () = unsafe { msg_send![&*first, flagsChanged: &*caps_on] };
+    pump(60);
+    assert_eq!(
+        (count("down key=CapsLock "), count("up key=CapsLock ")),
+        (caps_downs, caps_ups),
+        "Caps Lock turned on in a foreign window reports nothing here: {:?}",
+        EVENTS.lock().unwrap()
+    );
+    send_flags(&window, &first, 57, NSEventModifierFlags::empty());
+    until("the Caps Lock press after the foreign one", || {
+        count("down key=CapsLock ") == caps_downs + 1
+    });
+    assert_eq!(
+        count("up key=CapsLock "),
+        caps_ups,
+        "turning Caps Lock off is a press, not a release: {:?}",
+        EVENTS.lock().unwrap()
+    );
+    foreign.close();
+
     // A mounted capture on the focused view's ancestor takes Tab before
     // the platform's traversal runs: the focus stays where it is.
     CAPTURE.store(1, Ordering::SeqCst);

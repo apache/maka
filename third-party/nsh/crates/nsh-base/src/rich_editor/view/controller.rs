@@ -36,19 +36,24 @@ use crate::{
         extensions::{HistoryOptions, Keymap, KeymapOptions, history, starter},
         formats::{DomSerializer, slice_to_text},
         js::{RichClipboardContent, SliceJson, paste_hooks},
-        model::{Fragment, Mark, Node, SchemaSpec, Slice},
+        model::{Fragment, Mark, Node, SchemaSpec, Slice, utf16_len, utf16_slice},
         state::{
             Affinity, ClickEvent, Decoration, EditorState, EditorStateConfig, GapCursor, KeyEvent,
             NodeSelection, Plugin, Selection, TextSelection, Transaction, TransactionOrigin,
         },
-        tables::{CellSelection, is_table, table_role},
+        tables::{CellSelection, cell_around, is_table, table_role},
         transform::drop_point,
     },
+    sink_text::{sink_edit, utf16_to_byte},
 };
 
 /// The sink is emptied once it holds this many bytes (and no composition
 /// is in progress).
 const SINK_LIMIT: usize = 256;
+
+/// How long a forward move of the sink's own caret waits for the text it
+/// may belong to (`sink_selection`).
+const SINK_TEXT_WAIT: Duration = Duration::from_millis(50);
 
 /// The meta prosemirror-view sets on a selection the pointer made (a
 /// press, a drag, a touch), which plugins tell it from the keyboard's by.
@@ -160,6 +165,13 @@ struct Moving {
 #[derive(Debug, Default)]
 struct Sink {
     text: String,
+    /// Where the editor's caret stands in `text` (bytes), when not at its
+    /// end: the platform moved the sink's own caret (an input method that
+    /// types a pair of brackets and puts its caret between them).
+    caret: Option<usize>,
+    /// The sink's own caret as the platform last reported it (UTF-16), to
+    /// be read against the text it belongs to (`follow_sink_caret`).
+    reported: Option<u32>,
     emptied: Option<String>,
     composing: bool,
     /// The composition whose commit is still to come (its id).
@@ -237,6 +249,7 @@ pub(crate) struct Rv {
     pub(crate) table_gesture: Rc<RefCell<Option<TableGesture>>>,
     /// What that drag shows: a column's or row's new size, a drop line.
     pub(crate) table_preview: Signal<Option<TablePreview>>,
+    pub(crate) hovered_table_cell: Signal<Option<u64>>,
     /// The selection a touch made, its handles and edit menu.
     pub(crate) touch: super::touch::Touch,
     /// Per-block `(selected, focused)` state, notified only for changed blocks.
@@ -306,6 +319,7 @@ impl Rv {
             base_keymap: Rc::new(base_keymap),
             table_gesture: Rc::default(),
             table_preview: signal(None),
+            hovered_table_cell: signal(None),
             touch: super::touch::Touch::new(),
             active_blocks: Rc::default(),
             sel_rects: Rc::default(),
@@ -396,7 +410,10 @@ impl Rv {
                 return;
             }
             let tab_navigation = rv.props.tab_navigation.get();
-            for spec in keys::key_table(editable.get()) {
+            for spec in keys::key_table(editable.get())
+                .into_iter()
+                .filter(|spec| !spec.copy)
+            {
                 if tab_navigation
                     && spec.event.key == "Tab"
                     && !(spec.event.ctrl || spec.event.alt || spec.event.meta)
@@ -412,6 +429,38 @@ impl Rv {
                         when: When::Always,
                         repeat: spec.repeat,
                         for_focus: true,
+                        ..Default::default()
+                    },
+                    move |_| rv.key(&event),
+                );
+            }
+        });
+        // Copy, bound again as the selection empties or fills: with nothing
+        // selected in the editor the key also goes on to the platform, whose
+        // Copy takes what is selected around it (a chat's messages above its
+        // composer, which keeps the focus while they are selected), as an
+        // `Input`'s does. Plugins still hear it.
+        let rv = self.clone();
+        let copy_keys: Vec<keys::KeySpec> = keys::key_table(true)
+            .into_iter()
+            .filter(|spec| spec.copy)
+            .collect();
+        effect(move || {
+            if !rv.focused.get() || rv.composition.get().is_some() {
+                return;
+            }
+            rv.sel_rev.get();
+            let empty = untracked(|| rv.session.state().selection().empty());
+            for spec in &copy_keys {
+                let rv = rv.clone();
+                let event = spec.event.clone();
+                let input = rv.input;
+                input.on_key_with(
+                    &spec.keystroke,
+                    KeyOptions {
+                        when: When::Always,
+                        for_focus: true,
+                        pass_through: empty,
                         ..Default::default()
                     },
                     move |_| rv.key(&event),
@@ -918,11 +967,12 @@ impl Rv {
         self.sink_edited(text);
     }
 
-    /// Applies the sink's `text`: what was deleted and typed since.
+    /// Applies the sink's `text`: what was deleted and typed since, at the
+    /// place in it the editor's caret stands for.
     fn sink_edited(&self, text: &str) {
-        let (deleted, inserted, composed) = {
+        let (edit, composed) = {
             let mut sink = self.sink.borrow_mut();
-            let base = match sink.emptied.take() {
+            let (base, caret) = match sink.emptied.take() {
                 // The platform dropped the empty value: the text still extends
                 // what it held. A text equal to what it held was typed again
                 // into the emptied sink: platforms report each edit, so an
@@ -930,21 +980,32 @@ impl Rv {
                 // the edits made before it is idle as one: there, the text
                 // deleted and typed again before the empty value arrives reads
                 // the same, and is inserted a second time.
-                Some(old) if text != old && text.starts_with(old.as_str()) => old,
-                Some(_) => String::new(),
-                None => std::mem::take(&mut sink.text),
+                Some(old) if text != old && text.starts_with(old.as_str()) => {
+                    let len = old.len();
+                    (old, len)
+                }
+                Some(_) => (String::new(), 0),
+                None => {
+                    let caret = sink.caret.take();
+                    let old = std::mem::take(&mut sink.text);
+                    let caret = caret.unwrap_or(old.len());
+                    (old, caret)
+                }
             };
-            let prefix = common_prefix(&base, text);
-            let deleted = base[prefix..].chars().count();
-            let inserted = text[prefix..].to_owned();
+            let edit = sink_edit(&base, caret, text);
+            sink.reported = None;
             sink.text = text.to_owned();
-            (deleted, inserted, sink.composition.is_some())
+            sink.caret = (edit.caret < text.len()).then_some(edit.caret);
+            (edit, sink.composition.is_some())
         };
         self.sink_value.set(text.to_owned());
-        for _ in 0..deleted {
+        for _ in 0..edit.backspaces {
             self.key(&KeyEvent::new("Backspace"));
         }
-        let mut parts = inserted.split('\n').peekable();
+        for _ in 0..edit.deletes {
+            self.key(&KeyEvent::new("Delete"));
+        }
+        let mut parts = edit.inserted.split('\n').peekable();
         while let Some(part) = parts.next() {
             for piece in typed_pieces(part, composed) {
                 self.text_input(piece, composed);
@@ -964,12 +1025,122 @@ impl Rv {
         }
     }
 
+    /// The sink's own caret moved to `selection` (UTF-16 offsets in its
+    /// text): one the platform placed itself, without a key the editor
+    /// hears (an input method that types "（）" and puts its caret between
+    /// them). The editor's caret moves by as much, so what is typed next
+    /// goes in where the caret is drawn. While an input method composes
+    /// its caret is the composition's; a selection in the sink, a move past
+    /// what the sink is known to hold (its text is reported after it) or
+    /// across text the document does not show the same way is left alone.
+    pub(crate) fn sink_selection(&self, selection: &nsh_core::element::Selection) {
+        let forward = {
+            let mut sink = self.sink.borrow_mut();
+            sink.reported = None;
+            if sink.composing || selection.start != selection.end {
+                return;
+            }
+            // Where the editor's caret already stands for (typing at it), or
+            // past what the sink holds: nothing to follow.
+            let Some(to) = utf16_to_byte(&sink.text, selection.end as usize) else {
+                return;
+            };
+            let from = sink.caret.unwrap_or(sink.text.len());
+            if to == from {
+                return;
+            }
+            sink.reported = Some(selection.end);
+            to > from
+        };
+        // AppKit reports the caret an insertion leaves before the insertion's
+        // text, which may come a turn later: a change of the text drops the
+        // report (it puts the caret there itself), and a move forward, as an
+        // insertion's report reads, waits for one. A move back (an input
+        // method stepping into the pair it typed) is read next turn.
+        let delay = if forward {
+            SINK_TEXT_WAIT
+        } else {
+            Duration::ZERO
+        };
+        let rv = self.clone();
+        drop(set_timeout(delay, move || rv.follow_sink_caret()));
+    }
+
+    /// Moves the editor's caret to where the sink's own caret was last
+    /// reported, read against the text the sink holds now.
+    fn follow_sink_caret(&self) {
+        let (from, to) = {
+            let mut sink = self.sink.borrow_mut();
+            let Some(reported) = sink.reported.take() else {
+                return;
+            };
+            if sink.composing {
+                return;
+            }
+            let Some(to) = utf16_to_byte(&sink.text, reported as usize) else {
+                return;
+            };
+            (sink.caret.unwrap_or(sink.text.len()), to)
+        };
+        if from == to {
+            return;
+        }
+        let moved = {
+            let sink = self.sink.borrow();
+            let (a, b) = (from.min(to), from.max(to));
+            sink.text[a..b].to_owned()
+        };
+        if moved.contains('\n') {
+            return;
+        }
+        let state = self.session.state();
+        if state.selection().as_text().is_none() || !state.selection().empty() {
+            return;
+        }
+        let head = state.selection().head();
+        let units = utf16_len(&moved);
+        let Ok(at) = state.doc().resolve(head) else {
+            return;
+        };
+        if !at.parent().inline_content() {
+            return;
+        }
+        let start = at.start(at.depth);
+        let off = head - start;
+        let line = inline_text(at.parent());
+        let (target, shown) = if to < from {
+            if units > off {
+                return;
+            }
+            (head - units, utf16_slice(&line, off - units, off))
+        } else {
+            if off + units > utf16_len(&line) {
+                return;
+            }
+            (head + units, utf16_slice(&line, off, off + units))
+        };
+        if shown != moved {
+            return;
+        }
+        let Ok(target) = state.doc().resolve(target) else {
+            return;
+        };
+        let mut tr = state.tr();
+        tr.set_selection(TextSelection::new(target.clone(), target).into());
+        tr.set_origin(TransactionOrigin::Input);
+        self.dispatch(tr);
+        let mut sink = self.sink.borrow_mut();
+        sink.caret = (to < sink.text.len()).then_some(to);
+    }
+
     /// Empties the sink, unless an input method is composing there.
     fn empty_sink(&self) {
         let mut sink = self.sink.borrow_mut();
         if sink.composing || sink.text.is_empty() {
             return;
         }
+        sink.caret = None;
+        sink.reported = None;
         sink.emptied = Some(std::mem::take(&mut sink.text));
         drop(sink);
         self.sink_value.set(String::new());
@@ -2692,6 +2863,55 @@ impl Rv {
         self.node_box(pos)
     }
 
+    fn scroll_selected_cell(&self, state: &EditorState, caret: Bounds<Points>) {
+        let Some(cell) = cell_around(state.selection().resolved_head()) else {
+            return;
+        };
+        let tree = self.tree.borrow();
+        let geo = self.geo.borrow();
+        let Some(table_id) = tree.id_at(cell.before(cell.depth - 1)) else {
+            return;
+        };
+        let (Some(viewport), Some((offset, _)), Some(handle)) = (
+            geo.table_viewport(table_id),
+            geo.table_scroll.get(&table_id),
+            geo.table_scroll_handles.get(&table_id),
+        ) else {
+            return;
+        };
+        let selection = state.selection();
+        let mut visible = caret;
+        if !selection.empty()
+            && selection
+                .resolved_anchor()
+                .same_parent(selection.resolved_head())
+            && let Some(anchor) = geo.caret_rect(selection.anchor(), Affinity::Downstream)
+        {
+            let both = anchor.union(&caret);
+            if both.size.width <= viewport.size.width {
+                visible = both;
+            }
+        }
+        if visible.origin.x >= viewport.origin.x
+            && visible.origin.x + visible.size.width <= viewport.origin.x + viewport.size.width
+        {
+            return;
+        }
+        let target = node_box(&tree, &geo, state, cell.pos)
+            .filter(|cell| cell.size.width <= viewport.size.width)
+            .unwrap_or(visible);
+        let left = target.origin.x - viewport.origin.x;
+        let right = left + target.size.width - viewport.size.width;
+        let delta = if left < px(0.) {
+            left
+        } else if right > px(0.) {
+            right
+        } else {
+            return;
+        };
+        handle.scroll_to(Point::new((*offset + delta).max(px(0.)), px(0.)), false);
+    }
+
     /// Scrolls the head into view, once it is laid out: a selected node
     /// whole, as ProseMirror scrolls its DOM node, else the caret.
     fn scroll_into_view(&self) {
@@ -2727,6 +2947,7 @@ impl Rv {
             return;
         };
         self.scroll_pending.set(false);
+        self.scroll_selected_cell(&state, caret);
         let top = self.scroll_y.get_untracked();
         let height = self.viewport.get_untracked().height;
         if height <= px(0.0) {
@@ -3146,15 +3367,6 @@ pub(crate) fn word_at(doc: &Node, pos: usize) -> Option<(usize, usize)> {
         at += len;
     }
     Some((pos, pos))
-}
-
-/// The bytes `a` and `b` start with alike, on a char boundary.
-fn common_prefix(a: &str, b: &str) -> usize {
-    a.char_indices()
-        .zip(b.chars())
-        .find(|((_, x), y)| x != y)
-        .map(|((i, _), _)| i)
-        .unwrap_or_else(|| a.len().min(b.len()))
 }
 
 /// The insertions a change of the sink's text makes: an input method's

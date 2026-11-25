@@ -253,3 +253,72 @@ fn enter_in_a_checked_task_makes_an_unchecked_one() {
     // The task split keeps its state; the new one is still to do.
     assert_eq!((checked(0), checked(1)), (Some(true), Some(false)));
 }
+
+#[test]
+fn delete_at_end_of_item_hoists_branching_nested_list_and_second_delete_joins() {
+    let branching = doc(vec![list(
+        "bulletList",
+        vec![
+            li(vec![
+                p("Item 1"),
+                list(
+                    "bulletList",
+                    vec![
+                        li(vec![
+                            p("Item 1.1"),
+                            list(
+                                "bulletList",
+                                vec![li(vec![p("Item 1.1.1")]), li(vec![p("Item 1.1.2")])],
+                            ),
+                        ]),
+                        li(vec![p("Item 1.2")]),
+                    ],
+                ),
+            ]),
+            li(vec![p("Item 2")]),
+        ],
+    )]);
+    let mut ed = Ed::new(branching);
+    ed.select("Item 1", None);
+    let end = ed.state.selection().from() + "Item 1".len();
+    let mut tr = ed.state.tr();
+    tr.set_selection(TextSelection::create(ed.state.doc(), end, None));
+    ed.apply(tr);
+
+    // First Delete hoists the branching nested list items into the parent list.
+    assert!(ed.key("Delete", false));
+    assert_eq!(
+        ed.outline(),
+        "ul\n  -\n    Item 1\n  -\n    Item 1.1\n    ul\n      -\n        Item 1.1.1\n      -\n        Item 1.1.2\n  -\n    Item 1.2\n  -\n    Item 2\n\n"
+    );
+    assert_eq!(ed.state.selection().from(), end);
+    assert!(ed.state.selection().empty());
+
+    // Second Delete joins Item 1 and Item 1.1 without deleting the sublist.
+    assert!(ed.key("Delete", false));
+    assert_eq!(
+        ed.outline(),
+        "ul\n  -\n    Item 1Item 1.1\n    ul\n      -\n        Item 1.1.1\n      -\n        Item 1.1.2\n  -\n    Item 1.2\n  -\n    Item 2\n\n"
+    );
+    assert_eq!(ed.state.selection().from(), end);
+}
+
+#[test]
+fn delete_at_end_of_item_does_not_hoist_shallow_nested_list() {
+    let shallow = doc(vec![list(
+        "bulletList",
+        vec![li(vec![
+            p("Outer"),
+            list("bulletList", vec![li(vec![p("Inner")])]),
+        ])],
+    )]);
+    let mut ed = Ed::new(shallow);
+    ed.select("Outer", None);
+    let end = ed.state.selection().from() + "Outer".len();
+    let mut tr = ed.state.tr();
+    tr.set_selection(TextSelection::create(ed.state.doc(), end, None));
+    ed.apply(tr);
+
+    assert!(ed.key("Delete", false));
+    assert_eq!(ed.outline(), "ul\n  -\n    Outer\n    Inner\n\n");
+}

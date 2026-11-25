@@ -11,77 +11,6 @@ group: ui
 
 在 Rust 中，在 prelude 旁按名字导入这些构建函数（`use nsh_base::{dialog, nav_page, nav_stack};`；系统提示框是 `nsh_base::alert_dialog()`）。路由是一个 signal，栈的子元素就是它的页面，每个路由一个，按 key 保持（`each`）：放入页面即压入，移出即弹出。在 TSX 中，`createNavStack` 保存路由，`NavStack` 渲染它们。
 
-```rust tabs
-use nsh_base::{nav_page, nav_stack};
-use nsh_core::prelude::*;
-
-#[derive(Debug, Clone, PartialEq)]
-enum Route {
-    Inbox,
-    Message(u32),
-}
-
-/// 桌面和 Web 上页面的标题栏；iOS 和 Android 显示系统标题栏，取自 `title`。
-fn header(routes: Signal<Vec<Route>>, title: &'static str) -> impl IntoElement {
-    view()
-        .h(px(48.0))
-        .flex_row()
-        .items_center()
-        .gap_3()
-        .border_b_1()
-        .border_color(rgb(0xe5e7eb))
-        .px_4()
-        .child(when(
-            move || routes.with(|r| r.len() > 1),
-            move || {
-                text("Back")
-                    .role(AccessibilityRole::Button)
-                    .on_press(move || routes.update(|r| { r.pop(); }))
-                    .text_color(rgb(0x2563eb))
-                    .active(|s| s.opacity(0.6))
-            },
-        ))
-        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::SEMIBOLD))
-}
-
-fn inbox(routes: Signal<Vec<Route>>) -> Screen {
-    nav_page()
-        .title("Inbox")
-        .header(header(routes, "Inbox"))
-        .child(scroll().flex_1().children((1..=5).map(move |id| {
-            view()
-                .on_press(move || routes.update(|r| r.push(Route::Message(id))))
-                .p_4()
-                .active(|s| s.bg(rgb(0xf3f4f6)))
-                .child(text(format!("Message {id}")))
-        })))
-}
-
-fn message(routes: Signal<Vec<Route>>, id: u32) -> Screen {
-    nav_page()
-        .title(format!("Message {id}"))
-        .header(header(routes, "Message"))
-        .child(view().flex_1().p(px(16.0)).child(text(format!("The body of message {id}."))))
-}
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let routes = signal(vec![Route::Inbox]);
-    nav_stack().flex_1().child(each(
-        move || routes.get(),
-        |route: &Route| format!("{route:?}"),
-        move |route, index| {
-            let page = match route.get_untracked() {
-                Route::Inbox => inbox(routes),
-                Route::Message(id) => message(routes, id),
-            };
-            // 用户以原生方式返回：移除这个路由（以及它上面的路由）。
-            page.on_dismiss(move || routes.update(|r| r.truncate(index.get_untracked())))
-        },
-    ))
-}
-```
-
 ```tsx tabs
 import { mount, Scroll, Text, View } from "nsh";
 import { createNavStack, NavPage, NavStack } from "nsh/base";
@@ -153,6 +82,77 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_base::{nav_page, nav_stack};
+use nsh_core::prelude::*;
+
+#[derive(Debug, Clone, PartialEq)]
+enum Route {
+    Inbox,
+    Message(u32),
+}
+
+/// 桌面和 Web 上页面的标题栏；iOS 和 Android 显示系统标题栏，取自 `title`。
+fn header(routes: Signal<Vec<Route>>, title: &'static str) -> impl IntoElement {
+    view()
+        .h(px(48.0))
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .border_b_1()
+        .border_color(rgb(0xe5e7eb))
+        .px_4()
+        .child(when(
+            move || routes.with(|r| r.len() > 1),
+            move || {
+                text("Back")
+                    .role(AccessibilityRole::Button)
+                    .on_press(move || routes.update(|r| { r.pop(); }))
+                    .text_color(rgb(0x2563eb))
+                    .active(|s| s.opacity(0.6))
+            },
+        ))
+        .child(text(title).text_size(px(17.0)).font_weight(FontWeight::SEMIBOLD))
+}
+
+fn inbox(routes: Signal<Vec<Route>>) -> Screen {
+    nav_page()
+        .title("Inbox")
+        .header(header(routes, "Inbox"))
+        .child(scroll().flex_1().children((1..=5).map(move |id| {
+            view()
+                .on_press(move || routes.update(|r| r.push(Route::Message(id))))
+                .p_4()
+                .active(|s| s.bg(rgb(0xf3f4f6)))
+                .child(text(format!("Message {id}")))
+        })))
+}
+
+fn message(routes: Signal<Vec<Route>>, id: u32) -> Screen {
+    nav_page()
+        .title(format!("Message {id}"))
+        .header(header(routes, "Message"))
+        .child(view().flex_1().p(px(16.0)).child(text(format!("The body of message {id}."))))
+}
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let routes = signal(vec![Route::Inbox]);
+    nav_stack().flex_1().child(each(
+        move || routes.get(),
+        |route: &Route| format!("{route:?}"),
+        move |route, index| {
+            let page = match route.get_untracked() {
+                Route::Inbox => inbox(routes),
+                Route::Message(id) => message(routes, id),
+            };
+            // 用户以原生方式返回：移除这个路由（以及它上面的路由）。
+            page.on_dismiss(move || routes.update(|r| r.truncate(index.get_untracked())))
+        },
+    ))
+}
+```
+
 <a id="the-stacks-state"></a>
 
 ## 栈的状态
@@ -176,6 +176,16 @@ mount(() => (
 当用户以原生方式离开页面时（标题栏的返回按钮、iOS 侧滑返回、Android 返回键或返回手势、桌面的返回键和鼠标返回键、浏览器的返回按钮），TSX 的栈会自动从状态中移除对应路由，所以 `routes()` 总是与屏幕上的内容一致；Rust 的页面像上面那样用 `on_dismiss` 报告。
 
 路由携带页面需要的数据。gallery 示例应用推送的路由直接保存创建页面的函数，页面很多时路由类型依然很小：
+
+```ts tabs
+import { type JSX } from "nsh";
+import { createNavStack } from "nsh/base";
+
+export type Route = { name: "home" } | { name: "page"; page: () => JSX.Element };
+export const nav = createNavStack<Route>([{ name: "home" }]);
+
+// 在别处： nav.push({ name: "page", page: Settings });
+```
 
 ```rust tabs
 use std::rc::Rc;
@@ -204,16 +214,6 @@ pub fn routes() -> Signal<Routes> {
 }
 
 // 在别处： routes().update(|r| r.0.push(Route { key: "settings".into(), page: Rc::new(settings) }));
-```
-
-```ts tabs
-import { type JSX } from "nsh";
-import { createNavStack } from "nsh/base";
-
-export type Route = { name: "home" } | { name: "page"; page: () => JSX.Element };
-export const nav = createNavStack<Route>([{ name: "home" }]);
-
-// 在别处： nav.push({ name: "page", page: Settings });
 ```
 
 ## NavStack
@@ -331,6 +331,41 @@ nav_page()
 
 标题栏中的项目就是普通视图，所以可以按压，也是响应式的：
 
+```tsx tabs
+function Compose() {
+  const text = signal("");
+  const cancel = () => (
+    <Text onPress={() => nav.pop()} style={{ fontSize: 17, color: "#0969da" }}>
+      Cancel
+    </Text>
+  );
+  const sendButton = () => (
+    <Text
+      onPress={() => send(text())}
+      style={{ fontSize: 17, fontWeight: "600", color: text() ? "#0969da" : "#8c959f" }}
+    >
+      Send
+    </Text>
+  );
+  return (
+    <NavPage
+      title="New message"
+      headerLeft={cancel()}
+      headerRight={sendButton()}
+      header={
+        <View class="h-12 flex-row items-center justify-between px-4">
+          {cancel()}
+          <Text style={{ fontSize: 17, fontWeight: "600" }}>New message</Text>
+          {sendButton()}
+        </View>
+      }
+    >
+      <Input multiline value={text()} onChange={({ value }) => text.set(value)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
+    </NavPage>
+  );
+}
+```
+
 ```rust tabs
 fn compose(routes: Signal<Vec<Route>>) -> Screen {
     let draft = signal(String::new());
@@ -374,48 +409,7 @@ fn compose(routes: Signal<Vec<Route>>) -> Screen {
 }
 ```
 
-```tsx tabs
-function Compose() {
-  const text = signal("");
-  const cancel = () => (
-    <Text onPress={() => nav.pop()} style={{ fontSize: 17, color: "#0969da" }}>
-      Cancel
-    </Text>
-  );
-  const sendButton = () => (
-    <Text
-      onPress={() => send(text())}
-      style={{ fontSize: 17, fontWeight: "600", color: text() ? "#0969da" : "#8c959f" }}
-    >
-      Send
-    </Text>
-  );
-  return (
-    <NavPage
-      title="New message"
-      headerLeft={cancel()}
-      headerRight={sendButton()}
-      header={
-        <View class="h-12 flex-row items-center justify-between px-4">
-          {cancel()}
-          <Text style={{ fontSize: 17, fontWeight: "600" }}>New message</Text>
-          {sendButton()}
-        </View>
-      }
-    >
-      <Input multiline value={text()} onChange={({ value }) => text.set(value)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
-    </NavPage>
-  );
-}
-```
-
 彩色系统标题栏（在 Rust 中，`header_style_with` 接收类型化的样式：`bg`、`text_color` 和标题栏按钮颜色 `tint_color`；主题颜色随外观切换）：
-
-```rust tabs
-nav_page()
-    .title("Profile")
-    .header_style_with(|s| s.bg(rgb(0x1a7f37)).text_color(rgb(0xffffff)).tint_color(rgb(0xffffff)))
-```
 
 ```tsx tabs
 <NavPage title="Profile" headerStyle={{ backgroundColor: "#1a7f37", color: "#ffffff", tintColor: "#ffffff" }}>
@@ -423,7 +417,19 @@ nav_page()
 </NavPage>
 ```
 
+```rust tabs
+nav_page()
+    .title("Profile")
+    .header_style_with(|s| s.bg(rgb(0x1a7f37)).text_color(rgb(0xffffff)).tint_color(rgb(0xffffff)))
+```
+
 不显示标题栏的页面四周仍有系统栏；按[安全区域](../elements/safe-area.md)的 inset 给内容留出边距：
+
+```tsx tabs
+<NavPage headerVisible={false}>
+  <View class="flex-1 pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(env(safe-area-inset-bottom)+16px)] px-4">…</View>
+</NavPage>
+```
 
 ```rust tabs
 use nsh_base::nav_page;
@@ -431,12 +437,6 @@ use nsh_base::nav_page;
 nav_page()
     .header_visible(false)
     .child(view().flex_1().p_safe_area() /* … */)
-```
-
-```tsx tabs
-<NavPage headerVisible={false}>
-  <View class="flex-1 pt-[calc(env(safe-area-inset-top)+16px)] pb-[calc(env(safe-area-inset-bottom)+16px)] px-4">…</View>
-</NavPage>
 ```
 
 ### 标题栏下的安全区域
@@ -448,6 +448,31 @@ nav_page()
 ## 把用户留在当前页面：popOnBack
 
 要在丢弃未保存的修改前先询问用户，就在有内容可能丢失时把 `pop_on_back`（TSX 的 `popOnBack`）设为 false，处理返回事件（`.on_back_press(..)`，TSX 的 `onBackPress`），并在用户同意后再返回：
+
+```tsx tabs
+import { signal } from "nsh";
+import { AlertDialog, NavPage, Input } from "nsh/base";
+
+function EditNote() {
+  const text = signal("");
+  const dirty = () => text().length > 0;
+  const confirm = async () => {
+    const { action } = await AlertDialog.show({
+      title: "Discard your changes?",
+      actions: [
+        { label: "Keep editing", role: "cancel", id: "keep" },
+        { label: "Discard", role: "destructive", id: "discard" },
+      ],
+    });
+    if (action === "discard") nav.pop();
+  };
+  return (
+    <NavPage title="Edit" popOnBack={!dirty()} onBackPress={() => dirty() && confirm()}>
+      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
+    </NavPage>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{alert_dialog, nav_page};
@@ -487,31 +512,6 @@ fn edit_note(routes: Signal<Vec<Route>>) -> Screen {
 }
 ```
 
-```tsx tabs
-import { signal } from "nsh";
-import { AlertDialog, NavPage, Input } from "nsh/base";
-
-function EditNote() {
-  const text = signal("");
-  const dirty = () => text().length > 0;
-  const confirm = async () => {
-    const { action } = await AlertDialog.show({
-      title: "Discard your changes?",
-      actions: [
-        { label: "Keep editing", role: "cancel", id: "keep" },
-        { label: "Discard", role: "destructive", id: "discard" },
-      ],
-    });
-    if (action === "discard") nav.pop();
-  };
-  return (
-    <NavPage title="Edit" popOnBack={!dirty()} onBackPress={() => dirty() && confirm()}>
-      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
-    </NavPage>
-  );
-}
-```
-
 `pop_on_back(false)`（`popOnBack={false}`）时，每一种返回方式（返回按钮、Android 返回键和返回手势、桌面的返回键、浏览器的返回按钮、侧滑）都会让页面留下，返回事件告诉你用户试图返回。从代码返回（移除路由、`nav.pop()`）照常生效。
 
 > [!IMPORTANT]
@@ -524,6 +524,34 @@ function EditNote() {
 ## 对话框
 
 对话框（Rust 中是 `nsh_base` 的 `dialog()`，TSX 中是 `Dialog`）在其他所有内容之上呈现内容，处于独立的原生窗口层：iOS 上是被 present 的视图控制器，Android 上是一个对话框窗口，桌面和 Web 上是覆盖整个窗口的一层。它的外观由你决定。在 Rust 中，对话框在视图中时（放在 `when` 里）就会呈现，它的子元素铺满它：把背景（backdrop）和弹出层（popup）画成视图。在 TSX 中，`class` 和 `style` 设置容纳子元素的弹出层，`backdropClass` 或 `backdropStyle` 在它后面加一层背景，用 `open` 控制它：
+
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Dialog } from "nsh/base";
+
+function Files() {
+  const open = signal(false);
+  return (
+    <View style={{ flex: 1 }}>
+      <View onPress={() => open.set(true)} style={{ padding: 16 }}>
+        <Text>Delete the file</Text>
+      </View>
+      <Dialog
+        open={open()}
+        animation="fade"
+        onOpenChange={(e) => open.set(e.open)}
+        backdropClass="bg-black/40"
+        class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
+      >
+        <Text style={{ fontSize: 20, fontWeight: "700" }}>Delete the file?</Text>
+        <View onPress={() => open.set(false)}>
+          <Text style={{ color: "#cf222e" }}>Delete</Text>
+        </View>
+      </Dialog>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::dialog;
@@ -570,37 +598,9 @@ pub fn files() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Dialog } from "nsh/base";
-
-function Files() {
-  const open = signal(false);
-  return (
-    <View style={{ flex: 1 }}>
-      <View onPress={() => open.set(true)} style={{ padding: 16 }}>
-        <Text>Delete the file</Text>
-      </View>
-      <Dialog
-        open={open()}
-        animation="fade"
-        onOpenChange={(e) => open.set(e.open)}
-        backdropClass="bg-black/40"
-        class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
-      >
-        <Text style={{ fontSize: 20, fontWeight: "700" }}>Delete the file?</Text>
-        <View onPress={() => open.set(false)}>
-          <Text style={{ color: "#cf222e" }}>Delete</Text>
-        </View>
-      </Dialog>
-    </View>
-  );
-}
-```
-
 Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange({ open: false, reason })` 通知你，所以在那里把 `open` 设为 `false`。在 iOS 上，对话框显示的内容也可以关闭它，比如视频系统控件的关闭按钮：这会像 Escape 一样报告（`"cancel"`），于是对话框和其中的视频一起移除。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
 
-全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`env(safe-area-inset-*)` 变量和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
+全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`env(safe-area-inset-*)` 变量和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。一次按压可以同时关掉对话框或表单并弹出系统界面（提示框、选择器、分享面板），先后顺序不限：系统界面会留着，在 iOS 上对话框等它关掉后才离开，关闭也在那时报告。
 
 要让用户输入一小段文字（例如新名字），给提示框加上 `input`：iOS、Android、macOS 和 Web 会在提示框里显示系统自己的文本框并让它获得焦点，结果的 `value` 就是框里的文字。回车会选中最后一个 `"default"` 操作；设了 `required` 时，文本框为空期间除取消操作外的操作都不可用。在 Windows、Linux 和终端里，提示框不带文本框显示，`value` 为 `null`，那里请自己画一个 `Dialog`。
 
@@ -627,25 +627,6 @@ if (action === "rename" && value !== null) name.set(value);
 
 监听器处理了按键时返回 `true`，栈就不会弹出。注册了监听器时，Android 的返回手势不会预览弹出效果（手势结束后应用才给出答复），所以只在监听器可能处理按键时才注册它：
 
-```rust tabs
-use nsh_core::prelude::*;
-
-pub fn editor() -> impl IntoElement {
-    let selecting = signal(false);
-    // 只在选择时监听：其他时候由栈返回，并带有手势的预览。
-    effect(move || {
-        if selecting.get() {
-            on_back_press(move || {
-                selecting.set(false);
-                true
-            });
-        }
-    });
-    // …
-    view()
-}
-```
-
 ```tsx tabs
 import { effect, signal } from "nsh";
 import { BackHandler } from "nsh/mobile";
@@ -665,6 +646,25 @@ function Editor() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+pub fn editor() -> impl IntoElement {
+    let selecting = signal(false);
+    // 只在选择时监听：其他时候由栈返回，并带有手势的预览。
+    effect(move || {
+        if selecting.get() {
+            on_back_press(move || {
+                selecting.set(false);
+                true
+            });
+        }
+    });
+    // …
+    view()
+}
+```
+
 在 effect 中创建的监听器一直有效，直到 effect 再次运行或它的组件消失；在 TSX 中，调用 `BackHandler.on` 返回的函数也会停止它。在 TSX 中，`BackHandler.exitApp()` 退出应用；在 iOS 上也可以导入 `nsh/mobile`，`BackHandler` 的调用会立即返回，所以同一份代码可以在两个平台上运行。见[平台特定代码](./platform-specific.md)。
 
 ### 跟随返回手势
@@ -673,6 +673,31 @@ function Editor() {
 中用 `on_back_progress`，TSX 中用 `BackHandler.on("progress", listener)`。每一步带有 `phase`（`start`、`move`、`end`、
 `cancel`）、从 0 到 1 的 `progress`，以及滑动开始的屏幕边缘 `edge`（`left` 或 `right`）。`end` 之后紧接着是返回操作，你的返回监听器像上面那样收到它；
 `cancel` 之后把视图放回原处。注册了进度监听器时，导航栈把手势交给应用，不再预览弹出；对话框接管的手势不会报告。和返回监听器一样，只在视图打开时监听：
+
+```tsx tabs
+import { createAnimatedValue, effect, type Signal } from "nsh";
+import { BackHandler } from "nsh/mobile";
+
+const WIDTH = 280;
+
+function Drawer({ open }: { open: Signal<boolean> }) {
+  const x = createAnimatedValue(0);
+  // 只在打开时监听：按下关闭它，手势的各步移动它。
+  effect(() => {
+    if (open()) {
+      BackHandler.on("press", () => {
+        open.set(false);
+        return true;
+      });
+      BackHandler.on("progress", (e) => {
+        if (e.phase === "start" || e.phase === "move") x.set(-WIDTH * e.progress);
+        else if (e.phase === "cancel") x.spring(0);
+      });
+    }
+  });
+  // …
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -697,31 +722,6 @@ pub fn drawer(open: Signal<bool>) -> impl IntoElement {
     });
     // …
     view().w(px(WIDTH)).bind_translate_x(&x)
-}
-```
-
-```tsx tabs
-import { createAnimatedValue, effect, type Signal } from "nsh";
-import { BackHandler } from "nsh/mobile";
-
-const WIDTH = 280;
-
-function Drawer({ open }: { open: Signal<boolean> }) {
-  const x = createAnimatedValue(0);
-  // 只在打开时监听：按下关闭它，手势的各步移动它。
-  effect(() => {
-    if (open()) {
-      BackHandler.on("press", () => {
-        open.set(false);
-        return true;
-      });
-      BackHandler.on("progress", (e) => {
-        if (e.phase === "start" || e.phase === "move") x.set(-WIDTH * e.progress);
-        else if (e.phase === "cancel") x.spring(0);
-      });
-    }
-  });
-  // …
 }
 ```
 

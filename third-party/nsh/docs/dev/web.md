@@ -960,7 +960,12 @@ browsers' touches into what phones report:
   the area's texts on one row (their boxes overlap vertically: a table's cells) with a tab instead of a newline, joins
   a text whose props have `continuesText` (`ViewProps::continues_text`: a wrapped line's later part) to the one
   before it with nothing, and gives attachments (U+FFFC) as their copy texts (`copyText`, sent with the text) or
-  leaves them out, as `SelectionModel::text` does.
+  leaves them out, as `SelectionModel::text` does. The area's `onSelectionChange` (`areaSelectionChanged`, on the
+  document's `selectionchange`) carries that text, where it starts and `bounds`, the box around the selected
+  characters in the area as of the event (`selectionBounds`: the client rects of the selected parts of the runs a
+  copy takes, united, in the area's own points), to which the core adds `pageBounds`. It is reported when the text or
+  the box changed (the same text selected elsewhere); the layout moving the selected text after a batch is not
+  looked for, which would read the page's layout after every batch.
 - **Elsewhere**: no page context menu or iOS callout outside fields and selectable text; a mouse drag selects only in
   selectable text and fields; overflow is `clip`, never `hidden`, so that the browser cannot scroll a box the core
   laid out to show a focused field.
@@ -1146,6 +1151,18 @@ browser does and starts no press (`pointerDown`: the link does not open it again
 and a context menu on it is the browser's (open in a new tab, copy the link) unless the link or a view
 in it listens for `onContextMenu` (`contextMenu`, where the runtime otherwise prevents the browser's menu). The other
 backends store `web_element` and draw nothing differently.
+
+**Links of text.** A link of a text (a nested `<Text>` taking presses, `AttributedText::links`) whose span has an
+`href` (`AttributedText::link_hrefs`: `TextView` gives each of its links its URL, as `Link` gives its view its `href`)
+is an `a` inside its run (`fillRun`, class `nsh-link`; the link record of the text item is `[node, events, href]`)
+when its address is one a browser opens from a page (`textLinkAddress`: `http:`, `https:`, `mailto:`, `tel:` and
+paths, under the site's base as a `Link`'s `href`, `linkHref`); an `#anchor` of the document and any other scheme (an
+app's own routes, `javascript:`) stay a span, pressed as before. The `a` keeps its run's shaping, bidi order, color
+and decoration (a rule of the runtime's stylesheet takes the browser's off `a.nsh-link`), is not draggable (a drag
+selects its characters) and keeps `tabindex="-1"`, as Tab passes the web's links of text. Its clicks are a `Link`'s
+(`LINK_SELECTOR`): a plain click presses the link through its text (`linkPress`), a click with a modifier key or the
+middle button is the browser's alone; its context menu is the browser's unless its text listens for `onContextMenu`.
+`text-browser.test.mjs` checks that the `a` sits where the span would.
 
 **The page's head.** `nsh/web` is a native module like the platform modules (`nsh_core::js::NATIVE_MODULES`): the
 QuickJS hosts serve `nsh-js`'s `web_page.rs` (`Head` renders nothing), the browser runtime its

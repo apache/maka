@@ -17,6 +17,46 @@ settings page, the steps of a checkout. Five parts make it, each owning one piec
 - `AccordionTrigger`, the button in the heading that expands and collapses its item, and says whether it is expanded.
 - `AccordionPanel`, the item's content, shown while it is open; with `reveal` its height springs open and shut.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const FAQ = [
+  { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
+  { value: "returns", question: "How do I return an item?", answer: "Print the label from your order within 30 days." },
+];
+
+function App() {
+  const open = signal(["shipping"]);
+  return (
+    <Accordion value={open()} onChange={({ value }) => open.set(value)}>
+      {FAQ.map((item) => (
+        <AccordionItem value={item.value} class="border-b border-border">
+          <AccordionHeader>
+            <AccordionTrigger class="group flex-row items-center justify-between py-3 active:opacity-70">
+              <Text class="font-medium">{item.question}</Text>
+              <Text class="transition-transform group-aria-expanded:rotate-180">⌄</Text>
+            </AccordionTrigger>
+          </AccordionHeader>
+          <AccordionPanel reveal accessibilityLabel={item.question}>
+            <View class="pb-3">
+              <Text class="text-muted-foreground">{item.answer}</Text>
+            </View>
+          </AccordionPanel>
+        </AccordionItem>
+      ))}
+    </Accordion>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger, theme};
 use nsh_core::prelude::*;
@@ -61,46 +101,6 @@ fn faq() -> impl IntoElement {
     }
     list
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const FAQ = [
-  { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
-  { value: "returns", question: "How do I return an item?", answer: "Print the label from your order within 30 days." },
-];
-
-function App() {
-  const open = signal(["shipping"]);
-  return (
-    <Accordion value={open()} onChange={({ value }) => open.set(value)}>
-      {FAQ.map((item) => (
-        <AccordionItem value={item.value} class="border-b border-border">
-          <AccordionHeader>
-            <AccordionTrigger class="group flex-row items-center justify-between py-3 active:opacity-70">
-              <Text class="font-medium">{item.question}</Text>
-              <Text class="transition-transform group-aria-expanded:rotate-180">⌄</Text>
-            </AccordionTrigger>
-          </AccordionHeader>
-          <AccordionPanel reveal accessibilityLabel={item.question}>
-            <View class="pb-3">
-              <Text class="text-muted-foreground">{item.answer}</Text>
-            </View>
-          </AccordionPanel>
-        </AccordionItem>
-      ))}
-    </Accordion>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 The parts come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's: a

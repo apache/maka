@@ -633,12 +633,11 @@ pub(crate) fn keep_privacy_manifest(
     let mut refused = |problem: String| {
         ignored.push(format!("{at}: {problem}, which App Store Connect refuses"));
     };
+    // An empty `NSPrivacyAccessedAPITypes` is not one of them: packages
+    // add NSH's own entries to it ([`NSH_ACCESSED_APIS`]).
     let accessed = manifest
         .get("NSPrivacyAccessedAPITypes")
         .and_then(serde_json::Value::as_array);
-    if accessed.is_some_and(Vec::is_empty) {
-        refused("`NSPrivacyAccessedAPITypes` is empty".into());
-    }
     for (i, entry) in accessed.into_iter().flatten().enumerate() {
         if entry["NSPrivacyAccessedAPITypeReasons"]
             .as_array()
@@ -663,17 +662,85 @@ pub(crate) fn keep_privacy_manifest(
     }
 }
 
-/// Writes the app's privacy manifest (`nsh.json` `ios.privacyManifest`)
-/// into the iOS app bundle `app`, where the system and App Store Connect
-/// read it, before the bundle is signed; nothing when the app has none.
+/// The required-reason APIs NSH's runtime calls, which is linked into
+/// every iOS app's executable, so App Store Connect counts them as the
+/// app's own (ITMS-91053 without them): by category, the reasons that
+/// cover NSH's use.
+///
+/// - File timestamp: Rust's standard library reading file metadata
+///   (`stat`, `fstat`), and the image cache, which ages its files in the
+///   app's container (`C617.1`).
+/// - System boot time: the renderer's timer, `mach_absolute_time`
+///   (`35F9.1`).
+const NSH_ACCESSED_APIS: [(&str, &[&str]); 2] = [
+    ("NSPrivacyAccessedAPICategoryFileTimestamp", &["C617.1"]),
+    ("NSPrivacyAccessedAPICategorySystemBootTime", &["35F9.1"]),
+];
+
+/// The app's privacy manifest (`nsh.json` `ios.privacyManifest`, as
+/// [`keep_privacy_manifest`] kept it) with NSH's own required-reason APIs
+/// ([`NSH_ACCESSED_APIS`]) added: `NSPrivacyAccessedAPITypes` has one entry
+/// per category, in the order the app first declares it and NSH's after,
+/// each with the reasons of every entry of its category once, the app's
+/// first.
+fn with_nsh_privacy(
+    manifest: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value as Json;
+    let declared = manifest
+        .get("NSPrivacyAccessedAPITypes")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let category = entry["NSPrivacyAccessedAPIType"].as_str()?;
+            let reasons = entry["NSPrivacyAccessedAPITypeReasons"].as_array()?;
+            Some((category, reasons.iter().filter_map(Json::as_str).collect()))
+        });
+    let nsh = NSH_ACCESSED_APIS
+        .iter()
+        .map(|(category, reasons)| (*category, reasons.to_vec()));
+    let mut categories: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (category, reasons) in declared.chain(nsh) {
+        let at = match categories.iter().position(|(c, _)| *c == category) {
+            Some(at) => at,
+            None => {
+                categories.push((category, Vec::new()));
+                categories.len() - 1
+            }
+        };
+        let joined = &mut categories[at].1;
+        for reason in reasons {
+            if !joined.contains(&reason) {
+                joined.push(reason);
+            }
+        }
+    }
+    let accessed = categories
+        .into_iter()
+        .map(|(category, reasons)| {
+            serde_json::json!({
+                "NSPrivacyAccessedAPIType": category,
+                "NSPrivacyAccessedAPITypeReasons": reasons,
+            })
+        })
+        .collect();
+    let mut merged = manifest.clone();
+    merged.insert("NSPrivacyAccessedAPITypes".into(), Json::Array(accessed));
+    merged
+}
+
+/// Writes the iOS app bundle `app`'s privacy manifest,
+/// `PrivacyInfo.xcprivacy`, where the system and App Store Connect read
+/// it, before the bundle is signed: the app's (`nsh.json`
+/// `ios.privacyManifest`) with NSH's own required-reason APIs added, so
+/// every app has one, and apps declare only what they call themselves.
 pub(crate) fn write_privacy_manifest(
     manifest: &serde_json::Map<String, serde_json::Value>,
     app: &std::path::Path,
 ) -> anyhow::Result<()> {
-    if manifest.is_empty() {
-        return Ok(());
-    }
-    let dictionary = convert(manifest, "ios.privacyManifest", std::iter::empty())?;
+    let manifest = with_nsh_privacy(manifest);
+    let dictionary = convert(&manifest, "ios.privacyManifest", std::iter::empty())?;
     plist::Value::Dictionary(dictionary)
         .to_file_xml(app.join("PrivacyInfo.xcprivacy"))
         .map_err(|e| anyhow::anyhow!("write PrivacyInfo.xcprivacy: {e}"))
@@ -1222,10 +1289,6 @@ mod tests {
                 "with `NSPrivacyTracking` off",
             ),
             (
-                serde_json::json!({ "NSPrivacyAccessedAPITypes": [] }),
-                "is empty",
-            ),
-            (
                 serde_json::json!({ "NSPrivacyAccessedAPITypes": [{
                     "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
                     "NSPrivacyAccessedAPITypeReasons": [],
@@ -1240,6 +1303,89 @@ mod tests {
             );
         }
         assert!(refused(serde_json::Value::Object(privacy())).is_empty());
+        // Packages add NSH's entries to an empty list.
+        assert!(refused(serde_json::json!({ "NSPrivacyAccessedAPITypes": [] })).is_empty());
+    }
+
+    /// `NSPrivacyAccessedAPITypes` of a manifest: each category's reasons.
+    fn accessed(manifest: &serde_json::Map<String, serde_json::Value>) -> Vec<(&str, Vec<&str>)> {
+        manifest["NSPrivacyAccessedAPITypes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["NSPrivacyAccessedAPIType"].as_str().unwrap(),
+                    entry["NSPrivacyAccessedAPITypeReasons"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| r.as_str().unwrap())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_app_without_a_privacy_manifest_gets_nsh_s() {
+        let merged = with_nsh_privacy(&serde_json::Map::new());
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(
+            accessed(&merged),
+            [
+                ("NSPrivacyAccessedAPICategoryFileTimestamp", vec!["C617.1"]),
+                ("NSPrivacyAccessedAPICategorySystemBootTime", vec!["35F9.1"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn nsh_s_entries_join_the_app_s_by_category() {
+        let mut manifest = privacy();
+        manifest.insert(
+            "NSPrivacyAccessedAPITypes".into(),
+            serde_json::json!([
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+                  "NSPrivacyAccessedAPITypeReasons": ["3B52.1"] },
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+                  "NSPrivacyAccessedAPITypeReasons": ["CA92.1"] },
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
+                  "NSPrivacyAccessedAPITypeReasons": ["35F9.1"] },
+                { "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+                  "NSPrivacyAccessedAPITypeReasons": ["C617.1", "DDA9.1"] },
+            ]),
+        );
+        let merged = with_nsh_privacy(&manifest);
+        // One entry per category, in the app's order, each reason once.
+        assert_eq!(
+            accessed(&merged),
+            [
+                (
+                    "NSPrivacyAccessedAPICategoryFileTimestamp",
+                    vec!["3B52.1", "C617.1", "DDA9.1"]
+                ),
+                ("NSPrivacyAccessedAPICategoryUserDefaults", vec!["CA92.1"]),
+                ("NSPrivacyAccessedAPICategorySystemBootTime", vec!["35F9.1"]),
+            ]
+        );
+        // The app's other keys are its own.
+        for key in [
+            "NSPrivacyTracking",
+            "NSPrivacyTrackingDomains",
+            "NSPrivacyCollectedDataTypes",
+        ] {
+            assert_eq!(merged[key], manifest[key], "{key}");
+        }
+        // The app's other categories come first, NSH's after.
+        assert_eq!(
+            accessed(&with_nsh_privacy(&privacy())),
+            [
+                ("NSPrivacyAccessedAPICategoryUserDefaults", vec!["CA92.1"]),
+                ("NSPrivacyAccessedAPICategoryFileTimestamp", vec!["C617.1"]),
+                ("NSPrivacyAccessedAPICategorySystemBootTime", vec!["35F9.1"]),
+            ]
+        );
     }
 
     #[test]
@@ -1247,8 +1393,14 @@ mod tests {
         let app = std::env::temp_dir().join(format!("nsh-cli-privacy-{}.app", std::process::id()));
         let _ = std::fs::remove_dir_all(&app);
         std::fs::create_dir_all(&app).unwrap();
+        // An app without one still carries NSH's.
         write_privacy_manifest(&serde_json::Map::new(), &app).unwrap();
-        assert!(!app.join("PrivacyInfo.xcprivacy").exists());
+        let written = plist::Value::from_file(app.join("PrivacyInfo.xcprivacy")).unwrap();
+        let accessed = written.as_dictionary().unwrap()["NSPrivacyAccessedAPITypes"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(accessed, NSH_ACCESSED_APIS.len());
         write_privacy_manifest(&privacy(), &app).unwrap();
         let written = plist::Value::from_file(app.join("PrivacyInfo.xcprivacy")).unwrap();
         let written = written.as_dictionary().unwrap();

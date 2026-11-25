@@ -574,13 +574,115 @@ class Box extends ViewGroup implements Node, NshView.ShaderFrames {
         // the border at the corners: like CSS, a uniform border clips inside it.
         float inset = clip && decor.rounded() && decor.hasBorder() && decor.uniformBorder() ? decor.borderWidths[0] : 0;
         if ((decor.needsPathClip(clip) || inset > 0) && content == null) {
+            Path shape = decor.shape(new Rect(0, 0, getWidth(), getHeight()), inset, clipPath);
+            if (decor.continuous && canvas.isHardwareAccelerated() && outside(shape, inset)) {
+                drawInCorners(canvas);
+                return;
+            }
             canvas.save();
-            canvas.clipPath(decor.shape(new Rect(0, 0, getWidth(), getHeight()), inset, clipPath));
+            canvas.clipPath(shape);
             super.dispatchDraw(canvas);
             canvas.restore();
         } else {
             super.dispatchDraw(canvas);
         }
+    }
+
+    /**
+     * Draws the children clipped to continuous corners without clipping to
+     * their path. The GPU clips to a path of cubics through a coverage mask
+     * made for each draw inside it, every frame: the gallery's index, a
+     * banner of 330 dots and cards, uploaded 440 textures a frame. Here the
+     * children are drawn clipped to rectangles (the shape's box but its
+     * corners' squares), which the GPU clips exactly, and into a small layer
+     * per corner's square, where what lies outside the corner
+     * ({@link #outside}) is erased: those paths stay while the box does, so
+     * their coverage is made once. A box too small for its corners' squares
+     * to leave a middle is drawn into one layer.
+     */
+    private void drawInCorners(Canvas canvas) {
+        float left = edges[0], top = edges[1], right = edges[2], bottom = edges[3];
+        float l = edges[4], t = edges[5], r = edges[6], b = edges[7];
+        if (l >= r || t >= b) {
+            int layer = canvas.saveLayer(left, top, right, bottom, null);
+            canvas.clipRect(left, top, right, bottom);
+            super.dispatchDraw(canvas);
+            for (Path p : outside) canvas.drawPath(p, eraser);
+            canvas.restoreToCount(layer);
+            return;
+        }
+        float[][] bands = {{left, t, right, b}, {l, top, r, t}, {l, b, r, bottom}};
+        for (float[] band : bands) {
+            if (band[2] <= band[0] || band[3] <= band[1]) continue;
+            canvas.save();
+            canvas.clipRect(band[0], band[1], band[2], band[3]);
+            super.dispatchDraw(canvas);
+            canvas.restore();
+        }
+        float[][] squares = {{left, top, l, t}, {r, top, right, t}, {r, b, right, bottom}, {left, b, l, bottom}};
+        for (int q = 0; q < 4; q++) {
+            float[] s = squares[q];
+            if (s[2] <= s[0] || s[3] <= s[1]) continue;
+            int layer = canvas.saveLayer(s[0], s[1], s[2], s[3], null);
+            canvas.clipRect(s[0], s[1], s[2], s[3]);
+            super.dispatchDraw(canvas);
+            canvas.drawPath(outside[q], eraser);
+            canvas.restoreToCount(layer);
+        }
+    }
+
+    /**
+     * What lies outside continuous corners within the shape's box, one piece
+     * per quarter of it (each only near its corner), for
+     * {@link #drawInCorners}.
+     */
+    private final Path[] outside = {new Path(), new Path(), new Path(), new Path()};
+    /**
+     * For {@link #drawInCorners} (px): the shape's box (left, top, right,
+     * bottom), then where its corners' squares end along each side (the
+     * left ones' right edge, the top ones' bottom edge, the right ones' left
+     * edge, the bottom ones' top edge), on whole pixels so the bands and the
+     * squares meet on pixel edges (`clipRect` does not antialias).
+     */
+    private final float[] edges = new float[8];
+    /** What {@link #outside} is for: width, height, inset and the four radii. */
+    private final float[] outsideFor = new float[7];
+    private android.graphics.Paint eraser;
+
+    /** Updates {@link #outside} for `shape`; false where the paths could not be made. */
+    private boolean outside(Path shape, float inset) {
+        float w = getWidth(), h = getHeight();
+        float[] key = {w, h, inset, decor.radii[0], decor.radii[1], decor.radii[2], decor.radii[3]};
+        if (eraser != null && java.util.Arrays.equals(key, outsideFor)) return true;
+        float left = inset, top = inset, right = w - inset, bottom = h - inset;
+        float cx = (left + right) / 2, cy = (top + bottom) / 2;
+        float[][] quarters = {{left, top, cx, cy}, {cx, top, right, cy}, {cx, cy, right, bottom}, {left, cy, cx, bottom}};
+        android.graphics.RectF[] at = new android.graphics.RectF[4];
+        for (int q = 0; q < 4; q++) {
+            Path p = outside[q];
+            p.reset();
+            p.addRect(quarters[q][0], quarters[q][1], quarters[q][2], quarters[q][3], Path.Direction.CW);
+            if (!p.op(shape, Path.Op.DIFFERENCE)) {
+                eraser = null;
+                return false;
+            }
+            at[q] = new android.graphics.RectF();
+            if (!p.isEmpty()) p.computeBounds(at[q], true);
+        }
+        edges[0] = left;
+        edges[1] = top;
+        edges[2] = right;
+        edges[3] = bottom;
+        edges[4] = (float) Math.ceil(Math.max(at[0].isEmpty() ? left : at[0].right, at[3].isEmpty() ? left : at[3].right));
+        edges[5] = (float) Math.ceil(Math.max(at[0].isEmpty() ? top : at[0].bottom, at[1].isEmpty() ? top : at[1].bottom));
+        edges[6] = (float) Math.floor(Math.min(at[1].isEmpty() ? right : at[1].left, at[2].isEmpty() ? right : at[2].left));
+        edges[7] = (float) Math.floor(Math.min(at[2].isEmpty() ? bottom : at[2].top, at[3].isEmpty() ? bottom : at[3].top));
+        if (eraser == null) {
+            eraser = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            eraser.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT));
+        }
+        System.arraycopy(key, 0, outsideFor, 0, key.length);
+        return true;
     }
 
     // --- Hover routing: pointerEvents -----------------------------------------

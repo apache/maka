@@ -41,47 +41,6 @@ closure of one, sent again when it changes), `.on_native_event(..)` hears its ev
 `element_ref()` put on it with `.element_ref(&r)` send its commands. In TSX, `nativeComponent()` declares a component
 for the name with the props and events it uses.
 
-```rust tabs
-use nsh_core::prelude::*;
-use serde_json::json;
-
-const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let taps = signal(0_u64);
-    let badge = element_ref();
-    view()
-        .flex_1()
-        .p(px(20.0))
-        .pt_safe_area_plus(px(20.0))
-        .pb_safe_area_plus(px(20.0))
-        .gap(px(16.0))
-        .bg(rgb(0xf6f8fa))
-        .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
-        .child(
-            // The host app's badge: a label it draws, sized to its text.
-            native("embed.badge")
-                .element_ref(&badge)
-                .prop("text", move || match taps.get() {
-                    0 => json!("Tap the native badge"),
-                    n => json!(format!("Tapped {n}×")),
-                })
-                .prop("color", move || json!(COLORS[taps.get() as usize % COLORS.len()]))
-                .on_native_event(move |e: &NativeEvent| {
-                    if &*e.name == "tap" {
-                        taps.set(e.data["count"].as_u64().unwrap_or(0));
-                        badge.command("pulse", json!(null));
-                    }
-                })
-                .self_start()
-                .rounded(px(8.0))
-                .overflow_hidden(),
-        )
-        .child(text(move || format!("Rust saw {} taps", taps.get())))
-}
-```
-
 ```tsx tabs
 import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
@@ -121,6 +80,47 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+use serde_json::json;
+
+const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let taps = signal(0_u64);
+    let badge = element_ref();
+    view()
+        .flex_1()
+        .p(px(20.0))
+        .pt_safe_area_plus(px(20.0))
+        .pb_safe_area_plus(px(20.0))
+        .gap(px(16.0))
+        .bg(rgb(0xf6f8fa))
+        .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
+        .child(
+            // The host app's badge: a label it draws, sized to its text.
+            native("embed.badge")
+                .element_ref(&badge)
+                .prop("text", move || match taps.get() {
+                    0 => json!("Tap the native badge"),
+                    n => json!(format!("Tapped {n}×")),
+                })
+                .prop("color", move || json!(COLORS[taps.get() as usize % COLORS.len()]))
+                .on_native_event(move |e: &NativeEvent| {
+                    if &*e.name == "tap" {
+                        taps.set(e.data["count"].as_u64().unwrap_or(0));
+                        badge.command("pulse", json!(null));
+                    }
+                })
+                .self_start()
+                .rounded(px(8.0))
+                .overflow_hidden(),
+        )
+        .child(text(move || format!("Rust saw {} taps", taps.get())))
+}
 ```
 
 The TSX version is `examples/embedded/App.tsx`, which both embedding samples in the repository run.
@@ -189,23 +189,6 @@ value. The web has no registered components.
 The component emits an event by name with an optional JSON payload. NSH delivers it to the engine thread and calls the
 matching handler with the payload (in Rust, the one `on_native_event` listener with the event's `name` and `data`):
 
-```rust tabs
-use serde_json::json;
-
-native("acme.map")
-    .prop("latitude", json!(52.52))
-    .prop("longitude", json!(13.405))
-    .on_native_event(move |e: &NativeEvent| match &*e.name {
-        "regionChange" => center.set((
-            e.data["latitude"].as_f64().unwrap_or_default(),
-            e.data["longitude"].as_f64().unwrap_or_default(),
-        )),
-        "markerPress" => open(e.data["id"].as_str().unwrap_or_default()),
-        _ => {}
-    })
-    .flex_1()
-```
-
 ```tsx tabs
 const MapView = nativeComponent<
   { latitude: number; longitude: number; zoom?: number },
@@ -224,12 +207,37 @@ const MapView = nativeComponent<
 />;
 ```
 
+```rust tabs
+use serde_json::json;
+
+native("acme.map")
+    .prop("latitude", json!(52.52))
+    .prop("longitude", json!(13.405))
+    .on_native_event(move |e: &NativeEvent| match &*e.name {
+        "regionChange" => center.set((
+            e.data["latitude"].as_f64().unwrap_or_default(),
+            e.data["longitude"].as_f64().unwrap_or_default(),
+        )),
+        "markerPress" => open(e.data["id"].as_str().unwrap_or_default()),
+        _ => {}
+    })
+    .flex_1()
+```
+
 Events are asynchronous: the main thread never waits for the app's code. A component that must decide something on the spot (may
 this gesture start, may this region change) has to decide it natively, from props it received earlier.
 
 ## Commands
 
 Imperative calls (zoom to a point, start playback, pulse an animation) go through the element's ref (`element_ref()` in Rust, `ref` in TSX):
+
+```tsx tabs
+let map: NativeComponentRef | undefined;
+
+<MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
+
+map?.command("zoomTo", { level: 3 });
+```
 
 ```rust tabs
 let map = element_ref();
@@ -241,14 +249,6 @@ native("acme.map")
     .flex_1()
 
 map.command("zoomTo", json!({ "level": 3 }));
-```
-
-```tsx tabs
-let map: NativeComponentRef | undefined;
-
-<MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
-
-map?.command("zoomTo", { level: 3 });
 ```
 
 `command(name, args)` (TSX: `command(name, args?)`) sends the name and the arguments (any JSON value) to the component's `command` method. Commands
@@ -396,7 +396,7 @@ nsh.registerComponent("embed.badge") { context -> Badge(context) }
 | `NshView.registerComponent(String name, NshComponent.Factory factory)` | Registers a factory under a name; it makes one component per element created from then on (UI thread). |
 | `interface NshComponent` | `View view()`, `void setProp(String, Object)`, `default void command(String, Object)`, `default void destroy()` (the element is gone: removed, or its app stopped by `NshView.destroy()` or replaced by another load; called once per component). Called on the UI thread. |
 | `setProp` values | `String`, `Number`, `Boolean`, `java.util.List`, `java.util.Map`, or `null` when removed (or JSON `null`). |
-| `NshComponentContext.getContext()` | The context of the `NshView` the component is in (its activity's), for the component's views, resources and system services; keep its `getApplicationContext()` in what outlives the component. Any thread. |
+| `NshComponentContext.getContext()` | The context of the `NshView` the component is in (its activity's), for the component's views, resources and system services; keep its `getApplicationContext()` in what outlives the component. In Native Shell's own activities it wraps the activity (`ContextWrapper`) and moves to the activity Android makes again for a configuration change while the app keeps running: reach the `Activity` through `getBaseContext()` when needed, and keep none. Any thread. |
 | `NshComponentContext.emit(String event, Object data)` | Emits an event; `data` as the same Java types, or `null`. Any thread. |
 | `NshComponentContext.setSize(float width, float height)` | Reports the component's own size in dp. Any thread. |
 

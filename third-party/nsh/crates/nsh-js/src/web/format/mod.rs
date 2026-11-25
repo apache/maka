@@ -2,8 +2,8 @@
 //! (decimal, percent, currency and unit styles; fraction and significant
 //! digits; grouping; sign display; standard, scientific, engineering and
 //! compact notation) and `Intl.DateTimeFormat` (the date and time fields,
-//! `dateStyle` / `timeStyle`, 12- and 24-hour cycles; local time, UTC or a
-//! fixed offset), with `format`, `formatToParts` and `resolvedOptions`;
+//! `dateStyle` / `timeStyle`, 12- and 24-hour cycles; local time, UTC, a
+//! fixed offset or a named zone the app ships), with `format`, `formatToParts` and `resolvedOptions`;
 //! and the locale-aware `toLocaleString` of numbers, BigInts and dates.
 //! QuickJS has no `Intl`; this one formats natively, in Rust.
 //!
@@ -25,12 +25,17 @@
 //! (`CET-1CEST,M3.5.0,M10.5.0/3`) is named by its text, so its daylight
 //! saving time stays. A test's zone
 //! (`open({ localeSettings: { timeZone } })`) names the device's zone
-//! without moving local time, so `Intl` keeps naming the machine's. TypeScript declares all of
+//! without moving local time, so `Intl` keeps naming the machine's. Other
+//! named zones (`America/New_York`) are those the app ships (nsh.json
+//! `timeZones`: their rules from the IANA database, `zone.rs`), registered
+//! with the languages ([`add_zones`]); their short names are the
+//! database's abbreviations (`EST`), else the offset (`GMT+10:30`). TypeScript declares all of
 //! it in its ECMAScript library (`lib.es2023`), so `globals.d.ts` does not.
 //!
 //! Not there: `Collator`, `RelativeTimeFormat`,
-//! `ListFormat`, `DisplayNames`, `Segmenter`, `Intl.Locale`; time zones
-//! other than the device's, UTC and fixed offsets (no zone database);
+//! `ListFormat`, `DisplayNames`, `Segmenter`, `Intl.Locale`; named time
+//! zones the app does not ship, long zone names (`Eastern Standard Time`),
+//! `Intl.supportedValuesOf`;
 //! calendars other than the Gregorian, non-Latin digits, `currencySign:
 //! "accounting"` (written as `standard`) and currency names (written as
 //! codes). The constructors need `new`.
@@ -38,6 +43,7 @@
 mod date;
 mod locale;
 mod number;
+mod zone;
 
 use std::ffi::c_int;
 
@@ -46,6 +52,7 @@ use locale::Locale;
 #[cfg(not(target_arch = "wasm32"))]
 use nsh_core::platform::TimeZone;
 use rquickjs::qjs;
+pub(crate) use zone::Zones;
 
 use super::{
     Class, Key, Object, Spec, data, instance,
@@ -121,6 +128,11 @@ fn resolve(cx: Ctx, locales: Raw) -> R<Locale> {
 /// Registers the language data the app ships, by language (`"de"`).
 pub(crate) fn add_languages(cx: Ctx, languages: serde_json::Map<String, serde_json::Value>) {
     super::web(cx).languages.add(languages);
+}
+
+/// Registers the named time zones the app ships (`nsh_i18n::zones`' data).
+pub(crate) fn add_zones(cx: Ctx, zones: Vec<serde_json::Value>) {
+    super::web(cx).zones.add(zones);
 }
 
 /// The options object (`undefined`: none).
@@ -747,10 +759,13 @@ fn zone_option(cx: Ctx, o: &Option<V>) -> R<date::Zone> {
     if local_zone_name(cx)?.is_some_and(|local| local.eq_ignore_ascii_case(&name)) {
         return Ok(date::Zone::Local);
     }
+    if let Some(index) = super::web(cx).zones.find(&name) {
+        return Ok(date::Zone::Named(index));
+    }
     Err(js::range_error(
         cx,
         &format!(
-            "Invalid time zone specified: {name} (nsh knows the device's zone, UTC and offsets such as +08:00)"
+            "Invalid time zone specified: {name} (nsh knows the device's zone, UTC, offsets such as +08:00 and the zones nsh.json's timeZones lists)"
         ),
     ))
 }
@@ -963,12 +978,41 @@ fn format_date(
     zone: date::Zone,
     ms: f64,
 ) -> R<Vec<Part>> {
-    let offset = match zone {
-        date::Zone::Local => local_offset(cx, ms)?,
-        date::Zone::Utc => 0,
-        date::Zone::Offset(minutes) => minutes,
+    let (offset, abbr) = match zone {
+        date::Zone::Local => (local_offset(cx, ms)?, None),
+        date::Zone::Utc => (0, None),
+        date::Zone::Offset(minutes) => (minutes, None),
+        date::Zone::Named(index) => {
+            let (seconds, abbr) = super::web(cx).zones.get(index).at(ms);
+            let abbr = writes_abbreviation(locale.tag.as_str(), abbr).then(|| abbr.to_owned());
+            (seconds.div_euclid(60), abbr)
+        }
     };
-    Ok(date::format(ms, offset, zone, f, &locale.dates))
+    Ok(date::format(
+        ms,
+        offset,
+        zone,
+        abbr.as_deref(),
+        f,
+        &locale.dates,
+    ))
+}
+
+/// Whether `locale` writes a named zone's short name as its abbreviation
+/// (`EST`), as browsers do with CLDR's names: North American zones in
+/// English as written in the US and Canada. Any other zone is written by
+/// its offset (`GMT+5:30`).
+fn writes_abbreviation(locale: &str, abbr: &str) -> bool {
+    const NORTH_AMERICAN: &[&str] = &[
+        "EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT", "AKST", "AKDT", "HST", "HDT",
+    ];
+    let mut tags = locale.split(['-', '_']);
+    let english = tags.next().is_some_and(|l| l.eq_ignore_ascii_case("en"));
+    let region =
+        tags.find(|t| t.len() == 2 || t.len() == 3 && t.bytes().all(|b| b.is_ascii_digit()));
+    english
+        && region.is_none_or(|r| r.eq_ignore_ascii_case("US") || r.eq_ignore_ascii_case("CA"))
+        && NORTH_AMERICAN.contains(&abbr)
 }
 
 fn format_with(cx: Ctx, this: Raw, value: Raw) -> R<Vec<Part>> {
@@ -1028,6 +1072,7 @@ native!(
         let zone = match zone {
             Zone::Utc => "UTC".to_owned(),
             Zone::Offset(m) => format!("{}{:02}:{:02}", if m < 0 { '-' } else { '+' }, m.abs() / 60, m.abs() % 60),
+            Zone::Named(index) => super::web(cx).zones.get(index).name.clone(),
             Zone::Local => match local_zone_name(cx)? {
                 Some(name) => name,
                 None => {

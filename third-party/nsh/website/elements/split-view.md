@@ -15,51 +15,6 @@ with the system's sidebar button, and the system arranges the columns as the win
 the columns stand side by side, resized by dragging their edges. Where the room is compact (a phone, a narrow window) one column shows
 at a time. Which columns show is `columnVisibility`, a value the app owns.
 
-```rust tabs
-use nsh_base::{ColumnVisibility, button, nav_page, nav_stack, split_view, theme};
-use nsh_core::prelude::*;
-
-const MESSAGES: [&str; 2] = ["Welcome", "Release notes"];
-
-/// A message of the inbox: a press shows it in the detail.
-fn row(
-    title: &'static str,
-    selected: Signal<&'static str>,
-    visibility: Signal<ColumnVisibility>,
-) -> impl IntoElement {
-    button()
-        .on_press(move || {
-            selected.set(title);
-            // Where one column shows, the message comes in front.
-            if horizontal_size_class() == SizeClass::Compact {
-                visibility.set(ColumnVisibility::DetailOnly);
-            }
-        })
-        .px_4()
-        .py_3()
-        .child(text(title).text_color(move || theme().foreground()))
-}
-
-fn mail() -> impl IntoElement {
-    let visibility = signal(ColumnVisibility::Automatic);
-    let selected = signal(MESSAGES[0]);
-    split_view()
-        .flex_1()
-        .column_visibility(move || Some(visibility.get()))
-        .on_column_visibility_change(move |next: &ColumnVisibility| visibility.set(*next))
-        .sidebar(nav_stack().child(nav_page().title("Inbox").child(
-            view()
-                .flex_1()
-                .children(MESSAGES.map(|title| row(title, selected, visibility))),
-        )))
-        .detail(nav_stack().child(
-            nav_page()
-                .title(move || SharedString::from(selected.get()))
-                .child(text(move || format!("{} …", selected.get())).p_4()),
-        ))
-}
-```
-
 ```tsx tabs
 import { horizontalSizeClass, mount, signal, Text, View } from "nsh";
 import { Button, type ColumnVisibility, createNavStack, NavPage, NavStack, SplitView } from "nsh/base";
@@ -115,6 +70,51 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{ColumnVisibility, button, nav_page, nav_stack, split_view, theme};
+use nsh_core::prelude::*;
+
+const MESSAGES: [&str; 2] = ["Welcome", "Release notes"];
+
+/// A message of the inbox: a press shows it in the detail.
+fn row(
+    title: &'static str,
+    selected: Signal<&'static str>,
+    visibility: Signal<ColumnVisibility>,
+) -> impl IntoElement {
+    button()
+        .on_press(move || {
+            selected.set(title);
+            // Where one column shows, the message comes in front.
+            if horizontal_size_class() == SizeClass::Compact {
+                visibility.set(ColumnVisibility::DetailOnly);
+            }
+        })
+        .px_4()
+        .py_3()
+        .child(text(title).text_color(move || theme().foreground()))
+}
+
+fn mail() -> impl IntoElement {
+    let visibility = signal(ColumnVisibility::Automatic);
+    let selected = signal(MESSAGES[0]);
+    split_view()
+        .flex_1()
+        .column_visibility(move || Some(visibility.get()))
+        .on_column_visibility_change(move |next: &ColumnVisibility| visibility.set(*next))
+        .sidebar(nav_stack().child(nav_page().title("Inbox").child(
+            view()
+                .flex_1()
+                .children(MESSAGES.map(|title| row(title, selected, visibility))),
+        )))
+        .detail(nav_stack().child(
+            nav_page()
+                .title(move || SharedString::from(selected.get()))
+                .child(text(move || format!("{} …", selected.get())).p_4()),
+        ))
+}
 ```
 
 `SplitView` comes from [`nsh/base`](../modules/nsh-base.md), `nsh_base::split_view()` in Rust, with

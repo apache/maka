@@ -6,6 +6,8 @@ interface Route {
   /** Its content and its title arrive after the page is shown (a record
    * that loads). */
   late?: boolean;
+  /** Keep the scroll view mounted even when `headerLargeTitle` is false. */
+  keepRows?: boolean;
 }
 
 const rows = Array.from({ length: 30 }, (_, i) => i + 1);
@@ -15,8 +17,9 @@ const rows = Array.from({ length: 30 }, (_, i) => i + 1);
 function Rows(props: { name: string }) {
   const insets = safeAreaInsets();
   const offset = signal<number | undefined>(undefined);
+  const height = signal<number | undefined>(undefined);
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1 }} onLayout={(e) => height.set(Math.round(e.bounds.size.height))}>
       <Scroll style={{ flex: 1 }} onScroll={(e) => offset.set(Math.round(e.offset.y))}>
         <Each of={rows}>
           {(n) => (
@@ -26,7 +29,7 @@ function Rows(props: { name: string }) {
           )}
         </Each>
       </Scroll>
-      <Text>{`${props.name} top:${Math.round(insets().top)} offset:${offset() ?? "none"}`}</Text>
+      <Text>{`${props.name} top:${Math.round(insets().top)} offset:${offset() ?? "none"} height:${height() ?? "none"}`}</Text>
     </View>
   );
 }
@@ -50,11 +53,12 @@ function App() {
           const loaded = signal(!route.late);
           if (route.late) setTimeout(() => loaded.set(true), 300);
           // The same page, plain and then large again (`Toggle`): a header
-          // changed in place, over a new scroll view.
+          // changed in place, over a new scroll view (or the same scroll view
+          // when `route.keepRows` is set).
           const large = () => !plain();
           return (
             <NavPage title={loaded() ? route.name : "Loading"} headerLargeTitle={large()}>
-              <If when={large() && loaded()} else={<View style={{ flex: 1 }} />}>
+              <If when={(route.keepRows || large()) && loaded()} else={<View style={{ flex: 1 }} />}>
                 <Rows name={route.name} />
               </If>
             </NavPage>
@@ -65,6 +69,20 @@ function App() {
         <Button label="Push" onPress={() => nav.push({ name: "Pushed" })} />
         <Button label="Pop" onPress={() => nav.pop()} />
         <Button label="Replace" onPress={() => nav.setRoutes([{ name: "Replaced", late: true }])} />
+        <Button
+          label="KeepPlain"
+          onPress={() => {
+            plain.set(true);
+            nav.setRoutes([{ name: "Plain", keepRows: true }]);
+          }}
+        />
+        <Button
+          label="KeepLarge"
+          onPress={() => {
+            plain.set(false);
+            nav.setRoutes([{ name: "Keep", keepRows: true }]);
+          }}
+        />
         <Button label="Toggle" onPress={() => plain.set(!plain())} />
       </View>
     </View>

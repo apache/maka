@@ -9,7 +9,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::Duration,
@@ -61,6 +61,21 @@ pub(crate) struct WindowsNative {
     target: Arc<AtomicU64>,
     /// The UI thread the surface lives on.
     ui: UiThread,
+    /// Whether the last call that got nothing back waited [`MAIN`] in vain
+    /// (the window's thread busy) rather than finding the surface gone.
+    /// One flag for every call: an agent's steps run one at a time on its
+    /// worker thread (`nsh_testing`'s `Worker`), so the error a call builds
+    /// reads its own wait.
+    late: AtomicBool,
+    /// Whether a call waited [`MAIN`] in vain since the agent last asked
+    /// ([`Native::take_unanswered`]): calls that return no error (a view's
+    /// bounds, the viewport) are not the app's state then.
+    missed: AtomicBool,
+}
+
+/// The error of a call the window's thread did not answer in [`MAIN`].
+fn unanswered() -> String {
+    format!("the window did not answer in {} s", MAIN.as_secs())
 }
 
 impl WindowsNative {
@@ -69,6 +84,17 @@ impl WindowsNative {
             key,
             target: Arc::new(AtomicU64::new(ROOT_ID as u64)),
             ui,
+            late: AtomicBool::new(false),
+            missed: AtomicBool::new(false),
+        }
+    }
+
+    /// Why the last call got nothing back, for its error.
+    fn gone(&self) -> String {
+        if self.late.load(Ordering::Relaxed) {
+            unanswered()
+        } else {
+            "the window is gone".to_owned()
         }
     }
 
@@ -115,7 +141,13 @@ impl WindowsNative {
         self.ui.invoke(move || {
             let _ = tx.send(Surface::by_key(key).map(|surface| f(&surface)));
         });
-        rx.recv_timeout(MAIN).ok().flatten()
+        let got = rx.recv_timeout(MAIN);
+        let late = matches!(got, Err(mpsc::RecvTimeoutError::Timeout));
+        self.late.store(late, Ordering::Relaxed);
+        if late {
+            self.missed.store(true, Ordering::Relaxed);
+        }
+        got.ok().flatten()
     }
 
     fn click(&self, at: Point<Points>, hold: Duration, button: u8) {
@@ -259,18 +291,18 @@ impl Native for WindowsNative {
     fn choose_menu_item(&self, path: &[String]) -> Result<(), String> {
         let path = path.to_vec();
         self.on_main(move |s| crate::chrome::choose_open_menu(s, &path))
-            .unwrap_or_else(|| Err("the window is gone".to_owned()))
+            .unwrap_or_else(|| Err(self.gone()))
     }
 
     fn close_menu(&self) -> Result<(), String> {
         self.on_main(|s| crate::chrome::close_open_menu(s))
-            .unwrap_or_else(|| Err("the window is gone".to_owned()))
+            .unwrap_or_else(|| Err(self.gone()))
     }
 
     fn hover(&self, at: Point<Points>) -> Result<(), String> {
         let (x, y) = (at.x.0, at.y.0);
         self.in_target(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 0))
-            .ok_or_else(|| "the window is gone".to_owned())
+            .ok_or_else(|| self.gone())
     }
 
     fn press_keys(&self, keys: &str) -> Result<(), String> {
@@ -288,7 +320,7 @@ impl Native for WindowsNative {
             meta: m.cmd,
         };
         self.in_focused(move |s| synth::press(s, vk, modifiers))
-            .ok_or_else(|| "the window is gone".to_owned())
+            .ok_or_else(|| self.gone())
     }
 
     fn input_text(&self, id: NodeId) -> Option<String> {
@@ -312,7 +344,7 @@ impl Native for WindowsNative {
         let button = button.map(str::to_owned);
         let (x, y) = self
             .on_main(move |s| crate::system::dialog_point(s, button.as_deref()))
-            .unwrap_or_else(|| Err("the window is gone".into()))?;
+            .unwrap_or_else(|| Err(self.gone()))?;
         self.click(point(Points(x), Points(y)), CLICK, 0);
         Ok(())
     }
@@ -324,18 +356,18 @@ impl Native for WindowsNative {
     fn screenshot(&self) -> Result<Vec<u8>, String> {
         let target = self.target.load(Ordering::Relaxed) as NodeId;
         self.on_main(move |s| synth::screenshot(s, target))
-            .unwrap_or_else(|| Err("the window is gone".into()))
+            .unwrap_or_else(|| Err(self.gone()))
     }
 
     fn window_screenshot(&self, window: NodeId) -> Result<Vec<u8>, String> {
         self.on_main(move |s| synth::window_screenshot(s, window))
-            .unwrap_or_else(|| Err("the window is gone".into()))
+            .unwrap_or_else(|| Err(self.gone()))
     }
 
     fn resize(&self, width: Points, height: Points) -> Result<(), String> {
         let target = self.target.load(Ordering::Relaxed) as NodeId;
         self.on_main(move |s| synth::resize(s, target, width.0, height.0))
-            .ok_or_else(|| "the window is gone".to_owned())
+            .ok_or_else(|| self.gone())
     }
 
     fn set_dark(&self, dark: bool) -> Result<(), String> {
@@ -343,13 +375,13 @@ impl Native for WindowsNative {
             crate::system::simulate_system_scheme(dark);
             crate::system::settings_changed(s);
         })
-        .ok_or_else(|| "the window is gone".to_owned())
+        .ok_or_else(|| self.gone())
     }
 
     fn target_window(&self, window: NodeId) -> Result<(), String> {
         let known = self
             .on_main(move |s| window == ROOT_ID || crate::app_window::is_window(s, window))
-            .ok_or_else(|| "the window is gone".to_owned())?;
+            .ok_or_else(|| self.gone())?;
         if !known {
             return Err(format!("no window shows node {window}"));
         }
@@ -368,7 +400,7 @@ impl Native for WindowsNative {
                 crate::app_window::state(s, window)
             }
         })
-        .ok_or_else(|| "the window is gone".to_owned())
+        .ok_or_else(|| self.gone())
     }
 
     fn press_window_close(&self, window: NodeId) -> Result<(), String> {
@@ -381,7 +413,11 @@ impl Native for WindowsNative {
             let hwnd = hwnd.ok_or_else(|| format!("no window shows node {window}"))?;
             crate::chrome::press_close_button(hwnd)
         })
-        .unwrap_or_else(|| Err("the window is gone".to_owned()))
+        .unwrap_or_else(|| Err(self.gone()))
+    }
+
+    fn take_unanswered(&self) -> Option<String> {
+        self.missed.swap(false, Ordering::Relaxed).then(unanswered)
     }
 
     fn quit(&self) {

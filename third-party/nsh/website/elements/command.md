@@ -15,41 +15,6 @@ emoji filters at every keystroke. The look is the app's: the command draws nothi
 (`itemClass`, `groupClass`, `searchClass`, ...) and draws the rows' content (`renderItem`: an icon, the label, the
 shortcut's keys).
 
-```rust tabs
-use nsh_base::{CommandEntry, CommandItem, command, theme};
-use nsh_core::prelude::*;
-
-fn palette() -> impl IntoElement {
-    let items = vec![
-        CommandItem::new("new", "New File").group("File").shortcut("mod+n"),
-        CommandItem::new("open", "Open…").group("File").shortcut("mod+o"),
-        CommandItem::new("theme", "Toggle Theme").group("View").keywords(["dark", "light"]),
-        CommandItem::new("settings", "Settings").group("View").shortcut("mod+,"),
-    ];
-    let chosen = signal(SharedString::from("none"));
-    command()
-        .items(items)
-        .placeholder("Type a command or search…")
-        .accessibility_label("Commands")
-        .auto_focus(true)
-        .on_select(move |id: &SharedString| chosen.set(id.clone()))
-        .empty(text("No results.").text_color(move || theme().muted_foreground))
-        .h(px(360.0))
-        .render_item(|entry: &CommandEntry| {
-            view()
-                .flex_row()
-                .items_center()
-                .h_8()
-                .px_2()
-                .child(text(entry.label.clone()).flex_1())
-                .child(
-                    text(entry.shortcut_label.clone().unwrap_or_default())
-                        .text_color(move || theme().muted_foreground),
-                )
-        })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Command, type CommandItem } from "nsh/base";
@@ -95,6 +60,41 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{CommandEntry, CommandItem, command, theme};
+use nsh_core::prelude::*;
+
+fn palette() -> impl IntoElement {
+    let items = vec![
+        CommandItem::new("new", "New File").group("File").shortcut("mod+n"),
+        CommandItem::new("open", "Open…").group("File").shortcut("mod+o"),
+        CommandItem::new("theme", "Toggle Theme").group("View").keywords(["dark", "light"]),
+        CommandItem::new("settings", "Settings").group("View").shortcut("mod+,"),
+    ];
+    let chosen = signal(SharedString::from("none"));
+    command()
+        .items(items)
+        .placeholder("Type a command or search…")
+        .accessibility_label("Commands")
+        .auto_focus(true)
+        .on_select(move |id: &SharedString| chosen.set(id.clone()))
+        .empty(text("No results.").text_color(move || theme().muted_foreground))
+        .h(px(360.0))
+        .render_item(|entry: &CommandEntry| {
+            view()
+                .flex_row()
+                .items_center()
+                .h_8()
+                .px_2()
+                .child(text(entry.label.clone()).flex_1())
+                .child(
+                    text(entry.shortcut_label.clone().unwrap_or_default())
+                        .text_color(move || theme().muted_foreground),
+                )
+        })
+}
 ```
 
 `Command` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The query is the app's when it

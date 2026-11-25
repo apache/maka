@@ -106,6 +106,11 @@ pub trait ViewGeometry: Send + Sync {
         let _ = pos;
         None
     }
+    /// The visible box of the independently scrolling grid at this document position.
+    fn table_viewport(&self, _pos: usize) -> Option<Bounds<Points>> {
+        None
+    }
+
     /// A content point less the same point in the root view, now (its
     /// scrolling included), once the pointer has been over the content.
     fn page_shift(&self) -> Option<Point<Points>> {
@@ -632,6 +637,12 @@ impl EditorSession {
     /// children), or `None` when no view does.
     pub fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
         self.geometry()?.node_rect(pos)
+    }
+
+    /// The visible part of the table starting at `pos`, in content coordinates.
+    /// Content overlays can use its edges to avoid drawing over neighboring paragraphs.
+    pub fn table_viewport(&self, pos: usize) -> Option<Bounds<Points>> {
+        self.geometry()?.table_viewport(pos)
     }
 
     /// The box of the block starting at `pos` in the root view (page

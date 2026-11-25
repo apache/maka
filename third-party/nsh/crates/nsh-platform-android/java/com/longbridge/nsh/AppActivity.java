@@ -8,16 +8,39 @@ import android.os.Bundle;
 /** The activity of packaged apps (`nsh package --target android`). */
 public final class AppActivity extends Activity {
     private NshView view;
-    private final ShareReceiver shares = new ShareReceiver();
+    private ShareReceiver shares;
 
     /** Created by the system from the manifest. */
     public AppActivity() {}
+
+    /** What the activity made again for a configuration change takes over: the running app. */
+    private static final class Kept {
+        final NshView view;
+        final ShareReceiver shares;
+
+        Kept(NshView view, ShareReceiver shares) {
+            this.view = view;
+            this.shares = shares;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         Intent intent = getIntent();
         DevActivity.edgeToEdge(this);
+        // Made again for a configuration change it does not take as it runs (an overlay changing its resources, such as
+        // the navigation mode or the wallpaper's colors): the app keeps running, its views, dialogs and state as they
+        // were, and its intent was handled already.
+        Object last = getLastNonConfigurationInstance();
+        if (last instanceof Kept) {
+            Kept kept = (Kept) last;
+            view = kept.view;
+            shares = kept.shares;
+            view.enterActivity(this);
+            return;
+        }
+        shares = new ShareReceiver();
         // `nsh run` passes the app's declared environment as extras. Only a
         // development build (debuggable) takes them: the activity is
         // exported, so any app could start a store build with extras.
@@ -25,7 +48,8 @@ public final class AppActivity extends Activity {
                 && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             DevActivity.applyEnv(intent.getExtras());
         }
-        view = new NshView(this);
+        // Its views' context, which moves to the activity made again for a configuration change.
+        view = new NshView(new android.content.MutableContextWrapper(this));
         // An app on its own, not a module embedded in another app: no limits.
         view.useStandaloneLimits();
         view.ownSystemBars();
@@ -81,10 +105,20 @@ public final class AppActivity extends Activity {
         if (view == null || !view.handleBack()) super.onBackPressed();
     }
 
+    /** The running app, for the activity made again ({@link #onCreate}). */
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        return view != null && view.canMove() ? new Kept(view, shares) : null;
+    }
+
     @Override
     protected void onDestroy() {
-        shares.destroy();
-        view.destroy();
+        if (isChangingConfigurations() && view.canMove()) {
+            view.leaveActivity();
+        } else {
+            shares.destroy();
+            view.destroy();
+        }
         super.onDestroy();
     }
 }

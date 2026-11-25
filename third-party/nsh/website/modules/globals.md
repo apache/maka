@@ -73,6 +73,16 @@ Rust: `set_timeout(delay, f)` and `set_interval(period, f)` return a `Spawned` h
 
 `requestAnimationFrame` callbacks run once, at the next frame the engine produces, all with the same `performance.now()` time. A callback that requests another frame is called at the following frame, so the usual loop works:
 
+```tsx tabs
+let start = 0;
+function tick(time: number) {
+  if (!start) start = time;
+  progress.set(Math.min(1, (time - start) / 300));
+  if (time - start < 300) requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+```
+
 ```rust tabs
 spawn(async move {
     let start = next_frame().await;
@@ -85,16 +95,6 @@ spawn(async move {
         }
     }
 });
-```
-
-```tsx tabs
-let start = 0;
-function tick(time: number) {
-  if (!start) start = time;
-  progress.set(Math.min(1, (time - start) / 300));
-  if (time - start < 300) requestAnimationFrame(tick);
-}
-requestAnimationFrame(tick);
 ```
 
 > [!TIP]
@@ -196,14 +196,6 @@ These events are unrelated to the events of elements (`onPress`, `onChange`, ...
 
 `AbortSignal` cancels `fetch` requests and stream pipes, and removes listeners added with `{ signal }`. In Rust, a request runs in a task, and cancelling the task cancels it:
 
-```rust tabs
-let search = spawn(async move {
-    let _ = fetch("https://api.example.com/search?q=nsh").await;
-});
-// later, for example when the screen closes (a task also ends with its component):
-search.cancel();
-```
-
 ```tsx tabs
 const controller = new AbortController();
 const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
@@ -213,6 +205,14 @@ fetch("https://api.example.com/search?q=nsh", { signal }).catch((e) => {
 });
 // later, for example when the screen closes:
 controller.abort();
+```
+
+```rust tabs
+let search = spawn(async move {
+    let _ = fetch("https://api.example.com/search?q=nsh").await;
+});
+// later, for example when the screen closes (a task also ends with its component):
+search.cancel();
 ```
 
 ## URLs
@@ -262,17 +262,17 @@ class URLSearchParams {
 
 URLs are parsed per the URL Standard. A URL's `searchParams` is live in both directions: changing the parameters rewrites the query, and setting `search` or `href` parses it again. Rust code uses the `url` crate, which follows the same standard:
 
-```rust tabs
-let mut url = url::Url::parse("https://api.example.com")?.join("/v1/items")?;
-url.query_pairs_mut().append_pair("page", "2").append_pair("tag", "new");
-url.as_str(); // "https://api.example.com/v1/items?page=2&tag=new"
-```
-
 ```tsx tabs
 const url = new URL("/v1/items", "https://api.example.com");
 url.searchParams.set("page", "2");
 url.searchParams.append("tag", "new");
 url.href; // "https://api.example.com/v1/items?page=2&tag=new"
+```
+
+```rust tabs
+let mut url = url::Url::parse("https://api.example.com")?.join("/v1/items")?;
+url.query_pairs_mut().append_pair("page", "2").append_pair("tag", "new");
+url.as_str(); // "https://api.example.com/v1/items?page=2&tag=new"
 ```
 
 The iterators of `URLSearchParams` (and of `Headers` and `FormData`) iterate over a snapshot taken when the iterator was created, and have the iterator helpers (`map`, `filter`, `toArray`, ...).
@@ -386,6 +386,18 @@ type BodyInit = ReadableStream<Uint8Array> | Blob | BufferSource | FormData | UR
 
 `fetch` sends HTTP and HTTPS requests through the platform's own network stack: `NSURLSession` on iOS and Mac Catalyst, `HttpURLConnection` on Android. So the system's proxy settings, TLS configuration and certificate trust apply. `data:` URLs and `blob:` URLs (from `URL.createObjectURL`) are answered locally without touching the network; any other scheme rejects. Rust's `fetch(request)` goes through the same stack and the same capabilities, takes a URL or an `HttpRequest`, and resolves with an `HttpResponse` holding the whole body ([Networking](../docs/networking.md#from-rust-components)):
 
+```tsx tabs
+type Todo = { id: number; title: string; done: boolean };
+
+async function loadTodos(): Promise<Todo[]> {
+  const res = await fetch("https://api.example.com/todos", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+```
+
 ```rust tabs
 #[derive(serde::Deserialize)]
 struct Todo {
@@ -401,18 +413,6 @@ async fn load_todos(token: &str) -> Result<Vec<Todo>, String> {
         return Err(format!("HTTP {}", response.status()));
     }
     serde_json::from_slice(&response.body).map_err(|e| e.to_string())
-}
-```
-
-```tsx tabs
-type Todo = { id: number; title: string; done: boolean };
-
-async function loadTodos(): Promise<Todo[]> {
-  const res = await fetch("https://api.example.com/todos", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 ```
 
@@ -687,7 +687,7 @@ new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).fo
 Without `locales`, the locale the app shows is used: the device's region format (iOS `NSLocale.currentLocale`, Android `Locale.getDefault()`; `en-US` in `nsh test` and on the web), or the one `setLocale` (`nsh/i18n`) set.
 
 - **Numbers**: the `decimal`, `percent`, `currency` (`currencyDisplay` `symbol`, `narrowSymbol`, `code`) and `unit` (common units: lengths, masses, durations, data sizes, temperatures, speeds) styles; `minimumIntegerDigits`, `minimum` / `maximumFractionDigits`, `minimum` / `maximumSignificantDigits`, `roundingPriority`, `trailingZeroDisplay`, `useGrouping`, `signDisplay`; `standard`, `scientific`, `engineering` and `compact` notation (`compactDisplay` `short` / `long`). Rounding is half away from zero, on the number as written (`1.005` rounds to `1.01`, as in browsers). `format` also takes BigInts and decimal strings, exactly. `formatToParts` and `resolvedOptions` work as in browsers.
-- **Dates**: `weekday`, `year`, `month` (`numeric`, `2-digit`, `short`, `long`, `narrow`), `day`, `hour`, `minute`, `second`, `fractionalSecondDigits`, `hour12` / `hourCycle`, `timeZoneName` and `dateStyle` / `timeStyle`, in the Gregorian calendar. `timeZone` takes the zone of local time (the one `resolvedOptions().timeZone` gives by default: on a device `localeSettings().timeZone`, in a browser the browser's), `UTC` or an offset (`"+08:00"`); other zone names throw a `RangeError` (there is no time zone database).
+- **Dates**: `weekday`, `year`, `month` (`numeric`, `2-digit`, `short`, `long`, `narrow`), `day`, `hour`, `minute`, `second`, `fractionalSecondDigits`, `hour12` / `hourCycle`, `timeZoneName` and `dateStyle` / `timeStyle`, in the Gregorian calendar. `timeZone` takes the zone of local time (the one `resolvedOptions().timeZone` gives by default: on a device `localeSettings().timeZone`, in a browser the browser's), `UTC`, an offset (`"+08:00"`) or a zone `nsh.json`'s `timeZones` lists ([Time zones](../docs/i18n.md#time-zones)); other zone names throw a `RangeError`.
 - **Locales**: the runtime formats English (`en-US` and its regional variants: `en-GB`, `en-IN`, ...) itself; the data of other languages comes with the app, the ones `nsh.json`'s `locales` lists or, without it, those of its translations ([I18n](../docs/i18n.md#numbers-and-dates)). Native Shell has data for German, French, Spanish, Italian, Portuguese, Dutch, Russian, Swedish, Polish, Turkish, Indonesian, Vietnamese, Thai, Hindi, Chinese, Japanese and Korean, with their regional variants (`de-CH`, `es-MX`, `pt-PT`, `zh-TW`, ...), a table of common data rather than the whole of CLDR, so details can differ from a browser's output. A locale without data falls back to the next one asked for, then the device's, then `en-US`; Russian, Swedish, Polish, Turkish, Indonesian, Vietnamese, Thai and Hindi dates have no month names (their months are written as numbers, their weekdays in English). Digits are always Latin.
 - **Not there**: `Intl.Collator` (`String.prototype.localeCompare` is QuickJS's, which ignores the locale), `PluralRules`, `RelativeTimeFormat`, `ListFormat`, `DisplayNames`, `Segmenter` and `Intl.Locale`; `currencySign: "accounting"` and `currencyDisplay: "name"` format as `standard` and `code`.
 

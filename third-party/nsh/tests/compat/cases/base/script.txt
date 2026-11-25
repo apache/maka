@@ -746,6 +746,7 @@ expect Extended: text,custom
 expect CJK emphasis: strong,text
 expect CJK URL: https://example.com,text
 expect Math off: Math $x$
+expect Links off: a i
 expect From HTML: Hi there
 expect Text style: textStyle red
 expect Unknown tag: <US tech> up
@@ -2629,6 +2630,17 @@ prop label:2026-10-12 accessibilityState selected=true
 nostyle label:2026-10-12 backgroundColor
 nostyle label:2026-10-06 backgroundColor
 expect Trip: none
+# The mouse moving over a later day previews the range a press there
+# makes: the days from the start to it styled by the item's
+# `data-range-preview-start:`, `data-range-preview-middle:` and
+# `data-range-preview-end:` classes, the days between not selected.
+event label:2026-10-14 onMouseMove position.x=1 position.y=1
+style label:2026-10-12 backgroundColor #ff00ffff
+style label:2026-10-13 backgroundColor #ffff00ff
+style label:2026-10-14 backgroundColor #00ffffff
+prop label:2026-10-13 accessibilityState {}
+nostyle label:2026-10-15 backgroundColor
+expect Trip: none
 tap label:2026-10-14
 expect Trip: ["2026-10-12","2026-10-14"]
 absent M11
@@ -3841,6 +3853,15 @@ expect token radius-card 14
 style id:up backgroundColor #138a5aff
 style id:primary backgroundColor #17171780
 style id:faded color #138a5a80
+# A number token is a factor to scale, kept while held down, and a ring's
+# width or offset with the `length:` hint.
+style id:token-scale transform scale(0.97)
+state id:token-press pressed
+style id:token-press transform scale(0.97)
+state id:token-press none
+style id:token-ring boxShadow 0 0 0 3 #138a5aff
+style id:token-ring-offset boxShadow 0 0 0 2 #ffffffff, 0 0 0 4 #138a5aff
+style id:token-inset-ring boxShadow inset 0 0 0 3 #138a5aff
 covers [nsh] token
 
 # base-set-theme
@@ -4012,6 +4033,8 @@ expect Tab a*
 expect Tab b
 expect Tab c
 expect Panel a
+# The frame showing the panel is the tab panel for screen readers.
+prop parent:parent:parent:parent:id:panel-a role tabpanel
 # A tab of the other group shows that group.
 tap text:Tab c
 expect Tab c*
@@ -4565,6 +4588,8 @@ covers [nsh/base] wrappingRule
 
 # base-rich-editor-tables
 tap id:case-base-rich-editor-tables
+prop scroll:text:"InternationalConferenceAuditorium" horizontal true
+scroll id:rich-editor-table-scroll 30 0
 tap text:RunTables
 expect Insert: true *|*/|
 expect AddRow: true *|*/|/|

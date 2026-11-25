@@ -51,7 +51,7 @@
 //!   card), so its text starts where the frame's other content does. Horizontal padding and margins are one
 //!   Cell from 8pt, two from 24pt (at most one on a control or a box of
 //!   text), one from 4pt against a parent's border with no padding of the
-//!   parent's there ([`framing`]: a tree's list in its box); vertical padding a row from 24pt (none on a control or a box
+//!   parent's there ([`framing`]: a tree's list in its box); vertical padding a row from 12pt (none on a control or a box
 //!   of text);
 //! - **split** along `flexDirection` (reversed for the `-reverse` ones):
 //!   `flexGrow` is ratatui's `Fill(grow)`, every other child its content's
@@ -77,8 +77,8 @@
 //! - **spacing**: a gap between children is one column from above 0, two
 //!   from 24pt, in a row, margins added; in a column the gap and the
 //!   margins between two children collapse into one blank row when any is
-//!   16pt or more, and into none inside a bordered box (a card), whose
-//!   border already sets its content apart;
+//!   16pt or more, 12pt inside a bordered box (a card), so a card's
+//!   rows do not run line against line;
 //! - **flex**: `justifyContent` is ratatui's `Flex` (start, center, end,
 //!   space between, around, evenly) over the space left; across,
 //!   `alignItems` / `alignSelf` stretch (the default) or place the child at
@@ -406,16 +406,17 @@ fn space_x(points: f32) -> i32 {
     }
 }
 
-/// Vertical padding of `points`: a row from 24pt.
+/// Vertical padding of `points`: a row from 12pt.
 fn space_y(points: f32) -> i32 {
-    i32::from(points >= 24.0 - EPSILON)
+    i32::from(points >= 12.0 - EPSILON)
 }
 
 /// Vertical spacing between siblings (a gap, a margin) of `points`: a
-/// row from 16pt, none inside a bordered box (`framed`), where the border
-/// already sets the content apart.
+/// row from 16pt, and from 12pt inside a bordered box (`framed`), where a
+/// card's content would otherwise run line against line.
 fn space_between(points: f32, framed: bool) -> i32 {
-    i32::from(!framed && points >= 16.0 - EPSILON)
+    let from = if framed { 12.0 } else { 16.0 };
+    i32::from(points >= from - EPSILON)
 }
 
 /// A gap of `points` between children in a row: a column from above 0,
@@ -2097,7 +2098,10 @@ pub(crate) fn compute(
         right: grid.x(padding.l + content.w),
         bottom: grid.y(padding.t + content.h),
     };
-    LayoutOutput::from_sizes(grid.size(size), overflow)
+    LayoutOutput::from_sizes(
+        grid.size(size),
+        taffy::ScrollableOverflow::new(overflow, taffy::Point { x: false, y: false }),
+    )
 }
 
 /// How a container splits its children.
@@ -2723,7 +2727,15 @@ fn split_line(
                     } else {
                         2
                     };
-                    let need = apart - prev.edges.1 - item.edges.0;
+                    // Two filled controls (a row of buttons) keep two
+                    // blank columns between their bands, as Bubbles'
+                    // buttons do, so they read as two and not one strip;
+                    // their padding is inside the band.
+                    let need = if apart == 2 && item.filled && prev.filled {
+                        2
+                    } else {
+                        apart - prev.edges.1 - item.edges.0
+                    };
                     base.max(i32::from(pulled))
                         .max(if words { need } else { 0 })
                 } else {
@@ -3641,7 +3653,9 @@ mod tests {
     #[test]
     fn spacing_is_coarse() {
         assert_eq!([4.0, 8.0, 16.0, 24.0, 32.0].map(space_x), [0, 1, 1, 2, 2]);
-        assert_eq!([8.0, 12.0, 16.0, 24.0, 48.0].map(space_y), [0, 0, 0, 1, 1]);
+        assert_eq!([8.0, 12.0, 16.0, 24.0, 48.0].map(space_y), [0, 1, 1, 1, 1]);
         assert_eq!([0.0, 4.0, 24.0].map(gap_x), [0, 1, 2]);
+        assert_eq!([8.0, 12.0, 16.0].map(|p| space_between(p, true)), [0, 1, 1]);
+        assert_eq!([12.0, 16.0].map(|p| space_between(p, false)), [0, 1]);
     }
 }

@@ -7,9 +7,9 @@ group: start
 
 # 安装
 
-NSH 的所有操作都通过一个命令 `nsh` 完成：构建用 Rust 或 TSX 编写的应用、在每个平台上运行它们、以热更新的方式把 TSX 提供给开发宿主，以及打包可安装的应用。你可以使用预构建发行包，也可以从仓库源码构建。
+NSH 的所有操作都通过一个命令 `nsh` 完成：构建用 TSX 或 Rust 编写的应用、在每个平台上运行它们、以热更新的方式把 TSX 提供给开发宿主，以及打包可安装的应用。你可以使用预构建发行包，也可以从仓库源码构建。
 
-用 Rust 编写的应用还需要 Rust 工具链（[见下文](#用-rust-编写的应用)）；TSX 应用只需要 `nsh`。除此之外，每个平台还需要自己的工具：
+TSX 应用只需要 `nsh`。包含 Rust 的应用（`ext/` 里自己的 crate、Rust nshm，或用 Rust 编写的应用）还需要 Rust 工具链（[见下文](#用-rust-编写的应用)）。除此之外，每个平台还需要自己的工具：
 
 | 平台 | 在哪里开发和打包 | 需要 |
 |---|---|---|
@@ -90,7 +90,7 @@ nsh component remove gpui
 
 ## 用 Rust 编写的应用
 
-通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建 Rust 应用的运行器，使用你的 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标。iOS 模拟器、真机和 Mac Catalyst：
+应用包含 Rust 时——`ext/` 里自己的 crate、Rust nshm，或完全用 Rust 编写的应用——通过 [rustup](https://rustup.rs) 安装 Rust。`nsh` 用 Cargo 为每个目标构建应用的运行器，使用这些 crate 以及 crates.io 上与 CLI 同版本的 NSH crate，所以请添加你要运行的平台对应的 Rust 目标。iOS 模拟器、真机和 Mac Catalyst：
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios aarch64-apple-ios-macabi

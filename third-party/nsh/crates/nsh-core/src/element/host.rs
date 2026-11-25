@@ -809,6 +809,14 @@ impl Input {
         self.bind_prop(behavior, Prop::PasteBehavior)
     }
 
+    /// Reads pasted files of at most `bytes` bytes (`pasteMaxSize`); a
+    /// larger one reaches [`Self::on_paste`] in
+    /// [`PasteEvent::too_large`], its name, type and size only. Default:
+    /// every file is read.
+    pub fn paste_max_size(self, bytes: impl IntoReactive<u64>) -> Self {
+        self.bind_prop(bytes, |bytes: u64| Prop::PasteMaxSize(Some(bytes)))
+    }
+
     /// The user pasted: the text, the files with their bytes (a
     /// screenshot) and local files' URLs, before the text it inserts is
     /// reported.
@@ -1607,6 +1615,18 @@ impl WebView {
         })
     }
 
+    /// One more origin the web view may show and navigate to besides
+    /// `webview.hosts`, known only while the app runs
+    /// (`scheme://host[:port]`, matched exactly): needs
+    /// `"runtimeOrigin": true` in `capabilities.webview`
+    /// ([`crate::access::WebOrigin`]). Set with the source, it applies to
+    /// it; changed later, from the next navigation.
+    pub fn allow_origin(self, origin: impl IntoReactive<String>) -> Self {
+        self.bind_prop(origin, |origin: String| {
+            Prop::Native(NativeProp::AllowOrigin(Some(origin.into())))
+        })
+    }
+
     /// Runs before each page's own scripts.
     pub fn injected_java_script_before_content(self, script: impl IntoReactive<String>) -> Self {
         self.bind_prop(script, |script: String| {
@@ -1648,6 +1668,14 @@ impl WebView {
     /// when the web view is made, so it takes a value, not a signal.
     pub fn incognito(self, incognito: bool) -> Self {
         self.set(Prop::Native(NativeProp::Incognito(incognito)))
+    }
+
+    /// Lets the person pinch to zoom the page, also past its viewport's
+    /// scale limits (default no: each platform's own behavior, see the
+    /// `zoomable` prop). Read when the web view is made, as
+    /// [`incognito`](Self::incognito).
+    pub fn zoomable(self, zoomable: bool) -> Self {
+        self.set(Prop::Native(NativeProp::Zoomable(zoomable)))
     }
 
     /// Serves the page the URLs of `scheme` (`"app-image"` for

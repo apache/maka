@@ -1,6 +1,6 @@
 ---
 title: Linux
-description: 在 Linux 上用 GTK 4 窗口运行 Rust 和 TSX 编写的 NSH 应用、打包应用、用 AppView 嵌入 GTK 应用，以及 Linux 上的差异。
+description: 在 Linux 上用 GTK 4 窗口运行 TSX 和 Rust 编写的 NSH 应用、打包应用、用 AppView 嵌入 GTK 应用，以及 Linux 上的差异。
 order: 15
 group: platforms
 ---
@@ -219,6 +219,7 @@ Web 视图是绘制在 NSH 视图之内的 WebKitGTK 页面：sheet、对话框�
 
 ## 另见
 
+- [分发 Linux 应用](./packaging.md#distribute)
 - [CLI](./cli.md)：`nsh run --target linux`、`nsh package --target linux`
 - [打包](./packaging.md)
 - [平台特定代码](./platform-specific.md)

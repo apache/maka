@@ -3,14 +3,14 @@ use std::{
     net::TcpStream,
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
+use tungstenite::{Message, WebSocket, protocol::WebSocketConfig, stream::MaybeTlsStream};
 
 use crate::protocol::{
-    BundleFormat, ClientMessage, HostPlatform, LogLevel, PROTOCOL_VERSION, RunningBuild,
-    ServerMessage, StepOutcome, TestStep,
+    BundleFormat, ClientMessage, HostPlatform, LogLevel, MAX_MESSAGE_SIZE, PROTOCOL_VERSION,
+    RunningBuild, ServerMessage, StepOutcome, TestStep,
 };
 
 /// Something the dev server told the host.
@@ -164,32 +164,62 @@ impl DevClient {
         thread::Builder::new()
             .name("nsh-dev-client".into())
             .spawn(move || {
-                let mut backoff = Duration::from_millis(100);
+                let mut backoff = MIN_BACKOFF;
+                // The last connection error reported, so a persistent one
+                // (a frame over the size limit) is not repeated each retry.
+                let mut reported: Option<String> = None;
                 loop {
                     // Dropped while disconnected: stop retrying.
                     if let Err(TryRecvError::Disconnected) = log_rx.try_recv() {
                         return;
                     }
-                    match tungstenite::connect(url.as_str()) {
+                    // The server sends a message in one frame: take frames
+                    // as large as the messages it sends (a test's pasted
+                    // files), not tungstenite's smaller default frame.
+                    let config = WebSocketConfig::default()
+                        .max_message_size(Some(MAX_MESSAGE_SIZE))
+                        .max_frame_size(Some(MAX_MESSAGE_SIZE));
+                    match tungstenite::client::connect_with_config(url.as_str(), Some(config), 3) {
                         Ok((socket, _)) => {
-                            backoff = Duration::from_millis(100);
                             on_event(DevEvent::Connected);
                             if let ClientMessage::Hello { running: said, .. } = &mut hello {
                                 *said = running;
                             }
-                            if let Err(SessionEnd::Shutdown) = session(
+                            let started = Instant::now();
+                            let reached = running;
+                            let end = session(
                                 socket,
                                 &hello,
                                 &log_rx,
                                 &reply_rx,
                                 &mut running,
                                 &mut on_event,
-                            ) {
-                                return;
-                            }
+                            );
+                            let error = match end {
+                                Err(SessionEnd::Shutdown) => return,
+                                Err(SessionEnd::Disconnected(error)) => error,
+                                Ok(()) => None,
+                            };
                             on_event(DevEvent::Disconnected);
+                            // Only a session that got somewhere (a build
+                            // arrived, or it lasted) resets the backoff: one
+                            // the server ends right away, as with a frame
+                            // over the size limit, must not retry at 10 Hz.
+                            let progressed = running != reached || started.elapsed() >= STABLE;
+                            if progressed {
+                                backoff = MIN_BACKOFF;
+                                reported = None;
+                            } else {
+                                backoff = next_backoff(backoff);
+                            }
+                            if let Some(error) = error
+                                && reported.as_deref() != Some(error.as_str())
+                            {
+                                log::warn!("dev server connection error: {error}");
+                                reported = Some(error);
+                            }
                         }
-                        Err(_) => backoff = (backoff * 2).min(Duration::from_secs(2)),
+                        Err(_) => backoff = next_backoff(backoff),
                     }
                     thread::sleep(backoff);
                 }
@@ -229,8 +259,20 @@ impl DevClient {
     }
 }
 
+/// The first delay before reconnecting.
+const MIN_BACKOFF: Duration = Duration::from_millis(100);
+/// The longest delay between reconnects.
+const MAX_BACKOFF: Duration = Duration::from_secs(2);
+/// How long a session must last to count as working when no build arrived.
+const STABLE: Duration = Duration::from_secs(5);
+
+fn next_backoff(backoff: Duration) -> Duration {
+    (backoff * 2).min(MAX_BACKOFF)
+}
+
 enum SessionEnd {
-    Disconnected,
+    /// The connection ended, with the error that ended it, if any.
+    Disconnected(Option<String>),
     /// The `DevClient` was dropped.
     Shutdown,
 }
@@ -283,7 +325,7 @@ fn session(
             {
                 continue;
             }
-            Err(_) => return Err(SessionEnd::Disconnected),
+            Err(err) => return Err(SessionEnd::Disconnected(Some(err.to_string()))),
         };
         match msg {
             Message::Text(text) => match serde_json::from_str::<ServerMessage>(&text) {
@@ -415,7 +457,7 @@ fn session(
                     }
                 }
             }
-            Message::Close(_) => return Err(SessionEnd::Disconnected),
+            Message::Close(_) => return Err(SessionEnd::Disconnected(None)),
             _ => {}
         }
     }
@@ -428,5 +470,5 @@ fn send(
     let text = serde_json::to_string(msg).expect("serializable");
     socket
         .send(Message::Text(text.into()))
-        .map_err(|_| SessionEnd::Disconnected)
+        .map_err(|err| SessionEnd::Disconnected(Some(err.to_string())))
 }

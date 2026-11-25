@@ -1,6 +1,6 @@
 ---
 title: Linux
-description: Run Rust and TSX NSH apps on Linux in GTK 4 windows, package them, embed them in a GTK app with AppView, and what differs on Linux.
+description: Run TSX and Rust NSH apps on Linux in GTK 4 windows, package them, embed them in a GTK app with AppView, and what differs on Linux.
 order: 15
 group: platforms
 ---
@@ -79,7 +79,8 @@ Writes a directory and the same as an archive:
   nsh/assets/…           the assets it imports (a Rust crate's `assets!()` too)
   nsh/app.json           the window title, the application id and nsh.json's window options
   <id>.desktop           a desktop entry (StartupWMClass is the id)
-  <id>.png               the icon, when nsh.json names one
+  <id>.png               the icon at 256×256, when nsh.json names one
+  <id>.metainfo.xml      AppStream metainfo: what software centres and Flathub list
 .nsh/out/<Name>.tar.gz
 ```
 
@@ -87,6 +88,8 @@ The executable finds `nsh/` next to itself (a symbolic link to it, in `~/.local/
 WebKitGTK 6.0 must be installed where the app runs. To show the app in a desktop's launcher, put the executable (or a link) on the
 `PATH`, the `.desktop` file in `~/.local/share/applications` and the icon in an icon theme directory. `--run` launches
 the app after packaging it.
+
+AppImage and Flatpak packages are in [Packaging](./packaging.md#appimage-and-flatpak); releases on Flathub in [Publishing](./publish.md#publish-to-flathub).
 
 ## Embedding in a GTK app
 
@@ -241,6 +244,7 @@ Not supported:
 
 ## See also
 
+- [Distribute a Linux app](./packaging.md#distribute)
 - [CLI](./cli.md): `nsh run --target linux`, `nsh package --target linux`
 - [Packaging](./packaging.md)
 - [Platform-specific code](./platform-specific.md)

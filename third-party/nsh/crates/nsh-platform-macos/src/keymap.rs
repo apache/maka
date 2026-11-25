@@ -243,6 +243,7 @@ pub(crate) fn keystroke(event: &NSEvent) -> Option<Keystroke> {
         alt: flags.contains(NSEventModifierFlags::Option),
         shift: flags.contains(NSEventModifierFlags::Shift),
         cmd: flags.contains(NSEventModifierFlags::Command),
+        alt_graph: false,
     };
     // The virtual key codes (`kVK_*`) of keys that type no character.
     let code = event.keyCode();

@@ -516,6 +516,7 @@ fn keystroke(event: &KeyEvent) -> Option<Keystroke> {
             alt: event.alt,
             shift: event.shift,
             cmd: event.meta,
+            alt_graph: false,
         },
     })
 }

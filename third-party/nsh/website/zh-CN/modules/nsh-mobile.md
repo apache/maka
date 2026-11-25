@@ -8,13 +8,6 @@ order: 12.2
 
 `nsh/mobile` 收录 iOS 和 Android 的专属能力：两者都有的系统标签栏 `TabBar`、系统日期时间选择器 [`DateTimePicker`](#datetimepicker)、系统开关 [`Switch`](#switch)、设备的触感反馈 [`Haptics`](#haptics) 和系统设置中本应用的页面 [`AppSettings`](#appsettings)；iOS 的系统分段控件 [`SegmentedControl`](#segmentedcontrol) 和 [`InputAccessoryView`](#inputaccessoryview)，键盘上方的工具栏；Android 的 [`BackHandler`](#backhandler)，返回键。Rust 代码使用 `nsh_core::mobile` 和 `nsh_core::prelude`；TSX 导入 `nsh/mobile`。这个模块在所有平台上都可以导入，所以同一个 bundle 能在各处运行：在其他平台上，它的组件不占空间、调用立即返回，`isAvailable` 告诉你当前是否在 iOS 或 Android 上（`nsh` 的 `platform.os` 区分具体平台）。桌面的能力在 [nsh/desktop](./nsh-desktop.md) 中。
 
-```rust tabs
-use nsh_core::mobile::{
-    DateTimePickerMode, DateTimePickerValue, SegmentedControlItem, TabBarItem, date_time_picker, segmented_control,
-    switch, tab_bar,
-};
-```
-
 ```tsx tabs
 import {
   AppSettings,
@@ -38,6 +31,13 @@ import type {
 } from "nsh/mobile";
 ```
 
+```rust tabs
+use nsh_core::mobile::{
+    DateTimePickerMode, DateTimePickerValue, SegmentedControlItem, TabBarItem, date_time_picker, segmented_control,
+    switch, tab_bar,
+};
+```
+
 ## 模块范围
 
 这个模块提供移动平台专属的能力，例如用于应用顶层导航的系统标签栏。通用控件属于 [`nsh/base`](./nsh-base.md)：例如 [Switch](../elements/switch.md) 在手机、桌面和 Web 上共享行为与 API，轨道、滑块和各状态的样式由应用提供。`TabBar` 服务于移动应用导航，`Tabs` 服务于跨平台的标签内容切换。这个模块仅接受具有移动平台专属交互语义的能力。系统外观、尺寸或动画本身仍属于通用控件的共享职责。这个职责区别决定哪些能力适合放在这里（[目标与设计原则](../docs/goals.md)）。`SegmentedControl` 是系统自己的控件，供确实需要 iOS 原生分段控件的应用使用；在所有平台上以应用自己的外观做选择，用 `nsh/base` 的 [ToggleGroup](../elements/toggle.md) 或 [RadioGroup](../elements/radio.md)。同样，`DateTimePicker` 是手机上系统自己的日期时间选择器；在所有平台上以应用自己的外观选择日期和时间，用 `nsh/base` 的 [DatePicker](../elements/date-picker.md) 或 [TimeField](../elements/time-field.md)。`Switch` 同理：它是系统自己的开关，供确实需要 iOS 和 Android 原生开关的应用使用；在所有平台上以应用自己的外观显示开关，用 `nsh/base` 的 [Switch](../elements/switch.md)。
@@ -53,36 +53,6 @@ const isAvailable: boolean;
 ## TabBar
 
 标签栏在应用的几个顶层部分之间切换：记录和统计、收件箱和设置。`TabBar` 就是系统自己的标签栏，所以它的外观和行为与系统应用一致：iOS 和 iPadOS 上是 `UITabBar`（iOS 26 上是 Liquid Glass 及其选中效果），Android 上是 Material 3 的导航栏，使用系统的颜色，浅色和深色都一样。应用提供标签（`items`），指明选中哪一个（`selectedIndex`），接收用户的选择（`onChange`），用 `class` 和 `style` 摆放标签栏，并自己显示选中部分的内容。页面内的标签，以及在所有平台上，请使用 `nsh/base` 的 [Tabs](../elements/tabs.md)。
-
-```rust tabs
-use nsh_core::{
-    mobile::{TabBarItem, tab_bar},
-    prelude::*,
-};
-
-fn sections() -> impl IntoElement {
-    let section = signal(0u32);
-    view()
-        .flex_1()
-        .child(text(move || match section.get() {
-            0 => "Records",
-            _ => "Stats",
-        }))
-        .child(
-            tab_bar()
-                .items(vec![
-                    TabBarItem::new("Records").icon("list.bullet"),
-                    TabBarItem::new("Stats").icon("chart.bar"),
-                ])
-                .selected_index(section)
-                .on_change(move |index: &u32| section.set(*index))
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0(),
-        )
-}
-```
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
@@ -115,7 +85,37 @@ mount(() => (
 ));
 ```
 
-`TabBar` 来自 `nsh/mobile`，在 Rust 中是 `nsh_core::mobile`。选中状态属于应用：一次点按通过 `onChange` 报告该标签的索引（`{ index }`），标签栏像系统的一样立即显示这次选择，应用显示那一部分并把索引作为 `selectedIndex` 传回。样式没有给定高度时，高度是系统的。在 Rust 中，`tab_bar()` 创建它，每个 prop 一个 setter（`.items(..)`、`.selected_index(..)`），每个事件一个监听方法（`.on_change(..)`），以及带类型的样式方法；`TabBarItem::new(title).icon(name).badge(text)` 创建一个标签。
+```rust tabs
+use nsh_core::{
+    mobile::{TabBarItem, tab_bar},
+    prelude::*,
+};
+
+fn sections() -> impl IntoElement {
+    let section = signal(0u32);
+    view()
+        .flex_1()
+        .child(text(move || match section.get() {
+            0 => "Records",
+            _ => "Stats",
+        }))
+        .child(
+            tab_bar()
+                .items(vec![
+                    TabBarItem::new("Records").icon("list.bullet"),
+                    TabBarItem::new("Stats").icon("chart.bar"),
+                ])
+                .selected_index(section)
+                .on_change(move |index: &u32| section.set(*index))
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0(),
+        )
+}
+```
+
+`TabBar` 来自 `nsh/mobile`，在 Rust 中是 `nsh_core::mobile`。选中状态属于应用：一次点按通过 `onChange` 报告该标签的索引（`{ index }`），标签栏像系统的一样立即显示这次选择，应用显示那一部分并把索引作为 `selectedIndex` 传回。样式没有给定高度时，高度是系统的。标签栏不在视野中时（`hidden`，或被推入页面的 `hidesBottomBarWhenPushed` 移出底部）不接收触摸：落在它留下的区域上的点按会到达下面的视图，因此应用画在那里的控件（例如浮动的操作栏）可以点按。在 Rust 中，`tab_bar()` 创建它，每个 prop 一个 setter（`.items(..)`、`.selected_index(..)`），每个事件一个监听方法（`.on_change(..)`），以及带类型的样式方法；`TabBarItem::new(title).icon(name).badge(text)` 创建一个标签。
 
 ### Props
 
@@ -123,7 +123,7 @@ mount(() => (
 |---|---|---|---|---|
 | `items` | `.items(..)` | `TabBarItem[]` | `[]` | 各个标签，按顺序。 |
 | `selectedIndex` | `.selected_index(..)` | `number` | `0` | 选中的标签的索引；超出标签数量的索引不选中任何标签。 |
-| `hidden` | `.hidden(..)` | `boolean` | `false` | iOS：立即隐藏标签栏。应用在页面推入和弹出期间持有这个值；当它和当前可见导航栈的 `hidesBottomBarWhenPushed` 请求都为 false 时，标签栏显示。 |
+| `hidden` | `.hidden(..)` | `boolean` | `false` | iOS 和 Android：立即隐藏标签栏。应用在页面推入和弹出期间持有这个值；在 iOS 上当它和当前可见导航栈的 `hidesBottomBarWhenPushed` 请求都为 false 时，标签栏显示。不在视野中时它不接收触摸。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 标签栏的位置和尺寸。外观是系统的，选中的标签使用主题的 `primary`。 |
 | `testID` | `.test_id(..)` | `string` | 无 | 在测试和 `nsh test --trace` 中找到标签栏。 |
 
@@ -278,7 +278,7 @@ const at = signal("2026-11-17T09:30");
 ### 平台说明
 
 - **iOS 和 Mac Catalyst**：紧凑样式的 `UIDatePicker`；`dateTime` 时日期和时刻是两个胶囊。日历和时间滚轮是系统的，使用用户的语言区域、日历和时钟制式。
-- **Android**：值以系统的格式和用户的 12 或 24 小时制显示，每部分一个字段；按下时打开系统的日期或时间对话框。时间对话框提供每一分钟：落在 `minuteInterval` 两档之间的选择取前一档，超出 `min` 或 `max` 的选择取边界。
+- **Android**：值以应用语言（[国际化](../docs/i18n.md)，包括 `setLocale` 选的语言）的格式和用户的 12 或 24 小时制显示，每部分一个字段；按下时打开系统的日期或时间对话框，使用同一语言。时间对话框提供每一分钟：落在 `minuteInterval` 两档之间的选择取前一档，超出 `min` 或 `max` 的选择取边界。
 - **桌面和 Web**：`DateTimePicker` 不占空间、不显示，因此同一布局可兼顾两者：在这些平台上用 [DatePicker](../elements/date-picker.md) 或 [TimeField](../elements/time-field.md) 选择，按 `platform.os` 选用。
 
 ## InputAccessoryView
@@ -306,6 +306,34 @@ interface InputAccessoryViewProps {
 | `children` | `JSX.Element` | `.child(…)` | 工具栏的内容。 |
 
 它在树中所处的位置不渲染任何内容，在 Android 上则完全不渲染，因此可以把它放在所属输入框的旁边。
+
+```tsx tabs
+import { type InputRef, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { InputAccessoryView } from "nsh/mobile";
+
+function Note() {
+  const text = signal("");
+  let input: InputRef | undefined;
+  return (
+    <View>
+      <Input
+        ref={(n) => (input = n)}
+        value={text()}
+        onChange={({ value }) => text.set(value)}
+        placeholder="Write a note"
+        ios={{ inputAccessoryViewID: "note-bar" }}
+      />
+      <InputAccessoryView nativeID="note-bar" style={{ backgroundColor: "#f1f5f9" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", padding: 10 }}>
+          <Text style={{ flex: 1, color: "#64748b" }}>{text().length} characters</Text>
+          <Text onPress={() => input?.blur()} style={{ fontWeight: "600" }}>Done</Text>
+        </View>
+      </InputAccessoryView>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -340,34 +368,6 @@ fn Note() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { type InputRef, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { InputAccessoryView } from "nsh/mobile";
-
-function Note() {
-  const text = signal("");
-  let input: InputRef | undefined;
-  return (
-    <View>
-      <Input
-        ref={(n) => (input = n)}
-        value={text()}
-        onChange={({ value }) => text.set(value)}
-        placeholder="Write a note"
-        ios={{ inputAccessoryViewID: "note-bar" }}
-      />
-      <InputAccessoryView nativeID="note-bar" style={{ backgroundColor: "#f1f5f9" }}>
-        <View style={{ flexDirection: "row", alignItems: "center", padding: 10 }}>
-          <Text style={{ flex: 1, color: "#64748b" }}>{text().length} characters</Text>
-          <Text onPress={() => input?.blur()} style={{ fontWeight: "600" }}>Done</Text>
-        </View>
-      </InputAccessoryView>
-    </View>
-  );
-}
-```
-
 另见[表单与键盘](../docs/forms-and-keyboard.md)。
 
 ## BackHandler
@@ -392,9 +392,29 @@ interface BackProgressEvent {
 
 | 成员 | Rust | 说明 |
 |---|---|---|
-| `on("press", listener)` | `on_back_press(listener)` | `listener` 处理了这次返回时返回 `true`。返回一个停止监听的函数；在组件渲染（或 effect 运行）期间添加的监听器随之停止，Rust 与 TSX 都是如此。 |
+| `on("press", listener)` | `on_back_press(listener)` | `listener` 处理了这次返回时返回 `true`。返回一个停止监听的函数；在组件渲染（或 effect 运行）期间添加的监听器随之停止，TSX 与 Rust 都是如此。 |
 | `on("progress", listener)` | `on_back_progress(listener)` | 在 Android 14 及更高版本上跟随返回手势：对话框没有接管的手势，`listener` 收到它的每一步，`start`、`move`，然后是 `end`（紧接着是返回操作）或 `cancel`，带有从 0 到 1 的 `progress` 和滑动开始的边缘 `edge`。有监听器时，导航栈把手势交给应用，不再预览弹出。见[跟随返回手势](../docs/navigation.md#跟随返回手势)。 |
 | `exitApp()` | 监听器返回 `false` | 退出应用。Rust 监听器返回 `false` 时，返回操作继续传递，由导航栈返回或应用退出。 |
+
+```tsx tabs
+import { signal } from "nsh";
+import { BackHandler } from "nsh/mobile";
+import { AlertDialog } from "nsh/base";
+
+function Editor() {
+  const dirty = signal(false);
+  // Editor 移除时停止监听。
+  BackHandler.on("press", () => {
+    if (!dirty()) return false; // 交给应用返回或退出
+    AlertDialog.show({
+      title: "Discard changes?",
+      actions: [{ label: "Keep", role: "cancel", id: "keep" }, { label: "Discard", role: "destructive", id: "discard" }],
+    }).then(({ action }) => action === "discard" && BackHandler.exitApp());
+    return true;
+  });
+  // ...
+}
+```
 
 ```rust tabs
 use nsh_base::alert_dialog;
@@ -416,26 +436,6 @@ fn Editor() -> impl IntoElement {
         true
     });
     // ...
-}
-```
-
-```tsx tabs
-import { signal } from "nsh";
-import { BackHandler } from "nsh/mobile";
-import { AlertDialog } from "nsh/base";
-
-function Editor() {
-  const dirty = signal(false);
-  // Editor 移除时停止监听。
-  BackHandler.on("press", () => {
-    if (!dirty()) return false; // 交给应用返回或退出
-    AlertDialog.show({
-      title: "Discard changes?",
-      actions: [{ label: "Keep", role: "cancel", id: "keep" }, { label: "Discard", role: "destructive", id: "discard" }],
-    }).then(({ action }) => action === "discard" && BackHandler.exitApp());
-    return true;
-  });
-  // ...
 }
 ```
 
@@ -468,20 +468,6 @@ interface AppSettingsResult {
 - 它作用于整个应用：声明了能力的应用需要 `"application": true`（见[沙箱与能力](../docs/sandbox-and-capabilities.md#application)）。没有它时 `available()` 为 `false`，`open()` 以 `"ERR_ACCESS_DENIED"` reject，`permission` 为 `"application"`（Rust：`AppSettingsError::Denied`）。
 - `open()` 从不抛出：所有失败都以 reject 报告。在 Rust 中，两者都是可在任务中等待（或直接丢弃）的回答。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn open_settings_button() -> impl IntoElement {
-    let can_open = signal(false);
-    spawn(async move { can_open.set(app_settings_available().await) });
-    when(move || can_open.get(), || {
-        view()
-            .child(text("打开设置"))
-            .on_press(|_| drop(open_app_settings()))
-    })
-}
-```
-
 ```tsx tabs
 import { Text, View, signal } from "nsh";
 import { AppSettings } from "nsh/mobile";
@@ -496,6 +482,20 @@ function OpenSettingsButton() {
       </View>
     </If>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn open_settings_button() -> impl IntoElement {
+    let can_open = signal(false);
+    spawn(async move { can_open.set(app_settings_available().await) });
+    when(move || can_open.get(), || {
+        view()
+            .child(text("打开设置"))
+            .on_press(|_| drop(open_app_settings()))
+    })
 }
 ```
 
@@ -521,23 +521,6 @@ const Haptics: {
 
 传入不认识的名称会抛出 `TypeError`。Android 并不是每种触感都有对应的常量，它会播放最接近的一种：成功和失败从 Android 11 起用 `CONFIRM` 和 `REJECT`；警告，以及 Android 11 之前的失败，用长按的触感。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn save_button() -> impl IntoElement {
-    view().child(text("Save")).on_press(|_| {
-        spawn(async {
-            let saved = save().await;
-            haptic(if saved.is_ok() {
-                Haptic::Notification(HapticNotification::Success)
-            } else {
-                Haptic::Notification(HapticNotification::Error)
-            });
-        });
-    })
-}
-```
-
 ```tsx tabs
 import { Text, View } from "nsh";
 import { Haptics } from "nsh/mobile";
@@ -553,6 +536,23 @@ function SaveButton() {
       <Text>Save</Text>
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn save_button() -> impl IntoElement {
+    view().child(text("Save")).on_press(|_| {
+        spawn(async {
+            let saved = save().await;
+            haptic(if saved.is_ok() {
+                Haptic::Notification(HapticNotification::Success)
+            } else {
+                Haptic::Notification(HapticNotification::Error)
+            });
+        });
+    })
 }
 ```
 

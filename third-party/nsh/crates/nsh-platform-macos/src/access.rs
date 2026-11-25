@@ -38,7 +38,8 @@
 //! (`role="alert"`) is an assertive live region read whole, as a browser
 //! reads ARIA's: as it appears and when its content changes, once the
 //! batch is in ([`batch_applied`]), unless the app announced the same text
-//! in that batch;
+//! in that batch, or the batch deleted an alert that read it (the app
+//! rebuilt that alert under another parent: it moved);
 //! `AXPress` presses a view that takes presses, as Return does when it
 //! has the keyboard focus (`crate::input::accessibility_press`);
 //! `accessibilityActions` are not exposed.
@@ -89,12 +90,44 @@ pub(crate) fn frame(view: &NSView) -> Option<NSRect> {
     frame_of(view, view.layer()?.bounds())
 }
 
+/// `children` (AppKit's accessibility children of `view`) with `view`'s
+/// leaves (#2066), which are in no view hierarchy for AppKit to list.
+pub(crate) fn with_leaves(
+    view: &NshView,
+    children: Option<Retained<NSArray>>,
+) -> Option<Retained<NSArray>> {
+    let leaves = view.leaf_children();
+    if leaves.is_empty() {
+        return children;
+    }
+    let mut out: Vec<Retained<AnyObject>> = children.iter().flat_map(|c| c.iter()).collect();
+    out.extend(
+        leaves
+            .iter()
+            .map(|l| AsRef::<AnyObject>::as_ref(l.ns()).retain()),
+    );
+    Some(NSArray::from_retained_slice(&out))
+}
+
+/// The view in the window hierarchy that `view` is drawn in: itself, or
+/// for a leaf (#2066), the parent whose layer its layer is in.
+fn hosting(view: &NSView) -> Retained<NSView> {
+    match NshView::from_ns(view)
+        .filter(NshView::is_leaf_layer)
+        .and_then(|v| v.parent_view())
+    {
+        Some(parent) => AsRef::<NSView>::as_ref(parent.ns()).retain(),
+        None => view.retain(),
+    }
+}
+
 /// A rectangle of a view in AppKit screen coordinates, including layer transforms.
 pub(crate) fn frame_of(view: &NSView, rect: NSRect) -> Option<NSRect> {
-    let window = view.window()?;
+    let host = hosting(view);
+    let window = host.window()?;
     let layer = view.layer()?;
-    let mut outer = view.retain();
-    let mut parent = superview(view);
+    let mut outer = host.clone();
+    let mut parent = superview(&host);
     while let Some(view) = parent {
         parent = superview(&view);
         if view.layer().is_some() {
@@ -297,7 +330,13 @@ const MAX_NAME: usize = 1000;
 
 /// Appends the texts and labels of `view`'s content to `out`.
 fn gather_name(view: &NSView, out: &mut String) {
-    for child in view.subviews().iter() {
+    let leaves = NshView::from_ns(view)
+        .map(|v| v.leaf_children())
+        .unwrap_or_default();
+    let leaves = leaves
+        .iter()
+        .map(|l| AsRef::<NSView>::as_ref(l.ns()).retain());
+    for child in view.subviews().iter().chain(leaves) {
         if out.len() >= MAX_NAME {
             return;
         }
@@ -475,6 +514,8 @@ enum Ax {
     Toggle,
     Link,
     Text,
+    /// A text field.
+    TextField,
     Image,
     Group,
     Heading,
@@ -515,6 +556,8 @@ enum Ax {
     Dialog,
     /// An alert dialog (ARIA's `alertdialog`).
     AlertDialog,
+    /// The content of a tab (ARIA's `tabpanel`).
+    TabPanel,
     /// A view standing for the window's close button (`windowControl`).
     CloseButton,
     /// ... its minimize button.
@@ -599,12 +642,13 @@ struct Spec {
     grouped: bool,
 }
 
-/// The alerts to read once the batch being applied is in, and what was
-/// announced while it was applied.
+/// The alerts to read once the batch being applied is in, what was
+/// announced while it was applied, and what the alerts it deleted read.
 #[derive(Default)]
 struct Pending {
     alerts: Vec<NshView>,
     said: Vec<String>,
+    gone: Vec<String>,
 }
 
 thread_local! {
@@ -623,9 +667,11 @@ pub(crate) fn prepare(_batch: &MountBatch) {
 /// The batch is in: reads the alerts that appeared or changed in it,
 /// whole, now that their content is there too. An alert the app announced
 /// itself in the batch (its text, `announceForAccessibility`) is not read
-/// again.
+/// again, nor one that takes the place of an alert the batch deleted with
+/// the same text: the app moved it, rebuilding it under another parent in
+/// one update (a toast stack drawn in the topmost modal as one opens).
 pub(crate) fn batch_applied() {
-    let Pending { alerts, said } = PENDING.with_borrow_mut(std::mem::take);
+    let Pending { alerts, said, gone } = PENDING.with_borrow_mut(std::mem::take);
     let mut read: Vec<&NshView> = Vec::new();
     for alert in &alerts {
         if read.iter().any(|r| r.ns() == alert.ns()) || !is_shown(alert) {
@@ -635,9 +681,24 @@ pub(crate) fn batch_applied() {
         let Some((text, live)) = alert_text(alert) else {
             continue;
         };
-        if worth_reading(&text, &said) {
+        if worth_reading(&text, &said, &gone) {
             announce(alert.ns(), &text, priority(live));
         }
+    }
+}
+
+/// `MountItem::Delete`: an alert the batch deletes keeps what it read, for
+/// an alert it moved to ([`batch_applied`]).
+pub(crate) fn deleted(view: &NshView) {
+    if !ANY_ALERT.get()
+        || !view
+            .try_state()
+            .is_some_and(|s| s.props.accessibility.role == Role::Alert)
+    {
+        return;
+    }
+    if let Some((text, _)) = alert_text(view) {
+        PENDING.with_borrow_mut(|p| p.gone.push(text));
     }
 }
 
@@ -658,10 +719,10 @@ fn alert_text(alert: &NshView) -> Option<(String, LiveRegion)> {
 }
 
 /// Whether `text` is worth reading: not empty, nor what was already said
-/// in the batch.
-fn worth_reading(text: &str, said: &[String]) -> bool {
+/// in the batch, nor what an alert the batch deleted read (the alert moved).
+fn worth_reading(text: &str, said: &[String], gone: &[String]) -> bool {
     let text = text.trim();
-    !text.is_empty() && !said.iter().any(|s| s.trim() == text)
+    !text.is_empty() && !said.iter().chain(gone).any(|s| s.trim() == text)
 }
 
 /// Whether `view` is in a window with nothing around it hidden from
@@ -1176,6 +1237,7 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
             ),
             Ax::Link => (constant(NSAccessibilityLinkRole), None),
             Ax::Text => (constant(NSAccessibilityStaticTextRole), None),
+            Ax::TextField => (constant(NSAccessibilityTextFieldRole), None),
             Ax::Image => (constant(NSAccessibilityImageRole), None),
             Ax::Group => (constant(NSAccessibilityGroupRole), None),
             // WebKit's role for headings, which VoiceOver's rotor lists.
@@ -1249,6 +1311,8 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
                 constant(NSAccessibilityGroupRole),
                 named("AXApplicationAlertDialog"),
             ),
+            // As AccessKit (and WebKit) map ARIA's `tabpanel`.
+            Ax::TabPanel => (constant(NSAccessibilityGroupRole), named("AXTabPanel")),
             // As an option: AppKit's outline rows need the outline's rows
             // and columns; an item of a tree is static text that reports
             // its expanded state and its disclosure level.
@@ -1375,6 +1439,7 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Button | Role::ImageButton | Role::KeyboardKey => Ax::Button,
         Role::Link => Ax::Link,
         Role::Search => Ax::Search,
+        Role::Textbox => Ax::TextField,
         Role::Image => Ax::Image,
         Role::Text => Ax::Text,
         Role::Adjustable => Ax::Slider,
@@ -1414,6 +1479,7 @@ fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::TreeItem => Ax::TreeItem,
         Role::Dialog => Ax::Dialog,
         Role::AlertDialog => Ax::AlertDialog,
+        Role::TabPanel => Ax::TabPanel,
     }
 }
 
@@ -1493,10 +1559,20 @@ mod tests {
     #[test]
     fn an_alert_the_app_announced_in_the_same_batch_is_not_read_twice() {
         let said = ["Saved".to_owned()];
-        assert!(!worth_reading("Saved", &said));
-        assert!(!worth_reading(" Saved\n", &said));
-        assert!(worth_reading("Could not save", &said));
-        assert!(!worth_reading("  ", &[]));
+        assert!(!worth_reading("Saved", &said, &[]));
+        assert!(!worth_reading(" Saved\n", &said, &[]));
+        assert!(worth_reading("Could not save", &said, &[]));
+        assert!(!worth_reading("  ", &[], &[]));
+    }
+
+    #[test]
+    fn an_alert_moved_to_another_parent_is_not_read_again() {
+        // The batch deleted an alert that read "Saved" and made one that
+        // reads it under another parent: the app rebuilt it there.
+        let gone = ["Saved ".to_owned()];
+        assert!(!worth_reading("Saved", &[], &gone));
+        // Another alert in its place is read.
+        assert!(worth_reading("Could not save", &[], &gone));
     }
 
     #[test]
@@ -1534,6 +1610,10 @@ mod tests {
         assert_eq!(
             role_for(&with_role(Role::Option), ViewKind::View, true),
             Ax::Option
+        );
+        assert_eq!(
+            role_for(&with_role(Role::Textbox), ViewKind::View, false),
+            Ax::TextField
         );
     }
 
@@ -1647,6 +1727,7 @@ mod tests {
             (Role::MenuItemRadio, Ax::MenuItem),
             (Role::Dialog, Ax::Dialog),
             (Role::AlertDialog, Ax::AlertDialog),
+            (Role::TabPanel, Ax::TabPanel),
         ] {
             assert_eq!(role_for(&with_role(role), ViewKind::View, false), ax);
         }

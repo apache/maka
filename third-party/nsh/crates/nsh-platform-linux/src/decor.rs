@@ -254,9 +254,23 @@ pub(crate) fn append_clipped(
         }
     };
     let (bottom, right) = (bottom.max(top), right.max(left));
-    plain(rect(0.0, top, s.w, bottom));
-    plain(rect(left, 0.0, right, top));
-    plain(rect(left, bottom, right, s.h));
+    // The box's own edges off device pixels: a rectangle clip there is cut
+    // to whole pixels by some renderers (GL scissors), dropping the
+    // partially covered row or column the path keeps. The bands stop at the
+    // last whole device pixel inside the box; the thin strip beyond it is
+    // masked with the path like the corners.
+    let inner = |v: f32, o: f32, up: bool| {
+        let d = (o + v) * k;
+        let d = if up { d.ceil() } else { d.floor() };
+        d / k - o
+    };
+    let x0 = inner(0.0, ox, true).clamp(0.0, left);
+    let x1 = inner(s.w, ox, false).clamp(right, s.w);
+    let y0 = inner(0.0, oy, true).clamp(0.0, top);
+    let y1 = inner(s.h, oy, false).clamp(bottom, s.h);
+    plain(rect(x0, top, x1, bottom));
+    plain(rect(left, y0, right, top));
+    plain(rect(left, bottom, right, y1));
     let path = s.path();
     // The corners' outer sides reach past the box: there the path alone
     // antialiases the edge, not the path and the clip twice over.
@@ -266,6 +280,10 @@ pub(crate) fn append_clipped(
         rect(right, -o, s.w + o, top),
         rect(right, bottom, s.w + o, s.h + o),
         rect(-o, bottom, left, s.h + o),
+        rect(-o, top, x0, bottom).filter(|_| x0 > 0.0),
+        rect(x1, top, s.w + o, bottom).filter(|_| x1 < s.w),
+        rect(left, -o, right, y0).filter(|_| y0 > 0.0),
+        rect(left, y1, right, s.h + o).filter(|_| y1 < s.h),
     ]
     .into_iter()
     .flatten()
@@ -1330,8 +1348,22 @@ mod tests {
             let window = gtk::Window::new();
             window.set_default_size(200, 100);
             window.present();
-            assert!(crate::gtk_test::wait_until(|| window.renderer().is_some()));
-            let renderer = window.renderer().unwrap();
+            assert!(crate::gtk_test::wait_until(|| window.surface().is_some()));
+            let surface = window.surface().unwrap();
+            // The renderers whose path mask antialiases a fractional edge, not
+            // the window's: GTK picks the older GL renderer for software GL
+            // (llvmpipe), which draws a fill node as a cairo texture placed
+            // with hard edges, so on a half device pixel the reference fills
+            // the row the box covers half while a plain clip leaves it out.
+            // Cairo opens on every display; NGL, GTK's renderer on GPUs,
+            // wherever OpenGL does.
+            let cairo = gsk::CairoRenderer::new().upcast::<gsk::Renderer>();
+            cairo.realize(Some(&surface)).expect("the cairo renderer");
+            let ngl = gsk::NglRenderer::new().upcast::<gsk::Renderer>();
+            let renderers = match ngl.realize(Some(&surface)) {
+                Ok(()) => vec![cairo, ngl],
+                Err(_) => vec![cairo],
+            };
             // A translucent gradient, so a doubly drawn or missed seam shows.
             let content = || {
                 let s = gtk::Snapshot::new();
@@ -1346,55 +1378,67 @@ mod tests {
                 );
                 s.to_node().unwrap()
             };
-            for (scale, origin, radii) in [
-                (1.0, (0.0, 0.0), [20.0; 4]),
-                (1.6, (13.3, 7.7), [20.0; 4]),
-                (2.0, (0.5, 0.25), [24.0, 0.0, 12.0, 60.0]),
-                (1.6, (0.0, 0.0), [100.0; 4]),
-            ] {
-                let shape = Shape::new((0.0, 0.0, 300.0, 180.0), radii, true);
-                let render = |draw: &dyn Fn(&gtk::Snapshot)| {
-                    let drawing = gtk::Snapshot::new();
-                    drawing.scale(scale, scale);
-                    drawing.translate(&graphene::Point::new(origin.0, origin.1));
-                    draw(&drawing);
-                    let bounds = graphene::Rect::new(
-                        0.0,
-                        0.0,
-                        ((origin.0 + 300.0) * scale).ceil(),
-                        ((origin.1 + 180.0) * scale).ceil(),
+            for renderer in &renderers {
+                for (scale, origin, radii) in [
+                    (1.0, (0.0, 0.0), [20.0; 4]),
+                    (1.6, (13.3, 7.7), [20.0; 4]),
+                    (2.0, (0.5, 0.25), [24.0, 0.0, 12.0, 60.0]),
+                    (1.6, (0.0, 0.0), [100.0; 4]),
+                ] {
+                    let shape = Shape::new((0.0, 0.0, 300.0, 180.0), radii, true);
+                    let render = |draw: &dyn Fn(&gtk::Snapshot)| {
+                        let drawing = gtk::Snapshot::new();
+                        drawing.scale(scale, scale);
+                        drawing.translate(&graphene::Point::new(origin.0, origin.1));
+                        draw(&drawing);
+                        let bounds = graphene::Rect::new(
+                            0.0,
+                            0.0,
+                            ((origin.0 + 300.0) * scale).ceil(),
+                            ((origin.1 + 180.0) * scale).ceil(),
+                        );
+                        let texture =
+                            renderer.render_texture(drawing.to_node().unwrap(), Some(&bounds));
+                        let mut downloader = gdk::TextureDownloader::new(&texture);
+                        downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
+                        downloader.download_bytes()
+                    };
+                    let node = content();
+                    let (expected, stride) = render(&|s| {
+                        s.push_fill(&shape.path(), gsk::FillRule::Winding);
+                        s.append_node(&node);
+                        s.pop();
+                    });
+                    let clip = PiecewiseClip {
+                        shape,
+                        origin,
+                        scale,
+                    };
+                    let (actual, _) = render(&|s| append_clipped(s, &clip, &node));
+                    let (at, error) = actual
+                        .iter()
+                        .zip(expected.iter())
+                        .map(|(a, b)| a.abs_diff(*b))
+                        .enumerate()
+                        .max_by_key(|&(_, error)| error)
+                        .unwrap();
+                    let i = at / 4 * 4;
+                    // Seams or doubled corners differ by 30 levels and more;
+                    // the path mask itself covers the box's outer edge pixels
+                    // a few levels short of exact (76 for 76.5 at half
+                    // coverage).
+                    assert!(
+                        error <= 10,
+                        "{}: scale {scale}, radii {radii:?}: differs by {error} channel \
+                         levels at ({}, {}): {:?} for {:?}",
+                        renderer.type_().name(),
+                        at % stride / 4,
+                        at / stride,
+                        &actual[i..i + 4],
+                        &expected[i..i + 4],
                     );
-                    let texture =
-                        renderer.render_texture(drawing.to_node().unwrap(), Some(&bounds));
-                    let mut downloader = gdk::TextureDownloader::new(&texture);
-                    downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
-                    downloader.download_bytes().0
-                };
-                let node = content();
-                let expected = render(&|s| {
-                    s.push_fill(&shape.path(), gsk::FillRule::Winding);
-                    s.append_node(&node);
-                    s.pop();
-                });
-                let clip = PiecewiseClip {
-                    shape,
-                    origin,
-                    scale,
-                };
-                let actual = render(&|s| append_clipped(s, &clip, &node));
-                let error = actual
-                    .iter()
-                    .zip(expected.iter())
-                    .map(|(a, b)| a.abs_diff(*b))
-                    .max()
-                    .unwrap();
-                // Seams or doubled corners differ by 30 levels and more; the
-                // path mask itself covers the box's outer edge pixels a few
-                // levels short of exact (76 for 76.5 at half coverage).
-                assert!(
-                    error <= 10,
-                    "scale {scale}, radii {radii:?}: differs by {error} channel levels"
-                );
+                }
+                renderer.unrealize();
             }
             window.destroy();
         });

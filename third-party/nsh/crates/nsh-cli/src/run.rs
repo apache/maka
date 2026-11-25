@@ -165,6 +165,21 @@ impl HostWindow<'_> {
     }
 }
 
+fn validate_listen(listen: crate::dev::Listen, target: Target) -> anyhow::Result<()> {
+    if target == Target::Android
+        && !matches!(
+            listen.host,
+            std::net::Ipv4Addr::UNSPECIFIED | std::net::Ipv4Addr::LOCALHOST
+        )
+    {
+        bail!(
+            "--host {} is not supported with --target android: adb reverse forwards the device's 127.0.0.1 to this machine's 127.0.0.1, so use 127.0.0.1 or 0.0.0.0",
+            listen.host
+        );
+    }
+    Ok(())
+}
+
 /// Starts a dev session and runs the app in a development host, which
 /// loads bundles from the dev server and reloads on change.
 pub(crate) fn run(
@@ -196,6 +211,7 @@ pub(crate) fn run(
         );
     }
     window.check(target, crate::rust_app::is_root(entry))?;
+    validate_listen(listen, target)?;
     if matches!(
         target,
         Target::Macos | Target::Linux | Target::Windows | Target::Gpui
@@ -816,10 +832,10 @@ fn run_android(
             target_sdk: config.target_sdk()?,
         }),
     )?;
-    // The device reaches the dev server on its own 127.0.0.1, until the
-    // run ends.
+    // The device reaches the dev server on its own 127.0.0.1 through
+    // `adb reverse`, until the run ends.
     let _reverse = android::Reverse::add(&sdk, &serial, session.port())?;
-    let url = session.local_url();
+    let url = session.loopback_url();
     let mut start = android::dev_start("com.longbridge.nsh.host/com.longbridge.nsh.DevActivity");
     start.extend(["--es", "url", &url]);
     if trace {
@@ -1534,13 +1550,12 @@ fn info_plist(target: Target) -> String {
              <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>"
         }
     };
-    // The host runs any app: it may recognize speech and its pages may
-    // capture media.
-    let usage = crate::package::USAGE_DESCRIPTIONS
+    // The host runs any app: its pages may capture media. What the app's
+    // crates use (`nsh-extra`'s `speech`) they declare
+    // (`with_crates_info`).
+    let usage = crate::package::WEB_MEDIA_USAGE_DESCRIPTIONS
         .iter()
-        .copied()
-        .chain([crate::package::WEB_MEDIA_USAGE_DESCRIPTIONS[1]].map(|(_, key, text)| (key, text)))
-        .map(|(key, text)| format!("<key>{key}</key><string>{text}</string>"))
+        .map(|(_, key, text)| format!("<key>{key}</key><string>{text}</string>"))
         .collect::<Vec<_>>()
         .join("\n    ");
     format!(
@@ -1728,6 +1743,25 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(network, [Target::Ios, Target::Android, Target::Web]);
+    }
+
+    #[test]
+    fn android_rejects_bind_hosts_that_adb_reverse_cannot_reach() {
+        use std::net::Ipv4Addr;
+
+        let listen = |host| crate::dev::Listen { port: 8790, host };
+        assert!(super::validate_listen(listen(Ipv4Addr::UNSPECIFIED), Target::Android).is_ok());
+        assert!(super::validate_listen(listen(Ipv4Addr::LOCALHOST), Target::Android).is_ok());
+        assert!(
+            super::validate_listen(listen(Ipv4Addr::new(192, 168, 1, 20)), Target::Android)
+                .is_err()
+        );
+        assert!(
+            super::validate_listen(listen(Ipv4Addr::new(127, 0, 0, 2)), Target::Android).is_err()
+        );
+        assert!(
+            super::validate_listen(listen(Ipv4Addr::new(192, 168, 1, 20)), Target::Web).is_ok()
+        );
     }
 
     /// `--window-size` reaches every desktop host; GPUI runs no app of

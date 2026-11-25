@@ -217,6 +217,8 @@ pub enum RichEditorEvent {
         /// The full flow extent in points.
         content_size: Size<Points>,
     },
+    /// A table moved inside its horizontal viewport. Content overlays may need to reposition.
+    TableScroll,
     /// The document changed.
     #[args(change)]
     Change(RichEditorChange),

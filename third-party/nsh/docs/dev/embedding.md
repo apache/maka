@@ -87,12 +87,13 @@
   initial default; explicit main-window attributes and later window updates take precedence. Standard hosts
   leave that option false but can request transparency through their window configuration. A view's
   `behindWindow` material does not enable window transparency. An `AppView` never changes its host's window.
-  GPUI and GPUI Kit apps use `nsh_platform_gpui::AppView`, a GPUI view (`gpui.md`): `let view = cx.new(|cx|
-  AppView::new(options, window, cx));` inside a window, `view.read(cx).load(App::Js(bundle))`, then put the entity in
-  any element tree (in a GPUI Kit window, as a child of its `Root`); it fills the space its parent gives it and takes
-  the focus it is given (`Focusable`). The crate depends on `gpui-fast` 0.1 from crates.io (re-exported as
-  `nsh_platform_gpui::gpui`); GPUI Kit's `gpui-fast` feature makes `gpui_component` use that same crate, so both share
-  one GPUI. `open_app_window` opens a window showing an app in a running GPUI app.
+  GPUI and GPUI Kit apps use `nsh_platform_gpui::AppView`, a GPUI view (`gpui.md`): set `AppOptions::inline_root`
+  to `true`, create the view with `cx.new(|cx| AppView::new(options, window, cx))` inside a window, load the plain JS
+  root with `view.read(cx).load(App::Js(bundle))`, then put the entity in any element tree (in a GPUI Kit window, as
+  a child of its `Root`); it fills the space its parent gives it and takes the focus it is given (`Focusable`). The
+  crate depends on `gpui-fast` 0.1 from crates.io (re-exported as `nsh_platform_gpui::gpui`); GPUI Kit's `gpui-fast`
+  feature makes `gpui_component` use that same crate, so both share one GPUI. `open_app_window` opens a window
+  showing an app in a running GPUI app.
 - **An application-owned Tokio runtime (Rust-linked mobile hosts)**: iOS `SurfaceOptions::runtime` and Android
   `nsh::set_runtime(handle, runtime)` (`host.rs`) forward an optional `tokio::runtime::Handle` to
   `EngineConfig::runtime`, per view; `None` keeps the process-wide shared runtime. Both are read each time an engine
@@ -272,13 +273,9 @@
   reaches it. Where no backend is set, the platform's picker shows (`images.md` "Picked images"): on iOS and Android it
   needs nothing of the embedding app (PhotosUI is loaded on first use; Android's result comes to a headless fragment of
   the view's activity).
-- **The host's own recognizer** (`nsh_core::speech::SpeechBackend`): an embedding app that recognizes speech its own
-  way answers the apps' `Speech` with it: `EngineConfig::speech` gets every session's `SpeechRequest` and a
-  `SpeechSink` it reports to from any thread (`start`, `result` with the whole transcript, one `end`), and returns the
-  `SpeechControl` the core stops and aborts it with; `available` answers `Speech.available()`. No `Command::Speech` is
-  sent then. The capability check comes first. Where no backend is set, macOS and iOS recognize with the Speech
-  framework (the app's Info.plist needs `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`,
-  which `nsh package` writes); other platforms end every session with `unavailable`.
+- **The host's own recognizer** (`nsh-extra`'s `speech::SpeechBackend`): an embedding app that recognizes speech
+  its own way gives the module its recognizer with `nsh_extra::speech::set_backend`, process-wide; the apps'
+  `Speech` sessions then reach it instead of the platform's recognizer, after the module's capability check.
 - **The host's locale and text size** (`nsh_core::platform::HostEnvironment`): an embedding app that lets its users
   pick a language or a text size of its own gives them to its views in place of the system's: Rust `AppView::set_locale(Option<Locale>)`
   / `set_font_scale(Option<f32>)` (GPUI, AppKit, GTK, Win32; GPUI's take `cx`), Swift `NshAppView.locale` / `fontScale`
@@ -353,12 +350,13 @@ NSH draws (`src/layers.rs`).
   use it too: its `gpui-fast` feature. `cargo tree -i gpui-fast` must show one version, else the app has two GPUIs
   and NSH's views are not the app's elements. `nsh_platform_gpui::gpui` re-exports NSH's. NSH builds with GPUI Fast
   0.1.14 or later, which GPUI Kit is built on from 0.9.1.
-- **A view.** `cx.new(|cx| AppView::new(options, window, cx))`, then `view.read(cx).load(App::Js(bundle))` (or a
-  Rust app's root); the app puts the entity wherever it wants as a child element. The surface fills the space its
-  parent gives it and follows it when resized (each layout reports the size to the engine). Several views run at once,
-  in one window or several, each with its own engine thread; the process shares only the main-thread queue (`rt.rs`)
-  and the key bindings. Dropping the view (its last entity handle) stops its engine and joins its thread, as does
-  `AppView::stop`.
+- **A view.** `cx.new(|cx| AppView::new(options, window, cx))`, with `options.inline_root = true` for an inline plain JS
+  root. Load the bundle with `view.read(cx).load(App::Js(bundle))`, or a Rust root with
+  `view.read(cx).load(App::Rust(root))`. The host puts the entity wherever it wants as a child element.
+  The surface fills the space its parent gives it and follows it when resized (each layout reports the size to the
+  engine). Several views run at once, in one window or several, each with its own engine thread; the process shares
+  only the main-thread queue (`rt.rs`) and the key bindings. Dropping the view (its last entity handle) stops its
+  engine and joins its thread, as does `AppView::stop`.
 - **Focus.** `AppView` is `Focusable` and a tab stop (a `div` with `track_focus` around the surface element, which
   registers the stop). A press focuses it; keys reach it only while it is focused, so several surfaces and the host's
   inputs never share keys. Its key context `NshAppView` binds Tab and Shift + Tab deeper than GPUI Kit's `Root` (which

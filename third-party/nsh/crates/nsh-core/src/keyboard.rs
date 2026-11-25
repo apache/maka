@@ -91,6 +91,17 @@ pub enum KeyCapture {
     /// The listed keys are captured: each canonical [`Keystroke`] matches
     /// the same key and exactly its modifiers.
     Keys(Arc<[Keystroke]>),
+    /// Typing moves into the view's first enabled text `Input`: a key that
+    /// would type text (a character, a dead key, or a key an input method
+    /// composes; not Space, which activates a focused button) with no
+    /// Control, Alt or platform modifier (macOS's Option, which types
+    /// characters there, still moves), pressed while a non-input view
+    /// inside this one has the keyboard, focuses that input and is
+    /// delivered to it before any native default, so the input method and
+    /// dead keys compose there as if the input had been focused.
+    /// Other keys are not captured. A chat screen's selectable transcript
+    /// uses it so the first key typed goes to the message field.
+    Text,
 }
 
 impl KeyCapture {
@@ -107,9 +118,15 @@ impl KeyCapture {
     pub fn is_none(&self) -> bool {
         match self {
             KeyCapture::None => true,
-            KeyCapture::All => false,
+            KeyCapture::All | KeyCapture::Text => false,
             KeyCapture::Keys(keys) => keys.is_empty(),
         }
+    }
+
+    /// Whether typing moves into this view's text input ([`Self::Text`]).
+    #[doc(hidden)]
+    pub fn types_into_input(&self) -> bool {
+        matches!(self, KeyCapture::Text)
     }
 
     /// Matches the backend's canonical shortcut stroke. A key with no
@@ -117,7 +134,7 @@ impl KeyCapture {
     #[doc(hidden)]
     pub fn captures_key(&self, keystroke: Option<&Keystroke>) -> bool {
         match self {
-            KeyCapture::None => false,
+            KeyCapture::None | KeyCapture::Text => false,
             KeyCapture::All => true,
             KeyCapture::Keys(keys) => keystroke.is_some_and(|keystroke| keys.contains(keystroke)),
         }
@@ -194,6 +211,10 @@ mod tests {
         // A shortcut names US-layout ASCII keys: another layout's character
         // has no keystroke, and only `All` captures it.
         assert!(KeyCapture::All.captures_key(None));
+        assert!(!KeyCapture::Text.captures_key(None));
+        assert!(!KeyCapture::Text.captures_key(Some(&a)));
+        assert!(!KeyCapture::Text.is_none());
+        assert!(KeyCapture::Text.types_into_input());
         assert!(!KeyCapture::keys([stroke("a")]).captures_key(None));
         assert!(!KeyCapture::None.captures_key(None));
     }

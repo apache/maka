@@ -1,6 +1,6 @@
 ---
 title: GPUI
-description: 用 AppView 把 Rust 和 TSX 编写的 NSH 应用嵌入 GPUI 或 GPUI Kit 应用，在 macOS、Windows 和 Linux 上由 GPUI 绘制，在 GPUI 开发宿主中试用 TSX 应用，以及 GPUI 后端的不同之处。
+description: 用 AppView 把 TSX 和 Rust 编写的 NSH 应用嵌入 GPUI 或 GPUI Kit 应用，在 macOS、Windows 和 Linux 上由 GPUI 绘制，在 GPUI 开发宿主中试用 TSX 应用，以及 GPUI 后端的不同之处。
 order: 15.5
 group: platforms
 ---
@@ -99,13 +99,20 @@ gpui_platform::application().run(|cx| {
 ```
 
 `Root::tokens` 为根组件设置[主题](./rust.md#主题)（`nsh_base::Theme::from_json(json)?.into_tokens()`，这里也重新导出了
-`Theme`），`Root::app_id` 设置保存其数据所用的 id。`nsh build` 写出的 TSX bundle 也加载到同一种视图中：
+`Theme`），`Root::app_id` 设置保存其数据所用的 id。要加载 `nsh build` 生成的、使用普通 JS 根视图（`mount(App)`）的
+TSX bundle，请从 NSH 项目目录运行宿主，并在窗口的构建闭包中创建内嵌视图：
 
 ```rust
-use nsh_platform_gpui::{App, Bundle};
+use gpui::AppContext;
+use nsh_platform_gpui::{App, AppOptions, AppView, Bundle};
 
-let code = std::fs::read_to_string("app/bundle.js").expect("bundle");
-view.load(App::Js(Bundle::source(code)));
+let options = AppOptions {
+    inline_root: true,
+    ..AppOptions::default()
+};
+let view = cx.new(|cx| AppView::new(options, window, cx));
+let code = std::fs::read_to_string(".nsh/out/bundle.js").expect("bundle");
+view.read(cx).load(App::Js(Bundle::source(code)));
 ```
 
 像其他视图一样把这个 entity 放进元素树（GPUI Kit 的 `Root`、一个面板、一个停靠区）。`AppView::load` 替换正在运行的内容；
@@ -113,12 +120,15 @@ view.load(App::Js(Bundle::source(code)));
 `AssetBase::Http`）。字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的
 `Bundle::read_trusted(path)`）加载：QuickJS 字节码是受信任的输入，只应从你自己应用的文件中加载。
 
+将 `AppOptions::inline_root` 设为 `true`，可在视图内绘制普通 JS 根视图，参见 `examples/embed-gpui`。该选项默认为
+`false`，此时普通根视图会在隐式的第一个窗口中显示。应用看到的桌面平台不变，显式声明的 `<Window>` 或通过 `Window.open`
+打开的窗口仍是独立的 GPUI 窗口。无论视图是否接管宿主窗口（`AppView::own_window`），内嵌渲染都有效；`own_window` 可以在
+`load` 之前或之后调用。`open_app_window` 和 `run_app` 会忽略 `inline_root`。
+
 - `open_app_window(source, options, cx)` 在运行中的 GPUI 应用里打开一个带 `AppView` 的宿主窗口，并在第一帧之前应用
-  应用 nsh.json 中 `window` 的设置。应用必须声明至少一个顶层 `<Window>`（共享的 v2 mount 校验会拒绝普通根视图），
-  它的窗口是 GPUI 原生窗口（[应用宿主与第一个窗口](../modules/nsh-desktop.md#应用宿主与第一个窗口)）。GPUI 的宿主
-  窗口仍然沿用旧的主窗口模型：它不是 v2 的隐藏宿主（在 Linux 上仍会随启动显示），旧的 `"defaultVisible"` 键不再
-  影响它，因为共享的启动策略把宿主报告为隐藏；显示的是应用声明的 `<Window>` 窗口。`examples/embed-gpui` 的
-  AppView 嵌入示例尚未迁移，按现在的写法无法运行。该后端待平台验证。
+  nsh.json 中 `window` 的设置。普通 JS 根视图会在隐式的第一个窗口中显示（[应用宿主与第一个窗口](../modules/nsh-desktop.md#应用宿主与第一个窗口)）。
+  GPUI 的宿主窗口仍然沿用旧的主窗口模型，不是 v2 的隐藏宿主。在 Linux 上，空白的宿主窗口会先于应用窗口显示。
+  旧的 `"defaultVisible"` 键不再控制宿主窗口是否显示。该后端待平台验证。
 - `run_app(source, options)` 启动 GPUI，在一个窗口中运行一个应用直到窗口关闭（开发宿主就是这样做的）。
 - `AppView::register_component(name, factory)` 在加载前注册你自己的原生组件（[原生组件](./native-components.md)）。
 - `AppOptions::cache`（或 `AppView::set_cache`，作用于之后加载的应用）设置应用保存缓存（[下载的图片](./images-and-assets.md#磁盘缓存)）的位置和每种缓存的大小：`CacheOptions { location, images }`，`CacheLocation::System`（默认）、`Dir(path)` 或 `Off`，`CachePolicy::Default`（256 MiB）、`MaxSize(ByteSize::mib(n))` 或 `Off`。

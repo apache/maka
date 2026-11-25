@@ -242,7 +242,7 @@ pub(crate) fn draw_backdrop(cx: &mut DrawCx<'_>, state: &ViewState) {
             return;
         }
     };
-    cx.push_clip_rounded(rect(0.0, 0.0, w, h), state.radii());
+    cx.push_clip_rounded_shapes(rect(0.0, 0.0, w, h), state.radii());
     // SAFETY: COM calls on the live context; the image is in window
     // coordinates, offset to where it was copied from.
     unsafe {
@@ -300,7 +300,7 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
         // once, the edge is covered once.
         let clip_geometry = (fills > 1).then(|| shape.geometry(cx)).flatten();
         if let Some(g) = &clip_geometry {
-            cx.push_clip_geometry(g);
+            cx.push_clip_shapes(g, rect_f(0.0, 0.0, w, h));
             // What the fills draw is inside this clip: the corners are
             // covered by it, so they draw square and the outline is let go.
             shape.radii = [0.0; 4];
@@ -315,7 +315,7 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
                 Some(Paint::Bitmap(baked)) => {
                     let clip = shape.geometry(cx);
                     if let Some(g) = &clip {
-                        cx.push_clip_geometry(g);
+                        cx.push_clip_shapes(g, rect_f(0.0, 0.0, w, h));
                     }
                     draw_baked(cx, &baked);
                     if clip.is_some() {
@@ -847,7 +847,7 @@ fn draw_borders(cx: &mut DrawCx<'_>, b: &Borders, w: f32, h: f32, radii: [f32; 4
             let Some(clip) = polygon(cx.gfx, quad) else {
                 continue;
             };
-            cx.push_clip_geometry(&clip);
+            cx.push_clip_shapes(&clip, rect_f(0.0, 0.0, w, h));
             // SAFETY: as above.
             unsafe { cx.dc.FillGeometry(&ring, cx.solid(c), None) };
             cx.pop();
@@ -882,7 +882,7 @@ fn draw_borders(cx: &mut DrawCx<'_>, b: &Borders, w: f32, h: f32, radii: [f32; 4
         let (Some(clip), Some(g)) = (polygon(cx.gfx, quad), line(bw)) else {
             continue;
         };
-        cx.push_clip_geometry(&clip);
+        cx.push_clip_shapes(&clip, rect_f(0.0, 0.0, w, h));
         // SAFETY: as above.
         unsafe { cx.dc.DrawGeometry(&g, cx.solid(c), bw, &style) };
         cx.pop();

@@ -11,12 +11,12 @@ import { remarkCodeTabs, stripTabsMeta, tabLabel } from '../src/lib/remark-code-
 const SOURCE = [
   'Intro.',
   '',
-  '```rust tabs',
-  'view()',
-  '```',
-  '',
   '```tsx tabs',
   '<View />',
+  '```',
+  '',
+  '```rust tabs',
+  'view()',
   '```',
   '',
   'Between.',
@@ -46,10 +46,10 @@ test('consecutive tabbed fences become one accessible group', async () => {
   expect(html.match(/data-code-tabs/g)?.length).toBe(2);
   expect(html).toContain('role="tablist"');
   expect(html).toContain('aria-label="Language"');
-  // Rust first and selected, TSX second and hidden.
-  expect(html).toMatch(/<button[^>]*aria-selected="true"[^>]*data-tab="rust"[^>]*>Rust<\/button><button[^>]*aria-selected="false"[^>]*data-tab="tsx"[^>]*>TSX<\/button>/);
-  expect(html).toMatch(/role="tabpanel"[^>]*data-tab="tsx"[^>]*hidden/);
-  expect(html).toMatch(/role="tabpanel"[^>]*data-tab="rust"(?![^>]*hidden)/);
+  // The TSX tab comes first and is selected; Rust is second and hidden.
+  expect(html).toMatch(/<button[^>]*aria-selected="true"[^>]*data-tab="tsx"[^>]*>TSX<\/button><button[^>]*aria-selected="false"[^>]*data-tab="rust"[^>]*>Rust<\/button>/);
+  expect(html).toMatch(/role="tabpanel"[^>]*data-tab="rust"[^>]*hidden/);
+  expect(html).toMatch(/role="tabpanel"[^>]*data-tab="tsx"(?![^>]*hidden)/);
   // Each tab names its panel and each panel its tab.
   expect(html).toContain('aria-controls="code-tabs-1-panel-0"');
   expect(html).toContain('aria-labelledby="code-tabs-1-tab-0"');

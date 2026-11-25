@@ -1,6 +1,6 @@
 ---
 title: Windows
-description: 在 Windows 上用 Direct2D 绘制的 Win32 窗口运行 Rust 和 TSX 编写的 NSH 应用、打包应用、用 AppView 嵌入 Win32 应用，以及 Windows 上的差异。
+description: 在 Windows 上用 Direct2D 绘制的 Win32 窗口运行 TSX 和 Rust 编写的 NSH 应用、打包应用、用 AppView 嵌入 Win32 应用，以及 Windows 上的差异。
 order: 14
 group: platforms
 ---
@@ -198,6 +198,7 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 
 ## 另见
 
+- [签名与分发](./packaging.md#sign-and-distribute)
 - [CLI](./cli.md)：`nsh run --target windows`、`nsh package --target windows`
 - [打包](./packaging.md)
 - [平台特定代码](./platform-specific.md)

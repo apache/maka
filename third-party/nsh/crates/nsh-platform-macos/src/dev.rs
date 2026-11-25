@@ -10,8 +10,8 @@
 //! The status line ("Connecting…", "Building…") and the error overlay are
 //! AppKit views above the surface in [`AppView`]'s container. The status
 //! line lets the pointer through; the overlay takes it, and a click that
-//! selects no text dismisses it; its Copy button puts the error on the
-//! pasteboard. Cmd+R loads the latest build again.
+//! selects no text dismisses it; Cmd+C copies the selected text and the
+//! Copy action beside the title puts the whole error on the pasteboard. Cmd+R loads the latest build again.
 
 use std::{
     cell::RefCell,
@@ -36,12 +36,15 @@ use objc2::{
     runtime::AnyObject, sel,
 };
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSEvent, NSEventMask,
+    NSAutoresizingMaskOptions, NSButton, NSColor, NSControl, NSCursor, NSEvent, NSEventMask,
     NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightRegular, NSFontWeightSemibold,
     NSForegroundColorAttributeName, NSLineBreakMode, NSPasteboard, NSPasteboardTypeString,
     NSResponder, NSScrollView, NSText, NSTextField, NSTextView, NSView,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSMutableAttributedString, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize,
+    NSString,
+};
 use rustc_hash::FxHashMap;
 
 use crate::{app::AppView, image::AssetBase};
@@ -678,19 +681,50 @@ define_class!(
             pasteboard.setString_forType(&NSString::from_str(self.ivars()), unsafe {
                 NSPasteboardTypeString
             });
-            self.setTitle(&NSString::from_str("Copied"));
+            set_copy_label(self, "Copied");
+        }
+
+        /// The default arrow, as over any button: the text view around it
+        /// would otherwise show its I-beam.
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            self.addCursorRect_cursor(self.bounds(), &NSCursor::arrowCursor());
         }
     }
 );
 
-/// Adds the Copy button for `text` to the top right corner of `overlay`.
-fn add_copy_button(overlay: &NSView, text: String, mtm: MainThreadMarker) {
+/// Sets the Copy button's label: quiet text, no bezel, readable on the
+/// overlay's dark fill.
+fn set_copy_label(button: &NSButton, label: &str) {
+    let title = NSMutableAttributedString::from_nsstring(&NSString::from_str(label));
+    let whole = NSRange::new(0, label.encode_utf16().count());
+    // SAFETY: AppKit's attribute name and weight constants.
+    unsafe {
+        title.addAttribute_value_range(
+            NSForegroundColorAttributeName,
+            &NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.7),
+            whole,
+        );
+        title.addAttribute_value_range(
+            NSFontAttributeName,
+            &NSFont::systemFontOfSize_weight(11.0, NSFontWeightSemibold),
+            whole,
+        );
+    }
+    button.setAttributedTitle(&title);
+}
+
+/// Adds the Copy button for `text` to `view` (the error text, flipped),
+/// on the title's line just after it: it scrolls with the text and keeps
+/// clear of the window's corners, where a custom title bar puts its
+/// buttons.
+fn add_copy_button(view: &NSTextView, title_len: usize, text: String, mtm: MainThreadMarker) {
     let button = CopyButton::alloc(mtm).set_ivars(text);
     // SAFETY: NSButton's designated initializer.
     let button: Retained<CopyButton> =
         unsafe { msg_send![super(button), initWithFrame: NSRect::ZERO] };
-    button.setTitle(&NSString::from_str("Copy"));
-    button.setBezelStyle(NSBezelStyle::Push);
+    button.setBordered(false);
+    set_copy_label(&button, "Copy");
     // SAFETY: the button is its own target (controls do not retain their
     // target) and implements the action.
     unsafe {
@@ -698,24 +732,33 @@ fn add_copy_button(overlay: &NSView, text: String, mtm: MainThreadMarker) {
         button.setAction(Some(sel!(copyError:)));
     }
     button.sizeToFit();
-    // Wide enough for "Copied" too, so the button keeps its size.
+    // The title's line, in the text view's (flipped) coordinates.
+    // SAFETY: plain getters; the text view keeps both.
+    let line = unsafe {
+        match (view.layoutManager(), view.textContainer()) {
+            (Some(layout), Some(container)) => {
+                let glyphs = layout.glyphRangeForCharacterRange_actualCharacterRange(
+                    NSRange::new(0, title_len),
+                    std::ptr::null_mut(),
+                );
+                layout.boundingRectForGlyphRange_inTextContainer(glyphs, &container)
+            }
+            _ => NSRect::ZERO,
+        }
+    };
+    let origin = view.textContainerOrigin();
     let size = NSSize::new(
-        button.frame().size.width.max(84.0),
+        button.frame().size.width.max(52.0),
         button.frame().size.height,
     );
-    let bounds = overlay.bounds();
-    // Unflipped: the top is the high y. Clear of the vertical scroller.
     button.setFrame(NSRect::new(
         NSPoint::new(
-            bounds.size.width - size.width - 28.0,
-            bounds.size.height - size.height - 14.0,
+            origin.x + line.origin.x + line.size.width + 12.0,
+            origin.y + line.origin.y + (line.size.height - size.height) / 2.0,
         ),
         size,
     ));
-    button.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-    );
-    overlay.addSubview(&button);
+    view.addSubview(&button);
 }
 
 /// Shows `title` and `message` over the whole app; a click dismisses it
@@ -795,11 +838,11 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
             let ranges = [
                 (
                     NSRange::new(0, title_len),
-                    NSFont::systemFontOfSize_weight(16.0, NSFontWeightSemibold),
+                    NSFont::systemFontOfSize_weight(14.0, NSFontWeightSemibold),
                 ),
                 (
                     NSRange::new(message_at, units(message)),
-                    NSFont::monospacedSystemFontOfSize_weight(12.0, NSFontWeightRegular),
+                    NSFont::monospacedSystemFontOfSize_weight(11.0, NSFontWeightRegular),
                 ),
                 (
                     NSRange::new(hint_at, units(hint)),
@@ -829,9 +872,14 @@ fn show_error(ui: &Rc<RefCell<DevUi>>, title: &str, message: &str, prose: bool) 
     }
     text.sizeToFit();
     scroll.setDocumentView(Some(&text));
+    add_copy_button(&text, title_len, format!("{title}\n\n{message}"), mtm);
     overlay.addSubview(&scroll);
-    add_copy_button(&overlay, format!("{title}\n\n{message}"), mtm);
     container.addSubview(&overlay);
+    // Cmd+C copies the selected text.
+    if let Some(window) = container.window() {
+        let responder: &NSResponder = &text;
+        let _ = window.makeFirstResponder(Some(responder));
+    }
     ui.borrow_mut().error = Some(overlay);
     // The status line stays above the overlay.
     if let Some((pill, _)) = &ui.borrow().status {

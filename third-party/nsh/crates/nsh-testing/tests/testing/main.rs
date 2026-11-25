@@ -387,7 +387,16 @@ fn a_press_fails_on_a_view_another_covers() {
     let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 4);
+    assert_eq!(results.len(), 5);
+}
+
+#[test]
+fn a_press_reaches_a_control_under_a_tab_bar_out_of_sight() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/tab-bar-hit");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 1);
 }
 
 #[test]
@@ -420,6 +429,15 @@ fn a_press_reaches_a_view_across_a_scroll_view_s_fold() {
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
     assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn measure_takes_in_the_scrolls_that_keep_a_list_s_rows_in_place() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testing/scroll-by");
+    let results = run_file(&test_run(None), &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
+    let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
+    assert!(failed.is_empty(), "{failed:#?}");
+    assert_eq!(results.len(), 1);
 }
 
 #[test]

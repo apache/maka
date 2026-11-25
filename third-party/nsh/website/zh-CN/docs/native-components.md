@@ -34,47 +34,6 @@ NSH 本身就用系统原生视图渲染，所以原生组件只是同一视图�
 `.on_native_event(..)` 以 `NativeEvent { name, data }` 接收它的事件，用 `.element_ref(&r)` 挂上的 `element_ref()` 的方法发送它的命令。
 在 TSX 中，`nativeComponent()` 为这个名称声明一个组件，列出它用到的 props 和事件。
 
-```rust tabs
-use nsh_core::prelude::*;
-use serde_json::json;
-
-const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let taps = signal(0_u64);
-    let badge = element_ref();
-    view()
-        .flex_1()
-        .p(px(20.0))
-        .pt_safe_area_plus(px(20.0))
-        .pb_safe_area_plus(px(20.0))
-        .gap(px(16.0))
-        .bg(rgb(0xf6f8fa))
-        .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
-        .child(
-            // The host app's badge: a label it draws, sized to its text.
-            native("embed.badge")
-                .element_ref(&badge)
-                .prop("text", move || match taps.get() {
-                    0 => json!("Tap the native badge"),
-                    n => json!(format!("Tapped {n}×")),
-                })
-                .prop("color", move || json!(COLORS[taps.get() as usize % COLORS.len()]))
-                .on_native_event(move |e: &NativeEvent| {
-                    if &*e.name == "tap" {
-                        taps.set(e.data["count"].as_u64().unwrap_or(0));
-                        badge.command("pulse", json!(null));
-                    }
-                })
-                .self_start()
-                .rounded(px(8.0))
-                .overflow_hidden(),
-        )
-        .child(text(move || format!("Rust saw {} taps", taps.get())))
-}
-```
-
 ```tsx tabs
 import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
@@ -114,6 +73,47 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+use serde_json::json;
+
+const COLORS: [&str; 4] = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let taps = signal(0_u64);
+    let badge = element_ref();
+    view()
+        .flex_1()
+        .p(px(20.0))
+        .pt_safe_area_plus(px(20.0))
+        .pb_safe_area_plus(px(20.0))
+        .gap(px(16.0))
+        .bg(rgb(0xf6f8fa))
+        .child(text("Rendered by nsh").text_size(px(22.0)).font_weight(FontWeight::BOLD))
+        .child(
+            // The host app's badge: a label it draws, sized to its text.
+            native("embed.badge")
+                .element_ref(&badge)
+                .prop("text", move || match taps.get() {
+                    0 => json!("Tap the native badge"),
+                    n => json!(format!("Tapped {n}×")),
+                })
+                .prop("color", move || json!(COLORS[taps.get() as usize % COLORS.len()]))
+                .on_native_event(move |e: &NativeEvent| {
+                    if &*e.name == "tap" {
+                        taps.set(e.data["count"].as_u64().unwrap_or(0));
+                        badge.command("pulse", json!(null));
+                    }
+                })
+                .self_start()
+                .rounded(px(8.0))
+                .overflow_hidden(),
+        )
+        .child(text(move || format!("Rust saw {} taps", taps.get())))
+}
 ```
 
 TSX 版本就是 `examples/embedded/App.tsx`，仓库里的两个嵌入示例运行的都是它。
@@ -177,23 +177,6 @@ const pull = createAnimatedValue(0);
 
 组件按名称发出事件，可附带一个 JSON 负载。NSH 把它投递到引擎线程，并用该负载调用对应的处理函数（在 Rust 中是那个 `on_native_event` 监听函数，带着事件的 `name` 和 `data`）：
 
-```rust tabs
-use serde_json::json;
-
-native("acme.map")
-    .prop("latitude", json!(52.52))
-    .prop("longitude", json!(13.405))
-    .on_native_event(move |e: &NativeEvent| match &*e.name {
-        "regionChange" => center.set((
-            e.data["latitude"].as_f64().unwrap_or_default(),
-            e.data["longitude"].as_f64().unwrap_or_default(),
-        )),
-        "markerPress" => open(e.data["id"].as_str().unwrap_or_default()),
-        _ => {}
-    })
-    .flex_1()
-```
-
 ```tsx tabs
 const MapView = nativeComponent<
   { latitude: number; longitude: number; zoom?: number },
@@ -212,12 +195,37 @@ const MapView = nativeComponent<
 />;
 ```
 
+```rust tabs
+use serde_json::json;
+
+native("acme.map")
+    .prop("latitude", json!(52.52))
+    .prop("longitude", json!(13.405))
+    .on_native_event(move |e: &NativeEvent| match &*e.name {
+        "regionChange" => center.set((
+            e.data["latitude"].as_f64().unwrap_or_default(),
+            e.data["longitude"].as_f64().unwrap_or_default(),
+        )),
+        "markerPress" => open(e.data["id"].as_str().unwrap_or_default()),
+        _ => {}
+    })
+    .flex_1()
+```
+
 事件是异步的：主线程从不等待应用的代码。如果组件必须当场做出决定（这个手势能否开始、这个区域能否改变），就只能在原生端根据之前收到的
 props 来决定。
 
 ## 命令
 
 命令式调用（缩放到某个点、开始播放、播放一段动画）通过元素的 ref 发起（Rust 中是 `element_ref()`，TSX 中是 `ref`）：
+
+```tsx tabs
+let map: NativeComponentRef | undefined;
+
+<MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
+
+map?.command("zoomTo", { level: 3 });
+```
 
 ```rust tabs
 let map = element_ref();
@@ -229,14 +237,6 @@ native("acme.map")
     .flex_1()
 
 map.command("zoomTo", json!({ "level": 3 }));
-```
-
-```tsx tabs
-let map: NativeComponentRef | undefined;
-
-<MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
-
-map?.command("zoomTo", { level: 3 });
 ```
 
 `command(name, args)`（TSX：`command(name, args?)`）把名称和参数（任意 JSON 值）发送给组件的 `command` 方法。命令会和在它之前做出的变更按顺序应用，所以紧跟在
@@ -382,7 +382,7 @@ nsh.registerComponent("embed.badge") { context -> Badge(context) }
 | `NshView.registerComponent(String name, NshComponent.Factory factory)` | 以某个名称注册一个工厂；此后每创建一个元素，它就生成一个组件（UI 线程）。 |
 | `interface NshComponent` | `View view()`、`void setProp(String, Object)`、`default void command(String, Object)`、`default void destroy()`（元素已移除：被移除，或它的应用被 `NshView.destroy()` 停止、被再次加载替换；每个组件调用一次）。在 UI 线程上调用。 |
 | `setProp` 的值 | `String`、`Number`、`Boolean`、`java.util.List`、`java.util.Map`；被移除时（或 JSON `null`）为 `null`。 |
-| `NshComponentContext.getContext()` | 组件所在 `NshView` 的 context（即其 Activity 的），用于创建组件的视图、读取资源和获取系统服务；生命周期比组件长的对象应持有它的 `getApplicationContext()`。可在任意线程调用。 |
+| `NshComponentContext.getContext()` | 组件所在 `NshView` 的 context（即其 Activity 的），用于创建组件的视图、读取资源和获取系统服务；生命周期比组件长的对象应持有它的 `getApplicationContext()`。在 Native Shell 自己的 Activity 中，它是包着 Activity 的 `ContextWrapper`：系统因配置变化重建 Activity 时，应用继续运行，它随之换到新的 Activity；需要 `Activity` 时通过 `getBaseContext()` 取得，不要持有。可在任意线程调用。 |
 | `NshComponentContext.emit(String event, Object data)` | 发出一个事件；`data` 使用同样的 Java 类型，或 `null`。可在任意线程调用。 |
 | `NshComponentContext.setSize(float width, float height)` | 以 dp 为单位上报组件自身的尺寸。可在任意线程调用。 |
 

@@ -1,6 +1,6 @@
 {
   "title": "Native Shell — Build once, native everywhere | Rust UI framework",
-  "description": "Native Shell is a Rust-first native UI framework: build one app for iOS, Android, macOS, Windows, Linux and the web, with each platform’s own UI and interaction.",
+  "description": "Native Shell is a Rust-first native UI framework: build one app in TSX for iOS, Android, macOS, Windows, Linux and the web, with each platform’s own UI and interaction, and extend it with Rust where it needs to.",
   "slogan": "Build once, native everywhere",
   "lead": "Write only TSX and ship native clients that keep pace with Rust. One codebase runs on 8 platforms, each with the system’s own UI and interaction.",
   "idle": "Your app sits in the middle. Each arch around it is a platform.",
@@ -79,8 +79,8 @@
   "formCaption": "Desktop and phone run live in your browser on Native Shell’s web runtime. The terminal is real output of nsh run --target tui.",
   "pending": "The live preview is not built yet: run bun run dev (or cargo xtask web).",
   "tuiCta": "Explore TUI",
-  "langTitle": "The same engine in Rust, when you want it",
-  "langLead": "Rust is a first-class language for whole apps: UI, logic and components compile to native code, ready for demanding business logic. Both use the same elements and signals, and TSX screens import your Rust components.",
+  "langTitle": "Rust, where the app needs it",
+  "langLead": "A TSX app imports Rust components, modules and classes through nshm, its own crate in ext/ or one from crates.io, for native speed, the platform or a crate. A whole app can be Rust too: the same elements and signals, compiled to native code.",
   "langCta": "Building with Rust",
   "fastTitle": "Only the views that changed are touched",
   "fastLead": "Every element is a view the platform keeps. A change runs only the expressions that read the changed signal, in one batch per frame. The main thread never waits for JS and native animations run without it, so scrolling and animation hold 120 FPS and the app sits near idle at rest.",
@@ -153,7 +153,7 @@
   "ways": [
     {
       "label": "Standalone apps",
-      "body": "Write it in Rust, TSX or both, and package an installable iOS, Android, macOS, Windows or Linux app, or a static website.",
+      "body": "Write it in TSX, extend it with Rust where needed, and package an installable iOS, Android, macOS, Windows or Linux app, or a static website.",
       "cta": "Getting started"
     },
     {

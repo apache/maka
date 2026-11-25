@@ -74,6 +74,17 @@ final class SystemMenus {
     /** The menu on screen, which the test agent chooses from ({@link TestAgent}); null when none is. */
     static Popup open;
 
+    /**
+     * Closes the menu on screen if it was made in {@code context}, an app's: the activity its window is in goes
+     * ({@link Mounter#leaveWindows}).
+     */
+    static void dismissOf(Context context) {
+        if (open == null || open.owner != context) return;
+        // At once: an exit transition would keep the window until after the activity is gone, leaking it.
+        open.window.setExitTransition(null);
+        open.dismiss();
+    }
+
     /** How deep submenus nest: past it an entry's items are dropped, as on iOS. */
     private static final int MAX_DEPTH = 8;
 
@@ -165,6 +176,8 @@ final class SystemMenus {
      * shows its items in place of its menu's, under its label.
      */
     static final class Popup {
+        /** The context it was made in: its app's. */
+        private final Context owner;
         private final Context context;
         private final Palette palette;
         private final float density;
@@ -180,6 +193,7 @@ final class SystemMenus {
 
         Popup(Context context, boolean night, View anchor, int gravity, String title, List<Entry> entries,
                 Consumer<String> select) {
+            this.owner = context;
             this.context = new ContextThemeWrapper(context,
                     night ? android.R.style.Theme_Material : android.R.style.Theme_Material_Light);
             this.palette = new Palette(night);
@@ -200,7 +214,24 @@ final class SystemMenus {
             window.setElevation(dp(ELEVATION));
             window.setOverlapAnchor(false);
             window.setFocusable(true);
-            window.setOutsideTouchable(true);
+            // Touch-modal, so the touches outside come to the menu too: a
+            // tap there closes it on release, a back swipe leaves it to the
+            // back the swipe sends (MenuOutsideTouch).
+            window.setOutsideTouchable(false);
+            MenuOutsideTouch outside = new MenuOutsideTouch();
+            window.setTouchInterceptor((view, event) -> {
+                float x = event.getX(), y = event.getY();
+                boolean out = x < 0 || y < 0 || x >= view.getWidth() || y >= view.getHeight();
+                switch (outside.on(event.getActionMasked(), out)) {
+                    case MenuOutsideTouch.DISMISS:
+                        window.dismiss();
+                        return true;
+                    case MenuOutsideTouch.TAKE:
+                        return true;
+                    default:
+                        return false;
+                }
+            });
             window.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
             window.setOnDismissListener(() -> {
                 if (open == this) open = null;

@@ -6,7 +6,8 @@
 // weekends that take no press (`disabledMatcher`), the week's first day,
 // Previous and Next; a range of the picker's own (`defaultValue`) over
 // two months with a preset, its days styled by their `data-range-*:` and
-// `data-outside:` classes and their content by `group-data-*:`; and
+// `data-outside:` classes and their content by `group-data-*:`, a half
+// range's preview up to the day under the mouse by `data-range-preview-*:`; and
 // a date and time whose sheet a tap on a day closes and which opens
 // again for the time (`timePrecision`, `hourCycle`, the time's label and
 // segments). The
@@ -71,7 +72,7 @@ function App() {
         presets={[{ label: "Week", value: ["2026-10-19", "2026-10-25"] }]}
         presetsStyle={{ backgroundColor: "#0000ff" }}
         presetStyle={{ backgroundColor: "#00ff00" }}
-        itemClass="group data-range-start:bg-[#ff0000] data-range-middle:bg-[#00ff00] data-range-end:bg-[#0000ff] data-outside:opacity-50"
+        itemClass="group data-range-start:bg-[#ff0000] data-range-middle:bg-[#00ff00] data-range-end:bg-[#0000ff] data-range-preview-start:bg-[#ff00ff] data-range-preview-middle:bg-[#ffff00] data-range-preview-end:bg-[#00ffff] data-outside:opacity-50"
         renderItem={(item) => <Item item={item} />}
         trigger={<View testID="trip" style={{ height: 30 }}><Text>TripTrigger</Text></View>}
       />

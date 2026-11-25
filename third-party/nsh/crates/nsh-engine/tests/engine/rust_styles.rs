@@ -91,7 +91,6 @@ fn start_root(root: Root) -> (Engine, Receiver<MountBatch>) {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,

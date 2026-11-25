@@ -27,6 +27,9 @@ highlight = ["dep:syntect", "dep:two-face"]
 # 440 kB of code and data in a release runner); without it `nsh/base` has no
 # `EmojiPicker`.
 emoji-picker = []
+# A Rust app's web runtime: one `nsh_part_<name>` export per part, so `nsh
+# package` splits the parts the app makes by name into side modules.
+web-gates = []
 # `TextView`'s formulas typeset natively (RaTeX), with the KaTeX fonts
 # embedded (about 230 kB); without it a formula shows as its TeX, or as the
 # app's `renderMath`.

@@ -103,7 +103,6 @@ mount(() => <Text>{{shown()}}</Text>);
             clipboard: None,
             host: Default::default(),
             picker: None,
-            speech: None,
             audio: None,
             data_dir: None,
         };

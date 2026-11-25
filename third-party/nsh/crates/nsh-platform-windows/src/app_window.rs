@@ -144,8 +144,8 @@ pub(crate) fn hwnd_of(surface: &Surface, id: NodeId) -> Option<HWND> {
     get(surface, id).map(|w| w.hwnd)
 }
 
-/// Every native window the app has open on `surface`.
-pub(crate) fn all_hwnds(surface: &Surface) -> Vec<HWND> {
+/// Every native window the app currently has open on `surface`.
+pub(crate) fn hwnds(surface: &Surface) -> Vec<HWND> {
     surface.windows.borrow().iter().map(|w| w.hwnd).collect()
 }
 
@@ -1190,6 +1190,133 @@ mod tests {
         assert!(!has_ime(hwnd_b));
         assert!(!has_ime(host));
 
+        let (hwnd_c, _root_c) = make_window(surface, 9);
+        crate::text_input::window_focus(surface, true);
+        assert!(!has_ime(hwnd_c), "new unfocused window C must detach IME");
+
+        crate::text_input::stopped(surface);
+        // SAFETY: the test's own windows.
+        unsafe {
+            let _ = DestroyWindow(hwnd_a);
+            let _ = DestroyWindow(hwnd_b);
+            let _ = DestroyWindow(hwnd_c);
+        }
+        surface.windows.borrow_mut().clear();
+    }
+
+    #[test]
+    fn only_the_window_of_the_focused_field_takes_the_ime() {
+        use nsh_core::InputConfig;
+        use windows::Win32::UI::{
+            Input::Ime::{ImmGetContext, ImmReleaseContext},
+            WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED},
+        };
+
+        // SAFETY: plain system metric query.
+        assert_ne!(
+            unsafe { GetSystemMetrics(SM_IMMENABLED) },
+            0,
+            "IMM is not enabled on this machine"
+        );
+
+        let has_ime = |hwnd: HWND| -> bool {
+            // SAFETY: checks whether `hwnd` currently holds an associated IMC.
+            unsafe {
+                let himc = ImmGetContext(hwnd);
+                if himc.is_invalid() {
+                    return false;
+                }
+                let _ = ImmReleaseContext(hwnd, himc);
+                true
+            }
+        };
+
+        let make_window = |surface: &Rc<Surface>, id: NodeId| -> (HWND, NshView) {
+            let view = NshView::new(id, ViewKind::Modal);
+            view.set_invalidate(Rc::new(|_, _| {}));
+            let attributes = WindowAttributes::default();
+            let hwnd = crate::window::create_app_window(
+                surface,
+                id,
+                WindowKind::Normal,
+                &attributes,
+                None,
+                false,
+            )
+            .unwrap();
+            surface.windows.borrow_mut().push(Rc::new(AppWindow {
+                id,
+                hwnd,
+                view: view.clone(),
+                owner: None,
+                modal: false,
+                composition: None,
+                web: RefCell::default(),
+                placed: RefCell::default(),
+                composed: RefCell::default(),
+                swap: RefCell::new(None),
+                target_scale: Cell::new(0.0),
+                pixels: Cell::new((0, 0)),
+                scale: Cell::new(1.0),
+                invalid: Cell::new(false),
+                positioned: Cell::new(true),
+                reported: Cell::new(None),
+                opened: Cell::new(false),
+                closed: Cell::new(false),
+                hidden: Cell::new(false),
+                state: Cell::new(None),
+            }));
+            (hwnd, view)
+        };
+
+        let app = crate::app::AppView::new(None, Default::default()).unwrap();
+        let surface = app.surface();
+        let host = surface.hwnd();
+        let (hwnd_a, root_a) = make_window(surface, 7);
+        let (hwnd_b, root_b) = make_window(surface, 8);
+
+        let input_a = NshView::new(10, ViewKind::Input);
+        input_a.insert_before(&root_a, None);
+        crate::text_input::create(surface, &input_a);
+
+        let input_b = NshView::new(11, ViewKind::Input);
+        input_b.insert_before(&root_b, None);
+        crate::text_input::create(surface, &input_b);
+
+        // Focusing an editable field in window A enables IME on A and the host
+        // (whose IMC RichEdit reads) and detaches B.
+        crate::text_input::focus(&input_a);
+        assert!(has_ime(hwnd_a), "focused field's window must have IME");
+        assert!(has_ime(host), "host window must keep IME for RichEdit");
+        assert!(!has_ime(hwnd_b), "unfocused window B must not have IME");
+
+        // Focusing a secure field in window B detaches IME everywhere.
+        crate::text_input::config(
+            surface,
+            &input_b,
+            &InputConfig {
+                secure: true,
+                ..Default::default()
+            },
+        );
+        crate::text_input::focus(&input_b);
+        assert!(!has_ime(hwnd_a), "window A must detach on secure focus");
+        assert!(
+            !has_ime(hwnd_b),
+            "secure field's window B must not have IME"
+        );
+        assert!(!has_ime(host), "host must detach on secure focus");
+
+        // Blurring detaches IME from every window.
+        crate::text_input::focus(&input_a);
+        assert!(has_ime(hwnd_a) && has_ime(host));
+        crate::text_input::blur(&input_a);
+        assert!(!has_ime(hwnd_a));
+        assert!(!has_ime(hwnd_b));
+        assert!(!has_ime(host));
+
+        // A newly created window detaches IME on its first WM_SETFOCUS when no
+        // field is focused.
         let (hwnd_c, _root_c) = make_window(surface, 9);
         crate::text_input::window_focus(surface, true);
         assert!(!has_ime(hwnd_c), "new unfocused window C must detach IME");

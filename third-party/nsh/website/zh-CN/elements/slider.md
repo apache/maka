@@ -11,6 +11,37 @@ demo: el-slider
 `step` 对齐；每个滑块都是键盘焦点的一站，可以用方向键移动，并且对屏幕阅读器是带自己数值的可调节元素。外观由应用决定：`Slider`
 没有自己的颜色、尺寸、圆角或动效。它由轨道、轨道里的指示条、指示条上的范围和滑块，以及之后的子元素（标签、文字形式的数值）组成，每个部件都由应用设置样式。
 
+```tsx tabs
+import { mount, signal, Text } from "nsh";
+import { Slider } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const strength = signal(64);
+  return (
+    <Slider
+      value={strength()}
+      onChange={({ value }) => strength.set(value as number)}
+      accessibilityLabel="选项强度"
+      class="flex-row items-center gap-2"
+      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
+      indicatorClass="h-full"
+      rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
+      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
+      thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
+    >
+      <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
+    </Slider>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SliderValue, slider, theme};
 use nsh_core::prelude::*;
@@ -54,37 +85,6 @@ fn strength(level: Signal<SliderValue>) -> impl IntoElement {
                 .text_color(move || theme().muted_foreground),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text } from "nsh";
-import { Slider } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const strength = signal(64);
-  return (
-    <Slider
-      value={strength()}
-      onChange={({ value }) => strength.set(value as number)}
-      accessibilityLabel="选项强度"
-      class="flex-row items-center gap-2"
-      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
-      indicatorClass="h-full"
-      rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
-      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
-      thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
-    >
-      <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
-    </Slider>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Slider` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`slider()`

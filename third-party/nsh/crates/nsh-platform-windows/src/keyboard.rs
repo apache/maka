@@ -537,6 +537,21 @@ fn logical_char(event: &KeyEvent) -> Option<char> {
     })
 }
 
+/// Whether `event` types its character from the layout's AltGr level, as
+/// the DOM's `getModifierState("AltGraph")` reports: Windows sends AltGr
+/// as Left Control plus Right Alt, so Control and Alt are held, Right Alt
+/// is down, and the key translates to a character with them held. A
+/// Ctrl+Alt shortcut (left Alt, or a key with no AltGr character) is not.
+fn alt_graph(event: &KeyEvent) -> bool {
+    let m = event.modifiers;
+    if !(m.ctrl && m.alt) || dead_key(event.vk) {
+        return false;
+    }
+    let state = actual_state();
+    // VK_RMENU: the high bit is set while the key is down.
+    state[0xA5] & 0x80 != 0 && translated(event, &state).is_some()
+}
+
 /// `event`'s key translated with `state` (`ToUnicodeEx`): the first
 /// character, when the source writes one and it is printable. A dead key
 /// is never translated (`dead_key`) and written nothing.
@@ -839,6 +854,7 @@ fn core_event(event: &KeyEvent, down: bool, default_prevented: bool) -> nsh_core
     key.key = key_name(event);
     key.code = SharedString::new_static(dom_code(event));
     key.modifiers = event.modifiers.core();
+    key.modifiers.alt_graph = alt_graph(event);
     key.repeat = down && event.repeat;
     key.default_prevented = default_prevented;
     key
@@ -893,6 +909,7 @@ pub(crate) fn activate(surface: &std::rc::Rc<Surface>, event: &KeyEvent) -> bool
         alt: m.alt,
         shift: m.shift,
         cmd: m.meta,
+        alt_graph: false,
     };
     if !event.down || !nsh_core::input::presses_focused_control(key, held) {
         return false;
@@ -977,6 +994,7 @@ fn opens_context_menu(event: &KeyEvent) -> bool {
         alt: m.alt,
         shift: m.shift,
         cmd: m.meta,
+        alt_graph: false,
     };
     let function = (event.vk == 0x79).then_some(Key::F(10));
     nsh_core::input::opens_context_menu(event.vk == crate::input::VK_APPS, function, held)

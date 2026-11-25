@@ -1258,7 +1258,11 @@ impl<'a> Compiler<'a, '_> {
         let cond = self.use_helper("cond");
         // `{(user) => …}`: the child is called with an accessor of `when`'s
         // value, truthy while the branch shows (Solid's `<Show>`); `when`
-        // is read through it, once per read.
+        // is read through it, once per read. Once `when` turns falsy the
+        // branch is disposed, but its `cleanup()`s and its children's prop
+        // getters can still read the accessor: it keeps the branch's last
+        // truthy value (the `NonNullable<T>` it is typed as). Each branch
+        // made keeps its own, so a closed branch holds nothing.
         if lone_function_child(&el.children) {
             let mut render = String::new();
             for child in el.children {
@@ -1268,7 +1272,10 @@ impl<'a> Compiler<'a, '_> {
                     render = g.hole(e);
                 }
             }
-            let then = format!("() => ({render})({HOLE}w)");
+            let then = format!(
+                "() => {{ let {HOLE}l; return ({render})(() => {{ const {HOLE}x = {HOLE}w(); \
+                 return {HOLE}x ? ({HOLE}l = {HOLE}x) : {HOLE}l; }}); }}"
+            );
             let branches = match get("else") {
                 Some(otherwise) => format!("{then}, () => {otherwise}"),
                 None => then,
@@ -1786,11 +1793,20 @@ mod tests {
             .unwrap(),
         );
         assert!(
-            code.contains("((__nsh_hw) => _$cond(__nsh_hw, () => ((u) => (() => {"),
+            code.contains(
+                "((__nsh_hw) => _$cond(__nsh_hw, () => { let __nsh_hl; return ((u) => (() => {"
+            ),
             "{code}"
         );
-        // Called with the accessor; `else` as it was; `when` read through it.
-        assert!(code.contains("})())(__nsh_hw), () => (() => {"), "{code}");
+        // Called with an accessor that reads `when` and, once it turns
+        // falsy, keeps the branch's last truthy value; `else` as it was.
+        assert!(
+            code.contains(
+                "})())(() => { const __nsh_hx = __nsh_hw(); \
+                 return __nsh_hx ? __nsh_hl = __nsh_hx : __nsh_hl; }); }, () => (() => {"
+            ),
+            "{code}"
+        );
         assert!(code.contains("))(() => user());"), "{code}");
     }
 
@@ -1811,7 +1827,9 @@ mod tests {
                 .unwrap(),
             );
             assert!(
-                code.contains("((__nsh_hw) => _$cond(__nsh_hw, () => ((u) => (() => {"),
+                code.contains(
+                    "((__nsh_hw) => _$cond(__nsh_hw, () => { let __nsh_hl; return ((u) => (() => {"
+                ),
                 "{children}: {code}"
             );
             assert!(

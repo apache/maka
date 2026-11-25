@@ -46,16 +46,19 @@ use windows::{
             Direct2D::{
                 Common::{
                     D2D_POINT_2U, D2D_RECT_F, D2D_RECT_U, D2D_SIZE_F, D2D_SIZE_U,
-                    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-                    D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
+                    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
+                    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
                 },
                 D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT,
                 D2D1_ARC_SIZE_SMALL, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ,
                 D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-                D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
-                D2D1_MAP_OPTIONS_READ, D2D1_ROUNDED_RECT, D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Geometry, ID2D1Image, ID2D1SolidColorBrush,
+                D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1,
+                D2D1_LAYER_OPTIONS1_IGNORE_ALPHA, D2D1_LAYER_OPTIONS1_INITIALIZE_FROM_BACKGROUND,
+                D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_MAP_OPTIONS_READ,
+                D2D1_ROUNDED_RECT, D2D1_SWEEP_DIRECTION_CLOCKWISE, ID2D1Bitmap1,
+                ID2D1DeviceContext, ID2D1Geometry, ID2D1Image, ID2D1SolidColorBrush,
             },
+            DirectWrite::IDWriteRenderingParams,
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
         },
     },
@@ -103,13 +106,14 @@ pub(crate) const INFINITE: D2D_RECT_F = D2D_RECT_F {
 /// What was pushed on the context, to pop it the same way (and push it
 /// again: [`DrawCx::flatten`]).
 enum Pushed {
-    /// A layer: its opacity, mask and content bounds, with the transform
-    /// it was pushed with.
+    /// A layer: its opacity, mask, content bounds and options, with the
+    /// transform it was pushed with.
     Layer {
         transform: Matrix3x2,
         opacity: f32,
         mask: Option<ID2D1Geometry>,
         bounds: D2D_RECT_F,
+        options: D2D1_LAYER_OPTIONS1,
     },
     /// An axis-aligned clip, with the transform it was pushed with.
     Clip {
@@ -124,6 +128,8 @@ pub(crate) struct DrawCx<'a> {
     pub(crate) gfx: &'a Gfx,
     /// The context drawn with (the same as `gfx.dc`).
     pub(crate) dc: &'a ID2D1DeviceContext,
+    /// The context's DirectWrite settings, shared by command-list recordings.
+    pub(crate) text_params: Option<IDWriteRenderingParams>,
     /// The world transform of the view being drawn (its coordinates to
     /// the target's DIPs).
     pub(crate) transform: Mat4,
@@ -182,6 +188,15 @@ pub(crate) struct DrawCx<'a> {
     /// The pass draws the window's frame: views record where they were
     /// painted (not in snapshots, which leave the screen as it is).
     pub(crate) records: bool,
+    /// True when the active target uses `D2D1_ALPHA_MODE_IGNORE` (an opaque
+    /// window back buffer), so opaque geometric clip layers can initialize
+    /// from the background and preserve ClearType subpixel antialiasing.
+    opaque_target: bool,
+    /// Number of currently open layers pushed with `D2D1_LAYER_OPTIONS1_NONE`
+    /// (opacity layers or layers on a premultiplied target). While non-zero,
+    /// nested clip layers must also keep alpha intact instead of setting
+    /// `IGNORE_ALPHA`.
+    translucent_layers: usize,
 }
 
 /// A composed item reached by a pass.
@@ -225,11 +240,17 @@ impl<'a> DrawCx<'a> {
         now: f64,
     ) -> windows::core::Result<Self> {
         let black = color_f(Color::BLACK);
-        // SAFETY: a COM call on the live context.
-        let brush = unsafe { dc.CreateSolidColorBrush(&black, None)? };
+        // SAFETY: COM calls on the live context.
+        let (brush, text_params) = unsafe {
+            (
+                dc.CreateSolidColorBrush(&black, None)?,
+                dc.GetTextRenderingParams().ok(),
+            )
+        };
         Ok(DrawCx {
             gfx,
             dc,
+            text_params,
             transform: Mat4::new(),
             scale,
             dark,
@@ -250,6 +271,8 @@ impl<'a> DrawCx<'a> {
             clip_skip: 0,
             group_area: None,
             records: false,
+            opaque_target: false,
+            translucent_layers: 0,
         })
     }
 
@@ -395,6 +418,18 @@ impl<'a> DrawCx<'a> {
             }
         };
         split.layers.push(self.composed.len());
+        // Composition layers above a WebView are premultiplied transparent
+        // surfaces, so any open opaque clip layers must switch to preserving
+        // alpha before `flatten` re-pushes them on the new target.
+        self.opaque_target = false;
+        for p in &mut self.pushed {
+            if let Pushed::Layer { options, .. } = p
+                && *options != D2D1_LAYER_OPTIONS1_NONE
+            {
+                *options = D2D1_LAYER_OPTIONS1_NONE;
+                self.translucent_layers += 1;
+            }
+        }
         let ended = self.flatten(|dc| {
             // SAFETY: COM calls on the live context between its pushes:
             // the draw into the previous target ends, one into the layer
@@ -462,34 +497,72 @@ impl<'a> DrawCx<'a> {
 
     /// Draws what follows at `opacity`.
     pub(crate) fn push_opacity(&mut self, opacity: f32) {
-        self.push_layer(opacity, None, INFINITE);
+        self.push_layer(opacity, None, INFINITE, true);
     }
 
     /// Draws what follows at `opacity`, all of it inside `bounds` (current
     /// coordinates): Direct2D sizes the layer's surface to them, where an
     /// unbounded layer takes the whole clip (the window's, often).
     pub(crate) fn push_opacity_within(&mut self, opacity: f32, bounds: D2D_RECT_F) {
-        self.push_layer(opacity, None, bounds);
+        self.push_layer(opacity, None, bounds, true);
     }
 
-    /// Clips what follows to `geometry` (in the current coordinates).
-    pub(crate) fn push_clip_geometry(&mut self, geometry: &ID2D1Geometry) {
-        self.push_layer(1.0, Some(geometry.clone()), INFINITE);
+    /// Clips what follows to `geometry` (in the current coordinates), its
+    /// content inside `bounds` (the same coordinates): the layer's
+    /// surface, and an opaque clip's background copy, covers them only.
+    pub(crate) fn push_clip_geometry(&mut self, geometry: &ID2D1Geometry, bounds: D2D_RECT_F) {
+        self.push_layer(1.0, Some(geometry.clone()), bounds, true);
+    }
+
+    /// Clips what follows to `geometry` as [`Self::push_clip_geometry`],
+    /// for clipped drawing that holds no text (fills, borders, images):
+    /// the background copy that keeps ClearType buys nothing then.
+    pub(crate) fn push_clip_shapes(&mut self, geometry: &ID2D1Geometry, bounds: D2D_RECT_F) {
+        self.push_layer(1.0, Some(geometry.clone()), bounds, false);
     }
 
     /// Pushes a layer of `opacity` masked by `mask`, its content inside
-    /// `bounds` (current coordinates).
-    fn push_layer(&mut self, opacity: f32, mask: Option<ID2D1Geometry>, bounds: D2D_RECT_F) {
-        self.push_layer_raw(opacity, mask.as_ref(), &bounds);
+    /// `bounds` (current coordinates); `text` whether the content may
+    /// hold text worth keeping ClearType for.
+    fn push_layer(
+        &mut self,
+        opacity: f32,
+        mask: Option<ID2D1Geometry>,
+        bounds: D2D_RECT_F,
+        text: bool,
+    ) {
+        // On an opaque target with no open alpha-preserving layers, an opaque
+        // geometric clip layer (rounded corners, multi-rect partial frames) can
+        // initialize from the background and ignore alpha so Direct2D keeps
+        // ClearType subpixel antialiasing instead of falling back to grayscale.
+        let opaque_clip = text
+            && opacity >= 1.0
+            && mask.is_some()
+            && self.opaque_target
+            && self.translucent_layers == 0;
+        let options = if opaque_clip {
+            D2D1_LAYER_OPTIONS1_INITIALIZE_FROM_BACKGROUND | D2D1_LAYER_OPTIONS1_IGNORE_ALPHA
+        } else {
+            self.translucent_layers += 1;
+            D2D1_LAYER_OPTIONS1_NONE
+        };
+        self.push_layer_raw(opacity, mask.as_ref(), &bounds, options);
         self.pushed.push(Pushed::Layer {
             transform: self.dc_transform(),
             opacity,
             mask,
             bounds,
+            options,
         });
     }
 
-    fn push_layer_raw(&self, opacity: f32, mask: Option<&ID2D1Geometry>, bounds: &D2D_RECT_F) {
+    fn push_layer_raw(
+        &self,
+        opacity: f32,
+        mask: Option<&ID2D1Geometry>,
+        bounds: &D2D_RECT_F,
+        options: D2D1_LAYER_OPTIONS1,
+    ) {
         let mut params = D2D1_LAYER_PARAMETERS1 {
             contentBounds: *bounds,
             geometricMask: std::mem::ManuallyDrop::new(mask.cloned()),
@@ -497,7 +570,7 @@ impl<'a> DrawCx<'a> {
             maskTransform: Matrix3x2::identity(),
             opacity,
             opacityBrush: std::mem::ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            layerOptions: options,
         };
         // SAFETY: valid parameters; popped by `pop`.
         unsafe { self.dc.PushLayer(&params, None) };
@@ -537,10 +610,11 @@ impl<'a> DrawCx<'a> {
                     opacity,
                     mask,
                     bounds,
+                    options,
                 } => {
                     // SAFETY: a COM call on the live context.
                     unsafe { self.dc.SetTransform(transform) };
-                    self.push_layer_raw(*opacity, mask.as_ref(), bounds);
+                    self.push_layer_raw(*opacity, mask.as_ref(), bounds, *options);
                 }
                 Pushed::Clip { transform, rect } => {
                     // SAFETY: COM calls on the live context; popped by
@@ -577,7 +651,7 @@ impl<'a> DrawCx<'a> {
                 rect,
             });
         } else if let Some(g) = self.rounded_geometry(crate::geom::rect(x, y, w, h), [0.0; 4]) {
-            self.push_clip_geometry(&g);
+            self.push_clip_geometry(&g, rect_f(x, y, w, h));
         } else {
             self.push_opacity(1.0);
         }
@@ -586,6 +660,17 @@ impl<'a> DrawCx<'a> {
     /// Clips what follows to the rounded rectangle `rect` with `radii`
     /// (clockwise from the top left).
     pub(crate) fn push_clip_rounded(&mut self, rect: Bounds<Points>, radii: [f32; 4]) {
+        self.clip_rounded(rect, radii, true);
+    }
+
+    /// [`Self::push_clip_rounded`] for content without text
+    /// ([`Self::push_clip_shapes`]).
+    pub(crate) fn push_clip_rounded_shapes(&mut self, rect: Bounds<Points>, radii: [f32; 4]) {
+        self.clip_rounded(rect, radii, false);
+    }
+
+    /// [`Self::push_clip_rounded`], `text` as in [`Self::push_clip_shapes`].
+    fn clip_rounded(&mut self, rect: Bounds<Points>, radii: [f32; 4], text: bool) {
         if radii.iter().all(|r| *r <= 0.0) {
             return self.push_clip_rect(
                 rect.origin.x.0,
@@ -594,8 +679,15 @@ impl<'a> DrawCx<'a> {
                 rect.size.height.0,
             );
         }
+        let bounds = rect_f(
+            rect.origin.x.0,
+            rect.origin.y.0,
+            rect.size.width.0,
+            rect.size.height.0,
+        );
         match self.rounded_geometry(rect, radii) {
-            Some(g) => self.push_clip_geometry(&g),
+            Some(g) if text => self.push_clip_geometry(&g, bounds),
+            Some(g) => self.push_clip_shapes(&g, bounds),
             None => self.push_clip_rect(
                 rect.origin.x.0,
                 rect.origin.y.0,
@@ -608,8 +700,13 @@ impl<'a> DrawCx<'a> {
     /// Pops the last push.
     pub(crate) fn pop(&mut self) {
         match self.pushed.pop() {
-            // SAFETY: matches the push.
-            Some(Pushed::Layer { .. }) => unsafe { self.dc.PopLayer() },
+            Some(Pushed::Layer { options, .. }) => {
+                if options == D2D1_LAYER_OPTIONS1_NONE {
+                    self.translucent_layers = self.translucent_layers.saturating_sub(1);
+                }
+                // SAFETY: matches the push.
+                unsafe { self.dc.PopLayer() };
+            }
             // SAFETY: as above.
             Some(Pushed::Clip { .. }) => unsafe { self.dc.PopAxisAlignedClip() },
             None => log::error!("render: pop without push"),
@@ -1250,6 +1347,7 @@ pub(crate) fn draw_offscreen(
         unsafe {
             dc.SetTarget(target);
             dc.SetDpi(96.0 * scale, 96.0 * scale);
+            dc.SetTextRenderingParams(crate::text::rendering_params(surface.hwnd()).as_ref());
             dc.BeginDraw();
             dc.SetTransform(&Matrix3x2::identity());
             dc.Clear(Some(&color_f(Color::TRANSPARENT)));
@@ -1575,6 +1673,16 @@ fn clear_areas(dc: &ID2D1DeviceContext, areas: &[D2D_RECT_F], background: &D2D1_
     }
 }
 
+/// The smallest rectangle covering every one of `rects` (non-empty).
+fn union_rect(rects: &[D2D_RECT_F]) -> D2D_RECT_F {
+    rects[1..].iter().fold(rects[0], |u, r| D2D_RECT_F {
+        left: u.left.min(r.left),
+        top: u.top.min(r.top),
+        right: u.right.max(r.right),
+        bottom: u.bottom.max(r.bottom),
+    })
+}
+
 /// The union of `rects` as one geometry.
 fn rects_geometry(gfx: &Gfx, rects: &[D2D_RECT_F]) -> windows::core::Result<ID2D1Geometry> {
     // SAFETY: COM calls on the live factory.
@@ -1891,15 +1999,17 @@ fn draw_into(
     };
     // SAFETY: COM calls on the live context and target; `EndDraw` always
     // follows `BeginDraw`.
-    unsafe {
+    let opaque_target = unsafe {
         dc.SetTarget(target);
         dc.SetDpi(96.0 * scale, 96.0 * scale);
+        dc.SetTextRenderingParams(crate::text::rendering_params(hwnd).as_ref());
         dc.BeginDraw();
         dc.SetTransform(&Matrix3x2::identity());
         if areas.is_none() {
             dc.Clear(Some(&background));
         }
-    }
+        target.GetPixelFormat().alphaMode == D2D1_ALPHA_MODE_IGNORE
+    };
     let mut cx = match DrawCx::new(gfx, scale, crate::system::dark(surface), surface.now()) {
         Ok(cx) => cx,
         Err(err) => {
@@ -1909,6 +2019,7 @@ fn draw_into(
         }
     };
     cx.offscreen = offscreen;
+    cx.opaque_target = opaque_target;
     // A window of the app's own draws its root alone; where its views were
     // painted is not the main window's.
     cx.records = !offscreen && window.is_none();
@@ -1958,7 +2069,7 @@ fn draw_into(
             match areas {
                 [a] => cx.push_clip_rect(a.left, a.top, a.right - a.left, a.bottom - a.top),
                 _ => match rects_geometry(gfx, areas) {
-                    Ok(group) => cx.push_clip_geometry(&group),
+                    Ok(group) => cx.push_clip_geometry(&group, union_rect(areas)),
                     Err(err) => {
                         // SAFETY: closes the `BeginDraw` above.
                         let _ = unsafe { dc.EndDraw(None, None) };
@@ -2061,6 +2172,8 @@ mod tests {
 
     use super::*;
     use crate::geom::rect;
+
+    mod capture;
 
     thread_local! {
         /// How many views the passes on this thread drew ([`draw_content`]).
@@ -2356,7 +2469,7 @@ mod tests {
             gfx.dc.Clear(Some(&color_f(Color(0xff00_00ff))));
             if old_way {
                 let mut cx = DrawCx::new(gfx, 1.0, false, 0.0).unwrap();
-                cx.push_clip_geometry(&rects_geometry(gfx, areas).unwrap());
+                cx.push_clip_geometry(&rects_geometry(gfx, areas).unwrap(), union_rect(areas));
                 gfx.dc.Clear(Some(&transparent));
                 cx.pop();
             } else {
@@ -3668,5 +3781,242 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An opaque target bitmap (`D2D1_ALPHA_MODE_IGNORE`), matching a regular
+    /// window's swap chain back buffer.
+    fn opaque_target(gfx: &Gfx, size: (u32, u32)) -> ID2D1Bitmap1 {
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_IGNORE,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: size.0,
+            height: size.1,
+        };
+        // SAFETY: a COM call on the live context.
+        unsafe { gfx.dc.CreateBitmap(size, None, 0, &props) }.unwrap()
+    }
+
+    fn read_opaque(gfx: &Gfx, bitmap: &ID2D1Bitmap1, size: (u32, u32)) -> Vec<u8> {
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_IGNORE,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        // SAFETY: COM calls on live bitmaps; the mapped memory is copied
+        // before `Unmap`.
+        unsafe {
+            let cpu = gfx
+                .dc
+                .CreateBitmap(
+                    D2D_SIZE_U {
+                        width: size.0,
+                        height: size.1,
+                    },
+                    None,
+                    0,
+                    &props,
+                )
+                .unwrap();
+            cpu.CopyFromBitmap(None, bitmap, None).unwrap();
+            let mapped = cpu.Map(D2D1_MAP_OPTIONS_READ).unwrap();
+            let mut out = Vec::with_capacity((size.0 * size.1 * 4) as usize);
+            for row in 0..size.1 {
+                let start = mapped.bits.add((row * mapped.pitch) as usize);
+                out.extend_from_slice(std::slice::from_raw_parts(start, (size.0 * 4) as usize));
+            }
+            cpu.Unmap().unwrap();
+            out
+        }
+    }
+
+    /// Text inside an opaque rounded-clip container (`overflow: hidden` +
+    /// `borderRadius`) renders identically to unclipped text in its interior,
+    /// preserving ClearType subpixel antialiasing instead of falling back to
+    /// grayscale.
+    #[test]
+    fn rounded_clip_on_opaque_target_preserves_cleartype() {
+        use nsh_core::{AttributedText, ResolvedTextStyle, TextEngine, TextSpan};
+        let Ok(gfx) = gfx::get() else {
+            return;
+        };
+        let size = (260, 80);
+        let engine = crate::text::DWriteTextEngine::new(crate::text::ui_family());
+        let style = ResolvedTextStyle {
+            font_size: Points(14.0),
+            color: Color::BLACK,
+            ..Default::default()
+        };
+        let label = "ClearType inside rounded card";
+        let text = std::sync::Arc::new(AttributedText {
+            text: label.into(),
+            spans: vec![TextSpan {
+                start: 0,
+                end: label.encode_utf16().count() as u32,
+                style,
+            }],
+            ..Default::default()
+        });
+        let prepared = engine.prepare(&text);
+        let measured = engine.measure(&prepared, None);
+        let layout = engine.layout(&prepared, measured);
+        let white = Color::rgba(255, 255, 255, 255);
+
+        let make_scene = |rounded_clip: bool| {
+            let surface = Surface::new(Default::default());
+            surface.resized(size, 1.0);
+            let card = view(
+                Some(&surface.root),
+                2,
+                ViewKind::View,
+                rect(8.0, 8.0, 244.0, 64.0),
+            );
+            {
+                let mut s = card.state_mut();
+                s.style.background_color = white;
+                if rounded_clip {
+                    s.style.overflow_hidden = true;
+                    s.style.border_radius = Points(12.0);
+                }
+            }
+            let tv = view(
+                Some(&card),
+                4,
+                ViewKind::Text,
+                rect(16.0, 18.0, measured.width.0, measured.height.0),
+            );
+            crate::text::set(&tv, &text, &layout, Bounds::new(Point::default(), measured));
+            let into = opaque_target(&gfx, size);
+            draw_into(&surface, &gfx, &into, 1.0, false, None, None, None).unwrap();
+            read_opaque(&gfx, &into, size)
+        };
+
+        let unclipped = make_scene(false);
+        let clipped = make_scene(true);
+        // Compare the text interior (well inside the 12px rounded corners).
+        let mut diffs = 0usize;
+        let mut ink = 0usize;
+        let mut fringe = 0usize;
+        for y in 24..54 {
+            for x in 24..220 {
+                let i = ((y * size.0 + x) * 4) as usize;
+                let a = &unclipped[i..i + 3];
+                let b = &clipped[i..i + 3];
+                if a != b {
+                    diffs += 1;
+                }
+                if b[0] < 245 || b[1] < 245 || b[2] < 245 {
+                    ink += 1;
+                    if (i32::from(b[0]) - i32::from(b[1])).abs() > 4
+                        || (i32::from(b[1]) - i32::from(b[2])).abs() > 4
+                    {
+                        fringe += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(diffs, 0, "rounded clip altered interior text pixels");
+        assert!(ink > 0, "expected rendered text pixels");
+        let cleartype_enabled = crate::text::rendering_params(Default::default())
+            // SAFETY: COM call on live rendering params.
+            .is_some_and(|p| unsafe {
+                use windows::Win32::Graphics::DirectWrite::{
+                    DWRITE_PIXEL_GEOMETRY_FLAT, DWRITE_RENDERING_MODE_ALIASED,
+                };
+                p.GetClearTypeLevel() > 0.0
+                    && p.GetPixelGeometry() != DWRITE_PIXEL_GEOMETRY_FLAT
+                    && p.GetRenderingMode() != DWRITE_RENDERING_MODE_ALIASED
+            });
+        if cleartype_enabled {
+            assert!(
+                fringe > 0,
+                "expected ClearType RGB subpixel fringe inside rounded clip"
+            );
+        }
+    }
+
+    /// A multi-rect partial frame on an opaque target (which clips through
+    /// `push_clip_geometry`) renders text identically to a whole frame,
+    /// avoiding a ClearType-to-grayscale flicker when several areas redraw.
+    #[test]
+    fn multi_rect_partial_frame_matches_whole_frame_for_text_on_opaque_target() {
+        use nsh_core::{AttributedText, ResolvedTextStyle, TextEngine, TextSpan};
+        let Ok(gfx) = gfx::get() else {
+            return;
+        };
+        let size = (260, 100);
+        let surface = Surface::new(Default::default());
+        surface.resized(size, 1.0);
+        let panel = view(
+            Some(&surface.root),
+            2,
+            ViewKind::View,
+            rect(0.0, 0.0, 260.0, 100.0),
+        );
+        panel.state_mut().style.background_color = Color::rgba(255, 255, 255, 255);
+        let engine = crate::text::DWriteTextEngine::new(crate::text::ui_family());
+        let style = ResolvedTextStyle {
+            font_size: Points(14.0),
+            color: Color::BLACK,
+            ..Default::default()
+        };
+        let label = "Partial frame text fidelity";
+        let text = std::sync::Arc::new(AttributedText {
+            text: label.into(),
+            spans: vec![TextSpan {
+                start: 0,
+                end: label.encode_utf16().count() as u32,
+                style,
+            }],
+            ..Default::default()
+        });
+        let prepared = engine.prepare(&text);
+        let measured = engine.measure(&prepared, None);
+        let layout = engine.layout(&prepared, measured);
+        let tv = view(
+            Some(&panel),
+            4,
+            ViewKind::Text,
+            rect(12.0, 12.0, measured.width.0, measured.height.0),
+        );
+        crate::text::set(&tv, &text, &layout, Bounds::new(Point::default(), measured));
+
+        let whole = opaque_target(&gfx, size);
+        draw_into(&surface, &gfx, &whole, 1.0, false, None, None, None).unwrap();
+
+        let partial = opaque_target(&gfx, size);
+        draw_into(&surface, &gfx, &partial, 1.0, false, None, None, None).unwrap();
+        let areas = [
+            rect_f(0.0, 0.0, 240.0, 44.0),
+            rect_f(10.0, 60.0, 60.0, 24.0),
+        ];
+        draw_into(
+            &surface,
+            &gfx,
+            &partial,
+            1.0,
+            false,
+            None,
+            Some(&areas),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_opaque(&gfx, &whole, size),
+            read_opaque(&gfx, &partial, size)
+        );
     }
 }

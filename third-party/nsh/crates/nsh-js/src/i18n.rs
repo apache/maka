@@ -64,8 +64,9 @@ fn version(cx: *mut JsContext) -> JsValue {
     }
 }
 
-/// `nsh:rt`'s `i18n(json)`: the bundle's translations and language data
-/// (`{"translations": {...}, "languages": {...}}`), before anything else
+/// `nsh:rt`'s `i18n(json)`: the bundle's translations, language data and
+/// time zones (`{"translations": {...}, "languages": {...}, "zones": [...]}`),
+/// before anything else
 /// runs. The core gets the translations too (its components' `t!`).
 pub(crate) unsafe extern "C" fn setup(
     cx: *mut JsContext,
@@ -81,6 +82,7 @@ pub(crate) unsafe extern "C" fn setup(
     struct Bundle {
         translations: HashMap<String, HashMap<String, String>>,
         languages: serde_json::Map<String, serde_json::Value>,
+        zones: Vec<serde_json::Value>,
     }
     let bundle: Bundle = match serde_json::from_str(&json) {
         Ok(bundle) => bundle,
@@ -90,6 +92,7 @@ pub(crate) unsafe extern "C" fn setup(
         }
     };
     crate::web::add_languages(cx, bundle.languages);
+    crate::web::add_zones(cx, bundle.zones);
     let translations = Translations::from_map(bundle.translations);
     set_translations(cx, translations)
 }

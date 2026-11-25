@@ -94,6 +94,10 @@ fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
     options.data_dir = field("dataDir")
         .as_deref()
         .and_then(nsh_engine::resolve_data_dir);
+    // `nsh.json` `"logDir"`: where the log files go, apart from `dataDir`.
+    let log_dir = field("logDir")
+        .as_deref()
+        .and_then(nsh_engine::resolve_data_dir);
     if let Some(name) = field("name") {
         options.title = name;
     }
@@ -124,7 +128,12 @@ fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
         Some("dark") => options.appearance = Appearance::Dark,
         _ => {}
     }
-    install_logger(developing, &options.app_id, options.data_dir.as_deref());
+    install_logger(
+        developing,
+        &options.app_id,
+        options.data_dir.as_deref(),
+        log_dir.as_deref(),
+    );
     (dir, options)
 }
 
@@ -136,13 +145,15 @@ fn setup() -> (std::path::PathBuf, nsh_platform_windows::AppOptions) {
 /// its own logger (from its native module, which runs first) keeps it, and
 /// its level.
 #[cfg(windows)]
-fn install_logger(development: bool, app_id: &str, data_dir: Option<&std::path::Path>) {
+fn install_logger(
+    development: bool,
+    app_id: &str,
+    data_dir: Option<&std::path::Path>,
+    log_dir: Option<&std::path::Path>,
+) {
     let mut logging = nsh_engine::logging::LogOptions::default();
     logging.development = development;
-    logging.directory = match data_dir {
-        Some(dir) => Some(dir.join("logs")),
-        None => nsh_engine::logging::log_dir(app_id),
-    };
+    logging.directory = nsh_engine::logging::log_directory(app_id, data_dir, log_dir);
     logging.output = Some(Box::new(move |r: &log::Record<'_>| {
         let line = format!("{} {}: {}\n", r.level(), r.target(), r.args());
         nsh_platform_windows::debug_output(&line);

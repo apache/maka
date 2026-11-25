@@ -128,6 +128,20 @@ test("views are drawn as headings and links by their role, else the element they
   assert.equal(elementTag({}), "div");
 });
 
+test("a textbox role is ARIA's textbox", () => {
+  const { player } = fakePlayer();
+  const attrs = new Map();
+  const el = {
+    attrs,
+    getAttribute: (name) => attrs.get(name) ?? null,
+    setAttribute: (name, value) => attrs.set(name, value),
+    removeAttribute: (name) => attrs.delete(name),
+  };
+  el._props = { role: "textbox" };
+  player.updateAria(el);
+  assert.equal(el.attrs.get("role"), "textbox");
+});
+
 test("links the app shows no menu for keep the browser's context menu", () => {
   const { player } = fakePlayer();
   const link = {
@@ -206,6 +220,50 @@ test("a field's maxlength lets in what fits by characters, an emoji counting onc
   // No maxLength, no limit.
   player.op_in(["in", 1, { multiline: false }, null]);
   assert.equal(field.maxLength, undefined);
+});
+
+test("a pasted file larger than pasteMaxSize is not read, only named", async () => {
+  const { player } = fakePlayer();
+  const pasted = [];
+  player.wasm.nsh_paste = (_id, jp, jl, bp, bl) => {
+    const memory = player.wasm.memory.buffer;
+    pasted.push([JSON.parse(new TextDecoder().decode(new Uint8Array(memory, jp, jl))), [...new Uint8Array(memory, bp, bl)]]);
+    return -1;
+  };
+  const read = [];
+  const file = (name, type, bytes) => ({
+    name,
+    type,
+    size: bytes.length,
+    arrayBuffer() {
+      read.push(name);
+      return Promise.resolve(new Uint8Array(bytes).buffer);
+    },
+  });
+  const el = { _id: 7, _events: new Set(["onPaste"]), _config: { pasteMaxSize: 4 } };
+  player.pasted(el, {
+    preventDefault() {},
+    clipboardData: {
+      getData: () => "",
+      files: [file("a.png", "image/png", [1, 2, 3, 4]), file("clip.mp4", "video/mp4", [1, 2, 3, 4, 5])],
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(read, ["a.png"]);
+  assert.deepEqual(pasted, [
+    [
+      {
+        text: "",
+        html: "",
+        files: [
+          { name: "a.png", type: "image/png", size: 4 },
+          { name: "clip.mp4", type: "video/mp4", size: 5, read: false },
+        ],
+        uris: [],
+      },
+      [1, 2, 3, 4],
+    ],
+  ]);
 });
 
 test("a textarea reports its scrolling only while a bar of the app's follows it", () => {
@@ -3794,6 +3852,77 @@ test("a copy gives attachments' copy texts where the layout put them among the r
   assert.equal(player.selectedText(root, reaching(0, 2)), "Area is  here,\n next");
 });
 
+test("a selectable view's selection carries the box around it", (t) => {
+  const saved = ["getComputedStyle", "document", "getSelection"].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+  });
+  globalThis.getComputedStyle = () => ({ visibility: "visible" });
+  // Where the selected part of each run shows on the page.
+  const shown = new Map();
+  globalThis.document = {
+    createRange: () => ({
+      selectNodeContents(run) {
+        this.run = run;
+      },
+      setStart() {},
+      setEnd() {},
+      getClientRects() {
+        return shown.get(this.run) ?? [];
+      },
+    }),
+  };
+  const { player, sent } = fakePlayer();
+  const runs = [{}, {}, {}];
+  for (const run of runs) run.contains = () => false;
+  // A view 320 by 60 drawn at twice its size (a scaled player), at 100, 200
+  // on the page.
+  const area = {
+    _id: 4,
+    _events: new Set(["onSelectionChange"]),
+    isConnected: true,
+    querySelectorAll: () => runs,
+    getBoundingClientRect: () => ({ left: 100, top: 200, width: 640, height: 120 }),
+    offsetWidth: 320,
+    offsetHeight: 60,
+  };
+  // From the first run into the second; the third is not reached.
+  const range = { intersectsNode: (run) => run !== runs[2], startContainer: null, endContainer: null };
+  globalThis.getSelection = () => ({ rangeCount: 1, isCollapsed: false, anchorNode: { nodeType: 1 }, getRangeAt: () => range });
+  // The first line's part, and the empty box at its end (its break only).
+  shown.set(runs[0], [
+    { left: 140, top: 200, right: 300, bottom: 240, width: 160, height: 40 },
+    { left: 320, top: 200, right: 320, bottom: 240, width: 0, height: 40 },
+  ]);
+  shown.set(runs[1], [{ left: 100, top: 256, right: 180, bottom: 296, width: 80, height: 40 }]);
+  shown.set(runs[2], [{ left: 100, top: 300, right: 700, bottom: 340, width: 600, height: 40 }]);
+  Object.assign(player, {
+    root: { contains: () => true },
+    areaOf: () => area,
+    selectableText: () => true,
+    selectedText: () => "beta\nDel",
+    selectionStart: () => 6,
+  });
+  const reports = () => sent.filter(([name]) => name === "onSelectionChange").map(([, p]) => p);
+  player.areaSelectionChanged();
+  // In the view's own points, from its top left corner.
+  assert.deepEqual(reports(), [
+    { text: "beta\nDel", start: 6, bounds: { origin: { x: 0, y: 0 }, size: { width: 100, height: 48 } } },
+  ]);
+  // The same selection where it was: nothing to report.
+  player.areaSelectionChanged();
+  assert.equal(reports().length, 1);
+  // The same text selected elsewhere (the second line's part further on).
+  shown.set(runs[1], [{ left: 100, top: 256, right: 400, bottom: 296, width: 300, height: 40 }]);
+  player.areaSelectionChanged();
+  assert.equal(reports().length, 2);
+  assert.deepEqual(reports()[1].bounds, { origin: { x: 0, y: 0 }, size: { width: 150, height: 48 } });
+  // Nothing selected: no box.
+  player.selectedText = () => "";
+  player.areaSelectionChanged();
+  assert.deepEqual(reports().slice(2), [{ text: "", start: 0 }]);
+});
+
 test("text with its HTML goes on the clipboard as one item of both types", async (t) => {
   const log = fakeClipboard(t);
   const { player } = fakePlayer();
@@ -4587,17 +4716,17 @@ test("a click with a modifier key on a link is the browser's: the link takes no 
         _props: {},
         _tracked: 0,
         getBoundingClientRect: () => ({ left: 600, top: 300, right: 700, bottom: 340 }),
-        closest: (selector) => (link && selector === "a.nsh-v[href]" ? el : null),
+        closest: (selector) => (link && selector.split(", ").includes("a.nsh-v[href]") ? el : null),
       };
       return el;
     };
     const link = pressable(9, true);
     const button = pressable(10, false);
-    /** What a click on `target` sends, holding `keys`. */
-    const click = (target, keys = {}) => {
+    /** What a click on `target` (in view `view`) sends, holding `keys`. */
+    const click = (target, keys = {}, view = target) => {
       sent.length = 0;
-      player.viewOf = () => target;
-      player.ancestors = () => [target];
+      player.viewOf = () => view;
+      player.ancestors = () => [view];
       const e = {
         pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 640, clientY: 320, target,
         metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...keys,
@@ -4618,7 +4747,165 @@ test("a click with a modifier key on a link is the browser's: the link takes no 
     // A pressable that is no link still takes a press with a modifier, and
     // reports the key.
     assert.deepEqual(click(button, { metaKey: true }), [["onPressIn", true], ["onPress", true]]);
+    // A link of text that goes somewhere is an `a` too (`fillRun`), in a
+    // text that takes no presses of its own: the same.
+    const text = { ...pressable(11, false), _events: new Set() };
+    const textLink = {
+      _link: { node: 12, events: new Set(["onPressIn", "onPress"]) },
+      closest: (selector) => (selector.split(", ").includes("a.nsh-link[href]") ? textLink : null),
+    };
+    const pressed = [];
+    const nshEvent = player.wasm.nsh_event;
+    player.wasm.nsh_event = (id, ...rest) => {
+      pressed.push(id);
+      return nshEvent(id, ...rest);
+    };
+    // A plain click presses the link's node, through its text.
+    assert.deepEqual(click(textLink, {}, text), [["onPressIn", false], ["onPress", false]]);
+    assert.deepEqual(pressed, [12, 12]);
+    for (const key of ["metaKey", "ctrlKey", "shiftKey", "altKey"]) {
+      assert.deepEqual(click(textLink, { [key]: true }, text), [], key);
+    }
+    assert.deepEqual(click(textLink, { button: 1 }, text), []);
   });
+});
+
+/** A document whose elements keep what `replaceRuns` and `fillRun` give
+ * them: tag, attributes, classes, children (strings for text). */
+function runDocument(baseURI) {
+  const element = (tag) => {
+    const el = {
+      localName: tag,
+      style: {},
+      childNodes: [],
+      attributes: new Map(),
+      classes: new Set(),
+      setAttribute(name, value) { el.attributes.set(name, String(value)); },
+      getAttribute: (name) => el.attributes.get(name) ?? null,
+      append(...nodes) { el.childNodes.push(...nodes); },
+    };
+    el.classList = { add: (name) => el.classes.add(name), contains: (name) => el.classes.has(name) };
+    Object.defineProperty(el, "className", { set(value) { el.classes = new Set(value.split(" ")); } });
+    Object.defineProperty(el, "textContent", {
+      get: () => el.childNodes.map((n) => (typeof n === "string" ? n : n.textContent)).join(""),
+      set(value) { el.childNodes = [String(value)]; },
+    });
+    return el;
+  };
+  return { baseURI, createElement: element, createDocumentFragment: () => element("#fragment") };
+}
+
+test("a link of text that goes somewhere a browser opens is an a, any other a span", () => {
+  const savedDocument = globalThis.document;
+  globalThis.document = runDocument("https://site.test/app/n/1");
+  try {
+    const { player } = fakePlayer();
+    player.siteBase = "https://site.test/app/";
+    player.styleClass = () => null;
+    player.lineBreaks = () => {};
+    let hover = 0;
+    player.installLinkHover = () => hover++;
+    let inserted = null;
+    const el = { _animation: {}, querySelectorAll: () => [], insertBefore: (frag) => { inserted = frag; } };
+    // One run, five links (`[node, events, href?]`): to a page, to nowhere,
+    // to an app's own route, watched for a hint only, and to a path.
+    const text = "the guide this MU hint quote";
+    const parts = [[0, 9, 0], [10, 14, 1], [15, 17, 2], [18, 22, 3], [23, 28, 4]];
+    player.replaceRuns(el, 0, 0, [[0, 0, text, 0, 0, parts]], [null], null, [
+      [10, ["onPressIn", "onPress"], "https://example.com/guide"],
+      [11, ["onPress"]],
+      [12, ["onPress"], "lbt:stock/ST/US/MU"],
+      [13, ["onMouseEnter", "onMouseLeave"], "https://example.com/hint"],
+      [14, ["onPress"], "/zh-CN/quote/MU.US"],
+    ]);
+    const [run] = inserted.childNodes;
+    assert.equal(run.textContent, text, "the run's characters, in their order");
+    const links = run.childNodes.filter((n) => typeof n !== "string");
+    const drawn = links.map((l) => [l.localName, l.textContent, l.getAttribute("href"), l.classes.has("nsh-link"), l._link.node]);
+    assert.deepEqual(drawn, [
+      ["a", "the guide", "https://example.com/guide", true, 10],
+      ["span", "this", null, true, 11],
+      ["span", "MU", null, true, 12],
+      // No presses: no link of the browser's, whatever its `href`.
+      ["span", "hint", null, false, 13],
+      // A path of the app's, under the site's base as a `Link`'s.
+      ["a", "quote", "https://site.test/zh-CN/quote/MU.US", true, 14],
+    ]);
+    // A drag selects its characters; Tab passes it, as it passes the other
+    // links of text.
+    for (const a of links.filter((l) => l.localName === "a")) {
+      assert.equal(a.draggable, false);
+      assert.equal(a.tabIndex, -1);
+    }
+    assert.equal(hover, 1, "the hinted link hears the mouse");
+  } finally {
+    globalThis.document = savedDocument;
+  }
+});
+
+test("a link of text is an a for web pages, paths of the site, mail and phone", () => {
+  const savedDocument = globalThis.document;
+  globalThis.document = { baseURI: "https://page.test/app/n/1" };
+  try {
+    const { player } = fakePlayer();
+    player.siteBase = "https://site.test/app/";
+    const address = (href) => player.textLinkAddress(href);
+    assert.equal(address("https://example.com/a?b=1#c"), "https://example.com/a?b=1#c");
+    assert.equal(address("http://example.com/"), "http://example.com/");
+    assert.equal(address(" https://example.com/b "), "https://example.com/b", "as the browser reads an href");
+    assert.equal(address("//cdn.test/x"), "https://cdn.test/x");
+    assert.equal(address("/zh-CN/quote/MU.US"), "https://site.test/zh-CN/quote/MU.US");
+    assert.equal(address("notes/1"), "https://site.test/app/notes/1");
+    assert.equal(address("mailto:me@example.com"), "mailto:me@example.com");
+    assert.equal(address("tel:+85212345678"), "tel:+85212345678");
+    // A heading of the text's own document, the app's own routes, scripts
+    // and data: spans, the app's to route.
+    for (const href of ["#notes", "lbt:stock/ST/US/MU", "myapp://open", "javascript:alert(1)", "JavaScript:alert(1)",
+      "data:text/html,x", "file:///etc/hosts", undefined, null]) {
+      assert.equal(address(href), null, String(href));
+    }
+    // Without a site base the page's own base resolves it, and the `href`
+    // is kept as written, as a `Link`'s.
+    player.siteBase = null;
+    assert.equal(address("/zh-CN/quote/MU.US"), "/zh-CN/quote/MU.US");
+    assert.equal(address("lbt:stock/ST/US/MU"), null);
+  } finally {
+    globalThis.document = savedDocument;
+  }
+});
+
+test("a link of text has the browser's menu unless its text shows one", () => {
+  const { player } = fakePlayer();
+  const handled = [];
+  player.event = (id, name) => handled.push([id, name]);
+  player.point = () => [0, 0];
+  const text = {
+    _id: 8,
+    _events: new Set(),
+    localName: "div",
+    hasAttribute: () => false,
+    matches: () => false,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 20 }),
+  };
+  const page = { ...text, _id: 2, _events: new Set(["onContextMenu"]) };
+  player.viewOf = () => text;
+  player.ancestors = () => [text, page];
+  const link = { closest: (selector) => (selector === "a.nsh-link[href]" ? link : null) };
+  const plain = { closest: () => null };
+  const menu = (target) => {
+    handled.length = 0;
+    let prevented = false;
+    const shown = player.contextMenu({ target, button: 2, pointerType: "mouse", clientX: 5, clientY: 5,
+      preventDefault: () => { prevented = true; } });
+    return [shown, prevented, handled.map(([id]) => id)];
+  };
+  // On the link: the browser's (open in a new tab, copy the link).
+  assert.deepEqual(menu(link), [true, false, []]);
+  // Elsewhere in the text: the page's own menu.
+  assert.deepEqual(menu(plain), [true, true, [2]]);
+  // A text with a menu of its own shows it on its links too.
+  text._events = new Set(["onContextMenu"]);
+  assert.deepEqual(menu(link), [true, true, [8]]);
 });
 
 test("a web view's relative URL is the site's where the page names its base", () => {
@@ -4732,5 +5019,133 @@ test("window blur resets hoverButtons and cancels all active pointers", () => {
     else globalThis.window = savedWindow;
     if (savedDocument === undefined) delete globalThis.document;
     else globalThis.document = savedDocument;
+  }
+});
+
+test("point, corner, wheel, context menu, pinch, and scrollbar drag undo ancestor CSS zoom", () => {
+  const savedStyle = globalThis.getComputedStyle;
+  const styles = new Map();
+  globalThis.getComputedStyle = (node) => styles.get(node) ?? { zoom: "1", direction: "ltr" };
+  try {
+    const { player, sent } = fakePlayer();
+    const host = { parentElement: null };
+    const root = {
+      parentElement: host,
+      getBoundingClientRect: () => ({ left: 30, top: 15 }),
+    };
+    styles.set(host, { zoom: "1.5" });
+    styles.set(root, { zoom: "1" });
+    player.root = root;
+
+    // Fallback path when currentCSSZoom is absent: multiplies ancestor computed zoom.
+    assert.equal(player.cssZoom(root), 1.5);
+    assert.deepEqual(player.point({ clientX: 180, clientY: 90, target: root }, null), [100, 50]);
+
+    // Fast path when currentCSSZoom is present.
+    const view = {
+      _id: 9,
+      parentNode: root,
+      parentElement: root,
+      currentCSSZoom: 1.5,
+      _events: new Set(["onWheel", "onContextMenu", "onPinch"]),
+      getBoundingClientRect: () => ({ left: 60, top: 45, right: 360, bottom: 195 }),
+      matches: () => false,
+    };
+    root.currentCSSZoom = 1.5;
+    assert.deepEqual(player.corner(view, null), [20, 20]);
+    assert.deepEqual(player.point({ clientX: 210, clientY: 120, target: view }, null), [120, 70]);
+
+    // Wheel local position and pagePosition both report logical points.
+    player.viewOf = () => view;
+    player.ancestors = () => [view];
+    player.wheelTracked = new Set([9]);
+    player.size = [800, 600];
+    player.wheelEvent({
+      target: view,
+      clientX: 210,
+      clientY: 120,
+      deltaX: 0,
+      deltaY: 40,
+      deltaMode: 0,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+    });
+    assert.deepEqual(sent.at(-1)[1].position, { x: 100, y: 50 });
+    assert.deepEqual(sent.at(-1)[1].pagePosition, { x: 120, y: 70 });
+
+    // Context menu local position and pagePosition both report logical points.
+    player.contextMenu({
+      target: view,
+      clientX: 210,
+      clientY: 120,
+      button: 2,
+      pointerType: "mouse",
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.deepEqual(sent.at(-1)[1].position, { x: 100, y: 50 });
+    assert.deepEqual(sent.at(-1)[1].pagePosition, { x: 120, y: 70 });
+
+    // Pinch local position and pagePosition both report logical points.
+    view.isConnected = true;
+    player.pinchEvent(
+      {
+        target: view,
+        clientX: 210,
+        clientY: 120,
+        scale: 1.2,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+        preventDefault() {},
+      },
+      0,
+    );
+    assert.deepEqual(sent.at(-1)[1].position, { x: 100, y: 50 });
+    assert.deepEqual(sent.at(-1)[1].pagePosition, { x: 120, y: 70 });
+
+    // mousePoint and mouseEvent fallback both undo ancestor CSS zoom.
+    styles.set(view, { transform: "none", scale: "none", zoom: "1", width: "200px", height: "100px" });
+    styles.set(host, { transform: "none", scale: "none", zoom: "1.5" });
+    styles.set(root, { transform: "none", scale: "none", zoom: "1" });
+    assert.deepEqual(player.mousePoint(view, { clientX: 210, clientY: 120 }), [100, 50]);
+    styles.set(view, { transform: "none", scale: "0", zoom: "1", width: "200px", height: "100px" });
+    const mousePayload = player.mouseEvent(
+      view,
+      { clientX: 210, clientY: 120, buttons: 0, pointerType: "mouse" },
+      true,
+    );
+    assert.deepEqual(mousePayload.position, { x: 100, y: 50 });
+    assert.deepEqual(mousePayload.pagePosition, { x: 120, y: 70 });
+
+    // Scrollbar hit-testing and drag divide viewport coordinates by CSS zoom.
+    const scroll = {
+      _horizontal: false,
+      clientWidth: 200,
+      clientHeight: 100,
+      scrollTop: 0,
+      currentCSSZoom: 1.5,
+      getBoundingClientRect: () => ({ left: 60, top: 45 }),
+    };
+    player.barShown = () => true;
+    player.barThumb = () => [10, 40, 60, 300];
+    player.barEdge = () => 200;
+    // Viewport x = 60 + 195 * 1.5 = 352.5 (logical 195, inside right edge grab zone),
+    // y = 45 + 25 * 1.5 = 82.5 (logical 25, inside thumb [10, 50]).
+    assert.equal(player.barHit(scroll, { clientX: 352.5, clientY: 82.5 }), true);
+    // Unscaled logical y = 25 would look like 25/1.5 = 16.6 if not zoomed; check outside at logical 60.
+    assert.equal(player.barHit(scroll, { clientX: 352.5, clientY: 45 + 60 * 1.5 }), false);
+    player.dragBar({ scroll, start: 82.5, offset: 0 }, { clientY: 82.5 + 30 });
+    // 30 viewport px / 1.5 = 20 logical px; 20 * (300 / 60) = 100 logical scroll offset.
+    assert.equal(scroll.scrollTop, 100);
+  } finally {
+    if (savedStyle === undefined) delete globalThis.getComputedStyle;
+    else globalThis.getComputedStyle = savedStyle;
   }
 });

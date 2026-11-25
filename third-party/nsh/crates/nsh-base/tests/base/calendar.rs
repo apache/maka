@@ -3,11 +3,12 @@
 //! the months and years to pick from; disabled dates take no press; the
 //! days are one stop of Tab whose arrows move the keyboard (Left and Right
 //! traded in a right-to-left layout, where the weeks run from the right);
-//! several months show side by side from the week's first day; the items'
-//! states are their classes (`selected:`, `data-range-*:`, `focus:`), never
-//! `renderItem`'s: the keys, a pick and the focus draw nothing again, a
-//! turn of the months draws the days it brings once each and makes no
-//! views of the calendar's. Today is 2026-10-28 (the engine's manual
+//! a half range previews the range a pick makes up to the day the mouse or
+//! the keyboard is on; several months show side by side from the week's
+//! first day; the items' states are their classes (`selected:`,
+//! `data-range-*:`, `focus:`), never `renderItem`'s: the keys, the mouse, a
+//! pick and the focus draw nothing again, a turn of the months draws the
+//! days it brings once each and makes no views of the calendar's. Today is 2026-10-28 (the engine's manual
 //! clock).
 
 use std::{
@@ -82,9 +83,14 @@ fn item(e: &CalendarEntry) -> String {
 /// The classes the items show their states with, read back from their
 /// styles ([`marks`]): `focus:` at half opacity, the range's start, end
 /// and middle as a left, right and top border, today as a bottom one, a
-/// day of the months around in a background color.
+/// half range's preview's start, end and middle as a top left, bottom
+/// right and top right corner, a day of the months around in a background
+/// color.
 const ITEM_CLASS: &str = "focus:opacity-50 data-range-start:border-l data-range-end:border-r \
                           data-range-middle:border-t data-today:border-b \
+                          data-range-preview-start:rounded-tl-[1px] \
+                          data-range-preview-end:rounded-br-[1px] \
+                          data-range-preview-middle:rounded-tr-[1px] \
                           data-outside:bg-[#010101]";
 
 #[component]
@@ -184,7 +190,8 @@ impl Seen {
     }
 
     /// The state marks of each item showing `text` (by its drawing):
-    /// `*` selected, `[` a range's start, `]` its end, `~` its middle, `!`
+    /// `*` selected, `[` a range's start, `]` its end, `~` its middle, `(`
+    /// a half range's preview's start, `)` its end, `=` its middle, `!`
     /// disabled (a day), `^` the keyboard's.
     fn marks(&self, text: &str) -> Vec<String> {
         self.texts
@@ -201,11 +208,16 @@ impl Seen {
                 let (selected, disabled) = self.items[&at];
                 let style = self.styles.get(&at).cloned().unwrap_or_default();
                 let w = style.borders.widths;
+                let corner = |c: Option<Points>| c.is_some_and(|c| c.0 > 0.0);
+                let r = style.corner_radius;
                 [
                     (selected, '*'),
                     (w.left.0 > 0.0, '['),
                     (w.right.0 > 0.0, ']'),
                     (w.top.0 > 0.0, '~'),
+                    (corner(r.top_left), '('),
+                    (corner(r.bottom_right), ')'),
+                    (corner(r.top_right), '='),
                     (disabled && text.contains('-'), '!'),
                     (style.opacity < 1.0 && style.opacity > 0.0, '^'),
                 ]
@@ -292,7 +304,7 @@ fn log(app: &Headless) -> String {
 /// Waits until an item shows `spec`: its drawing ([`item`]), then the
 /// marks of its states ([`Seen::marks`]), those and no others.
 fn see(app: &mut App, spec: &str) {
-    let text = spec.trim_end_matches(['*', '[', ']', '~', '!', '^']);
+    let text = spec.trim_end_matches(['*', '[', ']', '~', '(', ')', '=', '!', '^']);
     let marks = &spec[text.len()..];
     let seen = app.seen.clone();
     let found = app.app.wait_until(
@@ -376,6 +388,75 @@ fn a_range_takes_two_presses_and_reports_once_complete() {
         see(&mut app, "10-5*");
         see(&mut app, "10-21");
         assert_eq!(log(&app), "2026-10-20..2026-10-23");
+    }
+}
+
+#[test]
+fn a_half_range_previews_to_the_day_the_mouse_or_the_keyboard_is_on() {
+    for controlled in [false, true] {
+        let mut app = start(HarnessProps {
+            value: Date::Range(None, None),
+            controlled,
+            range: true,
+            weekends_disabled: true,
+            ..props()
+        });
+        // Nothing to preview before a range starts.
+        app.hover("label:2026-10-22").unwrap();
+        app.press("label:2026-10-20").unwrap();
+        // The mouse over a later day: the days from the start to it are
+        // the range a press there makes, previewed, and not selected.
+        app.hover("label:2026-10-23").unwrap();
+        see(&mut app, "10-20*(");
+        see(&mut app, "10-21=");
+        see(&mut app, "10-22=");
+        see(&mut app, "10-23)");
+        see(&mut app, "10-26");
+        // A disabled day takes no press: the preview stays where it was.
+        // 2026-10-24 is a Saturday.
+        app.hover("label:2026-10-24").unwrap();
+        see(&mut app, "10-24!");
+        see(&mut app, "10-23)");
+        // Before the start a press starts again: no range to preview.
+        app.hover("label:2026-10-16").unwrap();
+        see(&mut app, "10-20*");
+        see(&mut app, "10-21");
+        // On the start: a range of one day, both ends.
+        app.hover("label:2026-10-20").unwrap();
+        see(&mut app, "10-20*()");
+        // The keyboard's day, once it moves, wins over the mouse's.
+        app.hover("label:2026-10-27").unwrap();
+        see(&mut app, "10-27)");
+        for _ in 0..5 {
+            app.press_key("tab").unwrap();
+        }
+        see(&mut app, "10-20*()^");
+        see(&mut app, "10-27");
+        app.press_key("right").unwrap();
+        see(&mut app, "10-21)^");
+        see(&mut app, "10-20*(");
+        // The mouse moving over the days again takes the preview, which
+        // stays where it was left when the mouse leaves them.
+        app.hover("label:2026-10-23").unwrap();
+        see(&mut app, "10-23)");
+        see(&mut app, "10-21=^");
+        app.hover("label:Next month").unwrap();
+        see(&mut app, "M10/2026");
+        see(&mut app, "10-23)");
+        // The keyboard moving takes it back.
+        app.press_key("right").unwrap();
+        see(&mut app, "10-22)^");
+        see(&mut app, "10-23");
+        assert_eq!(log(&app), "", "half a range is not reported");
+        // The second pick ends the range: marked, the preview gone.
+        app.press_key("enter").unwrap();
+        see(&mut app, "10-22*]^");
+        see(&mut app, "10-21*~");
+        see(&mut app, "10-20*[");
+        assert_eq!(log(&app), "2026-10-20..2026-10-22");
+        // A complete range previews nothing.
+        app.hover("label:2026-10-23").unwrap();
+        see(&mut app, "10-23");
     }
 }
 
@@ -785,7 +866,8 @@ fn states_draw_nothing_and_a_turn_draws_the_days_it_brings_once() {
     assert_eq!(day_count(&first), 35, "each day drawn once");
 
     // The focus coming (Tab: Previous, the toggles and Next, then today),
-    // the arrows, a range picked with Return, a press, the focus going.
+    // the arrows, a range picked with Return, a press, the mouse
+    // previewing the range, the focus going.
     made.store(0, Ordering::Relaxed);
     for _ in 0..5 {
         app.press_key("tab").unwrap();
@@ -798,6 +880,8 @@ fn states_draw_nothing_and_a_turn_draws_the_days_it_brings_once() {
     app.press_key("enter").unwrap();
     app.wait_for("text:Log: 2026-10-28..2026-10-31").unwrap();
     app.press("label:2026-10-12").unwrap();
+    app.hover("label:2026-10-14").unwrap();
+    app.hover("label:2026-10-15").unwrap();
     app.press("label:2026-10-16").unwrap();
     app.wait_for("text:Log: 2026-10-12..2026-10-16").unwrap();
     app.press_key("shift+tab").unwrap();

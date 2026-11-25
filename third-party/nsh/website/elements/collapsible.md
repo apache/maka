@@ -13,36 +13,6 @@ the trigger that flips it (one of the children), and the look is the app's: a `C
 label of its own. With `reveal`, the content opens and closes with motion: its region's height springs from nothing to
 the content's own and back, and what follows the collapsible moves along.
 
-```rust tabs
-use nsh_base::{collapsible, theme};
-use nsh_core::{AccessibilityState, prelude::*};
-
-fn storage() -> impl IntoElement {
-    let open = signal(false);
-    collapsible()
-        .open(open)
-        .reveal(true)
-        .gap_2()
-        .child(
-            view()
-                .role(AccessibilityRole::Button)
-                .accessibility_state(move || AccessibilityState {
-                    expanded: Some(open.get()),
-                    ..AccessibilityState::default()
-                })
-                .on_press(move || open.update(|o| *o = !*o))
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(text("Storage"))
-                .child(text("›").transition_transform().rotate(move || {
-                    if open.get() { deg(90.0) } else { deg(0.0) }
-                })),
-        )
-        .content(text("Photos 120 GB · Apps 54 GB · System 38 GB").text_color(move || theme().muted_foreground))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Collapsible } from "nsh/base";
@@ -75,6 +45,36 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{collapsible, theme};
+use nsh_core::{AccessibilityState, prelude::*};
+
+fn storage() -> impl IntoElement {
+    let open = signal(false);
+    collapsible()
+        .open(open)
+        .reveal(true)
+        .gap_2()
+        .child(
+            view()
+                .role(AccessibilityRole::Button)
+                .accessibility_state(move || AccessibilityState {
+                    expanded: Some(open.get()),
+                    ..AccessibilityState::default()
+                })
+                .on_press(move || open.update(|o| *o = !*o))
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(text("Storage"))
+                .child(text("›").transition_transform().rotate(move || {
+                    if open.get() { deg(90.0) } else { deg(0.0) }
+                })),
+        )
+        .content(text("Photos 120 GB · Apps 54 GB · System 38 GB").text_color(move || theme().muted_foreground))
+}
 ```
 
 `Collapsible` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the app's:

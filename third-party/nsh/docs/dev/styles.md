@@ -121,7 +121,9 @@
   `font-sans` / `font-mono`, when the theme sets them, are what the `font-sans` / `font-mono` utilities set
   (`ClassTokens::replaces`), and `font-sans` is the default font of every text (Tailwind's `--font-sans`, a page's
   preflight). Such a utility is parsed with the light and the dark values as arbitrary ones (two rules of its rank
-  when they differ, so it follows the appearance with no `dark:`) and depends on `deps::THEME`. When the design
+  when they differ, so it follows the appearance with no `dark:`) and depends on `deps::THEME`. A number becomes
+  a length in pixels (`[12px]`), except to the utilities that take a factor (`scale-*`, `takes_factor`) and after a
+  `number:` hint, where it stays bare (`scale-(--press)` is `scale-[0.97]`). When the design
   tokens the app draws with change (`Core::set_tokens`, `set_host_tokens`; a host's keep the app's names they lack,
   `Tokens::over`), `Core::class_tokens_changed` drops the cached strings that name tokens and resolves
   their nodes (and the app's classes on Rust components) again; when the names change, every class. `nsh build` / `nsh dev` warn about unknown static classes in app code (`file:line:col:
@@ -573,5 +575,5 @@ gpui-kit's `Colorize` methods are inherent methods of `Hsla` (no trait to import
 ## Android differences
 
 - **Android differences**: shadows need a background (no content shadows, e.g. text with a transparent background); odd corner
-  radii clip by path before API 33; pull to refresh is our own (stretch overscroll stays native); `contentInset` is padding and
+  radii clip by path before API 33, and continuous corners clip their children through a layer (pitfalls); pull to refresh is our own (stretch overscroll stays native); `contentInset` is padding and
   `decelerationRate` only shapes snapping glides.

@@ -350,7 +350,7 @@ function SidebarRow(props: { demo: DemoEntry; focused: boolean; onLayout: (bound
         onLayout={({ bounds }) => props.onLayout(bounds)}
         role="button"
         accessibilityLabel={props.demo.name}
-        accessibilityState={{ selected: active() }}
+        accessibilityState={{ selected: active(), current: active() ? "page" : undefined }}
         style={{ height: TERMINAL_ROW, flexDirection: "row", alignItems: "center", paddingHorizontal: TERMINAL_COLUMN }}
       >
         <Text style={{ numberOfLines: 1, flex: 1, fontSize: 14, fontWeight: active() ? "600" : "400", color: colors.text }}>
@@ -366,7 +366,7 @@ function SidebarRow(props: { demo: DemoEntry; focused: boolean; onLayout: (bound
       onLayout={({ bounds }) => props.onLayout(bounds)}
       role="button"
       accessibilityLabel={props.demo.name}
-      accessibilityState={{ selected: active() }}
+      accessibilityState={{ selected: active(), current: active() ? "page" : undefined }}
       hoverStyle={active() ? undefined : hovered()}
       style={{
         height: 28,
@@ -776,7 +776,7 @@ function Desktop() {
   wasDesktop.set(true);
   effect(() => shownDemo.set(selected()));
   keymap.bind("mod+b", toggleSidebar);
-  return (
+  const panes = (
     <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background, direction: demoDirection() }}>
       <Sidebar />
       <NavStack state={nav} style={{ flex: 1 }}>
@@ -792,6 +792,39 @@ function Desktop() {
           return <Page />;
         }}
       </NavStack>
+    </View>
+  );
+  if (!terminal) return panes;
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {panes}
+      <KeyHelp />
+    </View>
+  );
+}
+
+/** The keys a terminal's gallery answers, as a TUI's help line has them. */
+const KEY_HELP: [string, string][] = [
+  ["tab", "next"],
+  ["enter", "press"],
+  ["ctrl+k", "search"],
+  ["ctrl+b", "sidebar"],
+  ["ctrl+c", "quit"],
+];
+
+/**
+ * The terminal's help line under the panes, as Bubbles' `help` draws it: each
+ * key muted, what it does fainter, ` • ` between them, a column in from the edge.
+ */
+function KeyHelp() {
+  return (
+    <View style={{ flexDirection: "row", height: TERMINAL_ROW, paddingHorizontal: TERMINAL_COLUMN, overflow: "hidden" }}>
+      {KEY_HELP.map(([key, does], i) => (
+        <Text style={{ numberOfLines: 1, color: colors.faint }}>
+          {i > 0 ? " • " : ""}
+          <Text style={{ color: colors.muted }}>{key}</Text> {does}
+        </Text>
+      ))}
     </View>
   );
 }

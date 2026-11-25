@@ -903,3 +903,188 @@ fn a_host_that_reconnects_after_missed_builds_gets_their_hot_updates() {
         DevEvent::Bundle { version: 5, .. }
     ));
 }
+
+/// A test host on `server` that answers each step with `answer`'s outcome,
+/// once the server counts it as the test's host.
+fn tester(
+    server: &DevServer,
+    answer: impl Fn(nsh_dev::protocol::TestStep) -> nsh_dev::protocol::StepOutcome + Send + 'static,
+) -> std::sync::Arc<std::sync::OnceLock<DevClient>> {
+    let url = format!("ws://{}{WS_PATH}", server.local_addr());
+    let client = std::sync::Arc::new(std::sync::OnceLock::<DevClient>::new());
+    let answering = client.clone();
+    let started = DevClient::start(
+        url,
+        HostInfo {
+            tests: true,
+            ..host("tester", "bc-1")
+        },
+        move |event| {
+            if let DevEvent::Step { id, step } = event {
+                answering.get().expect("client").step_done(id, answer(step));
+            }
+        },
+    )
+    .unwrap();
+    let _ = client.set(started);
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !server.has_tester() {
+        assert!(std::time::Instant::now() < deadline, "the host never came");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    client
+}
+
+/// A paste of `files` into `#field`.
+fn paste(files: Vec<nsh_dev::protocol::TestFile>) -> nsh_dev::protocol::TestStep {
+    nsh_dev::protocol::TestStep::Paste {
+        selector: "#field".into(),
+        text: String::new(),
+        html: String::new(),
+        files,
+        uris: Vec::new(),
+    }
+}
+
+#[test]
+fn a_test_pastes_a_large_file_into_its_host() {
+    use nsh_dev::protocol::{StepOutcome, TestFile, TestStep};
+
+    let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc-1", None, |_| {}).unwrap();
+    server.test_session();
+    // The host answers with what arrived: each file's size and whether
+    // every byte is the one sent.
+    let _client = tester(&server, |step| match step {
+        TestStep::Paste { files, .. } => StepOutcome::Done {
+            value: files
+                .iter()
+                .map(|f| {
+                    serde_json::json!([f.name, f.data.len(), f.data.iter().all(|&b| b == b'a')])
+                })
+                .collect(),
+        },
+        other => StepOutcome::Failed {
+            message: format!("cannot {other:?}"),
+        },
+    });
+    // 20 MB of text: more than a WebSocket frame takes by default.
+    let size = 20 << 20;
+    assert_eq!(
+        server.step(
+            paste(vec![TestFile::new(
+                "big.txt",
+                "text/plain",
+                vec![b'a'; size]
+            )]),
+            Duration::from_secs(30),
+        ),
+        Ok(serde_json::json!([["big.txt", size, true]]))
+    );
+    // The connection stays up for the next step.
+    assert_eq!(
+        server.step(TestStep::Back, TIMEOUT),
+        Err("cannot Back".into())
+    );
+}
+
+#[test]
+fn a_paste_beyond_the_message_limit_fails_with_its_size() {
+    use nsh_dev::protocol::{StepOutcome, TestFile, TestStep};
+
+    let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc-1", None, |_| {}).unwrap();
+    server.test_session();
+    let _client = tester(&server, |step| match step {
+        TestStep::Back => StepOutcome::Done {
+            value: serde_json::Value::Null,
+        },
+        other => StepOutcome::Failed {
+            message: format!("cannot {other:?}"),
+        },
+    });
+    let err = server
+        .step(
+            paste(vec![TestFile::new(
+                "huge.bin",
+                "application/octet-stream",
+                vec![0; 60 << 20],
+            )]),
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+    assert!(err.contains("64 MiB"), "{err}");
+    // The host never saw it and is still there.
+    assert_eq!(
+        server.step(TestStep::Back, TIMEOUT),
+        Ok(serde_json::Value::Null)
+    );
+}
+
+#[test]
+fn a_host_that_takes_smaller_frames_leaving_on_a_paste_is_told_apart() {
+    use nsh_dev::protocol::{PROTOCOL_VERSION, TestFile};
+
+    let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc-1", None, |_| {}).unwrap();
+    server.test_session();
+    // A host on tungstenite's defaults (16 MiB frames), as hosts were
+    // before they took the protocol's whole message size.
+    let url = format!("ws://{}{WS_PATH}", server.local_addr());
+    let (mut socket, _) = tungstenite::connect(url).unwrap();
+    socket
+        .send(tungstenite::Message::Text(
+            serde_json::json!({
+                "type": "hello",
+                "protocol": PROTOCOL_VERSION,
+                "bytecode_version": "bc-1",
+                "device": "older",
+                "tests": true,
+            })
+            .to_string()
+            .into(),
+        ))
+        .unwrap();
+    let host = std::thread::spawn(move || while socket.read().is_ok() {});
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while !server.has_tester() {
+        assert!(std::time::Instant::now() < deadline, "the host never came");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let err = server
+        .step(
+            paste(vec![TestFile::new(
+                "big.txt",
+                "text/plain",
+                vec![b'a'; 20 << 20],
+            )]),
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+    assert!(err.contains("older nsh"), "{err}");
+    host.join().unwrap();
+}
+
+#[test]
+fn a_server_that_drops_each_session_at_once_is_retried_with_backoff() {
+    // A server that ends every session right after the handshake, as one
+    // sending a frame over the host's limit does.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = accepted.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut socket) = tungstenite::accept(stream) {
+                let _ = socket.close(None);
+                let _ = socket.flush();
+            }
+        }
+    });
+    let url = format!("ws://{addr}{WS_PATH}");
+    let client = DevClient::start(url, host("phone", "bc-1"), |_| {}).unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    drop(client);
+    let sessions = accepted.load(std::sync::atomic::Ordering::Relaxed);
+    // 100 ms apart that would be ~30; backing off it is a handful.
+    assert!((1..=8).contains(&sessions), "{sessions} sessions in 3 s");
+}

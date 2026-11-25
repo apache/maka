@@ -1,6 +1,6 @@
 ---
 title: iOS
-description: 在 iOS 上用 UIKit 视图运行 Rust 和 TSX 编写的 NSH 应用（模拟器或真机），打包成 .app 和 .ipa，并通过 AppView 或 NativeShell.xcframework 的 NshAppView 嵌入现有 iOS 应用。
+description: 在 iOS 上用 UIKit 视图运行 TSX 和 Rust 编写的 NSH 应用（模拟器或真机），打包成 .app 和 .ipa，并通过 AppView 或 NativeShell.xcframework 的 NshAppView 嵌入现有 iOS 应用。
 order: 11
 group: platforms
 ---
@@ -532,6 +532,7 @@ try app.loadBundle(at: bundledURL)
 
 ## 另请参阅
 
+- [发布到 App Store](./publish.md#publish-to-the-app-store)
 - [用 Rust 开发](./rust.md)
 - [嵌入 Android 应用](./android.md)
 - [原生组件](./native-components.md)

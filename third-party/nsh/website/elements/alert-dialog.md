@@ -12,6 +12,41 @@ demo: el-alert-dialog
 other platforms. `AlertDialog.show` (`alert_dialog()`'s `.show()` in Rust) returns a promise (a future in Rust) that resolves with `{ action }`: the `id` of the action the user chose.
 Every label comes from the app, so an alert says what your app says, in its language.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { AlertDialog, Button } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const answer = signal("–");
+  const confirm = async () => {
+    const { action } = await AlertDialog.show({
+      title: "Delete the photo?",
+      description: "This cannot be undone.",
+      actions: [
+        { label: "Cancel", role: "cancel", id: "cancel" },
+        { label: "Delete", role: "destructive", id: "delete" },
+      ],
+    });
+    answer.set(action === "delete" ? "deleted" : "kept");
+  };
+  return (
+    <View style={{ flex: 1, padding: 16, paddingTop: 48, gap: 12 }}>
+      <Button onPress={confirm} class="rounded-lg bg-red-600 px-4 py-3 active:bg-red-700">
+        <Text class="text-center font-semibold text-white">Delete…</Text>
+      </Button>
+      <Text>{answer()}</Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{alert_dialog, button};
 use nsh_core::prelude::*;
@@ -49,41 +84,6 @@ fn app() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { AlertDialog, Button } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const answer = signal("–");
-  const confirm = async () => {
-    const { action } = await AlertDialog.show({
-      title: "Delete the photo?",
-      description: "This cannot be undone.",
-      actions: [
-        { label: "Cancel", role: "cancel", id: "cancel" },
-        { label: "Delete", role: "destructive", id: "delete" },
-      ],
-    });
-    answer.set(action === "delete" ? "deleted" : "kept");
-  };
-  return (
-    <View style={{ flex: 1, padding: 16, paddingTop: 48, gap: 12 }}>
-      <Button onPress={confirm} class="rounded-lg bg-red-600 px-4 py-3 active:bg-red-700">
-        <Text class="text-center font-semibold text-white">Delete…</Text>
-      </Button>
-      <Text>{answer()}</Text>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 For dialogs with a look of your own (a card, a sheet, a full-screen flow), use [Dialog](./dialog.md).
 
 ## AlertDialog.show
@@ -106,6 +106,19 @@ the actions show, and `.show()` shows it; await its answer in a task (`spawn`).
 ## Action sheets
 
 An action sheet takes the same options with the `"actionSheet"` presentation:
+
+```tsx tabs
+const { action } = await AlertDialog.show({
+  title: "Share the photo",
+  presentation: "actionSheet",
+  actions: [
+    { label: "Copy link", id: "copy" },
+    { label: "Save", id: "save" },
+    { label: "Delete", role: "destructive", id: "delete" },
+    { label: "Cancel", role: "cancel", id: "cancel" },
+  ],
+});
+```
 
 ```rust tabs
 use nsh_base::alert_dialog;
@@ -130,19 +143,6 @@ fn share() {
         }
     });
 }
-```
-
-```tsx tabs
-const { action } = await AlertDialog.show({
-  title: "Share the photo",
-  presentation: "actionSheet",
-  actions: [
-    { label: "Copy link", id: "copy" },
-    { label: "Save", id: "save" },
-    { label: "Delete", role: "destructive", id: "delete" },
-    { label: "Cancel", role: "cancel", id: "cancel" },
-  ],
-});
 ```
 
 ## AlertDialogOptions

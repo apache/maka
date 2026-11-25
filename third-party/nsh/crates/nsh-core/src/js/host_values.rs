@@ -22,7 +22,7 @@ use crate::{
     props::{AccessibilityActionDef, AccessibilityValue, Checked, PanActivation, Ripple},
 };
 
-/// `"none"`, `"all"`, or the canonical keystrokes a view captures
+/// `"none"`, `"all"`, `"text"`, or the canonical keystrokes a view captures
 /// (`"mod+k"`, `"shift+tab"`): parsed once here with the shortcut rules
 /// and this platform's `mod`, which the engine's environment names
 /// ([`crate::element::try_apple_keys`]); a JS host decoding outside that
@@ -37,7 +37,7 @@ impl HostValue for crate::KeyCapture {
     }
 
     fn ts_type(_: &mut TsTypes) -> String {
-        "\"none\" | \"all\" | readonly string[]".into()
+        "\"none\" | \"all\" | \"text\" | readonly string[]".into()
     }
 }
 

@@ -10,7 +10,8 @@ import { desktop, Log, Panel, Segmented, size, Split, ui, wide, sectionSurface, 
 // calendar, the value or a muted placeholder, and `datePickerLook` for the
 // rest: the popup at the trigger (a sheet on a touch screen), the items
 // (`CalendarItem`: the month and year, two-letter weekdays, today on a quiet
-// fill, the selected days on `primary`, a range's band), the presets, and
+// fill, the selected days on `primary`, a range's band, previewed up to the
+// day under the pointer while the stay's end is chosen), the presets, and
 // the time's row, segments and well.
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];

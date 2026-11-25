@@ -24,7 +24,7 @@ use nsh_core::{
 };
 use nsh_engine::EngineControl;
 use objc2::{
-    msg_send,
+    Message, msg_send,
     rc::Retained,
     runtime::{AnyClass, AnyObject},
 };
@@ -138,13 +138,25 @@ unsafe fn configure(
 
 /// Shows `panel` as a sheet of the surface's window while the user sees it,
 /// else in a window of its own ([`crate::window::panel_window`]);
-/// `handler` gets the panel's response.
+/// `handler` gets the panel's response, unless the app stopped first
+/// ([`crate::panels`]).
 ///
 /// # Safety
 ///
 /// `panel` is an `NSSavePanel` (or an `NSOpenPanel`), on the main thread.
-unsafe fn begin(surface: &Surface, panel: &AnyObject, handler: impl Fn(isize) + 'static) {
-    let handler = RcBlock::new(handler);
+pub(crate) unsafe fn begin(
+    surface: &Surface,
+    panel: &AnyObject,
+    handler: impl Fn(isize) + 'static,
+) {
+    let shown = panel.retain();
+    let handler = RcBlock::new(move |response: isize| {
+        // Closed with the app: no one is left to answer.
+        if crate::panels::finished(&shown) {
+            handler(response);
+        }
+    });
+    crate::panels::track(surface, panel);
     // SAFETY: AppKit's documented NSSavePanel API, as the caller promises.
     unsafe {
         match crate::window::panel_window(surface) {

@@ -16,6 +16,11 @@ workspace = true
 default = ["browser"]
 # Every part of nsh/base; otherwise only its core controls are registered.
 base-full = []
+# A Rust app's runtime: a gate per part of nsh/base (`nsh_part_*`), which the
+# page runs the first time the app mounts a component of it made by name, and
+# asks for the shader gate (`nsh_feature_shader`) the first time it shows a
+# shader.
+rust-parts = ["nsh-base/web-gates"]
 # TSX apps, evaluated by the browser's JavaScript engine, with every base and
 # standard module. Without `browser-core` the module runs a Rust app only
 # (`nsh_start_rust`, `rust_app!`).

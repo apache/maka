@@ -9,6 +9,25 @@ demo: el-input
 
 `Input` 是原生文本输入框：iOS 和 Mac Catalyst 上是 UITextField（单行）或 UITextView（多行），Android 上是 EditText。输入、光标、选区、自动更正和自动填充都由平台自己处理。Rust 用 `nsh_base::input()` 创建，TSX 用从 `nsh/base` 导入的 `<Input>`。
 
+```tsx tabs
+import { signal } from "nsh";
+import { Input } from "nsh/base";
+
+function NameField() {
+  const name = signal("");
+  return (
+    <Input
+      value={name()}
+      onChange={({ value }) => name.set(value)}
+      placeholder="你的名字"
+      autoCapitalize="words"
+      returnKeyType="done"
+      style={{ fontSize: 16, padding: 12, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 8 }}
+    />
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::input;
 use nsh_core::prelude::*;
@@ -26,25 +45,6 @@ fn name_field() -> impl IntoElement {
         .border_1()
         .border_color(rgb(0xd0d7de))
         .rounded(px(8.0))
-}
-```
-
-```tsx tabs
-import { signal } from "nsh";
-import { Input } from "nsh/base";
-
-function NameField() {
-  const name = signal("");
-  return (
-    <Input
-      value={name()}
-      onChange={({ value }) => name.set(value)}
-      placeholder="你的名字"
-      autoCapitalize="words"
-      returnKeyType="done"
-      style={{ fontSize: 16, padding: 12, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 8 }}
-    />
-  );
 }
 ```
 
@@ -86,6 +86,7 @@ function NameField() {
 | `autoCorrect` | `.auto_correct(..)` | `boolean` | `true` | 系统的自动更正：拼写，以及 iOS、macOS 上的智能引号、破折号和文本替换。输入代码或标识符时关掉它。 |
 | `autoComplete` | `.auto_fill(AutoFill::OneTimeCode)` | `AutoComplete \| TextContentType` | | 输入框内容的类型，用于 iOS、Android 和 Web 上的自动填充：`"username"`、`"current-password"`、`"new-password"`、`"one-time-code"`、`"email"`、`"tel"`、`"postal-code"`、`"cc-number"`、`"off"` 等。 |
 | `pasteBehavior` | `.paste_behavior(PasteBehavior::Report)` | `"insert" \| "report"` | `"insert"` | 粘贴做什么：`"insert"` 插入粘贴的文本，`"report"` 不插入任何内容，由应用处理 `onPaste` 报告的内容。图片和文件从不插入。 |
+| `pasteMaxSize` | `.paste_max_size(20 << 20)` | `number` | 读取所有文件 | 读取的粘贴文件的最大字节数。更大的文件只带名称、类型和大小，在 `onPaste` 的 `tooLarge` 中到达；iOS、Android 和 Web 在复制字节前先检查大小（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
 | `submitBehavior` | `.submit_behavior(SubmitBehavior::Submit)` | `"submit" \| "blurAndSubmit" \| "newline"` | `"blurAndSubmit"`（单行），`"newline"`（多行） | 回车键做什么：`"submit"` 触发 `onSubmit` 并保持焦点，`"blurAndSubmit"` 提交后再失去焦点，`"newline"` 插入换行（多行；单行总是提交）。会提交的多行输入框在硬件键盘上仍可用 Shift+Return 或 Option / Alt+Return 换行。`"submit"` 让键盘保持弹出（例如连续发送多条消息）。 |
 | `autoFocus` | `.auto_focus(..)` | `boolean` | `false` | 出现时自动获得焦点。 |
 | `selectTextOnFocus` | `.select_text_on_focus(..)` | `boolean` | `false` | 输入框获得焦点时（点击、Tab、`focus()`、`autoFocus`）选中全部文本；拖动选择、Shift 点击或双击选词时保留用户的选区。 |
@@ -110,6 +111,11 @@ function NameField() {
 | `caretColor` | `.caret_color(..)` | `caret-*` | 光标的颜色。 |
 | `selectionColor` | `.selection_color(..)` | `selection:text-*` | 选区高亮的颜色。 |
 
+```tsx tabs
+<Input placeholder="搜索" class="text-zinc-900 placeholder:text-zinc-400 selection:text-blue-600" />
+<Input placeholder="搜索" style={{ placeholderColor: "#9ca3af", caretColor: "#2563eb", selectionColor: "#93c5fd" }} />
+```
+
 ```rust tabs
 input()
     .placeholder("搜索")
@@ -117,11 +123,6 @@ input()
     .placeholder_color(rgb(0x9ca3af))
     .caret_color(rgb(0x2563eb))
     .selection_color(rgb(0x93c5fd))
-```
-
-```tsx tabs
-<Input placeholder="搜索" class="text-zinc-900 placeholder:text-zinc-400 selection:text-blue-600" />
-<Input placeholder="搜索" style={{ placeholderColor: "#9ca3af", caretColor: "#2563eb", selectionColor: "#93c5fd" }} />
 ```
 
 ### iOS
@@ -132,14 +133,14 @@ input()
 | `inputAccessoryViewID` | `.input_accessory(id)` | `string` | 一个 `InputAccessoryView`（[`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview)）的 `nativeID`，输入框获得焦点时显示在键盘上方。 |
 | `keyboardAppearance` | `.keyboard_appearance(KeyboardAppearance::Dark)` | `"default" \| "light" \| "dark"` | 键盘的外观；`"default"` 跟随系统外观。Android 的键盘跟随系统主题。 |
 
+```tsx tabs
+<Input autoComplete="one-time-code" keyboardType="number-pad" ios={{ textContentType: "oneTimeCode" }} />
+```
+
 ```rust tabs
 use nsh_core::element::AutoFill;
 
 input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
-```
-
-```tsx tabs
-<Input autoComplete="one-time-code" keyboardType="number-pad" ios={{ textContentType: "oneTimeCode" }} />
 ```
 
 ## 事件
@@ -150,13 +151,22 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | 在会提交的输入框中按下了回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | 无 | 输入框获得 / 失去焦点。 |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | 光标或选区移动（UTF-16 单位）。 |
-| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, html, files, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片（如截图）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
+| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, html, files, tooLarge, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片（如截图）、超过 `pasteMaxSize` 的文件的名称、类型和大小（`tooLarge`）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
 | `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | 光标随选区移动，或因文本滚动、重新换行而移动：`bounds` 是它在输入框中的位置，`pageBounds` 是它在窗口中的位置，可作为 `Overlay` 的 `anchor`（[表单与键盘](../docs/forms-and-keyboard.md#光标位置)）。 |
 | `onKeyPress` | `.on_key_press(\|key: &str\| ..)` | `{ key }` | 文本变化之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
 | `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ size }` | 文本尺寸变化（多行时按输入框宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `.on_composition_change(\|e: &Composition\| ..)` | `{ composing, text }` | 输入法的组字开始、变化或结束：`text` 是正在组的字（选字前的拼音、变换前的假名），结束时为 `""`。上屏的文本先经 `onChange` 报告，然后才报告结束。 |
 
 随文本增高的多行输入框：
+
+```tsx tabs
+const height = signal(40);
+<Input
+  multiline
+  onContentSizeChange={({ size }) => height.set(Math.min(120, Math.max(40, size.height + 16)))}
+  style={{ height: height(), paddingHorizontal: 12, paddingVertical: 8 }}
+/>;
+```
 
 ```rust tabs
 let height = signal(px(40.0));
@@ -171,15 +181,6 @@ input()
     .py_2()
 ```
 
-```tsx tabs
-const height = signal(40);
-<Input
-  multiline
-  onContentSizeChange={({ size }) => height.set(Math.min(120, Math.max(40, size.height + 16)))}
-  style={{ height: height(), paddingHorizontal: 12, paddingVertical: 8 }}
-/>;
-```
-
 ## ref 方法
 
 | 方法 | Rust | 说明 |
@@ -191,6 +192,14 @@ const height = signal(40);
 
 按回车把焦点移到下一个输入框：
 
+```tsx tabs
+let password!: InputRef;
+<>
+  <Input returnKeyType="next" onSubmit={() => password.focus()} />
+  <Input ref={password} masked autoComplete="current-password" />
+</>;
+```
+
 ```rust tabs
 use nsh_core::element::AutoFill;
 
@@ -199,14 +208,6 @@ let password = element_ref();
 view()
     .child(input().return_key_type(ReturnKeyType::Next).on_submit(move |_: &str| password.focus()))
     .child(input().element_ref(&password).masked(true).auto_fill(AutoFill::Password))
-```
-
-```tsx tabs
-let password!: InputRef;
-<>
-  <Input returnKeyType="next" onSubmit={() => password.focus()} />
-  <Input ref={password} masked autoComplete="current-password" />
-</>;
 ```
 
 无论哪个输入框持有键盘，`nsh` 的 `Keyboard.dismiss()`（Rust 中为 `dismiss_keyboard()`）都能把它收起。

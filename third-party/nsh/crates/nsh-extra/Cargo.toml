@@ -1,6 +1,6 @@
 [package]
 name = "nsh-extra"
-description = "NSH's official modules apps install with `nsh add` (an nshm), one Cargo feature each: `camera` takes photos with the system's camera, `photos` reads the user's recent photos, `push` receives remote notifications."
+description = "NSH's official modules apps install with `nsh add` (an nshm), one Cargo feature each: `camera` takes photos with the system's camera, `location` reads the device's position, `photos` reads the user's recent photos, `push` receives remote notifications, `speech` recognizes what the user says."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,17 +20,51 @@ workspace = true
 default = []
 # `Camera`: photos taken with the system's camera (iOS, Android).
 camera = ["dep:tokio"]
+# `Location`: the device's position (macOS, iOS, the web).
+location = [
+  "dep:dispatch2",
+  "dep:objc2",
+  "dep:objc2-foundation",
+  "dep:objc2-core-location",
+  "dep:wasm-bindgen",
+  "dep:js-sys",
+  "dep:web-sys",
+]
 # `Photos`: the user's photo library, its recent photos, and `PhotosPicker`,
 # the system's photo picker embedded in the layout (iOS).
 photos = ["dep:tokio"]
 # `Push`: remote notifications with any push service (iOS, Android with a
 # push service's binding).
 push = ["dep:tokio"]
+# `Speech`: speech recognized as the user talks (macOS, iOS, Android,
+# Windows, the web).
+speech = [
+  "dep:tokio",
+  "dep:block2",
+  "dep:dispatch2",
+  "dep:objc2",
+  "dep:objc2-foundation",
+  "dep:libc",
+  "dep:windows",
+  "dep:wasm-bindgen",
+  "dep:js-sys",
+  "dep:web-sys",
+]
 
 [dependencies]
 nsh-core.workspace = true
 log.workspace = true
 tokio = { workspace = true, features = ["sync"], optional = true }
+
+# Speech's recognizer and Location's CoreLocation on macOS; iOS has these
+# below.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-location = { workspace = true, optional = true }
+block2 = { workspace = true, optional = true }
+dispatch2 = { workspace = true, optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 nsh-platform-ios.workspace = true
@@ -41,13 +75,57 @@ objc2.workspace = true
 objc2-core-foundation.workspace = true
 objc2-foundation.workspace = true
 objc2-ui-kit.workspace = true
+libc.workspace = true
+objc2-core-location = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 nsh-platform-android.workspace = true
 ndk-context.workspace = true
 
+# Speech's recognizer on Windows: WinRT's dictation.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, optional = true, features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Media_Devices",
+  "Media_SpeechRecognition",
+] }
+
+# Speech's recognizer on the web: the browser's Web Speech API; Location's
+# `navigator.geolocation`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+  "Event",
+  "EventTarget",
+  "Geolocation",
+  "PermissionDescriptor",
+  "PermissionName",
+  "PermissionState",
+  "PermissionStatus",
+  "Permissions",
+  "PositionOptions",
+  "SpeechRecognition",
+  "SpeechRecognitionAlternative",
+  "SpeechRecognitionEvent",
+  "SpeechRecognitionResult",
+  "SpeechRecognitionResultList",
+] }
+
 [dev-dependencies]
 nsh-core = { workspace = true, features = ["declarations"] }
+serde_json.workspace = true
+# The modules' tests run apps headless (`tests/extra`), without QuickJS.
+# Path only, as nsh-base's: `cargo publish` drops a dev-dependency without a
+# version, so the crate packages before these are on crates.io.
+nsh-engine = { path = "../nsh-engine", default-features = false }
+nsh-testing = { path = "../nsh-testing", default-features = false }
+
+[[test]]
+name = "extra"
+path = "tests/extra/main.rs"
 
 # What the packaged app needs of the system for each module: `nsh` merges the
 # entries of the features an app turns on into its Info.plist and Android
@@ -66,6 +144,20 @@ queries = ['<intent><action android:name="android.media.action.IMAGE_CAPTURE"/><
 [package.metadata.nsh.features.photos.ios.infoPlist]
 NSPhotoLibraryUsageDescription = "The app shows your recent photos so you can add them quickly."
 
+# Reading the position needs the user's permission, which the system asks
+# with this text; without it the system never asks (and the module reports
+# the platform unavailable). A sandboxed macOS app also needs the
+# entitlement. Only while the app is in use: no background location.
+[package.metadata.nsh.features.location.ios.infoPlist]
+NSLocationWhenInUseUsageDescription = "The app shows where you are."
+
+[package.metadata.nsh.features.location.macos.infoPlist]
+NSLocationWhenInUseUsageDescription = "The app shows where you are."
+NSLocationUsageDescription = "The app shows where you are."
+
+[package.metadata.nsh.features.location.macos.entitlements]
+"com.apple.security.personal-information.location" = true
+
 # Background deliveries wake the app. `aps-environment` is not declared:
 # the provisioning profile the app is signed with grants it, with the
 # environment the profile is for, and one value here would clash with the
@@ -76,3 +168,23 @@ UIBackgroundModes = ["remote-notification"]
 # Android needs no entry for the module itself: a push service's SDK
 # brings its own service, receiver and permissions in its manifest, and
 # showing notifications is `Notifications`' permission.
+
+# Recognizing speech needs the user's permission for the microphone and
+# for speech recognition, which the system asks with these texts.
+[package.metadata.nsh.features.speech.ios.infoPlist]
+NSMicrophoneUsageDescription = "The app listens to what you say."
+NSSpeechRecognitionUsageDescription = "The app turns what you say into text."
+
+[package.metadata.nsh.features.speech.macos.infoPlist]
+NSMicrophoneUsageDescription = "The app listens to what you say."
+NSSpeechRecognitionUsageDescription = "The app turns what you say into text."
+
+# A sandboxed or hardened app records audio only with this entitlement.
+[package.metadata.nsh.features.speech.macos.entitlements]
+"com.apple.security.device.audio-input" = true
+
+# The microphone's permission, asked when a session starts; Android 11+
+# only shows the recognition services a manifest queries.
+[package.metadata.nsh.features.speech.android]
+permissions = ["android.permission.RECORD_AUDIO"]
+queries = ['<intent><action android:name="android.speech.RecognitionService"/></intent>']

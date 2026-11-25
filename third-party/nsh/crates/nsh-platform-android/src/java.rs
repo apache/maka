@@ -47,6 +47,10 @@ pub(crate) struct Java {
     /// thread).
     pub(crate) picker: GlobalRef,
     pub(crate) picker_prepare_file: JStaticMethodID,
+    /// `com.longbridge.nsh.NativeProxy`: Java interfaces implemented in
+    /// Rust ([`crate::proxy`]; any thread).
+    pub(crate) proxy: GlobalRef,
+    pub(crate) proxy_create: JStaticMethodID,
     /// `com.longbridge.nsh.NshView` instance methods.
     pub(crate) view_submit: JMethodID,
     pub(crate) view_report_error: JMethodID,
@@ -97,6 +101,8 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
     let activities_class: &JClass<'_> = activities.as_obj().into();
     let picker = class(&mut env, "com/longbridge/nsh/Picker")?;
     let picker_class: &JClass<'_> = picker.as_obj().into();
+    let proxy = class(&mut env, "com/longbridge/nsh/NativeProxy")?;
+    let proxy_class: &JClass<'_> = proxy.as_obj().into();
     let view_class: &JClass<'_> = view.as_obj().into();
     let java = Java {
         text_prepare: env.get_static_method_id(
@@ -175,6 +181,11 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
             "prepareFile",
             "(Ljava/lang/String;Ljava/lang/String;IFZ)[Ljava/lang/Object;",
         )?,
+        proxy_create: env.get_static_method_id(
+            proxy_class,
+            "create",
+            "([Ljava/lang/String;J)Ljava/lang/Object;",
+        )?,
         view_submit: env.get_method_id(view_class, "submit", "([B[Ljava/lang/Object;J)V")?,
         view_report_error: env.get_method_id(view_class, "reportError", "(Ljava/lang/String;)V")?,
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
@@ -209,6 +220,7 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         permissions,
         activities,
         picker,
+        proxy,
         vm,
     };
     let _ = JAVA.set(java);

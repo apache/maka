@@ -1690,7 +1690,8 @@ fn focus_pane(tree: &Mounter) -> Option<NodeId> {
 
 /// Whether the box `pane` holds rows the keys move through: a scroll view
 /// (a list) or a selected item, in its own content (not inside a framed
-/// box within it, a pane of its own).
+/// box within it, a pane of its own). A chosen tab (a segmented control's)
+/// is a control's value, not a row: a card around one keeps its line.
 fn holds_rows(tree: &Mounter, pane: NodeId) -> bool {
     let mut stack: Vec<NodeId> = tree
         .get(pane)
@@ -1699,7 +1700,9 @@ fn holds_rows(tree: &Mounter, pane: NodeId) -> bool {
         let Some(view) = tree.get(id) else {
             continue;
         };
-        if view.kind == ViewKind::Scroll || view.props.accessibility.state.selected {
+        let row = view.props.accessibility.state.selected
+            && view.props.accessibility.role != AccessibilityRole::Tab;
+        if view.kind == ViewKind::Scroll || row {
             return true;
         }
         let lined = view
@@ -2710,6 +2713,7 @@ fn control(view: &NshView) -> bool {
                 | AccessibilityRole::Adjustable
                 | AccessibilityRole::Combobox
                 | AccessibilityRole::Spinbutton
+                | AccessibilityRole::Textbox
         )
 }
 
@@ -3085,9 +3089,17 @@ fn mark_surface(
     let covered = !(visible.y..visible.bottom())
         .any(|y| (visible.x..visible.right()).any(|x| buffer[(x, y)].bg == own));
     let active = (popup && (focused || hovered || pressed) && pressable(view))
-        || ((dialog || pane) && !popup && highlighted)
-        || (pane && !popup && selected && !tab && !covered && (item || !pressable(view)));
-    if active {
+        || ((dialog || pane) && !popup && highlighted);
+    // The selected row of a list in the focused pane, the keys not on it
+    // (a sidebar's current page): an accent rail down its leading column
+    // and its label in the accent, bold (Bubbles' list), no band, which
+    // would read as where the keys are. Without a free leading column it
+    // is the accent band.
+    let chosen = pane && !popup && selected && !tab && !covered && (item || !pressable(view));
+    if chosen && !active && selection_rail(buffer, visible, inner) {
+        return;
+    }
+    if active || chosen {
         accent_band(buffer, visible, inner, ramp, selected);
         return;
     }
@@ -3175,6 +3187,19 @@ fn mark_surface(
     } else if marked {
         focus_underline(buffer, visible, covered);
     }
+    // A list's selected row out of the focused pane keeps the same rail as
+    // in it, so the current page of a sidebar reads alike either way.
+    let nav = view.props.accessibility.state.current.is_some();
+    if selected
+        && (item || nav)
+        && !popup
+        && !covered
+        && !hued_label
+        && !focused
+        && selection_rail(buffer, visible, inner)
+    {
+        return;
+    }
     if selected {
         if !hued_label {
             band(buffer, visible, step(SELECT), own);
@@ -3258,6 +3283,33 @@ fn focus_rail(buffer: &mut Buffer, visible: Rect, inner: Rect) -> bool {
         }
     }
     any
+}
+
+/// Marks the selected row of a list (Bubbles' list): `▌` in the accent on
+/// its leading column when that column is blank on every row in sight, its
+/// text in the accent and bold. Whether it could (else nothing changes).
+fn selection_rail(buffer: &mut Buffer, visible: Rect, inner: Rect) -> bool {
+    let rows = inner.intersection(visible);
+    if rows.is_empty() || visible.width < 3 {
+        return false;
+    }
+    let x = visible.x;
+    if (rows.y..rows.bottom()).any(|y| buffer[(x, y)].symbol() != " ") {
+        return false;
+    }
+    for y in rows.y..rows.bottom() {
+        let cell = &mut buffer[(x, y)];
+        cell.set_symbol("▌");
+        cell.fg = ACCENT;
+        cell.modifier -= Modifier::DIM;
+    }
+    drawn(buffer, inner, |cell| {
+        if cell.symbol() != "▌" {
+            cell.fg = ACCENT;
+            cell.modifier = (cell.modifier | Modifier::BOLD) - Modifier::DIM;
+        }
+    });
+    true
 }
 
 /// The accent band of what the keys act on (a focused control, the

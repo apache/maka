@@ -1,6 +1,6 @@
 ---
 title: Lists
-description: Long and endless lists in Rust and TSX - recycling, row identity, columns, sticky headers, inverted chat lists, horizontal lists, lists in a page, loading more, viewability and scrolling to an item.
+description: Long and endless lists in TSX and Rust - recycling, row identity, columns, sticky headers, inverted chat lists, horizontal lists, lists in a page, loading more, viewability and scrolling to an item.
 order: 40
 group: ui
 demo: guide-lists
@@ -9,28 +9,6 @@ demo: guide-lists
 # Lists
 
 For collections that can grow, including chat timelines, feeds and history, prefer a virtualized list from the start. Use a scroll view with ordinary children for small, bounded content. A list (`virtual_list(..)` in Rust, `List` from `nsh` in TSX) renders long data on a native scroll view while only creating the rows near the screen. Which rows exist, where they go, the columns, sticky headers and which items are visible are all computed natively; your code only fills cells with content when the native side asks for one. A list of a million items costs about as much as a list of thirty.
-
-```rust tabs
-use std::rc::Rc;
-
-use nsh_core::prelude::*;
-
-#[component]
-pub fn App() -> impl IntoElement {
-    let titles: Rc<Vec<String>> = Rc::new((1..=10_000).map(|i| format!("Item {i}")).collect());
-    virtual_list(titles.len(), move |at| {
-        let titles = titles.clone();
-        view()
-            .p_4()
-            .border_b_1()
-            .border_b_color(rgb(0xeaeef2))
-            .child(text(move || titles[at.index()].clone()).text_size(px(16.0)))
-    })
-    .estimated_item_size(px(52.0))
-    .flex_1()
-    .bg(white())
-}
-```
 
 ```tsx tabs
 import { List, mount, Text, View } from "nsh";
@@ -57,6 +35,28 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use std::rc::Rc;
+
+use nsh_core::prelude::*;
+
+#[component]
+pub fn App() -> impl IntoElement {
+    let titles: Rc<Vec<String>> = Rc::new((1..=10_000).map(|i| format!("Item {i}")).collect());
+    virtual_list(titles.len(), move |at| {
+        let titles = titles.clone();
+        view()
+            .p_4()
+            .border_b_1()
+            .border_b_color(rgb(0xeaeef2))
+            .child(text(move || titles[at.index()].clone()).text_size(px(16.0)))
+    })
+    .estimated_item_size(px(52.0))
+    .flex_1()
+    .bg(white())
+}
+```
+
 In Rust, `virtual_list(count, row)` takes the number of rows (a value, a signal or a closure) and a function that builds a row from its position (`at.index()`); the rows read your data by that index. In TSX, `each` takes the items and the row function gets the item. Like a [scroll view](./scrolling.md), the list is the viewport and needs a size from its parent (`.flex_1()`, `flex: 1` or a height).
 
 ## How recycling works
@@ -66,6 +66,17 @@ The row function is not called once per item. It is called **once per cell**, an
 Two rules follow from that:
 
 **Read the position where you use it.** A value copied out at the top of the row function belongs to whichever row the cell showed first.
+
+```tsx tabs
+// Wrong: `title` stays the first item's title when the cell is reused.
+{(item) => {
+  const title = item().title;
+  return <Text>{title}</Text>;
+}}
+
+// Right: the text follows the cell's current item.
+{(item) => <Text>{item().title}</Text>}
+```
 
 ```rust tabs
 // Wrong: `title` stays the first row's title when the cell is reused.
@@ -81,18 +92,26 @@ virtual_list(count, move |at| {
 })
 ```
 
-```tsx tabs
-// Wrong: `title` stays the first item's title when the cell is reused.
-{(item) => {
-  const title = item().title;
-  return <Text>{title}</Text>;
-}}
-
-// Right: the text follows the cell's current item.
-{(item) => <Text>{item().title}</Text>}
-```
-
 **Keep per-item state in your data, not in the row.** A signal created inside the row belongs to the cell and travels with it to the next item. Store "is this row expanded / selected / liked" in the items or in a set keyed by id:
+
+```tsx tabs
+const liked = signal<Set<number>>(new Set());
+const toggle = (id: number) =>
+  liked.update((s) => {
+    const next = new Set(s);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+<List each={posts()} estimatedItemSize={64} style={{ flex: 1 }}>
+  {(post) => (
+    <View style={{ flexDirection: "row", padding: 16 }}>
+      <Text style={{ flex: 1 }}>{post().title}</Text>
+      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
+    </View>
+  )}
+</List>
+```
 
 ```rust tabs
 let liked = signal(HashSet::<u32>::new());
@@ -119,25 +138,6 @@ virtual_list(move || posts.with(Vec::len), move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-const liked = signal<Set<number>>(new Set());
-const toggle = (id: number) =>
-  liked.update((s) => {
-    const next = new Set(s);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
-
-<List each={posts()} estimatedItemSize={64} style={{ flex: 1 }}>
-  {(post) => (
-    <View style={{ flexDirection: "row", padding: 16 }}>
-      <Text style={{ flex: 1 }}>{post().title}</Text>
-      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
-    </View>
-  )}
-</List>
-```
-
 Rows can have different heights. Until a row has been measured, the list assumes the estimated item size (default 50 points); pass a value close to your typical row so the scroll indicator and jumps to far items are accurate from the start.
 
 ## Changing the data
@@ -146,7 +146,7 @@ In Rust, give the count as a signal or a closure (`move || posts.with(Vec::len)`
 
 In TSX, pass a new array to change the items: `posts.set([...posts(), ...more])`. The list compares the old and the new array **by item identity** (`===`), or by the keys `keyExtractor` returns.
 
-In both, a row that stays keeps its cell, its content and its measured size wherever it moves (an item sorted to the top once it changes), and so do the rows it passes: a focused field or an open menu in them stays open. Only new items get new rows. When rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping.
+In both, a row that stays keeps its cell, its content and its measured size wherever it moves (an item sorted to the top once it changes), and so do the rows it passes: a focused field or an open menu in them stays open. Only new items get new rows. When rows are inserted above the rows on screen, the visible rows stay where they are instead of jumping. A row only partly scrolled into view at the top counts as above them, so rows inserted right after it leave the rows being read in place.
 
 - In TSX, update immutably: a new array, with the unchanged item objects reused. Mutating the array in place (`push`) is not seen.
 - A changed item should be a new object (`{ ...post, title }`), so its row shows the change.
@@ -197,6 +197,18 @@ The header, footer and empty slots take an element (in TSX also a component: `he
 
 `numColumns` (`.columns(n)`) lays items out in rows of that many columns; content padding goes around the content, with gaps between rows and columns. Rows of a grid may have different heights: each row is as tall as its tallest item. `numColumns` may change while the list shows (more columns as a window widens): the first visible item stays at the top, and so it does when `estimatedItemSize` changes.
 
+```tsx tabs
+<List
+  each={photos}
+  numColumns={3}
+  estimatedItemSize={120}
+  style={{ flex: 1 }}
+  contentStyle={{ padding: 12, gap: 8 }}
+>
+  {(photo) => <Image src={photo().thumb} style={{ aspectRatio: 1, borderRadius: 8 }} />}
+</List>
+```
+
 ```rust tabs
 let count = photos.len();
 virtual_list(count, move |at| {
@@ -211,21 +223,32 @@ virtual_list(count, move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-<List
-  each={photos}
-  numColumns={3}
-  estimatedItemSize={120}
-  style={{ flex: 1 }}
-  contentStyle={{ padding: 12, gap: 8 }}
->
-  {(photo) => <Image src={photo().thumb} style={{ aspectRatio: 1, borderRadius: 8 }} />}
-</List>
-```
-
 ## Sticky headers
 
 `stickyHeaderIndices` lists items that stick to the top of the viewport while the content scrolls past them, until the next sticky item pushes them out. Sections are one list of header and row items; the headers' indices stick. The pinning is done natively on every scroll frame.
+
+```tsx tabs
+type Row = { header: string } | { name: string };
+
+const rows: Row[] = [];
+const headers: number[] = [];
+for (const [letter, names] of groups) {
+  headers.push(rows.length);
+  rows.push({ header: letter });
+  for (const name of names) rows.push({ name });
+}
+
+<List each={rows} stickyHeaderIndices={headers} estimatedItemSize={44} style={{ flex: 1 }}>
+  {(row) => (
+    <If
+      when={"header" in row()}
+      else={<Text style={{ padding: 12 }}>{(row() as { name: string }).name}</Text>}
+    >
+      <Text style={{ padding: 6, backgroundColor: "#eaeef2", fontWeight: "700" }}>{(row() as { header: string }).header}</Text>
+    </If>
+  )}
+</List>
+```
 
 ```rust tabs
 #[derive(Clone, PartialEq)]
@@ -261,34 +284,22 @@ virtual_list(count, move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-type Row = { header: string } | { name: string };
-
-const rows: Row[] = [];
-const headers: number[] = [];
-for (const [letter, names] of groups) {
-  headers.push(rows.length);
-  rows.push({ header: letter });
-  for (const name of names) rows.push({ name });
-}
-
-<List each={rows} stickyHeaderIndices={headers} estimatedItemSize={44} style={{ flex: 1 }}>
-  {(row) => (
-    <If
-      when={"header" in row()}
-      else={<Text style={{ padding: 12 }}>{(row() as { name: string }).name}</Text>}
-    >
-      <Text style={{ padding: 6, backgroundColor: "#eaeef2", fontWeight: "700" }}>{(row() as { header: string }).header}</Text>
-    </If>
-  )}
-</List>
-```
-
 Because a cell may show a header now and a name later, the row decides what to render with [`when` / `<If>`](../elements/control-flow.md), which switches when the row changes. Sticky headers need one column and a list that is not inverted.
 
 `stickyHeaderOffset` (`.sticky_header_offset(..)` in Rust) makes the headers stick that many points below the top instead, as CSS `position: sticky`'s `top` does: under a translucent bar 56 points tall, `stickyHeaderOffset={56}` (`.sticky_header_offset(px(56.0))`) keeps each header below the bar while the rows scroll on under it, and the next header pushes it out from there. A negative offset leaves part of a header out of view.
 
 The offset can be an [animated value](./animation.md#animated-values) (`.bind_sticky_header_offset(&node)` in Rust): the headers follow it every frame on the UI thread, so they stay below a bar that moves. With a bar that hides as the content scrolls down and comes back as it scrolls up ([`diffClamp`](./animation.md#arithmetic-and-diffclamp)), the headers stick to its bottom edge wherever it is:
+
+```tsx tabs
+const scroll = createAnimatedValue(0);
+const hidden = scroll.diffClamp(0, 56);
+const shown = hidden.mul(-1).add(56);
+
+<View style={{ flex: 1, overflow: "hidden" }}>
+  <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
+  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, hidden.mul(-1)] }}>…</View>
+</View>
+```
 
 ```rust tabs
 let offset = animated_value(0.0);
@@ -303,20 +314,77 @@ view().flex_1().overflow_hidden().child(
 ).child(view().absolute().top_0().left_0().right_0().h(px(56.0)).bind_translate_y(&hidden.mul(-1.0)))
 ```
 
-```tsx tabs
-const scroll = createAnimatedValue(0);
-const hidden = scroll.diffClamp(0, 56);
-const shown = hidden.mul(-1).add(56);
-
-<View style={{ flex: 1, overflow: "hidden" }}>
-  <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
-  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, hidden.mul(-1)] }}>…</View>
-</View>
-```
-
 ## Chat: inverted lists
 
 `inverted` lays the list out from the end: item 0 is at the bottom, the list starts scrolled to the end, and it keeps its distance from the end as items change. Keep the newest message first; prepend to add one, append to load older ones with `onLoadMore` (the "end" of an inverted list is the top). A chat opened at an old message loads the newer ones with [`onLoadMoreAtStart`](#loading-at-the-start-onloadmoreatstart); with it, the list keeps its distance from the bottom while it is there and keeps the messages on screen in place when scrolled up.
+
+```tsx tabs
+import { List, mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+type Message = { id: number; text: string; mine: boolean };
+
+function Chat() {
+  let next = 0;
+  const message = (text: string, mine: boolean): Message => ({ id: next++, text, mine });
+  const messages = signal(Array.from({ length: 30 }, (_, i) => message(`Message ${30 - i}`, i % 3 === 0)));
+  const draft = signal("");
+  const send = () => {
+    if (!draft().trim()) return;
+    messages.update((m) => [message(draft(), true), ...m]); // newest first
+    draft.set("");
+  };
+  const loadOlder = () => messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older ${i}`, false))]);
+  return (
+    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
+      <List
+        each={messages()}
+        inverted
+        estimatedItemSize={44}
+        style={{ flex: 1 }}
+        contentStyle={{ padding: 12, gap: 6 }}
+        keyboardDismissMode="interactive"
+        onLoadMore={loadOlder}
+        loadMoreThreshold={0.5}
+      >
+        {(m) => (
+          <View
+            style={{
+              alignSelf: m().mine ? "flex-end" : "flex-start",
+              maxWidth: "75%",
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 14,
+              backgroundColor: m().mine ? "#0969da" : "#eaeef2",
+            }}
+          >
+            <Text style={{ color: m().mine ? "#ffffff" : "#1f2328" }}>{m().text}</Text>
+          </View>
+        )}
+      </List>
+      <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
+        <Input
+          value={draft()}
+          onChange={({ value }) => draft.set(value)}
+          onSubmit={send}
+          multiline
+          submitBehavior="submit"
+          returnKeyType="send"
+          placeholder="Message"
+          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
+        />
+      </View>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <Chat />
+  </Window>
+));
+```
 
 ```rust tabs
 #[derive(Clone, PartialEq)]
@@ -408,74 +476,6 @@ pub fn chat() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { List, mount, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-type Message = { id: number; text: string; mine: boolean };
-
-function Chat() {
-  let next = 0;
-  const message = (text: string, mine: boolean): Message => ({ id: next++, text, mine });
-  const messages = signal(Array.from({ length: 30 }, (_, i) => message(`Message ${30 - i}`, i % 3 === 0)));
-  const draft = signal("");
-  const send = () => {
-    if (!draft().trim()) return;
-    messages.update((m) => [message(draft(), true), ...m]); // newest first
-    draft.set("");
-  };
-  const loadOlder = () => messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older ${i}`, false))]);
-  return (
-    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
-      <List
-        each={messages()}
-        inverted
-        estimatedItemSize={44}
-        style={{ flex: 1 }}
-        contentStyle={{ padding: 12, gap: 6 }}
-        keyboardDismissMode="interactive"
-        onLoadMore={loadOlder}
-        loadMoreThreshold={0.5}
-      >
-        {(m) => (
-          <View
-            style={{
-              alignSelf: m().mine ? "flex-end" : "flex-start",
-              maxWidth: "75%",
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              borderRadius: 14,
-              backgroundColor: m().mine ? "#0969da" : "#eaeef2",
-            }}
-          >
-            <Text style={{ color: m().mine ? "#ffffff" : "#1f2328" }}>{m().text}</Text>
-          </View>
-        )}
-      </List>
-      <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
-        <Input
-          value={draft()}
-          onChange={({ value }) => draft.set(value)}
-          onSubmit={send}
-          multiline
-          submitBehavior="submit"
-          returnKeyType="send"
-          placeholder="Message"
-          style={{ flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 }}
-        />
-      </View>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <Chat />
-  </Window>
-));
-```
-
 `scroll_to_end(..)` / `scrollToEnd()` on an inverted list scrolls to its start: the newest message.
 
 ### Bottom alignment
@@ -484,6 +484,12 @@ mount(() => (
 
 Rows keep their positions in the content while the list grows, so an appended message moves no other row: the list places the new row and scrolls once. Older messages prepended with `onLoadMoreAtStart` keep the visible rows in place.
 
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
+
 ```rust tabs
 virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .keys(move || messages.with(|m| m.iter().map(|m| m.id).collect::<Vec<_>>()))
@@ -491,15 +497,15 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .flex_1()
 ```
 
-```tsx tabs
-<List each={messages()} keyExtractor={(m) => m.id} alignment="bottom" style={{ flex: 1 }}>
-  {(m) => <Bubble message={m()} />}
-</List>
-```
-
 ### Following the end of a list that is not inverted
 
 A list in reading order (oldest first) can follow its end too: with `.follow_end(px(40.0))` in Rust or `maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }}` in TSX, while the user is at the end (or within 40 points of it), the list stays at the end as the content grows: a reply streaming into the last item, a new message appended, the keyboard shrinking the list. Scrolled further up, the visible content stays where it is and the new content grows below it. Items inserted above the visible ones never move them, with or without the option.
+
+```tsx tabs
+<List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
 
 ```rust tabs
 virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
@@ -508,15 +514,24 @@ virtual_list(move || messages.with(Vec::len), move |at| bubble(messages, at))
     .flex_1()
 ```
 
-```tsx tabs
-<List each={messages()} keyExtractor={(m) => m.id} maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 40 }} style={{ flex: 1 }}>
-  {(m) => <Bubble message={m()} />}
-</List>
-```
-
 ## Horizontal lists
 
 `horizontal` turns the list sideways; cells are laid out at the list's height. Combined with snapping it makes a carousel of any length:
+
+```tsx tabs
+<List
+  each={cards}
+  horizontal
+  estimatedItemSize={232}
+  snapToInterval={232}
+  decelerationRate="fast"
+  scrollbar={false}
+  style={{ height: 140 }}
+  contentStyle={{ paddingHorizontal: 16, gap: 12 }}
+>
+  {(card) => <View style={{ width: 220, height: 140, borderRadius: 14, backgroundColor: card().color }} />}
+</List>
+```
 
 ```rust tabs
 let count = cards.len();
@@ -538,26 +553,21 @@ virtual_list(count, move |at| {
 .h(px(140.0))
 ```
 
-```tsx tabs
-<List
-  each={cards}
-  horizontal
-  estimatedItemSize={232}
-  snapToInterval={232}
-  decelerationRate="fast"
-  scrollbar={false}
-  style={{ height: 140 }}
-  contentStyle={{ paddingHorizontal: 16, gap: 12 }}
->
-  {(card) => <View style={{ width: 220, height: 140, borderRadius: 14, backgroundColor: card().color }} />}
-</List>
-```
-
 Right to left, horizontal lists start at the right and run leftwards.
 
 ## Lists in a page: viewport="parent"
 
 A page often scrolls as one: a header, a few cards, then a long list, and maybe another list below it. Give the list `viewport="parent"` (`.viewport(ListViewport::Parent)` in Rust) and put it in a `Scroll` with the rest of the page: the list lies in the page at its full length, and the page's scroll view scrolls it with everything else. It still creates only the rows near the page's viewport and recycles their cells, so one page can hold several long lists.
+
+```tsx tabs
+<Scroll style={{ flex: 1 }}>
+  <Header />
+  <List viewport="parent" each={items} estimatedItemSize={56} contentStyle={{ gap: 6 }}>
+    {(item) => <Row item={item()} />}
+  </List>
+  <Footer />
+</Scroll>
+```
 
 ```rust tabs
 scroll()
@@ -572,16 +582,6 @@ scroll()
     .child(footer())
 ```
 
-```tsx tabs
-<Scroll style={{ flex: 1 }}>
-  <Header />
-  <List viewport="parent" each={items} estimatedItemSize={56} contentStyle={{ gap: 6 }}>
-    {(item) => <Row item={item()} />}
-  </List>
-  <Footer />
-</Scroll>
-```
-
 - The list is as long as its rows: its height (its width, sideways) comes from its content, as a view's does, and its padding, border and margins work as on a view.
 - Its rows follow the nearest scroll view around it along its axis, or the screen it is on.
 - The page keeps what you read in place, as a browser does: rows that change size wholly above the top of the viewport move the page by as much; while the list's start is in view, rows that grow push what is below them down.
@@ -593,6 +593,35 @@ scroll()
 ## Loading more: onLoadMore
 
 `onLoadMore` (`.on_load_more(..)`) fires when the viewport comes within `loadMoreThreshold` viewports of the end (1 by default: one screen ahead). Append the next page; the list fires again when the new end comes near.
+
+```tsx tabs
+const posts = signal<Post[]>([]);
+let loading = false;
+let page = 0;
+
+const loadMore = async () => {
+  if (loading) return;
+  loading = true;
+  try {
+    const next: Post[] = await (await fetch(`https://api.example.com/posts?page=${++page}`)).json();
+    posts.set([...posts(), ...next]);
+  } finally {
+    loading = false;
+  }
+};
+loadMore();
+
+<List
+  each={posts()}
+  estimatedItemSize={72}
+  style={{ flex: 1 }}
+  onLoadMore={loadMore}
+  loadMoreThreshold={0.5}
+  footer={<Text style={{ padding: 16, textAlign: "center", color: "#8c959f" }}>Loading…</Text>}
+>
+  {(post) => <PostRow post={post()} />}
+</List>
+```
 
 ```rust tabs
 let posts = signal(Vec::<Post>::new());
@@ -625,35 +654,6 @@ virtual_list(move || posts.with(Vec::len), move |at| post_row(posts, at))
     .flex_1()
 ```
 
-```tsx tabs
-const posts = signal<Post[]>([]);
-let loading = false;
-let page = 0;
-
-const loadMore = async () => {
-  if (loading) return;
-  loading = true;
-  try {
-    const next: Post[] = await (await fetch(`https://api.example.com/posts?page=${++page}`)).json();
-    posts.set([...posts(), ...next]);
-  } finally {
-    loading = false;
-  }
-};
-loadMore();
-
-<List
-  each={posts()}
-  estimatedItemSize={72}
-  style={{ flex: 1 }}
-  onLoadMore={loadMore}
-  loadMoreThreshold={0.5}
-  footer={<Text style={{ padding: 16, textAlign: "center", color: "#8c959f" }}>Loading…</Text>}
->
-  {(post) => <PostRow post={post()} />}
-</List>
-```
-
 Guard against overlapping loads as above: the end may be reported again while a page is on its way.
 
 ## Loading at the start: onLoadMoreAtStart
@@ -661,34 +661,6 @@ Guard against overlapping loads as above: the end may be reported again while a 
 A list can also open in the middle of its data: a chat opened at an old message (a search result, a reply's quote) shows a page around it, with newer messages still to load. `onLoadMoreAtStart` (`.on_load_more_at_start(..)`) fires when the viewport comes within `loadMoreAtStartThreshold` viewports of the start (1 by default), the side of item 0: the top of a list, the bottom of an inverted one. Prepend the page: the rows on screen keep their place while it arrives before them (an inverted list too, once scrolled away from its bottom), and the list fires again on the next approach, or at once when the page left it still near the start.
 
 It fires once the user scrolls there or a scroll command takes the list there (`initialScrollIndex` included), so a list that opens at its newest item asks for nothing, and one opened with `initialScrollIndex` near its start asks for the page before it right away.
-
-```rust tabs
-let messages = signal(page_around(target)); // newest first, ending at an old message
-let loading = stored(false);
-
-let load_newer = move |_: &()| {
-    if loading.replace(true) {
-        return;
-    }
-    let newest = messages.with(|m| m[0].id);
-    spawn(async move {
-        if let Ok(response) = fetch(format!("https://api.example.com/messages?after={newest}")).await {
-            let newer = parse_messages(&response.text());
-            messages.update(|m| {
-                m.splice(0..0, newer);
-            });
-        }
-        loading.replace(false);
-    });
-};
-
-virtual_list(move || messages.with(Vec::len), move |at| message_row(messages, at))
-    .inverted(true)
-    .on_load_more(load_older)
-    .on_load_more_at_start(load_newer)
-    .load_more_at_start_threshold(0.5)
-    .flex_1()
-```
 
 ```tsx tabs
 const messages = signal<Message[]>(pageAround(target)); // newest first, ending at an old message
@@ -718,6 +690,34 @@ const loadNewer = async () => {
 </List>
 ```
 
+```rust tabs
+let messages = signal(page_around(target)); // newest first, ending at an old message
+let loading = stored(false);
+
+let load_newer = move |_: &()| {
+    if loading.replace(true) {
+        return;
+    }
+    let newest = messages.with(|m| m[0].id);
+    spawn(async move {
+        if let Ok(response) = fetch(format!("https://api.example.com/messages?after={newest}")).await {
+            let newer = parse_messages(&response.text());
+            messages.update(|m| {
+                m.splice(0..0, newer);
+            });
+        }
+        loading.replace(false);
+    });
+};
+
+virtual_list(move || messages.with(Vec::len), move |at| message_row(messages, at))
+    .inverted(true)
+    .on_load_more(load_older)
+    .on_load_more_at_start(load_newer)
+    .load_more_at_start_threshold(0.5)
+    .flex_1()
+```
+
 Once the newest message is in, stop loading: new messages then arrive at the start as in any chat.
 
 ## Viewability
@@ -731,6 +731,19 @@ Once the newest message is in, stop loading: new messages then arrive at the sta
 | `minimumViewTime` | `.minimum_view_time(Duration)` | Milliseconds an item must stay viewable before it is reported. |
 
 Without a threshold, any visible pixel counts.
+
+```tsx tabs
+<List
+  each={videos}
+  estimatedItemSize={300}
+  style={{ flex: 1 }}
+  keyExtractor={(v) => v.slug}
+  viewabilityConfig={{ itemVisibleThreshold: 0.6, minimumViewTime: 250 }}
+  onViewableItemsChange={({ viewableItems }) => playing.set(viewableItems[0]?.key ?? null)}
+>
+  {(v) => <VideoCard video={v()} />}
+</List>
+```
 
 ```rust tabs
 let playing = signal(None::<usize>);
@@ -748,19 +761,6 @@ virtual_list(count, move |at| video_card(videos.clone(), at))
     .flex_1()
 ```
 
-```tsx tabs
-<List
-  each={videos}
-  estimatedItemSize={300}
-  style={{ flex: 1 }}
-  keyExtractor={(v) => v.slug}
-  viewabilityConfig={{ itemVisibleThreshold: 0.6, minimumViewTime: 250 }}
-  onViewableItemsChange={({ viewableItems }) => playing.set(viewableItems[0]?.key ?? null)}
->
-  {(v) => <VideoCard video={v()} />}
-</List>
-```
-
 ## Scrolling from code
 
 Give the list a ref (`element_ref()` and `.element_ref(&list)` in Rust, `ref` in TSX):
@@ -772,14 +772,6 @@ Give the list a ref (`element_ref()` and `.element_ref(&list)` in Rust, `ref` in
 | `scroll_to_end(animated)` | `scrollToEnd({ animated? })` | Scrolls to the end of the content (the start of an inverted list). |
 | `scroll_to(point, animated)` | `scrollTo({ x?, y?, animated? })` | Scrolls to an offset, as on a scroll view. |
 
-```rust tabs
-let list = element_ref();
-
-virtual_list(count, row).estimated_item_size(px(48.0)).flex_1().element_ref(&list)
-
-list.scroll_to_index(120, percentage(0.5), px(0.0), true);
-```
-
 ```tsx tabs
 import { List, type ListRef } from "nsh";
 
@@ -790,28 +782,19 @@ let list!: ListRef;
 list.scrollToIndex({ index: 120, viewPosition: 0.5 });
 ```
 
+```rust tabs
+let list = element_ref();
+
+virtual_list(count, row).estimated_item_size(px(48.0)).flex_1().element_ref(&list)
+
+list.scroll_to_index(120, percentage(0.5), px(0.0), true);
+```
+
 Scrolling to an index (and to the end) is resolved natively with the sizes known at that moment: measured rows where they have been measured, the estimated size elsewhere. The list then follows its target while the rows around it are measured, so it lands exactly, until the user scrolls or the items change. To open a list at an item, use `initialScrollIndex` (`.initial_scroll_index(..)`), and at its end `initialScrollAtEnd` (`.initial_scroll_at_end()`), rather than scrolling after the first frame.
 
 ### Keeping a reading position
 
 `measureScrollPosition()` (`measure_scroll_position()`) tells where the viewport starts among the rows once this turn's changes are laid out: `{ index, offset }`, the row there and how far into it, in the positions the list itself lays its rows out at (measured rows at their sizes, the others at their estimates). Read it as the list scrolls and keep it; `scrollToIndex({ index, viewOffset: -offset })` puts the viewport's start back there, in the same list or in one made anew, which follows the row as it is measured. A list without items answers `null`. It counts along the list's axis from the side item 0 is on (the bottom of an inverted list); in a header before the first row, `index` is 0 and `offset` negative.
-
-```rust tabs
-let list = element_ref();
-let reading = signal(None::<ListScrollPosition>);
-
-virtual_list(count, row)
-    .estimated_item_size(px(48.0))
-    .on_scroll(move |_| {
-        spawn(async move { reading.set(list.measure_scroll_position().await) });
-    })
-    .element_ref(&list)
-
-// Later, in a list made anew:
-if let Some(at) = reading.get() {
-    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
-}
-```
 
 ```tsx tabs
 let list!: ListRef;
@@ -831,9 +814,61 @@ let reading: { index: number; offset: number } | null = null;
 if (reading) list.scrollToIndex({ index: reading.index, viewOffset: -reading.offset, animated: false });
 ```
 
+```rust tabs
+let list = element_ref();
+let reading = signal(None::<ListScrollPosition>);
+
+virtual_list(count, row)
+    .estimated_item_size(px(48.0))
+    .on_scroll(move |_| {
+        spawn(async move { reading.set(list.measure_scroll_position().await) });
+    })
+    .element_ref(&list)
+
+// Later, in a list made anew:
+if let Some(at) = reading.get() {
+    list.scroll_to_index(at.index, percentage(0.0), -at.offset, false);
+}
+```
+
 ## A settings-style list
 
 The look of a list is the app's own: the list places and recycles the rows, and the rows, dividers and surfaces are your views. A grouped, settings-style list is a list with padding, a separator and rounded first and last rows. Make it a component of your own and use it wherever the app lists settings:
+
+```tsx tabs
+import { List, Text, View } from "nsh";
+
+type Setting = { id: string; label: string };
+
+function SettingsList(props: { each: Setting[]; onSelect: (s: Setting) => void }) {
+  return (
+    <View class="flex-1 bg-neutral-100 dark:bg-neutral-950">
+      <List
+        each={props.each}
+        estimatedItemSize={48}
+        style={{ flex: 1 }}
+        contentStyle={{ padding: 16 }}
+        separator={() => (
+          <View class="bg-white dark:bg-neutral-900">
+            <View class="ml-4 h-px bg-neutral-200 dark:bg-neutral-800" />
+          </View>
+        )}
+      >
+        {(s, i) => (
+          <View
+            onPress={() => props.onSelect(s())}
+            role="button"
+            class="h-12 justify-center bg-white px-4 active:bg-neutral-200 dark:bg-neutral-900"
+            classList={{ "rounded-t-xl": i() === 0, "rounded-b-xl": i() === props.each.length - 1 }}
+          >
+            <Text>{s().label}</Text>
+          </View>
+        )}
+      </List>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use std::rc::Rc;
@@ -873,41 +908,6 @@ pub fn settings_list(settings: Rc<Vec<Setting>>, on_select: impl Fn(&Setting) + 
         })
         .flex_1(),
     )
-}
-```
-
-```tsx tabs
-import { List, Text, View } from "nsh";
-
-type Setting = { id: string; label: string };
-
-function SettingsList(props: { each: Setting[]; onSelect: (s: Setting) => void }) {
-  return (
-    <View class="flex-1 bg-neutral-100 dark:bg-neutral-950">
-      <List
-        each={props.each}
-        estimatedItemSize={48}
-        style={{ flex: 1 }}
-        contentStyle={{ padding: 16 }}
-        separator={() => (
-          <View class="bg-white dark:bg-neutral-900">
-            <View class="ml-4 h-px bg-neutral-200 dark:bg-neutral-800" />
-          </View>
-        )}
-      >
-        {(s, i) => (
-          <View
-            onPress={() => props.onSelect(s())}
-            role="button"
-            class="h-12 justify-center bg-white px-4 active:bg-neutral-200 dark:bg-neutral-900"
-            classList={{ "rounded-t-xl": i() === 0, "rounded-b-xl": i() === props.each.length - 1 }}
-          >
-            <Text>{s().label}</Text>
-          </View>
-        )}
-      </List>
-    </View>
-  );
 }
 ```
 

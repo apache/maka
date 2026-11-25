@@ -747,6 +747,43 @@ public class NshView extends FrameLayout {
         endShaders();
     }
 
+    // --- Moving to the activity made again -----------------------------------------
+
+    /**
+     * Whether the view can move to another activity ({@link #leaveActivity}): it was made with a
+     * {@link android.content.MutableContextWrapper} of its activity, which it and its views keep as their context.
+     */
+    boolean canMove() {
+        return handle != 0 && getContext() instanceof android.content.MutableContextWrapper;
+    }
+
+    /**
+     * Its activity goes, and the system makes it again at once, for a configuration change it does not hand to the
+     * running one (an overlay changing its resources, such as the navigation mode or the wallpaper's colors). The app
+     * keeps running: this takes the view and the windows it shows over the activity (its dialogs, alerts and menus)
+     * off it, the views as they are, and {@link #enterActivity} shows them in the new one. Only where
+     * {@link #canMove}.
+     */
+    void leaveActivity() {
+        mounter.leaveWindows();
+        android.view.ViewParent parent = getParent();
+        if (parent instanceof android.view.ViewGroup) ((android.view.ViewGroup) parent).removeView(this);
+    }
+
+    /**
+     * Shows the view, taken off the activity it was in ({@link #leaveActivity}), as the content of {@code activity},
+     * the one made again, with the windows it showed; the views and their focus are as they were, and the app hears
+     * the new activity's environment (its insets, appearance and density).
+     */
+    void enterActivity(Activity activity) {
+        ((android.content.MutableContextWrapper) getContext()).setBaseContext(activity);
+        activity.setContentView(this);
+        // What changed reaches the views as Android hands a change to a running activity's: its own density here
+        // (onConfigurationChanged), the rest of the environment with the new window's insets.
+        dispatchConfigurationChanged(getResources().getConfiguration());
+        mounter.enterWindows();
+    }
+
     /**
      * Called by the native side when the running app stopped because another
      * one replaced it ({@code Host::load}). Batches the old app sent before
@@ -801,6 +838,12 @@ public class NshView extends FrameLayout {
 
     private float keyboard;
     /**
+     * The keyboard height a modal reported, in pixels, or 0 when none holds it. A dialog is its own window: the
+     * activity's insets never see the keyboard that window raised, so the modal reports it and this stands in for
+     * the activity's until the dialog closes.
+     */
+    private float modalKeyboard;
+    /**
      * Whether the app is in use (`lifecycle()`): its activity's state, 0 resumed (active), 1 paused or started
      * again (inactive: visible without the focus), 2 stopped (background). Active until the activity says otherwise.
      */
@@ -830,7 +873,9 @@ public class NshView extends FrameLayout {
             density = d;
             mounter.setDensity(d);
         }
-        publishEnvironment(getRootWindowInsets());
+        // Out of a window ({@link #enterActivity} before its window comes) the view has no insets: they and the rest
+        // of the environment go out as the window applies them.
+        if (isAttachedToWindow()) publishEnvironment(getRootWindowInsets());
         int w = getWidth(), h = getHeight();
         if (rescaled && handle != 0 && w > 0 && h > 0) Native.resize(handle, w / density, h / density);
     }
@@ -850,11 +895,16 @@ public class NshView extends FrameLayout {
             && (window.getAttributes().softInputMode & WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST) == WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;
     }
 
+    /** Attached to a window and not laid out in it yet ({@link #onLayout}). */
+    private boolean firstLayoutInWindow;
+
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
-        // Insets depend on where the view sits in the window.
-        if (changed) publishEnvironment(getRootWindowInsets());
+        // Insets depend on where the view sits in the window: in a window it was attached to since, it may sit where
+        // it sat in the one before, unchanged, while the insets came before the window's first layout.
+        if (changed || firstLayoutInWindow) publishEnvironment(getRootWindowInsets());
+        firstLayoutInWindow = false;
     }
 
     /**
@@ -880,12 +930,8 @@ public class NshView extends FrameLayout {
                 barsBottom = insets.getSystemWindowInsetBottom();
                 barsLeft = insets.getSystemWindowInsetLeft();
             }
-            View window = getRootView();
-            int[] at = new int[2];
-            getLocationInWindow(at);
-            int gapLeft = at[0], gapTop = at[1];
-            int gapRight = window.getWidth() - at[0] - getWidth();
-            int gapBottom = window.getHeight() - at[1] - getHeight();
+            int[] gaps = gaps();
+            int gapLeft = gaps[0], gapTop = gaps[1], gapRight = gaps[2], gapBottom = gaps[3];
             top = Math.max(0, barsTop - gapTop);
             right = Math.max(0, barsRight - gapRight);
             bottom = Math.max(0, barsBottom - gapBottom);
@@ -894,7 +940,10 @@ public class NshView extends FrameLayout {
             // bottom safe area under it included).
             ime = Math.min(getHeight(), Math.max(0, keyboardBottom - gapBottom));
         }
-        if (ime != keyboard) {
+        // A modal holding the keyboard owns the inset: this window's own ime is
+        // zero while a dialog has the focus, and reporting that would take the
+        // app's fields back under the keys.
+        if (modalKeyboard == 0 && ime != keyboard) {
             keyboard = ime;
             // Nothing to do when the system pans the window instead.
             int[] at = new int[2];
@@ -914,8 +963,9 @@ public class NshView extends FrameLayout {
         safe = new float[] {top / density, right / density, bottom / density, left / density};
         java.util.Locale locale = hostLocale != null ? hostLocale : java.util.Locale.getDefault();
         float fontScale = hostFontScale > 0 && !Float.isInfinite(hostFontScale) ? hostFontScale : c.fontScale;
+        float reported = modalKeyboard > 0 ? modalKeyboard : ime;
         Native.environment(handle, new float[] {
-            top / density, right / density, bottom / density, left / density, ime / density, (float) keyboardDuration, fontScale,
+            top / density, right / density, bottom / density, left / density, reported / density, (float) keyboardDuration, fontScale,
             android.text.TextUtils.getLayoutDirectionFromLocale(java.util.Locale.getDefault()) == LAYOUT_DIRECTION_RTL ? 1 : 0,
             // "Remove animations" sets the animator scale to 0.
             android.provider.Settings.Global.getFloat(getContext().getContentResolver(),
@@ -941,6 +991,19 @@ public class NshView extends FrameLayout {
         // Screens report their own insets only when their options change, so
         // a page already shown would keep the old safe area.
         if (!java.util.Arrays.equals(previous, safe)) mounter.reportAllScreenInsets();
+    }
+
+    /**
+     * A modal window's keyboard height, in pixels (0 when its keyboard went away).
+     *
+     * A dialog owns its own window and its own insets, so the activity never learns about the keyboard that window
+     * raised. The modal reports it here, and the environment carries it while the dialog is up; {@link
+     * #keyboardFromModal}(0) hands the inset back to the activity.
+     */
+    void keyboardFromModal(int px) {
+        if (modalKeyboard == px) return;
+        modalKeyboard = px;
+        publishEnvironment(getRootWindowInsets());
     }
 
     /** The system's time zone's ID (`localeSettings()`'s `timeZone`). */
@@ -1055,7 +1118,11 @@ public class NshView extends FrameLayout {
     // --- Back button -------------------------------------------------------------
 
     private Object backCallback;
-    private boolean backRegistered;
+    /**
+     * The window's dispatcher the callback is registered with, while it is: the view may move to another window
+     * (an embedding host's, or the activity made again for a configuration change), whose dispatcher is another.
+     */
+    private Object backDispatcher;
     private boolean exiting;
 
     /** The mounter, for the test agent ({@link TestAgent}). */
@@ -1131,22 +1198,31 @@ public class NshView extends FrameLayout {
     /** Whether the app wants back presses (registers the callback). */
     void setBackHandling(boolean wanted) {
         if (Build.VERSION.SDK_INT < 33) return;
+        if (!wanted) {
+            releaseBackCallback();
+            return;
+        }
+        if (backDispatcher != null) return;
         android.window.OnBackInvokedDispatcher dispatcher = findOnBackInvokedDispatcher();
         if (dispatcher == null) return;
         if (backCallback == null) backCallback = BackCallbacks.create(this, mounter);
-        android.window.OnBackInvokedCallback callback = (android.window.OnBackInvokedCallback) backCallback;
-        if (wanted && !backRegistered) {
-            dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
-            backRegistered = true;
-        } else if (!wanted && backRegistered) {
-            dispatcher.unregisterOnBackInvokedCallback(callback);
-            backRegistered = false;
-        }
+        dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                (android.window.OnBackInvokedCallback) backCallback);
+        backDispatcher = dispatcher;
+    }
+
+    /** Takes the callback back from the dispatcher it is registered with, if it is. */
+    private void releaseBackCallback() {
+        if (Build.VERSION.SDK_INT < 33 || backDispatcher == null) return;
+        ((android.window.OnBackInvokedDispatcher) backDispatcher)
+                .unregisterOnBackInvokedCallback((android.window.OnBackInvokedCallback) backCallback);
+        backDispatcher = null;
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        firstLayoutInWindow = true;
         getViewTreeObserver().addOnTouchModeChangeListener(keyboardFocus);
         accessibility().addTouchExplorationStateChangeListener(screenReader);
         Activity activity = activity(getContext());
@@ -1180,6 +1256,8 @@ public class NshView extends FrameLayout {
         keys.focusLost();
         backKeyDown = false;
         if (handle != 0) Native.keyReset(handle);
+        // The window it goes back with, if any, has another dispatcher: attached again, the view registers there.
+        releaseBackCallback();
         accessibility().removeTouchExplorationStateChangeListener(screenReader);
         if (Lifecycles.registered != null) Lifecycles.registered.views.remove(this);
         network.views.remove(this);
@@ -1371,14 +1449,27 @@ public class NshView extends FrameLayout {
             bottom = insets.getSystemWindowInsetBottom();
             left = insets.getSystemWindowInsetLeft();
         }
+        int[] gaps = gaps();
+        return new int[] {
+            Math.max(0, top - gaps[1]),
+            Math.max(0, right - gaps[2]),
+            Math.max(0, bottom - gaps[3]),
+            Math.max(0, left - gaps[0]),
+        };
+    }
+
+    /**
+     * Between the view and its window's edges (px: left, top, right, bottom). None before the window's first layout:
+     * the view's own frame is still the one it had in the window it was in before, if any (the activity made again
+     * for a configuration change), and the layout publishes the environment again ({@link #onLayout}).
+     */
+    private int[] gaps() {
         View window = getRootView();
+        if (window == this || window.getWidth() == 0 && window.getHeight() == 0) return new int[4];
         int[] at = new int[2];
         getLocationInWindow(at);
         return new int[] {
-            Math.max(0, top - at[1]),
-            Math.max(0, right - (window.getWidth() - at[0] - getWidth())),
-            Math.max(0, bottom - (window.getHeight() - at[1] - getHeight())),
-            Math.max(0, left - at[0]),
+            at[0], at[1], window.getWidth() - at[0] - getWidth(), window.getHeight() - at[1] - getHeight(),
         };
     }
 

@@ -795,6 +795,7 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::Button | Role::ImageButton | Role::KeyboardKey => Gtk::Button,
         Role::Link => Gtk::Link,
         Role::Search => Gtk::SearchBox,
+        Role::Textbox => Gtk::TextBox,
         Role::Image => Gtk::Img,
         Role::Text => Gtk::Label,
         Role::Adjustable => Gtk::Slider,
@@ -837,6 +838,7 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::TreeItem => Gtk::TreeItem,
         Role::Dialog => Gtk::Dialog,
         Role::AlertDialog => Gtk::AlertDialog,
+        Role::TabPanel => Gtk::TabPanel,
     }
 }
 
@@ -2549,6 +2551,7 @@ mod tests {
             (Role::Tab, Gtk::Tab),
             (Role::Tablist, Gtk::TabList),
             (Role::Search, Gtk::SearchBox),
+            (Role::Textbox, Gtk::TextBox),
             (Role::Progressbar, Gtk::ProgressBar),
             (Role::List, Gtk::List),
             (Role::Listbox, Gtk::ListBox),
@@ -2587,6 +2590,7 @@ mod tests {
             (Role::MenuItemRadio, Gtk::MenuItemRadio),
             (Role::Dialog, Gtk::Dialog),
             (Role::AlertDialog, Gtk::AlertDialog),
+            (Role::TabPanel, Gtk::TabPanel),
         ] {
             assert_eq!(
                 role_for(&with_role(role), ViewKind::View, false),

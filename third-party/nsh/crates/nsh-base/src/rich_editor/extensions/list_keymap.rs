@@ -81,7 +81,12 @@ pub fn list_keymap(options: &ListKeymapOptions) -> Vec<(String, BoxCommand)> {
                 let Some(item) = state.schema().node_type(&list.item_name) else {
                     return false;
                 };
-                handle_delete(state, reborrow(&mut dispatch), &item)
+                hoist_branching_nested_list(
+                    state,
+                    reborrow(&mut dispatch),
+                    &item,
+                    &list.wrapper_names,
+                ) || handle_delete(state, reborrow(&mut dispatch), &item)
             })
         })
     };
@@ -219,10 +224,93 @@ fn next_list_depth(state: &EditorState, item: &NodeType) -> Option<usize> {
     (depth > 0).then_some(depth)
 }
 
+/// Hoists all list items from a branching nested list immediately after
+/// the cursor into the parent list (Tiptap's `hoistBranchingNestedList`).
+pub(crate) fn hoist_branching_nested_list(
+    state: &EditorState,
+    dispatch: Dispatch<'_>,
+    item: &NodeType,
+    wrappers: &[String],
+) -> bool {
+    let selection = state.selection();
+    if !selection.empty() {
+        return false;
+    }
+    let from = selection.resolved_from();
+    if !from.parent().is_textblock() || from.parent_offset != from.parent().content().size() {
+        return false;
+    }
+    let Some(list_item_depth) = (1..=from.depth)
+        .rev()
+        .find(|&depth| from.node(depth).ty() == item)
+    else {
+        return false;
+    };
+    let list_item = from.node(list_item_depth);
+    let index_in_list_item = from.index(list_item_depth);
+    if index_in_list_item + 1 >= list_item.child_count() {
+        return false;
+    }
+    let next_child = list_item.child(index_in_list_item + 1);
+    if !wrappers.iter().any(|w| w == next_child.ty().name()) {
+        return false;
+    }
+    let has_branching = next_child
+        .content()
+        .iter()
+        .any(|child| child.ty() == item && child.child_count() > 1);
+    if !has_branching {
+        return false;
+    }
+    let nested_list_pos = from.after(from.depth);
+    let Ok(after_resolved) = state.doc().resolve(nested_list_pos) else {
+        return false;
+    };
+    let Some(node_after) = after_resolved.node_after() else {
+        return false;
+    };
+    if !wrappers.iter().any(|w| w == node_after.ty().name()) {
+        return false;
+    }
+    let items: Vec<_> = node_after.content().iter().cloned().collect();
+    if items.is_empty() {
+        return false;
+    }
+    let insert_pos = from.after(list_item_depth);
+    if let Some(dispatch) = dispatch {
+        let mut tr = state.tr();
+        if tr
+            .delete(nested_list_pos, nested_list_pos + node_after.node_size())
+            .is_err()
+        {
+            return false;
+        }
+        let mapped_insert_pos = tr.mapping.map(insert_pos, 1);
+        if tr.insert(mapped_insert_pos, Fragment::from(items)).is_err() {
+            return false;
+        }
+        let mapped_sel = selection.map(tr.doc(), &tr.mapping);
+        tr.set_selection(mapped_sel);
+        dispatch(tr);
+    }
+    true
+}
+
 /// Tiptap's list Delete: at the end of an item, joins the item after it
-/// (a nested list's first item is lifted and joined, a shallower one's
-/// text joined).
-pub fn handle_delete(state: &EditorState, dispatch: Dispatch<'_>, item: &NodeType) -> bool {
+/// (a branching nested list is hoisted into the parent list; a shallow
+/// nested list's first item is lifted and joined, a shallower one's text
+/// joined).
+pub fn handle_delete(state: &EditorState, mut dispatch: Dispatch<'_>, item: &NodeType) -> bool {
+    let list_wrappers: Vec<String> = state
+        .schema()
+        .node_types()
+        .into_iter()
+        .filter(|ty| ty.is_in_group("list"))
+        .map(|ty| ty.name().to_owned())
+        .collect();
+    if hoist_branching_nested_list(state, reborrow(&mut dispatch), item, &list_wrappers) {
+        return true;
+    }
     if !is_node_active(state, item, None)
         || !is_at_end_of_node(state, item)
         || !state.selection().empty()

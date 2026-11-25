@@ -108,7 +108,6 @@ fn app_config(
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,
@@ -1993,6 +1992,68 @@ fn picked_files_past_the_apps_limit_reach_js_unread() {
         )
     });
     assert_eq!(asked.expect("a pick").max_size, Some(4));
+}
+
+const PASTE_LIMIT: &str = r#"import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+const shown = signal("");
+
+mount(() => (
+  <View>
+    <Input
+      testID="field"
+      pasteMaxSize={4}
+      onPaste={(e) =>
+        shown.set(
+          `read ${e.files.map((f) => `${f.name}:${f.size}`).join(",")} ` +
+            `unread ${e.tooLarge.map((f) => `${f.name}:${f.type}:${f.size}`).join(",")}`,
+        )
+      }
+    />
+    <Text>{shown()}</Text>
+  </View>
+));
+"#;
+
+#[test]
+fn pasted_files_past_the_inputs_limit_reach_js_unread() {
+    let (engine, rx) = start(PASTE_LIMIT);
+    let control = engine.control();
+    let mut field = None;
+    let mut config = None;
+    until(&rx, |batch| {
+        for item in &batch.items {
+            if let MountItem::Input { id, config: c } = item {
+                field = Some(*id);
+                config = Some(c.clone());
+            }
+        }
+        field.is_some()
+    });
+    let field = field.expect("the field");
+    // The platform reads up to the limit before it reads a file.
+    assert_eq!(config.expect("its config").paste_max_size, Some(4));
+    let mut paste = nsh_core::PasteEvent::new("");
+    // Read, read but past the limit (a platform that could not tell its
+    // size first), and not read.
+    paste.files = vec![
+        nsh_core::PastedFile::new("a.txt", "text/plain", b"abcd".to_vec()),
+        nsh_core::PastedFile::new("b.txt", "text/plain", b"abcde".to_vec()),
+    ];
+    paste.too_large = vec![nsh_core::PastedFile::too_large(
+        "clip.mp4",
+        "video/mp4",
+        400_000_000,
+    )];
+    control.dispatch_event(
+        field,
+        EventKind::Paste,
+        EventPayload::Paste(Box::new(paste)),
+    );
+    let wanted = "read a.txt:4 unread clip.mp4:video/mp4:400000000,b.txt:text/plain:5";
+    let batches = until(&rx, |batch| shows(batch, wanted));
+    assert!(batches.iter().any(|b| shows(b, wanted)), "{wanted}");
 }
 
 const PICK: &str = r#"import { mount, signal, Text } from "nsh";
@@ -7000,6 +7061,48 @@ fn the_tab_bar_is_the_systems_component_on_ios_and_android() {
             "{os:?}"
         );
         assert_eq!(value("selectedIndex"), Some(serde_json::json!(0)), "{os:?}");
+    }
+}
+
+/// The bar's own view is what takes a press: its container passes one on.
+/// A bar out of sight (`hidden`, or hidden by a pushed page's
+/// `hidesBottomBarWhenPushed`) leaves the strip it had, and a control the
+/// app draws there hears the press.
+#[test]
+fn the_tab_bars_container_takes_no_press_of_its_own() {
+    use nsh_core::platform::Os;
+
+    for os in [Os::Ios, Os::Android] {
+        let (_engine, rx) = start_in(
+            TAB_BAR,
+            Environment {
+                os,
+                ..Environment::default()
+            },
+        );
+        let batches = until(&rx, |batch| batch.items.iter().any(is_tab_bar));
+        let container = batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .find_map(|item| match item {
+                MountItem::Component { id, .. } if is_tab_bar(item) => Some(*id),
+                _ => None,
+            })
+            .expect("the system bar's container");
+        let props = batches
+            .iter()
+            .flat_map(|batch| &batch.items)
+            .filter_map(|item| match item {
+                MountItem::ViewProps { id, props } if *id == container => Some(props),
+                _ => None,
+            })
+            .next_back()
+            .expect("the container's box-none reaches the platform");
+        assert_eq!(
+            props.pointer_events,
+            nsh_core::PointerEvents::BoxNone,
+            "{os:?}"
+        );
     }
 }
 

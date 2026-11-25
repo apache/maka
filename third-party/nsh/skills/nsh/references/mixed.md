@@ -1,7 +1,7 @@
-# Rust + TSX
+# TSX with Rust
 
-One app, two languages: a Rust crate owns the core and exports typed components,
-modules and classes; TSX screens import them by a specifier. Everything is checked
+One app, two languages: TSX screens import typed components, modules and classes by a
+specifier from Rust nshm crates, the app's own in `ext/` or published ones. Everything is checked
 against declarations generated from the Rust signatures.
 
 Rust UI: [rust.md](rust.md). TSX: [tsx.md](tsx.md). Commands: [tooling.md](tooling.md). This page covers the join.
@@ -10,21 +10,21 @@ Every Rust and TSX block here is verbatim from `examples/rust-exports`, which CI
 
 ## When to pick it
 
-Start from what must ship after the binary does:
+Start from what the app needs from Rust:
 
 | Situation | Mode |
 | --- | --- |
-| All logic and UI ship in the binary; no JS VM wanted | Rust |
-| Rust core, plus screens that change often, experiments, or screens delivered as signed packages | Rust + TSX |
-| The app needs a crate (parser, crypto, storage engine, a native view) under TSX screens | Rust + TSX |
-| UI delivered at run time, no Rust code of your own, no Rust toolchain | TSX |
+| Screens and logic fit TypeScript, or the UI is delivered at run time; no Rust toolchain | TSX |
+| The app needs a crate (parser, crypto, storage engine, heavy computation, a native view) under TSX screens | TSX with Rust |
+| A Rust core, plus screens that change often, experiments, or screens delivered as signed packages | TSX with Rust |
+| The app's core is heavy computation or system work; all logic and UI ship in the binary; no JS VM wanted | Rust |
 
 Costs of this mode over the other two:
 
-- It carries QuickJS, which a Rust app does not (in the browser, TSX runs on the browser's JavaScript engine).
 - It needs the Rust toolchain, and `rustup target add ...` per target. A TSX app needs neither.
 - It builds hosts for the app. The first `nsh check` or `nsh test` compiles the crate and NSH's core, a minute or more the first time; later runs reuse it.
 - Rust edits restart the app. TSX edits are hot.
+- It carries QuickJS, which a Rust app does not (in the browser, TSX runs on the browser's JavaScript engine).
 
 A Rust app can gain TSX later: it already has a `#[native_module]`; add an entry and name it (`nsh run App.tsx`).
 

@@ -6,6 +6,8 @@
 //!   nsh-omarchy/0.3.2/            crates.io: the .crate, its sha256 checked, unpacked
 //!   github.com/acme/ui/1.4.0/     a Git tag that is a version
 //!   github.com/acme/ui/4f2a1c0e9b3d/  a commit (a branch, a rev or another tag)
+//!   github.com/longbridge/nsh/4f2a1c0e9b3d/crates/nsh-extra/
+//!                                 one of nsh's own nshm in nsh's repository
 //!   .git/github.com/acme/ui/      one bare clone per repository
 //! ```
 //!
@@ -28,6 +30,7 @@ use super::{
     dep::{Origin, Ref},
     status,
 };
+use crate::rust_app;
 
 /// The sparse index of crates.io.
 const INDEX: &str = "https://index.crates.io";
@@ -262,10 +265,33 @@ impl Fetch for Net {
         origin: &Origin,
         candidate: &Candidate,
     ) -> anyhow::Result<String> {
-        let rel = installed_dir(name, origin, candidate)?;
-        let dir = self.root.join(&rel);
-        if dir.is_dir() {
-            return Ok(rel);
+        let base = installed_dir(name, origin, candidate)?;
+        let dir = self.root.join(&base);
+        // One of nsh's own nshm from a repository is a crate of nsh's
+        // workspace there when the commit has it: installed with only that
+        // crate and the workspace's manifest it takes its version from.
+        let mut sub = own_crate(name, origin);
+        if let Some(sub) = &sub
+            && dir.join(sub).is_dir()
+        {
+            return Ok(format!("{base}/{sub}"));
+        }
+        if sub.is_none() && dir.is_dir() {
+            return Ok(base);
+        }
+        let mut paths = Vec::new();
+        if let (Some(s), Origin::Git { url, .. }) = (&sub, origin) {
+            let commit = candidate.commit.as_deref().context("a commit")?;
+            let repo = self.repository_with(url, commit)?;
+            let manifest = format!("{commit}:{s}/Cargo.toml");
+            if git(Some(&repo), &["cat-file", "-e", &manifest]).is_ok() {
+                paths = vec!["Cargo.toml".to_owned(), s.clone()];
+            } else {
+                sub = None;
+                if dir.is_dir() {
+                    return Ok(base);
+                }
+            }
         }
         let parent = dir.parent().expect("an installed nshm has a parent");
         fs::create_dir_all(parent)?;
@@ -306,6 +332,7 @@ impl Fetch for Net {
                     .arg("-C")
                     .arg(&repo)
                     .args(["archive", "--format=tar", commit])
+                    .args(&paths)
                     .env("GIT_TERMINAL_PROMPT", "0")
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -326,16 +353,30 @@ impl Fetch for Net {
             }
             Origin::Path(_) => bail!("a directory is not installed"),
         };
-        match fs::rename(&unpacked, &dir) {
+        // Another of nsh's own nshm at this commit is installed: this one
+        // joins it.
+        let (from, to) = match &sub {
+            Some(s) if dir.is_dir() => (unpacked.join(s), dir.join(s)),
+            _ => (unpacked, dir.clone()),
+        };
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        match fs::rename(&from, &to) {
             Ok(()) => {}
             // Installed meanwhile by another nsh: that copy is the same.
-            Err(_) if dir.is_dir() => {}
+            Err(_) if to.is_dir() => {}
             Err(e) => {
                 let _ = fs::remove_dir_all(&tmp);
-                return Err(e).with_context(|| format!("installing {}", dir.display()));
+                return Err(e).with_context(|| format!("installing {}", to.display()));
             }
         }
         let _ = fs::remove_dir_all(&tmp);
+        let rel = match &sub {
+            Some(s) => format!("{base}/{s}"),
+            None => base,
+        };
+        let dir = self.root.join(&rel);
         let shown = if name.is_empty() {
             match origin {
                 Origin::Git { url, .. } => repo_dir(url)
@@ -359,6 +400,13 @@ impl Fetch for Net {
         );
         Ok(rel)
     }
+}
+
+/// The directory of nsh's own nshm `name` ([`rust_app::OWN_NSHM`]) in a
+/// repository of nsh that `origin` is: `crates/<name>`.
+fn own_crate(name: &str, origin: &Origin) -> Option<String> {
+    (matches!(origin, Origin::Git { .. }) && rust_app::OWN_NSHM.contains(&name))
+        .then(|| format!("crates/{name}"))
 }
 
 /// `path` with the user's home directory as `~`, as people write it.
@@ -557,6 +605,72 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].commit.as_deref(), Some("bbb"));
         assert_eq!(list[1].version.as_ref().unwrap().to_string(), "1.3.0");
+    }
+
+    /// nsh's own nshm from a repository of nsh: its crate, with the
+    /// workspace manifest it takes its version from and nothing else.
+    #[test]
+    fn nshs_own_nshm_installs_its_crate_from_nshs_repository() {
+        if git(None, &["--version"]).is_err() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("nsh-fetch-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let repo = base.join("nsh");
+        for dir in ["crates/nsh-extra/src", "crates/nsh-core/src", "website"] {
+            fs::create_dir_all(repo.join(dir)).unwrap();
+        }
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"0.6.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join("crates/nsh-extra/Cargo.toml"),
+            "[package]\nname = \"nsh-extra\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        fs::write(repo.join("crates/nsh-extra/src/lib.rs"), "").unwrap();
+        fs::write(repo.join("crates/nsh-core/src/lib.rs"), "").unwrap();
+        fs::write(repo.join("website/index.md"), "").unwrap();
+        let run = |args: &[&str]| git(Some(&repo), args).unwrap();
+        run(&["init", "-q", "-b", "main"]);
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "nsh",
+        ]);
+        let commit = run(&["rev-parse", "HEAD"]);
+        let url = format!("file://{}", repo.display());
+        let origin = Origin::Git {
+            url: url.clone(),
+            reference: Ref::Rev(commit.clone()),
+        };
+        let mut net = Net::new(base.join("nshms"));
+        let candidates = net.candidates("nsh-extra", &origin).unwrap();
+        assert_eq!(candidates[0].commit.as_deref(), Some(commit.as_str()));
+        let rel = net.install("nsh-extra", &origin, &candidates[0]).unwrap();
+        assert_eq!(
+            rel,
+            format!("{}/{}/crates/nsh-extra", repo_dir(&url), &commit[..12])
+        );
+        let installed = base.join("nshms").join(&rel);
+        assert!(installed.join("src/lib.rs").is_file());
+        let root = installed.parent().unwrap().parent().unwrap();
+        assert!(root.join("Cargo.toml").is_file());
+        assert!(!root.join("crates/nsh-core").exists());
+        assert!(!root.join("website").exists());
+        // Installed: the same directory, without Git.
+        assert_eq!(
+            net.install("nsh-extra", &origin, &candidates[0]).unwrap(),
+            rel
+        );
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

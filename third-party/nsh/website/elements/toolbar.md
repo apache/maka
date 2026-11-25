@@ -14,40 +14,6 @@ A toolbar is a bar of controls: a text editor's formatting, a media player's tra
 related items (undo and redo, the alignment), and a `ToolbarSeparator` a line the app draws between runs. The look is
 the app's: the toolbar has no colors, padding or gaps of its own, and each control keeps its own state.
 
-```rust tabs
-use nsh_base::{button, theme, toggle, toolbar, toolbar_group, toolbar_separator};
-use nsh_core::prelude::*;
-
-fn formatting() -> impl IntoElement {
-    let bold = signal(false);
-    toolbar()
-        .accessibility_label("Formatting")
-        .items_center()
-        .gap_1()
-        .child(
-            toolbar_group()
-                .accessibility_label("History")
-                .child(button().accessibility_label("Undo").size_8().child(text("↶")))
-                .child(button().accessibility_label("Redo").size_8().child(text("↷"))),
-        )
-        .child(toolbar_separator().w(px(1.0)).h_5().bg(move || theme().border))
-        .child(
-            toggle()
-                .pressed(bold)
-                .accessibility_label("Bold")
-                .on_change(move |pressed: &bool| bold.set(*pressed))
-                .size_8()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(transparent_black())
-                .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
-                .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
-                .child(text("B")),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Button, Toggle, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
@@ -83,6 +49,40 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{button, theme, toggle, toolbar, toolbar_group, toolbar_separator};
+use nsh_core::prelude::*;
+
+fn formatting() -> impl IntoElement {
+    let bold = signal(false);
+    toolbar()
+        .accessibility_label("Formatting")
+        .items_center()
+        .gap_1()
+        .child(
+            toolbar_group()
+                .accessibility_label("History")
+                .child(button().accessibility_label("Undo").size_8().child(text("↶")))
+                .child(button().accessibility_label("Redo").size_8().child(text("↷"))),
+        )
+        .child(toolbar_separator().w(px(1.0)).h_5().bg(move || theme().border))
+        .child(
+            toggle()
+                .pressed(bold)
+                .accessibility_label("Bold")
+                .on_change(move |pressed: &bool| bold.set(*pressed))
+                .size_8()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(transparent_black())
+                .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+                .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
+                .child(text("B")),
+        )
+}
 ```
 
 `Toolbar`, `ToolbarGroup` and `ToolbarSeparator` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate

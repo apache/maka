@@ -15,6 +15,46 @@ Accordion（手风琴）把多个分区叠在一起，每个分区在自己的�
 - `AccordionTrigger`：标题中的按钮，展开和收起所在分区，并报告分区是否已展开。
 - `AccordionPanel`：分区的内容，分区展开时显示；设置 `reveal` 后高度以弹簧动画展开和收起。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+const FAQ = [
+  { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
+  { value: "returns", question: "How do I return an item?", answer: "Print the label from your order within 30 days." },
+];
+
+function App() {
+  const open = signal(["shipping"]);
+  return (
+    <Accordion value={open()} onChange={({ value }) => open.set(value)}>
+      {FAQ.map((item) => (
+        <AccordionItem value={item.value} class="border-b border-border">
+          <AccordionHeader>
+            <AccordionTrigger class="group flex-row items-center justify-between py-3 active:opacity-70">
+              <Text class="font-medium">{item.question}</Text>
+              <Text class="transition-transform group-aria-expanded:rotate-180">⌄</Text>
+            </AccordionTrigger>
+          </AccordionHeader>
+          <AccordionPanel reveal accessibilityLabel={item.question}>
+            <View class="pb-3">
+              <Text class="text-muted-foreground">{item.answer}</Text>
+            </View>
+          </AccordionPanel>
+        </AccordionItem>
+      ))}
+    </Accordion>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger, theme};
 use nsh_core::prelude::*;
@@ -59,46 +99,6 @@ fn faq() -> impl IntoElement {
     }
     list
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-const FAQ = [
-  { value: "shipping", question: "When will my order ship?", answer: "Orders placed before 2 pm leave the same day." },
-  { value: "returns", question: "How do I return an item?", answer: "Print the label from your order within 30 days." },
-];
-
-function App() {
-  const open = signal(["shipping"]);
-  return (
-    <Accordion value={open()} onChange={({ value }) => open.set(value)}>
-      {FAQ.map((item) => (
-        <AccordionItem value={item.value} class="border-b border-border">
-          <AccordionHeader>
-            <AccordionTrigger class="group flex-row items-center justify-between py-3 active:opacity-70">
-              <Text class="font-medium">{item.question}</Text>
-              <Text class="transition-transform group-aria-expanded:rotate-180">⌄</Text>
-            </AccordionTrigger>
-          </AccordionHeader>
-          <AccordionPanel reveal accessibilityLabel={item.question}>
-            <View class="pb-3">
-              <Text class="text-muted-foreground">{item.answer}</Text>
-            </View>
-          </AccordionPanel>
-        </AccordionItem>
-      ))}
-    </Accordion>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 这些部件来自 [`nsh/base`](../modules/nsh-base.md)，Rust 中是 `nsh-base` crate。值由应用持有：按下触发器时通过 `onChange` 报告下一个 `value`，accordion 展开应用传回的值所对应的分区。每个部件自己找到外层的部件，因此应用可以自由安排它们：分区之间的分隔线、标题里的徽标、标题前的图标。Rust 中由 `accordion()`、`accordion_item()`、`accordion_header()`、`accordion_trigger()` 和 `accordion_panel()` 创建，每个属性有对应的 setter，里面的内容用 `.child(..)` 添加。

@@ -48,6 +48,7 @@ export const SECTIONS: Section[] = [
 export const GROUPS: Record<string, Record<Lang, string>> = {
   start: { en: 'Start here', 'zh-CN': '入门' },
   platforms: { en: 'Platforms', 'zh-CN': '平台' },
+  publishing: { en: 'Publishing', 'zh-CN': '发布' },
   delivery: { en: 'Delivery and security', 'zh-CN': '下发与安全' },
   ui: { en: 'Building UI', 'zh-CN': '构建界面' },
   tools: { en: 'Tools and internals', 'zh-CN': '工具与原理' },

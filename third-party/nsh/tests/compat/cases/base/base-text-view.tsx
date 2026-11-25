@@ -18,7 +18,7 @@
 // (`TextView.parse`, `TextView.parseHtml`, `TextView.plainText`; emphasis
 // beside CJK text read by the CJK-friendly rule, a tag that names no
 // element read as text, bare URLs ending at CJK text, escaped brackets
-// around reference numbers read as text). Each
+// around reference numbers read as text, links and images left out). Each
 // document's texts are its own, so the script finds them. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
@@ -78,6 +78,8 @@ function App() {
   const url = TextView.parse("https://example.com。下一句").blocks[0];
   // A span's color read into a text style.
   const colored = TextView.parseHtml('<p><span style="color: red">x</span></p>').blocks[0];
+  // Links and images left out: their text and `alt` text.
+  const plain = TextView.parse("[a](https://a.com) ![i](i.png)", { links: false, images: false }).blocks[0];
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <TextView
@@ -154,6 +156,7 @@ function App() {
       <Text>{`CJK emphasis: ${cjk.type === "paragraph" ? cjk.content.map((i) => i.type).join(",") : cjk.type}`}</Text>
       <Text>{`CJK URL: ${url.type === "paragraph" ? url.content.map((i) => (i.type === "link" ? i.url : i.type)).join(",") : url.type}`}</Text>
       <Text>{`Math off: ${TextView.plainText(TextView.parse("Math $x$", { math: false }))}`}</Text>
+      <Text>{`Links off: ${plain.type === "paragraph" ? plain.content.map((i) => (i.type === "text" ? i.text : i.type)).join(",") : plain.type}`}</Text>
       <Text>{`From HTML: ${TextView.plainText(TextView.parseHtml("<p>Hi <i>there</i></p>"))}`}</Text>
       <Text>{`Text style: ${colored.type === "paragraph" ? colored.content.map((i) => (i.type === "textStyle" ? `${i.type} ${i.color}` : i.type)).join(",") : colored.type}`}</Text>
       <Text>{`Unknown tag: ${TextView.plainText(TextView.parse("<US tech> up"))}`}</Text>

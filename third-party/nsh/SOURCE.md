@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `d01cd3cce6645391c65a379d6230c2d2e651d55f`.
+synchronized through revision `3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359`.
 The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -35,8 +35,10 @@ and independent workspaces retain their attribution.
 
 Maka uses the canonical NSH component, event, ref, module and typed-style APIs.
 Desktop `Input` uses the platform's native editing path; Windows uses upstream's
-windowless RichEdit/TSF implementation. The structured skill composer uses
-RichEditor's schema and node-view model, as upstream's structured editors do.
+windowless RichEdit/TSF composition and window-specific IME association. The
+structured skill composer uses RichEditor's schema and node-view model, as
+upstream's structured editors do. NSH 0.7 moves `Speech` to `nsh-extra`; Maka
+dictation uses its own host binding.
 
 Lists, reactive item publication, component event traversal, input modality and
 focus-visible behavior use upstream implementations. Immutable captured files
@@ -66,7 +68,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   provide Kitty, Sixel and iTerm2 pixel transport, shared with the AppKit and
   Direct2D offscreen terminal surfaces and the TUI image store. GPUI and its
   embed example remain retired.
-- **Embedding and packages:** configured host loading, lazy plugin chunks,
+- **Embedding and packages:** `EmbeddedHost` binds the main `AppView` window to
+  `ROOT_ID`; configured host loading, lazy plugin chunks,
   `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
   terminal inspection are required by Maka's shells and plugin composition.
 - **Source-aware reading:** TextView preserves canonical source identity,
@@ -77,6 +80,8 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Input ordering and scopes:** `inputAction`, `ScrollIntent`, scoped/fallback
   key bindings and focus-event fences preserve editor actions, IME, paste and
   reload ordering. Scoped lookups also enforce upstream window isolation.
+- **Localization and TUI:** Maka's CJK locale and international formatting
+  support and bandless selection and focus marks remain local extensions.
 - **Native lifecycle:** terminal surfaces keep host ownership of windows and
   event loops while honoring menu labels, quit requests and system session
   termination. Stopping an engine revokes its input and frame receipts.

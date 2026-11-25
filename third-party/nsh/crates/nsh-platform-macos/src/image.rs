@@ -1129,6 +1129,12 @@ pub(crate) struct ImageState {
     options: ImageOptions,
     /// Bumped on every source change: older loads are stale.
     generation: u64,
+    /// Bumped when the placeholder itself goes stale (a new source or
+    /// placeholder), unlike `generation`, which a filter change bumps too:
+    /// the placeholder is decoded without the filters (`Look::default()`)
+    /// and at the size it started at (a resize never reloads it), so only
+    /// a new source or placeholder may reject its result.
+    placeholder_epoch: u64,
     /// The source's picture (not the placeholder) shown, and the lease that
     /// keeps it.
     image: Option<Picture>,
@@ -1171,6 +1177,7 @@ pub(crate) fn set(
             false
         } else {
             image.generation += 1;
+            image.placeholder_epoch += 1;
             let retain = options.retain_previous && source.is_some() && image.source.is_some();
             if !retain {
                 image.image = None;
@@ -1277,7 +1284,7 @@ fn want(view: &NshView) -> (Want, Look) {
 /// Requests the view's image (and placeholder) at its current size.
 fn start(surface: &Rc<Surface>, view: &NshView) {
     let (want, look) = want(view);
-    let (generation, source, placeholder, events, id) = {
+    let (generation, epoch, source, placeholder, events, id) = {
         let mut guard = view.state_mut();
         let s = &mut *guard;
         let (events, id) = (s.events, s.id);
@@ -1292,6 +1299,7 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
             .filter(|_| image.image.is_none() && image.placeholder_load.is_none());
         (
             image.generation,
+            image.placeholder_epoch,
             image.source.clone(),
             placeholder,
             events,
@@ -1381,7 +1389,7 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
                     let Some(image) = s
                         .image
                         .as_mut()
-                        .filter(|i| i.generation == generation && i.image.is_none())
+                        .filter(|i| i.placeholder_epoch == epoch && i.image.is_none())
                     else {
                         return;
                     };
@@ -1409,7 +1417,7 @@ fn start(surface: &Rc<Surface>, view: &NshView) {
     );
     if let Some(load) = load
         && let Some(i) = view.state_mut().image.as_mut()
-        && i.generation == generation
+        && i.placeholder_epoch == epoch
     {
         i.placeholder_load = Some(load);
     }

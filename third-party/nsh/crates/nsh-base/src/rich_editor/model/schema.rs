@@ -107,6 +107,9 @@ pub struct AttrSpec {
     /// Whether it is rendered to HTML at all (Tiptap's `rendered`, default
     /// true).
     pub rendered: bool,
+    /// When set, only these string values are accepted when parsing from or
+    /// rendering to HTML (e.g. `textAlign`'s `alignments` allowlist).
+    pub allowed_values: Option<Vec<String>>,
 }
 
 impl Default for AttrSpec {
@@ -118,6 +121,7 @@ impl Default for AttrSpec {
             render_html: None,
             keep_on_split: true,
             rendered: true,
+            allowed_values: None,
         }
     }
 }
@@ -481,6 +485,7 @@ fn attrs_from_json(spec: &Value) -> Result<Vec<(String, AttrSpec)>, SchemaError>
                         .transpose()?,
                     keep_on_split: bool_field(attr, "keepOnSplit", true)?,
                     rendered: bool_field(attr, "rendered", true)?,
+                    allowed_values: None,
                 },
             ))
         })

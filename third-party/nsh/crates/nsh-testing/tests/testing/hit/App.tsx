@@ -40,6 +40,21 @@ function App() {
       <View style={{ ...box(0, 300, 200, 70), clipPath: "inset(0 0 0 70% round 8px)" }}>
         <Text>Clipped</Text>
       </View>
+      {/* A wide target whose middle the overlay below covers: a press at a
+          position reaches the part of it nothing covers. */}
+      <View
+        style={box(10, 390, 200, 90)}
+        onPress={(e) =>
+          pressed.set(
+            `edge at ${e.position.x} ${e.position.y} in ${e.pagePosition.x} ${e.pagePosition.y}`,
+          )
+        }
+      >
+        <Text>Wide</Text>
+      </View>
+      <View style={box(100, 380, 120, 110)}>
+        <Text>Center overlay</Text>
+      </View>
       <Text>{`Pressed: ${pressed()}`}</Text>
     </View>
   );

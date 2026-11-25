@@ -45,7 +45,7 @@ use crate::surface::Surface;
 /// else any open app window, else the host window (for embedded views).
 pub(crate) fn dialog_owner(surface: &Surface) -> HWND {
     crate::app_window::focused_hwnd(surface)
-        .or_else(|| crate::app_window::all_hwnds(surface).into_iter().next())
+        .or_else(|| crate::app_window::hwnds(surface).into_iter().next())
         .unwrap_or_else(|| surface.hwnd())
 }
 

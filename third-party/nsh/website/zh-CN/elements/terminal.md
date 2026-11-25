@@ -82,6 +82,7 @@ fn shell() -> impl IntoElement {
 | 方法 | 说明 |
 |---|---|
 | `write(data)` | 显示程序的输出。 |
+| `write_bytes(data)` | *（Rust）* 直接向模拟器喂入原始输出字节（`&[u8]`），不要求每个分块本身是合法 UTF-8。 |
 | `reset()` | 清空屏幕和回滚缓冲区。 |
 | `text()` | 所有行的文本，返回 Promise。 |
 | `focus()` | 获取键盘焦点，手机上会弹出软键盘。 |

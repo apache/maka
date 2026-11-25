@@ -514,8 +514,6 @@ impl RootView {
                 && !objc2_foundation::NSProcessInfo::processInfo().isiOSAppOnMac(),
             // `ASWebAuthenticationSession` (`crate::auth_session`).
             auth_session: true,
-            // The Speech framework fed by the microphone.
-            speech: true,
             // The notification center.
             notifications: true,
             // AVAudioEngine and AVPlayer.
@@ -927,7 +925,6 @@ impl RootView {
             clipboard: None,
             host: self.ivars().options.host.clone(),
             picker: None,
-            speech: None,
             audio: None,
             windows: None,
             login_item: None,
@@ -1421,7 +1418,7 @@ fn lifecycle(mtm: MainThreadMarker) -> Lifecycle {
 
 /// The iOS version (`UIDevice.systemVersion`, the iOS version Catalyst
 /// apps run as), read once.
-fn os_version(mtm: MainThreadMarker) -> (u16, u16) {
+pub(crate) fn os_version(mtm: MainThreadMarker) -> (u16, u16) {
     static VERSION: std::sync::OnceLock<(u16, u16)> = std::sync::OnceLock::new();
     *VERSION.get_or_init(|| {
         let version = UIDevice::currentDevice(mtm).systemVersion().to_string();

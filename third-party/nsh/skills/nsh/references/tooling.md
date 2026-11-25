@@ -1,7 +1,7 @@
 # Tooling
 
-Commands for all three modes, Rust first. "Rust" is an app with `nsh.json` `"root"`. "Mixed" is a TSX entry with Rust nshm crates in `ext/` (`"dependencies"` by path), or `"rust"` and no
-`"root"`, so `App.tsx` is the entry. "TSX" has neither. Mode pages: [rust.md](rust.md), [mixed.md](mixed.md), [tsx.md](tsx.md).
+Commands for all three modes. "TSX" is an app with no Rust of its own. "Mixed" is a TSX entry with Rust nshm crates in `ext/` (`"dependencies"` by path), or `"rust"` and no
+`"root"`, so `App.tsx` is the entry. "Rust" is an app with `nsh.json` `"root"`. Mode pages: [tsx.md](tsx.md), [mixed.md](mixed.md), [rust.md](rust.md).
 
 ## First-run setup
 
@@ -11,7 +11,7 @@ supported distribution and install method. Installing this skill provides guidan
 the `nsh` CLI is installed separately. Use an existing project’s required CLI version
 rather than updating it as a side effect of a feature change.
 
-Rust and mixed apps also need Cargo and the target’s native build prerequisites;
+Mixed and Rust apps also need Cargo and the target’s native build prerequisites;
 TSX apps use the prebuilt runtime. Check only the target the user needs in
 [Platforms and prerequisites](#platforms-and-prerequisites). Follow the environment’s
 permissions when installing tools, and leave installing toolchains to the user: never
@@ -42,20 +42,20 @@ For TSX and mixed changes, also run `nsh build` to check bundler diagnostics.
 
 Every command takes `[ENTRY]`: the app's directory (default `.`) or a TSX entry file. `-v` (or `NSH_VERBOSE=1`) prints everything. `nsh <command> --help` lists flags.
 
-| Command | Rust | Mixed | TSX |
+| Command | TSX | Mixed | Rust |
 | --- | --- | --- | --- |
-| `nsh init DIR --template` | `rust` | `mixed` | `ts` (the default off a terminal) |
-| `nsh check` | `cargo check --all-targets`; `tsc` on test files if there is a `tsconfig.json` | `cargo check --all-targets`, then `tsc` | `tsc` |
-| `nsh build` | Describes the crates; writes `app.json`, `assets/` | Describes the crates, bundles, compiles to bytecode | Bundles, compiles to bytecode |
-| `nsh test` | `cargo test`, then `*.test.tsx` | Same | `*.test.tsx` |
-| `nsh run` | Builds the app's runner, no QuickJS, restarts on change | Hosts built with the crate; TSX hot, Rust restarts | Prebuilt host; hot updates |
-| `nsh dev` (`--server-only` for your own hosts) | Refused: use `nsh run` | Dev server and host | Dev server and host |
-| `nsh package --target` | Runner from Cargo | Runner with the crate, from Cargo | Prebuilt runtime; no Rust toolchain |
-| `nsh publish` | Refused | TSX only; crates ship in the host | Yes |
+| `nsh init DIR --template` | `ts` (the default off a terminal) | `mixed` | `rust` |
+| `nsh check` | `tsc` | `cargo check --all-targets`, then `tsc` | `cargo check --all-targets`; `tsc` on test files if there is a `tsconfig.json` |
+| `nsh build` | Bundles, compiles to bytecode | Describes the crates, bundles, compiles to bytecode | Describes the crates; writes `app.json`, `assets/` |
+| `nsh test` | `*.test.tsx` | `cargo test`, then `*.test.tsx` | `cargo test`, then `*.test.tsx` |
+| `nsh run` | Prebuilt host; hot updates | Hosts built with the crate; TSX hot, Rust restarts | Builds the app's runner, no QuickJS, restarts on change |
+| `nsh dev` (`--server-only` for your own hosts) | Dev server and host | Dev server and host | Refused: use `nsh run` |
+| `nsh package --target` | Prebuilt runtime; no Rust toolchain | Runner with the crate, from Cargo | Runner from Cargo |
+| `nsh publish` | Yes | TSX only; crates ship in the host | Refused |
 | `nsh update-manifest` | Yes | Yes | Yes |
-| `nsh keygen`, `certify`, `verify`, `revoke`, `symbolicate` | Keys only | Yes | Yes |
-| `cargo run` | Runs `src/main.rs` on the desktop backend | - | - |
-| `cargo test`, `cargo check` | Direct | Direct, for the crate | - |
+| `nsh keygen`, `certify`, `verify`, `revoke`, `symbolicate` | Yes | Yes | Keys only |
+| `cargo run` | - | - | Runs `src/main.rs` on the desktop backend |
+| `cargo test`, `cargo check` | - | Direct, for the crate | Direct |
 
 `nsh --help` says `nsh package` needs no Rust. That holds for TSX only.
 
@@ -274,15 +274,16 @@ nsh verify .nsh/out/com.example.app-2.nshpkg --root keys/root.pub
 
 Run the whole loop for your mode before calling work done. Skip full builds when `check` and headless tests answer the question.
 
-**Rust**
+**TSX**
 
 ```sh
-cargo check --all-targets      # or nsh check, which also checks TS tests
-cargo test                     # headless, through the UI, with nsh_testing::Headless
+nsh check                      # the only type check: fix every error
+nsh build                      # treat every warn as a finding
+nsh test                       # headless, hardened
 nsh run                        # look at it
 ```
 
-**Rust + TSX**
+**TSX with Rust (mixed)**
 
 ```sh
 nsh check                      # cargo check --all-targets, then tsc against the generated types
@@ -291,12 +292,11 @@ nsh test                       # cargo test, then *.test.tsx in a runner linked 
 nsh run                        # TSX hot; Rust restarts
 ```
 
-**TSX**
+**Rust**
 
 ```sh
-nsh check                      # the only type check: fix every error
-nsh build                      # treat every warn as a finding
-nsh test                       # headless, hardened
+cargo check --all-targets      # or nsh check, which also checks TS tests
+cargo test                     # headless, through the UI, with nsh_testing::Headless
 nsh run                        # look at it
 ```
 

@@ -10,18 +10,6 @@ demo: el-safe-area
 
 安全区让内容避开刘海或灵动岛、状态栏、主屏幕指示条、导航标题栏、Mac Catalyst 的窗口标题栏以及窗口化 iPad 应用的窗口控件（在 iPadOS 26 及更高版本上，窗口化应用的前缘 inset 与这些控件一样宽）。任何视图都可以用 CSS 的 `env()` 按它添加内边距：在 padding 或 margin 中使用 `env(safe-area-inset-top)`、`env(safe-area-inset-right)`、`env(safe-area-inset-bottom)` 和 `env(safe-area-inset-left)`。它们是节点所在根视图的边距：在 [NavPage](./nav-stack.md) 中是页面标题栏下方的边距，在 [Dialog](./dialog.md) 中是对话框的边距，其他地方是界面的安全区。在浏览器中页面就是根视图，这些变量就是浏览器自己的。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn app() -> impl IntoElement {
-    view()
-        .flex_1()
-        .bg(rgb(0xfff8c5))
-        .p_safe_area()
-        .child(text("Clear of the notch").text_2xl().font_weight(FontWeight::BOLD))
-}
-```
-
 ```tsx tabs
 import { mount, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -50,6 +38,18 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn app() -> impl IntoElement {
+    view()
+        .flex_1()
+        .bg(rgb(0xfff8c5))
+        .p_safe_area()
+        .child(text("Clear of the notch").text_2xl().font_weight(FontWeight::BOLD))
+}
+```
+
 背景色填满整个区域，包括状态栏背后的区域，内容从它下方开始。这些值跟随边距变化：旋转屏幕、进入另一个页面或对话框时，内边距会在原生侧更新。
 
 ## 取值
@@ -69,17 +69,17 @@ mount(() => (
 
 只给需要的边添加内边距，例如由标签栏或你自己的底部栏处理底部边距时：
 
+```tsx tabs
+<View class="flex-1 pt-[env(safe-area-inset-top)] px-[calc(env(safe-area-inset-left)+16px)]">
+  …
+</View>
+```
+
 ```rust tabs
 view()
     .flex_1()
     .pt_safe_area()
     .px_safe_area()
-```
-
-```tsx tabs
-<View class="flex-1 pt-[env(safe-area-inset-top)] px-[calc(env(safe-area-inset-left)+16px)]">
-  …
-</View>
 ```
 
 ## 使用场景
@@ -100,18 +100,6 @@ view()
 | `safeArea()` | `safe_area()` | 界面的安全区：避开系统 UI（刘海、主屏幕指示条、标题栏）的部分。 |
 | `safeAreaInsets()` | `cx.insets()` | 组件渲染位置的边距：最近页面的（标题栏下方）、最近对话框的，否则是界面的安全区。它们就是 `safe-area-inset-*` 变量的值。在 TSX 中，请在组件内调用它；它返回一个访问器。你的 crate 中的 Rust 组件用 `cx.insets()` 读取。 |
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn bottom_bar() -> impl IntoElement {
-    view()
-        .flex_row()
-        .p_2()
-        .pb(move || if safe_area().bottom > Points::ZERO { px(4.0) } else { px(8.0) })
-        .child(text("Bottom bar"))
-}
-```
-
 ```tsx tabs
 import { Text, View, safeArea } from "nsh";
 
@@ -122,6 +110,18 @@ function BottomBar() {
       <Text>Bottom bar</Text>
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn bottom_bar() -> impl IntoElement {
+    view()
+        .flex_row()
+        .p_2()
+        .pb(move || if safe_area().bottom > Points::ZERO { px(4.0) } else { px(8.0) })
+        .child(text("Bottom bar"))
 }
 ```
 

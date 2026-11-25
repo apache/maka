@@ -125,7 +125,7 @@ fn RoundedCoverage() -> impl IntoElement {
             .py(px(16.0))
             .child(view().child(text(" ")))
             .child(view().child(text(" "))),
-        view().absolute().top(px(208.0)).child(text("ready")),
+        view().absolute().top(px(240.0)).child(text("ready")),
     ])
 }
 
@@ -154,8 +154,8 @@ fn bands_cover_rounded_corners_and_borders_round_the_corners_that_have_a_radius(
     assert!(!banded(buffer, 1, 1), "outside the box");
     assert_eq!(buffer[(2, 8)].symbol(), "╭");
     assert_eq!(buffer[(11, 8)].symbol(), "┐");
-    assert_eq!(buffer[(2, 11)].symbol(), "└");
-    assert_eq!(buffer[(11, 11)].symbol(), "╯");
+    assert_eq!(buffer[(2, 13)].symbol(), "└");
+    assert_eq!(buffer[(11, 13)].symbol(), "╯");
 }
 
 #[test]

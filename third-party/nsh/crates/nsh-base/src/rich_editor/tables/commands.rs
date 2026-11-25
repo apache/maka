@@ -223,6 +223,29 @@ fn refreshed(tr: &Transaction, rect: &mut TableRect) -> bool {
     }
 }
 
+// Keeps the cursor inside the table at `table_pos` after a deletion
+// (Tiptap's `keepCursorInTable`): deleting the last row or column can map
+// the selection out into a following paragraph or table.
+fn keep_cursor_in_table(tr: &mut Transaction, table_pos: usize) {
+    let mapped_table_pos = tr.mapping.map(table_pos, 1);
+    let selection = tr.selection();
+    let from = selection.resolved_from();
+    let still_in_table = (1..=from.depth)
+        .rev()
+        .find(|&d| table_role(from.node(d).ty()) == Some(TableRole::Table))
+        .map(|d| from.before(d));
+    if still_in_table == Some(mapped_table_pos) {
+        return;
+    }
+    let Some(table_node) = tr.doc().node_at(mapped_table_pos) else {
+        return;
+    };
+    let end_of_table = mapped_table_pos + table_node.node_size() - 1;
+    if let Ok(at) = tr.doc().resolve(end_of_table) {
+        tr.set_selection(Selection::near(&at, -1));
+    }
+}
+
 /// Deletes the selected columns (`deleteColumn`); does not apply when
 /// they are all of the table's.
 pub fn delete_column() -> BoxCommand {
@@ -236,6 +259,7 @@ pub fn delete_column() -> BoxCommand {
         if rect.rect.left == 0 && rect.rect.right == rect.map.width {
             return false;
         }
+        let table_pos = rect.table_start - 1;
         with_tr(state, dispatch, |tr| {
             let left = rect.rect.left;
             let mut i = rect.rect.right - 1;
@@ -246,6 +270,7 @@ pub fn delete_column() -> BoxCommand {
                 }
                 i -= 1;
             }
+            keep_cursor_in_table(tr, table_pos);
             true
         })
     })
@@ -415,6 +440,7 @@ pub fn delete_row() -> BoxCommand {
         if rect.rect.top == 0 && rect.rect.bottom == rect.map.height {
             return false;
         }
+        let table_pos = rect.table_start - 1;
         with_tr(state, dispatch, |tr| {
             let top = rect.rect.top;
             let mut i = rect.rect.bottom - 1;
@@ -425,6 +451,7 @@ pub fn delete_row() -> BoxCommand {
                 }
                 i -= 1;
             }
+            keep_cursor_in_table(tr, table_pos);
             true
         })
     })
@@ -1825,5 +1852,36 @@ mod tests {
         CommandRegistry::builtin()
             .make(name, &args, &schema())
             .is_err()
+    }
+
+    #[test]
+    fn deleting_last_row_or_column_keeps_cursor_in_the_edited_table() {
+        // Two tables back-to-back, followed by a paragraph.
+        let d = doc(vec![
+            table(vec![tr(vec![td("a"), td("b")]), tr(vec![td("c"), td("d")])]),
+            table(vec![tr(vec![td("x"), td("y")])]),
+            p("after"),
+        ]);
+        // Delete last row from cell "d": cursor must stay in the first table (at end of "b").
+        let s = at(d.clone(), in_cell(&d, "d"));
+        let after_row = run(&s, &delete_row()).unwrap();
+        let from = after_row.selection().resolved_from();
+        let table_depth = (1..=from.depth)
+            .rev()
+            .find(|&depth| table_role(from.node(depth).ty()) == Some(TableRole::Table))
+            .expect("cursor still in a table");
+        assert_eq!(from.before(table_depth), 0, "stayed in the first table");
+        assert_eq!(from.parent().text_content(), "b");
+
+        // Delete last column from cell "d": cursor must stay in the first table (at end of "c").
+        let s = at(d, in_cell(&abcd(), "d"));
+        let after_col = run(&s, &delete_column()).unwrap();
+        let from = after_col.selection().resolved_from();
+        let table_depth = (1..=from.depth)
+            .rev()
+            .find(|&depth| table_role(from.node(depth).ty()) == Some(TableRole::Table))
+            .expect("cursor still in a table");
+        assert_eq!(from.before(table_depth), 0, "stayed in the first table");
+        assert_eq!(from.parent().text_content(), "c");
     }
 }

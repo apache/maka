@@ -1,6 +1,6 @@
 ---
 title: Layout
-description: Flexbox with a column default, CSS grid, sizes and percentages, aspect ratio, absolute positioning, measuring with onLayout, responsive layouts and right-to-left, in Rust and TSX.
+description: Flexbox with a column default, CSS grid, sizes and percentages, aspect ratio, absolute positioning, measuring with onLayout, responsive layouts and right-to-left, in TSX and Rust.
 order: 34
 group: ui
 demo: guide-layout
@@ -25,6 +25,17 @@ A view lays out its children with flexbox. A view that sets no `display` stacks 
 | `minWidth` / `minHeight` | `0` | `auto` |
 | `position` | `"relative"` | `static` |
 
+```tsx tabs
+<View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: 16 }}>
+  <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
+  <View style={{ flex: 1, gap: 2 }}>
+    <Text style={{ fontWeight: "600" }}>{props.name}</Text>
+    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
+  </View>
+  <Text style={{ color: "#6e7781" }}>{props.time}</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
@@ -40,17 +51,6 @@ view()
             .child(text(message).text_color(rgb(0x6e7781)).number_of_lines(1)),
     )
     .child(text(time).text_color(rgb(0x6e7781)))
-```
-
-```tsx tabs
-<View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: 16 }}>
-  <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
-  <View style={{ flex: 1, gap: 2 }}>
-    <Text style={{ fontWeight: "600" }}>{props.name}</Text>
-    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
-  </View>
-  <Text style={{ color: "#6e7781" }}>{props.time}</Text>
-</View>
 ```
 
 | Property | Values | Rust |
@@ -69,6 +69,14 @@ view()
 
 `flex` is CSS's shorthand, as Tailwind's `flex-*` classes are: a number `n` means grow by `n`, shrink by 1 and start from a basis of 0, so `flex: 1` siblings (`.flex_1()` in Rust, `flex-1`) share the space equally whatever their content; `"none"` is `0 0 auto` (the view keeps its size), `"auto"` is `1 1 auto`, `"initial"` is `0 1 auto`, and grow, shrink and basis can be written out (`"2 0 50%"`, `"1 1 120px"`). As minimum sizes default to 0, `flex: 0` (`0 1 0`) shrinks a view to nothing unless `minWidth: "auto"` keeps its content's size.
 
+```tsx tabs
+<View style={{ flexDirection: "row", gap: 8 }}>
+  <View style={{ flex: 1, height: 36, backgroundColor: "#c8e1ff" }} />   {/* one share */}
+  <View style={{ flex: 2, height: 36, backgroundColor: "#79b8ff" }} />   {/* two shares */}
+  <View style={{ width: 36, height: 36, backgroundColor: "#0366d6" }} /> {/* fixed */}
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
@@ -79,14 +87,6 @@ view()
     .child(view().flex_grow(2.0).flex_shrink(1.0).basis(px(0.0)).h(px(36.0)).bg(rgb(0x79b8ff)))
     // Fixed.
     .child(view().size(px(36.0)).bg(rgb(0x0366d6)))
-```
-
-```tsx tabs
-<View style={{ flexDirection: "row", gap: 8 }}>
-  <View style={{ flex: 1, height: 36, backgroundColor: "#c8e1ff" }} />   {/* one share */}
-  <View style={{ flex: 2, height: 36, backgroundColor: "#79b8ff" }} />   {/* two shares */}
-  <View style={{ width: 36, height: 36, backgroundColor: "#0366d6" }} /> {/* fixed */}
-</View>
 ```
 
 Because minimum sizes default to 0, a `flex: 1` text in a row shrinks and wraps instead of pushing its siblings out. `minWidth: "auto"` / `minHeight: "auto"` (`min-w-auto` / `min-h-auto`, `.min_w(auto())` in Rust) is CSS's automatic minimum: a shrinking item stops at its content's smallest size, the longest word of a text, as on the web.
@@ -112,12 +112,12 @@ Without a size, a view is as big as its content (plus padding), stretched across
 
 `aspectRatio` sizes the other dimension from the one that is known:
 
-```rust tabs
-view().w_full().aspect_ratio(16.0 / 9.0).bg(black())
-```
-
 ```tsx tabs
 <View style={{ width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000000" }} />
+```
+
+```rust tabs
+view().w_full().aspect_ratio(16.0 / 9.0).bg(black())
 ```
 
 Images from the app's assets have a natural size and lay out at it when no size is given ([Images and assets](./images-and-assets.md)). Remote images have no size until they load: give them one.
@@ -125,6 +125,15 @@ Images from the app's assets have a natural size and lay out at it when no size 
 ## Grid
 
 `display: "grid"` (`.grid()` in Rust) lays out children in CSS grid tracks:
+
+```tsx tabs
+<View style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+  <View style={{ gridColumn: "span 2", height: 60, backgroundColor: "#d8b9ff" }} />
+  <View style={{ height: 60, backgroundColor: "#b083f0" }} />
+  <View style={{ gridRow: "span 2", backgroundColor: "#8250df" }} />
+  <View style={{ gridColumn: "2 / 4", height: 60, backgroundColor: "#6639ba" }} />
+</View>
+```
 
 ```rust tabs
 view()
@@ -135,15 +144,6 @@ view()
     .child(view().h(px(60.0)).bg(rgb(0xb083f0)))
     .child(view().row_span(2).bg(rgb(0x8250df)))
     .child(view().col_start(2).col_end(4).h(px(60.0)).bg(rgb(0x6639ba)))
-```
-
-```tsx tabs
-<View style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-  <View style={{ gridColumn: "span 2", height: 60, backgroundColor: "#d8b9ff" }} />
-  <View style={{ height: 60, backgroundColor: "#b083f0" }} />
-  <View style={{ gridRow: "span 2", backgroundColor: "#8250df" }} />
-  <View style={{ gridColumn: "2 / 4", height: 60, backgroundColor: "#6639ba" }} />
-</View>
 ```
 
 | Property | Values | Rust |
@@ -159,6 +159,13 @@ view()
 
 Templates name their lines in brackets, one or several names per line, and items are placed by those names, as in CSS (in Rust, by the lines' numbers):
 
+```tsx tabs
+<View style={{ display: "grid", gridTemplateColumns: "[full-start] 16px [content-start] 1fr [content-end] 16px [full-end]" }}>
+  <View style={{ gridColumn: "content-start / content-end", height: 60, backgroundColor: "#b083f0" }} />
+  <View style={{ gridColumn: "full-start / full-end", height: 60, backgroundColor: "#8250df" }} />
+</View>
+```
+
 ```rust tabs
 view()
     .grid()
@@ -169,13 +176,6 @@ view()
     .child(view().col_start(1).col_end(4).h(px(60.0)).bg(rgb(0x8250df)))
 ```
 
-```tsx tabs
-<View style={{ display: "grid", gridTemplateColumns: "[full-start] 16px [content-start] 1fr [content-end] 16px [full-end]" }}>
-  <View style={{ gridColumn: "content-start / content-end", height: 60, backgroundColor: "#b083f0" }} />
-  <View style={{ gridColumn: "full-start / full-end", height: 60, backgroundColor: "#8250df" }} />
-</View>
-```
-
 In a grid, `justifyContent` and `alignContent` default to CSS's `"normal"`: tracks sized `auto` stretch to fill the container, so a grid with a height and no row template shares that height among its rows. A value set explicitly (`"start"`, `"center"`, `"space-between"`, ...) places the tracks as it does in CSS. The alignment classes set exactly what Tailwind CSS sets: `content-start` (`align-content: flex-start`) and `place-content-start` pack the tracks at the start, and `content-normal` and `justify-normal` stretch them, as in a browser.
 
 `display: "block"` uses CSS block layout (children stacked, each as wide as the container), and `display: "none"` (`.hidden()`) removes the view from layout.
@@ -183,6 +183,15 @@ In a grid, `justifyContent` and `alignContent` default to CSS's `"normal"`: trac
 ## Absolute positioning
 
 `position: "absolute"` (`.absolute()`) takes a view out of the flow and places it by `top`, `right`, `bottom` and `left`, relative to its parent:
+
+```tsx tabs
+<View style={{ height: 200 }}>
+  <Image src={cover} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }} />
+  <View style={{ position: "absolute", left: 12, right: 12, bottom: 12 }}>
+    <Text style={{ color: "#ffffff", fontWeight: "700" }}>Caption</Text>
+  </View>
+</View>
+```
 
 ```rust tabs
 view()
@@ -198,28 +207,11 @@ view()
     )
 ```
 
-```tsx tabs
-<View style={{ height: 200 }}>
-  <Image src={cover} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }} />
-  <View style={{ position: "absolute", left: 12, right: 12, bottom: 12 }}>
-    <Text style={{ color: "#ffffff", fontWeight: "700" }}>Caption</Text>
-  </View>
-</View>
-```
-
 Offsets accept points and percentages (`.top(..)`, `.right(..)`, `.bottom(..)`, `.left(..)`, `.inset(..)` in Rust). A view with `left` and `right` (or `top` and `bottom`) and no size stretches between them. Later siblings are drawn above earlier ones; `zIndex` (`.z_index(n)`) changes the order.
 
 ## Measuring
 
 `onLayout` (`.on_layout(..)`) reports a view's frame, relative to its parent, after each layout in which it changed:
-
-```rust tabs
-let width = signal(0.0_f32);
-
-view()
-    .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
-    .child(text(move || format!("{} points wide", width.get())))
-```
 
 ```tsx tabs
 const width = signal(0);
@@ -229,17 +221,25 @@ const width = signal(0);
 </View>
 ```
 
-The frame is in points: `Bounds<Points>` in Rust, `{ bounds }` in TSX, a `Bounds` (`{ origin: { x, y }, size: { width, height } }`). For the whole surface, read `window()` in Rust or `windowSize()` from [`nsh`](../modules/nsh.md#device) in TSX; both follow rotation and resizing, and a style that reads them changes with the surface. On the desktops the host is invisible: a window's own size is its `WindowRef.state()?.contentBounds` (Rust `WindowRef::state()`), which follows that window's resizes:
-
 ```rust tabs
-view().style_when(|| window().width > px(600.0), |s| s.flex_row())
+let width = signal(0.0_f32);
+
+view()
+    .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
+    .child(text(move || format!("{} points wide", width.get())))
 ```
+
+The frame is in points: `Bounds<Points>` in Rust, `{ bounds }` in TSX, a `Bounds` (`{ origin: { x, y }, size: { width, height } }`). For the whole surface, read `window()` in Rust or `windowSize()` from [`nsh`](../modules/nsh.md#device) in TSX; both follow rotation and resizing, and a style that reads them changes with the surface. On the desktops the host is invisible: a window's own size is its `WindowRef.state()?.contentBounds` (Rust `WindowRef::state()`), which follows that window's resizes:
 
 ```tsx tabs
 import { View } from "nsh";
 import { windowSize } from "nsh";
 
 <View style={{ flexDirection: windowSize().width > 600 ? "row" : "column" }} />
+```
+
+```rust tabs
+view().style_when(|| window().width > px(600.0), |s| s.flex_row())
 ```
 
 Tailwind's breakpoints (`sm:`, `md:`, ...) and `portrait:` / `landscape:` give the same result without code.
@@ -257,19 +257,6 @@ The app's layout direction follows the system language, and a view's `direction`
 - the logical properties follow the direction, inline start being the right side: `marginStart`, `marginEnd`, `paddingStart`, `paddingEnd`, `start`, `end`, `borderStartWidth`, `borderEndColor`, `borderTopStartRadius`, ..., `textAlign: "start"` / `"end"` (`ps-4`, `ms-2`, `start-0`, `border-s`, `rounded-ss-lg`, `text-start` as classes; `.ms(..)`, `.me(..)`, `.ps(..)`, `.pe(..)`, `.border_s(..)`, `.rounded_ss(..)`, ... in Rust); `marginHorizontal` and `paddingHorizontal` set both sides;
 - text with `textAlign: "auto"` aligns right, and native controls mirror.
 
-```rust tabs
-view()
-    .flex_row()
-    .gap_2()
-    .child(view().ms_4().rounded_ss(px(12.0)).size(px(44.0)).bg(rgb(0x54aeff)))
-
-let rtl = signal(false);
-view()
-    .direction(move || if rtl.get() { LayoutDirection::Rtl } else { LayoutDirection::Ltr })
-    .on_press(move |_: &()| rtl.set(!rtl.get()))
-    .child(text(move || if rtl.get() { "Right to left" } else { "Left to right" }))
-```
-
 ```tsx tabs
 import { signal, Text, View } from "nsh";
 
@@ -283,6 +270,19 @@ const rtl = signal(false);
     <Text>{rtl() ? "Right to left" : "Left to right"}</Text>
   </View>
 </View>
+```
+
+```rust tabs
+view()
+    .flex_row()
+    .gap_2()
+    .child(view().ms_4().rounded_ss(px(12.0)).size(px(44.0)).bg(rgb(0x54aeff)))
+
+let rtl = signal(false);
+view()
+    .direction(move || if rtl.get() { LayoutDirection::Rtl } else { LayoutDirection::Ltr })
+    .on_press(move |_: &()| rtl.set(!rtl.get()))
+    .child(text(move || if rtl.get() { "Right to left" } else { "Left to right" }))
 ```
 
 Changes to the direction, the language's or a view's, apply at once, without a restart. The `direction` style also keeps one view and its children in a direction of their own, for example a phone number left to right. On Android, apps that embed NSH need `android:supportsRtl="true"` in their manifest for native controls to mirror.

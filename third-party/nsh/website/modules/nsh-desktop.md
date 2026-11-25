@@ -8,17 +8,6 @@ order: 12.5
 
 `nsh/desktop` holds what only desktops have: the app's windows and their title bars, the displays, the application menu and context menus, the tray and global shortcuts. It works on macOS, Windows and Linux. Rust code finds the same in `nsh_core::element::desktop`: windows (`window()`), the window a component renders in (`current_window()`, a `WindowRef`), the displays (`displays`), `quit`, `restart`, opening at login (`launch_at_login`, `set_launch_at_login`), the application menu and context menus (`set_application_menu`, `popup_menu`, made of `MenuItem`s), the tray (`set_tray`) and global shortcuts (`register_global_shortcut`), and marks draggable views with `.window_drag(true)`; TSX imports `nsh/desktop`. The module can be imported on every platform, so one bundle runs everywhere: on iOS and Android its functions do nothing, and `isAvailable` tells you whether its windows and menus are there. An app that declares capabilities needs `"application": true` for the application menu, the tray, global shortcuts, `quit` and quit requests, `restart`, the quit mode and launching at login ([capabilities](../docs/sandbox-and-capabilities.md#application)); without it they do nothing. Context menus and the app's windows (granted by `windows`) need no `application`.
 
-```rust tabs
-use nsh_core::{
-    desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes, WindowKind, WindowMode},
-    element::desktop::{
-        MenuItem, current_window, displays, popup_menu, quit, set_application_menu, title_bar,
-        window,
-    },
-    prelude::*,
-};
-```
-
 ```tsx tabs
 import {
   Application,
@@ -32,6 +21,17 @@ import {
   windows,
   windowState,
 } from "nsh/desktop";
+```
+
+```rust tabs
+use nsh_core::{
+    desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes, WindowKind, WindowMode},
+    element::desktop::{
+        MenuItem, current_window, displays, popup_menu, quit, set_application_menu, title_bar,
+        window,
+    },
+    prelude::*,
+};
 ```
 
 In the AppKit and Win32 backends, the menus NSH builds and role items without an explicit label follow the language selected by `nsh/i18n`, including changes while the app runs. Built-in menu translations cover English, Japanese, Simplified Chinese and Traditional Chinese; other languages fall back to English. An item's own `label` always takes precedence.
@@ -83,20 +83,6 @@ On the desktops, `<Window>` is a window, controlled as a [`Dialog`](./nsh-base.m
 
 Its props are its [options](#options) and [attributes](#attributes); the attributes are reactive, so `title={`${doc().name} – Editor`}` follows the signal.
 
-```rust tabs
-#[component]
-fn Inspector(open: Signal<bool>) -> impl IntoElement {
-    window()
-        .id("inspector")
-        .kind(WindowKind::Panel)
-        .title("Inspector")
-        .default_size(size(px(320.0), px(560.0)))
-        .open(open)
-        .on_open_change(move |e| open.set(e.open))
-        .content(inspector_panel)
-}
-```
-
 ```tsx tabs
 import { signal, Text, View } from "nsh";
 import { Button } from "nsh/base";
@@ -122,6 +108,20 @@ function Toolbar() {
       </Window>
     </View>
   );
+}
+```
+
+```rust tabs
+#[component]
+fn Inspector(open: Signal<bool>) -> impl IntoElement {
+    window()
+        .id("inspector")
+        .kind(WindowKind::Panel)
+        .title("Inspector")
+        .default_size(size(px(320.0), px(560.0)))
+        .open(open)
+        .on_open_change(move |e| open.set(e.open))
+        .content(inspector_panel)
 }
 ```
 
@@ -485,6 +485,19 @@ for as long as the page remains. A page the browser keeps in its back / forward 
 goes on when the user comes back. This works whatever `isAvailable` says; an app that declares capabilities lists
 `"application": true` for it.
 
+```tsx tabs
+import { Application } from "nsh/desktop";
+
+function Editor() {
+  Application.on("quitRequest", () => (dirty() ? askToSave() : Application.quit()));
+  // Runs however the app quits; it cannot keep it running.
+  Application.on("quit", async () => {
+    await saveSession();
+  });
+  return <EditorView />;
+}
+```
+
 ```rust tabs
 use nsh_core::{
     element::desktop::{on_app_quit, on_quit_request, quit},
@@ -504,19 +517,6 @@ fn Editor() -> impl IntoElement {
     // Runs however the app quits; it cannot keep it running.
     on_app_quit(move || async move { save_session().await });
     editor()
-}
-```
-
-```tsx tabs
-import { Application } from "nsh/desktop";
-
-function Editor() {
-  Application.on("quitRequest", () => (dirty() ? askToSave() : Application.quit()));
-  // Runs however the app quits; it cannot keep it running.
-  Application.on("quit", async () => {
-    await saveSession();
-  });
-  return <EditorView />;
 }
 ```
 
@@ -674,6 +674,33 @@ packaged app. [`examples/tray`](https://github.com/longbridge/nsh/tree/main/exam
 
 With the title bar hidden (`titleBar: { style: "hidden" }`), the app draws its own bar and says which parts of it move the window, with `.window_drag(true)` in Rust and `desktop={{ windowDrag: true }}` in TSX. The first window takes `titleBar` from nsh.json's [`window`](#the-app-host-and-the-first-window), so its first frame already has it; every `<Window>` also takes it as a prop.
 
+```tsx tabs
+import { Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { currentWindow } from "nsh/desktop";
+
+function TitleBar() {
+  const win = currentWindow();
+  win.set({ titleBar: { style: "hidden", height: 40 } }); // a bar 40 points tall
+  return (
+    <View
+      desktop={{ windowDrag: true }}
+      style={{
+        height: win.titleBar().height || 40,
+        paddingLeft: win.titleBar().left + 8, // macOS's traffic lights
+        paddingRight: win.titleBar().right + 8, // the caption buttons on Windows, GTK's buttons
+        flexDirection: "row",
+        alignItems: "center",
+      }}
+    >
+      <Text>My App</Text>
+      <View style={{ flex: 1 }} />
+      <Input placeholder="Search" style={{ width: 180 }} />
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::{
     desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes},
@@ -703,33 +730,6 @@ fn TitleBar() -> impl IntoElement {
         .child(text("My App"))
         .child(view().flex_1())
         .child(input().placeholder("Search").w(px(180.0)))
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { currentWindow } from "nsh/desktop";
-
-function TitleBar() {
-  const win = currentWindow();
-  win.set({ titleBar: { style: "hidden", height: 40 } }); // a bar 40 points tall
-  return (
-    <View
-      desktop={{ windowDrag: true }}
-      style={{
-        height: win.titleBar().height || 40,
-        paddingLeft: win.titleBar().left + 8, // macOS's traffic lights
-        paddingRight: win.titleBar().right + 8, // the caption buttons on Windows, GTK's buttons
-        flexDirection: "row",
-        alignItems: "center",
-      }}
-    >
-      <Text>My App</Text>
-      <View style={{ flex: 1 }} />
-      <Input placeholder="Search" style={{ width: 180 }} />
-    </View>
-  );
 }
 ```
 
@@ -823,6 +823,24 @@ While the window is on the screen, [`lifecycle()`](./nsh.md#device) reporting `"
 
 `placement` is what to save to open the window as the user left it: a maximized or full screen window carries the bounds it returns to. `<Window restoreBounds>` keeps and restores it per window id. An app that restores its whole window set saves each window's `placement` itself and calls `setPlacement` on the window it opens; the same entry serves a Rust window component and a TSX one, as `WindowPlacement`'s serde form is the object TSX saves. Read the window inside itself: `currentWindow()` in the component, not `Window.get` at module top level (the scene has not opened then).
 
+```tsx tabs
+import { effect, Storage } from "nsh";
+import { currentWindow } from "nsh/desktop";
+
+function Restore() {
+  const main = currentWindow();
+  Storage.getItem("window").then((saved) => {
+    if (saved) main.setPlacement(JSON.parse(saved)); // fitted on today's displays
+  });
+  effect(() => {
+    const state = main.state();
+    if (state) Storage.setItem("window", JSON.stringify(state.placement));
+  });
+  return <></>;
+}
+// <Window id="main"><Restore />…</Window>
+```
+
 ```rust tabs
 #[component]
 fn App() -> impl IntoElement {
@@ -840,24 +858,6 @@ fn App() -> impl IntoElement {
     });
     view() // ...
 }
-```
-
-```tsx tabs
-import { effect, Storage } from "nsh";
-import { currentWindow } from "nsh/desktop";
-
-function Restore() {
-  const main = currentWindow();
-  Storage.getItem("window").then((saved) => {
-    if (saved) main.setPlacement(JSON.parse(saved)); // fitted on today's displays
-  });
-  effect(() => {
-    const state = main.state();
-    if (state) Storage.setItem("window", JSON.stringify(state.placement));
-  });
-  return <></>;
-}
-// <Window id="main"><Restore />…</Window>
 ```
 
 The desktops report the windows' state and the displays. On iOS, Android and the web, and in a terminal app, `windowState()` is `null` and `displays()` is empty.
@@ -951,6 +951,44 @@ Menu shortcuts come first, as in native apps: a key an item takes never reaches 
 
 On the GPUI backend, a native component with the keyboard focus sees each key first. A key it handles itself never reaches the keymap or the menu. A key it lets through reaches the keymap as if a text field were focused, then the menu.
 
+```tsx tabs
+import { effect, signal } from "nsh";
+import { platform } from "nsh";
+import { Menu } from "nsh/desktop";
+
+const mac = platform.os === "macos";
+const wrap = signal(true);
+
+effect(() => {
+  Menu.setApplicationMenu([
+    mac && {
+      label: "My App",
+      submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { type: "separator" }, { role: "quit" }],
+    },
+    {
+      label: "File",
+      submenu: [
+        { label: "New", shortcut: "mod+n", onSelect: () => createDocument() },
+        { label: "Open…", shortcut: "mod+o", onSelect: () => openDocument() },
+        !mac && { type: "separator" },
+        !mac && { role: "quit", label: "Exit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }],
+    },
+    {
+      label: "View",
+      submenu: [
+        { label: "Word Wrap", checked: wrap(), onSelect: () => wrap.update((w) => !w) },
+        { role: "toggleFullScreen" },
+      ],
+    },
+  ]);
+});
+```
+
 ```rust tabs
 use nsh_core::{
     desktop::MenuRole,
@@ -1004,56 +1042,7 @@ fn AppMenu() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { effect, signal } from "nsh";
-import { platform } from "nsh";
-import { Menu } from "nsh/desktop";
-
-const mac = platform.os === "macos";
-const wrap = signal(true);
-
-effect(() => {
-  Menu.setApplicationMenu([
-    mac && {
-      label: "My App",
-      submenu: [{ role: "about" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { type: "separator" }, { role: "quit" }],
-    },
-    {
-      label: "File",
-      submenu: [
-        { label: "New", shortcut: "mod+n", onSelect: () => createDocument() },
-        { label: "Open…", shortcut: "mod+o", onSelect: () => openDocument() },
-        !mac && { type: "separator" },
-        !mac && { role: "quit", label: "Exit" },
-      ],
-    },
-    {
-      label: "Edit",
-      submenu: [{ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }],
-    },
-    {
-      label: "View",
-      submenu: [
-        { label: "Word Wrap", checked: wrap(), onSelect: () => wrap.update((w) => !w) },
-        { role: "toggleFullScreen" },
-      ],
-    },
-  ]);
-});
-```
-
 A context menu, from a button's press:
-
-```rust tabs
-text("More").on_press(|| {
-    let _ = popup_menu(vec![
-        MenuItem::new("Rename").on_select(rename),
-        MenuItem::new("Duplicate").on_select(duplicate),
-        MenuItem::separator(),
-        MenuItem::new("Delete").on_select(remove),
-    ]);
-})
-```
 
 ```tsx tabs
 <View
@@ -1068,6 +1057,17 @@ text("More").on_press(|| {
 >
   <Text>More</Text>
 </View>
+```
+
+```rust tabs
+text("More").on_press(|| {
+    let _ = popup_menu(vec![
+        MenuItem::new("Rename").on_select(rename),
+        MenuItem::new("Duplicate").on_select(duplicate),
+        MenuItem::separator(),
+        MenuItem::new("Delete").on_select(remove),
+    ]);
+})
 ```
 
 > [!NOTE]
@@ -1114,15 +1114,6 @@ A window the app shows or focuses in `onClick` or in a menu item's `onSelect` co
 
 A title keeps something in sight beside the icon in macOS's menu bar, such as a price, its change in a color of the app's theme. A run's color is fixed when `set` is called; set the tray inside an `effect` that reads the color scheme for a theme color to follow light and dark:
 
-```rust tabs
-use nsh_core::desktop::TrayTitleRun;
-
-set_tray(tray().icon(icon).title([
-    TrayTitleRun::new("AAPL 228.00 "),
-    TrayTitleRun::new("+1.33%").color(color(tokens().color("up").unwrap())),
-]));
-```
-
 ```tsx tabs
 import { token } from "nsh";
 
@@ -1130,6 +1121,15 @@ Tray.set({
   icon,
   title: [{ text: "AAPL 228.00 " }, { text: "+1.33%", color: token("up") }],
 });
+```
+
+```rust tabs
+use nsh_core::desktop::TrayTitleRun;
+
+set_tray(tray().icon(icon).title([
+    TrayTitleRun::new("AAPL 228.00 "),
+    TrayTitleRun::new("+1.33%").color(color(tokens().color("up").unwrap())),
+]));
 ```
 
 ### A window at the icon

@@ -1,6 +1,6 @@
 ---
 title: TUI
-description: "在终端里运行 Rust 和 TSX 编写的 NSH 应用：Cell 布局、键盘与鼠标输入、终端的颜色、组件和弹出层在字符网格上的样子、在应用代码中识别终端、测试，以及在 ratatui 应用中嵌入 AppView。"
+description: "在终端里运行 TSX 和 Rust 编写的 NSH 应用：Cell 布局、键盘与鼠标输入、终端的颜色、组件和弹出层在字符网格上的样子、在应用代码中识别终端、测试，以及在 ratatui 应用中嵌入 AppView。"
 order: 16.5
 group: platforms
 ---
@@ -229,26 +229,6 @@ Cell 两个像素，在 tmux 里也一样。任何尺寸的图片都会显示：
 
 大多数应用无需改动：桌面行为适用，上面的布局规则会把桌面设计适配到字符网格上。需要为终端单独布局时，用 idiom 判断：
 
-```rust tabs
-use nsh_core::{platform::Idiom, prelude::*};
-
-#[component]
-pub fn Shell() -> impl IntoElement {
-    // 终端使用一列紧凑布局；窗口使用侧边栏。
-    view()
-        .flex_1()
-        .child(if idiom() == Idiom::Terminal { compact_layout() } else { sidebar_layout() })
-}
-
-fn compact_layout() -> AnyElement {
-    view().flex_1().flex_col().into_element()
-}
-
-fn sidebar_layout() -> AnyElement {
-    view().flex_1().flex_row().into_element()
-}
-```
-
 ```tsx tabs
 import { View, platform } from "nsh";
 
@@ -267,6 +247,26 @@ function CompactLayout() {
 
 function SidebarLayout() {
   return <View class="flex-1 flex-row" />;
+}
+```
+
+```rust tabs
+use nsh_core::{platform::Idiom, prelude::*};
+
+#[component]
+pub fn Shell() -> impl IntoElement {
+    // 终端使用一列紧凑布局；窗口使用侧边栏。
+    view()
+        .flex_1()
+        .child(if idiom() == Idiom::Terminal { compact_layout() } else { sidebar_layout() })
+}
+
+fn compact_layout() -> AnyElement {
+    view().flex_1().flex_col().into_element()
+}
+
+fn sidebar_layout() -> AnyElement {
+    view().flex_1().flex_row().into_element()
 }
 ```
 

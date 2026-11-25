@@ -7,7 +7,7 @@ group: start
 
 # CLI
 
-`nsh` is the tool an NSH app is built with, in Rust or TSX. Every subcommand that builds an app takes `[ENTRY]`: the app's directory (default: the current one, so `cd my-app && nsh run` works), which runs a Rust app's root component (`nsh.json` `"root"`) or a TSX app's `App.tsx`, or a TSX entry module. It reads `nsh.json` in the app's root and refreshes the type declarations in `.nsh/types`.
+`nsh` is the tool an NSH app is built with, in TSX or Rust. Every subcommand that builds an app takes `[ENTRY]`: the app's directory (default: the current one, so `cd my-app && nsh run` works), which runs a Rust app's root component (`nsh.json` `"root"`) or a TSX app's `App.tsx`, or a TSX entry module. It reads `nsh.json` in the app's root and refreshes the type declarations in `.nsh/types`.
 
 ```text
 nsh <COMMAND>
@@ -116,10 +116,10 @@ On Unix, the terminal host exits on SIGHUP, SIGTERM, SIGINT or terminal disconne
 ## nsh dev
 
 ```sh
-nsh dev [ENTRY] [--target macos|linux|windows|ios|android|gpui|tui|web|catalyst] [--device <DEVICE>] [--server-only] [--port <PORT>] [--release] [--limits [<LIMITS>]]
+nsh dev [ENTRY] [--target macos|linux|windows|ios|android|gpui|tui|web|catalyst] [--device <DEVICE>] [--server-only] [--port <PORT>] [--host <HOST>] [--release] [--limits [<LIMITS>]]
 ```
 
-Starts the dev server and opens this system’s native host: AppKit on macOS, GTK on Linux, Win32 on Windows. Choose `--target ios` or `--target android` explicitly for mobile development. `--server-only` serves hosts you start yourself. The server builds the app, watches the entry’s directory and the app’s `nsh.json`, theme and translations, and pushes every rebuild to connected hosts. With `--server-only`, it prints the URL for hosts on this machine and one per LAN address for devices, and, when the web runtime is there, the page browsers open to run the app ([Web](./web.md#develop-in-the-browser)):
+Starts the dev server and opens this system’s native host: AppKit on macOS, GTK on Linux, Win32 on Windows. Choose `--target ios` or `--target android` explicitly for mobile development. `--server-only` serves hosts you start yourself. The server builds the app, watches the entry’s directory and the app’s `nsh.json`, theme and translations, and pushes every rebuild to connected hosts. With `--server-only`, it prints the URL for hosts on this machine and, unless bound to loopback, one per LAN address for devices, and, when the web runtime is there, the page browsers open to run the app ([Web](./web.md#develop-in-the-browser)):
 
 ```text
 ✓ built App.tsx (3.2 KB js, 9.8 KB bytecode, 21ms)
@@ -129,7 +129,7 @@ Starts the dev server and opens this system’s native host: AppKit on macOS, GT
   browsers on this network: http://192.168.1.20:8790/
 ```
 
-Use `nsh dev --server-only` with an app that embeds the development SDK (`NativeShellDev.xcframework`, `nsh-dev.aar`). `--target`, `--device`, `--port`, `--release` and `--limits` work as for `nsh run`; `--server-only` selects a server without a launched host.
+Use `nsh dev --server-only` with an app that embeds the development SDK (`NativeShellDev.xcframework`, `nsh-dev.aar`). `--target`, `--device`, `--port`, `--release` and `--limits` work as for `nsh run`; `--server-only` selects a server without a launched host. `--host <HOST>` binds the dev server to a specific IPv4 address instead of the default (`0.0.0.0` for `--server-only` and `--target ios`, `android`, or `web`; `127.0.0.1` for local targets), for example `nsh dev App.tsx --server-only --host 127.0.0.1` to listen on loopback only. With `--target android`, `--host` must be `127.0.0.1` or `0.0.0.0` because `adb reverse` forwards the device's `127.0.0.1` to this machine's `127.0.0.1`.
 
 ## nsh test
 
@@ -224,7 +224,7 @@ Builds an installable app in release mode. A Rust app (`nsh.json` `"root"`) is p
 | `--keystore <FILE>` | Android: release keystore. Default: the debug key in `~/.android/debug.keystore` (created if missing). |
 | `--key-alias <ALIAS>` | Android: key alias in the keystore. |
 | `--keystore-password <PASSWORD>` | Android: keystore password. Also read from `NSH_KEYSTORE_PASSWORD`. |
-| `--format <FORMAT>` | Android: `apk` (default) or `aab`, an Android App Bundle for Google Play, signed with `jarsigner`. Not with `--run`. |
+| `--format <FORMAT>` | Android: `apk` (default) or `aab`, an Android App Bundle for Google Play, signed with `jarsigner`. Linux: `appimage` or `flatpak`, besides the directory and archive ([Packaging](./packaging.md#appimage-and-flatpak)). Not with `--run`. |
 | `--abi <ABI>` | Android: the ABIs of the APK (`arm64-v8a`, `armeabi-v7a`, `x86_64`), repeated or separated by commas. Default: `arm64-v8a` and `armeabi-v7a`, plus the device's with `--run`. |
 | `--arch <ARCH>` | macOS: the processors the app runs on, `arm64` (Apple silicon), `x86_64` (Intel) or `universal` (both, in one executable). Default: this Mac's. A runner for another processor needs its Rust target (`rustup target add x86_64-apple-darwin`). |
 | `--run` | Install and launch the app afterwards: in the simulator (`ios-simulator`) or on the connected Android device; `macos`, `linux` and `windows` launch it; `web` serves the site on this machine at the address it prints. |
@@ -382,20 +382,91 @@ may name the package read, and only `--key`, `--cert` and `-o` apply.
 ### nsh publish android
 
 ```sh
-nsh publish android <BUNDLE.aab> [--entry <DIR>] [--package <NAME>] [--credentials <KEY.json>] [--draft]
+nsh publish android <BUNDLE.aab> [--track <TRACK>] [--rollout <FRACTION>] [--status <STATUS>] [--listing] [--draft]
+nsh publish android --from <TRACK> --track <TRACK> [--rollout <FRACTION>]
 ```
 
-Uploads an Android App Bundle to Google Play and releases it to the **internal testing** track, in one edit (insert,
-upload, track update, commit; a failed edit is deleted). It never goes further: promote the release to closed, open or
-production testing in Play Console. Signs in as a Google Cloud service account that has release permission for the app
-in Play Console ([Android](./android.md#upload-to-google-play)).
+Uploads an Android App Bundle to Google Play and releases it to a track, in one edit (insert, upload, track update,
+commit; a failed edit is deleted). Without `--track` the release goes to **internal testing** only; reaching testers
+beyond it, or the public, always takes an explicit `--track`. With `--from` instead of a bundle, it promotes the newest
+release of one track to another. Signs in as a Google Cloud service account that has release permission for the app in
+Play Console ([Publish to Google Play](./publish.md#publish-to-google-play)).
 
 | Flag | Description |
 |---|---|
 | `--entry <DIR>` | The app's directory or entry, whose `nsh.json` `id` is the package name. Default: `.`. |
 | `--package <NAME>` | The package name on Google Play. Default: `nsh.json` `id`. |
 | `--credentials <KEY.json>` | The service account's JSON key. Default: `NSH_PLAY_CREDENTIALS`. Keep it out of the repository. |
+| `--track <TRACK>` | `internal` (default), `alpha`, `beta`, `production` or a custom track's name. |
+| `--from <TRACK>` | Promote: release the version codes of this track's newest release to `--track`, uploading nothing. |
+| `--rollout <FRACTION>` | A staged rollout to this fraction of the track's users, above 0 and below 1, e.g. `0.1`. |
+| `--status <STATUS>` | `completed` (default), `in-progress` (default with `--rollout`), `halted` (stop a staged rollout, with its `--rollout`) or `draft`. |
 | `--draft` | Release as a draft: Play takes only drafts until the app's first release is made in Play Console. |
+| `--store <DIR>` | The [store directory](./publish.md#store-listing). Default: `store` in the app's directory. |
+| `--listing` | Also update the store listing (name, descriptions, images) from the store directory, replacing what Play has for those locales. |
+
+To raise a staged rollout, release the same version again with a larger `--rollout`; to finish it, release it with no
+`--rollout`.
+
+### nsh publish status android
+
+```sh
+nsh publish status android [--entry <DIR>] [--package <NAME>] [--credentials <KEY.json>] [--json]
+```
+
+Prints every track's releases: status, version codes and rollout fraction. It reads them in an edit it deletes, so it
+changes nothing. `--json` prints `{"package", "releases": [{"track", "name", "status", "version_codes",
+"user_fraction"}]}` for scripts.
+
+### nsh publish doctor android
+
+```sh
+nsh publish doctor android [--entry <DIR>] [--package <NAME>] [--credentials <KEY.json>] [--store <DIR>]
+```
+
+Checks, without changing anything on Play, what `nsh publish android` needs: the service account key, the package
+name, the store directory, signing in, and access to the app (it opens an edit and deletes it). Exits with an error if
+a check fails.
+
+### nsh publish linux
+
+```sh
+nsh publish linux <ARCHIVE.tar.gz> [--url <URL>] [--entry <DIR>] [--out <DIR>]
+nsh publish status linux [--entry <DIR>] [--json]
+nsh publish doctor linux [--entry <DIR>]
+```
+
+Writes or updates the app's Flathub manifest (`<id>.yml`) for a release archive: its download URL and SHA-256. It opens
+no pull request; commit the manifest to `flathub/<id>` yourself ([Publishing](./publish.md#publish-to-flathub)). `status`
+prints the app's version on Flathub and exits 1 until it is `nsh.json`'s; `doctor` checks the metadata Flathub asks for
+(`id`, the store listing, `store.linux`, the icon), and validates the metainfo and desktop entry.
+
+| Flag | Description |
+|---|---|
+| `--url <URL>` | Where the archive is downloaded from (HTTPS): the release asset's URL. Default: `nsh.json` `store.linux.archiveUrl`, with `{version}` replaced. |
+| `--entry <DIR>` | The app's directory or entry. Default: `.`. |
+| `--out <DIR>` | The checkout of the app's Flathub repository to write `<id>.yml` into. Default: `.nsh/out/flathub/<id>`. |
+
+### nsh publish windows
+
+```sh
+nsh publish windows <APP.msix> [--entry <DIR>] [--product-id <ID>] [--notes <FILE>|<LANG>=<FILE>]... [--wait]
+nsh publish status windows [--entry <DIR>] [--product-id <ID>] [--submission <ID>] [--json]
+nsh publish doctor windows [--entry <DIR>] [--product-id <ID>]
+```
+
+Submits an MSIX package (`nsh package --target windows --format msix`) to the Microsoft Store with the Store
+submission API: creates a submission from the last published one, replaces its package, sets the release notes of
+its listings (each locale's `releaseNotes` of the [store listing](./publish.md#store-listing), or `--notes`), uploads the package and commits it to certification. A failed submission is deleted before
+it is committed; an app with a pending submission (a draft in Partner Center) is refused, so nothing a person
+started is overwritten. `--wait` polls until certification ends and fails when the Store rejects it. `status` prints
+the latest submission's status and exits 0 when published, 2 while in progress, 1 when failed. `doctor` checks
+`nsh.json`, the credentials and the Store ID without changing anything.
+
+Credentials are an Azure AD app associated with Partner Center (Account settings → User management → Azure AD
+applications, role Manager), read only from `NSH_MS_TENANT_ID`, `NSH_MS_CLIENT_ID` and `NSH_MS_CLIENT_SECRET`. The
+Store ID is `nsh.json` `store.windows.productId` (or `--product-id`). The app's first submission (pricing, age ratings, store
+listing) is made in Partner Center; later ones go through this command.
 
 ### nsh verify
 
@@ -448,9 +519,13 @@ Signs a revocation list: release keys and packages that must not load any more.
 ## nsh publish ios
 
 ```sh
-nsh publish ios <IPA> --app-id <ID> --issuer-id <ID> --key-id <ID> --private-key <PATH>
+nsh publish ios <IPA> [--app-id <ID>] [--issuer-id <ID>] [--key-id <ID>] [--private-key <PATH>]
 ```
 
-Uploads an App Store-signed IPA on macOS to App Store Connect for TestFlight. Flags also accept
+Uploads an App Store-signed IPA on macOS to App Store Connect, waits for processing, gives it to
+TestFlight groups, prepares the App Store version and listing, and submits it for review with
+`--submit`. `nsh publish status ios` and `nsh publish doctor ios` report the release state and check
+the setup. Flags also accept
 `NSH_APP_STORE_APP_ID`, `NSH_APP_STORE_ISSUER_ID`, `NSH_APP_STORE_KEY_ID` and
-`NSH_APP_STORE_PRIVATE_KEY`. See [Upload to TestFlight](./packaging.md#upload-to-testflight) for signing, credentials and processing.
+`NSH_APP_STORE_PRIVATE_KEY`. The app ID defaults to `nsh.json` `store.ios.appId` and the key to
+`~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8`, so a configured app runs `nsh publish ios <IPA>`. See [Publish to the App Store](./publish.md#upload-to-testflight) for signing, credentials and processing.

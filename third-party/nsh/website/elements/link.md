@@ -13,21 +13,6 @@ screen readers. The look is the app's: a `Link` has no color, underline or label
 shows. `href` says where it goes; it is data for the opening, and the URL the desktops show while the pointer rests on
 the link ([Where it goes](#where-it-goes)).
 
-```rust tabs
-use nsh_base::{link, theme};
-use nsh_core::prelude::*;
-
-fn docs() -> impl IntoElement {
-    link()
-        .href("https://example.com/docs")
-        .text_color(move || theme().primary)
-        .underline()
-        .hover(|s| s.opacity(0.8))
-        .focus_visible(|s| s.rounded_sm().outline(px(2.0)).outline_color(move || theme().ring))
-        .child(text("Read the docs"))
-}
-```
-
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Link } from "nsh/base";
@@ -49,6 +34,21 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{link, theme};
+use nsh_core::prelude::*;
+
+fn docs() -> impl IntoElement {
+    link()
+        .href("https://example.com/docs")
+        .text_color(move || theme().primary)
+        .underline()
+        .hover(|s| s.opacity(0.8))
+        .focus_visible(|s| s.rounded_sm().outline(px(2.0)).outline_color(move || theme().ring))
+        .child(text("Read the docs"))
+}
 ```
 
 `Link` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `link()` makes one
