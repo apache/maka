@@ -31,11 +31,24 @@ pub(super) fn initialize_for(cli: &crate::args::Cli) -> Result<(), maka_host_run
 }
 
 pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
+    use tracing_subscriber::{
+        filter::{LevelFilter, Targets},
+        layer::SubscriberExt,
+        util::SubscriberInitExt,
+    };
+    // Upstream relay diagnostics can contain arbitrary response and health text.
+    let targets = Targets::new()
+        .with_default(LevelFilter::WARN)
+        .with_target("iroh::socket::transports::relay", LevelFilter::OFF)
+        .with_target("iroh_relay::client", LevelFilter::OFF);
     tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
+        .with_max_level(LevelFilter::WARN)
         .with_ansi(false)
         .with_writer(std::io::stderr)
-        .try_init()
+        .finish()
+        .with(targets)
+        .try_init()?;
+    Ok(())
 }
 
 /// Task-owned passive extension RPC metadata only. The extension bootstrap precedes
@@ -245,6 +258,7 @@ mod tests {
             assert!(stdout.contains("query completed"));
             assert!(!stdout.contains("WARN") && !stdout.contains("host-log-sqlx-probe"));
             let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(!stderr.contains("RELAY_HEALTH_SECRET"), "{stderr}");
             assert_eq!(
                 stderr.contains("host-log-sqlx-probe"),
                 expected,
@@ -269,6 +283,7 @@ mod tests {
             return;
         };
         super::initialize().unwrap();
+        log::warn!(target: "iroh::socket::transports::relay::actor", "RELAY_HEALTH_SECRET");
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

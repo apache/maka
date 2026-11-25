@@ -242,7 +242,7 @@ impl PeerEndpoint {
         let mut reports = self.endpoint.net_report();
         let mut report = reports.get();
         let mut rejected = BTreeMap::new();
-        let mut failures = Vec::new();
+        let mut authentication_rejected = false;
         let ready = 'registration: loop {
             let statuses = home.get();
             let connected = self.connected_relays(&statuses);
@@ -254,30 +254,28 @@ impl PeerEndpoint {
                 .take()
                 .is_some_and(|report| report.preferred_relay.is_none())
             {
-                failures.extend(
-                    self.routes
-                        .keys()
-                        .filter(|url| !rejected.contains_key(*url))
-                        .map(|url| format!("relay {url}: network probe failed")),
-                );
-                break Err(failures.join("; ").into());
+                break Err(if authentication_rejected {
+                    relay_auth_rejected()
+                } else {
+                    "relay network probe failed; check connectivity and TLS trust".into()
+                });
             }
             for status in &statuses {
                 let url = status.url();
                 if rejected.contains_key(url) {
                     continue;
                 }
-                let Some(error) = status.last_error() else {
+                if status.last_error().is_none() {
                     continue;
-                };
-                failures.push(if status.auth_denied_reason().is_some() {
-                    // The server supplies the rejection text and can echo credentials.
-                    format!("relay {url} rejected authentication (missing or invalid relay Bearer token, or relay policy denied access)")
-                } else {
-                    format!("relay {url}: {error:#}")
-                });
+                }
+                // Neither upstream error chains nor auth denial reasons are safe to display.
+                authentication_rejected |= status.auth_denied_reason().is_some();
                 if self.routes.len() == rejected.len() + 1 {
-                    break 'registration Err(failures.join("; ").into());
+                    break 'registration Err(if authentication_rejected {
+                        relay_auth_rejected()
+                    } else {
+                        "relay connection failed; check connectivity and TLS trust".into()
+                    });
                 }
                 // A failed home registration can win the network probe. Let
                 // iroh select another home, then restore this candidate.
@@ -287,8 +285,8 @@ impl PeerEndpoint {
             }
             tokio::select! {
                 () = self.endpoint.closed() => return Err("peer endpoint closed before relay registration".into()),
-                update = home.updated() => { update?; }
-                update = reports.updated() => report = update?,
+                update = home.updated() => { update.map_err(|_| "relay status watcher closed")?; }
+                update = reports.updated() => report = update.map_err(|_| "relay network watcher closed")?,
             };
         };
         for (url, config) in rejected {
@@ -296,6 +294,11 @@ impl PeerEndpoint {
         }
         ready
     }
+}
+
+#[cfg(feature = "host")]
+fn relay_auth_rejected() -> Box<dyn std::error::Error + Send + Sync> {
+    "relay rejected authentication (missing or invalid relay Bearer token, or relay policy denied access)".into()
 }
 
 #[derive(Clone)]

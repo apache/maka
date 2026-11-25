@@ -64,7 +64,7 @@ pub(super) fn now() -> Result<u64> {
     u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
         .map_err(|_| "clock precedes Unix epoch".into())
 }
-pub(super) fn timestamp() -> Result<String> {
+fn timestamp() -> Result<String> {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|error| error.to_string())

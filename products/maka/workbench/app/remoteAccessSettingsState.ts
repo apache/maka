@@ -34,7 +34,6 @@ type Status = {
   status: 'disabled' | 'starting' | 'connected' | 'error';
   peerId: string;
   connectedRelays: string[];
-  pairedPeerCount: number;
   sas: { peerId: string; sas: string; at: number } | null;
   error: string | null;
   cliOverride: boolean;
@@ -72,6 +71,9 @@ export function createRemoteAccessSettings() {
   let active = false;
   let nextId = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let clockTimer: ReturnType<typeof setInterval> | undefined;
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+  let copyRequest = 0;
 
   const blank = (): RelayDraft => ({
     id: ++nextId,
@@ -83,20 +85,25 @@ export function createRemoteAccessSettings() {
     auth: 'keep',
     token: '',
   });
+  const fromConfig = (config: Config): Draft => ({
+    enabled: config.enabled,
+    relayOnly: config.relayOnly,
+    relays: config.relays.map((relay) => ({
+      ...blank(),
+      url: relay.endpoint.url,
+      quicPort: String(relay.endpoint.quicPort ?? ''),
+      certSha256: relay.endpoint.certSha256 ?? '',
+      caDerPath: relay.caDerPath ?? '',
+      hasAuthToken: relay.hasAuthToken,
+    })),
+  });
   const reset = (config: Config) => {
-    draft.set({
-      enabled: config.enabled,
-      relayOnly: config.relayOnly,
-      relays: config.relays.map((relay) => ({
-        ...blank(),
-        url: relay.endpoint.url,
-        quicPort: String(relay.endpoint.quicPort ?? ''),
-        certSha256: relay.endpoint.certSha256 ?? '',
-        caDerPath: relay.caDerPath ?? '',
-        hasAuthToken: relay.hasAuthToken,
-      })),
-    });
+    draft.set(fromConfig(config));
     dirty.set(false);
+  };
+  const cancelRevoke = () => {
+    confirming.set(null);
+    actionError.set('');
   };
   const discarding = createSettingsDiscard(dirty, () => reset(status()!.config));
   const setDraft = (value: Draft) => {
@@ -115,9 +122,21 @@ export function createRemoteAccessSettings() {
       ]);
       if (!current()) return;
       const live = next as Status;
+      const previous = status()?.config;
+      if (!dirty() && JSON.stringify(previous) !== JSON.stringify(live.config)) reset(live.config);
+      const paired = peers as Device[];
+      const notice = live.sas ?? status()?.sas;
+      const pairing = invite();
+      if (
+        pairing &&
+        notice &&
+        notice.at >= pairing.requestedAt &&
+        paired.some((device) => device.peerId === notice.peerId)
+      ) {
+        invite.set(null);
+      }
+      devices.set(paired);
       status.set(live);
-      devices.set(peers as Device[]);
-      if (!dirty() && !draft()) reset(live.config);
       loadError.set('');
     } catch (error) {
       if (current()) loadError.set(String(error));
@@ -125,7 +144,6 @@ export function createRemoteAccessSettings() {
   };
   const tick = async (run: number) => {
     if (run !== generation) return;
-    clock.set(Date.now());
     if (!busy()) await load(run);
     if (run === generation) timer = setTimeout(() => void tick(run), 1000);
   };
@@ -151,6 +169,27 @@ export function createRemoteAccessSettings() {
   const urlError = (relay: RelayDraft) => !host.validRemoteRelayUrl(relay.url.trim());
   const canPair = () =>
     !loadError() && status()?.status === 'connected' && !!status()?.connectedRelays.length;
+  const apply = async ({ enabled, relayOnly, relays }: Draft) => {
+    if ((enabled && !relays.length) || relays.some(urlError))
+      throw new Error(tr('Enter an HTTP or HTTPS relay URL.'));
+    if (relays.some(portError)) throw new Error(tr('Enter a port from 1 to 65535.'));
+    return (await host.updateRemoteAccess(
+      {
+        enabled,
+        relayOnly,
+        relays: relays.map((relay) => ({
+          endpoint: {
+            url: relay.url.trim(),
+            quicPort: relay.quicPort.trim() ? Number(relay.quicPort) : null,
+            certSha256: relay.certSha256.trim() || null,
+          },
+          caDerPath: relay.caDerPath.trim() || null,
+          auth: { kind: relay.auth },
+        })),
+      },
+      relays.map((relay) => (relay.auth === 'replace' ? relay.token : null)),
+    )) as Config;
+  };
   return {
     status,
     devices,
@@ -169,17 +208,30 @@ export function createRemoteAccessSettings() {
     secondsLeft: () => Math.max(0, Math.ceil(((invite()?.expiresAtMs ?? 0) - clock()) / 1000)),
     sas: () => {
       const notice = status()?.sas;
-      return notice && notice.at >= (invite()?.requestedAt ?? Infinity) ? notice : null;
+      const pairing = invite();
+      const now = clock();
+      return notice &&
+        pairing &&
+        now < pairing.expiresAtMs &&
+        notice.at >= pairing.requestedAt &&
+        now - notice.at < 120_000 &&
+        !devices().some((device) => device.peerId === notice.peerId)
+        ? notice
+        : null;
     },
     activate() {
       if (active || platform.idiom === 'terminal') return;
       active = true;
+      clock.set(Date.now());
+      clockTimer = setInterval(() => clock.set(Date.now()), 1000);
       void tick(++generation);
     },
     deactivate() {
       active = false;
       ++generation;
       clearTimeout(timer);
+      clearTimeout(copyTimer);
+      clearInterval(clockTimer);
       busy.set(false);
       status.set(null);
       draft.set(null);
@@ -192,10 +244,19 @@ export function createRemoteAccessSettings() {
       actionError.set('');
       discarding.clear();
     },
-    refresh: () => void load(generation),
+    refresh: () => load(generation),
+    discard() {
+      reset(status()!.config);
+      actionError.set('');
+    },
+    cancelRevoke,
+    confirmRevoke(device: Device) {
+      actionError.set('');
+      confirming.set(device);
+    },
     back() {
       if (confirming()) {
-        confirming.set(null);
+        cancelRevoke();
         return false;
       }
       return !discarding.back();
@@ -230,29 +291,20 @@ export function createRemoteAccessSettings() {
     },
     save: () =>
       void perform(async (current) => {
-        const { enabled, relayOnly, relays } = draft()!;
-        if ((enabled && !relays.length) || relays.some(urlError))
-          throw new Error(tr('Enter an HTTP or HTTPS relay URL.'));
-        if (relays.some(portError)) throw new Error(tr('Enter a port from 1 to 65535.'));
-        const config = (await host.updateRemoteAccess(
-          {
-            enabled,
-            relayOnly,
-            relays: relays.map((relay) => ({
-              endpoint: {
-                url: relay.url.trim(),
-                quicPort: relay.quicPort.trim() ? Number(relay.quicPort) : null,
-                certSha256: relay.certSha256.trim() || null,
-              },
-              caDerPath: relay.caDerPath.trim() || null,
-              auth: { kind: relay.auth },
-            })),
-          },
-          relays.map((relay) => (relay.auth === 'replace' ? relay.token : null)),
-        )) as Config;
+        const next = draft()!;
+        const config = await apply(
+          next.enabled ? next : { ...fromConfig(status()!.config), enabled: false },
+        );
         if (!current()) return;
         invite.set(null);
         reset(config);
+        await load(generation);
+      }),
+    retry: () =>
+      void perform(async (current) => {
+        await apply(fromConfig(status()!.config));
+        if (!current()) return;
+        invite.set(null);
         await load(generation);
       }),
     pair: () =>
@@ -273,11 +325,20 @@ export function createRemoteAccessSettings() {
         confirming.set(null);
         await load(generation);
       }),
-    copy: (key: string, value: string) =>
-      void perform(async (current) => {
+    async copy(key: string, value: string) {
+      const run = generation;
+      const request = ++copyRequest;
+      const current = () => run === generation && request === copyRequest;
+      try {
         await Clipboard.writeText(value);
-        if (current()) copied.set(key);
-      }),
+        if (!current()) return;
+        copied.set(key);
+        clearTimeout(copyTimer);
+        copyTimer = setTimeout(() => copied.set(''), 2000);
+      } catch (error) {
+        if (current()) actionError.set(String(error));
+      }
+    },
   };
 }
 

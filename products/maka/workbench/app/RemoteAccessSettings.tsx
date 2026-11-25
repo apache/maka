@@ -21,6 +21,7 @@ import { Canvas, Text, View, platform } from 'nsh';
 import { LoadingIndicator } from './Loading';
 import { messageDateTime, tr } from './locale';
 import {
+  RowLine,
   SettingsBody,
   SettingsButton,
   SettingsConfirm,
@@ -36,6 +37,8 @@ import type { RemoteAccessSettingsOwner } from './remoteAccessSettingsState';
 import { C, captionTextStyle } from './ui';
 
 type Props = { owner: RemoteAccessSettingsOwner };
+const shortPeerId = (id: string) => (id.length > 12 ? id.slice(0, 8) + '…' + id.slice(-4) : id);
+const peerIdStyle = { ...captionTextStyle, fontFamily: 'monospace' };
 
 export function RemoteAccessSettings({ owner }: Props) {
   return (
@@ -57,13 +60,16 @@ export function RemoteAccessSettings({ owner }: Props) {
           when={!owner.confirming()}
           else={
             <SettingsConfirm
-              title={tr('Revoke device access?')}
-              body={owner.actionError() || owner.confirming()?.label || owner.confirming()?.peerId}
+              title={tr('Revoke access for {device}?', {
+                device: owner.confirming()?.label || shortPeerId(owner.confirming()?.peerId ?? ''),
+              })}
+              body={tr('This disconnects the device immediately. To reconnect, pair it again.')}
+              error={owner.actionError()}
               confirm={tr('Revoke')}
               destructive
               disabled={owner.busy()}
               onConfirm={owner.revoke}
-              onCancel={() => owner.confirming.set(null)}
+              onCancel={owner.cancelRevoke}
             />
           }
         >
@@ -102,20 +108,28 @@ function RemoteAccessForm({ owner }: Props) {
       }
     >
       <SettingsBody
-        footerShown={owner.dirty() || (live().status === 'error' && !live().cliOverride)}
+        footerShown={owner.dirty()}
         footer={
-          <SettingsButton
-            label={owner.dirty() ? tr('Save') : tr('Retry')}
-            tone="primary"
-            disabled={disabled()}
-            onPress={owner.save}
-          />
+          <>
+            <SettingsButton
+              label={tr('Discard')}
+              tone="quiet"
+              disabled={owner.busy()}
+              onPress={owner.discard}
+            />
+            <SettingsButton
+              label={tr('Save')}
+              tone="primary"
+              disabled={disabled()}
+              onPress={owner.save}
+            />
+          </>
         }
       >
         <If when={owner.loadError()}>
           <SettingsProblem message={owner.loadError()} retry={owner.refresh} />
         </If>
-        <SettingsSection title={tr('Connection status')} note={live().error ?? undefined} noteWarns>
+        <SettingsSection title={tr('Connection status')}>
           <SettingsRow
             label={tr('Remote Access')}
             trailing={
@@ -127,7 +141,7 @@ function RemoteAccessForm({ owner }: Props) {
                     live().status === 'error'
                       ? C.danger
                       : live().status === 'connected'
-                        ? C.accent
+                        ? C.success
                         : C.muted,
                 }}
               >
@@ -135,9 +149,23 @@ function RemoteAccessForm({ owner }: Props) {
               </Text>
             }
           />
+          <If when={live().error}>
+            <SettingsRow
+              label={tr('Relay')}
+              description={live().error ?? undefined}
+              tone="danger"
+              trailing={
+                <If when={!live().cliOverride}>
+                  <SettingsButton label={tr('Retry')} disabled={disabled()} onPress={owner.retry} />
+                </If>
+              }
+            />
+          </If>
           <SettingsRow
             label={tr('Host Peer ID')}
-            description={live().peerId}
+            detail={
+              <Text style={{ ...peerIdStyle, color: C.muted }}>{shortPeerId(live().peerId)}</Text>
+            }
             trailing={
               <SettingsButton
                 label={owner.copied() === 'peer' ? tr('Copied') : tr('Copy')}
@@ -165,86 +193,32 @@ function RemoteAccessForm({ owner }: Props) {
             disabled={disabled()}
             onPress={() => owner.setEnabled(!draft().enabled)}
           />
-          <SettingsSwitch
-            label={tr('Relay only (disable direct P2P)')}
-            checked={draft().relayOnly}
-            disabled={disabled()}
-            onPress={() => owner.setRelayOnly(!draft().relayOnly)}
-          />
-          <SettingsRow
-            label={tr('Relays')}
-            trailing={
-              <SettingsButton
-                label={tr('Add relay')}
-                disabled={disabled()}
-                onPress={owner.addRelay}
-              />
-            }
-          />
-        </SettingsSection>
-        <Each of={draft().relays} key={(relay) => relay.id}>
-          {(relay) => (
-            <SettingsSection>
-              <SettingsInput
-                label={tr('Relay URL')}
-                value={relay().url}
-                disabled={disabled()}
-                error={
-                  relay().url && owner.urlError(relay())
-                    ? tr('Enter an HTTP or HTTPS relay URL.')
-                    : undefined
-                }
-                change={(url) => owner.editRelay(relay().id, { url })}
-              />
-              <SettingsInput
-                label={tr('QUIC port')}
-                value={relay().quicPort}
-                disabled={disabled()}
-                error={owner.portError(relay()) ? tr('Enter a port from 1 to 65535.') : undefined}
-                change={(quicPort) => owner.editRelay(relay().id, { quicPort })}
-              />
-              <SettingsInput
-                label={tr('TLS certificate SHA-256')}
-                value={relay().certSha256}
-                disabled={disabled()}
-                change={(certSha256) => owner.editRelay(relay().id, { certSha256 })}
-              />
-              <SettingsInput
-                label={tr('TLS CA certificate path')}
-                value={relay().caDerPath}
-                disabled={disabled()}
-                change={(caDerPath) => owner.editRelay(relay().id, { caDerPath })}
-              />
-              <SettingsSelect
-                label={tr('Relay Bearer token')}
-                value={relay().auth}
-                disabled={disabled()}
-                choices={[
-                  {
-                    value: 'keep',
-                    title: relay().hasAuthToken ? tr('Keep saved token') : tr('No token'),
-                  },
-                  { value: 'replace', title: tr('Replace') },
-                  ...(relay().hasAuthToken ? [{ value: 'clear', title: tr('Clear') }] : []),
-                ]}
-                change={(auth) =>
-                  owner.editRelay(relay().id, {
-                    auth: auth as 'keep' | 'clear' | 'replace',
-                    token: '',
-                  })
-                }
-              />
-              <If when={relay().auth === 'replace'}>
-                <SettingsInput
-                  label={tr('New Bearer token')}
-                  masked
-                  value={relay().token}
+          <If when={draft().enabled}>
+            <SettingsSwitch
+              label={tr('Relay only (disable direct P2P)')}
+              checked={draft().relayOnly}
+              disabled={disabled()}
+              onPress={() => owner.setRelayOnly(!draft().relayOnly)}
+            />
+            <SettingsRow
+              label={tr('Relays')}
+              trailing={
+                <SettingsButton
+                  label={tr('Add relay')}
                   disabled={disabled()}
-                  change={(token) => owner.editRelay(relay().id, { token })}
+                  onPress={owner.addRelay}
                 />
-              </If>
-              <SettingsRow
-                label={tr('Relay')}
+              }
+            />
+          </If>
+        </SettingsSection>
+        <If when={draft().enabled}>
+          <Each of={draft().relays} key={(relay) => relay.id}>
+            {(relay) => (
+              <SettingsSection
+                title={tr('Relay {number}', {
+                  number: draft().relays.findIndex((item) => item.id === relay().id) + 1,
+                })}
                 trailing={
                   <SettingsButton
                     label={tr('Remove')}
@@ -252,10 +226,73 @@ function RemoteAccessForm({ owner }: Props) {
                     onPress={() => owner.removeRelay(relay().id)}
                   />
                 }
-              />
-            </SettingsSection>
-          )}
-        </Each>
+              >
+                <SettingsInput
+                  label={tr('Relay URL')}
+                  placeholder="https://relay.example.org"
+                  value={relay().url}
+                  disabled={disabled()}
+                  error={
+                    relay().url && owner.urlError(relay())
+                      ? tr('Enter an HTTP or HTTPS relay URL.')
+                      : undefined
+                  }
+                  change={(url) => owner.editRelay(relay().id, { url })}
+                />
+                <SettingsInput
+                  label={tr('QUIC port')}
+                  placeholder={tr('Optional')}
+                  value={relay().quicPort}
+                  disabled={disabled()}
+                  error={owner.portError(relay()) ? tr('Enter a port from 1 to 65535.') : undefined}
+                  change={(quicPort) => owner.editRelay(relay().id, { quicPort })}
+                />
+                <SettingsInput
+                  label={tr('TLS certificate SHA-256')}
+                  placeholder={tr('Optional')}
+                  value={relay().certSha256}
+                  disabled={disabled()}
+                  change={(certSha256) => owner.editRelay(relay().id, { certSha256 })}
+                />
+                <SettingsInput
+                  label={tr('TLS CA certificate path')}
+                  placeholder={tr('Optional')}
+                  value={relay().caDerPath}
+                  disabled={disabled()}
+                  change={(caDerPath) => owner.editRelay(relay().id, { caDerPath })}
+                />
+                <SettingsSelect
+                  label={tr('Relay Bearer token')}
+                  value={relay().auth}
+                  disabled={disabled()}
+                  choices={[
+                    {
+                      value: 'keep',
+                      title: relay().hasAuthToken ? tr('Keep saved token') : tr('No token'),
+                    },
+                    { value: 'replace', title: tr('Replace') },
+                    ...(relay().hasAuthToken ? [{ value: 'clear', title: tr('Clear') }] : []),
+                  ]}
+                  change={(auth) =>
+                    owner.editRelay(relay().id, {
+                      auth: auth as 'keep' | 'clear' | 'replace',
+                      token: '',
+                    })
+                  }
+                />
+                <If when={relay().auth === 'replace'}>
+                  <SettingsInput
+                    label={tr('New Bearer token')}
+                    masked
+                    value={relay().token}
+                    disabled={disabled()}
+                    change={(token) => owner.editRelay(relay().id, { token })}
+                  />
+                </If>
+              </SettingsSection>
+            )}
+          </Each>
+        </If>
         <If when={owner.actionError()}>
           <SettingsProblem message={owner.actionError()} />
         </If>
@@ -268,29 +305,33 @@ function RemoteAccessForm({ owner }: Props) {
             {(device) => (
               <SettingsRow
                 label={device().label || tr('Unnamed device')}
-                description={device().peerId.slice(0, 12) + '…'}
                 detail={
-                  <Text style={{ ...captionTextStyle, color: C.muted }}>
-                    {[
-                      device().createdAt &&
-                        tr('Paired {time}', {
-                          time: messageDateTime(Date.parse(device().createdAt)),
-                        }),
-                      device().lastActiveAt &&
-                        tr('Last active {time}', {
-                          time: messageDateTime(Date.parse(device().lastActiveAt!)),
-                        }),
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </Text>
+                  <>
+                    <Text style={{ ...peerIdStyle, color: C.muted }}>
+                      {shortPeerId(device().peerId)}
+                    </Text>
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {[
+                        device().createdAt &&
+                          tr('Paired {time}', {
+                            time: messageDateTime(Date.parse(device().createdAt)),
+                          }),
+                        device().lastActiveAt &&
+                          tr('Last active {time}', {
+                            time: messageDateTime(Date.parse(device().lastActiveAt!)),
+                          }),
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </>
                 }
                 trailing={
                   <SettingsButton
                     label={tr('Revoke')}
                     tone="danger"
                     disabled={owner.busy()}
-                    onPress={() => owner.confirming.set(device())}
+                    onPress={() => owner.confirmRevoke(device())}
                   />
                 }
               />
@@ -309,13 +350,43 @@ function Pairing({ owner }: Props) {
   const side = () => ((code()?.length ?? 0) + 8) * moduleSize();
   return (
     <SettingsSection title={tr('Pair new device')}>
+      <If when={owner.sas()}>
+        <SettingsRow
+          label={tr('SAS verification code')}
+          description={tr('Confirm only if this code matches the one on your phone.')}
+          trailing={
+            <View
+              style={{
+                backgroundColor: C.raised,
+                borderRadius: 8,
+                paddingHorizontal: 14,
+                paddingVertical: 8,
+              }}
+            >
+              <Text
+                style={{
+                  color: C.text,
+                  fontFamily: 'monospace',
+                  fontVariant: ['tabular-nums'],
+                  fontSize: 24,
+                  fontWeight: '600',
+                  letterSpacing: 3,
+                }}
+              >
+                {owner.sas()?.sas}
+              </Text>
+            </View>
+          }
+        />
+      </If>
       <SettingsRow
-        label={
-          owner.invite()
-            ? active()
-              ? tr('Expires in {seconds}s', { seconds: owner.secondsLeft() })
-              : tr('Pairing link expired')
-            : tr('Pair device')
+        label={owner.invite() && !active() ? tr('Pairing link expired') : tr('Pairing link')}
+        detail={
+          <If when={active()}>
+            <Text style={{ ...captionTextStyle, color: C.muted, fontVariant: ['tabular-nums'] }}>
+              {tr('Expires in {seconds}s', { seconds: owner.secondsLeft() })}
+            </Text>
+          </If>
         }
         description={
           !owner.canPair() ? tr('Connect to a relay before pairing a device.') : undefined
@@ -342,39 +413,33 @@ function Pairing({ owner }: Props) {
             />
           }
         />
-        <If when={code()}>
-          <View style={{ alignItems: 'center', padding: 12 }}>
-            <Canvas
-              accessibilityElementsHidden
-              style={{ width: side(), height: side() }}
-              draw={(ctx) => {
-                const matrix = code();
-                if (!matrix) return;
-                const unit = moduleSize();
-                // QR optical colors are data, independent of the window appearance.
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(0, 0, side(), side());
-                ctx.fillStyle = '#000';
-                matrix.forEach((row, y) =>
-                  row.forEach((dark, x) => {
-                    if (dark) ctx.fillRect((x + 4) * unit, (y + 4) * unit, unit, unit);
-                  }),
-                );
-              }}
-            />
+        <If when={code() && !owner.sas()}>
+          <View style={{ alignItems: 'center', paddingVertical: 16 }}>
+            <RowLine />
+            <View
+              style={{ borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: C.line }}
+            >
+              <Canvas
+                accessibilityElementsHidden
+                style={{ width: side(), height: side() }}
+                draw={(ctx) => {
+                  const matrix = code();
+                  if (!matrix) return;
+                  const unit = moduleSize();
+                  // QR optical colors are data, independent of the window appearance.
+                  ctx.fillStyle = '#fff';
+                  ctx.fillRect(0, 0, side(), side());
+                  ctx.fillStyle = '#000';
+                  matrix.forEach((row, y) =>
+                    row.forEach((dark, x) => {
+                      if (dark) ctx.fillRect((x + 4) * unit, (y + 4) * unit, unit, unit);
+                    }),
+                  );
+                }}
+              />
+            </View>
           </View>
         </If>
-      </If>
-      <If when={owner.sas()}>
-        <SettingsRow
-          label={tr('SAS verification code')}
-          description={tr('Confirm only if this code matches the one on your phone.')}
-          trailing={
-            <Text style={{ color: C.text, fontSize: 20, fontWeight: '600' }}>
-              {owner.sas()?.sas}
-            </Text>
-          }
-        />
       </If>
     </SettingsSection>
   );

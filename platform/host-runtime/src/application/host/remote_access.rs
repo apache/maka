@@ -18,16 +18,14 @@
  */
 
 //! Trusted local control of the product-owned peer transport.
-use super::{
-    Host, PeerId, Result,
-    access::{now, timestamp},
-};
+use super::{Host, PeerId, Result, access::now};
 pub use maka_config::remote_access::{
     RelayAuthUpdate, RemoteAccessConfig, RemoteAccessUpdate, RemoteRelayUpdate, RemoteTransport,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 pub fn valid_relay_url(url: String) -> bool {
     maka_remote_pairing::RelayEndpoint {
@@ -82,7 +80,6 @@ pub struct RemoteAccessStatus {
     pub status: ConnectionStatus,
     pub peer_id: String,
     pub connected_relays: Vec<String>,
-    pub paired_peer_count: usize,
     pub sas: Option<SasNotice>,
     pub error: Option<String>,
     pub cli_override: bool,
@@ -129,19 +126,62 @@ impl Host {
         state.sas = None;
     }
 
-    pub async fn observe_peer_handshake(&self, peer: &PeerId, sas: String) -> Result<()> {
+    pub async fn observe_peer_handshakes(
+        &self,
+        mut observations: mpsc::Receiver<(PeerId, String, std::time::SystemTime)>,
+        stop: CancellationToken,
+    ) -> Result<()> {
+        // Keep advisory writes off the connection used for authentication and control.
+        let store = tokio::select! {
+            biased;
+            () = stop.cancelled() => return Ok(()),
+            result = maka_config::ConfigurationStore::for_root(self.root.clone()) => {
+                result.map_err(|error| error.to_string())?
+            }
+        };
+        loop {
+            let (peer, sas, at) = tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                next = observations.recv() => match next {
+                    Some(next) => next,
+                    None => break,
+                },
+            };
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                result = self.observe_peer_handshake(&store, peer, sas, at) => {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "could not record peer handshake");
+                    }
+                }
+            }
+        }
+        store.close().await.map_err(|error| error.to_string())
+    }
+
+    async fn observe_peer_handshake(
+        &self,
+        store: &maka_config::ConfigurationStore,
+        peer: PeerId,
+        sas: String,
+        at: std::time::SystemTime,
+    ) -> Result<()> {
+        let at = time::OffsetDateTime::from(at);
+        let timestamp = at
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|error| error.to_string())?;
+        let at = u64::try_from(at.unix_timestamp_nanos() / 1_000_000)
+            .map_err(|_| "clock precedes Unix epoch")?;
         let grant = self.access_grant.lock().unwrap().clone();
-        if !self
-            .access
-            .record_host_peer_activity(peer.clone(), grant, timestamp()?)
+        let peer_id = peer.as_str().to_owned();
+        if !store
+            .record_host_peer_activity(peer, grant, timestamp)
             .await
             .map_err(|error| error.to_string())?
         {
-            self.remote_access.state.lock().unwrap().sas = Some(SasNotice {
-                peer_id: peer.as_str().into(),
-                sas,
-                at: now()?,
-            });
+            self.remote_access.state.lock().unwrap().sas = Some(SasNotice { peer_id, sas, at });
         }
         Ok(())
     }
@@ -171,7 +211,6 @@ impl Host {
             .remote_access_config()
             .await
             .map_err(|error| error.to_string())?;
-        let paired_peer_count = self.list_peer_access().await?.len();
         let connected_relays: Vec<_> = self
             .native_relays()
             .into_iter()
@@ -193,7 +232,6 @@ impl Host {
             status,
             peer_id: self.device_identity().public_key().to_string(),
             connected_relays,
-            paired_peer_count,
             sas: state
                 .sas
                 .as_ref()

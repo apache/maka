@@ -495,7 +495,13 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
             assert!(status.config.enabled);
             assert!(status.error.is_none(), "{:?}", status.error);
             if matches!(status.status, ConnectionStatus::Connected) {
-                assert_eq!(status.paired_peer_count, 1);
+                assert_eq!(
+                    Client::list_peer_access(&socket, epoch)
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -505,4 +511,172 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
     })
     .await
     .expect("saved remote transport did not complete");
+}
+
+#[tokio::test]
+async fn saved_remote_transport_does_not_expose_upstream_header_text() {
+    use http_body_util::Empty;
+    use hyper::{
+        Request, Response,
+        body::{Bytes, Incoming},
+        server::conn::http1,
+        service::service_fn,
+    };
+    use hyper_util::rt::TokioIo;
+    use maka_host_runtime::application::host::remote_access::{
+        RelayAuthUpdate, RemoteAccessUpdate, RemoteRelayUpdate,
+    };
+    use maka_remote_pairing::RelayEndpoint;
+    use std::{convert::Infallible, path::Path};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+    use tokio_util::sync::CancellationToken;
+
+    const REFLECTED: &str = "server-reflected-secret-from-response";
+    timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let stop_relay = CancellationToken::new();
+        let relay = tokio::spawn({
+            let stop = stop_relay.clone();
+            async move {
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    let stream = tokio::select! {
+                        () = stop.cancelled() => break,
+                        next = listener.accept() => next.unwrap().0,
+                    };
+                    let service = service_fn(|request: Request<Incoming>| async move {
+                        let response = if request.uri().path() == "/relay" {
+                            let key = &request.headers()["sec-websocket-key"];
+                            Response::builder()
+                                .status(101)
+                                .header("upgrade", "websocket")
+                                .header("connection", "upgrade")
+                                .header("sec-websocket-accept", derive_accept_key(key.as_bytes()))
+                                .header("sec-websocket-protocol", REFLECTED)
+                        } else {
+                            assert_eq!(request.uri().path(), "/ping");
+                            Response::builder().status(200)
+                        };
+                        Ok::<_, Infallible>(response.body(Empty::<Bytes>::new()).unwrap())
+                    });
+                    connections.spawn(async move {
+                        http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .await
+                            .unwrap();
+                    });
+                }
+                connections.shutdown().await;
+            }
+        });
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let mut serve =
+            host::command_for(&crate::maka_executable(), &sandbox.home, &sandbox.workspace);
+        serve.args(["host", "serve", "--root"]).arg(&sandbox.root);
+        let (server, ready) = spawn_ready(serve, Stdio::inherit()).await;
+        let socket = Path::new(ready["socketPath"].as_str().unwrap());
+        let epoch = ready["hostEpoch"].as_str().unwrap().parse().unwrap();
+        Client::update_remote_access(
+            socket,
+            epoch,
+            RemoteAccessUpdate {
+                enabled: true,
+                relay_only: true,
+                relays: vec![RemoteRelayUpdate {
+                    endpoint: RelayEndpoint {
+                        url,
+                        quic_port: None,
+                        cert_sha256: None,
+                    },
+                    ca_der_path: None,
+                    auth: RelayAuthUpdate::Keep,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let error = loop {
+            if let Some(error) = Client::remote_access_status(socket, epoch)
+                .await
+                .unwrap()
+                .error
+            {
+                break error;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(
+            error,
+            "relay connection failed; check connectivity and TLS trust"
+        );
+        stop(server).await;
+        stop_relay.cancel();
+        relay.await.unwrap();
+    })
+    .await
+    .expect("sanitized registration failure did not reach Host status");
+}
+
+#[tokio::test]
+async fn peer_stream_reaches_ingress_while_activity_writer_is_locked() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    use maka_remote_pairing::RelayEndpoint;
+    use maka_remote_transport::host::HostPeerTransport;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_util::sync::CancellationToken;
+
+    timeout(Duration::from_secs(20), async {
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let host = super::peer_access::open_host(&sandbox).await;
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        let server = Server::spawn(config).await.unwrap();
+        let route = RelayEndpoint {
+            url: format!("http://{}", server.http_addr().unwrap()),
+            quic_port: None,
+            cert_sha256: None,
+        };
+        let relay = Relay::new(&route, None, None).unwrap();
+        let transport = HostPeerTransport::bind(&host, &[relay], true)
+            .await
+            .unwrap();
+        transport.wait_for_relay().await.unwrap();
+        let device = DeviceIdentity::generate().unwrap();
+        let endpoint =
+            PeerEndpoint::bind(&device, &[Relay::new(&route, None, None).unwrap()], true)
+                .await
+                .unwrap();
+        let lock =
+            rusqlite::Connection::open(sandbox.root.join("configuration-rust.sqlite")).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (send, mut ingress) = HostPeerTransport::ingress();
+        let cancel = CancellationToken::new();
+        let serving = tokio::spawn(transport.serve(send, cancel.clone(), |_, _| {}));
+        let peer = endpoint
+            .connect(&host.device_identity().public_key())
+            .await
+            .unwrap();
+        let mut stream = peer.open_bi().await.unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        let incoming = async {
+            let stream = ingress.recv().await.unwrap();
+            let mut bytes = [0; 5];
+            stream.stream.take(5).read_exact(&mut bytes).await.unwrap();
+            bytes
+        };
+        let received = timeout(Duration::from_secs(1), incoming).await;
+        lock.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            received.expect("peer ingress waited for the SQLite writer"),
+            *b"hello"
+        );
+        cancel.cancel();
+        serving.await.unwrap().unwrap();
+        endpoint.close().await;
+        server.shutdown().await.unwrap();
+    })
+    .await
+    .expect("locked-writer admission test timed out");
 }

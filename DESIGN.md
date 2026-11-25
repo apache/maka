@@ -94,7 +94,7 @@ All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/
 - Press, hover, focus and category selection reuse the shared Settings controls and rail.
 - The footer, revoke confirmation and loading state use the shared Settings body and loading indicator.
 - Relay rows and QR appear in place without moving focus; the QR stays still while visible so the camera can lock on.
-- Connection status, SAS and expiry update in place without animation. No gestures or additional motion in reduced motion mode.
+- Connection status, SAS and expiry update without animation; SAS appears above the QR and takes its place while verification is active. No gestures or additional motion in reduced motion mode.
 
 ## Visual verification
 

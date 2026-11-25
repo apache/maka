@@ -25,7 +25,13 @@ use maka_host_runtime::{
     },
 };
 use maka_remote_transport::{Relay, host::HostPeerTransport};
-use std::{sync::Arc, time::Duration};
+use std::{
+    fs::OpenOptions,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -68,8 +74,8 @@ async fn start(
 ) -> Option<Running> {
     let config = match host.remote_transport_config().await {
         Ok(config) => config,
-        Err(error) => {
-            host.remote_access_error(error);
+        Err(_) => {
+            host.remote_access_error("could not read remote access configuration".into());
             return None;
         }
     };
@@ -113,12 +119,19 @@ async fn run(
         let mut relays = Vec::with_capacity(config.relays.len());
         for relay in config.relays {
             let ca = match relay.ca_der_path {
-                Some(path) => Some(tokio::fs::read(path).await?),
+                Some(path) => Some(read_ca(path).await?),
                 None => None,
             };
-            relays.push(Relay::new(&relay.endpoint, ca, relay.auth_token)?);
+            relays.push(Relay::new(&relay.endpoint, ca, relay.auth_token).map_err(
+                |_| "invalid relay configuration; check the URL, TLS trust and Bearer settings",
+            )?);
         }
-        HostPeerTransport::bind(host, &relays, config.relay_only).await
+        HostPeerTransport::bind(host, &relays, config.relay_only)
+            .await
+            .map_err(|_| -> HostError {
+                "could not start relay transport; check relay configuration and local networking"
+                    .into()
+            })
     };
     let transport = tokio::select! {
         biased;
@@ -138,10 +151,99 @@ async fn run(
         }
     };
     match result {
-        Ok(true) => transport.serve(ingress, cancel, |_, _| {}).await,
+        Ok(true) => transport
+            .serve(ingress, cancel, |_, _| {})
+            .await
+            .map_err(|_| "relay transport stopped unexpectedly".into()),
         result => {
             transport.close().await;
             result.map(|_| ())
         }
+    }
+}
+
+pub(super) async fn read_ca(path: PathBuf) -> Result<Vec<u8>, HostError> {
+    tokio::task::spawn_blocking(move || read_ca_file(&path))
+        .await
+        .map_err(|_| "could not read relay CA certificate")?
+        .map_err(Into::into)
+}
+
+const MAX_CA_BYTES: u64 = 64 * 1024;
+
+fn read_ca_file(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let check = |metadata: std::fs::Metadata| {
+        if !metadata.is_file() {
+            Err("relay CA certificate must be a regular file")
+        } else if metadata.len() > MAX_CA_BYTES {
+            Err("relay CA certificate exceeds 64 KiB")
+        } else {
+            Ok(())
+        }
+    };
+    const READ_ERROR: &str = "could not read relay CA certificate";
+    check(path.metadata().map_err(|_| READ_ERROR)?)?;
+    let file = options.open(path).map_err(|_| READ_ERROR)?;
+    check(file.metadata().map_err(|_| READ_ERROR)?)?;
+    let mut data = Vec::new();
+    file.take(MAX_CA_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| READ_ERROR)?;
+    if data.len() as u64 > MAX_CA_BYTES {
+        return Err("relay CA certificate exceeds 64 KiB");
+    }
+    Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_ca_read_accepts_regular_files_and_caps_the_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.der");
+        std::fs::write(&path, vec![42; MAX_CA_BYTES as usize]).unwrap();
+        assert_eq!(read_ca_file(&path).unwrap().len() as u64, MAX_CA_BYTES);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_CA_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            read_ca_file(&path).unwrap_err(),
+            "relay CA certificate exceeds 64 KiB"
+        );
+        assert_eq!(
+            read_ca_file(dir.path()).unwrap_err(),
+            "relay CA certificate must be a regular file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relay_ca_read_rejects_fifo_without_waiting_for_a_writer() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pipe");
+        let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is valid NUL-terminated storage inside the test directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let error = tokio::time::timeout(Duration::from_secs(2), read_ca(path))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "relay CA certificate must be a regular file"
+        );
     }
 }

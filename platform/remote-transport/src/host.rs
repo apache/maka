@@ -25,7 +25,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     num::NonZeroUsize,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     io::join,
@@ -96,6 +96,18 @@ impl HostPeerTransport {
     ) -> Result<()> {
         let mut pending = JoinSet::new();
         let mut streams = JoinSet::new();
+        let (observe, observations) = mpsc::channel(16);
+        let observe_stop = CancellationToken::new();
+        let mut observer = JoinSet::new();
+        observer.spawn({
+            let host = self.host.clone();
+            let stop = observe_stop.clone();
+            async move {
+                if let Err(error) = host.observe_peer_handshakes(observations, stop).await {
+                    tracing::warn!(%error, "peer handshake observations unavailable");
+                }
+            }
+        });
         let mut active: BTreeMap<PeerId, HashMap<Id, Connection>> = BTreeMap::new();
         let mut home = self.peer.endpoint.home_relay_status();
         let result: Result<()> = async {
@@ -155,11 +167,9 @@ impl HostPeerTransport {
                         let peer = peer_id.clone();
                         let transport = conn.clone();
                         let host = self.host.clone();
-                        let notice = sas.clone();
+                        // Advisory only; neither SQLite nor a full queue may stall ingress.
+                        let _ = observe.try_send((peer_id.clone(), sas.clone(), SystemTime::now()));
                         let task = streams.spawn(async move {
-                            if let Err(error) = host.observe_peer_handshake(&peer, notice).await {
-                                tracing::warn!(%error, "could not record peer handshake");
-                            }
                             serve_connection(transport, &peer, ingress, &host, deadline).await;
                             peer
                         });
@@ -194,6 +204,7 @@ impl HostPeerTransport {
                 }
             }
         }.await;
+        observe_stop.cancel();
         let withdraw = self.host.set_native_relays(Vec::new());
         self.peer.close().await;
         pending.shutdown().await;
@@ -204,7 +215,15 @@ impl HostPeerTransport {
             Ok(())
         }
         .await;
-        result.and(withdraw.map_err(Into::into)).and(drained)
+        let observed = observer
+            .join_next()
+            .await
+            .expect("one observation worker")
+            .map_err(Into::into);
+        result
+            .and(withdraw.map_err(Into::into))
+            .and(drained)
+            .and(observed)
     }
 }
 

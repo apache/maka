@@ -326,6 +326,7 @@
   "This conversation changed. Open the workspace picker again.": "此對話已更改，請重新開啟工作區選擇器。",
   "This conversation changed. Review its current details, then try the action again.": "此對話已變更。查看目前詳細資料後，再重試此操作。",
   "This conversation is archived. Restore it in Sessions to send; your draft is kept.": "此對話已封存，請在對話列表中還原後傳送；草稿已保留。",
+  "This disconnects the device immediately. To reconnect, pair it again.": "此裝置會立即中斷連接。若要重新連接，請再次配對。",
   "This file changed while it was being read. Refresh to capture it again.": "此檔案在讀取期間已變更。請重新整理以重新截取。",
   "This folder has no subfolders.": "此檔案夾沒有子檔案夾。",
   "This folder is unavailable or cannot be opened. Choose another location or retry.": "此檔案夾無法使用或開啟。請選擇其他位置或重試。",

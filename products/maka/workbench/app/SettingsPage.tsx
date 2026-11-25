@@ -190,7 +190,7 @@ export function SettingsSection(props: {
   );
 }
 
-function RowLine() {
+export function RowLine() {
   return (
     <If when={!terminal}>
       <View
@@ -889,6 +889,7 @@ export function SettingsProblem(props: { message?: string; retry?: () => void })
 export function SettingsConfirm(props: {
   title: string;
   body?: string;
+  error?: string;
   confirm: string;
   cancel?: string;
   destructive?: boolean;
@@ -925,6 +926,9 @@ export function SettingsConfirm(props: {
           </Text>
         </If>
       </View>
+      <If when={props.error}>
+        <SettingsProblem message={props.error} />
+      </If>
     </SettingsBody>
   );
 }
