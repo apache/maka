@@ -31,6 +31,7 @@ import { Button, Input } from 'nsh/base';
 import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { Icon } from './Icon';
+import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
 import { RoomReactionBurst } from './RoomReactions';
 import { sessionStatusCaption } from './sessionStatus';
@@ -538,8 +539,11 @@ export function SideComposer(props: {
  * stay when the reply's actions are hidden, so a reply shows what was asked of it.
  */
 export function SideNotes(props: {
-  /** Those not underlined in the reply: asked about all of it, or about text not found in it. */
-  questions(): readonly { id: string; title: string; activity?: string }[];
+  /**
+   * Those not underlined in the reply (asked about all of it, or about text not found in
+   * it), and underlined ones that are working, waiting or unread.
+   */
+  questions(): readonly { id: string; title: string; activity?: string; hasUnread?: boolean }[];
   /** The side question whose card is open. */
   shown(): string | null;
   open(sessionId: string): void;
@@ -579,10 +583,24 @@ export function SideNotes(props: {
               >
                 {item().title}
               </Text>
+              {/* The same states the sidebar shows for a conversation. */}
               <If when={item().activity === 'waiting'}>
                 <Text style={{ ...captionTextStyle, color: C.warning, flexShrink: 0 }}>
                   {sessionStatusCaption.waiting}
                 </Text>
+              </If>
+              <If when={item().activity === 'working'}>
+                <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+              </If>
+              <If
+                when={
+                  item().activity !== 'waiting' &&
+                  item().activity !== 'working' &&
+                  item().hasUnread &&
+                  props.shown() !== item().id
+                }
+              >
+                <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: C.accent }} />
               </If>
             </Button>
           )}

@@ -5337,12 +5337,16 @@ export function Conversation(props: ConversationProps) {
                       <SideNotes
                         questions={() => {
                           const position = row().position;
-                          // An underlined one is listed too while it waits for the user.
+                          // An underlined one is listed too while it works, waits for the
+                          // user or has an unread reply: the underline cannot show that.
                           return position
                             ? sideActions
                                 .asked(position)
                                 .filter(
-                                  (item) => !marked().has(item.id) || item.activity === 'waiting',
+                                  (item) =>
+                                    !marked().has(item.id) ||
+                                    item.activity !== 'idle' ||
+                                    item.hasUnread,
                                 )
                             : [];
                         }}
