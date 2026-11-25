@@ -20,16 +20,21 @@
 import { computed, effect, signal } from 'nsh';
 import {
   hasAgentEndpoint,
+  hostMutate,
   hostQuery,
   onSubscriptionEnded,
   onSubscriptionItem,
   subscribe,
   unsubscribe,
+  type AgentBackendPreference,
+  type AgentProject,
   type AgentSession,
   type AgentSessionPage,
+  type AgentWorkspaceSelection,
   type SubscriptionHandle,
 } from '../bridge';
-import { connectedHosts, selectedScopeRootId } from './hostPool';
+import { connectedHosts, hostById, selectedScopeRootId, showToast } from './hostPool';
+import { hapticNotification, hapticSelection } from './preferences';
 
 export interface ScopedSession {
   key: string;
@@ -116,6 +121,10 @@ export const recentSessions = computed<ScopedSession[]>(() =>
   ),
 );
 
+export function findScopedSession(rootId: string, sessionId: string): ScopedSession | undefined {
+  return (sessionsByHost()[rootId] ?? []).find((s) => s.session.id === sessionId);
+}
+
 export async function refreshHostSessions(rootId: string, hostName: string) {
   try {
     const page = await hostQuery<AgentSessionPage>(
@@ -158,12 +167,201 @@ export async function refreshAllSessions() {
   }
 }
 
+export async function togglePinSession(item: ScopedSession): Promise<boolean> {
+  try {
+    const res = await hostMutate<{ kind: string; reason?: unknown }>(
+      'agent',
+      'metadata',
+      {
+        sessionId: item.session.id,
+        expectedRevision: item.session.revision,
+        title: item.session.title,
+        labels: item.session.labels ?? [],
+        pinned: !item.session.pinned,
+      },
+      { rootId: item.rootId },
+    );
+    if (res?.kind === 'rejected') {
+      throw new Error(String(res.reason ?? 'rejected'));
+    }
+    hapticSelection();
+    await refreshHostSessions(item.rootId, item.hostName);
+    return true;
+  } catch (cause) {
+    hapticNotification('error');
+    showToast(cause instanceof Error ? cause.message : String(cause));
+    return false;
+  }
+}
+
+export async function renameSession(item: ScopedSession, nextTitle: string): Promise<boolean> {
+  const trimmed = nextTitle.trim();
+  if (!trimmed) return false;
+  try {
+    const res = await hostMutate<{ kind: string; reason?: unknown }>(
+      'agent',
+      'metadata',
+      {
+        sessionId: item.session.id,
+        expectedRevision: item.session.revision,
+        title: trimmed,
+        labels: item.session.labels ?? [],
+        pinned: item.session.pinned,
+      },
+      { rootId: item.rootId },
+    );
+    if (res?.kind === 'rejected') {
+      throw new Error(String(res.reason ?? 'rejected'));
+    }
+    hapticNotification('success');
+    await refreshHostSessions(item.rootId, item.hostName);
+    return true;
+  } catch (cause) {
+    hapticNotification('error');
+    showToast(cause instanceof Error ? cause.message : String(cause));
+    return false;
+  }
+}
+
+export async function deleteSession(item: ScopedSession): Promise<boolean> {
+  try {
+    const res = await hostMutate<{ kind: string; reason?: unknown }>(
+      'agent',
+      'changeSession',
+      {
+        sessionId: item.session.id,
+        expectedRevision: item.session.revision,
+        action: 'remove',
+      },
+      { rootId: item.rootId },
+    );
+    if (res?.kind === 'rejected') {
+      throw new Error(String(res.reason ?? 'rejected'));
+    }
+    hapticNotification('warning');
+    await refreshHostSessions(item.rootId, item.hostName);
+    return true;
+  } catch (cause) {
+    hapticNotification('error');
+    showToast(cause instanceof Error ? cause.message : String(cause));
+    return false;
+  }
+}
+
+export async function listHostProjects(rootId: string): Promise<AgentProject[]> {
+  try {
+    const page = await hostQuery<{ kind: string; projects?: AgentProject[] }>(
+      'agent',
+      'projects',
+      { kind: 'list', cursor: null },
+      undefined,
+      rootId,
+    );
+    return page && page.kind === 'projects' && Array.isArray(page.projects) ? page.projects : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function listHostDirectoryRoots(
+  rootId: string,
+): Promise<{ name: string; path: string }[]> {
+  try {
+    const page = await hostQuery<{ kind: string; roots?: { name: string; path: string }[] }>(
+      'agent',
+      'directories',
+      { kind: 'roots' },
+      undefined,
+      rootId,
+    );
+    return page && page.kind === 'roots' && Array.isArray(page.roots) ? page.roots : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function listHostDirectoryChildren(
+  rootId: string,
+  path: string,
+  after: string | null = null,
+): Promise<{
+  directory: { name: string; path: string } | null;
+  children: { name: string; path: string }[];
+  after: string | null;
+}> {
+  const page = await hostQuery<{
+    kind: string;
+    directory?: { name: string; path: string };
+    children?: { name: string; path: string }[];
+    after?: string | null;
+  }>('agent', 'directories', { kind: 'children', path, after }, undefined, rootId);
+  if (page && page.kind === 'children' && Array.isArray(page.children)) {
+    return {
+      directory: page.directory ?? null,
+      children: page.children,
+      after: page.after ?? null,
+    };
+  }
+  return { directory: null, children: [], after: null };
+}
+
+export async function createHostSession(params: {
+  rootId: string;
+  title: string;
+  kind: 'agent' | 'room';
+  workspace: AgentWorkspaceSelection;
+  automaticTitle: boolean;
+  backend?: AgentBackendPreference | null;
+}): Promise<ScopedSession> {
+  const res = await hostMutate<
+    | { kind: 'created'; session: AgentSession }
+    | { kind: 'rejected'; reason: unknown }
+    | AgentSession
+  >(
+    'agent',
+    'create',
+    {
+      incognito: false,
+      kind: params.kind,
+      presetId: null,
+      backend: params.kind === 'room' ? null : (params.backend ?? null),
+      automaticTitle: params.kind === 'room' ? false : params.automaticTitle,
+      tools: null,
+      title: params.title,
+      labels: [],
+      workspace: params.workspace,
+    },
+    { rootId: params.rootId },
+  );
+  let session: AgentSession;
+  if (res && typeof res === 'object' && 'kind' in res) {
+    if (res.kind === 'created' && 'session' in res && res.session) {
+      session = res.session;
+    } else if (res.kind === 'rejected') {
+      const reason = 'reason' in res ? res.reason : 'unknown';
+      throw new Error(typeof reason === 'string' ? reason : JSON.stringify(reason));
+    } else {
+      session = res as AgentSession;
+    }
+  } else {
+    session = res as AgentSession;
+  }
+  const hostName = hostById(params.rootId)?.hostName ?? params.rootId;
+  await refreshHostSessions(params.rootId, hostName);
+  return {
+    key: params.rootId + '::' + session.id,
+    rootId: params.rootId,
+    hostName,
+    session,
+  };
+}
+
 export function startSessionsStore() {
   if (initialized) return;
   initialized = true;
 
   onSubscriptionItem((payload) => {
-    if (!payload.subscriptionId.startsWith('sessions:')) return;
+    if (!payload.subscriptionId.startsWith('catalog:')) return;
     const rootId = payload.rootId;
     if (!rootId) return;
     const entry = connectedHosts().find((c) => c.host.rootId === rootId);
@@ -173,7 +371,7 @@ export function startSessionsStore() {
   });
 
   onSubscriptionEnded((payload) => {
-    if (!payload.subscriptionId.startsWith('sessions:')) return;
+    if (!payload.subscriptionId.startsWith('catalog:')) return;
     if (payload.rootId) {
       const existing = activeSubscriptions.get(payload.rootId);
       if (existing && existing.handle.subscriptionId === payload.subscriptionId) {
@@ -186,7 +384,6 @@ export function startSessionsStore() {
     const current = connectedHosts().filter((entry) => hasAgentEndpoint(entry.connection));
     const currentRoots = new Set(current.map((entry) => entry.host.rootId));
 
-    // Clean up disconnected hosts' subscriptions & cached sessions.
     for (const [rootId, sub] of [...activeSubscriptions.entries()]) {
       if (!currentRoots.has(rootId)) {
         activeSubscriptions.delete(rootId);
@@ -204,17 +401,19 @@ export function startSessionsStore() {
         void unsubscribe(existing.handle).catch(() => {});
       }
       void refreshHostSessions(rootId, hostName);
-      const subscriptionId = 'sessions:' + rootId + ':' + String(++subSeq);
+      const subscriptionId = 'catalog:' + rootId + ':' + String(++subSeq);
       void subscribe(
         subscriptionId,
         'agent',
-        'sessions',
+        'catalog',
         {
           kind: null,
           filter: 'all',
           includeArchived: false,
           rootsOnly: false,
+          position: { kind: 'start' },
           scope: { kind: 'all' },
+          titleQuery: '',
         },
         rootId,
       )

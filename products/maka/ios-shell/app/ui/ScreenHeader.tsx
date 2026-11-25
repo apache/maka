@@ -76,11 +76,12 @@ export function ScreenHeader(props: {
           </If>
           <If when={!props.large}>
             <Text
-              numberOfLines={1}
               style={{
                 ...type.headline,
                 color: token('foreground'),
                 flex: 1,
+                numberOfLines: 1,
+                textOverflow: 'ellipsis',
               }}
             >
               {props.title}
@@ -95,7 +96,6 @@ export function ScreenHeader(props: {
       </View>
       <If when={props.large}>
         <Text
-          numberOfLines={1}
           style={{
             fontSize: 32,
             fontWeight: '700',
@@ -103,6 +103,8 @@ export function ScreenHeader(props: {
             letterSpacing: -0.5,
             color: token('foreground'),
             marginTop: 2,
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
           }}
         >
           {props.title}

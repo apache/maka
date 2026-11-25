@@ -102,10 +102,12 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
     <NavPage
       style={{ flex: 1 }}
       title={tr('Scan QR Code')}
-      headerTransparent
+      headerTransparent={showCamera()}
       headerShadowVisible={false}
-      headerStyle={{ color: token('scanner-fg'), tintColor: token('scanner-fg') }}
-      statusBar={{ foreground: 'light' }}
+      headerStyle={
+        showCamera() ? { color: token('scanner-fg'), tintColor: token('scanner-fg') } : undefined
+      }
+      statusBar={showCamera() ? { foreground: 'light' } : undefined}
       header={
         <ScreenHeader title={tr('Scan QR Code')} backLabel={tr('Back')} onBack={props.onBack} />
       }
@@ -113,7 +115,7 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
       <View
         style={{
           flex: 1,
-          backgroundColor: token('scanner-bg'),
+          backgroundColor: showCamera() ? token('scanner-bg') : token('grouped-bg'),
         }}
       >
         <If when={showCamera()}>
@@ -225,6 +227,7 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                     ...type.subheadline,
                     color: token('muted-foreground'),
                     textAlign: 'center',
+                    maxWidth: 268,
                   }}
                 >
                   {tr(

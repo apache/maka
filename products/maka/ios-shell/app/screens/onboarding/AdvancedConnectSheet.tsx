@@ -18,7 +18,7 @@
  */
 
 import { Clipboard, effect, Scroll, signal, Text, View, token } from 'nsh';
-import { Input, Sheet } from 'nsh/base';
+import { Input, Sheet, type SheetDetent } from 'nsh/base';
 import { tr } from '../../locale';
 import {
   closeAdvancedConnectSheet,
@@ -38,6 +38,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
   const relayUrl = signal('');
   const relayToken = signal('');
   const showAdvanced = signal(false);
+  const detent = signal<SheetDetent>('medium');
 
   // Direct WebSocket fields (tucked inside collapsible advanced section).
   const wsEndpoint = signal('');
@@ -78,11 +79,16 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
       open={isAdvancedSheetOpen()}
       accessibilityLabel={tr('Pair with Link')}
       detents={['medium', 'large']}
-      defaultDetent="large"
+      detent={detent()}
+      onDetentChange={(e) => detent.set(e.detent)}
       grabber
       closeOnSwipe
       onOpenChange={({ open }) => {
-        if (!open) closeAdvancedConnectSheet();
+        if (!open) {
+          showAdvanced.set(false);
+          detent.set('medium');
+          closeAdvancedConnectSheet();
+        }
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
       popupStyle={{
@@ -132,7 +138,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
       <Scroll
         style={{ flex: 1 }}
         keyboardDismissMode="interactive"
-        contentContainerStyle={{ paddingBottom: 36 }}
+        contentStyle={{ paddingBottom: 36 }}
       >
         <If when={currentPairingError()}>
           <BannerNotice tone="destructive" title={currentPairingError()!} />
@@ -156,6 +162,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 minHeight: 40,
                 ...type.mono,
                 color: token('foreground'),
+                placeholderColor: token('muted-foreground'),
                 backgroundColor: 'transparent',
               }}
             />
@@ -197,7 +204,9 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
             accessibilityLabel={tr('Custom relay or WebSocket')}
             onPress={() => {
               hapticSelection();
-              showAdvanced.update((v) => !v);
+              const next = !showAdvanced();
+              showAdvanced.set(next);
+              detent.set(next ? 'large' : 'medium');
             }}
             class="active:bg-row-pressed"
             style={{

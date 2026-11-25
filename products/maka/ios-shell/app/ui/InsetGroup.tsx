@@ -155,21 +155,23 @@ export function GroupRow(props: {
       </If>
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <Text
-          numberOfLines={1}
           style={{
             ...type.body,
             fontWeight: props.tone === 'primary' ? '500' : '400',
             color: titleColor(),
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
           }}
         >
           {props.title}
         </Text>
         <If when={props.subtitle}>
           <Text
-            numberOfLines={2}
             style={{
               ...type.footnote,
               color: token('muted-foreground'),
+              numberOfLines: 2,
+              textOverflow: 'ellipsis',
             }}
           >
             {props.subtitle}
@@ -178,12 +180,13 @@ export function GroupRow(props: {
       </View>
       <If when={props.value}>
         <Text
-          numberOfLines={1}
           style={{
             ...type.body,
             color: token('muted-foreground'),
             maxWidth: 150,
             textAlign: 'right',
+            numberOfLines: 1,
+            textOverflow: 'ellipsis',
           }}
         >
           {props.value}

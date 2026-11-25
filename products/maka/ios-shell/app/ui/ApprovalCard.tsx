@@ -97,20 +97,22 @@ export function ApprovalCard(props: {
           </View>
 
           <Text
-            numberOfLines={1}
             style={{
               ...type.footnote,
               color: token('muted-foreground'),
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
             }}
           >
             {props.sourceLine}
           </Text>
 
           <Text
-            numberOfLines={2}
             style={{
               ...type.headline,
               color: token('foreground'),
+              numberOfLines: 2,
+              textOverflow: 'ellipsis',
             }}
           >
             {props.title}
@@ -127,10 +129,11 @@ export function ApprovalCard(props: {
               }}
             >
               <Text
-                numberOfLines={3}
                 style={{
                   ...(props.monospaceDetail ? type.mono : type.subheadline),
                   color: token('foreground'),
+                  numberOfLines: 3,
+                  textOverflow: 'ellipsis',
                 }}
               >
                 {props.detail}

@@ -34,7 +34,7 @@ export function ScopePills(props: {
   onSelect: (id: string) => void;
 }) {
   return (
-    <Scroll horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+    <Scroll horizontal scrollbar={false} style={{ marginBottom: 12 }}>
       <View
         style={{
           flexDirection: 'row',

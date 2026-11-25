@@ -141,7 +141,7 @@ export function DeviceDetailScreen(props: { rootId: string; onBack: () => void }
         <Scroll
           style={{ flex: 1 }}
           keyboardDismissMode="interactive"
-          contentContainerStyle={{
+          contentStyle={{
             paddingTop: 20,
             paddingBottom: Math.max(insets().bottom, 20) + 28,
           }}

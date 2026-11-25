@@ -33,6 +33,7 @@ export function installTheme() {
         muted: '#E5E5EA',
         'row-pressed': 'rgba(60, 60, 67, 0.08)',
         separator: 'rgba(60, 60, 67, 0.22)',
+        border: 'rgba(60, 60, 67, 0.14)',
         foreground: '#000000',
         'muted-foreground': 'rgba(60, 60, 67, 0.68)',
         'tertiary-foreground': 'rgba(60, 60, 67, 0.36)',
@@ -71,6 +72,7 @@ export function installTheme() {
         muted: '#2C2C2E',
         'row-pressed': 'rgba(255, 255, 255, 0.09)',
         separator: 'rgba(84, 84, 88, 0.55)',
+        border: 'rgba(84, 84, 88, 0.45)',
         foreground: '#FFFFFF',
         'muted-foreground': 'rgba(235, 235, 245, 0.65)',
         'tertiary-foreground': 'rgba(235, 235, 245, 0.36)',
@@ -111,7 +113,7 @@ export const spacing = {
   rowMinHeight: 44,
   buttonMinHeight: 50,
   hairline: 0.5,
-  tabBarClearance: 96,
+  tabBarClearance: 128,
 } as const;
 
 export const type = {

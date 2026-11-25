@@ -142,7 +142,7 @@ export function HostSettingPlaceholderScreen(props: {
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          contentContainerStyle={{
+          contentStyle={{
             paddingTop: 20,
             paddingBottom: Math.max(insets().bottom, 20) + 24,
           }}
