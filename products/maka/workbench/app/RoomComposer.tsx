@@ -23,11 +23,13 @@ import {
   effect,
   keymap,
   Overlay,
+  Scroll,
   signal,
   Text,
   View,
   windowSize,
   type InputRef,
+  type ScrollRef,
   type ViewRef,
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
@@ -69,6 +71,7 @@ import {
 } from './ui';
 import { tr } from './locale';
 import {
+  buildRoomMentionChoices,
   extractInlineMentionIds,
   formatInlineMention,
   formatRoomPreviewText,
@@ -79,6 +82,7 @@ import {
   roomResult,
   stripInlineMention,
   workspaceTailName,
+  type RoomMentionChoice,
 } from './roomMessage';
 import { ComposerShelf, ComposerShelfRow } from './Feedback';
 import { LoadingIndicator } from './Loading';
@@ -86,24 +90,13 @@ import { motionEnabled } from './roomMotion';
 
 export type RoomComposerHandle = { flush(): Promise<void>; reply(message: AgentRoomMessage): void };
 
-type MentionChoice =
-  | {
-      kind: 'all';
-      id: '__all__';
-      ids: string[];
-      title: string;
-    }
-  | {
-      kind: 'session';
-      id: string;
-      title: string;
-      presetName?: string | null;
-      workspacePath: string;
-      activity: 'idle' | 'working' | 'waiting';
-      isMember: boolean;
-    };
+type MentionSection = 'all' | 'members' | 'rooms' | 'others';
 
-const MAX_PICKER_ROWS = 8;
+function choiceSection(entry: RoomMentionChoice): MentionSection {
+  if (entry.kind === 'all') return 'all';
+  if (entry.kind === 'room') return 'rooms';
+  return entry.isMember ? 'members' : 'others';
+}
 
 export function RoomComposer(props: {
   sessionId: string;
@@ -147,6 +140,10 @@ export function RoomComposer(props: {
   let dirty = false;
   let saving: Promise<void> | null = null;
   let searchGeneration = 0;
+  let pickerScroll: ScrollRef | undefined;
+  let pickerScrollY = 0;
+  let pickerViewportHeight = 0;
+  const rowBounds = new Map<string, { y: number; height: number }>();
 
   const describe = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
   const attachments = createAttachmentDraft({
@@ -426,6 +423,9 @@ export function RoomComposer(props: {
     choice.set(0);
     if (!opened) {
       searching.set(false);
+      pickerScrollY = 0;
+      pickerViewportHeight = 0;
+      rowBounds.clear();
       return;
     }
     searching.set(true);
@@ -442,73 +442,19 @@ export function RoomComposer(props: {
       });
   });
 
-  const visibleChoices = (): MentionChoice[] => {
-    const already = new Set(effectiveMentions());
-    const needle = pickerQuery().trim().toLowerCase();
-    const activeMembers = props
-      .members()
-      .filter(
-        (member) => !member.unavailable && !member.archived && member.sessionId !== props.sessionId,
-      );
-    const memberIds = new Set(activeMembers.map((member) => member.sessionId));
-    const rows: MentionChoice[] = [];
-
-    const unmentionedMembers = activeMembers.filter((m) => !already.has(m.sessionId));
-    const allKeywords = tr('room.mention_all_keywords')
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean);
-    if (
-      unmentionedMembers.length >= 2 &&
-      (!needle || 'all'.startsWith(needle) || allKeywords.some((kw) => kw.includes(needle)))
-    ) {
-      rows.push({
-        kind: 'all',
-        id: '__all__',
-        ids: unmentionedMembers.map((m) => m.sessionId),
-        title: tr('All room members'),
-      });
-    }
-
-    for (const member of unmentionedMembers) {
-      if (
-        !needle ||
-        member.title.toLowerCase().includes(needle) ||
-        (member.presetName?.toLowerCase().includes(needle) ?? false)
-      ) {
-        rows.push({
-          kind: 'session',
-          id: member.sessionId,
-          title: member.title,
-          presetName: member.presetName,
-          workspacePath: member.workspacePath,
-          activity: member.activity,
-          isMember: true,
-        });
-      }
-    }
-
-    for (const session of choices()) {
-      if (
-        session.id === props.sessionId ||
-        already.has(session.id) ||
-        memberIds.has(session.id) ||
-        session.archived
-      )
-        continue;
-      rows.push({
-        kind: 'session',
-        id: session.id,
-        title: session.title,
-        presetName: session.appliedPreset?.name ?? null,
-        workspacePath: session.workspace.path,
-        activity: session.activity,
-        isMember: false,
-      });
-    }
-
-    return rows.slice(0, MAX_PICKER_ROWS);
-  };
+  const visibleChoices = (): RoomMentionChoice[] =>
+    buildRoomMentionChoices({
+      roomId: props.sessionId,
+      members: props.members(),
+      sessions: choices(),
+      alreadyMentioned: new Set(effectiveMentions()),
+      query: pickerQuery(),
+      allLabel: tr('All room members'),
+      allKeywords: tr('room.mention_all_keywords')
+        .split(',')
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean),
+    });
 
   effect(() => {
     const len = visibleChoices().length;
@@ -516,58 +462,61 @@ export function RoomComposer(props: {
     else if (choice() >= len) choice.set(len - 1);
   });
 
-  const selectChoice = async (entry: MentionChoice) => {
-    const token = choosing() ? null : typedMention();
-    if (entry.kind === 'all') {
-      const membersById = new Map(props.members().map((m) => [m.sessionId, m.title]));
-      const inserted = entry.ids
-        .map((id) => formatInlineMention(id, membersById.get(id) ?? props.name(id)))
-        .join('');
-      if (token) {
-        const replaced = await editor()?.replaceRange({
-          expectedText: text(),
-          expectedSelection: selection(),
-          start: token.start,
-          end: token.end,
-          text: inserted,
-        });
-        if (!replaced) return;
-      } else {
-        const current = text();
-        const sep = current.length > 0 && !/\s$/.test(current) ? ' ' : '';
-        text.set(current + sep + inserted);
-      }
-      batch(() => {
-        choosing.set(false);
-        query.set('');
-        dismissedAt.set(null);
+  const moveChoice = (delta: number) => {
+    const list = visibleChoices();
+    if (list.length === 0) return;
+    const next = Math.max(0, Math.min(choice() + delta, list.length - 1));
+    choice.set(next);
+    const target = list[next];
+    if (!target || !pickerScroll || pickerViewportHeight <= 0) return;
+    const bounds = rowBounds.get(target.id);
+    if (!bounds) return;
+    if (bounds.y < pickerScrollY) {
+      pickerScroll.scrollTo({ y: bounds.y, animated: false });
+    } else if (bounds.y + bounds.height > pickerScrollY + pickerViewportHeight) {
+      pickerScroll.scrollTo({
+        y: bounds.y + bounds.height - pickerViewportHeight,
+        animated: false,
       });
-      changed();
-      editor()?.focus();
-      return;
     }
+  };
 
-    const inline = formatInlineMention(entry.id, entry.title);
+  const selectChoice = async (entry: RoomMentionChoice) => {
+    const token = choosing() ? null : typedMention();
+    const current = text();
+    const inserted =
+      entry.kind === 'all'
+        ? (() => {
+            const membersById = new Map(props.members().map((m) => [m.sessionId, m.title]));
+            return entry.ids
+              .map((id) => formatInlineMention(id, membersById.get(id) ?? props.name(id)))
+              .join('');
+          })()
+        : formatInlineMention(entry.id, entry.title, entry.kind);
+
     if (token) {
+      const sep = token.start > 0 && !/\s/.test(current[token.start - 1]!) ? ' ' : '';
       const replaced = await editor()?.replaceRange({
-        expectedText: text(),
+        expectedText: current,
         expectedSelection: selection(),
         start: token.start,
         end: token.end,
-        text: inline,
+        text: sep + inserted,
       });
       if (!replaced) return;
+    } else if (entry.kind === 'all') {
+      const sep = current.length > 0 && !/\s$/.test(current) ? ' ' : '';
+      text.set(current + sep + inserted);
     } else {
-      const current = text();
       const sel = selection();
       if (sel.start >= 0 && sel.start <= current.length && sel.end <= current.length) {
         const before = current.slice(0, sel.start);
         const after = current.slice(sel.end);
         const sep = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
-        text.set(before + sep + inline + after);
+        text.set(before + sep + inserted + after);
       } else {
         const sep = current.length > 0 && !/\s$/.test(current) ? ' ' : '';
-        text.set(current + sep + inline);
+        text.set(current + sep + inserted);
       }
     }
     batch(() => {
@@ -583,11 +532,8 @@ export function RoomComposer(props: {
     const node = editor();
     if (!node || !pickerOpen()) return;
     const cleanups = [
-      node.bindKey('down', () => {
-        const len = visibleChoices().length;
-        if (len > 0) choice.set(Math.min(choice() + 1, len - 1));
-      }),
-      node.bindKey('up', () => choice.set(Math.max(0, choice() - 1))),
+      node.bindKey('down', () => moveChoice(1)),
+      node.bindKey('up', () => moveChoice(-1)),
       node.bindKey('tab', () => {
         const item = visibleChoices()[choice()];
         if (item) void selectChoice(item);
@@ -602,18 +548,8 @@ export function RoomComposer(props: {
     const input = searchField();
     if (!input || !choosing()) return;
     const cleanups = [
-      keymap.bind(
-        'down',
-        () => {
-          const len = visibleChoices().length;
-          if (len > 0) choice.set(Math.min(choice() + 1, len - 1));
-        },
-        { when: 'always', within: input },
-      ),
-      keymap.bind('up', () => choice.set(Math.max(0, choice() - 1)), {
-        when: 'always',
-        within: input,
-      }),
+      keymap.bind('down', () => moveChoice(1), { when: 'always', within: input }),
+      keymap.bind('up', () => moveChoice(-1), { when: 'always', within: input }),
       keymap.bind(
         'tab',
         () => {
@@ -644,7 +580,10 @@ export function RoomComposer(props: {
   const duplicateTitles = () => {
     const counts = new Map<string, number>();
     for (const row of visibleChoices()) {
-      if (row.kind === 'session') counts.set(row.title, (counts.get(row.title) ?? 0) + 1);
+      if (row.kind === 'agent' || row.kind === 'room') {
+        const key = `${row.kind}:${row.title}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
     }
     return counts;
   };
@@ -714,6 +653,7 @@ export function RoomComposer(props: {
           style={{
             ...floatingStyle(),
             width: Math.min(460, Math.max(240, windowSize().width - 48)),
+            maxHeight: Math.min(380, Math.max(160, windowSize().height - 120)),
             padding: 8,
             gap: 4,
           }}
@@ -752,162 +692,184 @@ export function RoomComposer(props: {
               <LoadingIndicator />
             </View>
           </If>
-          <Each of={visibleChoices()} key={(entry) => entry.id}>
-            {(entry, index) => {
-              const isSession = () => entry().kind === 'session';
-              const asSession = () => entry() as Extract<MentionChoice, { kind: 'session' }>;
-              const showMembersHeader = () => {
-                const cur = entry();
-                return (
-                  cur.kind === 'session' &&
-                  cur.isMember &&
-                  (index() === 0 || visibleChoices()[index() - 1]?.kind === 'all')
-                );
-              };
-              const showOthersHeader = () => {
-                const cur = entry();
-                const prev = visibleChoices()[index() - 1];
-                return (
-                  cur.kind === 'session' &&
-                  !cur.isMember &&
-                  (index() === 0 ||
-                    prev?.kind === 'all' ||
-                    (prev?.kind === 'session' && prev.isMember))
-                );
-              };
-              return (
-                <View style={{ gap: 2 }}>
-                  <If when={showMembersHeader()}>
-                    <Text
-                      style={{
-                        ...captionTextStyle,
-                        color: C.muted,
-                        paddingHorizontal: 10,
-                        paddingTop: 4,
+          <If when={visibleChoices().length > 0}>
+            <Scroll
+              ref={(node) => {
+                pickerScroll = node;
+              }}
+              style={{
+                maxHeight: Math.min(310, Math.max(120, windowSize().height - 190)),
+                minHeight: 0,
+                flexShrink: 1,
+                flexGrow: 0,
+              }}
+              contentStyle={{ gap: 2 }}
+              onLayout={({ bounds }) => {
+                pickerViewportHeight = bounds.size.height;
+              }}
+              onScroll={(event) => {
+                pickerScrollY = event.offset.y;
+                pickerViewportHeight = event.size.height;
+              }}
+            >
+              <Each of={visibleChoices()} key={(entry) => entry.id}>
+                {(entry, index) => {
+                  const sectionHeader = () => {
+                    const section = choiceSection(entry());
+                    if (section === 'all') return null;
+                    const prev = index() > 0 ? visibleChoices()[index() - 1] : undefined;
+                    if (prev && choiceSection(prev) === section) return null;
+                    if (section === 'members') return tr('Room members');
+                    if (section === 'rooms') return tr('Rooms');
+                    return tr('Other conversations');
+                  };
+                  const presetName = () => {
+                    const cur = entry();
+                    return cur.kind === 'agent' ? cur.presetName : null;
+                  };
+                  const duplicateWorkspace = () => {
+                    const cur = entry();
+                    if (cur.kind === 'all' || !cur.workspacePath) return '';
+                    return (duplicateTitles().get(`${cur.kind}:${cur.title}`) ?? 0) > 1
+                      ? workspaceTailName(cur.workspacePath)
+                      : '';
+                  };
+                  const activity = () => {
+                    const cur = entry();
+                    return cur.kind === 'agent' ? cur.activity : 'idle';
+                  };
+                  return (
+                    <View
+                      style={{ gap: 2 }}
+                      onLayout={({ bounds }) => {
+                        rowBounds.set(entry().id, {
+                          y: bounds.origin.y,
+                          height: bounds.size.height,
+                        });
                       }}
                     >
-                      {tr('Room members')}
-                    </Text>
-                  </If>
-                  <If when={showOthersHeader()}>
-                    <Text
-                      style={{
-                        ...captionTextStyle,
-                        color: C.muted,
-                        paddingHorizontal: 10,
-                        paddingTop: index() > 0 ? 6 : 4,
-                      }}
-                    >
-                      {tr('Other conversations')}
-                    </Text>
-                  </If>
-                  <Button
-                    accessibilityLabel={entry().title}
-                    onPress={() => void selectChoice(entry())}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 10,
-                      paddingHorizontal: 10,
-                      paddingVertical: 8,
-                      borderRadius: 8,
-                      backgroundColor: index() === choice() ? C.surface : 'transparent',
-                    }}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={controlFocusStyle()}
-                  >
-                    <If
-                      when={entry().kind === 'all'}
-                      else={
-                        <View
+                      <If when={sectionHeader() !== null}>
+                        <Text
                           style={{
-                            width: 22,
-                            height: 22,
-                            borderRadius: 11,
-                            backgroundColor: roomAvatarColor(entry().id),
-                            alignItems: 'center',
-                            justifyContent: 'center',
+                            ...captionTextStyle,
+                            color: C.muted,
+                            paddingHorizontal: 10,
+                            paddingTop: index() > 0 ? 6 : 4,
                           }}
                         >
-                          <Text style={{ fontSize: 11, fontWeight: '600', color: '#FFFFFF' }}>
-                            {roomAvatarInitial(entry().title)}
-                          </Text>
-                        </View>
-                      }
-                    >
-                      <View
-                        style={{
-                          width: 22,
-                          height: 22,
-                          borderRadius: 11,
-                          backgroundColor: C.accent,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <Icon name="rooms" size={12} color={C.background} />
-                      </View>
-                    </If>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                          {entry().title}
-                        </Text>
-                        <If
-                          when={
-                            entry().kind === 'session' &&
-                            Boolean(
-                              (entry() as Extract<MentionChoice, { kind: 'session' }>).presetName,
-                            )
-                          }
-                        >
-                          <Text style={{ ...captionTextStyle, color: C.muted }}>
-                            {(entry() as Extract<MentionChoice, { kind: 'session' }>).presetName}
-                          </Text>
-                        </If>
-                      </View>
-                      <If
-                        when={
-                          entry().kind === 'session' &&
-                          (duplicateTitles().get(entry().title) ?? 0) > 1 &&
-                          Boolean(
-                            (entry() as Extract<MentionChoice, { kind: 'session' }>).workspacePath,
-                          )
-                        }
-                      >
-                        <Text
-                          style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}
-                        >
-                          {workspaceTailName(
-                            (entry() as Extract<MentionChoice, { kind: 'session' }>).workspacePath,
-                          )}
+                          {sectionHeader()!}
                         </Text>
                       </If>
-                    </View>
-                    <If
-                      when={
-                        entry().kind === 'session' &&
-                        (entry() as Extract<MentionChoice, { kind: 'session' }>).activity !== 'idle'
-                      }
-                    >
-                      <View
+                      <Button
+                        accessibilityLabel={entry().title}
+                        onPress={() => void selectChoice(entry())}
                         style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: 4,
-                          backgroundColor:
-                            (entry() as Extract<MentionChoice, { kind: 'session' }>).activity ===
-                            'waiting'
-                              ? C.warning
-                              : C.accent,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 10,
+                          paddingHorizontal: 10,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          backgroundColor: index() === choice() ? C.surface : 'transparent',
                         }}
-                      />
-                    </If>
-                  </Button>
-                </View>
-              );
-            }}
-          </Each>
+                        hoverStyle={{ backgroundColor: C.surface }}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <If
+                          when={entry().kind === 'all'}
+                          else={
+                            <If
+                              when={entry().kind === 'room'}
+                              else={
+                                <View
+                                  style={{
+                                    width: 22,
+                                    height: 22,
+                                    borderRadius: 11,
+                                    backgroundColor: roomAvatarColor(entry().id),
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                  }}
+                                >
+                                  <Text
+                                    style={{ fontSize: 11, fontWeight: '600', color: '#FFFFFF' }}
+                                  >
+                                    {roomAvatarInitial(entry().title)}
+                                  </Text>
+                                </View>
+                              }
+                            >
+                              <View
+                                style={{
+                                  width: 22,
+                                  height: 22,
+                                  borderRadius: 6,
+                                  backgroundColor: C.surface,
+                                  borderWidth: 1,
+                                  borderColor: C.line,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <Icon name="symbol" size={12} color={C.secondary} />
+                              </View>
+                            </If>
+                          }
+                        >
+                          <View
+                            style={{
+                              width: 22,
+                              height: 22,
+                              borderRadius: 11,
+                              backgroundColor: C.accent,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <Icon name="rooms" size={12} color={C.background} />
+                          </View>
+                        </If>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text
+                              style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}
+                            >
+                              {entry().title}
+                            </Text>
+                            <If when={Boolean(presetName())}>
+                              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                                {presetName()!}
+                              </Text>
+                            </If>
+                          </View>
+                          <If when={Boolean(duplicateWorkspace())}>
+                            <Text
+                              style={[
+                                { ...captionTextStyle, color: C.muted },
+                                { numberOfLines: 1 },
+                              ]}
+                            >
+                              {duplicateWorkspace()}
+                            </Text>
+                          </If>
+                        </View>
+                        <If when={activity() !== 'idle'}>
+                          <View
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: 4,
+                              backgroundColor: activity() === 'waiting' ? C.warning : C.accent,
+                            }}
+                          />
+                        </If>
+                      </Button>
+                    </View>
+                  );
+                }}
+              </Each>
+            </Scroll>
+          </If>
           <If when={!searching() && visibleChoices().length === 0}>
             <Text style={{ ...captionTextStyle, color: C.muted, padding: 10 }}>
               {tr('No matching sessions')}
