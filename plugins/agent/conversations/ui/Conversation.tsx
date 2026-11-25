@@ -1062,7 +1062,9 @@ export function Conversation(props: ConversationProps) {
   // Side questions asked beside this conversation's replies. Its lists leave
   // them out, so they are read here for the replies that show them.
   const sideQuestions = signal<AgentSession[]>([]);
+  let sideLoad = 0;
   const loadSideQuestions = async () => {
+    const version = ++sideLoad;
     const sessions: AgentSession[] = [];
     let position: AgentSessionPosition = { kind: 'start' };
     for (;;) {
@@ -1071,6 +1073,7 @@ export function Conversation(props: ConversationProps) {
         position,
         scope: { kind: 'side_questions', sessionId },
       });
+      if (!alive || version !== sideLoad) return;
       sessions.push(...page.sessions);
       if (!page.after) break;
       position = { kind: 'after', revision: page.revision, cursor: page.after };
@@ -1086,23 +1089,35 @@ export function Conversation(props: ConversationProps) {
   const sideQuotes = signal<ReadonlyMap<string, readonly SideQuote[]>>(new Map());
   const loadSideQuotes = async (sessions: readonly AgentSession[]) => {
     for (const session of sessions) {
+      if (!alive) return;
       if (sideQuotes().has(session.id)) continue;
       let quotes: SideQuote[] = [];
       try {
-        const page = await host.query('agent', 'history', {
-          sessionId: session.id,
-          through: null,
-          position: { kind: 'tail' },
-          includeThinking: false,
-          view: 'conversation',
-        });
-        const first =
-          page.kind === 'ready'
-            ? page.chunks.find(
-                (chunk) =>
-                  chunk.role === 'user' && chunk.position.kind === 'live' && chunk.offset === 0,
-              )
-            : undefined;
+        const readPage = (through: number | null, position: HistoryPosition) =>
+          host.query('agent', 'history', {
+            sessionId: session.id,
+            through,
+            position,
+            includeThinking: false,
+            view: 'conversation',
+          });
+        let first: AgentHistoryChunk | undefined;
+        let position: HistoryPosition = { kind: 'tail' };
+        let through: number | null = null;
+        for (let pages = 0; pages < 8; pages += 1) {
+          const page = await readPage(through, position);
+          if (!alive) return;
+          if (page.kind !== 'ready') break;
+          const liveUser = page.chunks.find(
+            (chunk) =>
+              chunk.role === 'user' && chunk.position.kind === 'live' && chunk.offset === 0,
+          );
+          if (liveUser) first = liveUser;
+          const earliest = page.chunks[0];
+          if (!page.before || !earliest || earliest.position.kind !== 'live') break;
+          through = page.through;
+          position = { kind: 'before', cursor: page.before };
+        }
         quotes = (first?.quotes ?? []).map((quote) => ({
           text: quote.truncated ? quote.text.replace(/(…|\.\.\.)$/, '') : quote.text,
         }));
@@ -1155,7 +1170,7 @@ export function Conversation(props: ConversationProps) {
         await props.control('changeSession', {
           sessionId: id,
           expectedRevision: observed.session.revision,
-          action: 'archive',
+          action: 'remove',
         });
         if (alive) sideQuestions.set(sideQuestions().filter((session) => session.id !== id));
       },
@@ -2847,6 +2862,10 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
+    // A side question's card hides inherited snapshot turns; stop paging back
+    // once the loaded window already reaches the snapshot boundary.
+    if (edge === 'before' && props.side && historyRows().ordered[0]?.position?.kind !== 'live')
+      return null;
     return (edge === 'before' ? !deferOlderUntilScroll : historyScrolled) &&
       owner?.[edge] &&
       ownsWindow(owner.identity) &&

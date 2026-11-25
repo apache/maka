@@ -5,8 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::{
-    TextViewClasses, TextViewLinkPressEvent, TextViewPart, TextViewParts, TextViewStyles,
-    TextViewTaskPressEvent, text_view,
+    TextViewClasses, TextViewLinkPressEvent, TextViewMark, TextViewMarkPressEvent,
+    TextViewMarksMatchEvent, TextViewPart, TextViewParts, TextViewStyles, TextViewTaskPressEvent,
+    text_view,
 };
 use nsh_core::{
     Color, MountItem, StyleKey,
@@ -1592,6 +1593,64 @@ fn app_part_classes_can_still_override_marker_user_select() {
         _ => None,
     });
     assert_eq!(marker, Some(Some(true)));
+}
+
+#[component]
+fn MarkedPassages() -> impl IntoElement {
+    let matched = signal(String::new());
+    let pressed = signal(String::new());
+    let marks = vec![
+        TextViewMark {
+            id: "s1".into(),
+            quotes: vec!["cache is warm".into()],
+            title: Some("Why warm?".into()),
+            active: Some(false),
+        },
+        TextViewMark {
+            id: "s2".into(),
+            quotes: vec!["not in prose".into()],
+            title: None,
+            active: Some(false),
+        },
+    ];
+    view()
+        .child(
+            text_view()
+                .selectable(true)
+                .markdown("The cache is **warm** now. See [docs](https://example.test) and `not in prose`.")
+                .marks(marks)
+                .on_marks_match(move |e: &TextViewMarksMatchEvent| {
+                    matched.set(e.ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","));
+                })
+                .on_mark_press(move |e: &TextViewMarkPressEvent| {
+                    pressed.set(format!("mark:{}", e.id));
+                })
+                .on_link_press(move |e: &TextViewLinkPressEvent| {
+                    pressed.set(format!("link:{}", e.url));
+                }),
+        )
+        .child(text(move || format!("Matched {}", matched.get())))
+        .child(text(move || format!("Pressed {}", pressed.get())))
+}
+
+#[test]
+fn passage_marks_report_matches_and_fire_mark_press_without_disturbing_links() {
+    let mut config = EngineConfig::new(nsh_testing::windowed_root::<MarkedPassages>());
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("Matched s1").unwrap();
+    app.press("cache is warm").unwrap();
+    app.wait_for("Pressed mark:s1").unwrap();
+    app.press("docs").unwrap();
+    app.wait_for("Pressed link:https://example.test").unwrap();
+    // Tab lands on the coalesced mark in a single stop, then moves to the link.
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed mark:s1").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed link:https://example.test").unwrap();
 }
 
 #[component]

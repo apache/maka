@@ -22,6 +22,16 @@ import { signal } from 'nsh';
 import { sameHistoryRow, type Row } from './history';
 import { tr } from './locale';
 
+/** A side question to underline in the reply it was asked beside. */
+export type SideMark = {
+  id: string;
+  title: string;
+  /** The passages it quotes, as they were selected. */
+  quotes: readonly string[];
+  /** Its card is open. */
+  open: boolean;
+};
+
 /** A follow-up a side question's answer can be given in one press. */
 export type SideFollowUp = { emoji: string; label: string; message: string };
 

@@ -2393,6 +2393,9 @@ export function createConversationUi(
   // A side question's card offers its reactions once its answer stands and
   // nothing is being typed or sent.
   const sideAttached = signal(false);
+  effect(() => {
+    if (composerSession()?.run() !== null) sideAttached.set(false);
+  });
   const sideSettled = () => {
     const session = composerSession();
     return (
@@ -2407,14 +2410,14 @@ export function createConversationUi(
     const id = selected();
     if (id === null) return;
     const observed = await host.query('agent', 'observe', { sessionId: id });
-    const archived = await control('changeSession', {
+    const removed = await control('changeSession', {
       sessionId: id,
       expectedRevision: observed.session.revision,
-      action: 'archive',
+      action: 'remove',
     });
-    if (archived.kind !== 'changed')
+    if (removed.kind !== 'removed')
       throw new UiError('The side question could not be discarded: {reason}', {
-        reason: archived.reason ?? archived.kind,
+        reason: removed.reason ?? removed.kind,
       });
     close();
   };
@@ -2422,10 +2425,11 @@ export function createConversationUi(
     title: () => handle()?.title() ?? null,
     appendToDraft(text) {
       const owner = handle();
-      if (!owner?.editable()) return;
+      if (!owner?.editable()) return false;
       const draft = owner.draft();
       owner.changeDraft(draft === '' || /\s$/.test(draft) ? draft + text : `${draft} ${text}`);
       owner.focus();
+      return true;
     },
     floatingComposer: () =>
       selected() === null ? null : (
@@ -3119,10 +3123,12 @@ export function createConversationUi(
                   attach={() => {
                     const id = selected();
                     if (id === null) return;
-                    input.compact!.side!.attach(
-                      `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
-                    );
-                    sideAttached.set(true);
+                    if (
+                      input.compact!.side!.attach(
+                        `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
+                      )
+                    )
+                      sideAttached.set(true);
                   }}
                   resolve={input.compact!.close}
                   archive={() => void discardSide(input.compact!.close).catch(report)}

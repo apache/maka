@@ -79,7 +79,7 @@ export interface ConversationSessionHandle {
   /** Floating mini-conversation and composer overlaid when the workspace stage is fullscreen. */
   floatingComposer?(): unknown;
   /** Adds text to the end of the selected conversation's draft and focuses it. */
-  appendToDraft?(text: string): void;
+  appendToDraft?(text: string): boolean;
 }
 
 export type QuickIcon =
@@ -214,7 +214,7 @@ export interface ConversationCompact {
 
 export interface ConversationSideCard {
   /** Puts a reference to this side question in the draft of the conversation it was asked from. */
-  attach(reference: string): void;
+  attach(reference: string): boolean;
 }
 
 export interface ConversationSessionInput {

@@ -64,6 +64,7 @@ import {
   Workbench,
   canDockBrowser,
   canDockPreview,
+  sideCardWidth,
   sidePaneRoom,
 } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
@@ -180,11 +181,22 @@ function App(
     const panel = plugins.panel();
     if (panel) plugins.closePanel(panel.instance);
   });
+  // A side question's card beside the selected conversation: first where it is
+  // asked, then its conversation. One at a time; it stays with that conversation.
+  type SideCard = {
+    parent: string | null;
+    /** Its conversation, once the question is asked. */
+    pane: Signal<SidePane | null>;
+    render(): JSX.Element;
+  };
+  const sideCard = signal<SideCard | null>(null);
+  const sideCardBudget = () =>
+    workspaceMode() === 'conversations' && sideCard() !== null ? sideCardWidth() : 0;
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
   const previewFullscreen = () =>
     platform.idiom !== 'terminal' &&
     plugins.panel() === null &&
-    canDockPreview() &&
+    canDockPreview(sideCardBudget()) &&
     (preview()?.shown() ?? false) &&
     (preview()?.fullscreen?.() ?? false);
   const closePreview = () => {
@@ -196,12 +208,14 @@ function App(
     shown: previewShown,
     suppressed: () => plugins.panel() === null && (preview()?.modalSuppressed() ?? false),
     focused: () => plugins.panel() !== null || (preview()?.focused() ?? false),
+    cardWidth: sideCardBudget,
     close: closePreview,
   });
   const sideRoom = () =>
     sidePaneRoom(
-      sidebarExpanded() && canDockBrowser(previewShown()),
-      previewShown() && canDockPreview(),
+      sidebarExpanded() && canDockBrowser(previewShown(), sideCardBudget()),
+      previewShown() && canDockPreview(sideCardBudget()),
+      sideCardBudget(),
     );
   const launcherClosed = () =>
     batch(() => {
@@ -228,15 +242,6 @@ function App(
     id !== null && assistant()?.id() === id ? closeLauncher() : Promise.resolve(true);
   const openElsewhere = (id: string) =>
     sideFor(id) !== undefined || assistant()?.id() === id || sideCard()?.pane()?.id() === id;
-  // A side question's card beside the selected conversation: first where it is
-  // asked, then its conversation. One at a time; it stays with that conversation.
-  type SideCard = {
-    parent: string | null;
-    /** Its conversation, once the question is asked. */
-    pane: Signal<SidePane | null>;
-    render(): JSX.Element;
-  };
-  const sideCard = signal<SideCard | null>(null);
   const closeSideCard = async (): Promise<boolean> => {
     const card = sideCard();
     if (card === null) return true;
@@ -271,7 +276,7 @@ function App(
             if (sideRoom() > 0) openBeside(id);
             else void openSession(id);
           }),
-        side: { attach: (reference) => session()?.appendToDraft?.(reference) },
+        side: { attach: (reference) => session()?.appendToDraft?.(reference) ?? false },
       },
       first?.quotes,
     );
@@ -447,7 +452,7 @@ function App(
     visible: () =>
       workspaceMode() === 'conversations' &&
       !settingsOpened() &&
-      !(plugins.panel() && !canDockPreview()),
+      !(plugins.panel() && !canDockPreview(sideCardBudget())),
     paneVisible: conversationPaneVisible,
     blocked,
     connectionLost: () => runtime.updateError() !== null,
@@ -464,9 +469,10 @@ function App(
     },
     sidebarShown: sidebarExpanded,
     sidebarHover: (inside) => sidebarHover.hover(inside),
-    sidebarDocked: () => canDockBrowser(previewShown()),
+    sidebarDocked: () => canDockBrowser(previewShown(), sideCardBudget()),
     previewDocked: () =>
-      (previewShown() && canDockPreview()) || Math.min(sideRoom(), sides().length) > 0,
+      (previewShown() && canDockPreview(sideCardBudget())) ||
+      Math.min(sideRoom(), sides().length) > 0,
     showSidebar() {
       if (!blocked()) sidebarExpanded.set(true);
     },
@@ -580,7 +586,7 @@ function App(
       previewDocked: () => {
         const index = sides().indexOf(pane);
         return (
-          (previewShown() && canDockPreview()) ||
+          (previewShown() && canDockPreview(sideCardBudget())) ||
           (index >= 0 && index + 1 < Math.min(sideRoom(), sides().length))
         );
       },

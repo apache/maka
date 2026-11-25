@@ -29,8 +29,7 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
-import { markPassages, sideLinkTarget, type SideMark } from './sideMarks';
-import { notePassage } from './sideQuestions';
+import { notePassage, type SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
 import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
 
@@ -52,6 +51,8 @@ export function MarkdownBody(props: {
   /** The side questions asked beside this reply, whose passages are underlined. */
   marks?(): readonly SideMark[];
   openSide?(sessionId: string): void;
+  /** Reports which mark ids matched a prose passage in the rendered document. */
+  onMarksMatch?(ids: ReadonlySet<string>): void;
   /** Compact size in the full text color, for a message another agent sent. */
   fullColor?: boolean;
   /** The complete text, read apart from the row, shown in place of the row's own. */
@@ -95,13 +96,14 @@ export function MarkdownBody(props: {
     });
   };
 
-  // Citations are placed by byte offsets of the reply as written, so a reply
-  // that has them keeps its text; its side questions stay listed under it.
-  const marks = () => (props.citations?.()?.length ? [] : (props.marks?.() ?? []));
-  const rawMarkdown = computed(() => {
-    const text = props.text ? props.text() : props.row().text;
-    return marks().length > 0 ? markPassages(text, marks()).markdown : text;
-  });
+  const marks = () => props.marks?.() ?? [];
+  const rawMarkdown = () => (props.text ? props.text() : props.row().text);
+  const segmentMatches = new Map<string, readonly string[]>();
+  const reportMatches = () => {
+    const matched = new Set<string>();
+    for (const ids of segmentMatches.values()) for (const id of ids) matched.add(id);
+    props.onMarksMatch?.(matched);
+  };
   const segments = computed(() => {
     const text = rawMarkdown();
     return props.interactiveBlocks === false
@@ -175,6 +177,10 @@ export function MarkdownBody(props: {
             key={(seg) => (seg.kind === 'spec' ? `${ownerIdentity()}\0${seg.key}` : seg.key)}
           >
             {(seg) => {
+              const segKey = seg().key;
+              cleanup(() => {
+                if (segmentMatches.delete(segKey)) reportMatches();
+              });
               const atSegment = () => segmentMarkers().get(seg().key);
               const extensions = () => {
                 const base = props.interactiveBlocks === false ? [] : markdownExtensions;
@@ -193,6 +199,18 @@ export function MarkdownBody(props: {
                         return s.kind === 'markdown' ? s.text : '';
                       })()}
                       extensions={extensions()}
+                      marks={marks().map((mark) => ({
+                        id: mark.id,
+                        title: mark.title,
+                        quotes: [...mark.quotes],
+                        active: mark.open,
+                      }))}
+                      onMarkPress={({ id }) => props.openSide?.(id)}
+                      onMarksMatch={({ ids }) => {
+                        if (ids.length > 0) segmentMatches.set(segKey, ids);
+                        else segmentMatches.delete(segKey);
+                        reportMatches();
+                      }}
                       renderCustom={(node) => {
                         const marker = node.name.startsWith('source-')
                           ? atSegment()?.[Number(node.name.slice(7))]
@@ -225,11 +243,6 @@ export function MarkdownBody(props: {
                       onScrollIntent={props.userScroll}
                       onParseError={({ reason }) => failure.set(reason)}
                       onLinkPress={(event) => {
-                        const side = sideLinkTarget(event.url);
-                        if (side !== null) {
-                          props.openSide?.(side);
-                          return;
-                        }
                         const owns = makeLinkGuard();
                         const target = event.target;
                         if (owns() && target?.isLive())
@@ -267,10 +280,8 @@ export function MarkdownBody(props: {
                         heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                         blockquote: { borderLeftColor: C.line, color: C.secondary },
                         link: { color: C.accent },
-                        // A marked passage keeps the reply's own text; its link underlines it.
-                        ...(marks().length > 0
-                          ? { highlight: { backgroundColor: 'transparent', color: color() } }
-                          : {}),
+                        mark: { textDecorationColor: C.accent },
+                        activeMark: { color: C.accent, textDecorationColor: C.accent },
                         code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
                         ...codeBlockStyles(color(), props.compact ? 8 : 12),
                         // On the desktop a table is framed as a code block is and ruled only

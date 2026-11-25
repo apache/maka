@@ -24,8 +24,7 @@ import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
-import { markPassages, type SideMark } from './sideMarks';
-import { selectedPassage } from './sideQuestions';
+import { selectedPassage, type SideMark } from './sideQuestions';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import {
@@ -553,12 +552,8 @@ export function MessageRow({
           return passage ? () => void Clipboard.writeText(passage) : null;
         };
         const marks = () => (sideMarks && !user() ? sideMarks(row()) : []);
-        // The side questions whose passage the reply shows underlined.
-        const marked = computed(() =>
-          marks().length > 0 && !citations?.()?.length
-            ? markPassages(row().text, marks()).found
-            : new Set<string>(),
-        );
+        // The side questions whose passage TextView underlined in the reply.
+        const marked = signal<ReadonlySet<string>>(new Set());
         const withMenu = (trigger: JSX.Element) => (
           <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={trigger}>
             <If when={copySelection() !== null}>
@@ -638,6 +633,7 @@ export function MessageRow({
                               menu={menu ? withMenu : undefined}
                               marks={marks}
                               openSide={openSide}
+                              onMarksMatch={(ids) => marked.set(ids)}
                             />
                           </If>
                         }

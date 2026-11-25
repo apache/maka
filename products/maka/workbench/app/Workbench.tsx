@@ -44,17 +44,26 @@ export const SIDE_CARD_WIDTH = 47 * CELL;
 const GAP = platform.idiom === 'terminal' ? CELL : 0;
 const INSET = platform.idiom === 'terminal' ? 0 : PANEL_INSET;
 const available = () => windowSize().width - 2 * INSET;
+/** Clamped on narrow windows so the card never crowds out the conversation beside it. */
+export const sideCardWidth = () =>
+  Math.max(0, Math.min(SIDE_CARD_WIDTH, Math.floor(available() * 0.48)));
 
-export const canDockBrowser = (withPreview = false) =>
+export const canDockBrowser = (withPreview = false, cardWidth = 0) =>
   available() >=
-  CENTER_DOCK_WIDTH + BROWSER_MIN + GAP + (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
-export const canDockPreview = () => available() >= CENTER_DOCK_WIDTH + PREVIEW_MIN + GAP;
+  CENTER_DOCK_WIDTH +
+    cardWidth +
+    BROWSER_MIN +
+    GAP +
+    (withPreview && canDockPreview(cardWidth) ? PREVIEW_MIN + GAP : 0);
+export const canDockPreview = (cardWidth = 0) =>
+  available() >= CENTER_DOCK_WIDTH + cardWidth + PREVIEW_MIN + GAP;
 /** Side conversations that fit beside the selected one at the panels' minimum widths. */
-export const sidePaneRoom = (browser: boolean, preview: boolean) =>
+export const sidePaneRoom = (browser: boolean, preview: boolean, cardWidth = 0) =>
   Math.max(
     0,
     Math.floor(
-      (available() - (browser ? BROWSER_MIN : 0) - (preview ? PREVIEW_MIN : 0)) / CENTER_MIN,
+      (available() - cardWidth - (browser ? BROWSER_MIN : 0) - (preview ? PREVIEW_MIN : 0)) /
+        CENTER_MIN,
     ) - 1,
   );
 
@@ -62,12 +71,13 @@ export function createPreviewDialog(props: {
   shown(): boolean;
   suppressed(): boolean;
   focused(): boolean;
+  cardWidth?(): number;
   close(): void;
 }) {
   const open = signal(false);
-  let wasDocked = canDockPreview();
+  let wasDocked = canDockPreview(props.cardWidth?.() ?? 0);
   effect(() => {
-    const docked = canDockPreview();
+    const docked = canDockPreview(props.cardWidth?.() ?? 0);
     if (!props.shown() || docked || props.suppressed()) open.set(false);
     else if (!wasDocked || props.focused()) open.set(true);
     else {
@@ -138,18 +148,20 @@ export function Workbench(props: {
 }) {
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(platform.idiom === 'terminal' ? 48 * CELL : 62 * CELL);
-  const preview = () => props.previewShown() && canDockPreview();
   const fullscreen = () => props.previewFullscreen?.() ?? false;
-  const browser = () => props.expanded() && canDockBrowser(props.previewShown() && !fullscreen());
-  const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview()));
   const card = () => (fullscreen() ? null : (props.card?.() ?? null));
+  const cardWidth = () => (card() ? sideCardWidth() : 0);
+  const preview = () => props.previewShown() && canDockPreview(cardWidth());
+  const browser = () =>
+    props.expanded() && canDockBrowser(props.previewShown() && !fullscreen(), cardWidth());
+  const room = () => (fullscreen() ? 0 : sidePaneRoom(browser(), preview(), cardWidth()));
   let unbindFullscreen: (() => void) | undefined;
   cleanup(() => unbindFullscreen?.());
   const panes = () => (
     <>
       <ResizablePanel
         visible={!fullscreen()}
-        minSize={CENTER_MIN + (card() ? SIDE_CARD_WIDTH : 0)}
+        minSize={CENTER_MIN + cardWidth()}
         style={{ minHeight: 0 }}
       >
         <View style={{ flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'row' }}>
@@ -158,7 +170,7 @@ export function Workbench(props: {
             {(shown) => (
               <View
                 style={{
-                  width: SIDE_CARD_WIDTH,
+                  width: sideCardWidth(),
                   minHeight: 0,
                   paddingTop: 12,
                   paddingRight: 12,
@@ -200,7 +212,7 @@ export function Workbench(props: {
     (fullscreen()
       ? PREVIEW_MIN
       : CENTER_MIN * (1 + Math.min(room(), props.sides?.().length ?? 0)) +
-        (card() ? SIDE_CARD_WIDTH : 0) +
+        cardWidth() +
         (preview() ? PREVIEW_MIN : 0)) +
     INSET * (browser() ? 1 : 2);
   return (

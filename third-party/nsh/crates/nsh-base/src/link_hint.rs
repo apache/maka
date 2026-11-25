@@ -68,6 +68,7 @@ pub(crate) fn link_hint(
 ) -> Overlay {
     let shown = move || href().and_then(|href| hint_url(&href, URL_CHARS));
     let open = shown.clone();
+    let has_href = shown.clone();
     let head = shown.clone();
     let rest = shown;
     let (placement, offset) = match at {
@@ -77,10 +78,11 @@ pub(crate) fn link_hint(
     };
     let title = move || title().filter(|t| !t.trim().is_empty());
     let has_title = title.clone();
+    let open_title = title.clone();
     overlay()
         .hint(HINT_DELAY)
-        // Nowhere to go: never shown.
-        .hint_open(move || open().is_none().then_some(false))
+        // Nothing to show: never shown.
+        .hint_open(move || (open().is_none() && open_title().is_none()).then_some(false))
         .placement(placement)
         .offset(offset)
         .margin(px(4.0))
@@ -112,6 +114,7 @@ pub(crate) fn link_hint(
                         // A URL reads left to right in every language: the
                         // head first, then the rest, in an RTL app too.
                         .direction(LayoutDirection::Ltr)
+                        .style_when(move || has_href().is_none(), |s| s.hidden())
                         .child(
                             // Scheme, host and port: never shrinks or wraps.
                             text(move || head().map(|(head, _)| head).unwrap_or_default())
