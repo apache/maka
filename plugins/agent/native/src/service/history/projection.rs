@@ -903,7 +903,7 @@ pub(super) async fn project(
         }
         Fact::ExternalEffect { event } => {
             use maka_agent_facts::external_effects::{
-                ExternalEffectDescriptor, ExternalEffectEvent,
+                ExternalEffectEvent, StoredExternalEffectDescriptor,
             };
             let key = event.key();
             if !matches!(
@@ -931,7 +931,7 @@ pub(super) async fn project(
                 .filter(|external| external.task == key.task)
                 .and_then(|external| external.effects.get(&key.operation))
                 .ok_or("agent_history_external_effect_missing")?;
-            let descriptor: ExternalEffectDescriptor =
+            let descriptor: StoredExternalEffectDescriptor =
                 data::content(reader, item.recorded.run, &state.descriptor).await?;
             let id = maka_agent_facts::tool_call::tool_use_id(
                 item.recorded.run,

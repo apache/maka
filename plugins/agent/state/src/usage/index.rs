@@ -389,6 +389,15 @@ pub(crate) fn index_fact(
     record: &RecordedFact,
     sequence: u64,
 ) -> Result<(), StoreError> {
+    index_fact_with_external(c, spec, record, sequence, None)
+}
+pub(crate) fn index_fact_with_external(
+    c: &Connection,
+    spec: &RunSpec,
+    record: &RecordedFact,
+    sequence: u64,
+    external: Option<&crate::external_effects::PersistedExternalEffect>,
+) -> Result<(), StoreError> {
     if !matches!(spec.origin, RunOrigin::Local) {
         return Ok(());
     }
@@ -500,7 +509,9 @@ pub(crate) fn index_fact(
             },
             event,
         )?,
-        Fact::ExternalEffect { event } => external::index(c, spec, record, sequence, event)?,
+        Fact::ExternalEffect { event } => {
+            external::index(c, spec, record, sequence, event, external)?
+        }
         _ => {}
     }
     Ok(())

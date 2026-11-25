@@ -44,7 +44,7 @@ pub(crate) use continuation::admit_continuation;
 pub(crate) use sql::{
     capture_at, captured_tool_call, check_bytes, source_content_at, sources_at, validate_cut,
 };
-pub(crate) use sql::{index, index_queue, index_retained};
+pub(crate) use sql::{index, index_queue, index_retained, index_retained_with_external};
 #[cfg(test)]
 pub(crate) use sql::{index_legacy_owner_session, recovery_diagnostic};
 

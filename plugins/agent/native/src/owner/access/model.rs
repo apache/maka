@@ -276,19 +276,17 @@ impl RunAccess {
         };
         let code = mode == maka_agent_facts::execution::ToolMode::CodeMode;
         let contracts: BTreeMap<String, String> = if code {
-            let provenance: serde_json::Value =
-                owner.run_content(view.run, &request.provenance).await?;
-            serde_json::from_value(
-                provenance
-                    .get("toolContracts")
-                    .ok_or_else(|| {
-                        source_authority_changed(
-                            "original request-bound tool contracts are unavailable",
-                        )
-                    })?
-                    .clone(),
-            )
-            .map_err(RunError::Json)?
+            if let Some(reference) = &request.tool_contracts {
+                owner.run_content(view.run, reference).await?
+            } else {
+                let provenance: serde_json::Value =
+                    owner.run_content(view.run, &request.provenance).await?;
+                match provenance.get("toolContracts") {
+                    Some(value) => serde_json::from_value(value.clone()).map_err(RunError::Json)?,
+                    // Empty tool contracts are omitted instead of writing an empty "{}" blob.
+                    None => BTreeMap::new(),
+                }
+            }
         } else {
             BTreeMap::new()
         };

@@ -975,8 +975,8 @@ impl DriverModel {
                 "execution": self.execution, "canonicalRevision": source_evidence.current_revision,
                 "input": view.spec.input, "historicalSourceDigest": source_evidence.cut.digest,
                 "steering": steering_refs,
-                "notifications": &frozen.notifications,
-                "recoveredCells": &frozen.recovered_cells,
+                "notificationsDigest": maka_agent_engine::digest(&frozen.notifications)?,
+                "recoveredCellsDigest": maka_agent_engine::digest(&frozen.recovered_cells)?,
             }))?;
             let mut request_context = model.context.clone();
             if let Some(context) = request_context.as_mut() {
@@ -986,6 +986,9 @@ impl DriverModel {
                 Some(catalog) => driver.tool_contracts(catalog, &definitions)?,
                 None => std::collections::BTreeMap::new(),
             };
+            let tool_contracts_blob = (!tool_contracts.is_empty())
+                .then(|| ContentBlob::json(&tool_contracts))
+                .transpose()?;
             let compaction_request = compaction_request.filter(|key| summary || matches!(mode,
                 Preparation::ToolContinuation { attempt } | Preparation::Notifications { attempt } | Preparation::Steering { attempt } if attempt == key.attempt
             ));
@@ -993,7 +996,6 @@ impl DriverModel {
                 "inputDigest": request.input_digest,
                 "compactionRequest": compaction_request,
                 "resumeModel": summary_options.resume_model,
-                "toolContracts": tool_contracts,
                 "routeIdentity": request.route_identity,
                 "modelInputPolicy": {"vision": model.supports_vision, "imageInput": model.provider.image_input},
                 "breakdown": request.context_breakdown,
@@ -1002,8 +1004,6 @@ impl DriverModel {
                 "codexPreflight": preflight,
                 "previousCheckpointId":previous_checkpoint_id,
                 "steering": steering_evidence,
-                "notifications": &frozen.notifications,
-                "recoveredCells": &frozen.recovered_cells,
             }))?;
             let mut revisions = system
                 .as_ref()
@@ -1052,6 +1052,7 @@ impl DriverModel {
                 source_digest: source_evidence.cut.digest.clone(),
                 effective_source_digest: projection.reference().digest.clone(),
                 provenance: provenance.reference().clone(),
+                tool_contracts: tool_contracts_blob.as_ref().map(|blob| blob.reference().clone()),
                 projection: Some(match &mode {
                     Preparation::Prefix { proof, .. } => proof.clone(),
                     _ => projection.reference().clone(),
@@ -1076,6 +1077,9 @@ impl DriverModel {
                         provenance,
                         projection,
                     ];
+                    if let Some(blob) = tool_contracts_blob {
+                        contents.push(blob);
+                    }
                     contents.extend(chunks);
                     contents.extend(steering_contents);
                     contents.extend(texts);
@@ -2786,6 +2790,20 @@ impl DriverModel {
             StoredToolResult::Operation(body) => {
                 let reply = reader.operation_reply(view.run, &body.operation).await?;
                 body.resolve(reply)
+                    .map_err(|reason| RunError::InvalidInput(reason.into()))?
+            }
+            StoredToolResult::CellCompleted(body) => {
+                let result_ref = body
+                    .result_ref()
+                    .ok_or_else(|| {
+                        RunError::InvalidInput(
+                            "shared cell projection missing completed result ref".into(),
+                        )
+                    })?
+                    .clone();
+                let obs: maka_agent_facts::cells::CellObservation =
+                    reader.decode(view.run, &result_ref).await?;
+                body.resolve(&obs)
                     .map_err(|reason| RunError::InvalidInput(reason.into()))?
             }
         };

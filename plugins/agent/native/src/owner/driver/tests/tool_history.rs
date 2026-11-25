@@ -3327,6 +3327,301 @@ async fn compact_cell_tool_result_reads_the_original_observation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_external_effect_shares_definition_and_preserves_cross_run_cell_reads() {
+    use maka_agent_facts::{
+        cells::{
+            CellChild, CellInterruption, CellReply, CellReplyState, LocalCellResult,
+            StoredCellReturn,
+        },
+        durable::{ExternalTaskId, SCHEMA_VERSION},
+        executor::{Binding, TaskDescriptor},
+        external_effects::{
+            ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey,
+            StoredExternalEffectDescriptor,
+        },
+        model::prompt_source::source::json as stream,
+        tool_call::{ToolCallIdentity, ToolOrigin, ToolSettlement},
+        tool_output::{DurableToolProjection, ToolSuccess},
+        tools::{ToolDefinition, ToolSemantics},
+    };
+    use maka_agent_state::{
+        Admission, Change, Head,
+        session_history::{snapshot::CaptureRequest, tool_result_source::ToolResultReader},
+    };
+    use maka_tools::{ToolCallContext, ToolCatalog};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig
+            .start_configured(None, |c| c["external"] = json!({"runtimes":{"codex":true}}))
+            .await?;
+        rig.assemble_backend(&session, Budget { tokens: None, retries: 0, deadline: None }, false, true).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run_b = driver.access.execution().run_id;
+        let view_b = driver.state.frontier(run_b).await?;
+        let effects = driver.external_effects.get().ok_or("missing NativeExternalEffects")?.clone();
+        let history = driver.state.session_history(view_b.spec.owner.clone(), session.clone());
+        let resources = driver.owner.services.model_preparation_resources();
+        let source = Binding {
+            executor_id: "external".to_string().try_into()?,
+            package_id: "maka.agent".into(),
+            entry_id: "maka.agent".into(),
+            activation: "test".into(),
+        };
+        let task_desc = ContentBlob::json(&TaskDescriptor {
+            protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+            source: source.clone(),
+            payload: json!({}),
+        })?;
+
+        // Run A owns a Completed cell observation and an Interrupted cell with a Run-A-only child blob.
+        let mut run_a_spec = view_b.spec.clone();
+        run_a_spec.turn_id = "turn-run-a".into();
+        run_a_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+            message_id: format!("run-a-msg-{}", Uuid::new_v4()),
+        };
+        let run_a_input = ContentBlob::json(&maka_agent_facts::input::RunInput::Message {
+            content: maka_agent_facts::input::MessageInput::from("run a cell host"),
+            request_fingerprint: None,
+            source_messages: vec![],
+        })?;
+        run_a_spec.input = run_a_input.reference().clone();
+        let run_a = driver.state.admit(Admission::new(run_a_spec, at(), vec![run_a_input])).await?.facts[0].run;
+        let claim_a = driver.state.claim(run_a).await?;
+        let task_a = ExternalTaskId::new();
+        let key_a_comp = ExternalEffectKey { task: task_a, operation: Uuid::new_v4() };
+        let key_a_intr = ExternalEffectKey { task: task_a, operation: Uuid::new_v4() };
+        let cell_completed = CellId::for_external(run_a, key_a_comp);
+        let cell_interrupted = CellId::for_external(run_a, key_a_intr);
+        let completed_obs = CellObservation::Completed {
+            cell_id: cell_completed,
+            content: vec![],
+            result: json!({"answer": "original completed evidence"}),
+        };
+        let completed_blob = ContentBlob::json(&completed_obs)?;
+        let run_a_only_child = ContentBlob::json(&ToolReturn {
+            schema_version: SCHEMA_VERSION,
+            body: StoredCellReturn::Inline(CellReturnedResult {
+                output: ToolOutput::Json(json!({"secret": "run-a-only-child-evidence"})),
+                projection: Some(DurableToolProjection::Text { text: "run-a-only-child-evidence".into() }),
+                is_error: false,
+            }),
+            artifacts: vec![],
+        })?;
+        let child_op = Uuid::new_v4();
+        let child_input = ContentBlob::json(&json!({}))?;
+        let interrupted_report_blob = ContentBlob::json(&CellInterruption {
+            cell: cell_interrupted,
+            diagnostic: "cancelled during child wait".into(),
+            children: std::collections::BTreeMap::from([(
+                child_op,
+                CellChild {
+                    name: "child_tool".into(),
+                    display: None,
+                    semantics: ToolSemantics::Parallel,
+                    input: child_input.reference().clone(),
+                    resources: vec![],
+                    reference: None,
+                    reply: None,
+                    local_result: Some(LocalCellResult {
+                        result: run_a_only_child.reference().clone(),
+                        is_error: false,
+                        settlement: ToolSettlement::Returned,
+                    }),
+                    provider_result: None,
+                    approvals: Default::default(),
+                    admitted: true,
+                    rejected: None,
+                },
+            )]),
+            prior_output: None,
+        })?;
+        let mut exec_a = driver.access.execution().clone();
+        exec_a.run_id = run_a;
+        let run_a_desc = |key: ExternalEffectKey| -> TestResult<ContentBlob> {
+            Ok(ContentBlob::json(&ExternalEffectDescriptor {
+                schema_version: SCHEMA_VERSION,
+                protocol: "maka.external-host-effect.v1".into(),
+                execution: exec_a.clone(),
+                key,
+                origin: ToolOrigin::External {
+                    task: task_a,
+                    operation: key.operation,
+                    package_id: source.package_id.clone(),
+                    entry_id: source.entry_id.clone(),
+                    activation: source.activation.clone(),
+                },
+                operation_id: format!("external:{task_a}:{}", key.operation),
+                name: "exec".into(),
+                input: json!({}),
+                definition: ToolDefinition {
+                    name: "exec".into(),
+                    description: "run a exec".into(),
+                    input_schema: json!({"type": "object"}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                catalog_digest: format!("sha256:{}", "2".repeat(64)),
+                resources: vec![],
+            })?)
+        };
+        let (desc_a_comp, desc_a_intr) = (run_a_desc(key_a_comp)?, run_a_desc(key_a_intr)?);
+        let cell_source = ContentBlob::new(b"text('cell');".to_vec());
+        let vm_desc = ContentBlob::json(&json!({"vm": "run-a"}))?;
+        let head_a = driver.state.frontier(run_a).await?;
+        let head_a = driver.state.append(&claim_a, Head::from(&head_a), vec![
+            Change::new(Fact::ExternalTaskPrepared { task: task_a, descriptor: task_desc.reference().clone(), live_workspace: true }, at()),
+            Change::new(Fact::ExternalTaskAdmitted { task: task_a }, at()),
+        ], vec![task_desc.clone()]).await?.head;
+        let head_a = driver.state.append(&claim_a, head_a, vec![
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Prepared { key: key_a_comp, descriptor: desc_a_comp.reference().clone() } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_a_comp, approval: None } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Prepared { key: key_a_intr, descriptor: desc_a_intr.reference().clone() } }, at()),
+            Change::new(Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_a_intr, approval: None } }, at()),
+        ], vec![desc_a_comp, desc_a_intr]).await?.head;
+        let head_a = driver.state.append(&claim_a, head_a, vec![
+            Change { id: cell_completed.started_fact_id(), fact: Fact::Cell { event: CellEvent::Started { cell: cell_completed, owner: CellOwner::External { run: run_a, key: key_a_comp }, source: cell_source.reference().clone() } }, at: at() },
+            Change::new(Fact::Cell { event: CellEvent::VmBound { cell: cell_completed, binding: CellVmBinding { runtime: "v8".into(), version: 1, descriptor: vm_desc.reference().clone() } } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::Completed { cell: cell_completed, result: completed_blob.reference().clone(), publication: SessionPublication { values: Default::default(), loaded_tools: None } } }, at()),
+        ], vec![cell_source.clone(), vm_desc, completed_blob.clone()]).await?.head;
+        driver.state.append(&claim_a, head_a, vec![
+            Change { id: cell_interrupted.started_fact_id(), fact: Fact::Cell { event: CellEvent::Started { cell: cell_interrupted, owner: CellOwner::External { run: run_a, key: key_a_intr }, source: cell_source.reference().clone() } }, at: at() },
+            Change::new(Fact::Cell { event: CellEvent::ChildPrepared { cell: cell_interrupted, operation: child_op, name: "child_tool".into(), input: child_input.reference().clone(), resources: vec![], semantics: ToolSemantics::Parallel } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::ChildAdmitted { cell: cell_interrupted, operation: child_op } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::LocalChildReturned { cell: cell_interrupted, operation: child_op, result: run_a_only_child.reference().clone(), is_error: false, settlement: ToolSettlement::Returned } }, at()),
+            Change::new(Fact::Cell { event: CellEvent::Interrupted { cell: cell_interrupted, report: interrupted_report_blob.reference().clone() } }, at()),
+        ], vec![cell_source, child_input, run_a_only_child.clone(), interrupted_report_blob.clone()]).await?;
+        assert!(driver.state.content(run_b, run_a_only_child.reference().clone()).await.is_err());
+
+        // Run B prepares two external calls through production prepare_descriptor() with a shared ToolDefinition.
+        let task = ExternalTaskId::new();
+        rig.append(vec![
+            Fact::ExternalTaskPrepared { task, descriptor: task_desc.reference().clone(), live_workspace: true },
+            Fact::ExternalTaskAdmitted { task },
+        ], vec![task_desc]).await?;
+        let definition = ToolDefinition {
+            name: "wait".into(),
+            description: "Unique tool definition marker for dedup check".into(),
+            input_schema: json!({"type": "object"}),
+            provider: None,
+            freeform: None,
+            output_schema: None,
+        };
+        let catalog = ToolCatalog::new(std::iter::empty())?;
+        let cancel = CancellationToken::new();
+        let make_ctx = |key: ExternalEffectKey| ToolCallContext {
+            execution: driver.access.execution().clone(),
+            operation_id: format!("external:{task}:{}", key.operation),
+            call: ToolCallIdentity {
+                tool_call_id: key.operation.to_string(),
+                origin: ToolOrigin::External {
+                    task,
+                    operation: key.operation,
+                    package_id: source.package_id.clone(),
+                    entry_id: source.entry_id.clone(),
+                    activation: source.activation.clone(),
+                },
+            },
+            custody: Some(driver.access.custody().clone()),
+        };
+        let key_completed = ExternalEffectKey { task, operation: Uuid::new_v4() };
+        let key_interrupted = ExternalEffectKey { task, operation: Uuid::new_v4() };
+        let desc_completed_ref = effects.prepare_descriptor(&make_ctx(key_completed), key_completed, &catalog, definition.clone(), json!({"cell_id": cell_completed}), &cancel).await?;
+        let desc_interrupted_ref = effects.prepare_descriptor(&make_ctx(key_interrupted), key_interrupted, &catalog, definition.clone(), json!({"cell_id": cell_interrupted}), &cancel).await?;
+        rig.append(vec![
+            Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_completed, approval: None } },
+            Fact::ExternalEffect { event: ExternalEffectEvent::Admitted { key: key_interrupted, approval: None } },
+        ], vec![]).await?;
+
+        // Both descriptors omit inline definitions, share one definitionRef digest, and resolve identically.
+        let mut def_refs = Vec::new();
+        for (key, desc_ref) in [(key_completed, &desc_completed_ref), (key_interrupted, &desc_interrupted_ref)] {
+            let raw = driver.state.content(run_b, desc_ref.clone()).await?;
+            assert!(!String::from_utf8(raw.clone())?.contains("Unique tool definition marker"));
+            let stored: StoredExternalEffectDescriptor = serde_json::from_slice(&raw)?;
+            def_refs.push(stored.definition.content_ref().cloned().ok_or("expected definitionRef")?);
+            assert_eq!(driver.state.external_effect_descriptor(run_b, key).await?.definition, definition);
+        }
+        assert_eq!(def_refs[0], def_refs[1]);
+
+        // Settle both via production NativeExternalEffects::settle().
+        let completed_inline = serde_json::to_value(&completed_obs)?;
+        let expected_proj = maka_agent_facts::tool_output::completed_cell_text_projection(&completed_obs)
+            .ok_or("completed cell text projection")?;
+        let settled = effects.settle(
+            key_completed,
+            "wait",
+            Ok(ToolSuccess::projected(
+                ToolOutput::Cell(Box::new(CellReply {
+                    cell: cell_completed,
+                    state: CellReplyState::Completed { result: completed_blob.reference().clone() },
+                    observation: completed_inline.clone(),
+                })),
+                DurableToolProjection::Text { text: expected_proj.clone() },
+            )),
+            ToolSettlement::Failed,
+        ).await?;
+        assert!(matches!(&settled.output, ToolOutput::Cell(r) if r.observation == completed_inline));
+        effects.settle(
+            key_interrupted,
+            "wait",
+            Ok(ToolSuccess::projected(
+                ToolOutput::Cell(Box::new(CellReply {
+                    cell: cell_interrupted,
+                    state: CellReplyState::Interrupted { report: interrupted_report_blob.reference().clone() },
+                    observation: json!({
+                        "state": "interrupted",
+                        "cell_id": cell_interrupted,
+                        "report": { "diagnostic": "cancelled during child wait", "child": { "secret": "run-a-only-child-evidence" } }
+                    }),
+                })),
+                DurableToolProjection::Text { text: "Interrupted".into() },
+            )),
+            ToolSettlement::Failed,
+        ).await?;
+
+        let ret_completed_ref = driver.state.external_effect(run_b, key_completed).await?.and_then(|e| e.returned).ok_or("missing completed return")?;
+        let ret_interrupted_ref = driver.state.external_effect(run_b, key_interrupted).await?.and_then(|e| e.returned).ok_or("missing interrupted return")?;
+        let raw_completed_str = String::from_utf8(driver.state.content(run_b, ret_completed_ref.clone()).await?)?;
+        assert!(!raw_completed_str.contains("original completed evidence"));
+        let replayed = effects.read_return(key_completed, "wait", ret_completed_ref.clone()).await?;
+        assert!(matches!(&replayed.output, ToolOutput::Cell(r) if r.observation == completed_inline));
+        assert_eq!(replayed.projection, DurableToolProjection::Text { text: expected_proj });
+        assert!(driver.state.content(run_b, run_a_only_child.reference().clone()).await.is_err());
+
+        // Live reader, same-root snapshot, and fresh-root imported snapshot all reconstruct both returns.
+        let cut = history.capture().await?;
+        let frozen = history.capture_snapshot(CaptureRequest { id: SnapshotId::new(), cut: cut.clone() }, cancel.clone()).await?;
+        let (_dest_dir, _dest_root, imported) = transfer_snapshot(&frozen, view_b.spec.owner.clone(), &cancel).await?;
+        let ret_completed_fact = Fact::ExternalEffect { event: ExternalEffectEvent::Returned { key: key_completed, output: ret_completed_ref.clone(), finish_turn: false } };
+        let ret_interrupted_fact = Fact::ExternalEffect { event: ExternalEffectEvent::Returned { key: key_interrupted, output: ret_interrupted_ref.clone(), finish_turn: false } };
+        let budget = resources.acquire_work().await?.budget();
+        for reader in [
+            ToolResultReader::live(&history, &cut, run_b, &cancel),
+            ToolResultReader::snapshot(&frozen, run_b, &cancel),
+            ToolResultReader::snapshot(&imported, run_b, &cancel),
+        ] {
+            let v = reader.result(&ret_completed_fact, &ret_completed_ref, budget.clone()).await?.value(budget.clone()).await?;
+            let answer = stream::field(&v, &["observation", "result", "answer"], budget.clone()).await?.ok_or("missing answer")?;
+            assert!(stream::text_eq(&answer.text()?, "original completed evidence", budget.clone()).await?);
+            let v = reader.result(&ret_interrupted_fact, &ret_interrupted_ref, budget.clone()).await?.value(budget.clone()).await?;
+            let secret = stream::field(&v, &["observation", "report", "child", "secret"], budget.clone()).await?.ok_or("missing child secret")?;
+            assert!(stream::text_eq(&secret.text()?, "run-a-only-child-evidence", budget.clone()).await?);
+        }
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "External effect compaction regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_operation_receipt_survives_snapshot_transfer() {
     use maka_agent_facts::{
         model::prompt_source::source::json as stream, tool_output::DurableToolProjection,

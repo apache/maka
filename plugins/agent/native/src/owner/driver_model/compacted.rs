@@ -413,9 +413,14 @@ impl DriverModel {
                 let recovery=ContentBlob::json(&FrozenRecovery{protocol:format!("{PROTOCOL}/recovery"),version:VERSION,request:body.reference().clone(),adapter:frozen.adapter.clone(),contract:original_recovery_contract(&adapter,&model.provider,&definitions,frozen.operation)})?;
                 let projection=ContentBlob::json(&json!({"original":request.projection,"baseline":baseline,"checkpoint":checkpoint}))?;
                 let tool_contracts = driver.tool_contracts(&bound.catalog, &definitions)?;
+                let tool_contracts_blob = (!tool_contracts.is_empty())
+                    .then(|| ContentBlob::json(&tool_contracts))
+                    .transpose()?;
                 let fields=provenance.as_object_mut().ok_or_else(||unsupported("frozen-main-provenance"))?;
                 fields.insert("modelInputPolicy".into(), json!({"vision": model.supports_vision, "imageInput": model.provider.image_input}));
-                fields.insert("toolContracts".into(), json!(tool_contracts));
+                fields.remove("toolContracts");
+                fields.remove("notifications");
+                fields.remove("recoveredCells");
                 fields.remove("compactionRequest");
                 fields.insert("inputDigest".into(),json!(prepared.input_digest));fields.insert("routeIdentity".into(),json!(prepared.route_identity));fields.insert("breakdown".into(),json!(prepared.context_breakdown));fields.insert("estimatedInputTokens".into(),json!(prepared.estimated_input_tokens));fields.insert("previousCheckpointId".into(),json!(checkpoint));
                 let provenance=ContentBlob::json(&provenance)?;
@@ -427,8 +432,9 @@ impl DriverModel {
                 request.composition.tool_catalog_digest = maka_agent_engine::digest(&definitions)?;
                 surface.tools = definitions;
                 let surface_blob = ContentBlob::json(&surface)?;
-                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.surface=surface_blob.reference().clone();request.composition.max_output_tokens=prepared.request.max_output_tokens;
+                request.adjudications.clear();request.request=body.reference().clone();request.request_contents=frozen.content_refs();request.recovery_contract=recovery.reference().clone();request.provenance=provenance.reference().clone();request.tool_contracts=tool_contracts_blob.as_ref().map(|blob|blob.reference().clone());request.projection=Some(projection.reference().clone());request.effective_source_digest=projection.reference().digest.clone();request.composition.surface=surface_blob.reference().clone();request.composition.max_output_tokens=prepared.request.max_output_tokens;
                 let mut contents=vec![body,recovery,projection,provenance,surface_blob];
+                if let Some(blob)=tool_contracts_blob{contents.push(blob);}
                 contents.extend(layout_chunks);
                 contents.extend(texts);
                 Ok(contents)
