@@ -80,6 +80,8 @@ export interface ConversationSessionHandle {
   floatingComposer?(): unknown;
   /** Adds text to the end of the selected conversation's draft and focuses it. */
   appendToDraft?(text: string): boolean;
+  /** Takes text added that way out of the selected conversation's draft, where it still is. */
+  removeFromDraft?(text: string): void;
 }
 
 export type QuickIcon =
@@ -215,6 +217,8 @@ export interface ConversationCompact {
 export interface ConversationSideCard {
   /** Puts a reference to this side question in the draft of the conversation it was asked from. */
   attach(reference: string): boolean;
+  /** Takes that reference out of the draft again, as the side question is discarded. */
+  detach(reference: string): void;
 }
 
 export interface ConversationSessionInput {

@@ -85,6 +85,7 @@ import {
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
+  type ConversationCompact,
   type ConversationSessionHandle,
   type ComposerSession,
   type ComposerCompletionSource,
@@ -2401,6 +2402,8 @@ export function createConversationUi(
   // A side question's card offers its reactions once its answer stands and
   // nothing is being typed or sent.
   const sideAttached = signal(false);
+  // What the card put in the main draft, taken out again if the side question is discarded.
+  let sideReference: string | null = null;
   effect(() => {
     if (composerSession()?.run() !== null) sideAttached.set(false);
   });
@@ -2414,7 +2417,7 @@ export function createConversationUi(
       session.draft().trim() === ''
     );
   };
-  const discardSide = async (close: () => void) => {
+  const discardSide = async (card: ConversationCompact) => {
     const id = selected();
     if (id === null) return;
     const observed = await host.query('agent', 'observe', { sessionId: id });
@@ -2427,7 +2430,8 @@ export function createConversationUi(
       throw new UiError('The side question could not be discarded: {reason}', {
         reason: removed.reason ?? removed.kind,
       });
-    close();
+    if (sideReference !== null) card.side?.detach(sideReference);
+    card.close();
   };
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
@@ -2438,6 +2442,15 @@ export function createConversationUi(
       owner.changeDraft(draft === '' || /\s$/.test(draft) ? draft + text : `${draft} ${text}`);
       owner.focus();
       return true;
+    },
+    removeFromDraft(text) {
+      const owner = handle();
+      if (!owner?.editable()) return;
+      const draft = owner.draft();
+      // The space after it may have been edited away.
+      const found = draft.includes(text) ? text : text.trimEnd();
+      const at = draft.indexOf(found);
+      if (at >= 0) owner.changeDraft(draft.slice(0, at) + draft.slice(at + found.length));
     },
     floatingComposer: () =>
       selected() === null ? null : (
@@ -3131,15 +3144,14 @@ export function createConversationUi(
                   attach={() => {
                     const id = selected();
                     if (id === null) return;
-                    if (
-                      input.compact!.side!.attach(
-                        `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
-                      )
-                    )
+                    const reference = `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `;
+                    if (input.compact!.side!.attach(reference)) {
+                      sideReference = reference;
                       sideAttached.set(true);
+                    }
                   }}
                   resolve={input.compact!.close}
-                  archive={() => void discardSide(input.compact!.close).catch(report)}
+                  archive={() => void discardSide(input.compact!).catch(report)}
                 />
               </If>
               <SideComposer
