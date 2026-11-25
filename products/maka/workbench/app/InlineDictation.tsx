@@ -268,15 +268,12 @@ export function DictationBar(props: { state: ReturnType<typeof attachDictation> 
       tooltip={textTooltip(() => title)}
       onPress={run}
       style={{
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        alignItems: 'center',
-        justifyContent: 'center',
+        ...composerIconSlot,
+        borderRadius: composerIconSlot.height / 2,
         backgroundColor: name === 'close' ? undefined : name === 'send' ? C.text : C.line,
       }}
     >
-      <Icon name={name} color={name === 'send' ? C.surface : C.secondary} size={17} />
+      <Icon name={name} color={name === 'send' ? C.surface : C.secondary} size={15} />
     </Button>
   );
   return (
@@ -284,7 +281,7 @@ export function DictationBar(props: { state: ReturnType<typeof attachDictation> 
       style={{
         flex: 1,
         minWidth: 0,
-        height: 32,
+        height: composerIconSlot.height,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,

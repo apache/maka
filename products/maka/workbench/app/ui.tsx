@@ -194,9 +194,11 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const composerToolbarIconSize = platform.idiom === 'terminal' ? 16 : 14;
+export const composerToolbarChevronSize = platform.idiom === 'terminal' ? 16 : 12;
 export const composerIconSlot = {
-  width: 32,
-  height: 32,
+  width: platform.idiom === 'terminal' ? 32 : 28,
+  height: platform.idiom === 'terminal' ? 32 : 28,
   flexShrink: 0,
   alignItems: 'center',
   justifyContent: 'center',
@@ -206,6 +208,16 @@ export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
 } as const;
+export const composerToolbarControlStyle =
+  platform.idiom === 'terminal'
+    ? toolbarControlStyle
+    : ({
+        ...toolbarControlStyle,
+        minHeight: 28,
+        height: 28,
+        paddingHorizontal: 6,
+        paddingVertical: 0,
+      } as const);
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and

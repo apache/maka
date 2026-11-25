@@ -2079,7 +2079,7 @@ mod tests {
                 .matches("label:Search models and sources")
                 .unwrap()
         );
-        app.wait_for("text: · medium").unwrap();
+        app.wait_for("text:Reasoning model · medium").unwrap();
         assert!(
             app.screen()
                 .enabled("label:Choose reasoning effort")
@@ -2094,7 +2094,7 @@ mod tests {
         app.press("label:Choose reasoning effort").unwrap();
         app.wait_for("label:Use effort high").unwrap();
         app.press("label:Use effort high").unwrap();
-        app.wait_for("text: · high").unwrap();
+        app.wait_for("text:Reasoning model · high").unwrap();
         assert!(!app.screen().matches("label:Use effort high").unwrap());
         assert!(
             app.screen()
@@ -2120,14 +2120,14 @@ mod tests {
         app.press("label:Use Sol · ChatGPT").unwrap();
         app.wait_for("label:Ultrafast").unwrap();
         app.press("label:Ultrafast").unwrap();
-        app.wait_for("text: · Ultrafast").unwrap();
+        app.wait_for("text:Sol · Ultrafast").unwrap();
         app.press("label:Choose reasoning effort").unwrap();
         app.press("label:Use effort high").unwrap();
-        app.wait_for("text: · high · Ultrafast").unwrap();
+        app.wait_for("text:Sol · high · Ultrafast").unwrap();
         app.press("label:Fast").unwrap();
-        app.wait_for("text: · high · Fast").unwrap();
+        app.wait_for("text:Sol · high · Fast").unwrap();
         app.press("label:Default").unwrap();
-        app.wait_for("text: · high").unwrap();
+        app.wait_for("text:Sol · high").unwrap();
         app.press("label:Use Plain model · DeepSeek").unwrap();
         app.wait_for("text:Unsupported").unwrap();
         assert!(!app.screen().matches("text:Speed").unwrap());

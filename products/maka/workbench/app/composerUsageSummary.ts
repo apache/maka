@@ -35,6 +35,7 @@ export type ComposerUsageSummary =
       kind: 'balance';
       limit: Extract<UsageLimitEntry, { kind: 'balance' }>;
       text: string;
+      compactText: string;
     };
 
 export function remainingPercent(usedPercent: number): number {
@@ -94,7 +95,41 @@ export function summarizeComposerUsage(
       unit === '$' || unit === '€' || unit === '£' || unit === '¥'
         ? `${unit}${formatted}`
         : [formatted, unit].filter(Boolean).join(' ');
-    return { kind: 'balance', limit: balance, text };
+    const compactText = formatCompactBalance(balance.amount, unit, formatNumber);
+    return { kind: 'balance', limit: balance, text, compactText };
   }
   return null;
+}
+
+const COMPACT_CURRENCY_SYMBOLS: Record<string, string> = {
+  $: '$',
+  '€': '€',
+  '£': '£',
+  '¥': '¥',
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  CNY: '¥',
+  RMB: '¥',
+  JPY: '¥',
+};
+
+function formatCompactBalance(
+  amount: number,
+  unit: string | undefined,
+  formatNumber: (value: number) => string = (value) => String(Math.round(value * 100) / 100),
+): string {
+  const trimmed = unit?.trim() ?? '';
+  const value = Math.abs(amount) >= 10 ? Math.sign(amount) * Math.round(Math.abs(amount)) : amount;
+  const formatted = formatNumber(value);
+  const symbol =
+    COMPACT_CURRENCY_SYMBOLS[trimmed.toUpperCase()] ?? COMPACT_CURRENCY_SYMBOLS[trimmed];
+  if (symbol) {
+    const absFormatted = formatNumber(Math.abs(value));
+    if (formatted.endsWith(absFormatted) && formatted.length > absFormatted.length) {
+      return `${formatted.slice(0, formatted.length - absFormatted.length)}${symbol}${absFormatted}`;
+    }
+    return `${symbol}${formatted}`;
+  }
+  return [formatted, trimmed].filter(Boolean).join(' ');
 }

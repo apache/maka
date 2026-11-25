@@ -79,29 +79,29 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
             focusStyle={quietFocusStyle()}
             style={{
               width: 24,
-              height: 32,
+              height: 28,
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
-              borderRadius: 4,
+              borderRadius: 6,
               cursor: 'pointer',
             }}
           >
             <Canvas
               accessibilityElementsHidden
-              style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+              style={[{ width: 14, height: 14 }, { pointerEvents: 'none' }]}
               draw={(cx) => {
                 cx.lineWidth = 1.5;
                 cx.lineCap = 'round';
                 cx.strokeStyle = C.line;
                 cx.beginPath();
-                cx.arc(8, 8, 6.25, 0, Math.PI * 2);
+                cx.arc(7, 7, 5.5, 0, Math.PI * 2);
                 cx.stroke();
                 // A small share still shows as a short arc.
                 const start = -Math.PI / 2;
                 cx.strokeStyle = color();
                 cx.beginPath();
-                cx.arc(8, 8, 6.25, start, start + Math.max(0.04, share()) * Math.PI * 2);
+                cx.arc(7, 7, 5.5, start, start + Math.max(0.04, share()) * Math.PI * 2);
                 cx.stroke();
               }}
             />

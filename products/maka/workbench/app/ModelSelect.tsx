@@ -59,9 +59,12 @@ import {
 } from './modelSelection';
 import { SettingsSegmented } from './SettingsPage';
 import { createText, errorText, UiError } from './text';
+import { useToolbarCompact } from './composerToolbar';
 import {
   C,
   captionTextStyle,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
   controlDisabledStyle,
   floatingStyle,
   menuDetailTextStyle,
@@ -70,7 +73,6 @@ import {
   menuSeparatorStyle,
   shortcut,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
 
 type SelectionAction = {
@@ -138,6 +140,10 @@ export function ModelSelect(props: {
     ]
       .filter(Boolean)
       .join(' · ');
+  const triggerLabel = () => {
+    const suffix = useToolbarCompact() ? '' : modifiers();
+    return suffix ? `${model()} · ${suffix}` : model();
+  };
   const tooltipLabel = () =>
     [modelCaption(owner.backend(), owner.modelDetails()), modifiers()].filter(Boolean).join(' · ');
   return (
@@ -148,7 +154,7 @@ export function ModelSelect(props: {
       align="end"
       offset={8}
       margin={8}
-      style={{ minWidth: 0, alignItems: 'flex-end' }}
+      style={{ minWidth: 0, flexShrink: 1, maxWidth: '100%', alignItems: 'flex-end' }}
       popupStyle={{
         ...floatingStyle(),
         width: platform.idiom === 'terminal' ? 420 : 340,
@@ -165,7 +171,7 @@ export function ModelSelect(props: {
               : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           style={{
-            ...toolbarControlStyle,
+            ...composerToolbarControlStyle,
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',
@@ -177,36 +183,20 @@ export function ModelSelect(props: {
           focusStyle={{ backgroundColor: C.line }}
           activeStyle={{ backgroundColor: C.surface }}
         >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              minWidth: 0,
-              flexShrink: 1,
-            }}
+          <Text
+            style={[
+              {
+                color: owner.backend() ? C.secondary : C.warning,
+                fontSize: 13,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
-            <Text
-              style={[
-                {
-                  color: owner.backend() ? C.secondary : C.warning,
-                  fontSize: 13,
-                  minWidth: 0,
-                  flexShrink: 1,
-                },
-                { numberOfLines: 1 },
-              ]}
-            >
-              {model()}
-            </Text>
-            <If when={modifiers()}>
-              <Text
-                style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
-              >
-                {` · ${modifiers()}`}
-              </Text>
-            </If>
-          </View>
-          <Icon name="down" color={C.muted} />
+            {triggerLabel()}
+          </Text>
+          <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
         </Button>
       }
     >
