@@ -83,7 +83,8 @@ import {
   disconnectHost,
   hasAgentEndpoint,
   onHostState,
-  setAnchorSession,
+  setHostSnapshot,
+  type SubscriptionHandle,
   onOperationRecovery,
   onSubscriptionEnded,
   onSubscriptionItem,
@@ -608,7 +609,7 @@ function App() {
   });
   const applyHostState = (snap: HostStateSnapshot): boolean => {
     if (snap.revision <= hostState().revision) return false;
-    setAnchorSession(snap.active?.session);
+    setHostSnapshot(snap);
     hostState.set(snap);
     return true;
   };
@@ -729,6 +730,7 @@ function App() {
   interface SubSlot {
     subscriptionId: string;
     generation: number | null;
+    handle?: SubscriptionHandle;
     ended: boolean;
     hostGen: number;
     hostEpoch: string;
@@ -820,26 +822,26 @@ function App() {
     queueReview.set(null);
     if (clearError) watchError.set(null);
     if (watchSub) {
-      const id = watchSub.subscriptionId;
+      const handle = watchSub.handle;
       watchSub = null;
-      unsubscribe(id).catch((err) => console.warn('unsubscribe:', err));
+      if (handle) unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
     }
   };
 
   const stopGoalSubscription = () => {
     if (goalSub) {
-      const id = goalSub.subscriptionId;
+      const handle = goalSub.handle;
       goalSub = null;
-      unsubscribe(id).catch((err) => console.warn('unsubscribe:', err));
+      if (handle) unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
     }
   };
 
   const stopCatalogSubscription = (clearError = true) => {
     if (clearError) catalogError.set(null);
     if (catalogSub) {
-      const id = catalogSub.subscriptionId;
+      const handle = catalogSub.handle;
       catalogSub = null;
-      unsubscribe(id).catch((err) => console.warn('unsubscribe:', err));
+      if (handle) unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
     }
   };
 
@@ -1086,10 +1088,11 @@ function App() {
           !isSessionStillCurrent(gen, epoch, sGen, sessionId)
         ) {
           if (watchSub === slot) watchSub = null;
-          unsubscribe(handle.subscriptionId).catch((err) => console.warn('unsubscribe:', err));
+          unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
           return;
         }
         slot.generation = handle.generation;
+        slot.handle = handle;
         watchError.set(null);
       },
       (err: Error) => {
@@ -1153,10 +1156,11 @@ function App() {
       (handle) => {
         if (goalSub !== slot || slot.ended || !isSessionStillCurrent(gen, epoch, sGen, sessionId)) {
           if (goalSub === slot) goalSub = null;
-          unsubscribe(handle.subscriptionId).catch((err) => console.warn('unsubscribe:', err));
+          unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
           return;
         }
         slot.generation = handle.generation;
+        slot.handle = handle;
       },
       () => {
         if (goalSub === slot) goalSub = null;
@@ -1201,10 +1205,11 @@ function App() {
           qGen !== catalogQueryGen
         ) {
           if (catalogSub === slot) catalogSub = null;
-          unsubscribe(handle.subscriptionId).catch((err) => console.warn('unsubscribe:', err));
+          unsubscribe(handle).catch((err) => console.warn('unsubscribe:', err));
           return;
         }
         slot.generation = handle.generation;
+        slot.handle = handle;
         catalogError.set(null);
       },
       (err: Error) => {

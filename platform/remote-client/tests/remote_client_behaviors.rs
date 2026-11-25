@@ -62,6 +62,7 @@ fn package(id: &str, host: Value) -> Package {
 }
 
 const PROBE: &str = "test.remote.probe";
+const LARGE_UPLOAD: usize = 33 * 1024 * 1024;
 
 fn probe_secret() -> String {
     // Force the first 64 KiB chunk boundary into the middle of a scalar.
@@ -78,11 +79,23 @@ impl Handler for Probe {
         context: Context,
     ) -> futures_util::future::BoxFuture<'static, HandlerResult> {
         Box::pin(async move {
-            if input != json!({"keyId": "test-key"}) {
-                return Err("unexpected JSON input".into());
-            }
-            let resource = &context.attachments()["secret"];
-            if resource.read(0..resource.bytes())? != probe_secret().as_bytes() {
+            let resource = context
+                .attachments()
+                .get("secret")
+                .ok_or("missing attachment")?;
+            let valid = match input["keyId"].as_str() {
+                Some("test-key") => {
+                    resource.read(0..resource.bytes())? == probe_secret().as_bytes()
+                }
+                Some("empty") => resource.bytes() == 0 && resource.read(0..0)?.is_empty(),
+                Some("large") => {
+                    resource.bytes() == LARGE_UPLOAD
+                        && resource.read(0..1)? == b"x"
+                        && resource.read(resource.bytes() - 1..resource.bytes())? == b"x"
+                }
+                _ => return Err("unexpected JSON input".into()),
+            };
+            if !valid {
                 return Err("wrong attachment bytes".into());
             }
             context.emit(json!({"step": "received"})).await?;
@@ -319,6 +332,18 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         );
         assert_eq!(saved_value, json!({"saved":true}));
 
+        let empty = client
+            .mutate_with(
+                "probe",
+                "commit",
+                json!({"keyId":"empty"}),
+                Attachments::from([("secret".into(), ReadResource::utf8(String::new()))]),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty, json!({"saved":true}));
+
         let mut watch = client
             .subscribe("hostLogs", "watch", json!({"position":{"kind":"tail"}}))
             .await
@@ -388,6 +413,162 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
     })
     .await
     .expect("remote client test timed out");
+}
+
+#[tokio::test]
+async fn cancelling_mid_upload_releases_host_attachment_budget() {
+    use futures_util::{SinkExt, StreamExt};
+    use maka_host_runtime::{
+        application::host::{
+            Channel, Client,
+            websocket::{WebSocketListener, channel_opener},
+        },
+        ipc::LocalListener,
+    };
+    use maka_remote_transport::{TlsTrust, websocket::WebSocketEndpoint};
+    use tokio::{
+        io::{AsyncWriteExt, copy_bidirectional},
+        net::{TcpListener, TcpStream},
+        sync::oneshot,
+    };
+    use tokio_tungstenite::accept_async;
+
+    timeout(DEADLINE, async {
+        let (dir, host) = logs_host().await;
+        #[cfg(unix)]
+        let local = dir.path().join("upload.sock");
+        #[cfg(windows)]
+        let local = std::path::PathBuf::from(format!(r"\\.\pipe\maka-upload-{}", Uuid::new_v4()));
+        let local = LocalListener::bind(&local).unwrap();
+        let ws = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let addr = ws.local_addr().unwrap();
+        let pairing = host.prepare_access("upload-fixture".into()).await.unwrap();
+        let stop = CancellationToken::new();
+        let server = tokio::spawn({
+            let stop = stop.clone();
+            async move { host.serve(local, Some(ws), stop).await }
+        });
+        let bearer: Arc<str> = pairing.credential.into();
+        let instance: Arc<str> = Uuid::new_v4().to_string().into();
+        Client::finalize_access(
+            channel_opener(
+                Arc::new(move || {
+                    Box::pin(
+                        async move { Ok(Box::new(TcpStream::connect(addr).await?) as Channel) },
+                    )
+                }),
+                bearer.clone(),
+            ),
+            instance.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/runtime-host", proxy.local_addr().unwrap());
+        let (forwarded, first_chunk) = oneshot::channel();
+        let (cut, cancelled) = oneshot::channel();
+        let proxy_task = tokio::spawn({
+            let bearer = bearer.clone();
+            async move {
+                let (mut anchor, _) = proxy.accept().await.unwrap();
+                let anchor_proxy = tokio::spawn(async move {
+                    let mut host = TcpStream::connect(addr).await.unwrap();
+                    let _ = copy_bidirectional(&mut anchor, &mut host).await;
+                });
+                let (socket, _) = proxy.accept().await.unwrap();
+                let mut client = accept_async(socket).await.unwrap();
+                let endpoint =
+                    WebSocketEndpoint::new(&format!("ws://{addr}/runtime-host"), TlsTrust::System)
+                        .unwrap();
+                let mut upstream = endpoint.open(Some(&bearer)).await.unwrap();
+                // Opening, call, descriptors (each is a length frame plus a JSON frame).
+                for messages in [2, 4] {
+                    for _ in 0..messages {
+                        upstream
+                            .send(client.next().await.unwrap().unwrap())
+                            .await
+                            .unwrap();
+                    }
+                    for _ in 0..2 {
+                        client
+                            .send(upstream.next().await.unwrap().unwrap())
+                            .await
+                            .unwrap();
+                    }
+                }
+                let length = client.next().await.unwrap().unwrap();
+                let body = client.next().await.unwrap().unwrap();
+                assert_eq!(
+                    length.clone().into_data().as_ref(),
+                    &65536_u32.to_be_bytes()
+                );
+                assert_eq!(body.len(), 65536);
+                upstream.send(length).await.unwrap();
+                upstream.send(body).await.unwrap();
+                forwarded.send(()).unwrap();
+                cancelled.await.unwrap();
+                drop(client);
+                upstream.get_mut().shutdown().await.unwrap();
+                assert!(!matches!(upstream.next().await, Some(Ok(_))));
+                drop(upstream);
+
+                let (mut retry, _) = proxy.accept().await.unwrap();
+                let mut host = TcpStream::connect(addr).await.unwrap();
+                let result = copy_bidirectional(&mut retry, &mut host).await;
+                if let Err(error) = result {
+                    assert!(matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                    ));
+                }
+                anchor_proxy.abort();
+            }
+        });
+        let client = RemoteHostConnection::connect_websocket(
+            &endpoint,
+            TlsTrust::System,
+            bearer,
+            &pairing.root_id,
+            instance,
+        )
+        .await
+        .unwrap();
+        let upload = || {
+            client.mutate_with(
+                "probe",
+                "commit",
+                json!({"keyId":"large"}),
+                Attachments::from([(
+                    "secret".into(),
+                    ReadResource::utf8("x".repeat(LARGE_UPLOAD)),
+                )]),
+                |_| {},
+            )
+        };
+        {
+            let pending = upload();
+            tokio::pin!(pending);
+            tokio::select! {
+                result = &mut pending => panic!("upload completed before cancellation: {result:?}"),
+                result = first_chunk => result.unwrap(),
+            }
+        }
+        cut.send(()).unwrap();
+
+        // Each upload reserves more than half of the Host's attachment window.
+        // A leaked reservation would reject this retry before another upload starts.
+        assert_eq!(upload().await.unwrap(), json!({"saved":true}));
+        drop(client);
+        stop.cancel();
+        server.await.unwrap().unwrap();
+        proxy_task.await.unwrap();
+    })
+    .await
+    .expect("upload cancellation timed out");
 }
 
 #[tokio::test]
