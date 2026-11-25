@@ -19,8 +19,9 @@
 
 import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
+import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import { describeChildDecision, describePermissions } from '../../approval';
-import { ApprovalFeedback, approvalFeedback } from '../../ui/ApprovalCard';
+import { approvalFeedback } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
 import { savedHosts } from '../../state/hostPool';
 import {
@@ -156,17 +157,22 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
   const category = signal<CategoryFilter>('all');
 
-  const feedback = approvalFeedback();
+  const feedback = approvalFeedback<{ item: InboxItem; index: number; accepted: boolean }>();
   const respond = async (
     item: InboxItem,
     answer: Record<string, unknown>,
     kind: 'success' | 'warning',
   ) => {
-    if (await respondInboxItem(item, answer, kind)) feedback.show(kind === 'success');
+    const index = allInboxItems().findIndex(({ key }) => key === item.key);
+    if (await respondInboxItem(item, answer, kind))
+      feedback.show({ item, index, accepted: kind === 'success' });
   };
 
   const visibleItems = () => {
-    const list = allInboxItems();
+    const previous = feedback.outcome();
+    const list = [...allInboxItems()];
+    if (previous && !list.some(({ key }) => previous.item.key === key))
+      list.splice(Math.max(0, previous.index), 0, previous.item);
     if (category() === 'questions') {
       return list.filter((i) => i.summary.kind === 'question');
     }
@@ -208,20 +214,28 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
             paddingBottom: insets().bottom + spacing.tabBarClearance,
           }}
         >
-          <If when={allInboxItems().length > 0}>
-            <ScopePills
-              items={categoryItems()}
-              selectedId={category()}
-              onSelect={(id) => {
-                hapticSelection();
-                category.set(id as CategoryFilter);
-              }}
-            />
-          </If>
-
-          <If when={feedback.outcome() !== null}>
-            <View style={{ paddingHorizontal: spacing.pageX, paddingBottom: 12 }}>
-              <ApprovalFeedback accepted={feedback.outcome()} />
+          <If
+            when={isAvailable}
+            else={
+              <ScopePills
+                items={categoryItems()}
+                selectedId={category()}
+                onSelect={(id) => {
+                  hapticSelection();
+                  category.set(id as CategoryFilter);
+                }}
+              />
+            }
+          >
+            <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 12 }}>
+              <SegmentedControl
+                items={categoryItems().map((item) => ({ title: item.label }))}
+                selectedIndex={categoryItems().findIndex((item) => item.id === category())}
+                onChange={({ index }) => {
+                  hapticSelection();
+                  category.set(categoryItems()[index].id as CategoryFilter);
+                }}
+              />
             </View>
           </If>
           <If
@@ -232,9 +246,11 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                   icon="checkCircle"
                   tint="success"
                   title={tr('All caught up')}
-                  subtitle={tr(
-                    'No approvals or questions are waiting across your connected computers.',
-                  )}
+                  subtitle={
+                    savedHosts().length > 1
+                      ? tr('No approvals or questions are waiting across your connected computers.')
+                      : tr('No approvals or questions are waiting.')
+                  }
                 />
               </View>
             }
@@ -269,7 +285,11 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                       allowLabel={
                         allow() ? (allowSession() ? tr('Allow once') : tr('Allow')) : undefined
                       }
-                      sessionLabel={tr('This session')}
+                      accepted={
+                        feedback.outcome()?.item.key === item().key
+                          ? feedback.outcome()?.accepted
+                          : undefined
+                      }
                       onAllowSession={
                         allowSession()
                           ? () => void respond(item(), allowSession()!, 'success')
@@ -280,7 +300,11 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                         allow() ? () => void respond(item(), allow()!, 'success') : undefined
                       }
                       onDeny={deny() ? () => void respond(item(), deny()!, 'warning') : undefined}
-                      onPress={() => props.onOpenItem(item())}
+                      onPress={
+                        feedback.outcome()?.item.key === item().key
+                          ? undefined
+                          : () => props.onOpenItem(item())
+                      }
                       divider={index() < visibleItems().length - 1}
                     />
                   );

@@ -312,85 +312,89 @@ export function DeviceDetailScreen(props: {
                     />
                   }
                 >
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 12 }}>
-                    <ActionButton
-                      title={tr('Reconnect')}
-                      variant="secondary"
-                      compact
-                      disabled={busy()}
-                      onPress={() => void handleConnect()}
-                    />
-                    <ActionButton
-                      title={tr('Disconnect')}
-                      variant="quiet"
-                      compact
-                      disabled={busy()}
-                      onPress={() => void handleDisconnect()}
-                    />
-                    <ActionButton
-                      title={tr('Remove')}
-                      variant="destructive"
-                      compact
-                      disabled={busy()}
-                      onPress={() => void handleRemove()}
-                    />
+                  <View style={{ flexDirection: 'row', gap: 8, padding: 12 }}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <ActionButton
+                        title={tr('Reconnect')}
+                        variant="secondary"
+                        compact
+                        disabled={busy()}
+                        onPress={() => void handleConnect()}
+                      />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <ActionButton
+                        title={tr('Disconnect')}
+                        variant="secondary"
+                        compact
+                        disabled={busy()}
+                        onPress={() => void handleDisconnect()}
+                      />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <ActionButton
+                        title={tr('Remove')}
+                        variant="destructive"
+                        compact
+                        disabled={busy()}
+                        onPress={() => void handleRemove()}
+                      />
+                    </View>
                   </View>
                 </If>
               </If>
             </InsetGroup>
 
             {props.settings}
-            <If when={!props.settings}>
-              {/* Diagnostics (collapsed by default on Settings detail) */}
-              <InsetGroup header={tr('Diagnostics')}>
+            {/* Diagnostics (collapsed by default on Settings detail) */}
+            <InsetGroup header={tr('Diagnostics')}>
+              <GroupRow
+                title={tr('Connection details')}
+                value={showDiagnostics() ? tr('Hide') : tr('Show')}
+                divider={showDiagnostics()}
+                onPress={() => {
+                  hapticSelection();
+                  showDiagnostics.update((v) => !v);
+                }}
+              />
+              <If when={showDiagnostics()}>
                 <GroupRow
-                  title={tr('Connection details')}
-                  value={showDiagnostics() ? tr('Hide') : tr('Show')}
-                  divider={showDiagnostics()}
-                  onPress={() => {
-                    hapticSelection();
-                    showDiagnostics.update((v) => !v);
-                  }}
+                  title={tr('Root ID')}
+                  subtitle={host()!.rootId}
+                  divider
+                  onPress={() => copyText(host()!.rootId, tr('Root ID'))}
                 />
-                <If when={showDiagnostics()}>
+                <If when={host()!.peerId}>
                   <GroupRow
-                    title={tr('Root ID')}
-                    subtitle={host()!.rootId}
+                    title={tr('Host Peer ID')}
+                    subtitle={host()!.peerId}
                     divider
-                    onPress={() => copyText(host()!.rootId, tr('Root ID'))}
+                    onPress={() => copyText(host()!.peerId, tr('Host Peer ID'))}
                   />
-                  <If when={host()!.peerId}>
-                    <GroupRow
-                      title={tr('Host Peer ID')}
-                      subtitle={host()!.peerId}
-                      divider
-                      onPress={() => copyText(host()!.peerId, tr('Host Peer ID'))}
-                    />
-                  </If>
-                  <If when={devicePeerId()}>
-                    <GroupRow
-                      title={tr('This iPhone Peer ID')}
-                      subtitle={devicePeerId()}
-                      divider={
-                        (conn()?.endpoints.length ?? host()!.endpoints.length) > 0 ||
-                        (host()!.relayUrls?.length ?? 0) > 0
-                      }
-                      onPress={() => copyText(devicePeerId(), tr('This iPhone Peer ID'))}
-                    />
-                  </If>
-                  <If when={(conn()?.endpoints.length ?? host()!.endpoints.length) > 0}>
-                    <GroupRow
-                      title={tr('Endpoints')}
-                      subtitle={(conn()?.endpoints ?? host()!.endpoints).join(', ')}
-                      divider={(host()!.relayUrls?.length ?? 0) > 0}
-                    />
-                  </If>
-                  <If when={(host()!.relayUrls?.length ?? 0) > 0}>
-                    <GroupRow title={tr('Relays')} subtitle={host()!.relayUrls!.join(', ')} />
-                  </If>
                 </If>
-              </InsetGroup>
-            </If>
+                <If when={devicePeerId()}>
+                  <GroupRow
+                    title={tr('This iPhone Peer ID')}
+                    subtitle={devicePeerId()}
+                    divider={
+                      (conn()?.endpoints.length ?? host()!.endpoints.length) > 0 ||
+                      (host()!.relayUrls?.length ?? 0) > 0
+                    }
+                    onPress={() => copyText(devicePeerId(), tr('This iPhone Peer ID'))}
+                  />
+                </If>
+                <If when={(conn()?.endpoints.length ?? host()!.endpoints.length) > 0}>
+                  <GroupRow
+                    title={tr('Endpoints')}
+                    subtitle={(conn()?.endpoints ?? host()!.endpoints).join(', ')}
+                    divider={(host()!.relayUrls?.length ?? 0) > 0}
+                  />
+                </If>
+                <If when={(host()!.relayUrls?.length ?? 0) > 0}>
+                  <GroupRow title={tr('Relays')} subtitle={host()!.relayUrls!.join(', ')} />
+                </If>
+              </If>
+            </InsetGroup>
             <If when={!props.settings || !isHostConnected(props.rootId)}>
               <InsetGroup>
                 <GroupRow

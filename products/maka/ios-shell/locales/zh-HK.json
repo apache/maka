@@ -14,6 +14,7 @@
   "Connection error": "連接錯誤",
   "Connection failed": "連接失敗",
   "Connection is unavailable": "連線不可用",
+  "Connection timed out": "連線超時",
   "Could not save the proxy password.": "無法儲存代理密碼。",
   "Default sandbox mode": "預設沙盒模式",
   "Disconnect": "中斷連接",
@@ -27,6 +28,7 @@
   "Network: exact host {host}, port {port}": "網絡：指定主機 {host}，連接端口 {port}",
   "Network: no access": "網絡：無存取權限",
   "Network: no destinations": "網絡：未指定目標",
+  "No approvals or questions are waiting.": "沒有待處理的審批或提問。",
   "No further action is needed on this iPhone.": "這部 iPhone 無需再操作。",
   "Paired Computers": "已配對電腦連接",
   "Paste pairing link or connect manually": "貼上配對連結或手動連接",
@@ -47,6 +49,7 @@
   "This computer is connected, and Agent conversations are not enabled on it.": "這部電腦已連接，但尚未啟用 Agent 對話功能。",
   "This iPhone": "這部 iPhone",
   "This iPhone Peer ID": "這部 iPhone Peer ID",
+  "Unavailable": "不可用",
   "Username": "用戶名稱",
   "Web Search": "網絡搜尋"
 }

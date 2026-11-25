@@ -35,8 +35,8 @@ import {
 } from './SettingsForm';
 
 export function NetworkSettingsScreen(props: SettingsPageProps) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const basis = signal<SettingsNetworkSnapshot | null>(null);
   const draft = signal<NetworkProxy | null>(null);
   const port = signal('');
@@ -97,6 +97,7 @@ export function NetworkSettingsScreen(props: SettingsPageProps) {
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={tr('Network Proxy')}
@@ -106,7 +107,7 @@ export function NetworkSettingsScreen(props: SettingsPageProps) {
       dirty={dirty()}
       save={save}
     >
-      <InsetGroup header={tr('Network Proxy')}>
+      <InsetGroup>
         <SettingSwitch
           title={tr('Enable proxy')}
           checked={proxy().enabled}
@@ -116,6 +117,7 @@ export function NetworkSettingsScreen(props: SettingsPageProps) {
         />
         <SettingChoice
           title={tr('Protocol')}
+          divider
           value={proxy().protocol}
           disabled={work.busy()}
           options={[
@@ -160,7 +162,7 @@ export function NetworkSettingsScreen(props: SettingsPageProps) {
           title={tr('Proxy authentication')}
           checked={proxy().authEnabled}
           disabled={work.busy()}
-          divider
+          divider={proxy().authEnabled}
           change={(authEnabled) => {
             edit({ authEnabled });
             if (!authEnabled) password.set('');

@@ -32,8 +32,8 @@ import {
 } from './SettingsForm';
 
 export function GeneralSettingsScreen(props: SettingsPageProps) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const data = signal<Awaited<ReturnType<typeof readGeneral>> | null>(null);
   const instructions = signal('');
   const prompt = signal('');
@@ -75,7 +75,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
         const updated = await rpc.query('agent', 'globalInstructions', {});
         data.update((prev) => ({ ...prev!, instructions: updated }));
       }
-      if (customPromptChanged()) {
+      if (work.canWrite() && customPromptChanged()) {
         const next = await savePreference(rpc, preferences(), {
           kind: 'compaction_prompt',
           prompt: useDefaultPrompt() ? null : prompt().trim() || null,
@@ -89,6 +89,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={tr('General')}
@@ -98,9 +99,10 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
       dirty={dirty()}
       save={save}
     >
-      <InsetGroup header={tr('General')}>
+      <InsetGroup>
         <SettingChoice
           title={tr('Assistant language')}
+          divider
           value={preferences().language ?? 'auto'}
           options={[
             { id: 'auto', label: tr('System') },
@@ -113,6 +115,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
         />
         <SettingChoice
           title={tr('Default sandbox mode')}
+          divider
           value={preferences().defaultSandboxMode}
           options={[
             { id: 'read-only', label: tr('Read-only') },
@@ -143,7 +146,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
           }
         />
       </InsetGroup>
-      <InsetGroup header="AGENTS.md">
+      <InsetGroup>
         <SettingSwitch
           title={tr('Workspace instructions')}
           checked={preferences().workspaceInstructions}
@@ -164,7 +167,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
           />
         </If>
       </InsetGroup>
-      <InsetGroup header={tr('Compaction prompt')}>
+      <InsetGroup>
         <SettingField
           label={tr('Compaction prompt')}
           multiline

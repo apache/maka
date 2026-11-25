@@ -101,4 +101,6 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Computer, room and inbox selection | Native segmented selection or shared pill color transition (150 ms); replace target-bound data without animating stale rows |
 | Drafts, progress and load failures | Keep form position, show progress/errors inline; no animation on streamed status updates |
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
-| Approval actions | Capsule press at 0.97 scale with a short opacity transition; no scale under Reduce Motion |
+| Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
+
+M4 polish keeps approvals in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.

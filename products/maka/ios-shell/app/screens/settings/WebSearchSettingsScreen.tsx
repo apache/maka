@@ -29,7 +29,9 @@ import { GroupRow, InsetGroup } from '../../ui';
 import { settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { saveWebSettings, updateWebKey } from '../../state/settings/web';
 import {
+  confirmDeleteApiKey,
   SettingChoice,
+  SettingStatus,
   SettingField,
   SettingsForm,
   SettingSwitch,
@@ -37,8 +39,8 @@ import {
 } from './SettingsForm';
 
 export function WebSearchSettingsScreen(props: SettingsPageProps) {
-  const rpc = settingsRpc(props.rootId);
-  const work = settingsWork();
+  const work = settingsWork(props.rootId, props.active);
+  const rpc = settingsRpc(props.rootId, work.canWrite);
   const basis = signal<WebSnapshot | null>(null);
   const draft = signal<WebSettings | null>(null);
   const secret = signal('');
@@ -86,6 +88,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
         <If when={field === 'query' || custom()?.limit}>
           <SettingChoice
             title={field === 'query' ? tr('Search query location') : tr('Result limit location')}
+            divider
             options={locations()}
             value={value().location}
             disabled={work.busy()}
@@ -100,7 +103,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
       label={label}
       value={custom()!.results[field] ?? ''}
       disabled={work.busy()}
-      divider
+      divider={field !== 'snippet'}
       edit={(value) => editCustom({ results: { ...custom()!.results, [field]: value } })}
     />
   );
@@ -164,9 +167,28 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
     { id: 'serper', label: 'Serper' },
     ...(basis()?.presets.length ? [{ id: 'custom' as const, label: tr('Custom endpoint') }] : []),
   ];
+  const deleteKey = async () => {
+    const current = work.fence();
+    if ((await confirmDeleteApiKey()) && current() && !dirty()) credential('deleteKey');
+  };
+  const checkStatus = () => {
+    switch (basis()?.credential.check?.outcome) {
+      case 'valid':
+        return { label: tr('Connected'), tone: 'success' } as const;
+      case 'invalid_credentials':
+        return { label: tr('Invalid API key'), tone: 'destructive' } as const;
+      case 'rate_limited':
+        return { label: tr('Rate limited'), tone: 'warning' } as const;
+      case 'network_error':
+        return { label: tr('Connection error'), tone: 'destructive' } as const;
+      case 'timeout':
+        return { label: tr('Connection timed out'), tone: 'warning' } as const;
+    }
+  };
   return (
     <SettingsForm
       rootId={props.rootId}
+      active={props.active}
       onBack={props.onBack}
       backLabel={props.backLabel}
       title={tr('Web Search')}
@@ -176,7 +198,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
       dirty={dirty()}
       save={save}
     >
-      <InsetGroup header={tr('Web Search')}>
+      <InsetGroup>
         <SettingSwitch
           title={tr('Enable web search')}
           checked={settings().enabled}
@@ -192,7 +214,12 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
             { id: 'custom', label: tr('Search provider') },
           ]}
           disabled={work.busy()}
-          change={(source) => edit({ source })}
+          divider={settings().source === 'custom'}
+          change={(source) => {
+            if (source === settings().source) return;
+            secret.set('');
+            edit({ source });
+          }}
         />
         <If when={settings().source === 'custom'}>
           <SettingChoice
@@ -226,6 +253,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
           />
           <SettingChoice
             title={tr('HTTP method')}
+            divider
             value={custom()!.method}
             disabled={work.busy()}
             options={[
@@ -255,7 +283,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
             value={urlParameters()}
             multiline
             edit={urlParameters.set}
-            divider
+            divider={custom()?.method === 'post'}
             disabled={work.busy()}
           />
           <If when={custom()?.method === 'post'}>
@@ -271,6 +299,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
         <InsetGroup header={tr('Search authentication')}>
           <SettingChoice
             title={tr('Authentication location')}
+            divider={!!custom()?.auth}
             value={custom()!.auth?.location ?? 'none'}
             disabled={work.busy()}
             options={[
@@ -332,13 +361,18 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
           <GroupRow
             title={tr('Save API key')}
             tone="primary"
-            divider
+            divider={!!basis()?.credential.configured}
             disabled={work.busy() || dirty() || !secret().trim()}
             onPress={() => credential('saveKey')}
           />
           <If when={basis()?.credential.configured}>
             <GroupRow
               title={tr('Test connection')}
+              trailing={
+                checkStatus() ? (
+                  <SettingStatus label={checkStatus()!.label} tone={checkStatus()!.tone} />
+                ) : undefined
+              }
               tone="primary"
               divider
               disabled={work.busy() || dirty()}
@@ -348,13 +382,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
               title={tr('Delete API key')}
               tone="destructive"
               disabled={work.busy() || dirty()}
-              onPress={() => credential('deleteKey')}
-            />
-          </If>
-          <If when={basis()?.credential.check}>
-            <GroupRow
-              title={tr('Test connection')}
-              value={basis()!.credential.check!.outcome.kind}
+              onPress={() => void deleteKey()}
             />
           </If>
         </InsetGroup>
