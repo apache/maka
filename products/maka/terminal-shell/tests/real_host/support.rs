@@ -525,10 +525,14 @@ pub(crate) async fn configure(
 }
 
 pub async fn mutate(client: &Client, method: &str, input: Value) -> Value {
+    mutate_service(client, "agent", method, input).await
+}
+
+pub async fn mutate_service(client: &Client, service: &str, method: &str, input: Value) -> Value {
     let mutation = client
         .mutation(
             Uuid::new_v4(),
-            "agent",
+            service,
             method,
             input,
             Attachments::new(),

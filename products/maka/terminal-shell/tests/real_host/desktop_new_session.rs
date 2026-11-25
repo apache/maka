@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
+use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate, mutate_service};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -3034,25 +3034,6 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
         )
         .await;
 
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.control("Focus message composer").await;
-    let external = desktop
-        .wait(
-            "externalAgents query failed",
-            desktop
-                .client
-                .query("agent", "externalAgents", json!({"inspect": true})),
-        )
-        .await
-        .unwrap();
-    assert_eq!(external["state"]["kind"], "enabled");
-    assert!(
-        desktop.controls("Add a model connection").is_empty(),
-        "new conversation home screen should not ask for a model connection when an external agent is enabled"
-    );
-
     desktop.press("Open settings").await;
     desktop.control("Disable Antigravity").await;
     desktop.press("Disable Antigravity").await;
@@ -3060,6 +3041,59 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
 
     desktop.press("Close settings").await;
     desktop.control("Add a model connection").await;
+
+    // Enabling an external agent from another client on the same Host updates
+    // the visible start pane without reopening Settings.
+    let other_client = desktop.wait("connect peer client", fixture.client()).await;
+    let deployment = desktop
+        .wait(
+            "management read failed",
+            other_client.query("management", "read", json!({})),
+        )
+        .await
+        .unwrap();
+    let external = desktop
+        .wait(
+            "externalAgents query failed",
+            other_client.query("agent", "externalAgents", json!({"inspect": true})),
+        )
+        .await
+        .unwrap();
+    let mut path = external["target"]["path"].as_array().unwrap().clone();
+    path.push(json!("runtimes"));
+    path.push(json!("antigravity"));
+    let configured = desktop
+        .wait(
+            "management configureBatch failed",
+            mutate_service(
+                &other_client,
+                "management",
+                "configureBatch",
+                json!({
+                    "expectedRevision": deployment["source"]["reference"]["revision"],
+                    "edits": [{
+                        "instance": external["target"]["source"]["namespace"],
+                        "changes": [{
+                            "path": path,
+                            "value": { "kind": "boolean", "value": true },
+                        }],
+                    }],
+                }),
+            ),
+        )
+        .await;
+    assert_eq!(configured["status"], "committed");
+    desktop
+        .until(
+            "external agent enabled by another client did not clear the missing-connection prompt",
+            || {
+                desktop
+                    .controls("Add a model connection")
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await;
 
     desktop.close().await;
     fixture.finish().await;
