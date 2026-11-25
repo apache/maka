@@ -194,13 +194,15 @@ export function unsettledSends<Send>(
 export function workingRowActive(state: {
   run: string;
   quietWait: boolean;
+  waitingForUser?: boolean;
   pendingCount: number;
   outgoingCount: number;
 }): boolean {
   return (
-    state.run === 'admitted' ||
-    state.run === 'running' ||
-    (state.run === 'waiting' && state.quietWait) ||
+    (!state.waitingForUser &&
+      (state.run === 'admitted' ||
+        state.run === 'running' ||
+        (state.run === 'waiting' && state.quietWait))) ||
     state.pendingCount > 0 ||
     state.outgoingCount > 0
   );

@@ -53,7 +53,7 @@ pub(super) struct DriverExecutor {
     pub instructions: Option<String>,
     pub cancellation: CancellationToken,
     pub root_observation: CancellationToken,
-    pub prepared_private: Mutex<Option<PrivatePreparation>>,
+    pub prepared_private: Mutex<Option<PrivateLaunch>>,
     pub candidate_capture: std::sync::OnceLock<maka_process::isolated::CandidateCapture>,
     pub publication:
         tokio::sync::OnceCell<Arc<super::driver_executor_publication::calls::LivePublication>>,
@@ -438,12 +438,11 @@ impl TaskBinding for Publications {
         })
     }
 }
-#[expect(
-    clippy::large_enum_variant,
-    reason = "A connection selects one recovery mode; keep its original recovery payload inline"
-)]
 enum ConnectionMode {
-    Start(PrivatePreparation),
+    Start {
+        actual: maka_sandbox::Sandbox,
+        basis: maka_sandbox::workspace::PermissionBasis,
+    },
     Observe,
 }
 
@@ -466,6 +465,17 @@ impl DriverExecutor {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            if let Some(PrivateLaunch::Sealed(seal)) = source.prepared_private.lock().await.as_ref()
+            {
+                let seal = seal.clone();
+                let executor = source.clone();
+                signals.push(Box::pin(async move {
+                    if let Err(error) = executor.record_sealed_launch(&seal).await {
+                        tracing::error!(%error, "Original prelaunch no-launch seal remains unsettled");
+                        std::future::pending::<()>().await;
+                    }
+                }));
+            }
             if let Some(publication) = source.publication.get() {
                 signals.extend(publication.original_cleanup_signals());
             }
@@ -478,8 +488,34 @@ impl DriverExecutor {
         signals
     }
 
+    async fn record_sealed_launch(
+        &self,
+        seal: &Arc<maka_process::isolated::NoLaunchSeal>,
+    ) -> Result<(), maka_process::isolated::Error> {
+        seal.record().await?;
+        let mut slot = self.prepared_private.lock().await;
+        if matches!(
+            slot.as_ref(),
+            Some(PrivateLaunch::Sealed(current)) if Arc::ptr_eq(current, seal)
+        ) {
+            slot.take();
+        }
+        Ok(())
+    }
+
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         if !self.root_observation.is_cancelled() || !self.workers.is_empty() {
+            return Ok(false);
+        }
+        let seal = match self.prepared_private.lock().await.as_ref() {
+            Some(PrivateLaunch::Sealed(seal)) => Some(seal.clone()),
+            Some(PrivateLaunch::Prepared(_)) => return Ok(false),
+            None => None,
+        };
+        if let Some(seal) = seal
+            && let Err(error) = self.record_sealed_launch(&seal).await
+        {
+            tracing::error!(%error, "Original prelaunch no-launch seal remains unconfirmed");
             return Ok(false);
         }
         let cleanups = {
@@ -511,6 +547,7 @@ impl DriverExecutor {
             .is_none_or(|publication| publication.original_cleanup_confirmed());
         Ok(self.retained.lock().await.is_empty()
             && self.workers.is_empty()
+            && self.prepared_private.lock().await.is_none()
             && publication_confirmed)
     }
 
@@ -578,6 +615,17 @@ impl DriverExecutor {
             }
         }
         self.root_observation.cancel();
+        let mut slot = self.prepared_private.lock().await;
+        if let Some(current) = slot.take() {
+            *slot = Some(match current {
+                // The driver retired before transferring launch custody. The cleanup
+                // observer can now settle even an admitted task without a binding.
+                PrivateLaunch::Prepared(prepared) => {
+                    PrivateLaunch::Sealed(Arc::new(prepared.owner.into_no_launch_seal()))
+                }
+                PrivateLaunch::Sealed(seal) => PrivateLaunch::Sealed(seal),
+            });
+        }
         Ok(())
     }
 
@@ -688,45 +736,6 @@ impl DriverExecutor {
             witness.with_data_writer(self.access.data_writer().map_err(RunError::Internal)?)?;
         let cancellation = self.cancellation.child_token();
         let (send, recv) = mpsc::channel(1);
-        if self.root_observation.is_cancelled() {
-            return Err(RunError::Cancelled);
-        }
-        let floor = match &mode {
-            ConnectionMode::Start(prepared) => prepared.actual.clone(),
-            ConnectionMode::Observe => {
-                let configuration = self.access.observation_configuration().await?;
-                self.authority_floor(
-                    &frozen.payload.request,
-                    &self.root_observation,
-                    configuration,
-                )
-                .await?
-            }
-        };
-        let fresh = matches!(&mode, ConnectionMode::Start(_));
-        let (authority, prepared): (Option<Arc<dyn ExecutorAccess>>, Option<PrivatePreparation>) =
-            match mode {
-                ConnectionMode::Start(prepared) => match self.backend.service_binding() {
-                    Some(binding) => (
-                        Some(Arc::new(ExecutionAuthority {
-                            access: self.access.clone(),
-                            state: self.state.clone(),
-                            binding,
-                            profile_binding: self
-                                .backend
-                                .setup_binding()
-                                .map_err(RunError::InvalidInput)?,
-                            task: task.task,
-                            inputs: self.inputs.clone(),
-                            root_observation: self.root_observation.clone(),
-                            prepared: Mutex::new(Some(prepared)),
-                        })),
-                        None,
-                    ),
-                    None => (None, Some(prepared)),
-                },
-                ConnectionMode::Observe => (None, None),
-            };
         if task.live_workspace != frozen.payload.publication.is_none() {
             return Err(blocked(descriptor));
         }
@@ -758,6 +767,72 @@ impl DriverExecutor {
             .ok_or(RunError::Cancelled)?
             .stop
             .clone();
+        let fresh = matches!(&mode, ConnectionMode::Start { .. });
+        let (floor, authority, prepared) = match mode {
+            ConnectionMode::Start { actual, basis } => {
+                let service = self.backend.service_binding();
+                let profile_binding = self
+                    .backend
+                    .setup_binding()
+                    .map_err(RunError::InvalidInput)?;
+                self.backend
+                    .validate_start(&frozen.payload.request)
+                    .map_err(|error| external_error(error, descriptor.clone()))?;
+                let mut slot = self.prepared_private.lock().await;
+                if view.stopped
+                    || self.root_observation.is_cancelled()
+                    || self.cancellation.is_cancelled()
+                {
+                    return Err(RunError::Cancelled);
+                }
+                let Some(PrivateLaunch::Prepared(prepared)) = slot.as_ref() else {
+                    return Err(blocked(descriptor));
+                };
+                if prepared.task != task.task
+                    || prepared.owner.descriptor().resource_ref
+                        != frozen.payload.private_resource.resource_ref
+                    || prepared.basis != basis
+                    || !actual
+                        .contains(&prepared.actual)
+                        .map_err(|error| RunError::InvalidInput(error.to_string()))?
+                {
+                    return Err(blocked(descriptor));
+                }
+                // No fallible setup between consuming the preparation and registering its worker.
+                let Some(PrivateLaunch::Prepared(prepared)) = slot.take() else {
+                    unreachable!("verified launch custody")
+                };
+                let floor = prepared.actual.clone();
+                match service {
+                    Some(binding) => (
+                        floor,
+                        Some(Arc::new(ExecutionAuthority {
+                            access: self.access.clone(),
+                            state: self.state.clone(),
+                            binding,
+                            profile_binding,
+                            task: task.task,
+                            inputs: self.inputs.clone(),
+                            root_observation: self.root_observation.clone(),
+                            prepared: Mutex::new(Some(prepared)),
+                        }) as Arc<dyn ExecutorAccess>),
+                        None,
+                    ),
+                    None => (floor, None, Some(prepared.owner)),
+                }
+            }
+            ConnectionMode::Observe => {
+                let configuration = self.access.observation_configuration().await?;
+                let floor = self
+                    .authority_floor(
+                        &frozen.payload.request,
+                        &self.root_observation,
+                        configuration,
+                    )
+                    .await?;
+                (floor, None, None)
+            }
+        };
         let publications = Arc::new(Publications {
             owner_stop,
             publication_source,
@@ -789,19 +864,13 @@ impl DriverExecutor {
         self.workers.spawn(async move {
             let work = async {
                 let settlement = if fresh {
-                    let actual = if let Some(prepared) = &prepared {
-                        prepared.actual.clone()
-                    } else {
-                        floor.clone()
-                    };
-                    let isolated = prepared.map(|prepared| prepared.owner);
                     let admitted = backend
                         .admit_execution(
                             frozen.payload.request.clone(),
                             publications.clone(),
                             inputs,
-                            actual,
-                            isolated,
+                            floor,
+                            prepared,
                         )
                         .await
                         .map_err(|error| external_error(error, descriptor.clone()))?;
@@ -941,7 +1010,10 @@ impl ExternalPorts for DriverExecutor {
             let actual = self.fresh_authority(&request, &self.cancellation).await?;
             let basis = self.access.live_configuration().await?.permission_basis();
             let mut slot = self.prepared_private.lock().await;
-            if let Some(prepared) = slot.as_ref() {
+            if self.root_observation.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            if let Some(PrivateLaunch::Prepared(prepared)) = slot.as_ref() {
                 if prepared.task != task || prepared.basis != basis {
                     return Err(RunError::InvalidInput("original private preparation no longer matches this task and permission epoch".into()));
                 }
@@ -1031,13 +1103,13 @@ impl ExternalPorts for DriverExecutor {
                 },
             };
             let descriptor = ContentBlob::json(&frozen)?;
-            *slot = Some(PrivatePreparation {
+            *slot = Some(PrivateLaunch::Prepared(PrivatePreparation {
                 task,
                 owner,
                 actual,
                 basis,
                 descriptor: descriptor.clone(),
-            });
+            }));
             Ok(PreparedExternal {
                 live_workspace,
                 descriptor,
@@ -1062,27 +1134,11 @@ impl ExternalPorts for DriverExecutor {
                 .fresh_authority(&frozen.payload.request, &self.cancellation)
                 .await?;
             let basis = self.access.live_configuration().await?.permission_basis();
-            let prepared = self
-                .prepared_private
-                .lock()
-                .await
-                .take()
-                .ok_or_else(|| blocked(descriptor.clone()))?;
-            if prepared.task != task
-                || prepared.owner.descriptor().resource_ref
-                    != frozen.payload.private_resource.resource_ref
-                || prepared.basis != basis
-                || !actual
-                    .contains(&prepared.actual)
-                    .map_err(|error| RunError::InvalidInput(error.to_string()))?
-            {
-                return Err(blocked(descriptor));
-            }
             self.connection(
                 frozen,
                 descriptor,
                 0,
-                ConnectionMode::Start(prepared),
+                ConnectionMode::Start { actual, basis },
                 witness,
             )
             .await
@@ -1206,6 +1262,15 @@ async fn task_prefix(
         .map_err(|error| RunError::Internal(error.to_string()))??;
     }
     Ok((digest, messages))
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep launch custody inline until sealed"
+)]
+pub(super) enum PrivateLaunch {
+    Prepared(PrivatePreparation),
+    Sealed(Arc<maka_process::isolated::NoLaunchSeal>),
 }
 
 pub(super) struct PrivatePreparation {

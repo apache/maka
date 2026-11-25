@@ -115,6 +115,14 @@ pub(crate) async fn read_with_result_visibility(
     }
     .validate()
     .map_err(|e| e.to_string())?;
+    if let Some(thought) = &input.thought {
+        if thought.field != wire::HistoryField::Thinking {
+            return Err("invalid execution request: invalid history read".into());
+        }
+        thought
+            .validate(input.through, input.include_thinking)
+            .map_err(|e| e.to_string())?;
+    }
     authorize(owner, scope, &input.session_id).await?;
     let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
     if rooms
@@ -328,6 +336,7 @@ pub(crate) async fn read_page(
         position: input.position,
         include_thinking: input.include_thinking,
         view: wire::HistoryView::Text,
+        thought: None,
     };
     let (page, _) = window(owner, scope, &history, &cut, &input).await?;
     authorize(owner, scope, &input.session_id).await?;
@@ -403,6 +412,7 @@ async fn window(
         &tree,
         Some(cut.through_sequence),
         input.position.clone(),
+        input.thought.as_ref(),
         input.include_thinking,
         input.view,
         mask_evidence.then_some(&mut coordinates),
@@ -416,7 +426,13 @@ async fn window(
         }
     })?;
     let mut restricted_result_rows = RestrictedToolResultRows::new();
-    if mask_evidence && let wire::Page::Ready { chunks, .. } = &mut page {
+    if mask_evidence
+        && let wire::Page::Ready {
+            chunks,
+            tail_thought,
+            ..
+        } = &mut page
+    {
         let mut positions = std::collections::BTreeSet::new();
         for chunk in chunks.iter() {
             positions.insert(chunk.position.clone());
@@ -425,12 +441,18 @@ async fn window(
             }
             if let Some(work) = &chunk.work {
                 positions.extend(work.last_call.iter().map(|call| call.position.clone()));
+                positions.extend(
+                    work.last_thought
+                        .iter()
+                        .map(|thought| thought.position.clone()),
+                );
                 positions.extend(work.images.iter().map(|image| image.position.clone()));
             }
             if let Some(work) = &chunk.folded_work {
                 positions.extend(work.images.iter().map(|image| image.position.clone()));
             }
         }
+        positions.extend(tail_thought.iter().map(|thought| thought.position.clone()));
         let restrictions =
             restrictions(owner, scope, &tree, positions.into_iter().collect()).await?;
         let excerpts = chunks
@@ -467,6 +489,10 @@ async fn window(
                     .last_call
                     .take()
                     .filter(|call| !restrictions.contains_key(&call.position));
+                work.last_thought = work
+                    .last_thought
+                    .take()
+                    .filter(|thought| !restrictions.contains_key(&thought.position));
                 work.images
                     .retain(|image| !restrictions.contains_key(&image.position));
             }
@@ -509,6 +535,9 @@ async fn window(
                 chunk.folded_work = None;
             }
         }
+        *tail_thought = tail_thought
+            .take()
+            .filter(|thought| !restrictions.contains_key(&thought.position));
     }
     Ok((page, restricted_result_rows))
 }
@@ -531,12 +560,27 @@ pub async fn snapshot_page(
     let tree = maka_agent_state::session_history::source_tree::SourceTree::snapshot(snapshot)
         .await
         .map_err(|error| error.to_string())?;
-    tree_window(&tree, through, position, include_thinking, view, None, stop).await
+    tree_window(
+        &tree,
+        through,
+        position,
+        None,
+        include_thinking,
+        view,
+        None,
+        stop,
+    )
+    .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "History window reading binds source tree, fence, cursor, optional active thought cursor, view, evidence coordinates and cancellation"
+)]
 async fn tree_window(
     tree: &maka_agent_state::session_history::source_tree::SourceTree,
     through: Option<u64>,
     position: wire::Position,
+    thought: Option<&wire::Cursor>,
     include_thinking: bool,
     view: wire::HistoryView,
     mut coordinates: Option<&mut EvidenceCoordinates>,
@@ -584,6 +628,7 @@ async fn tree_window(
                     chunks: Vec::new(),
                     before: None,
                     after: None,
+                    tail_thought: None,
                 });
             }
         },
@@ -598,7 +643,7 @@ async fn tree_window(
     if matches!(view, wire::HistoryView::Turn | wire::HistoryView::Steps) && anchor.is_none() {
         return Err("agent_history_turn_requires_anchor".into());
     }
-    let shape = match view {
+    let mut shape = match view {
         wire::HistoryView::Chat | wire::HistoryView::Turn => source::Shape::Groups {
             cursor: matches!(position, Position::Before { .. } | Position::After { .. }),
         },
@@ -610,6 +655,7 @@ async fn tree_window(
     } else {
         source::Shape::Rows
     };
+    let mut tail_thought_candidate = None;
     if let Some(anchor) = &anchor {
         let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
         if view == wire::HistoryView::Turn {
@@ -633,6 +679,78 @@ async fn tree_window(
         ) && !selected.row.visible
         {
             reverse = true;
+        }
+        if view == wire::HistoryView::Chat
+            && matches!(&position, Position::After { .. })
+            && let wire::HistoryRowAddress::Live {
+                sequence: anchor_sequence,
+                ..
+            } = selected.row.chunk.position
+            && selected
+                .row
+                .chunk
+                .timing
+                .as_ref()
+                .is_some_and(|timing| timing.finished.is_none())
+        {
+            let mut resummarize = false;
+            if selected.row.chunk.tool.is_none()
+                && selected.row.chunk.field == wire::HistoryField::Thinking
+                && let projection::Body::Text(body) = &selected.row.body
+            {
+                let total = body.len_bytes() as u64;
+                if total > anchor.offset
+                    && source::thought_tail(body).is_some()
+                    && usize::try_from(anchor.offset)
+                        .ok()
+                        .and_then(|end| body.slice(0..end))
+                        .is_some_and(|prefix| prefix.chunks().all(|chunk| chunk.trim().is_empty()))
+                {
+                    // Thought crossed from empty/whitespace into visible text; re-summarize the
+                    // group once so `work.last` and `work.thoughts` include it too.
+                    shape = source::Shape::Groups { cursor: false };
+                    resummarize = true;
+                }
+            }
+            if !resummarize {
+                let target = thought.filter(|cursor| {
+                    matches!(
+                        cursor.position,
+                        wire::HistoryRowAddress::Live { sequence, .. }
+                            if sequence <= anchor_sequence
+                    )
+                });
+                let candidate = if let Some(target) = target {
+                    let body = if target.position == selected.row.chunk.position {
+                        match &selected.row.body {
+                            projection::Body::Text(body) => Some(body),
+                            _ => None,
+                        }
+                    } else {
+                        cache.executor_thinking(&target.position)
+                    };
+                    body.map(|body| (target.position.clone(), target.offset, body))
+                } else if selected.row.chunk.tool.is_none()
+                    && selected.row.chunk.field == wire::HistoryField::Thinking
+                    && let projection::Body::Text(body) = &selected.row.body
+                {
+                    Some((selected.row.chunk.position.clone(), anchor.offset, body))
+                } else {
+                    None
+                };
+                if let Some((position, offset, body)) = candidate {
+                    let total = body.len_bytes() as u64;
+                    if total > offset
+                        && let Some(text) = source::thought_tail(body)
+                    {
+                        tail_thought_candidate = Some(Box::new(wire::WorkThought {
+                            position,
+                            offset: total,
+                            text,
+                        }));
+                    }
+                }
+            }
         }
     }
     let scoped = turn.map(|(run, _)| RunRows::Only { run, start: None });
@@ -826,11 +944,17 @@ async fn tree_window(
     {
         after = None;
     }
+    let tail_thought = if chunks.is_empty() {
+        tail_thought_candidate
+    } else {
+        None
+    };
     Ok(wire::Page::Ready {
         through,
         chunks,
         before,
         after,
+        tail_thought,
     })
 }
 fn fragment_metadata(chunk: &mut wire::Chunk) {

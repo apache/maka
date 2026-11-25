@@ -100,6 +100,7 @@ function ConnectionList(props: {
     !props.externalAgents?.loading() &&
     !owner.error() &&
     !owner.connections().length &&
+    !props.externalAgents?.runtimes().some((runtime) => runtime.enabled) &&
     !owner.connectionQuery().trim();
   return (
     <SettingsBody>

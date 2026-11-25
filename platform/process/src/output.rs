@@ -43,6 +43,7 @@ pub struct Captured {
     pub stdout: String,
     pub stderr: String,
     pub stdout_truncated: bool,
+    pub stdout_eof: bool,
     pub stderr_truncated: bool,
 }
 
@@ -76,12 +77,15 @@ impl Captured {
     }
 
     pub(crate) fn new(outcome: Outcome, mut stdout: Tail, mut stderr: Tail) -> Self {
+        let stdout_text = stdout.text();
+        let stderr_text = stderr.text();
         Self {
             outcome,
-            stdout: stdout.text(),
-            stderr: stderr.text(),
-            stdout_truncated: stdout.truncated,
-            stderr_truncated: stderr.truncated,
+            stdout: stdout_text,
+            stderr: stderr_text,
+            stdout_truncated: stdout.truncated(),
+            stdout_eof: stdout.reached_eof,
+            stderr_truncated: stderr.truncated(),
         }
     }
 }

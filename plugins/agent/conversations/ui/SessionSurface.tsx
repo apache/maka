@@ -2300,20 +2300,28 @@ export function createConversationUi(
     blocked: () => recovering() || busy(),
     recover: recoverControls,
   });
-  // Whether the Host has no model connection, read each time the composer is
-  // shown again (back from Settings, too): the start pane then asks for one.
+  // Whether the Host has no model connection or enabled external agent, read
+  // each time the composer is shown again (back from Settings, too) or the
+  // deployment catalog changes: the start pane then asks for one.
   const noConnections = signal(false);
   let connectionRead = 0;
   effect(() => {
-    if (overlay() !== null || !(shell()?.visible() ?? false)) return;
+    if (overlay() !== null || reloading() || !(shell()?.visible() ?? false)) return;
+    runtime.source();
     const read = ++connectionRead;
-    void host
-      .query('settings', 'connections', { kind: 'start' })
-      .then((result) => {
-        if (!alive || read !== connectionRead || result.kind === 'changed') return;
-        noConnections.set(result.connections.length === 0 && result.next === null);
-      })
-      .catch(() => undefined);
+    void (async () => {
+      const result = await host.query('settings', 'connections', { kind: 'start' });
+      if (!alive || read !== connectionRead || result.kind === 'changed') return;
+      if (result.connections.length > 0 || result.next !== null) {
+        noConnections.set(false);
+        return;
+      }
+      const external = await host.query('agent', 'externalAgents', { inspect: true });
+      if (!alive || read !== connectionRead) return;
+      noConnections.set(
+        external.state.kind === 'disabled' || !external.runtimes.some((item) => item.enabled),
+      );
+    })().catch(() => undefined);
   });
   const composerTarget = context.configuration.composer as UiTarget;
   const ComposerView = (input: ComposerViewInput<JSX.Element>) =>

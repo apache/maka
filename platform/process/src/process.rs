@@ -28,9 +28,14 @@ use std::{io, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) enum Mode {
+    Shell,
+    Protocol { input: Vec<u8>, stdout_limit: usize },
+}
+
 pub(crate) async fn run(
     plan: crate::Command,
-    input: Option<Vec<u8>>,
+    mode: Mode,
     timeout_ms: Option<u64>,
     cancellation: CancellationToken,
     observer: Option<tokio::sync::mpsc::Sender<PipeEvent>>,
@@ -55,7 +60,13 @@ pub(crate) async fn run(
         let _ = observer.try_send(PipeEvent::Started);
     }
     let exited = CancellationToken::new();
-    let owns_tree = input.is_some();
+    let (input, owns_tree, stdout_limit) = match mode {
+        Mode::Shell => (None, false, tail::TAIL_BYTES),
+        Mode::Protocol {
+            input,
+            stdout_limit,
+        } => (Some(input), true, stdout_limit),
+    };
     let lifecycle = async {
         let outcome = settle(&mut child, timeout_ms, cancellation, owns_tree).await;
         exited.cancel();
@@ -77,11 +88,13 @@ pub(crate) async fn run(
         tail::capture(
             stdout,
             exited.clone(),
+            stdout_limit,
             observer.clone().map(|o| (o, PipeStream::Stdout))
         ),
         tail::capture(
             stderr,
             exited.clone(),
+            tail::TAIL_BYTES,
             observer.map(|o| (o, PipeStream::Stderr))
         ),
     );

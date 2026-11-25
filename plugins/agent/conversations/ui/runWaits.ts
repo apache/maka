@@ -49,8 +49,14 @@ export const retrying = (waits: readonly RunWait[]) =>
 export function waitActivity(
   status: ConversationStatus,
   execution: AgentExecution | null,
+  hasPendingInteraction = false,
 ): 'waiting_for_user' | 'retrying' | undefined {
   if (status === 'waiting_for_user') return 'waiting_for_user';
+  if (
+    hasPendingInteraction &&
+    (status === 'admitted' || status === 'running' || status === 'waiting')
+  )
+    return 'waiting_for_user';
   if (status !== 'waiting') return;
   const state = execution?.state;
   if (state?.kind !== 'waiting') return;

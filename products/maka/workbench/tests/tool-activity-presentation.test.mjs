@@ -502,3 +502,19 @@ test('gateway search envelopes accept query batches, text blocks and titled resu
     });
   }
 });
+
+test('ScheduledTask test_script mode renders its script condition', () => {
+  const scheduled = activityPresentation('maka.agent.Builtin@1/ScheduledTask');
+  assert.deepEqual(
+    activityProjection(
+      scheduled,
+      'arguments',
+      { request: { mode: 'test_script', source: 'console.log(true)' } },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [{ label: 'Script condition', text: 'console.log(true)' }],
+    },
+  );
+});

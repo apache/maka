@@ -15881,6 +15881,17 @@ export const contracts: {
                 $ref: '#/$defs/HistoryView',
                 default: 'text',
               },
+              thought: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/Cursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'position'],
@@ -16267,6 +16278,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/Cursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
                       },
                       {
                         type: 'null',
@@ -17650,6 +17671,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -17901,6 +17934,25 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
               Role: {
                 description:
@@ -25655,6 +25707,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -27032,6 +27094,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -27283,6 +27357,25 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
               Role: {
                 description:

@@ -2732,6 +2732,222 @@ mod source_recovery {
     use maka_agent_state::ReadyCause;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_before_external_launch_settles_admitted_run() {
+        use maka_agent_engine::ports::ExternalPorts;
+        let mut rig = Rig::new().unwrap();
+        let result: TestResult<()> = async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({"runtimes":{"codex":true}});
+                })
+                .await?;
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let NativeBackend::Executor(executor) = &driver.backend else {
+                return Err("expected an external executor".into());
+            };
+            let prepared = executor
+                .prepare_external(&driver.state.frontier(run).await?, task)
+                .await?;
+            rig.append(
+                vec![
+                    Fact::ExternalTaskPrepared {
+                        task,
+                        descriptor: prepared.descriptor.reference().clone(),
+                        live_workspace: prepared.live_workspace,
+                    },
+                    Fact::ExternalTaskAdmitted { task },
+                ],
+                vec![prepared.descriptor],
+            )
+            .await?;
+            rig.append(
+                vec![Fact::StopRequested {
+                    diagnostic: "steering_interrupt".into(),
+                    requester: StopRequester::Internal,
+                }],
+                vec![],
+            )
+            .await?;
+
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            engine
+                .drive(
+                    driver.access.claim().clone(),
+                    driver.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            driver.access.claim().deactivate();
+            driver.finish().await?;
+            rig.work_effects.take().unwrap().settle().await?;
+            rig.lease.take().unwrap().finish();
+            // Late cleanup cannot take over until the original driver drops its physical claim.
+            drop(rig.cells.take());
+            drop(rig.ordinary.take());
+            drop(rig.driver.take());
+            drop(driver);
+            owner.physical_availability_changed();
+
+            let mut changes = owner.durable.subscribe()?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    changes.borrow_and_update();
+                    let view = owner.durable.frontier(run).await?;
+                    if let Some(terminal) = view.terminal {
+                        assert_eq!(terminal, Terminal::Cancelled);
+                        let external = view.external.unwrap();
+                        assert!(external.binding.is_none());
+                        assert_eq!(external.cleanup, OperationCleanup::Confirmed);
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    changes.changed().await?;
+                }
+            })
+            .await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(result.is_ok(), "{result:?}; cleanup: {cleanup:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_after_handoff_before_external_spawn_settles_admitted_run() {
+        use maka_agent_engine::ports::{DriverPorts, ExternalPorts};
+        let mut rig = Rig::new().unwrap();
+        let result: TestResult<()> = async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({
+                        "runtimes": {"codex": true},
+                        "commands": {"codex": {"executable": "maka-nonexistent-codex-test-binary"}},
+                    });
+                })
+                .await?;
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let NativeBackend::Executor(executor) = &driver.backend else {
+                return Err("expected an external executor".into());
+            };
+            let prepared = executor
+                .prepare_external(&driver.state.frontier(run).await?, task)
+                .await?;
+            // Leave the task prepared (not yet admitted) so Engine::drive executes StartExternal,
+            // admits the task, and hands the TaskOwner off to the launch worker.
+            rig.append(
+                vec![Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor: prepared.descriptor.reference().clone(),
+                    live_workspace: prepared.live_workspace,
+                }],
+                vec![prepared.descriptor],
+            )
+            .await?;
+
+            let stop_driver = driver.clone();
+            let stop_executor = executor.clone();
+            let stop_state = driver.state.clone();
+            let stop_claim = driver.access.claim().clone();
+            let interruptor = tokio::spawn(async move {
+                loop {
+                    if stop_executor.prepared_private.lock().await.is_none() {
+                        // Cancel right after launch custody leaves prepared_private so the
+                        // worker hits its pre-launch cancellation path before spawning.
+                        stop_driver.cancel_live(run);
+                        let view = stop_state.frontier(run).await?;
+                        stop_state
+                            .append(
+                                &stop_claim,
+                                (&view).into(),
+                                vec![Change::new(
+                                    Fact::StopRequested {
+                                        diagnostic: "steering_interrupt".into(),
+                                        requester: StopRequester::Internal,
+                                    },
+                                    at(),
+                                )],
+                                vec![],
+                            )
+                            .await?;
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    tokio::task::yield_now().await;
+                }
+            });
+
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            engine
+                .drive(
+                    driver.access.claim().clone(),
+                    driver.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            interruptor.await??;
+            driver.access.claim().deactivate();
+            driver.join_original_workers().await?;
+            driver.finish().await?;
+            rig.work_effects.take().unwrap().settle().await?;
+            rig.lease.take().unwrap().finish();
+            drop(rig.cells.take());
+            drop(rig.ordinary.take());
+            drop(rig.driver.take());
+            drop(driver);
+            owner.physical_availability_changed();
+
+            let mut changes = owner.durable.subscribe()?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    changes.borrow_and_update();
+                    let view = owner.durable.frontier(run).await?;
+                    if let Some(terminal) = view.terminal {
+                        assert_eq!(terminal, Terminal::Cancelled);
+                        let external = view.external.unwrap();
+                        assert!(external.binding.is_none());
+                        assert_eq!(external.cleanup, OperationCleanup::Confirmed);
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    changes.changed().await?;
+                }
+            })
+            .await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(result.is_ok(), "{result:?}; cleanup: {cleanup:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn external_scope_releases_root_after_late_vm_ack() {
         use maka_agent_facts::cells::{CellEvent, CellId, CellOwner};
         use maka_agent_facts::external_effects::{

@@ -8,6 +8,7 @@
   "A new message closed the question.": "新しいメッセージにより質問が終了しました。",
   "A provider credential is stored. Sign in again to replace it.": "プロバイダーの認証情報が保存されています。置き換えるには再度サインインしてください。",
   "A proxy password is stored. Its value is never read back.": "プロキシのパスワードが保存されています。値が読み返されることはありません。",
+  "A question for you": "あなたへの質問",
   "A server with this name already exists at this location.": "この場所には同じ名前のサーバーが既に存在します。",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "ショートカットを使うと、どのアプリからでもコマンドを実行できます。エイリアスを入力して検索でき、空欄にすると組み込みエイリアスが使用されます。",
   "A subagent with this name already exists.": "この名前のサブエージェントは既に存在します。",

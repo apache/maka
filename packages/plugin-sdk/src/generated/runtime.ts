@@ -4817,6 +4817,7 @@ export type AgentHistoryPage =
       chunks: AgentHistoryChunk[];
       before: Cursor | null;
       after: Cursor | null;
+      tailThought?: HistoryWorkThought | null;
     };
 export type AgentRoomActor =
   | {
@@ -8776,6 +8777,7 @@ export interface AgentHistoryRead {
   position: HistoryPosition;
   includeThinking?: boolean;
   view?: HistoryView & string;
+  thought?: Cursor | null;
 }
 /**
  * Byte offset in one message field's UTF-8 text, not a bearer capability.
@@ -9009,6 +9011,10 @@ export interface HistoryWorkGroup {
   last: HistoryWorkKind;
   lastCall?: HistoryToolCall | null;
   /**
+   * Tail of the group's latest non-empty thought while its Turn is unfinished.
+   */
+  lastThought?: HistoryWorkThought | null;
+  /**
    * The first step's tool, when it is one.
    */
   firstToolUseId?: string | null;
@@ -9040,6 +9046,11 @@ export interface HistoryToolCall {
    */
   dispatched: boolean;
   externalTarget?: ExternalToolTarget | null;
+}
+export interface HistoryWorkThought {
+  position: HistoryRowAddress;
+  offset: number;
+  text: string;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

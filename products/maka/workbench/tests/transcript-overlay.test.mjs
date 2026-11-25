@@ -20,16 +20,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  groupLatestIsThought,
+  groupThought,
   orderProcessRows,
   projectProcessGroups,
   sameProcessRows,
   showTurnSummary,
   turnOutcome,
+  turnThought,
   turnWorkFold,
 } from '../app/processGroups.ts';
 import {
+  applyWorkTailThought,
+  groupStepsFollowCursor,
   HistoryRows,
+  historyFollowPosition,
   historyFollowTail,
+  historyRowKey,
   historyRowThrough,
   historyTurnKey,
   isReplyWithActions,
@@ -573,4 +580,203 @@ test('reverse-paging a group whose first tool finishes in the tail page keeps on
     previous: tail.entries,
   });
   assert.equal(head.entries[0].key, initialKey);
+});
+
+test('groupThought, turnThought, and applyWorkTailThought keep active thoughts current without regressing to expanded steps', () => {
+  const workRow = (lastThought, { endPos, endField = 'body', endOffset = 0, last } = {}) =>
+    row(undefined, '', 2, {
+      role: 'thinking',
+      field: 'thinking',
+      work: {
+        end: { position: endPos ?? row('', '', 7).position, field: endField, offset: endOffset },
+        last: last ?? { kind: 'tool', presentation: null },
+        lastCall: null,
+        lastThought,
+        firstToolUseId: null,
+        kinds: [{ kind: 'thought' }, { kind: 'tool', presentation: null }],
+        thoughts: 1,
+        tools: 1,
+        messages: 0,
+        imageCount: 0,
+        images: [],
+      },
+    });
+  const req = row('user', 'Check PR', 1, { role: 'user', field: 'body' });
+  const oldLoadedThought = row('t1', 'Old expanded thought', 2, {
+    role: 'thinking',
+    field: 'thinking',
+  });
+  const t1Work = workRow(
+    { position: oldLoadedThought.position, offset: 7, text: 'Initial' },
+    {
+      endPos: oldLoadedThought.position,
+      endField: 'thinking',
+      endOffset: 7,
+      last: { kind: 'thought' },
+    },
+  );
+  const work2 = workRow({
+    position: row('', '', 6).position,
+    offset: 20,
+    text: 'Newer folded thought',
+  });
+  const liveThought = {
+    key: 'live/model/step-2/att-1/0',
+    messageId: 'live-t2',
+    role: 'thinking',
+    field: 'thinking',
+    text: 'Streaming live thought',
+    turnId: 'run',
+    startSequence: 10,
+    modelPart: { stepId: 'step-2', attemptId: 'att-1', ordinal: 0 },
+  };
+  const lookup = (items) => {
+    const map = new Map(items.map((item) => [stableRowId(item), item]));
+    return (id) => map.get(id);
+  };
+
+  // Returning to tail at an old fence sends work.end.offset; Host tailThought advances both text and cursor.
+  assert.deepEqual(historyFollowPosition(t1Work, []), {
+    kind: 'after',
+    cursor: { position: oldLoadedThought.position, field: 'thinking', offset: 7 },
+  });
+  const caughtUp = applyWorkTailThought(t1Work, {
+    position: oldLoadedThought.position,
+    offset: 19,
+    text: 'Initial + continued',
+  });
+  assert.equal(caughtUp.work.end.offset, 19);
+  assert.equal(caughtUp.work.lastThought.offset, 19);
+  assert.equal(caughtUp.work.lastThought.text, 'Initial + continued');
+
+  // When a tool occupies work.end, tailThought updates lastThought without disturbing the tool pagination cursor.
+  const toolEndPos = row('', '', 8).position;
+  const toolTailWork = workRow(
+    { position: oldLoadedThought.position, offset: 7, text: 'Initial' },
+    { endPos: toolEndPos, endField: 'body', endOffset: 0 },
+  );
+  const toolTailUpdated = applyWorkTailThought(toolTailWork, {
+    position: oldLoadedThought.position,
+    offset: 17,
+    text: 'Initial plus more',
+  });
+  assert.deepEqual(toolTailUpdated.work.end, { position: toolEndPos, field: 'body', offset: 0 });
+  assert.equal(toolTailUpdated.work.lastThought.offset, 17);
+  assert.equal(toolTailUpdated.work.lastThought.text, 'Initial plus more');
+
+  // If an in-flight steps expand at fence 7 lands after both a thought continuation (fence 8) and a
+  // tool result (fence 9, bumping metadataThrough), follow prioritizes the lagging thought over window.last
+  // so one forward page catches up both the thought suffix and the tool result.
+  const toolLastCursor = { position: toolEndPos, field: 'body', offset: 0 };
+  const updatedWithToolResult = { ...toolTailUpdated, metadataThrough: 9 };
+  const loadedSteps = new Map([
+    [
+      historyRowKey(oldLoadedThought.position, 'thinking'),
+      { fragments: [{ offset: 0, text: 'Initial' }], totalBytes: 7 },
+    ],
+  ]);
+  assert.deepEqual(
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 7 },
+      9,
+      (k) => loadedSteps.get(k),
+    ),
+    { position: oldLoadedThought.position, field: 'thinking', offset: 7 },
+  );
+  // Once the thought step already covers the confirmed offset, follow advances from window.last for new tool metadata,
+  // and stops completely once window.through catches up.
+  loadedSteps.set(historyRowKey(oldLoadedThought.position, 'thinking'), {
+    fragments: [
+      { offset: 0, text: 'Initial' },
+      { offset: 7, text: ' plus more' },
+    ],
+    totalBytes: 17,
+  });
+  assert.deepEqual(
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 7 },
+      9,
+      (k) => loadedSteps.get(k),
+    ),
+    toolLastCursor,
+  );
+  assert.equal(
+    groupStepsFollowCursor(
+      updatedWithToolResult,
+      { after: null, last: toolLastCursor, through: 9 },
+      9,
+      (k) => loadedSteps.get(k),
+    ),
+    null,
+  );
+
+  // Collapsed external executor reads work.lastThought and reports thinking title without expanding.
+  const foldedOnly = projectProcessGroups({
+    rows: [req, caughtUp],
+    toolActivity: [],
+    activeTurnId: 'run',
+  });
+  const foldedGroup = foldedOnly.entries.find((entry) => entry.kind === 'process');
+  assert.equal(groupThought(foldedGroup, lookup([req, caughtUp])), 'Initial + continued');
+  assert.equal(groupLatestIsThought(foldedGroup, lookup([req, caughtUp])), true);
+  assert.equal(turnThought([foldedGroup], lookup([req, caughtUp])), 'Initial + continued');
+
+  // After expanding once (oldLoadedThought in rowIds) and collapsing: newer work.lastThought wins.
+  const expandedThenUpdated = projectProcessGroups({
+    rows: [req, work2, oldLoadedThought],
+    toolActivity: [],
+    activeTurnId: 'run',
+  });
+  const updatedGroup = expandedThenUpdated.entries.find((entry) => entry.kind === 'process');
+  assert.equal(
+    groupThought(updatedGroup, lookup([req, work2, oldLoadedThought])),
+    'Newer folded thought',
+  );
+  assert.equal(groupLatestIsThought(updatedGroup, lookup([req, work2, oldLoadedThought])), false);
+
+  // While a new native thought streams live, it takes precedence over work.lastThought.
+  const withLive = projectProcessGroups({
+    rows: [req, work2, oldLoadedThought, liveThought],
+    toolActivity: [],
+    activeTurnId: 'run',
+  });
+  const liveGroup = withLive.entries.find((entry) => entry.kind === 'process');
+  assert.equal(
+    groupThought(liveGroup, lookup([req, work2, oldLoadedThought, liveThought])),
+    'Streaming live thought',
+  );
+  assert.equal(
+    groupLatestIsThought(liveGroup, lookup([req, work2, oldLoadedThought, liveThought])),
+    true,
+  );
+
+  // Conversation view without work summary derives both thought and title from group.rowIds.
+  const ungrouped = projectProcessGroups({
+    rows: [req, oldLoadedThought],
+    toolActivity: [],
+    activeTurnId: 'run',
+  });
+  const ungroupedProc = ungrouped.entries.find((entry) => entry.kind === 'process');
+  assert.equal(
+    groupThought(ungroupedProc, lookup([req, oldLoadedThought])),
+    'Old expanded thought',
+  );
+  assert.equal(groupLatestIsThought(ungroupedProc, lookup([req, oldLoadedThought])), true);
+
+  // Streaming answer closes groups so folded TurnSummary clears its peek.
+  const streamingAnswer = row('ans', 'Here is the review', 20, {
+    role: 'assistant',
+    field: 'body',
+    finalAnswer: true,
+  });
+  const answering = projectProcessGroups({
+    rows: [req, work2, streamingAnswer],
+    toolActivity: [],
+    activeTurnId: 'run',
+    answerTurnId: 'run',
+  });
+  const closedGroups = answering.entries.filter((entry) => entry.kind === 'process');
+  assert.equal(turnThought(closedGroups, lookup([req, work2, streamingAnswer])), null);
 });

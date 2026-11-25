@@ -145,6 +145,7 @@
     "create_automation": "Créer une automatisation",
     "create_automation_titled": "Créer une automatisation · {title}",
     "list_automations": "Lister les automatisations",
+    "test_automation_script": "Tester le script d'automatisation",
     "pause_automation": "Mettre en pause l'automatisation",
     "resume_automation": "Reprendre l'automatisation",
     "delete_automation": "Supprimer l'automatisation",
