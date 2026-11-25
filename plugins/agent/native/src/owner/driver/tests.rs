@@ -2796,6 +2796,11 @@ mod source_recovery {
             driver.finish().await?;
             rig.work_effects.take().unwrap().settle().await?;
             rig.lease.take().unwrap().finish();
+            // Late cleanup cannot take over until the original driver drops its physical claim.
+            drop(rig.cells.take());
+            drop(rig.ordinary.take());
+            drop(rig.driver.take());
+            drop(driver);
             owner.physical_availability_changed();
 
             let mut changes = owner.durable.subscribe()?;
