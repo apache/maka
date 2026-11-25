@@ -31,7 +31,7 @@ use std::{
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_mock_ai::{
     ControlPlaneConfig, FinishReason, HttpErrorSpec, MockAiBuilder, MockAiServer, ModelEntry,
-    NormalizedRequest, TurnContext, TurnPlan, Usage,
+    NormalizedRequest, NormalizedRole, TurnContext, TurnPlan, Usage,
 };
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
@@ -475,8 +475,175 @@ async fn run_preserves_background_http_server_across_completion_and_subsequent_f
     assert_port_closed(port, Duration::from_secs(5)).await;
 }
 
+fn json_stdout(out: &Output) -> Value {
+    assert!(
+        out.status.success(),
+        "maka run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout is not JSON ({error}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+fn waiting_stdout(out: &Output) -> Value {
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "expected a waiting report: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let waiting: Value = serde_json::from_slice(&out.stdout).expect("waiting report is JSON");
+    assert_eq!(waiting["status"], "waiting", "{waiting}");
+    waiting
+}
+
+fn text_stdout(out: &Output) -> &str {
+    assert!(
+        out.status.success(),
+        "maka run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::str::from_utf8(&out.stdout).expect("valid utf8 stdout")
+}
+
+fn session_command(env: &TestEnv, root: &Path, session: &str) -> Command {
+    let mut cmd = env.maka_command();
+    cmd.args(["run", "--root"])
+        .arg(root)
+        .args(["--session", session]);
+    cmd
+}
+
 #[tokio::test]
-async fn run_reuses_service_host_and_stops_on_pending_interaction() {
+async fn run_continues_a_session_started_without_waiting() {
+    let mock = start_mock_ai(|req, _| {
+        let saw_first = req.messages.iter().any(|message| {
+            matches!(message.role, NormalizedRole::User) && message.text.contains("First task")
+        });
+        let reply = if req.raw_body["messages"].to_string().contains("Second task") {
+            format!("second reply, first task seen: {saw_first}")
+        } else {
+            "first reply".into()
+        };
+        TurnPlan::new()
+            .push_text(reply)
+            .with_usage(Usage::new(100, 20))
+            .finish(FinishReason::Stop)
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-continue", &mock.base_url(), "danger-full-access");
+
+    let mut start = env.maka_command();
+    start
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "First task"]);
+    let receipt = json_stdout(&run_cli(start, None).await);
+    assert_eq!(receipt["status"], "submitted", "{receipt}");
+    let session = receipt["sessionId"].as_str().expect("session id");
+
+    let mut wait = session_command(&env, &root, session);
+    wait.arg("--wait");
+    assert_eq!(text_stdout(&run_cli(wait, None).await), "first reply\n");
+
+    let mut send = session_command(&env, &root, session);
+    send.arg("Second task");
+    let second = "second reply, first task seen: true\n";
+    assert_eq!(text_stdout(&run_cli(send, None).await), second);
+
+    // An idle Session reports its latest result.
+    let mut wait_again = session_command(&env, &root, session);
+    wait_again.arg("--wait");
+    assert_eq!(text_stdout(&run_cli(wait_again, None).await), second);
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
+}
+
+#[tokio::test]
+async fn run_reports_a_pending_question_and_continues_with_the_answer() {
+    let mock = start_mock_ai(|req, _| {
+        let (plan, finish) = match req
+            .messages
+            .iter()
+            .rfind(|message| matches!(message.role, NormalizedRole::Tool))
+        {
+            Some(result) if result.text.contains("Zeta") => {
+                (TurnPlan::new().push_text("picked Zeta"), FinishReason::Stop)
+            }
+            Some(result) => (
+                TurnPlan::new().push_text(format!("unexpected answer: {}", result.text)),
+                FinishReason::Stop,
+            ),
+            None => (
+                TurnPlan::new().push_tool_call(
+                    "call_ask",
+                    "AskUserQuestion",
+                    json!({ "questions": [{
+                        "question": "Which option?",
+                        "options": [{ "label": "Alpha" }, { "label": "Zeta" }],
+                    }]}),
+                ),
+                FinishReason::ToolCalls,
+            ),
+        };
+        plan.with_usage(Usage::new(100, 20)).finish(finish)
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-question", &mock.base_url(), "danger-full-access");
+
+    let mut ask = env.maka_command();
+    ask.args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Ask me first"]);
+    let receipt = json_stdout(&run_cli(ask, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+
+    let mut wait = session_command(&env, &root, session);
+    wait.arg("--wait");
+    let waiting = waiting_stdout(&run_cli(wait, None).await);
+    assert_eq!(
+        waiting,
+        json!({
+            "status": "waiting",
+            "sessionId": session,
+            "interactions": [{
+                "kind": "question",
+                "questions": [{
+                    "question": "Which option?",
+                    "options": [{ "label": "Alpha" }, { "label": "Zeta" }],
+                }],
+            }],
+        })
+    );
+
+    let mut answer = session_command(&env, &root, session);
+    answer.args(["--answer", r#"["Zeta"]"#]);
+    assert_eq!(text_stdout(&run_cli(answer, None).await), "picked Zeta\n");
+
+    let mut again = session_command(&env, &root, session);
+    again.args(["--answer", r#"["Alpha"]"#]);
+    let out = run_cli(again, None).await;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no pending question"), "{stderr}");
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
+}
+
+#[tokio::test]
+async fn run_reuses_service_host_and_keeps_a_pending_permission_until_stopped() {
     let mut env = TestEnv::new();
 
     let absent_root = env.base_dir().join("absent-root-prompt");
@@ -504,13 +671,14 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("prompt must not be empty"));
     assert!(!absent_root.exists());
 
-    let sent_priv = Arc::new(AtomicBool::new(false));
-    let sent_priv_cb = Arc::clone(&sent_priv);
-    let mock = start_mock_ai(move |req, _| {
+    let mock = start_mock_ai(|req, _| {
         if req.raw_body["messages"]
             .to_string()
             .contains("Run privileged")
-            && !sent_priv_cb.swap(true, Ordering::SeqCst)
+            && !req
+                .messages
+                .iter()
+                .any(|message| matches!(message.role, NormalizedRole::Tool))
         {
             let shell_input = json!({
                 "command": "echo privileged",
@@ -560,6 +728,7 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
         "Service Host must stay running after completed maka run"
     );
 
+    // A single-shot run cannot be answered later, so it cancels and fails.
     let mut perm_cmd = env.maka_command();
     perm_cmd
         .args(["run", "--root"])
@@ -570,17 +739,98 @@ async fn run_reuses_service_host_and_stops_on_pending_interaction() {
     let perm_out = run_cli(perm_cmd, None).await;
     assert_eq!(perm_out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&perm_out.stderr);
-    assert!(stderr.contains("pending interaction"), "{stderr}");
+    assert!(
+        stderr.contains("execution blocked by pending interaction(s): permissions("),
+        "{stderr}"
+    );
+    assert!(perm_out.stdout.is_empty());
     assert!(
         serve_child.try_wait().unwrap().is_none(),
-        "Service Host must stay running after stopped maka run"
+        "Service Host must stay running after a failed maka run"
     );
+
+    let mut start_cmd = env.maka_command();
+    start_cmd
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Run privileged shell"]);
+    let receipt = json_stdout(&run_cli(start_cmd, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+    let mut wait_cmd = session_command(&env, &root, session);
+    wait_cmd.arg("--wait");
+    let waiting = waiting_stdout(&run_cli(wait_cmd, None).await);
+    assert_eq!(
+        waiting["interactions"][0]["kind"], "permissions",
+        "{waiting}"
+    );
+
+    // A follow-up leaves the Run waiting for the decision instead of cancelling it.
+    let mut wait_again = session_command(&env, &root, session);
+    wait_again.arg("--wait");
+    let still_waiting = waiting_stdout(&run_cli(wait_again, None).await);
+    assert_eq!(still_waiting, waiting);
     let status_json: Value = serde_json::from_slice(&env.status(&root).stdout).unwrap();
     assert_eq!(status_json["closing"], false, "{status_json}");
+
+    let mut stop_cmd = session_command(&env, &root, session);
+    stop_cmd.arg("--stop");
+    let stopped = json_stdout(&run_cli(stop_cmd, None).await);
+    assert_eq!(
+        stopped,
+        json!({ "status": "stopped", "sessionId": session })
+    );
+    let mut stop_again = session_command(&env, &root, session);
+    stop_again.arg("--stop");
+    let out = run_cli(stop_again, None).await;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no active run"), "{stderr}");
 
     assert!(env.retire(&root).status.success());
     assert!(serve_child.wait().unwrap().success());
     let _ = drain.join();
+}
+
+#[tokio::test]
+async fn run_wait_reports_the_failure_of_an_ended_run() {
+    let mock = start_mock_ai(|_, _| {
+        TurnPlan::http_error(HttpErrorSpec::new(
+            400,
+            "invalid_request_error",
+            "simulated model failure",
+        ))
+    })
+    .await;
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-wait-failed", &mock.base_url(), "danger-full-access");
+
+    let mut start = env.maka_command();
+    start
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Fail on the model request"]);
+    let receipt = json_stdout(&run_cli(start, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+
+    // The first wait may follow the Run; the second finds it already ended.
+    for _ in 0..2 {
+        let mut wait = session_command(&env, &root, session);
+        wait.arg("--wait");
+        let out = run_cli(wait, None).await;
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("run failed: ") && stderr.contains("simulated model failure"),
+            "{stderr}"
+        );
+    }
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
 }
 
 #[tokio::test]
@@ -769,6 +1019,69 @@ async fn run_sigterm_cancels_in_flight_run() {
     assert!(
         stderr_text.contains("interrupted by signal"),
         "{stderr_text}"
+    );
+
+    wait_for_root_released(&root, Duration::from_secs(10)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_sigterm_detaches_a_wait_without_cancelling_the_run() {
+    let mut mock = MockAiBuilder::new()
+        .control(ControlPlaneConfig {
+            models: vec![ModelEntry::simple("test-model")],
+            ..Default::default()
+        })
+        .interactive(4)
+        .start()
+        .await
+        .expect("start interactive mock-ai server");
+
+    let mut env = TestEnv::new();
+    let root = env.init_root("root-sigterm-wait", &mock.base_url(), "danger-full-access");
+
+    let mut start = env.maka_command();
+    start
+        .args(["run", "--root"])
+        .arg(&root)
+        .arg("--workspace")
+        .arg(&env.workspace)
+        .args(["--no-wait", "Hold until released"]);
+    let receipt = json_stdout(&run_cli(start, None).await);
+    let session = receipt["sessionId"].as_str().expect("session id");
+    let turn = tokio::time::timeout(Duration::from_secs(15), mock.next_turn())
+        .await
+        .expect("model request did not arrive")
+        .expect("interactive turn handle");
+
+    let mut wait = tokio::process::Command::from(session_command(&env, &root, session));
+    wait.arg("--wait")
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = wait.spawn().expect("spawn maka run --wait");
+    // Give the wait time to attach to the Session.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let pid = child.id().expect("child pid");
+    // SAFETY: `pid` is a live child process spawned by this test.
+    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    assert_eq!(rc, 0, "failed to send SIGTERM");
+    let out = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+        .await
+        .expect("maka run --wait did not exit promptly on SIGTERM")
+        .expect("wait child");
+    assert_eq!(out.status.code(), Some(1), "expected exit 1 on SIGTERM");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("interrupted by signal"), "{stderr}");
+
+    // Detaching left the Run running: releasing the model completes it.
+    turn.reply_text("released reply");
+    let mut wait_again = session_command(&env, &root, session);
+    wait_again.arg("--wait");
+    assert_eq!(
+        text_stdout(&run_cli(wait_again, None).await),
+        "released reply\n"
     );
 
     wait_for_root_released(&root, Duration::from_secs(10)).await;

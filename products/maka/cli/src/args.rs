@@ -43,7 +43,7 @@ enum Command {
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
     TerminalShell(crate::terminal_args::Args),
-    /// Execute a single headless Agent prompt to completion.
+    /// Run a headless Agent prompt, or continue, wait on or answer its Session.
     Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
     #[command(subcommand)]
@@ -233,7 +233,7 @@ impl Cli {
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
             }
-            Command::Run(args) => command_exit(args.run()),
+            Command::Run(args) => Box::pin(args.run()),
             Command::Application(args) => command_exit(args.run()),
             Command::Relay(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
