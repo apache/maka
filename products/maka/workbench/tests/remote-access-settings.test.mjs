@@ -71,9 +71,16 @@ async function setup(t, ttl = 300_000) {
   };
   let devices = [];
   let hung = false;
+  let pending = true;
   const copies = [];
   globalThis.remoteFixture = {
-    remoteAccessStatus: () => (hung ? new Promise(() => {}) : Promise.resolve(next)),
+    remoteAccessStatus: (inviteId) =>
+      hung
+        ? new Promise(() => {})
+        : Promise.resolve({
+            ...next,
+            invitePending: inviteId === 'invite' ? pending : null,
+          }),
     listPairedDevices: async () => devices,
     prepareDevicePairing: async () => ({
       inviteId: 'invite',
@@ -101,6 +108,10 @@ async function setup(t, ttl = 300_000) {
       next = { ...next, sas: { peerId: peer.peerId, sas: '123456', at: Date.now() } };
     },
     addPeer: () => {
+      devices = [peer];
+    },
+    redeem: () => {
+      pending = false;
       devices = [peer];
     },
     hang: () => {
@@ -146,17 +157,31 @@ for (const [label, ttl, advance] of [
   });
 }
 
-test('clears SAS when its peer appears in the paired-device list', async (t) => {
-  const { owner, sas, addPeer } = await setup(t);
+test('clears a redeemed QR without any SAS notice', async (t) => {
+  const { owner, redeem } = await setup(t);
+  owner.pair();
+  await flush();
+  assert.ok(owner.activeInvite()?.qr);
+  assert.equal(owner.sas(), null);
+  redeem();
+  await owner.refresh();
+  assert.equal(owner.activeInvite(), null);
+  assert.equal(owner.invite(), null);
+});
+
+test('shows a handshake alongside the QR and does not infer redemption from peer changes', async (t) => {
+  const { owner, sas, addPeer, redeem } = await setup(t);
   owner.pair();
   await flush();
   sas();
-  await owner.refresh();
-  assert.equal(owner.sas()?.sas, '123456');
   addPeer();
   await owner.refresh();
+  assert.equal(owner.sas()?.sas, '123456');
+  assert.ok(owner.activeInvite()?.qr);
+  redeem();
+  await owner.refresh();
   assert.equal(owner.sas(), null);
-  assert.equal(owner.invite(), null, 'do not leave the consumed QR on screen');
+  assert.equal(owner.activeInvite(), null);
 });
 
 test('copy provides transient feedback without making the settings busy', async (t) => {

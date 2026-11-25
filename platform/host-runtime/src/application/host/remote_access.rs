@@ -81,6 +81,7 @@ pub struct RemoteAccessStatus {
     pub peer_id: String,
     pub connected_relays: Vec<String>,
     pub sas: Option<SasNotice>,
+    pub invite_pending: Option<bool>,
     pub error: Option<String>,
     pub cli_override: bool,
 }
@@ -132,13 +133,13 @@ impl Host {
         stop: CancellationToken,
     ) -> Result<()> {
         // Keep advisory writes off the connection used for authentication and control.
-        let store = tokio::select! {
-            biased;
-            () = stop.cancelled() => return Ok(()),
-            result = maka_config::ConfigurationStore::for_root(self.root.clone()) => {
-                result.map_err(|error| error.to_string())?
-            }
-        };
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        // Opening owns a SQLite writer: wait for it before honoring cancellation.
+        let store = maka_config::ConfigurationStore::for_root(self.root.clone())
+            .await
+            .map_err(|error| error.to_string())?;
         loop {
             let (peer, sas, at) = tokio::select! {
                 biased;
@@ -205,7 +206,10 @@ impl Host {
             .map_err(|_| "remote access transport stopped before applying settings")?
     }
 
-    pub(super) async fn remote_access_status(&self) -> Result<RemoteAccessStatus> {
+    pub(super) async fn remote_access_status(
+        &self,
+        invite_id: Option<String>,
+    ) -> Result<RemoteAccessStatus> {
         let config = self
             .access
             .remote_access_config()
@@ -217,6 +221,18 @@ impl Host {
             .map(|relay| relay.url)
             .collect();
         let now = now()?;
+        let invite_pending = match invite_id {
+            Some(invite_id) => {
+                let grant = self.access_grant.lock().unwrap().clone();
+                Some(
+                    self.access
+                        .host_peer_pairing_invite_pending(invite_id, grant, now)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            None => None,
+        };
         let state = self.remote_access.state.lock().unwrap();
         let status = if !connected_relays.is_empty() {
             ConnectionStatus::Connected
@@ -232,6 +248,7 @@ impl Host {
             status,
             peer_id: self.device_identity().public_key().to_string(),
             connected_relays,
+            invite_pending,
             sas: state
                 .sas
                 .as_ref()

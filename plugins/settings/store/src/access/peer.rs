@@ -144,6 +144,24 @@ impl ConfigurationStore {
         .await
     }
 
+    pub async fn host_peer_pairing_invite_pending(
+        &self,
+        invite_id: String,
+        host_grant: String,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let now_ms = sqlite_ms(now_ms)?;
+        self.transaction(TransactionMode::Deferred, move |tx| {
+            Ok(tx
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM host_peer_pairing_invites
+                    WHERE invite_id = ? AND host_grant = ? AND expires_at_ms > ?)",
+                )?
+                .query_row(params![invite_id, host_grant, now_ms], |row| row.get(0))?)
+        })
+        .await
+    }
+
     pub async fn redeem_host_peer_pairing_invite(
         &self,
         secret_hash: [u8; 32],

@@ -379,8 +379,11 @@ impl ApplicationHost {
         maka_host_runtime::application::host::remote_access::valid_relay_url(url)
     }
 
-    pub async fn remote_access_status(this: Instance<Self>) -> Result<JsonValue, String> {
-        remote_access::control(this, remote_access::Action::Status).await
+    pub async fn remote_access_status(
+        this: Instance<Self>,
+        invite_id: Option<String>,
+    ) -> Result<JsonValue, String> {
+        remote_access::control(this, remote_access::Action::Status { invite_id }).await
     }
 
     pub async fn update_remote_access(

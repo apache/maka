@@ -647,8 +647,17 @@ impl Client {
     pub async fn remote_access_status(
         address: &Path,
         epoch: Uuid,
+        invite_id: Option<&str>,
     ) -> Result<super::remote_access::RemoteAccessStatus> {
-        match control(address, Some(epoch), Request::RemoteAccessStatus).await? {
+        match control(
+            address,
+            Some(epoch),
+            Request::RemoteAccessStatus {
+                invite_id: invite_id.map(str::to_owned),
+            },
+        )
+        .await?
+        {
             Response::RemoteAccessStatus(result) => result,
             _ => Err("Host remote access status response mismatch".into()),
         }

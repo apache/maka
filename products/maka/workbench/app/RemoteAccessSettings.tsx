@@ -344,8 +344,8 @@ function RemoteAccessForm({ owner }: Props) {
 }
 
 function Pairing({ owner }: Props) {
-  const code = () => owner.invite()?.qr;
-  const active = () => owner.invite() && owner.secondsLeft() > 0;
+  const code = () => owner.activeInvite()?.qr;
+  const active = owner.activeInvite;
   const moduleSize = () => Math.max(2, Math.min(5, Math.floor(320 / ((code()?.length ?? 0) + 8))));
   const side = () => ((code()?.length ?? 0) + 8) * moduleSize();
   return (
@@ -413,7 +413,7 @@ function Pairing({ owner }: Props) {
             />
           }
         />
-        <If when={code() && !owner.sas()}>
+        <If when={code()}>
           <View style={{ alignItems: 'center', paddingVertical: 16 }}>
             <RowLine />
             <View

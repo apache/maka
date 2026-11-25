@@ -426,7 +426,9 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
         };
         let (server, ready) = spawn_ready(launch(), Stdio::inherit()).await;
         let (socket, epoch) = target(ready);
-        let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+        let status = Client::remote_access_status(&socket, epoch, None)
+            .await
+            .unwrap();
         assert!(matches!(status.status, ConnectionStatus::Disabled));
         assert!(!status.config.enabled);
 
@@ -434,7 +436,9 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
             .await
             .unwrap();
         loop {
-            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
             assert!(status.error.is_none(), "{:?}", status.error);
             if matches!(status.status, ConnectionStatus::Connected) {
                 assert_eq!(status.connected_relays, [url.as_str()]);
@@ -453,13 +457,22 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
         )
         .await
         .unwrap();
+        let invite_pending = || async {
+            Client::remote_access_status(&socket, epoch, Some(&invite.invite_id))
+                .await
+                .unwrap()
+                .invite_pending
+        };
+        assert_eq!(invite_pending().await, Some(true));
         let ticket = SignedPairingTicket::parse_and_verify_uri(&invite.uri, 0).unwrap();
         let device = DeviceIdentity::generate().unwrap();
         let route = Relay::new(&invite.relays[0], None, None).unwrap();
         let endpoint = PeerEndpoint::bind(&device, &[route], true).await.unwrap();
         let connected = endpoint.connect_ticket(&ticket).await.unwrap();
         loop {
-            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
             if let Some(notice) = status.sas {
                 assert_eq!(notice.peer_id, device.public_key().to_string());
                 assert_eq!(notice.sas, connected.export_sas().unwrap());
@@ -471,6 +484,7 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
             .redeem_pairing(&ticket, Some("Phone".into()))
             .await
             .unwrap();
+        assert_eq!(invite_pending().await, Some(false));
         let peers = Client::list_peer_access(&socket, epoch).await.unwrap();
         assert_eq!(peers[0].label, "Phone");
         assert!(peers[0].last_active_at.is_some());
@@ -478,7 +492,9 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
         Client::update_remote_access(&socket, epoch, update(false))
             .await
             .unwrap();
-        let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+        let status = Client::remote_access_status(&socket, epoch, None)
+            .await
+            .unwrap();
         assert!(matches!(status.status, ConnectionStatus::Disabled));
         assert!(status.connected_relays.is_empty() && status.sas.is_none());
         connected.closed().await;
@@ -491,7 +507,9 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
         let (restarted, ready) = spawn_ready(launch(), Stdio::inherit()).await;
         let (socket, epoch) = target(ready);
         loop {
-            let status = Client::remote_access_status(&socket, epoch).await.unwrap();
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
             assert!(status.config.enabled);
             assert!(status.error.is_none(), "{:?}", status.error);
             if matches!(status.status, ConnectionStatus::Connected) {
@@ -575,7 +593,19 @@ async fn saved_remote_transport_does_not_expose_upstream_header_text() {
         let mut serve =
             host::command_for(&crate::maka_executable(), &sandbox.home, &sandbox.workspace);
         serve.args(["host", "serve", "--root"]).arg(&sandbox.root);
-        let (server, ready) = spawn_ready(serve, Stdio::inherit()).await;
+        let (mut server, ready) = spawn_ready(serve, Stdio::piped()).await;
+        let mut stderr = BufReader::new(server.stderr.take().unwrap());
+        let diagnostics = loop {
+            let mut line = String::new();
+            assert_ne!(
+                stderr.read_line(&mut line).await.unwrap(),
+                0,
+                "Host diagnostics path missing"
+            );
+            if let Some(path) = line.trim_end().strip_prefix("Host diagnostics: ") {
+                break std::path::PathBuf::from(path);
+            }
+        };
         let socket = Path::new(ready["socketPath"].as_str().unwrap());
         let epoch = ready["hostEpoch"].as_str().unwrap().parse().unwrap();
         Client::update_remote_access(
@@ -598,7 +628,7 @@ async fn saved_remote_transport_does_not_expose_upstream_header_text() {
         .await
         .unwrap();
         let error = loop {
-            if let Some(error) = Client::remote_access_status(socket, epoch)
+            if let Some(error) = Client::remote_access_status(socket, epoch, None)
                 .await
                 .unwrap()
                 .error
@@ -611,7 +641,10 @@ async fn saved_remote_transport_does_not_expose_upstream_header_text() {
             error,
             "relay connection failed; check connectivity and TLS trust"
         );
+        assert!(!error.contains(REFLECTED));
         stop(server).await;
+        let logs = tokio::fs::read(diagnostics).await.unwrap();
+        assert!(!String::from_utf8_lossy(&logs).contains(REFLECTED));
         stop_relay.cancel();
         relay.await.unwrap();
     })

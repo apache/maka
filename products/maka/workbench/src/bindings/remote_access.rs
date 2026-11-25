@@ -27,7 +27,7 @@ use nsh_core::{JsonValue, prelude::Instance};
 use serde_json::{json, to_value};
 
 pub(super) enum Action {
-    Status,
+    Status { invite_id: Option<String> },
     Pair,
     List,
     Revoke(String),
@@ -76,7 +76,7 @@ pub(super) async fn control(
     let client = owner.client.clone();
     execute(owner, async move {
         let request = match action {
-            Action::Status => Request::RemoteAccessStatus,
+            Action::Status { invite_id } => Request::RemoteAccessStatus { invite_id },
             Action::Pair => Request::PreparePeerPairing(PeerPairingOptions {
                 host_name: "Maka Desktop".into(),
                 label: None,

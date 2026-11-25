@@ -657,11 +657,11 @@ impl Host {
                 )
                 .await
             }
-            Request::RemoteAccessStatus => {
+            Request::RemoteAccessStatus { invite_id } => {
                 authority.local()?;
                 wire::write(
                     &mut output,
-                    &Response::RemoteAccessStatus(self.remote_access_status().await),
+                    &Response::RemoteAccessStatus(self.remote_access_status(invite_id).await),
                 )
                 .await
             }

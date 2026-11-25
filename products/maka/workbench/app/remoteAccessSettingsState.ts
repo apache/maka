@@ -35,6 +35,7 @@ type Status = {
   peerId: string;
   connectedRelays: string[];
   sas: { peerId: string; sas: string; at: number } | null;
+  invitePending: boolean | null;
   error: string | null;
   cliOverride: boolean;
 };
@@ -114,28 +115,21 @@ export function createRemoteAccessSettings() {
   const load = async (run: number) => {
     if (!active) return;
     const id = ++observation;
+    const inviteId = invite()?.inviteId;
     const current = () => run === generation && id === observation;
     try {
       const [next, peers] = await Promise.all([
-        host.remoteAccessStatus(),
+        host.remoteAccessStatus(inviteId ?? null),
         host.listPairedDevices(),
       ]);
       if (!current()) return;
       const live = next as Status;
       const previous = status()?.config;
       if (!dirty() && JSON.stringify(previous) !== JSON.stringify(live.config)) reset(live.config);
-      const paired = peers as Device[];
-      const notice = live.sas ?? status()?.sas;
-      const pairing = invite();
-      if (
-        pairing &&
-        notice &&
-        notice.at >= pairing.requestedAt &&
-        paired.some((device) => device.peerId === notice.peerId)
-      ) {
+      if (live.invitePending === false && invite()?.inviteId === inviteId) {
         invite.set(null);
       }
-      devices.set(paired);
+      devices.set(peers as Device[]);
       status.set(live);
       loadError.set('');
     } catch (error) {
@@ -190,11 +184,16 @@ export function createRemoteAccessSettings() {
       relays.map((relay) => (relay.auth === 'replace' ? relay.token : null)),
     )) as Config;
   };
+  const activeInvite = () => {
+    const pairing = invite();
+    return pairing && clock() < pairing.expiresAtMs ? pairing : null;
+  };
   return {
     status,
     devices,
     draft,
     invite,
+    activeInvite,
     confirming,
     busy,
     dirty,
@@ -208,14 +207,8 @@ export function createRemoteAccessSettings() {
     secondsLeft: () => Math.max(0, Math.ceil(((invite()?.expiresAtMs ?? 0) - clock()) / 1000)),
     sas: () => {
       const notice = status()?.sas;
-      const pairing = invite();
-      const now = clock();
-      return notice &&
-        pairing &&
-        now < pairing.expiresAtMs &&
-        notice.at >= pairing.requestedAt &&
-        now - notice.at < 120_000 &&
-        !devices().some((device) => device.peerId === notice.peerId)
+      const pairing = activeInvite();
+      return notice && pairing && notice.at >= pairing.requestedAt && clock() - notice.at < 120_000
         ? notice
         : null;
     },

@@ -40,7 +40,7 @@ pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
     let targets = Targets::new()
         .with_default(LevelFilter::WARN)
         .with_target("iroh::socket::transports::relay", LevelFilter::OFF)
-        .with_target("iroh_relay::client", LevelFilter::OFF);
+        .with_target("iroh_relay", LevelFilter::OFF);
     tracing_subscriber::fmt()
         .with_max_level(LevelFilter::WARN)
         .with_ansi(false)
@@ -259,6 +259,7 @@ mod tests {
             assert!(!stdout.contains("WARN") && !stdout.contains("host-log-sqlx-probe"));
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert!(!stderr.contains("RELAY_HEALTH_SECRET"), "{stderr}");
+            assert!(!stderr.contains("RELAY_RAW_FRAME_SECRET"), "{stderr}");
             assert_eq!(
                 stderr.contains("host-log-sqlx-probe"),
                 expected,
@@ -284,6 +285,7 @@ mod tests {
         };
         super::initialize().unwrap();
         log::warn!(target: "iroh::socket::transports::relay::actor", "RELAY_HEALTH_SECRET");
+        log::warn!(target: "iroh_relay::protos::streams", "RELAY_RAW_FRAME_SECRET");
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

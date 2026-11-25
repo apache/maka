@@ -176,7 +176,10 @@ pub enum Request {
     RevokeAccess {
         credential: String,
     },
-    RemoteAccessStatus,
+    RemoteAccessStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite_id: Option<String>,
+    },
     UpdateRemoteAccess(super::remote_access::RemoteAccessUpdate),
     PreparePeerPairing(super::PeerPairingOptions),
     ListPeerAccess,
