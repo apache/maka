@@ -252,7 +252,10 @@ impl Owner {
                     .imported_sessions(self.run_owner(), self.prefix.clone(), after, 16)
                     .await
                     .map_err(Failure::from)?;
-                let catalog = self.canonical_catalog().map_err(|_| Failure::Unavailable)?;
+                let catalog = self
+                    .canonical_catalog()
+                    .map_err(|_| Failure::Unavailable)?
+                    .with_cancellation(scope.cancellation.clone());
                 let mut sessions = Vec::with_capacity(page.ids.len());
                 for id in page.ids {
                     if let Some(session) = catalog

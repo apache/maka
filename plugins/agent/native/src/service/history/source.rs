@@ -238,7 +238,7 @@ async fn project_item(
                     .run_source(item.recorded.run)
                     .await
                     .map_err(|error| error.to_string())?;
-                let mut timing = timing(&data, &source).await?;
+                let mut timing = timing(&data, &source, stop).await?;
                 cache.views.clear();
                 cache.executor = None;
                 if let BackendSpec::Executor { selection, .. } = &source.spec.backend {
@@ -388,11 +388,12 @@ async fn project_item(
 async fn timing(
     data: &data::DataSource,
     source: &maka_agent_state::session_history::RunSource,
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::TurnTiming, String> {
     let millis =
         |at: UnixMillis| u64::try_from(at.0).map_err(|_| "agent_history_timestamp_invalid");
     let finished = data
-        .terminated(source.run)
+        .terminated(source.run, Some(stop))
         .await
         .map_err(|error| error.to_string())?
         .map(|(at, terminal)| {

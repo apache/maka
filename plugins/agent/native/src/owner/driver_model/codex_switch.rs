@@ -165,7 +165,7 @@ impl DriverModel {
             model_context_window: target.context.as_ref().and_then(|c| c.model_context_window),
             provenance,
         };
-        let Some(previous) = self.history.current_model_context(cut).await? else {
+        let Some(previous) = self.history.current_model_context(cut, None).await? else {
             return Ok(None);
         };
         let reader = match previous.source {

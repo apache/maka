@@ -74,7 +74,11 @@ pub(super) async fn catalog_revision(owner: &Owner, input: &List) -> Result<Stri
         .map_err(catalog_error)
 }
 
-pub(super) async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String> {
+pub(super) async fn catalog_page(
+    owner: &Owner,
+    input: &List,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<SessionPage, String> {
     let (revision, position) = match &input.position {
         crate::contract::SessionPosition::Start => (None, Position::Start),
         crate::contract::SessionPosition::At { cursor } => (None, Position::At(cursor.clone())),
@@ -92,6 +96,7 @@ pub(super) async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionP
     let reverse = matches!(position, Position::Before(_));
     let page = owner
         .canonical_catalog()?
+        .with_cancellation(stop.clone())
         .page(
             catalog_scope(owner, input).await?,
             revision,

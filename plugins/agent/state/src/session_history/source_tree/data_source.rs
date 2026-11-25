@@ -92,6 +92,7 @@ impl HistoryDataSource {
     pub async fn terminated(
         &self,
         run: RunId,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
         match self {
             Self::Live { history, cut } => {
@@ -104,7 +105,7 @@ impl HistoryDataSource {
                     ))
                     .await
             }
-            Self::Snapshot(source) => source.terminated(run).await,
+            Self::Snapshot(source) => source.terminated(run, stop).await,
         }
     }
     pub async fn final_attempt(&self, run: RunId) -> Result<Option<ModelAttemptId>, StoreError> {
@@ -369,26 +370,30 @@ impl HistoryDataSource {
         summary_run: RunId,
         summary_step: StepId,
         adopted_sequence: u64,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64, StoreError> {
         match self {
             Self::Live { history, .. } => {
-                snapshot::run_with_snapshot_rebuild(
-                    tokio_util::sync::CancellationToken::new(),
-                    || {
-                        history.data.query(CompactionDuration(
-                            self.clone(),
-                            run,
-                            summary_run,
-                            summary_step,
-                            adopted_sequence,
-                        ))
-                    },
-                )
-                .await
+                match history
+                    .data
+                    .query(CompactionDuration(
+                        self.clone(),
+                        run,
+                        summary_run,
+                        summary_step,
+                        adopted_sequence,
+                    ))
+                    .await?
+                {
+                    snapshot::IndexedRead::Ready(elapsed) => Ok(elapsed),
+                    snapshot::IndexedRead::NeedsRebuild(_) => Err(invalid(
+                        "live compaction duration unexpectedly requested snapshot rebuild",
+                    )),
+                }
             }
             Self::Snapshot(snapshot) => {
                 snapshot
-                    .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence)
+                    .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence, stop)
                     .await
             }
         }

@@ -17,7 +17,10 @@
  * under the License.
  */
 use super::*;
-use crate::session_history::snapshot::{IndexedRead, IndexedReadError};
+use crate::session_history::{
+    SessionHistory,
+    snapshot::{IndexedRead, IndexedReadError, Snapshot, catalog as snapshot_catalog},
+};
 use maka_agent_facts::artifact::content_digest;
 use maka_event_log::{sessions::CatalogSelection, workspace_bindings::WorkspaceBinding};
 use maka_sandbox::workspace::BindingRef;
@@ -92,6 +95,27 @@ const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
     format!("{BASE} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16")
 });
+// CROSS JOIN forces SQLite to drive from the small partial index
+// `agent_session_history_historical` instead of scanning `agent_session_history_run`.
+const STALE_CATALOG_SQL: &str = "SELECT s.id, source.run
+FROM (
+    SELECT session, MAX(sequence) AS sequence
+    FROM agent_session_history INDEXED BY agent_session_history_historical
+    WHERE owner=?1 AND historical=1
+      AND session>=?2 AND session<?3 AND substr(session,1,length(?2))=?2
+      AND (?4 IS NULL OR session=?4)
+    GROUP BY session
+) latest
+CROSS JOIN session_control s ON s.id=latest.session
+CROSS JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
+CROSS JOIN agent_session_history source
+  ON source.sequence=latest.sequence AND source.owner=?1 AND source.session=latest.session
+CROSS JOIN agent_history_snapshot_adoptions source_adoption ON source_adoption.run=source.run
+LEFT JOIN agent_history_snapshot_catalog source_summary ON source_summary.snapshot=source_adoption.snapshot
+WHERE NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
+  AND (source_summary.snapshot IS NULL
+       OR (typeof(json_extract(source_summary.summary_json,'$.version'))='integer'
+           AND json_extract(source_summary.summary_json,'$.version')!=?5))";
 static PENDING_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{BASE} SELECT COUNT(*) FROM selected WHERE needs_you=1 AND ?11 IN(0,1) AND ?12 IN(0,1)"
@@ -231,6 +255,32 @@ impl Selection {
             scope,
             filter,
         ))?))
+    }
+    fn stale_catalog_sources(&self, c: &Connection) -> Result<Vec<Snapshot>, StoreError> {
+        let rows: Vec<(String, String)> = c
+            .prepare_cached(STALE_CATALOG_SQL)?
+            .query_map(
+                rusqlite::params![
+                    &self.values[0],
+                    &self.values[1],
+                    &self.values[2],
+                    &self.values[3],
+                    i64::from(snapshot_catalog::VERSION),
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?
+            .collect::<Result<_, _>>()?;
+        let mut stale = Vec::with_capacity(rows.len());
+        for (session, run) in rows {
+            let marker: RunId = serde_json::from_value(Value::String(run))?;
+            let history = SessionHistory::new(
+                self.catalog.data.clone(),
+                self.catalog.owner.clone(),
+                session,
+            );
+            stale.push(history.catalog_source_in_snapshot(c, marker)?);
+        }
+        Ok(stale)
     }
     fn key(&self, c: &Connection, id: &str) -> Result<Option<Key>, StoreError> {
         let mut values = self.values.clone();
@@ -588,6 +638,11 @@ pub(super) fn page(c: &Connection, read: ReadPage) -> Result<IndexedRead<Page>, 
             expected,
             actual: revision,
         });
+    }
+    // Ensure snapshot catalog recency keys are current before selecting page keys or cursors.
+    let stale = selection.stale_catalog_sources(c)?;
+    if !stale.is_empty() {
+        return Ok(IndexedRead::NeedsRebuild(stale));
     }
     let anchor = cursor.map(|id| selection.key(c, id)).transpose()?.flatten();
     let reverse = matches!(read.position, Position::Before(_));

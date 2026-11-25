@@ -24,7 +24,7 @@ use crate::{
 };
 use maka_agent_facts::history_snapshot::ImportedMessage;
 
-const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

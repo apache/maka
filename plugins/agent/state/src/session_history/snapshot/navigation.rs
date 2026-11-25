@@ -89,18 +89,24 @@ impl From<serde_json::Error> for IndexedReadError {
 }
 
 pub(crate) async fn run_with_snapshot_rebuild<T, F, Fut>(
-    stop: CancellationToken,
+    stop: Option<&CancellationToken>,
     mut attempt: F,
 ) -> Result<T, StoreError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<IndexedRead<T>, StoreError>>,
 {
-    let mut rebuilt = HashSet::new();
+    let mut rebuilt = None;
+    let mut cold_stop = None;
     loop {
         match attempt().await? {
             IndexedRead::Ready(value) => return Ok(value),
             IndexedRead::NeedsRebuild(snapshots) => {
+                let rebuilt = rebuilt.get_or_insert_with(HashSet::new);
+                let token = match stop {
+                    Some(token) => token,
+                    None => cold_stop.get_or_insert_with(CancellationToken::new),
+                };
                 let mut batch = Vec::new();
                 let mut seen_in_batch = HashSet::new();
                 for snapshot in snapshots {
@@ -120,7 +126,7 @@ where
                         ));
                     }
                     // Keep the cold-rebuild future out of hot-path read state machines.
-                    Box::pin(snapshot.ensure_navigation(stop.clone())).await?;
+                    Box::pin(snapshot.ensure_navigation(token.clone())).await?;
                 }
             }
         }
@@ -457,8 +463,11 @@ impl Statement for Write {
     fn committed(value: i64) -> i64 {
         value
     }
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::InvalidTransition(_) | StoreError::EventConflict
+        )
     }
 }
 fn owned_document(c: &Connection, snapshot: &Snapshot, document: i64) -> Result<(), StoreError> {

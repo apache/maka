@@ -87,8 +87,9 @@ impl SessionHistory {
     pub async fn current_model_context(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<CurrentModelContext>, StoreError> {
-        run_with_snapshot_rebuild(CancellationToken::new(), || {
+        run_with_snapshot_rebuild(stop, || {
             self.data
                 .query(ReadCurrentContext(self.clone(), cut.clone()))
         })
@@ -98,8 +99,9 @@ impl SessionHistory {
     pub async fn metrics(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<SessionModelMetrics>, StoreError> {
-        run_with_snapshot_rebuild(CancellationToken::new(), || {
+        run_with_snapshot_rebuild(stop, || {
             self.data.query(ReadMetrics(self.clone(), cut.clone()))
         })
         .await
@@ -107,8 +109,9 @@ impl SessionHistory {
     pub async fn calibration_sample(
         &self,
         cut: &HistoryCut,
+        stop: Option<&CancellationToken>,
     ) -> Result<Option<ModelCalibrationSample>, StoreError> {
-        run_with_snapshot_rebuild(CancellationToken::new(), || {
+        run_with_snapshot_rebuild(stop, || {
             self.data.query(ReadCalibration(self.clone(), cut.clone()))
         })
         .await
@@ -325,7 +328,7 @@ impl HistoryDataSource {
         after: u64,
         limit: u32,
     ) -> Result<ModelRequestTracePage, StoreError> {
-        self.model_request_traces_for_reader(run, after, limit, false)
+        self.model_request_traces_for_reader(run, after, limit, false, None)
             .await
     }
 
@@ -335,16 +338,17 @@ impl HistoryDataSource {
         after: u64,
         limit: u32,
         mask_evidence: bool,
+        stop: Option<&CancellationToken>,
     ) -> Result<ModelRequestTracePage, StoreError> {
         let query = ReadRequestTraces(self.clone(), run, after, limit, mask_evidence);
         match self {
-            Self::Live { history, .. } => {
-                run_with_snapshot_rebuild(CancellationToken::new(), || {
-                    history.data.query(query.clone())
-                })
-                .await
-            }
-            Self::Snapshot(snapshot) => snapshot.query_request_traces(query).await,
+            Self::Live { history, .. } => match history.data.query(query).await? {
+                IndexedRead::Ready(page) => Ok(page),
+                IndexedRead::NeedsRebuild(_) => Err(invalid(
+                    "live request traces unexpectedly requested snapshot rebuild",
+                )),
+            },
+            Self::Snapshot(snapshot) => snapshot.query_request_traces(query, stop).await,
         }
     }
 }

@@ -240,6 +240,7 @@ impl Statement for Backfill {
     type Value = Option<u64>;
     type Output = Option<u64>;
     fn execute(self, c: &Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        navigation::check(&self.stop)?;
         read::Header(self.snapshot.clone()).execute(c)?;
         let after = self.after.map(bind_u64).transpose()?;
         let rows: Vec<(u64, String, String, u64)> = c.prepare_cached("SELECT ordinal,entry_json,run,sequence FROM agent_history_snapshot_entries WHERE snapshot=? AND kind='fact' AND (fact_kind IS NULL OR (fact_kind IN ('step_prepared','proactive_summary_prepared') AND model_json IS NULL) OR fact_kind IN ('model_private_partial_captured','model_source_failure_captured')) AND (? IS NULL OR ordinal>?) ORDER BY ordinal LIMIT 128")?
@@ -271,7 +272,10 @@ impl Statement for Backfill {
     fn committed(value: Self::Value) -> Self::Output {
         value
     }
-    fn isolated_rejection(_: &StoreError) -> bool {
-        false
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::InvalidTransition(_) | StoreError::EventConflict
+        )
     }
 }

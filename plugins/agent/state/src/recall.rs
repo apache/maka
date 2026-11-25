@@ -199,13 +199,10 @@ impl RecallStore {
         })
     }
     pub async fn validate_execution(&self, execution: ExecutionIdentity) -> Result<(), StoreError> {
-        crate::session_history::snapshot::run_with_snapshot_rebuild(
-            CancellationToken::new(),
-            || {
-                self.data
-                    .query(VerifyExecution(self.clone(), execution.clone()))
-            },
-        )
+        crate::session_history::snapshot::run_with_snapshot_rebuild(None, || {
+            self.data
+                .query(VerifyExecution(self.clone(), execution.clone()))
+        })
         .await
     }
     pub async fn capture(
@@ -266,7 +263,7 @@ impl RecallStore {
         stop: CancellationToken,
     ) -> Result<Batch, StoreError> {
         query.normalize()?;
-        crate::session_history::snapshot::run_with_snapshot_rebuild(stop.clone(), || {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(&stop), || {
             self.data.query(Search(
                 self.clone(),
                 query.clone(),
@@ -286,7 +283,7 @@ impl RecallStore {
         exclude: Option<ExcludedTail>,
         stop: CancellationToken,
     ) -> Result<Context, StoreError> {
-        crate::session_history::snapshot::run_with_snapshot_rebuild(stop.clone(), || {
+        crate::session_history::snapshot::run_with_snapshot_rebuild(Some(&stop), || {
             self.data.query(ReadContext(
                 self.clone(),
                 session.clone(),

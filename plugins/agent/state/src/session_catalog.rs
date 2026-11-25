@@ -172,6 +172,7 @@ pub struct SessionCatalog {
     data: DataWriter,
     owner: RunOwner,
     id_prefix: String,
+    stop: Option<tokio_util::sync::CancellationToken>,
 }
 impl SessionCatalog {
     pub fn new(data: DataWriter, owner: RunOwner, id_prefix: String) -> Result<Self, StoreError> {
@@ -183,7 +184,12 @@ impl SessionCatalog {
             data,
             owner,
             id_prefix,
+            stop: None,
         })
+    }
+    pub fn with_cancellation(mut self, stop: tokio_util::sync::CancellationToken) -> Self {
+        self.stop = Some(stop);
+        self
     }
     pub async fn revision(
         &self,
@@ -206,19 +212,16 @@ impl SessionCatalog {
         filter: Filter,
         limit: u32,
     ) -> Result<Page, StoreError> {
-        crate::session_history::snapshot::run_with_snapshot_rebuild(
-            tokio_util::sync::CancellationToken::new(),
-            || {
-                self.data.query(ReadPage {
-                    catalog: self.clone(),
-                    scope: scope.clone(),
-                    expected_revision: expected_revision.clone(),
-                    position: position.clone(),
-                    filter: filter.clone(),
-                    limit,
-                })
-            },
-        )
+        crate::session_history::snapshot::run_with_snapshot_rebuild(self.stop.as_ref(), || {
+            self.data.query(ReadPage {
+                catalog: self.clone(),
+                scope: scope.clone(),
+                expected_revision: expected_revision.clone(),
+                position: position.clone(),
+                filter: filter.clone(),
+                limit,
+            })
+        })
         .await
     }
     pub async fn record(&self, session: &str) -> Result<Option<Record>, StoreError> {

@@ -29,7 +29,7 @@ use rusqlite::{OptionalExtension, params};
 
 mod archive;
 mod capture;
-mod catalog;
+pub(crate) mod catalog;
 mod checkpoint;
 pub(in crate::session_history) mod metrics_metadata;
 mod model_evidence;
@@ -250,8 +250,9 @@ impl Snapshot {
         summary_run: RunId,
         step: StepId,
         sequence: u64,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64, StoreError> {
-        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
+        run_with_snapshot_rebuild(stop, || {
             self.data.query(super::source_tree::CompactionDuration(
                 super::source_tree::HistoryDataSource::Snapshot(self.clone()),
                 run,
@@ -404,11 +405,9 @@ impl Snapshot {
     pub(super) async fn query_request_traces(
         &self,
         query: super::metrics::ReadRequestTraces,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<super::metrics::ModelRequestTracePage, StoreError> {
-        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
-            self.data.query(query.clone())
-        })
-        .await
+        run_with_snapshot_rebuild(stop, || self.data.query(query.clone())).await
     }
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
@@ -440,8 +439,9 @@ impl Snapshot {
     pub async fn terminated(
         &self,
         run: RunId,
+        stop: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
-        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
+        run_with_snapshot_rebuild(stop, || {
             self.data.query(read::Terminated(self.clone(), run))
         })
         .await

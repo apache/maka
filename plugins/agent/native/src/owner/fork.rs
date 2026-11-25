@@ -350,7 +350,9 @@ impl Owner {
             .map_err(fork_failure)?;
         let at = now();
         let recorded_at = UnixMillis(at.try_into().map_err(|_| "agent_clock_invalid")?);
-        let catalog = self.canonical_catalog()?;
+        let catalog = self
+            .canonical_catalog()?
+            .with_cancellation(scope.cancellation.clone());
         let control = catalog.control_statement(
             claim.session_id.clone(),
             ControlCommand {

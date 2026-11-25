@@ -57,7 +57,7 @@ impl Snapshot {
         input: FindInput,
         stop: CancellationToken,
     ) -> Result<LocalFindPage, StoreError> {
-        run_with_snapshot_rebuild(stop.clone(), || {
+        run_with_snapshot_rebuild(Some(&stop), || {
             self.data
                 .query(FindQuery(self.clone(), input.clone(), stop.clone()))
         })
@@ -68,7 +68,7 @@ impl Snapshot {
         min_admission: u64,
         stop: CancellationToken,
     ) -> Result<u64, StoreError> {
-        run_with_snapshot_rebuild(stop, || {
+        run_with_snapshot_rebuild(Some(&stop), || {
             self.data.query(LandmarkCount(self.clone(), min_admission))
         })
         .await
@@ -79,7 +79,7 @@ impl Snapshot {
         ranks: Vec<u64>,
         stop: CancellationToken,
     ) -> Result<Vec<LocalLandmark>, StoreError> {
-        run_with_snapshot_rebuild(stop.clone(), || {
+        run_with_snapshot_rebuild(Some(&stop), || {
             self.data.query(LandmarkQuery(
                 self.clone(),
                 min_admission,

@@ -22,7 +22,6 @@ use crate::session_history::{
     snapshot::{AdoptSnapshot, IndexedRead, IndexedReadError, Snapshot, run_with_snapshot_rebuild},
 };
 use maka_sandbox::workspace::{BindingRef, BindingStamp};
-use tokio_util::sync::CancellationToken;
 
 /// An inert projection of the original historical source, not a published Session.
 pub struct PlannedCatalog {
@@ -78,7 +77,7 @@ impl SessionCatalog {
             ));
         }
         adoption.adoption()?;
-        run_with_snapshot_rebuild(CancellationToken::new(), || {
+        run_with_snapshot_rebuild(self.stop.as_ref(), || {
             self.data.query(ReadPlanned {
                 catalog: self.clone(),
                 source: source.clone(),

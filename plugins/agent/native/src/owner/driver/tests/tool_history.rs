@@ -2133,7 +2133,7 @@ async fn assert_restricted_retry_history(
     reader.finish().await?;
 
     let traces = HistoryDataSource::Snapshot(earlier)
-        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true)
+        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true, None)
         .await?;
     assert!(!traces.run_terminated);
     assert_eq!(traces.requests.len(), 2);
@@ -4556,13 +4556,11 @@ async fn wait_terminal(client: &HostClient, session: &str, run_id: Value) -> Tes
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stale_snapshot_derived_indexes_rebuild_on_demand_across_all_read_paths() -> TestResult<()>
-{
+async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibling_writes()
+-> TestResult<()> {
     use maka_agent_state::{
-        recall::{ContextWindow, RecallStore, SearchQuery},
-        session_catalog::{
-            ControlCommand, ControlEdit, Filter, Position as CatalogPosition, SideQuestions,
-        },
+        recall::{RecallStore, SearchQuery},
+        session_catalog::{Filter, Position as CatalogPosition, SideQuestions},
         session_history::{
             navigation::SourceFind,
             source_tree::{HistoryDataSource, SourceTree},
@@ -4575,72 +4573,17 @@ async fn stale_snapshot_derived_indexes_rebuild_on_demand_across_all_read_paths(
         writeback::{Notification, Prepared, Statement},
     };
 
-    struct PoisonSnapshot {
-        snapshot: SnapshotId,
-        nav_version: Option<i64>,
-        catalog_version: Option<i64>,
-        inject_phantom: bool,
-    }
-    impl Statement for PoisonSnapshot {
+    struct SqlWrite<F>(F);
+    impl<F: FnOnce(&rusqlite::Connection) -> Result<bool, StoreError> + Send + 'static> Statement
+        for SqlWrite<F>
+    {
         type Value = ();
         type Output = ();
         fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
-            let id = self.snapshot.to_string();
-            match self.nav_version {
-                Some(version) => {
-                    c.execute(
-                        "UPDATE agent_history_snapshot_nav_heads SET version=? WHERE snapshot=?",
-                        rusqlite::params![version, &id],
-                    )?;
-                }
-                None => {
-                    c.execute(
-                        "DELETE FROM agent_history_snapshot_nav_heads WHERE snapshot=?",
-                        [&id],
-                    )?;
-                }
-            }
-            if self.inject_phantom {
-                c.execute(
-                    "UPDATE agent_history_snapshot_nav_documents SET label='STALE_V3_LABEL' WHERE snapshot=?",
-                    [&id],
-                )?;
-                let doc: i64 = c.query_row(
-                    "SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=? ORDER BY id LIMIT 1",
-                    [&id],
-                    |r| r.get(0),
-                )?;
-                c.execute(
-                    "INSERT INTO agent_history_snapshot_nav_fields(document,ordinal,field,internal,bytes) VALUES(?,999,'\"body\"',0,22)",
-                    [doc],
-                )?;
-                let chunk: i64 = c.query_row(
-                    "INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body) VALUES(?,999,0,0,'phantom_v3_stale_token') RETURNING id",
-                    [doc],
-                    |r| r.get(0),
-                )?;
-                c.execute(
-                    "INSERT INTO agent_history_snapshot_nav_terms(rowid,grams) VALUES(?,?)",
-                    rusqlite::params![chunk, "pha han ant nto tom om_ m_v _v3 v3_ 3_s _st sta tal ale le_ e_t _to tok oke ken"],
-                )?;
-            }
-            match self.catalog_version {
-                Some(version) => {
-                    c.execute(
-                        "UPDATE agent_history_snapshot_catalog SET summary_json=json_set(summary_json,'$.version',?) WHERE snapshot=?",
-                        rusqlite::params![version, &id],
-                    )?;
-                }
-                None => {
-                    c.execute(
-                        "DELETE FROM agent_history_snapshot_catalog WHERE snapshot=?",
-                        [&id],
-                    )?;
-                }
-            }
+            let changed = (self.0)(c)?;
             Ok(Prepared {
                 value: (),
-                changed: true,
+                changed,
                 notification: Notification::NONE,
             })
         }
@@ -4649,28 +4592,15 @@ async fn stale_snapshot_derived_indexes_rebuild_on_demand_across_all_read_paths(
             false
         }
     }
-
-    struct ReadVersions(SnapshotId);
-    impl Query for ReadVersions {
-        type Output = (Option<i64>, Option<i64>);
-        fn execute(self, c: &rusqlite::Connection) -> Result<Self::Output, StoreError> {
-            use rusqlite::OptionalExtension;
-            let id = self.0.to_string();
-            let nav = c
-                .query_row(
-                    "SELECT version FROM agent_history_snapshot_nav_heads WHERE snapshot=?",
-                    [&id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()?;
-            let catalog = c
-                .query_row(
-                    "SELECT json_extract(summary_json,'$.version') FROM agent_history_snapshot_catalog WHERE snapshot=?",
-                    [&id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()?;
-            Ok((nav, catalog))
+    struct SqlQuery<F>(F);
+    impl<
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, StoreError> + Send + 'static,
+    > Query for SqlQuery<F>
+    {
+        type Output = T;
+        fn execute(self, c: &rusqlite::Connection) -> Result<T, StoreError> {
+            (self.0)(c)
         }
     }
 
@@ -4685,7 +4615,7 @@ async fn stale_snapshot_derived_indexes_rebuild_on_demand_across_all_read_paths(
                 .push_text("Beta followup answer.")
                 .with_usage(Usage::new(180, 50)),
             TurnPlan::new()
-                .push_text("Compacted summary preserving alpha and beta.")
+                .push_text("Compacted summary.")
                 .with_usage(Usage::new(90, 30)),
         ])
         .start()
@@ -4693,507 +4623,230 @@ async fn stale_snapshot_derived_indexes_rebuild_on_demand_across_all_read_paths(
     let boot = model_recovery::bootstrap(&base, server.base_url(), false).await?;
     model_recovery::attach(&mut rig, &boot).await?;
 
-    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
-        let client = rig.client.as_ref().ok_or("client missing")?;
-        let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
-        let writer = owner.store.data_writer()?;
-        let run_owner = owner.run_owner();
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(60),
+        Box::pin(async {
+            let client = rig.client.as_ref().ok_or("client missing")?;
+            let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
+            let writer = owner.store.data_writer()?;
+            let run_owner = owner.run_owner();
 
-        let catalog_resp =
-            model_recovery::call(client, "settings", "connections", json!({"kind": "start"})).await?;
-        let created_conn = model_recovery::call(
-            client,
-            "settings",
-            "create",
-            json!({
-                "expectedCatalogRevision": catalog_resp["revision"],
+            let conns = model_recovery::call(client, "settings", "connections", json!({"kind": "start"})).await?;
+            let conn_id = model_recovery::call(client, "settings", "create", json!({
+                "expectedCatalogRevision": conns["revision"],
                 "connection": {
-                    "slug": "snapshot-rebuild",
-                    "name": "Snapshot Rebuild",
+                    "slug": "snapshot-rebuild", "name": "Snapshot Rebuild",
                     "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
                     "configuration": {"baseUrl": boot.base_url},
-                    "enabled": true,
-                    "enabledModelIds": ["llama3.2"],
+                    "enabled": true, "enabledModelIds": ["llama3.2"],
                     "modelOverrides": {"llama3.2": {"apiProtocol": "openai-chat-completions"}}
                 }
-            }),
-        )
-        .await?;
-        let conn_id = created_conn["connection"]["connectionId"].clone();
-        let backend = json!({"kind": "model", "connectionId": conn_id, "modelId": "llama3.2"});
+            })).await?["connection"]["connectionId"].clone();
+            let backend = json!({"kind": "model", "connectionId": conn_id, "modelId": "llama3.2"});
 
-        // Turn 1 on primary session.
-        let primary = model_recovery::call(
-            client,
-            "agent",
-            "create",
-            json!({
-                "title": "Primary Snapshot Source",
-                "automaticTitle": false,
-                "labels": [],
-                "workspace": {"kind": "directory", "path": base.join("workspace")}
-            }),
-        )
-        .await?["session"]["id"]
-            .as_str()
-            .ok_or("primary session id missing")?
-            .to_owned();
-        let sent1 = model_recovery::call(
-            client,
-            "agent",
-            "send",
-            json!({"sessionId": primary, "message": "Alpha milestone prompt", "backend": backend}),
-        )
-        .await?;
-        let primary_run: RunId =
-            model_recovery::completed_message(client, &primary, &sent1["messageId"]).await?;
+            let create_session = |title: &str| {
+                let (title, path) = (title.to_owned(), base.join("workspace"));
+                async move {
+                    let r = model_recovery::call(client, "agent", "create", json!({
+                        "title": title, "automaticTitle": false, "labels": [],
+                        "workspace": {"kind": "directory", "path": path}
+                    })).await?;
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("session id")?.to_owned())
+                }
+            };
+            let fork_session = |source: &str, title: &str| {
+                let (owner, source, title) = (owner.clone(), source.to_owned(), title.to_owned());
+                async move {
+                    let rev = owner.session(&source).await?.revision;
+                    let r = model_recovery::call(client, "agent", "fork", json!({
+                        "sessionId": source, "expectedRevision": rev,
+                        "position": {"kind": "end"}, "title": title, "labels": []
+                    })).await?;
+                    assert_eq!(r["kind"], "forked", "{r}");
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("fork id")?.to_owned())
+                }
+            };
+            let poison = |id: SnapshotId, nav: Option<i64>, cat: Option<i64>, phantom: bool, clear_kind: bool| {
+                let writer = writer.clone();
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        let s = id.to_string();
+                        match nav {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_nav_heads SET version=? WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_nav_heads WHERE snapshot=?", [&s])?,
+                        };
+                        if clear_kind {
+                            c.execute("UPDATE agent_history_snapshot_entries SET fact_kind=NULL WHERE snapshot=? AND kind='fact'", [&s])?;
+                        }
+                        if phantom {
+                            c.execute("UPDATE agent_history_snapshot_nav_documents SET label='STALE_V3_LABEL' WHERE snapshot=?", [&s])?;
+                            let doc: i64 = c.query_row("SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=? ORDER BY id LIMIT 1", [&s], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_fields(document,ordinal,field,internal,bytes) VALUES(?,999,'\"body\"',0,22)", [doc])?;
+                            let chunk: i64 = c.query_row("INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body) VALUES(?,999,0,0,'phantom_v3_stale_token') RETURNING id", [doc], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_terms(rowid,grams) VALUES(?,?)", rusqlite::params![chunk, "pha han ant nto tom om_ m_v _v3 v3_ 3_s _st sta tal ale le_ e_t _to tok oke ken"])?;
+                        }
+                        match cat {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_catalog SET summary_json=json_set(summary_json,'$.version',?) WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_catalog WHERE snapshot=?", [&s])?,
+                        };
+                        Ok(true)
+                    })).await
+                }
+            };
+            let find_req = |q: &str, include_internal: bool| SourceFind {
+                after: None, query: q.into(), case_sensitive: true,
+                whole_word: false, include_internal, mask_evidence: false,
+            };
 
-        // Fork primary twice: one single-hop fork (forked_peer) and one base (forked_a) for a nested fork.
-        let fork_session = |source: &str, title: &str| {
-            let owner = owner.clone();
-            let source = source.to_owned();
-            let title = title.to_owned();
-            async move {
-                let rev = owner.session(&source).await?.revision;
-                let forked = model_recovery::call(
-                    client,
-                    "agent",
-                    "fork",
-                    json!({
-                        "sessionId": source,
-                        "expectedRevision": rev,
-                        "position": {"kind": "end"},
-                        "title": title,
-                        "labels": []
-                    }),
-                )
-                .await?;
-                assert_eq!(forked["kind"], "forked", "{forked}");
-                Ok::<String, Box<dyn Error + Send + Sync>>(
-                    forked["session"]["id"]
-                        .as_str()
-                        .ok_or("forked session id missing")?
-                        .to_owned(),
-                )
-            }
-        };
-        let forked_peer = fork_session(&primary, "Forked Peer").await?;
-        let forked_a = fork_session(&primary, "Forked Chain Base").await?;
+            // Seed primary -> forked_peer + forked_a (+ turn 2 + compact) -> forked_nested (S0 -> S1).
+            let primary = create_session("Primary Source").await?;
+            let sent1 = model_recovery::call(client, "agent", "send", json!({"sessionId": primary, "message": "Alpha milestone prompt", "backend": backend})).await?;
+            let primary_run = model_recovery::completed_message(client, &primary, &sent1["messageId"]).await?;
+            let forked_peer = fork_session(&primary, "Forked Peer").await?;
+            let forked_a = fork_session(&primary, "Forked Base").await?;
+            let sent2 = model_recovery::call(client, "agent", "send", json!({"sessionId": forked_a, "message": "Beta followup prompt", "backend": backend})).await?;
+            model_recovery::completed_message(client, &forked_a, &sent2["messageId"]).await?;
+            let compact_run: RunId = serde_json::from_value(
+                model_recovery::call(client, "agent", "compact", json!({"sessionId": forked_a, "model": {"connectionId": conn_id, "modelId": "llama3.2"}})).await?["execution"]["runId"].clone()
+            )?;
+            assert_eq!(wait_terminal(client, &forked_a, json!(compact_run)).await?["state"]["kind"], "completed");
+            let forked_nested = fork_session(&forked_a, "Forked Nested").await?;
 
-        // Turn 2 + manual compaction on forked_a, then fork forked_a -> forked_nested (S0 -> S1 chain).
-        let sent2 = model_recovery::call(
-            client,
-            "agent",
-            "send",
-            json!({"sessionId": forked_a, "message": "Beta followup prompt", "backend": backend}),
-        )
-        .await?;
-        model_recovery::completed_message(client, &forked_a, &sent2["messageId"]).await?;
-        let compact = model_recovery::call(
-            client,
-            "agent",
-            "compact",
-            json!({
-                "sessionId": forked_a,
-                "model": {"connectionId": conn_id, "modelId": "llama3.2"}
-            }),
-        )
-        .await?;
-        let compact_run: RunId = serde_json::from_value(compact["execution"]["runId"].clone())?;
-        let compact_exec = wait_terminal(client, &forked_a, json!(compact_run)).await?;
-        assert_eq!(compact_exec["state"]["kind"], "completed");
-        let forked_nested = fork_session(&forked_a, "Forked Nested").await?;
-
-        // Locate adopted snapshot handles for forked_peer (snap_peer) and forked_nested (s0 -> s1).
-        let peer_history = owner.durable.session_history(run_owner.clone(), forked_peer.clone());
-        let peer_cut = peer_history.capture().await?;
-        let peer_tree = SourceTree::live(&peer_history, &peer_cut).await?;
-        let snap_peer = match peer_tree.sources().next().map(|(_, s)| s) {
-            Some(HistoryDataSource::Snapshot(s)) => s.clone(),
-            _ => return Err("forked_peer must adopt a snapshot".into()),
-        };
-
-        let nested_history = owner
-            .durable
-            .session_history(run_owner.clone(), forked_nested.clone());
-        let nested_cut = nested_history.capture().await?;
-        let nested_tree = SourceTree::live(&nested_history, &nested_cut).await?;
-        let nested_snaps: Vec<_> = nested_tree
-            .sources()
-            .filter_map(|(_, s)| match s {
+            let peer_history = owner.durable.session_history(run_owner.clone(), forked_peer.clone());
+            let peer_cut = peer_history.capture().await?;
+            let peer_tree = SourceTree::live(&peer_history, &peer_cut).await?;
+            let Some(HistoryDataSource::Snapshot(snap_peer)) = peer_tree.sources().next().map(|(_, s)| s.clone()) else {
+                return Err("forked_peer must adopt a snapshot".into());
+            };
+            let nested_history = owner.durable.session_history(run_owner.clone(), forked_nested.clone());
+            let nested_cut = nested_history.capture().await?;
+            let nested_tree = SourceTree::live(&nested_history, &nested_cut).await?;
+            let nested_snaps: Vec<_> = nested_tree.sources().filter_map(|(_, s)| match s {
                 HistoryDataSource::Snapshot(snap) => Some(snap.clone()),
                 HistoryDataSource::Live { .. } => None,
-            })
-            .collect();
-        assert_eq!(nested_snaps.len(), 2, "nested fork must carry S0 -> S1");
-        let (s0, s1) = (nested_snaps[0].clone(), nested_snaps[1].clone());
-        let (expected_nav, expected_cat) = writer.query(ReadVersions(snap_peer.id())).await?;
-        assert!(expected_nav.is_some() && expected_cat.is_some());
+            }).collect();
+            assert_eq!(nested_snaps.len(), 2);
+            let (s0, s1) = (nested_snaps[0].clone(), nested_snaps[1].clone());
+            let s1_compact_seq = s1.page(0, 64).await?.items.into_iter()
+                .find(|it| it.recorded.run == compact_run && matches!(it.recorded.fact, Fact::ContextCompacted { .. }))
+                .ok_or("compaction fact missing in s1")?.sequence;
 
-        // Find the adopted compaction sequence inside s1 for compaction_duration_ms coverage.
-        let mut s1_compact_seq = None;
-        let mut after = 0;
-        loop {
-            let page = s1.page(after, 64).await?;
-            for item in &page.items {
-                if item.recorded.run == compact_run
-                    && matches!(item.recorded.fact, Fact::ContextCompacted { .. })
-                {
-                    s1_compact_seq = Some(item.sequence);
+            // 1. Upgrade path: agent.observe rebuilds stale v3 snapshot, triggers FTS5 delete on phantom chunks, and restores labels.
+            poison(snap_peer.id(), Some(3), Some(2), true, false).await?;
+            let fts_hits = |term: &'static str| writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT COUNT(*) FROM agent_history_snapshot_nav_terms WHERE agent_history_snapshot_nav_terms MATCH ?", [term], |r| r.get::<_, i64>(0)).map_err(Into::into)
+            }));
+            assert!(fts_hits("pha").await? > 0);
+            let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_peer})).await?;
+            assert_eq!(obs["metrics"]["contextTokens"], 160, "{obs}");
+            assert_eq!(fts_hits("pha").await?, 0, "Edit::Reset must clear stale FTS5 nav_terms");
+            assert!(peer_tree.find_page(find_req("phantom_v3_stale_token", true), CancellationToken::new()).await?.matches.is_empty());
+            let landmarks = peer_tree.landmarks(16, CancellationToken::new()).await?;
+            assert_eq!(landmarks.len(), 1);
+            assert!(landmarks[0].label.contains("Alpha milestone"), "{}", landmarks[0].label);
+
+            // 2. Nested S0 -> S1 cold rebuild, compaction_duration_ms, and concurrent peer-path rebuilds.
+            poison(s0.id(), Some(3), Some(1), true, false).await?;
+            poison(s1.id(), Some(3), Some(1), true, false).await?;
+            let nested_obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_nested})).await?;
+            assert_eq!(nested_obs["session"]["id"], forked_nested, "{nested_obs}");
+            poison(s1.id(), Some(3), Some(2), false, false).await?;
+            let _ = HistoryDataSource::Snapshot(s1.clone())
+                .compaction_duration_ms(compact_run, compact_run, StepId::new(), s1_compact_seq, None).await?;
+
+            poison(snap_peer.id(), None, Some(1), true, false).await?;
+            let snap_source = HistoryDataSource::Snapshot(snap_peer.clone());
+            let recall = RecallStore::new(writer.clone(), run_owner.clone(), owner.prefix.clone())?;
+            let query = SearchQuery { terms: vec!["Forked".into()], session_id: None, since: None, until: None, exclude: None, limit: None };
+            let (r_m, r_c, r_cal, r_tr, r_f, r_l, r_t, r_r) = tokio::join!(
+                peer_history.metrics(&peer_cut, None),
+                peer_history.current_model_context(&peer_cut, None),
+                peer_history.calibration_sample(&peer_cut, None),
+                snap_source.model_request_traces(primary_run, 0, 24),
+                peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()),
+                peer_tree.landmarks(16, CancellationToken::new()),
+                snap_peer.terminated(primary_run, None),
+                recall.search(query, 0, 0, CancellationToken::new()),
+            );
+            assert!(r_m?.is_some() && r_c?.is_some() && r_cal?.is_some());
+            assert!(!r_tr?.requests.is_empty() && !r_f?.matches.is_empty() && !r_l?.is_empty());
+            assert!(matches!(r_t?, Some((_, Terminal::Completed))));
+            assert!(r_r?.titles.iter().any(|r| r.metadata.id == forked_peer));
+
+            // 3. Pagination stability & catalog cancellation: missing summary_json never causes After(cursor) to skip a Session.
+            let catalog = owner.canonical_catalog()?;
+            let snap_updated = catalog.record(&forked_peer).await?.ok_or("peer")?.metadata.updated_at as i64;
+            let between = create_session("Between Recency").await?;
+            let (fp, bw) = (forked_peer.clone(), between.clone());
+            writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 2_000, snap_updated - 2_000, fp])?;
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 1_000, snap_updated - 1_000, bw])?;
+                Ok(true)
+            })).await?;
+            poison(snap_peer.id(), Some(4), None, false, false).await?;
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let err = catalog.clone().with_cancellation(cancelled).record(&forked_peer).await.err().ok_or("cancelled catalog read must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+
+            let filter = Filter {
+                base: CatalogFilter { roots_only: false, archived_only: false, include_archived: true },
+                needs_you_only: false, room: None, side: SideQuestions::Any,
+            };
+            let (mut seen, mut rev, mut pos) = (Vec::new(), None, CatalogPosition::Start);
+            loop {
+                let page = catalog.page(CatalogScope::Profile, rev.clone(), pos, filter.clone(), 1).await?;
+                rev = Some(page.revision);
+                seen.extend(page.sessions.into_iter().map(|r| r.metadata.id));
+                match page.next_cursor { Some(c) => pos = CatalogPosition::After(c), None => break }
+            }
+            let peer_idx = seen.iter().position(|id| id == &forked_peer).ok_or("forked_peer skipped across pages")?;
+            let between_idx = seen.iter().position(|id| id == &between).ok_or("between missing")?;
+            assert!(peer_idx < between_idx, "forked_peer must sort ahead of between: {seen:?}");
+
+            // 4. Batched writer isolation: cancelling an in-flight Backfill queued in the same Root batch never rolls back sibling writes.
+            poison(snap_peer.id(), Some(3), Some(2), false, true).await?;
+            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let hold = tokio::spawn({
+                let writer = writer.clone();
+                async move { writer.write(SqlWrite(move |_: &rusqlite::Connection| { let _ = entered_tx.send(()); let _ = release_rx.recv(); Ok(false) })).await }
+            });
+            tokio::task::spawn_blocking(move || entered_rx.recv()).await.map_err(|e| e.to_string())??;
+            let stop_search = CancellationToken::new();
+            let search_task = tokio::spawn({
+                let (tree, stop) = (peer_tree.clone(), stop_search.clone());
+                async move { tree.find_page(find_req("Alpha milestone", false), stop).await }
+            });
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let tag = format!("sibling-{}", Uuid::now_v7());
+            let sibling_task = tokio::spawn({
+                let (writer, tag) = (writer.clone(), tag.clone());
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        c.execute("CREATE TABLE IF NOT EXISTS test_sibling_commits(tag TEXT PRIMARY KEY)", [])?;
+                        c.execute("INSERT INTO test_sibling_commits(tag) VALUES(?)", [tag])?;
+                        Ok(true)
+                    })).await
                 }
-            }
-            match page.next {
-                Some(next) => after = next,
-                None => break,
-            }
-        }
-        let s1_compact_seq = s1_compact_seq.ok_or("compaction fact missing in s1")?;
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop_search.cancel();
+            let _ = release_tx.send(());
 
-        let poison_nav = |id: SnapshotId, nav_version: Option<i64>, inject_phantom: bool| {
-            let writer = writer.clone();
-            async move {
-                writer
-                    .write(PoisonSnapshot {
-                        snapshot: id,
-                        nav_version,
-                        catalog_version: expected_cat,
-                        inject_phantom,
-                    })
-                    .await
-            }
-        };
-        let poison_cat = |id: SnapshotId, catalog_version: Option<i64>| {
-            let writer = writer.clone();
-            async move {
-                writer
-                    .write(PoisonSnapshot {
-                        snapshot: id,
-                        nav_version: expected_nav,
-                        catalog_version,
-                        inject_phantom: false,
-                    })
-                    .await
-            }
-        };
+            hold.await.map_err(|e| e.to_string())??;
+            let err = search_task.await.map_err(|e| e.to_string())?.err().ok_or("cancelled find_page must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+            sibling_task.await.map_err(|e| e.to_string())?.map_err(|e| format!("sibling rolled back: {e}"))?;
+            let committed = writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT EXISTS(SELECT 1 FROM test_sibling_commits WHERE tag=?)", [tag], |r| r.get::<_, bool>(0)).map_err(Into::into)
+            })).await?;
+            assert!(committed, "sibling write must remain committed");
+            assert!(!peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()).await?.matches.is_empty());
 
-        // 1. Upgrade-compat path: agent.observe on stale v3 snapshot with phantom v3 FTS/label rows.
-        poison_nav(snap_peer.id(), Some(3), true).await?;
-        let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_peer})).await?;
-        assert_eq!(obs["session"]["id"], forked_peer, "{obs}");
-        assert_eq!(obs["metrics"]["contextTokens"], 160, "{obs}");
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?, (expected_nav, expected_cat));
-        // Reset must have wiped stale v3 chunks & FTS5 nav_terms and restored clean landmark labels.
-        let phantom = peer_tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "phantom_v3_stale_token".into(),
-                    case_sensitive: false,
-                    whole_word: false,
-                    include_internal: true,
-                    mask_evidence: false,
-                },
-                CancellationToken::new(),
-            )
-            .await?;
-        assert!(phantom.matches.is_empty(), "stale v3 FTS chunk survived rebuild: {}", phantom.matches.len());
-        let landmarks = peer_tree.landmarks(16, CancellationToken::new()).await?;
-        assert_eq!(landmarks.len(), 1);
-        assert!(landmarks[0].label.contains("Alpha milestone"), "{}", landmarks[0].label);
-
-        // 2. SessionHistory::metrics with deleted nav_heads row.
-        poison_nav(snap_peer.id(), None, false).await?;
-        assert!(peer_history.metrics(&peer_cut).await?.is_some());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 3. SessionHistory::current_model_context.
-        poison_nav(snap_peer.id(), Some(3), false).await?;
-        assert!(peer_history.current_model_context(&peer_cut).await?.is_some());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 4. SessionHistory::calibration_sample.
-        poison_nav(snap_peer.id(), Some(3), false).await?;
-        assert!(peer_history.calibration_sample(&peer_cut).await?.is_some());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 5. HistoryDataSource::model_request_traces on Snapshot.
-        poison_nav(snap_peer.id(), Some(3), false).await?;
-        let traces = HistoryDataSource::Snapshot(snap_peer.clone())
-            .model_request_traces(primary_run, 0, 24)
-            .await?;
-        assert!(!traces.requests.is_empty());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 6. SourceTree::find_page on stale snapshot.
-        poison_nav(snap_peer.id(), Some(3), true).await?;
-        let found = peer_tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "Alpha milestone".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: false,
-                    mask_evidence: false,
-                },
-                CancellationToken::new(),
-            )
-            .await?;
-        assert!(!found.matches.is_empty());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 7. SourceTree::landmarks on stale snapshot.
-        poison_nav(snap_peer.id(), Some(3), true).await?;
-        let landmarks = peer_tree.landmarks(16, CancellationToken::new()).await?;
-        assert!(landmarks.iter().any(|l| l.label.contains("Alpha milestone")));
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 8. Snapshot::terminated on stale snapshot.
-        poison_nav(snap_peer.id(), Some(3), false).await?;
-        let terminated = snap_peer.terminated(primary_run).await?;
-        assert!(matches!(terminated, Some((_, Terminal::Completed))), "{terminated:?}");
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        // 9. HistoryDataSource::compaction_duration_ms on stale snapshot S1.
-        poison_nav(s1.id(), Some(3), false).await?;
-        let _elapsed = HistoryDataSource::Snapshot(s1.clone())
-            .compaction_duration_ms(compact_run, compact_run, StepId::new(), s1_compact_seq)
-            .await?;
-        assert_eq!(writer.query(ReadVersions(s1.id())).await?.0, expected_nav);
-
-        // 10. Catalog & Recall peer paths on stale catalog version (multi-snapshot batch in SessionCatalog::page).
-        let catalog = owner.canonical_catalog()?;
-        poison_cat(snap_peer.id(), Some(1)).await?;
-        poison_cat(s1.id(), Some(1)).await?;
-        let page = catalog
-            .page(
-                CatalogScope::Profile,
-                None,
-                CatalogPosition::Start,
-                Filter {
-                    base: CatalogFilter {
-                        roots_only: false,
-                        archived_only: false,
-                        include_archived: true,
-                    },
-                    needs_you_only: false,
-                    room: None,
-                    side: SideQuestions::Any,
-                },
-                32,
-            )
-            .await?;
-        assert!(page.sessions.iter().any(|r| r.metadata.id == forked_peer));
-        assert!(page.sessions.iter().any(|r| r.metadata.id == forked_nested));
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.1, expected_cat);
-        assert_eq!(writer.query(ReadVersions(s1.id())).await?.1, expected_cat);
-
-        // Deleted catalog row on SessionCatalog::record.
-        poison_cat(snap_peer.id(), None).await?;
-        let peer_rec = catalog.record(&forked_peer).await?.ok_or("missing peer record")?;
-        let tail_id = peer_rec
-            .last_message
-            .as_ref()
-            .ok_or("missing peer tail message")?
-            .tail_message_id
-            .clone();
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.1, expected_cat);
-
-        // SessionCatalog::apply(MarkRead) on stale catalog version.
-        poison_cat(snap_peer.id(), Some(1)).await?;
-        catalog
-            .apply(
-                forked_peer.clone(),
-                ControlCommand {
-                    id: FactId::new(),
-                    at: UnixMillis(10_000),
-                    expected_revision: peer_rec.control_revision,
-                    edit: ControlEdit::MarkRead { message_id: tail_id },
-                },
-            )
-            .await?;
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.1, expected_cat);
-
-        // SessionCatalog::planned_adoption on stale catalog version.
-        let primary_history = owner.durable.session_history(run_owner.clone(), primary.clone());
-        let primary_cut = primary_history.capture().await?;
-        let captured = primary_history
-            .capture_snapshot(
-                CaptureRequest {
-                    id: SnapshotId::new(),
-                    cut: primary_cut,
-                },
-                CancellationToken::new(),
-            )
-            .await?;
-        poison_cat(captured.id(), Some(1)).await?;
-        let target_id = format!("{}planned-target", owner.prefix);
-        let target_history = owner.durable.session_history(run_owner.clone(), target_id.clone());
-        let adopt_op = Uuid::now_v7();
-        let input_blob = ContentBlob::json(&json!({"kind": "historical"}))?;
-        let mut adopt_spec = snap_peer.run_source(primary_run).await?.spec;
-        adopt_spec.session_id = target_id;
-        adopt_spec.turn_id = format!("turn-{adopt_op}");
-        adopt_spec.origin = maka_agent_facts::durable::RunOrigin::Forked {
-            source_run: primary_run,
-            source: captured.reference().clone(),
-        };
-        adopt_spec.trigger = Trigger::HistorySource;
-        adopt_spec.backend = BackendSpec::Historical {};
-        adopt_spec.input = input_blob.reference().clone();
-        let adoption = captured.adopt(
-            &target_history,
-            adopt_op,
-            adopt_spec,
-            UnixMillis(20_000),
-            vec![input_blob],
-        )?;
-        let _planned = catalog.planned_adoption(&adoption).await?;
-        assert_eq!(writer.query(ReadVersions(captured.id())).await?.1, expected_cat);
-
-        // RecallStore::search & RecallStore::context when a matching session's snapshot catalog is stale.
-        let recall = RecallStore::new(writer.clone(), run_owner.clone(), owner.prefix.clone())?;
-        poison_cat(snap_peer.id(), Some(1)).await?;
-        let search_query = SearchQuery {
-            terms: vec!["Forked".into()],
-            session_id: None,
-            since: None,
-            until: None,
-            exclude: None,
-            limit: None,
-        };
-        let batch = recall.search(search_query, 0, 0, CancellationToken::new()).await?;
-        assert!(batch.titles.iter().any(|r| r.metadata.id == forked_peer));
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.1, expected_cat);
-
-        poison_cat(s1.id(), Some(1)).await?;
-        let ctx_query = SearchQuery {
-            terms: vec!["Beta".into()],
-            session_id: Some(forked_a.clone()),
-            since: None,
-            until: None,
-            exclude: None,
-            limit: None,
-        };
-        let found_beta = recall.search(ctx_query, 0, 0, CancellationToken::new()).await?;
-        let anchor_id = found_beta
-            .hits
-            .first()
-            .ok_or("missing Beta recall hit")?
-            .anchor
-            .message_id
-            .clone();
-        poison_cat(s0.id(), Some(1)).await?;
-        let _ctx = recall
-            .context(
-                forked_a.clone(),
-                anchor_id,
-                ContextWindow { before: 1, after: 1 },
-                None,
-                None,
-                CancellationToken::new(),
-            )
-            .await?;
-        assert_eq!(writer.query(ReadVersions(s0.id())).await?.1, expected_cat);
-
-        // 11. Nested snapshot chain S0 -> S1: both stale nav + catalog rebuild bottom-up on observe.
-        writer
-            .write(PoisonSnapshot {
-                snapshot: s0.id(),
-                nav_version: Some(3),
-                catalog_version: Some(1),
-                inject_phantom: true,
-            })
-            .await?;
-        writer
-            .write(PoisonSnapshot {
-                snapshot: s1.id(),
-                nav_version: Some(3),
-                catalog_version: Some(1),
-                inject_phantom: true,
-            })
-            .await?;
-        let nested_obs = model_recovery::call(
-            client,
-            "agent",
-            "observe",
-            json!({"sessionId": forked_nested}),
-        )
-        .await?;
-        assert_eq!(nested_obs["session"]["id"], forked_nested, "{nested_obs}");
-        assert_eq!(writer.query(ReadVersions(s0.id())).await?, (expected_nav, expected_cat));
-        assert_eq!(writer.query(ReadVersions(s1.id())).await?, (expected_nav, expected_cat));
-
-        // 12. Concurrent cold rebuild across all peer paths on the same stale snapshot.
-        poison_nav(snap_peer.id(), Some(3), true).await?;
-        let snap_peer_source = HistoryDataSource::Snapshot(snap_peer.clone());
-        let (r_metrics, r_ctx, r_cal, r_traces, r_find, r_landmarks, r_term) = tokio::join!(
-            peer_history.metrics(&peer_cut),
-            peer_history.current_model_context(&peer_cut),
-            peer_history.calibration_sample(&peer_cut),
-            snap_peer_source.model_request_traces(primary_run, 0, 24),
-            peer_tree.find_page(
-                SourceFind {
-                    after: None,
-                    query: "Alpha milestone".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: false,
-                    mask_evidence: false,
-                },
-                CancellationToken::new(),
-            ),
-            peer_tree.landmarks(16, CancellationToken::new()),
-            snap_peer.terminated(primary_run),
-        );
-        assert!(r_metrics?.is_some());
-        assert!(r_ctx?.is_some());
-        assert!(r_cal?.is_some());
-        assert!(!r_traces?.requests.is_empty());
-        assert!(!r_find?.matches.is_empty());
-        assert!(!r_landmarks?.is_empty());
-        assert!(matches!(r_term?, Some((_, Terminal::Completed))));
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?, (expected_nav, expected_cat));
-
-        // 13. Cancelled cold rebuild does not seal a stale snapshot, and a subsequent read succeeds.
-        poison_nav(snap_peer.id(), Some(3), false).await?;
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        let err = peer_tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "Alpha milestone".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: false,
-                    mask_evidence: false,
-                },
-                cancelled,
-            )
-            .await
-            .err()
-            .ok_or("cancelled find_page must fail")?;
-        assert!(err.to_string().contains("cancelled"), "{err}");
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, Some(3));
-        let after_cancel = peer_tree
-            .find_page(
-                SourceFind {
-                    after: None,
-                    query: "Alpha milestone".into(),
-                    case_sensitive: true,
-                    whole_word: false,
-                    include_internal: false,
-                    mask_evidence: false,
-                },
-                CancellationToken::new(),
-            )
-            .await?;
-        assert!(!after_cancel.matches.is_empty());
-        assert_eq!(writer.query(ReadVersions(snap_peer.id())).await?.0, expected_nav);
-
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    }))
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }),
+    ))
     .catch_unwind()
     .await;
     server.shutdown().await;

@@ -244,6 +244,7 @@ pub(super) async fn requests(
             input.after.unwrap_or(0),
             LIMIT + 1,
             scope.identity.agent().is_some(),
+            Some(&scope.cancellation),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -1119,7 +1120,7 @@ pub(super) async fn observation(
         None
     } else {
         history
-            .metrics(&cut)
+            .metrics(&cut, Some(&scope.cancellation))
             .await
             .map_err(|error| error.to_string())?
             .map(|basis| ui::SessionMetrics {

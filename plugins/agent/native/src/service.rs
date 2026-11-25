@@ -417,8 +417,8 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
-            "list" => json_rpc(&mut args, |owner, input, _context| async move {
-                encode(catalog_page(&owner, &decode(input)?).await?)
+            "list" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(catalog_page(&owner, &decode(input)?, &context.scope().cancellation).await?)
             }),
             "catalog" => json_rpc(&mut args, |owner, input, context| async move {
                 let mut input: List = decode(input)?;
@@ -441,7 +441,7 @@ impl Handler for Agent {
                     };
                     let mut retry_immediately = false;
                     if !unchanged || physical_changed {
-                        match catalog_page(&owner, &input).await {
+                        match catalog_page(&owner, &input, &context.scope().cancellation).await {
                             Ok(page) => {
                                 revision = Some(page.revision.clone());
                                 if !matches!(input.position, SessionPosition::Start) {
@@ -1318,8 +1318,9 @@ impl maka_host_runtime::application::NativeOwner for Agent {
 pub(crate) async fn catalog_page_for_tool(
     owner: &Owner,
     input: &List,
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<SessionPage, String> {
-    catalog_page(owner, input).await
+    catalog_page(owner, input, stop).await
 }
 pub(crate) async fn history_observation_for_tool(
     owner: &Owner,
