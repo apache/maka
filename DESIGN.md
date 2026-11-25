@@ -104,3 +104,5 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
 
 M4 polish keeps approvals in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
+
+M5 settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.

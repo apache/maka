@@ -1343,3 +1343,201 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     assert_eq!(call["input"]["networkProxy"]["host"], "proxy.example");
     assert!(!call["input"].to_string().contains("proxy-fixture-secret"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_settings_edit_presets_plugins_mcp_and_skills() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let connection = json!({
+            "rootId":"root-m5", "hostName":"Settings computer", "peerId":"peer", "connected":true,
+            "epoch":"e", "session":"s", "generation":7,
+            "endpoints":["agent","settings","management","skills"], "transport":"quic"
+        });
+        call.resolve(
+            json!({"revision":1,"devicePeerId":"phone","hosts":[connection],"active":connection,
+            "connections":{"root-m5":{"status":"connected","connection":connection}}}),
+        );
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":data["rootId"],"subscriptionId":data["subscriptionId"],"generation":7}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let model = json!({"connectionId":"fixture","modelId":"test-model"});
+    let preset = json!({"id":"preset-id","revision":8,"name":"Build reviewer","description":"Reviews changes",
+        "instruction":"Check changes.","model":model,"thinkingLevel":null,"enabled":true,"availability":{"kind":"available"}});
+    let source = json!({"deployment":"deploy","stateDomain":"domain","revision":9});
+    let package = json!({"id":"demo.plugin","revision":"rev"});
+    let plugin = json!({"instance":["key"],"package":package,"path":["demo"],"disabled":false,
+        "parentDisabled":false,"structural":false,"presentation":{"displayName":"Demo Plugin","description":""}});
+    let skill = json!({"reference":"skill-ref","name":"Release checklist","description":"Release process",
+        "bundled":false,"valid":true,"source":"user","path":"/skills/check","preference":{"enabled":true,"pinned":false},
+        "installation":{"source":{"kind":"directory","path":"/src"},"directory":"check"}});
+    let source_q = source.clone();
+    let package_q = package.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root-m5");
+        let workspace = &data["input"]["workspace"];
+        let value = match (data["endpoint"].as_str().unwrap(),data["method"].as_str().unwrap()) {
+            ("agent", "list") => json!({"sessions":[]}),
+            ("agent", "botOutbox") => json!({"isBot":false,"through":0,"readThrough":0}),
+            ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[
+                {"reference":{"id":"project"},"name":"Fixture workspace","path":"/work","archived":false,"available":true}
+            ]}),
+            ("agent", "presets") => json!([preset]),
+            ("agent", "preset") => json!({"preset":preset,"availability":{"kind":"available"}}),
+            ("settings", "models") => json!({"kind":"ready","revision":9,"next":null,"choices":[
+                {"selection":model,"label":"Fixture model","connectionName":"Fixture","thinkingLevels":["low","high"]}
+            ]}),
+            ("management", "instances") => json!({"source":source_q,"instances":[plugin],"next":null}),
+            ("management", "read") => json!({"source":{"reference":source_q,"input":{"instances":{"demo":{"bindings":{}}}}},"packages":[package_q]}),
+            ("management", "readSettings") => json!({"fields":[],"next":null}),
+            ("agent", "mcpConfigurations") => {
+                let location = if workspace.is_null() { "user:agents" } else {
+                    assert_eq!(workspace, &json!({"projectId":"project","path":"/work"}));
+                    "project:agents"
+                };
+                json!({"locations":[{"location":location,"path":"/config/mcp.json","revision":"mcp-basis","servers":[
+                    {"name":"mcp-fixture","configuration":{"type":"stdio","command":"fixture-command","passEnv":["TOKEN"]}}
+                ]}]})
+            }
+            ("skills", "list") => json!({"kind":"page","revision":"skill-basis","preferenceRevision":3,
+                "entries":[skill],"targets":[],"writable":true}),
+            ("skills", "read") => json!({"kind":"page","entry":skill,"revision":"skill-basis","text":"Fixture skill instructions.",
+                "preferencesWritable":true,"preferenceRevision":3,"writable":true,"after":null}),
+            method => panic!("unexpected query {method:?}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (tx, mut writes) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root-m5");
+        let value = match data["method"].as_str().unwrap() {
+            "createPreset" | "updatePreset" | "manageMcpServer" => json!({"kind":"saved"}),
+            "deletePreset" => json!({"kind":"deleted"}),
+            "setEnabled" | "editComposition" => json!({"status":"committed","value":source}),
+            "installUrl" => json!({"status":"committed","value":{"source":source,"package":{"id":"new.plugin","revision":"v2"}}}),
+            "setPreference" | "delete" => json!({"kind":"applied"}),
+            method => panic!("unexpected mutation {method}"),
+        };
+        tx.send(data).unwrap();
+        call.resolve(json!({"value":value}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.on_dialog(|dialog| {
+        let button = if dialog.title.as_deref().unwrap().starts_with("Delete") {
+            "Delete"
+        } else if dialog.title.as_deref().unwrap().starts_with("Remove") {
+            "Remove"
+        } else if dialog.title.as_deref().unwrap().starts_with("Install") {
+            "Install"
+        } else {
+            panic!("unexpected dialog {:?}", dialog.title)
+        };
+        nsh_testing::DialogAnswer::Press(button.to_owned())
+    });
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Subagents").unwrap();
+    app.wait_for("label:Build reviewer").unwrap();
+    app.press("label:Add subagent").unwrap();
+    app.wait_for("label:Name").unwrap();
+    app.type_text("label:Name", "New reviewer").unwrap();
+    app.press("label:Save").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "createPreset");
+    assert_eq!(write["input"]["model"]["modelId"], "test-model");
+    app.press("label:Build reviewer").unwrap();
+    app.wait_for("label:Instructions").unwrap();
+    app.type_text("label:Instructions", "Check documentation too.")
+        .unwrap();
+    app.press("label:Save").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "updatePreset");
+    assert_eq!(write["input"]["expectedRevision"], 8);
+    app.press("label:Build reviewer").unwrap();
+    app.wait_for("label:Delete").unwrap();
+    app.press("label:Delete").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "deletePreset");
+    app.press("label:Settings").unwrap();
+
+    app.press("label:Plugins").unwrap();
+    app.wait_for("label:Demo Plugin").unwrap();
+    app.press("label:Demo Plugin").unwrap();
+    app.wait_for("label:Enabled").unwrap();
+    app.press("label:Enabled").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "setEnabled");
+    assert_eq!(write["input"]["instance"], json!(["key"]));
+    app.press("label:Plugins").unwrap();
+    app.type_text("label:URL", "https://example.com/plugin.maka-plugin")
+        .unwrap();
+    app.press("label:Install").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "installUrl");
+    assert!(write["progressId"].is_null());
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "editComposition");
+    assert_eq!(write["input"]["edits"][0]["package"]["id"], "new.plugin");
+    app.press("label:Settings").unwrap();
+
+    app.press("label:MCP").unwrap();
+    app.wait_for("label:mcp-fixture").unwrap();
+    app.press("label:Workspace").unwrap();
+    app.choose_menu_item("Fixture workspace").unwrap();
+    app.wait_for("text:Fixture workspace").unwrap();
+    app.press("label:Add MCP server").unwrap();
+    app.wait_for("label:Command").unwrap();
+    app.type_text("label:Name", "new-server").unwrap();
+    app.type_text("label:Command", "mcp-tool").unwrap();
+    app.press("label:Save").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "manageMcpServer");
+    assert_eq!(write["input"]["workspace"]["projectId"], "project");
+    assert_eq!(write["input"]["location"], "project:agents");
+    assert_eq!(
+        write["input"]["change"]["configuration"]["command"],
+        "mcp-tool"
+    );
+    app.press("label:mcp-fixture").unwrap();
+    app.wait_for("label:Enabled").unwrap();
+    app.press("label:Enabled").unwrap();
+    app.press("label:Save").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["input"]["change"]["configuration"]["disabled"], true);
+    app.press("label:mcp-fixture").unwrap();
+    app.wait_for("label:Remove").unwrap();
+    app.press("label:Remove").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["input"]["change"]["kind"], "delete");
+    app.press("label:Settings").unwrap();
+
+    app.press("label:Skills").unwrap();
+    app.wait_for("label:Release checklist").unwrap();
+    app.press("label:Release checklist").unwrap();
+    app.wait_for("text:Fixture skill instructions.").unwrap();
+    app.press("label:Enabled").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "setPreference");
+    assert_eq!(write["input"]["preference"]["enabled"], false);
+    app.press("label:Release checklist").unwrap();
+    app.wait_for("label:Delete").unwrap();
+    app.press("label:Delete").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "delete");
+    assert_eq!(write["input"]["reference"], "skill-ref");
+}

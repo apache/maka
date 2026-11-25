@@ -30,6 +30,7 @@ const service = {
   settingsAuthentication: 'authentication',
   settingsSetup: 'setup',
   deploymentManager: 'management',
+  skillLibrary: 'skills',
   workspaceWeb: 'web',
 } as const;
 type Endpoint = keyof ServiceMethods;
