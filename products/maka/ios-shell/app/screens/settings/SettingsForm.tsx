@@ -175,6 +175,7 @@ export function SettingSwitch(props: {
       title={props.title}
       disabled={props.disabled}
       divider={props.divider}
+      onPress={() => props.change(!props.checked)}
       trailing={
         <Switch
           accessibilityLabel={props.title}
@@ -242,4 +243,21 @@ export async function confirmDeleteApiKey() {
     ],
   });
   return action === 'delete';
+}
+
+export async function confirmSettingAction(
+  title: string,
+  label: string,
+  destructive = true,
+  description?: string,
+) {
+  const { action } = await AlertDialog.show({
+    title,
+    description,
+    actions: [
+      { id: 'cancel', label: tr('Cancel'), role: 'cancel' },
+      { id: 'accept', label, role: destructive ? 'destructive' : 'default' },
+    ],
+  });
+  return action === 'accept';
 }

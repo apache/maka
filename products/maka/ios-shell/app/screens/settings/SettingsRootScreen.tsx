@@ -53,7 +53,7 @@ import {
   currentLanguageDisplayName,
   onSelectLanguageId,
 } from '../onboarding/LanguageMenuTrigger';
-import { HOST_SETTING_DOMAINS, type HostSettingDomain } from './HostSettingPlaceholderScreen';
+import { HOST_SETTING_DOMAINS, type HostSettingDomain } from './hostSettingDomains';
 
 function appearanceLabel(pref: AppearancePreference): string {
   switch (pref) {

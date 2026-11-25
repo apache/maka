@@ -33,10 +33,25 @@ import { ScanScreen } from './screens/onboarding/ScanScreen';
 import { WelcomeScreen } from './screens/onboarding/WelcomeScreen';
 import { ComputerSettingsScreen } from './screens/settings/ComputerSettingsScreen';
 import { DeviceDetailScreen } from './screens/settings/DeviceDetailScreen';
+import type { HostSettingDomain } from './screens/settings/hostSettingDomains';
 import {
-  HostSettingPlaceholderScreen,
-  type HostSettingDomain,
-} from './screens/settings/HostSettingPlaceholderScreen';
+  SubagentsSettingsScreen,
+  SubagentEditor,
+} from './screens/settings/SubagentsSettingsScreen';
+import {
+  PluginsSettingsScreen,
+  PluginDetailScreen,
+} from './screens/settings/PluginsSettingsScreen';
+import {
+  McpSettingsScreen,
+  McpServerEditor,
+  type McpTarget,
+} from './screens/settings/McpSettingsScreen';
+import {
+  SkillsSettingsScreen,
+  SkillDetailScreen,
+  type SkillTarget,
+} from './screens/settings/SkillsSettingsScreen';
 import { GeneralSettingsScreen } from './screens/settings/GeneralSettingsScreen';
 import { ModelsSettingsScreen, ProviderPicker } from './screens/settings/ModelsSettingsScreen';
 import {
@@ -75,6 +90,10 @@ type ChatsRoute =
   | { name: 'diff'; item: ScopedSession; file: ParsedDiffFile };
 type InboxRoute = { name: 'list' } | { name: 'review'; item: InboxItem };
 type SettingsRoute =
+  | { name: 'preset'; rootId: string; presetId: string | null }
+  | { name: 'plugin'; rootId: string; instance: string[] }
+  | { name: 'mcpServer'; rootId: string; target: McpTarget }
+  | { name: 'skill'; rootId: string; target: SkillTarget }
   | { name: 'root' }
   | { name: 'device'; rootId: string }
   | { name: 'computer'; rootId: string }
@@ -388,9 +407,93 @@ function MainTabShell() {
                 />
               );
             }
+            if (route.name === 'preset')
+              return (
+                <SubagentEditor
+                  rootId={route.rootId}
+                  active={active}
+                  onBack={back}
+                  presetId={route.presetId}
+                />
+              );
+            if (route.name === 'plugin')
+              return (
+                <PluginDetailScreen
+                  rootId={route.rootId}
+                  active={active}
+                  onBack={back}
+                  instance={route.instance}
+                />
+              );
+            if (route.name === 'mcpServer')
+              return (
+                <McpServerEditor
+                  rootId={route.rootId}
+                  active={active}
+                  onBack={back}
+                  target={route.target}
+                />
+              );
+            if (route.name === 'skill')
+              return (
+                <SkillDetailScreen
+                  rootId={route.rootId}
+                  active={active}
+                  onBack={back}
+                  target={route.target}
+                />
+              );
             if (route.name === 'hostSetting') {
               const backLabel = route.backLabel ?? tr('Settings');
               switch (route.domain) {
+                case 'subagents':
+                  return (
+                    <SubagentsSettingsScreen
+                      rootId={route.rootId}
+                      active={active}
+                      onBack={back}
+                      backLabel={backLabel}
+                      open={(presetId) =>
+                        settingsNav.push({ name: 'preset', rootId: route.rootId, presetId })
+                      }
+                    />
+                  );
+                case 'plugins':
+                  return (
+                    <PluginsSettingsScreen
+                      rootId={route.rootId}
+                      active={active}
+                      onBack={back}
+                      backLabel={backLabel}
+                      open={(instance) =>
+                        settingsNav.push({ name: 'plugin', rootId: route.rootId, instance })
+                      }
+                    />
+                  );
+                case 'mcp':
+                  return (
+                    <McpSettingsScreen
+                      rootId={route.rootId}
+                      active={active}
+                      onBack={back}
+                      backLabel={backLabel}
+                      open={(target) =>
+                        settingsNav.push({ name: 'mcpServer', rootId: route.rootId, target })
+                      }
+                    />
+                  );
+                case 'skills':
+                  return (
+                    <SkillsSettingsScreen
+                      rootId={route.rootId}
+                      active={active}
+                      onBack={back}
+                      backLabel={backLabel}
+                      open={(target) =>
+                        settingsNav.push({ name: 'skill', rootId: route.rootId, target })
+                      }
+                    />
+                  );
                 case 'general':
                   return (
                     <GeneralSettingsScreen
@@ -443,14 +546,6 @@ function MainTabShell() {
                     />
                   );
               }
-              return (
-                <HostSettingPlaceholderScreen
-                  domain={route.domain}
-                  backLabel={backLabel}
-                  rootId={route.rootId}
-                  onBack={() => settingsNav.pop()}
-                />
-              );
             }
             return (
               <SettingsRootScreen

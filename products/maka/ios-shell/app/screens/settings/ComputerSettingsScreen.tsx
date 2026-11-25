@@ -19,7 +19,7 @@
 
 import { DeviceDetailScreen } from './DeviceDetailScreen';
 import { HostSettingsRows } from './SettingsRootScreen';
-import type { HostSettingDomain } from './HostSettingPlaceholderScreen';
+import type { HostSettingDomain } from './hostSettingDomains';
 
 export function ComputerSettingsScreen(props: {
   rootId: string;
