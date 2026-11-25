@@ -44,7 +44,10 @@ import {
   SideHeader,
   SideReactions,
 } from '../../../../products/maka/workbench/app/SideQuestionCard';
-import { sessionInvocation } from '../../composer/ui/composerCompletionSyntax';
+import {
+  sessionInvocation,
+  stripSessionReference,
+} from '../../composer/ui/composerCompletionSyntax';
 import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
@@ -2402,8 +2405,6 @@ export function createConversationUi(
   // A side question's card offers its reactions once its answer stands and
   // nothing is being typed or sent.
   const sideAttached = signal(false);
-  // What the card put in the main draft, taken out again if the side question is discarded.
-  let sideReference: string | null = null;
   effect(() => {
     if (composerSession()?.run() !== null) sideAttached.set(false);
   });
@@ -2430,8 +2431,9 @@ export function createConversationUi(
       throw new UiError('The side question could not be discarded: {reason}', {
         reason: removed.reason ?? removed.kind,
       });
-    if (sideReference !== null) card.side?.detach(sideReference);
-    card.close();
+    // A reference to it in the main draft would lead nowhere now.
+    card.side?.detach(id);
+    if (alive && selected() === id) card.close();
   };
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
@@ -2443,14 +2445,12 @@ export function createConversationUi(
       owner.focus();
       return true;
     },
-    removeFromDraft(text) {
+    removeSessionReference(sessionId) {
       const owner = handle();
       if (!owner?.editable()) return;
       const draft = owner.draft();
-      // The space after it may have been edited away.
-      const found = draft.includes(text) ? text : text.trimEnd();
-      const at = draft.indexOf(found);
-      if (at >= 0) owner.changeDraft(draft.slice(0, at) + draft.slice(at + found.length));
+      const stripped = stripSessionReference(draft, sessionId);
+      if (stripped !== draft) owner.changeDraft(stripped);
     },
     floatingComposer: () =>
       selected() === null ? null : (
@@ -3144,11 +3144,12 @@ export function createConversationUi(
                   attach={() => {
                     const id = selected();
                     if (id === null) return;
-                    const reference = `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `;
-                    if (input.compact!.side!.attach(reference)) {
-                      sideReference = reference;
+                    if (
+                      input.compact!.side!.attach(
+                        `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
+                      )
+                    )
                       sideAttached.set(true);
-                    }
                   }}
                   resolve={input.compact!.close}
                   archive={() => void discardSide(input.compact!).catch(report)}

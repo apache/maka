@@ -278,7 +278,7 @@ function App(
           }),
         side: {
           attach: (reference) => session()?.appendToDraft?.(reference) ?? false,
-          detach: (reference) => session()?.removeFromDraft?.(reference),
+          detach: (sessionId) => session()?.removeSessionReference?.(sessionId),
         },
       },
       first?.quotes,
