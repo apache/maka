@@ -1674,6 +1674,41 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_response_truncated_before_sep_does_not_leak_pua_prefix() {
+        for truncated in ["OK \u{E200}", "OK \u{E200}cite", "OK \u{E200}cite\u{E202}"] {
+            let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+            let mut clean = String::new();
+            decoder
+                .push(json!({"type":"response.output_item.added","item":{"type":"message","id":"msg_inc","role":"assistant","content":[]}}))
+                .unwrap();
+            for ev in decoder
+                .push(json!({"type":"response.output_text.delta","item_id":"msg_inc","delta":truncated}))
+                .unwrap()
+            {
+                if let OutputEvent::PartDelta { text, .. } = ev {
+                    clean.push_str(&text);
+                }
+            }
+            for ev in decoder
+                .push(json!({"type":"response.incomplete","response":{
+                    "id":"resp_inc",
+                    "incomplete_details":{"reason":"max_output_tokens"},
+                    "output":[{
+                        "type":"message","id":"msg_inc","role":"assistant","status":"incomplete",
+                        "content":[{"type":"output_text","text":truncated,"annotations":[]}]
+                    }]
+                }}))
+                .unwrap()
+            {
+                if let OutputEvent::PartDelta { text, .. } = ev {
+                    clean.push_str(&text);
+                }
+            }
+            assert_eq!(clean, "OK", "truncated input: {truncated:?}");
+        }
+    }
+
+    #[test]
     fn incomplete_terminals_preserve_started_search_without_inventing_its_result() {
         for (status, settled) in [
             ("in_progress", false),

@@ -27,18 +27,23 @@ use maka_agent_facts::model::prompt_source::source::{
 };
 use maka_provider_protocol::json_stream::pull::{JsonEscape, Transform};
 use std::{io, sync::Arc};
-pub(super) fn content(text: TextSource, parts: JsonSource) -> io::Result<F> {
+pub(super) fn content(text: TextSource, parts: JsonSource, allow_raw_text: bool) -> io::Result<F> {
     let (layout, _) = std::alloc::Layout::new::<[usize; 2]>()
         .extend(std::alloc::Layout::new::<Content>())
         .map_err(io::Error::other)?;
     Ok(F::owned_raw(
-        JsonSource::new(SourceBytes::Source(Arc::new(Content { text, parts }))),
+        JsonSource::new(SourceBytes::Source(Arc::new(Content {
+            text,
+            parts,
+            allow_raw_text,
+        }))),
         layout.pad_to_align().size(),
     ))
 }
 struct Content {
     text: TextSource,
     parts: JsonSource,
+    allow_raw_text: bool,
 }
 impl ByteSource for Content {
     fn len(&self) -> Option<u64> {
@@ -46,7 +51,10 @@ impl ByteSource for Content {
     }
     fn open(&self, budget: Arc<dyn SourceBudget>) -> Box<dyn ByteCursor> {
         Box::new(Cursor {
-            text: recipe::text::cursor(self.text.clone(), budget.clone()),
+            shared_text: TextStream::new(recipe::text::cursor(self.text.clone(), budget.clone())),
+            raw_text: None,
+            allow_raw_text: self.allow_raw_text,
+            raw_mode: None,
             parts_source: Some(self.parts.clone()),
             parts: None,
             fields: None,
@@ -58,9 +66,6 @@ impl ByteSource for Content {
             budget,
             phase: Phase::Section,
             active: Some(FragmentSequence::new(Arc::from([F::literal(b"[")]))),
-            input: None,
-            offset: 0,
-            eof: false,
             remaining: 0,
             escape: JsonEscape::new(),
             utf8_remaining: 0,
@@ -75,8 +80,54 @@ enum Phase {
     Validate,
     Complete,
 }
+struct TextStream {
+    cursor: Box<dyn ByteCursor>,
+    input: Option<Bytes>,
+    offset: usize,
+    eof: bool,
+}
+impl TextStream {
+    fn new(cursor: Box<dyn ByteCursor>) -> Self {
+        Self {
+            cursor,
+            input: None,
+            offset: 0,
+            eof: false,
+        }
+    }
+    async fn ready(&mut self, budget: &Arc<dyn SourceBudget>) -> io::Result<bool> {
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|bytes| self.offset < bytes.len())
+        {
+            return Ok(true);
+        }
+        self.input = None;
+        self.offset = 0;
+        if self.eof {
+            return Ok(false);
+        }
+        let mut buffer = budget.allocate(2048).await?;
+        buffer.limit(2048);
+        let read = self.cursor.read_chunk(buffer).await?;
+        self.eof = read.eof;
+        if read.bytes_read == 0 && !read.eof {
+            return Err(invalid("text source made no progress"));
+        }
+        if read.bytes_read > 0 {
+            self.input = Some(read.buffer.into_bytes(read.bytes_read));
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
 struct Cursor {
-    text: Box<dyn ByteCursor>,
+    shared_text: TextStream,
+    raw_text: Option<TextStream>,
+    allow_raw_text: bool,
+    raw_mode: Option<bool>,
     parts_source: Option<JsonSource>,
     parts: Option<ArrayCursor>,
     fields: Option<ObjectCursor>,
@@ -88,9 +139,6 @@ struct Cursor {
     budget: Arc<dyn SourceBudget>,
     phase: Phase,
     active: Option<FragmentSequence>,
-    input: Option<Bytes>,
-    offset: usize,
-    eof: bool,
     remaining: u64,
     escape: JsonEscape,
     utf8_remaining: u8,
@@ -112,7 +160,7 @@ impl Cursor {
         };
         let values = json::fields(
             &part.source,
-            &["bytes", "key", "fields"],
+            &["bytes", "key", "fields", "rawText"],
             self.budget.clone(),
         )
         .await?;
@@ -137,6 +185,28 @@ impl Cursor {
             .next()
             .flatten()
             .ok_or_else(|| invalid("accepted Responses content fields missing"))?;
+        let raw_text = values.next().flatten();
+        match (self.raw_mode, raw_text) {
+            (Some(false), Some(_)) | (Some(true), None) => {
+                return Err(invalid(
+                    "accepted Responses raw text metadata is incomplete",
+                ));
+            }
+            (_, Some(raw)) => {
+                if !self.allow_raw_text {
+                    return Err(invalid("invalid accepted Responses raw text metadata"));
+                }
+                self.raw_mode = Some(true);
+                self.raw_text = Some(TextStream::new(recipe::text::cursor(
+                    raw.text()?,
+                    self.budget.clone(),
+                )));
+            }
+            (_, None) => {
+                self.raw_mode = Some(false);
+                self.raw_text = None;
+            }
+        }
         self.remaining = json::u64_value(&length.source, self.budget.clone()).await?;
         self.fields = Some(ObjectCursor::open(fields.source.clone(), self.budget.clone()).await?);
         self.fields_source = Some(fields.source);
@@ -197,33 +267,6 @@ impl Cursor {
         self.fragments(fragments);
         Ok(())
     }
-    async fn text_ready(&mut self) -> io::Result<bool> {
-        if self
-            .input
-            .as_ref()
-            .is_some_and(|bytes| self.offset < bytes.len())
-        {
-            return Ok(true);
-        }
-        self.input = None;
-        self.offset = 0;
-        if self.eof {
-            return Ok(false);
-        }
-        let mut buffer = self.budget.allocate(2048).await?;
-        buffer.limit(2048);
-        let read = self.text.read_chunk(buffer).await?;
-        self.eof = read.eof;
-        if read.bytes_read == 0 && !read.eof {
-            return Err(invalid("text source made no progress"));
-        }
-        if read.bytes_read > 0 {
-            self.input = Some(read.buffer.into_bytes(read.bytes_read));
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
     fn boundary(&self) -> io::Result<()> {
         if self.utf8_remaining == 0 {
             Ok(())
@@ -252,33 +295,52 @@ impl Cursor {
     }
     async fn text(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if self.remaining == 0 {
+            if let Some(raw) = &mut self.raw_text
+                && raw.ready(&self.budget).await?
+            {
+                return Err(invalid(
+                    "accepted Responses text no longer matches its boundaries",
+                ));
+            }
             let p = self.escape.transform(&[], true, out)?;
             if p.finished {
                 self.boundary()?;
+                self.raw_text = None;
                 self.phase = Phase::Fields;
                 self.fragments(vec![F::literal(b"\"")]);
             }
             return Ok(p.written);
         }
-        if !self.text_ready().await? {
+        let budget = &self.budget;
+        let stream = self.raw_text.as_mut().unwrap_or(&mut self.shared_text);
+        if !stream.ready(budget).await? {
             return Err(invalid(
                 "accepted Responses text no longer matches its boundaries",
             ));
         }
-        let input = self.input.as_ref().expect("ready source text");
-        let count =
-            (input.len() - self.offset).min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let input = stream.input.as_ref().expect("ready source text");
+        let count = (input.len() - stream.offset)
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
         let p = self.escape.transform(
-            &input[self.offset..self.offset + count],
+            &input[stream.offset..stream.offset + count],
             count as u64 == self.remaining,
             out,
         )?;
         let input = input.clone();
-        self.utf8(&input[self.offset..self.offset + p.consumed])?;
-        self.offset += p.consumed;
+        let slice_start = stream.offset;
+        stream.offset += p.consumed;
         self.remaining -= p.consumed as u64;
+        self.utf8(&input[slice_start..slice_start + p.consumed])?;
         if p.finished {
+            if let Some(raw) = &mut self.raw_text
+                && raw.ready(&self.budget).await?
+            {
+                return Err(invalid(
+                    "accepted Responses text no longer matches its boundaries",
+                ));
+            }
             self.boundary()?;
+            self.raw_text = None;
             self.phase = Phase::Fields;
             self.fragments(vec![F::literal(b"\"")]);
         }
@@ -316,7 +378,9 @@ impl ByteCursor for Cursor {
                         }
                     }
                     Phase::Validate => {
-                        if self.text_ready().await? {
+                        if self.raw_mode != Some(true)
+                            && self.shared_text.ready(&self.budget).await?
+                        {
                             return Err(invalid(
                                 "accepted Responses text no longer matches its boundaries",
                             ));
@@ -366,7 +430,7 @@ mod tests {
             {"bytes":0,"key":"text","fields":fields.clone()},
             {"bytes":6,"key":"refusal","fields":{"type":"refusal","opaque":"kept"}}
         ]));
-        let fragment = content(generated::text("🙂\n\""), parts).expect("plan");
+        let fragment = content(generated::text("🙂\n\""), parts, true).expect("plan");
         let mut cursor = source::FragmentCursor::new(fragment);
         let mut bytes = Vec::new();
         while let Some(chunk) = cursor.next(budget.clone()).await.expect("replay") {
@@ -397,6 +461,7 @@ mod tests {
                 {"bytes":10,"key":"text","fields":{"type":"output_text"}},
                 {"bytes":7,"key":"text","fields":{"type":"output_text"}}
             ])),
+            true,
         );
         let mut cursor = source::FragmentCursor::new(value.expect("accepted replay plan"));
         let mut bytes = Vec::new();
@@ -408,5 +473,175 @@ mod tests {
             bytes.extend_from_slice(&chunk);
         }
         assert_eq!(bytes,serde_json::to_vec(&serde_json::json!([{"type":"output_text","text":"First 🙂"},{"type":"output_text","text":"第二\n"}])).expect("golden JSON"));
+    }
+
+    #[tokio::test]
+    async fn raw_text_replay_restores_sanitized_message_and_validates_invariants() {
+        let budget: Arc<dyn SourceBudget> = Arc::new(Budget);
+        let raw_refusal = "\u{E200}cite\u{E202}turn0search0\u{E201}";
+        let parts = generated::json(&serde_json::json!([
+            {"bytes": 0, "key": "text", "fields": {"type": "output_text"}, "rawText": ""},
+            {"bytes": raw_refusal.len(), "key": "refusal", "fields": {"type": "refusal"}, "rawText": raw_refusal}
+        ]));
+        let fragment = content(generated::text(""), parts, true).expect("plan");
+        let mut cursor = source::FragmentCursor::new(fragment);
+        let mut bytes = Vec::new();
+        while let Some(chunk) = cursor.next(budget.clone()).await.expect("replay") {
+            bytes.extend_from_slice(&chunk);
+        }
+        let expected = serde_json::json!([
+            {"type": "output_text", "text": ""},
+            {"type": "refusal", "refusal": raw_refusal}
+        ]);
+        assert_eq!(bytes, serde_json::to_vec(&expected).expect("golden"));
+
+        // Reject rawText on non-message (reasoning) replay.
+        let reasoning_parts = generated::json(&serde_json::json!([
+            {"bytes": 2, "key": "text", "fields": {"type": "summary_text"}, "rawText": "ok"}
+        ]));
+        let mut cursor = source::FragmentCursor::new(
+            content(generated::text("ok"), reasoning_parts, false).unwrap(),
+        );
+        assert!(cursor.next(budget.clone()).await.is_err());
+
+        // Reject mixed parts (one rawText, one without) and byte-length mismatches.
+        for bad in [
+            serde_json::json!([
+                {"bytes": 2, "key": "text", "fields": {"type": "output_text"}, "rawText": "ok"},
+                {"bytes": 2, "key": "text", "fields": {"type": "output_text"}}
+            ]),
+            serde_json::json!([
+                {"bytes": 2, "key": "text", "fields": {"type": "output_text"}, "rawText": "longer"}
+            ]),
+            serde_json::json!([
+                {"bytes": 5, "key": "text", "fields": {"type": "output_text"}, "rawText": "ok"}
+            ]),
+        ] {
+            let mut cursor = source::FragmentCursor::new(
+                content(generated::text("ok"), generated::json(&bad), true).unwrap(),
+            );
+            let mut err = false;
+            while let Some(res) = cursor.next(budget.clone()).await.transpose() {
+                if res.is_err() {
+                    err = true;
+                    break;
+                }
+            }
+            assert!(err, "expected error for invalid rawText metadata: {bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_source_replays_decoded_cited_message_on_follow_up_turn() {
+        use crate::prompt::{AssistantPart, Message};
+        use maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages;
+        use maka_provider_protocol::responses::{
+            Event as OutputEvent, PartMetadata, ReasoningMode, decode::Decoder,
+        };
+
+        let raw_text = "OK \u{E200}cite\u{E202}turn0search0\u{E201}";
+        let raw_item = serde_json::json!({
+            "type": "message",
+            "id": "msg_cited_turn1",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": raw_text,
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.test/doc",
+                    "title": "Doc",
+                    "start_index": 3,
+                    "end_index": raw_text.chars().count()
+                }]
+            }]
+        });
+
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        let mut clean = String::new();
+        let mut replay = None;
+        for ev in decoder
+            .push(serde_json::json!({"type": "response.output_item.done", "item": raw_item}))
+            .unwrap()
+        {
+            match ev {
+                OutputEvent::PartDelta { text, .. } => clean.push_str(&text),
+                OutputEvent::PartFinished {
+                    metadata: Some(PartMetadata::Item(meta)),
+                    ..
+                } => replay = meta.replay,
+                _ => {}
+            }
+        }
+        assert_eq!(clean, "OK");
+        let replay = replay.expect("encrypted Responses message captures replay metadata");
+
+        let provider = crate::ProviderConfig {
+            adapter: None,
+            capabilities: Default::default(),
+            image_input: None,
+            network: Default::default(),
+            kind: crate::ProviderKind::OpenaiResponses,
+            model: "gpt-5".into(),
+            base_url: "https://example.invalid".into(),
+            auth: crate::ProviderAuth::ApiKey("fixture".into()),
+            headers: Default::default(),
+            body_overlay: None,
+        };
+        let encoding = crate::WireEncoding::new(
+            maka_agent_facts::language::Language::EN,
+            &provider,
+            &serde_json::Value::Null,
+            &[],
+        )
+        .unwrap();
+        let messages = vec![
+            Message::user("first question"),
+            Message::Assistant {
+                content: vec![AssistantPart::Text {
+                    text: clean,
+                    provider_options: Some(serde_json::json!({
+                        "openai": {
+                            "itemId": "msg_cited_turn1",
+                            "responsesReplay": replay
+                        }
+                    })),
+                }],
+                provider_options: None,
+            },
+            Message::user("follow up"),
+        ];
+        let resources = crate::ModelPreparationResources::new(crate::PreparationPolicy {
+            staging_bytes: 1024 * 1024,
+            resident_bytes: 1024 * 1024,
+            progress_bytes: 64 * 1024,
+            work_bytes: 64 * 1024,
+        })
+        .unwrap();
+        let frozen = encoding
+            .prepare_source(Arc::new(GeneratedMessages::new(&messages)), resources)
+            .await
+            .expect("follow-up turn prepared wire encoding must succeed");
+        let mut items = Vec::new();
+        let mut current = Vec::new();
+        let mut cursor = frozen.source.open(0);
+        while let Some(chunk) = cursor.next().await.unwrap() {
+            if chunk.item_start {
+                current.clear();
+            }
+            current.extend_from_slice(&chunk.bytes);
+            if chunk.item_end {
+                items.push(
+                    serde_json::from_slice::<serde_json::Value>(&current)
+                        .expect("valid wire item JSON"),
+                );
+            }
+        }
+        let assistant_item = items
+            .iter()
+            .find(|item| item["id"] == "msg_cited_turn1")
+            .expect("replayed assistant message");
+        assert_eq!(assistant_item["content"], raw_item["content"]);
     }
 }

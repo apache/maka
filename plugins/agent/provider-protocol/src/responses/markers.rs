@@ -17,14 +17,21 @@
  * under the License.
  */
 
-//! Streaming sanitizer and scalar offset mapper for OpenAI Responses / Codex
-//! Private Use Area inline citation and entity markers (`U+E200`..`U+E204`).
+//! Bounded O(N) streaming sanitizer and scalar offset mapper for OpenAI
+//! Responses / Codex Private Use Area inline citation and entity markers
+//! (`U+E200`..`U+E204`).
 
 const OPEN: char = '\u{E200}';
 const CLOSE: char = '\u{E201}';
 const SEP: char = '\u{E202}';
 const SPAN_OPEN: char = '\u{E203}';
 const SPAN_CLOSE: char = '\u{E204}';
+
+/// Hard cap on a single unclosed PUA marker token so malformed streams cannot
+/// grow pending memory unboundedly.
+const MAX_MARKER_BYTES: usize = 8 * 1024;
+/// Hard cap on mid-line horizontal whitespace held pending a following marker.
+const MAX_HELD_SPACE_BYTES: usize = 64;
 
 /// Fast UTF-8 byte scan for `U+E200..=U+E204` (`[0xEE, 0x88, 0x80..=0x84]`).
 pub(crate) fn has_citation_markers(text: &str) -> bool {
@@ -39,20 +46,23 @@ pub(crate) fn has_citation_markers(text: &str) -> bool {
     false
 }
 
-/// Incremental PUA marker sanitizer for streamed `output_text` deltas.
+/// Incremental O(N) PUA marker sanitizer for streamed `output_text` deltas.
 ///
-/// Output concatenated across arbitrary UTF-8 chunk boundaries matches batch
-/// sanitization byte-for-byte.
+/// Confirmed removed markers are discarded immediately; pending memory is
+/// strictly bounded (~8 KiB) and output concatenated across arbitrary UTF-8
+/// chunk boundaries matches batch sanitization byte-for-byte.
 pub(crate) struct StreamSanitizer {
-    pending: String,
     at_line_start: bool,
+    state: SpaceState,
+    marker: Option<MarkerBuf>,
 }
 
 impl StreamSanitizer {
     pub(crate) fn new() -> Self {
         Self {
-            pending: String::new(),
             at_line_start: true,
+            state: SpaceState::Idle,
+            marker: None,
         }
     }
 
@@ -60,43 +70,368 @@ impl StreamSanitizer {
         if chunk.is_empty() {
             return String::new();
         }
-        if self.pending.is_empty() && !has_citation_markers(chunk) && !chunk.ends_with([' ', '\t'])
+        if self.marker.is_none()
+            && matches!(self.state, SpaceState::Idle)
+            && !has_citation_markers(chunk)
+            && !chunk.ends_with([' ', '\t'])
         {
             update_line_start(&mut self.at_line_start, chunk);
             return chunk.to_owned();
         }
-        self.pending.push_str(chunk);
-        let mut out = String::with_capacity(self.pending.len());
+        let mut out = String::new();
         let mut clean_scalars = 0u64;
-        let consumed = drain(
-            &self.pending,
-            &mut self.at_line_start,
-            false,
-            &mut out,
-            None,
-            &mut clean_scalars,
-        );
-        self.pending.drain(..consumed);
+        self.feed_str(chunk, Some(&mut out), None, &mut clean_scalars);
         out
     }
 
     pub(crate) fn finish(&mut self) -> String {
-        if self.pending.is_empty() {
-            return String::new();
-        }
-        let mut out = String::with_capacity(self.pending.len());
+        let mut out = String::new();
         let mut clean_scalars = 0u64;
-        let consumed = drain(
-            &self.pending,
-            &mut self.at_line_start,
-            true,
-            &mut out,
-            None,
-            &mut clean_scalars,
-        );
-        debug_assert_eq!(consumed, self.pending.len());
-        self.pending.clear();
+        self.finish_into(Some(&mut out), None, &mut clean_scalars);
         out
+    }
+
+    fn feed_str(
+        &mut self,
+        chunk: &str,
+        mut out: Option<&mut String>,
+        mut map: Option<&mut Vec<u64>>,
+        clean_scalars: &mut u64,
+    ) {
+        let mut pos = 0;
+        while pos < chunk.len() {
+            // Fast batch scan for normal characters while idle.
+            if self.marker.is_none() && matches!(self.state, SpaceState::Idle) {
+                let run_start = pos;
+                while pos < chunk.len() {
+                    let ch = chunk[pos..].chars().next().expect("valid char boundary");
+                    if ch == OPEN
+                        || is_span_delim(ch)
+                        || (is_horizontal_space(ch) && !self.at_line_start)
+                    {
+                        break;
+                    }
+                    if ch == '\n' || ch == '\r' {
+                        self.at_line_start = true;
+                    } else if !is_horizontal_space(ch) {
+                        self.at_line_start = false;
+                    }
+                    pos += ch.len_utf8();
+                }
+                if pos > run_start {
+                    record_copied(&chunk[run_start..pos], &mut out, &mut map, clean_scalars);
+                    continue;
+                }
+            }
+
+            let ch = chunk[pos..].chars().next().expect("valid char boundary");
+            pos += ch.len_utf8();
+            self.feed_char(ch, &mut out, &mut map, clean_scalars);
+        }
+    }
+
+    fn feed_char(
+        &mut self,
+        ch: char,
+        out: &mut Option<&mut String>,
+        map: &mut Option<&mut Vec<u64>>,
+        clean_scalars: &mut u64,
+    ) {
+        if let Some(mut m) = self.marker.take() {
+            if ch == CLOSE {
+                let body = &m.buf[OPEN.len_utf8()..];
+                let total_scalars = m.scalars + 1;
+                match classify_closed_body(body) {
+                    Some(ClosedMarker::Remove) => {
+                        self.on_removed_marker(total_scalars);
+                    }
+                    Some(ClosedMarker::Replace(display)) => {
+                        self.flush_non_remove(false, out, map, clean_scalars);
+                        record_replaced(total_scalars, &display, out, map, clean_scalars);
+                        update_line_start(&mut self.at_line_start, &display);
+                    }
+                    None => {
+                        self.flush_non_remove(false, out, map, clean_scalars);
+                        m.buf.push(CLOSE);
+                        record_copied(&m.buf, out, map, clean_scalars);
+                        update_line_start(&mut self.at_line_start, &m.buf);
+                    }
+                }
+                return;
+            }
+
+            let abort = ch == OPEN
+                || ch == '\n'
+                || ch == '\r'
+                || m.buf.len() + ch.len_utf8() > MAX_MARKER_BYTES
+                || (!m.sep_seen
+                    && if ch == SEP {
+                        !is_ascii_tag(&m.buf[OPEN.len_utf8()..])
+                    } else {
+                        !is_ascii_token_char(ch)
+                    });
+            if !abort {
+                if ch == SEP {
+                    m.sep_seen = true;
+                }
+                m.buf.push(ch);
+                m.scalars += 1;
+                self.marker = Some(m);
+                return;
+            }
+
+            // Aborted marker becomes literal text, then re-process `ch` normally.
+            self.flush_non_remove(false, out, map, clean_scalars);
+            record_copied(&m.buf, out, map, clean_scalars);
+            update_line_start(&mut self.at_line_start, &m.buf);
+        }
+
+        if ch == OPEN {
+            let mut buf = String::with_capacity(32);
+            buf.push(OPEN);
+            self.marker = Some(MarkerBuf {
+                buf,
+                sep_seen: false,
+                scalars: 1,
+            });
+            return;
+        }
+
+        if is_span_delim(ch) {
+            match &mut self.state {
+                SpaceState::Idle | SpaceState::SpaceOverflow => {
+                    record_removed_count(1, map, *clean_scalars);
+                }
+                SpaceState::PreSpace { span_scalars, .. } => {
+                    *span_scalars += 1;
+                }
+                SpaceState::InCluster {
+                    cluster_scalars,
+                    inter_spaces,
+                    inter_span_scalars,
+                    ..
+                } => {
+                    if inter_spaces.is_empty() {
+                        *cluster_scalars += 1;
+                    } else {
+                        *inter_span_scalars += 1;
+                    }
+                }
+            }
+            return;
+        }
+
+        if is_horizontal_space(ch) {
+            match std::mem::replace(&mut self.state, SpaceState::Idle) {
+                SpaceState::Idle => {
+                    if self.at_line_start {
+                        record_copied_char(ch, out, map, clean_scalars);
+                    } else {
+                        let mut spaces = String::with_capacity(4);
+                        spaces.push(ch);
+                        self.state = SpaceState::PreSpace {
+                            spaces,
+                            space_scalars: 1,
+                            span_scalars: 0,
+                        };
+                    }
+                }
+                SpaceState::SpaceOverflow => {
+                    record_copied_char(ch, out, map, clean_scalars);
+                    self.state = SpaceState::SpaceOverflow;
+                }
+                SpaceState::PreSpace {
+                    mut spaces,
+                    space_scalars,
+                    span_scalars,
+                } => {
+                    if span_scalars > 0 {
+                        record_copied(&spaces, out, map, clean_scalars);
+                        record_removed_count(span_scalars, map, *clean_scalars);
+                        let mut next = String::with_capacity(4);
+                        next.push(ch);
+                        self.state = SpaceState::PreSpace {
+                            spaces: next,
+                            space_scalars: 1,
+                            span_scalars: 0,
+                        };
+                    } else if spaces.len() + ch.len_utf8() <= MAX_HELD_SPACE_BYTES {
+                        spaces.push(ch);
+                        self.state = SpaceState::PreSpace {
+                            spaces,
+                            space_scalars: space_scalars + 1,
+                            span_scalars: 0,
+                        };
+                    } else {
+                        record_copied(&spaces, out, map, clean_scalars);
+                        record_copied_char(ch, out, map, clean_scalars);
+                        self.state = SpaceState::SpaceOverflow;
+                    }
+                }
+                SpaceState::InCluster {
+                    pre_spaces,
+                    pre_space_scalars,
+                    cluster_scalars,
+                    mut inter_spaces,
+                    inter_space_scalars,
+                    inter_span_scalars,
+                } => {
+                    if inter_span_scalars > 0 {
+                        record_removed_count(
+                            pre_space_scalars + cluster_scalars,
+                            map,
+                            *clean_scalars,
+                        );
+                        record_copied(&inter_spaces, out, map, clean_scalars);
+                        record_removed_count(inter_span_scalars, map, *clean_scalars);
+                        let mut next = String::with_capacity(4);
+                        next.push(ch);
+                        self.state = SpaceState::PreSpace {
+                            spaces: next,
+                            space_scalars: 1,
+                            span_scalars: 0,
+                        };
+                    } else if inter_spaces.len() + ch.len_utf8() <= MAX_HELD_SPACE_BYTES {
+                        inter_spaces.push(ch);
+                        self.state = SpaceState::InCluster {
+                            pre_spaces,
+                            pre_space_scalars,
+                            cluster_scalars,
+                            inter_spaces,
+                            inter_space_scalars: inter_space_scalars + 1,
+                            inter_span_scalars: 0,
+                        };
+                    } else {
+                        record_removed_count(
+                            pre_space_scalars + cluster_scalars,
+                            map,
+                            *clean_scalars,
+                        );
+                        record_copied(&inter_spaces, out, map, clean_scalars);
+                        record_copied_char(ch, out, map, clean_scalars);
+                        self.state = SpaceState::SpaceOverflow;
+                    }
+                }
+            }
+            return;
+        }
+
+        let drop_trigger = ch == '\n' || ch == '\r' || is_trailing_punctuation(ch);
+        self.flush_non_remove(drop_trigger, out, map, clean_scalars);
+        record_copied_char(ch, out, map, clean_scalars);
+        self.at_line_start = ch == '\n' || ch == '\r';
+    }
+
+    fn on_removed_marker(&mut self, marker_scalars: usize) {
+        match std::mem::replace(&mut self.state, SpaceState::Idle) {
+            SpaceState::Idle | SpaceState::SpaceOverflow => {
+                self.state = SpaceState::InCluster {
+                    pre_spaces: String::new(),
+                    pre_space_scalars: 0,
+                    cluster_scalars: marker_scalars,
+                    inter_spaces: String::new(),
+                    inter_space_scalars: 0,
+                    inter_span_scalars: 0,
+                };
+            }
+            SpaceState::PreSpace {
+                spaces,
+                space_scalars,
+                span_scalars,
+            } => {
+                self.state = SpaceState::InCluster {
+                    pre_spaces: spaces,
+                    pre_space_scalars: space_scalars,
+                    cluster_scalars: span_scalars + marker_scalars,
+                    inter_spaces: String::new(),
+                    inter_space_scalars: 0,
+                    inter_span_scalars: 0,
+                };
+            }
+            SpaceState::InCluster {
+                pre_spaces,
+                pre_space_scalars,
+                cluster_scalars,
+                mut inter_spaces,
+                inter_space_scalars,
+                inter_span_scalars,
+            } => {
+                inter_spaces.clear();
+                self.state = SpaceState::InCluster {
+                    pre_spaces,
+                    pre_space_scalars,
+                    cluster_scalars: cluster_scalars
+                        + inter_space_scalars
+                        + inter_span_scalars
+                        + marker_scalars,
+                    inter_spaces,
+                    inter_space_scalars: 0,
+                    inter_span_scalars: 0,
+                };
+            }
+        }
+    }
+
+    fn flush_non_remove(
+        &mut self,
+        drop_trigger: bool,
+        out: &mut Option<&mut String>,
+        map: &mut Option<&mut Vec<u64>>,
+        clean_scalars: &mut u64,
+    ) {
+        match std::mem::replace(&mut self.state, SpaceState::Idle) {
+            SpaceState::Idle | SpaceState::SpaceOverflow => {}
+            SpaceState::PreSpace {
+                spaces,
+                span_scalars,
+                ..
+            } => {
+                record_copied(&spaces, out, map, clean_scalars);
+                record_removed_count(span_scalars, map, *clean_scalars);
+            }
+            SpaceState::InCluster {
+                pre_spaces,
+                pre_space_scalars,
+                cluster_scalars,
+                inter_spaces,
+                inter_span_scalars,
+                ..
+            } => {
+                if !inter_spaces.is_empty() {
+                    record_removed_count(pre_space_scalars + cluster_scalars, map, *clean_scalars);
+                    record_copied(&inter_spaces, out, map, clean_scalars);
+                    record_removed_count(inter_span_scalars, map, *clean_scalars);
+                } else if drop_trigger {
+                    record_removed_count(
+                        pre_space_scalars + cluster_scalars + inter_span_scalars,
+                        map,
+                        *clean_scalars,
+                    );
+                } else {
+                    record_copied(&pre_spaces, out, map, clean_scalars);
+                    record_removed_count(cluster_scalars + inter_span_scalars, map, *clean_scalars);
+                }
+            }
+        }
+    }
+
+    fn finish_into(
+        &mut self,
+        mut out: Option<&mut String>,
+        mut map: Option<&mut Vec<u64>>,
+        clean_scalars: &mut u64,
+    ) {
+        if let Some(m) = self.marker.take() {
+            let tail = &m.buf[OPEN.len_utf8()..];
+            if m.sep_seen || tail.is_empty() || is_ascii_tag(tail) {
+                self.on_removed_marker(m.scalars);
+            } else {
+                self.flush_non_remove(false, &mut out, &mut map, clean_scalars);
+                record_copied(&m.buf, &mut out, &mut map, clean_scalars);
+                update_line_start(&mut self.at_line_start, &m.buf);
+            }
+        }
+        self.flush_non_remove(true, &mut out, &mut map, clean_scalars);
     }
 }
 
@@ -106,32 +441,42 @@ pub(crate) fn raw_to_clean_scalar_map(text: &str) -> Option<Vec<u64>> {
     if !has_citation_markers(text) {
         return None;
     }
-    let mut out = String::with_capacity(text.len());
     let mut map = Vec::with_capacity(text.len() + 1);
-    let mut at_line_start = true;
+    let mut sanitizer = StreamSanitizer::new();
     let mut clean_scalars = 0u64;
-    let consumed = drain(
-        text,
-        &mut at_line_start,
-        true,
-        &mut out,
-        Some(&mut map),
-        &mut clean_scalars,
-    );
-    debug_assert_eq!(consumed, text.len());
+    sanitizer.feed_str(text, None, Some(&mut map), &mut clean_scalars);
+    sanitizer.finish_into(None, Some(&mut map), &mut clean_scalars);
     map.push(clean_scalars);
     Some(map)
 }
 
-enum Marker {
-    Remove { end: usize },
-    Replace { end: usize, text: String },
+struct MarkerBuf {
+    buf: String,
+    sep_seen: bool,
+    scalars: usize,
 }
 
-enum MarkerParse {
-    Complete(Marker),
-    Incomplete,
-    Invalid,
+enum SpaceState {
+    Idle,
+    PreSpace {
+        spaces: String,
+        space_scalars: usize,
+        span_scalars: usize,
+    },
+    SpaceOverflow,
+    InCluster {
+        pre_spaces: String,
+        pre_space_scalars: usize,
+        cluster_scalars: usize,
+        inter_spaces: String,
+        inter_space_scalars: usize,
+        inter_span_scalars: usize,
+    },
+}
+
+enum ClosedMarker {
+    Remove,
+    Replace(String),
 }
 
 fn is_ascii_tag(s: &str) -> bool {
@@ -143,10 +488,12 @@ fn is_ascii_tag(s: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
+fn is_ascii_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '-' | '.' | '/')
+}
+
 fn is_ascii_token(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-' | b'.' | b'/'))
+    !s.is_empty() && s.chars().all(is_ascii_token_char)
 }
 
 fn is_horizontal_space(ch: char) -> bool {
@@ -202,131 +549,30 @@ fn extract_entity_display(payload: &str) -> Option<String> {
     (!display.is_empty()).then(|| display.to_owned())
 }
 
-fn classify_closed_body(body: &str, end: usize) -> MarkerParse {
+fn classify_closed_body(body: &str) -> Option<ClosedMarker> {
     if let Some((tag, payload)) = body.split_once(SEP) {
         if !is_ascii_tag(tag) {
-            return MarkerParse::Invalid;
+            return None;
         }
         if tag == "entity"
             && let Some(display) = extract_entity_display(payload)
         {
-            return MarkerParse::Complete(Marker::Replace { end, text: display });
+            return Some(ClosedMarker::Replace(display));
         }
-        return MarkerParse::Complete(Marker::Remove { end });
+        return Some(ClosedMarker::Remove);
     }
-    if is_ascii_token(body) {
-        MarkerParse::Complete(Marker::Remove { end })
-    } else {
-        MarkerParse::Invalid
-    }
-}
-
-fn parse_marker(text: &str, start: usize, eof: bool) -> MarkerParse {
-    let Some(rest) = text.get(start..) else {
-        return MarkerParse::Invalid;
-    };
-    if !rest.starts_with(OPEN) {
-        return MarkerParse::Invalid;
-    }
-    let after_open = start + OPEN.len_utf8();
-    let tail = &text[after_open..];
-    for (rel, ch) in tail.char_indices() {
-        match ch {
-            CLOSE => {
-                let body = &tail[..rel];
-                let end = after_open + rel + CLOSE.len_utf8();
-                return classify_closed_body(body, end);
-            }
-            OPEN | '\n' | '\r' => return MarkerParse::Invalid,
-            _ => {}
-        }
-    }
-    if !eof {
-        let valid_prefix = match tail.split_once(SEP) {
-            Some((tag, _)) => is_ascii_tag(tag),
-            None => tail.is_empty() || is_ascii_token(tail),
-        };
-        return if valid_prefix {
-            MarkerParse::Incomplete
-        } else {
-            MarkerParse::Invalid
-        };
-    }
-    if tail
-        .split_once(SEP)
-        .is_some_and(|(tag, _)| is_ascii_tag(tag))
-    {
-        MarkerParse::Complete(Marker::Remove { end: text.len() })
-    } else {
-        MarkerParse::Invalid
-    }
-}
-
-fn skip_horizontal_space(text: &str, mut pos: usize) -> usize {
-    while let Some(ch) = text[pos..].chars().next() {
-        if is_horizontal_space(ch) {
-            pos += ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-    pos
-}
-
-fn skip_span_delims(text: &str, mut pos: usize) -> usize {
-    while let Some(ch) = text[pos..].chars().next() {
-        if is_span_delim(ch) {
-            pos += ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-    pos
-}
-
-/// Extend a confirmed `Marker::Remove` ending at `end` across any immediately
-/// following removed markers separated only by horizontal spaces or span delims.
-/// Returns `None` when streaming needs more bytes to determine the cluster end.
-fn extend_removed_cluster(text: &str, mut end: usize, eof: bool) -> Option<usize> {
-    loop {
-        let after_d1 = skip_span_delims(text, end);
-        if !eof && after_d1 == text.len() {
-            return None;
-        }
-        match parse_marker(text, after_d1, eof) {
-            MarkerParse::Complete(Marker::Remove { end: next_end }) => {
-                end = next_end;
-                continue;
-            }
-            MarkerParse::Incomplete => return None,
-            _ => {}
-        }
-        let after_sp = skip_horizontal_space(text, after_d1);
-        if after_sp > after_d1 {
-            let after_d2 = skip_span_delims(text, after_sp);
-            if !eof && after_d2 == text.len() {
-                return None;
-            }
-            match parse_marker(text, after_d2, eof) {
-                MarkerParse::Complete(Marker::Remove { end: next_end }) => {
-                    end = next_end;
-                    continue;
-                }
-                MarkerParse::Incomplete => return None,
-                _ => {}
-            }
-        }
-        return Some(end);
-    }
+    is_ascii_token(body).then_some(ClosedMarker::Remove)
 }
 
 fn record_copied(
     slice: &str,
-    out: &mut String,
+    out: &mut Option<&mut String>,
     map: &mut Option<&mut Vec<u64>>,
     clean_scalars: &mut u64,
 ) {
-    out.push_str(slice);
+    if let Some(out) = out.as_deref_mut() {
+        out.push_str(slice);
+    }
     if let Some(map) = map.as_deref_mut() {
         for _ in slice.chars() {
             map.push(*clean_scalars);
@@ -335,144 +581,45 @@ fn record_copied(
     }
 }
 
-fn record_removed(slice: &str, map: &mut Option<&mut Vec<u64>>, clean_scalars: u64) {
+fn record_copied_char(
+    ch: char,
+    out: &mut Option<&mut String>,
+    map: &mut Option<&mut Vec<u64>>,
+    clean_scalars: &mut u64,
+) {
+    if let Some(out) = out.as_deref_mut() {
+        out.push(ch);
+    }
     if let Some(map) = map.as_deref_mut() {
-        for _ in slice.chars() {
-            map.push(clean_scalars);
-        }
+        map.push(*clean_scalars);
+        *clean_scalars += 1;
+    }
+}
+
+fn record_removed_count(count: usize, map: &mut Option<&mut Vec<u64>>, clean_scalars: u64) {
+    if let Some(map) = map.as_deref_mut() {
+        map.resize(map.len() + count, clean_scalars);
     }
 }
 
 fn record_replaced(
-    raw_slice: &str,
+    raw_scalars: usize,
     display: &str,
-    out: &mut String,
+    out: &mut Option<&mut String>,
     map: &mut Option<&mut Vec<u64>>,
     clean_scalars: &mut u64,
 ) {
-    out.push_str(display);
+    if let Some(out) = out.as_deref_mut() {
+        out.push_str(display);
+    }
     if let Some(map) = map.as_deref_mut() {
         let start = *clean_scalars;
         *clean_scalars += display.chars().count() as u64;
-        let mut chars = raw_slice.chars();
-        if chars.next().is_some() {
+        if raw_scalars > 0 {
             map.push(start);
-            for _ in chars {
-                map.push(*clean_scalars);
-            }
+            map.resize(map.len() + raw_scalars - 1, *clean_scalars);
         }
     }
-}
-
-fn drain(
-    text: &str,
-    at_line_start: &mut bool,
-    eof: bool,
-    out: &mut String,
-    mut map: Option<&mut Vec<u64>>,
-    clean_scalars: &mut u64,
-) -> usize {
-    let mut pos = 0;
-    while pos < text.len() {
-        let ch = text[pos..].chars().next().expect("valid char boundary");
-        if is_span_delim(ch) {
-            let next = pos + ch.len_utf8();
-            record_removed(&text[pos..next], &mut map, *clean_scalars);
-            pos = next;
-            continue;
-        }
-
-        if ch == OPEN {
-            match parse_marker(text, pos, eof) {
-                MarkerParse::Incomplete => break,
-                MarkerParse::Complete(Marker::Replace { end, text: display }) => {
-                    record_replaced(&text[pos..end], &display, out, &mut map, clean_scalars);
-                    if display.chars().any(|c| !is_horizontal_space(c)) {
-                        *at_line_start = display.ends_with('\n') || display.ends_with('\r');
-                    }
-                    pos = end;
-                    continue;
-                }
-                MarkerParse::Complete(Marker::Remove { end }) => {
-                    let Some(cluster_end) = extend_removed_cluster(text, end, eof) else {
-                        break;
-                    };
-                    record_removed(&text[pos..cluster_end], &mut map, *clean_scalars);
-                    pos = cluster_end;
-                    continue;
-                }
-                MarkerParse::Invalid => {
-                    let next = pos + OPEN.len_utf8();
-                    record_copied(&text[pos..next], out, &mut map, clean_scalars);
-                    *at_line_start = false;
-                    pos = next;
-                    continue;
-                }
-            }
-        }
-
-        if is_horizontal_space(ch) && !*at_line_start {
-            let space_end = skip_horizontal_space(text, pos);
-            let after_delims = skip_span_delims(text, space_end);
-            if !eof && after_delims == text.len() {
-                break;
-            }
-            match parse_marker(text, after_delims, eof) {
-                MarkerParse::Incomplete => break,
-                MarkerParse::Complete(Marker::Remove { end }) => {
-                    let Some(cluster_end) = extend_removed_cluster(text, end, eof) else {
-                        break;
-                    };
-                    let after_cluster = skip_span_delims(text, cluster_end);
-                    if !eof && after_cluster == text.len() {
-                        break;
-                    }
-                    let drop_pre_space = match text[after_cluster..].chars().next() {
-                        None => true,
-                        Some(c) => {
-                            c == '\n'
-                                || c == '\r'
-                                || is_horizontal_space(c)
-                                || is_trailing_punctuation(c)
-                        }
-                    };
-                    if drop_pre_space {
-                        record_removed(&text[pos..cluster_end], &mut map, *clean_scalars);
-                    } else {
-                        record_copied(&text[pos..space_end], out, &mut map, clean_scalars);
-                        record_removed(&text[space_end..cluster_end], &mut map, *clean_scalars);
-                    }
-                    pos = cluster_end;
-                    continue;
-                }
-                _ => {
-                    record_copied(&text[pos..space_end], out, &mut map, clean_scalars);
-                    pos = space_end;
-                    continue;
-                }
-            }
-        }
-
-        let run_start = pos;
-        loop {
-            let c = text[pos..].chars().next().expect("valid char boundary");
-            if c == '\n' || c == '\r' {
-                *at_line_start = true;
-            } else if !is_horizontal_space(c) {
-                *at_line_start = false;
-            }
-            pos += c.len_utf8();
-            let Some(next) = text[pos..].chars().next() else {
-                break;
-            };
-            if is_span_delim(next) || next == OPEN || (is_horizontal_space(next) && !*at_line_start)
-            {
-                break;
-            }
-        }
-        record_copied(&text[run_start..pos], out, &mut map, clean_scalars);
-    }
-    pos
 }
 
 #[cfg(test)]
@@ -499,6 +646,15 @@ mod tests {
 
     #[test]
     fn streaming_matches_batch_across_every_char_boundary() {
+        let overflow_spaces = format!(
+            "Hello{} \u{E200}cite\u{E202}turn0search0\u{E201}.",
+            " ".repeat(70)
+        );
+        let overflow_spaces_expected = format!("Hello{} .", " ".repeat(70));
+        let oversized_marker = format!(
+            "Start \u{E200}cite\u{E202}{}\u{E201} end",
+            "x".repeat(MAX_MARKER_BYTES + 16)
+        );
         let cases = [
             (
                 "定位到了。 \u{E200}cite\u{E202}turn137145search0\u{E201}",
@@ -520,19 +676,28 @@ mod tests {
                 "Truncated tail \u{E200}cite\u{E202}turn0search",
                 "Truncated tail",
             ),
+            ("Truncated tag \u{E200}cite", "Truncated tag"),
+            ("Truncated open \u{E200}", "Truncated open"),
             (
                 "Literal \u{E200}not a marker\nnext",
                 "Literal \u{E200}not a marker\nnext",
             ),
+            ("Literal \u{E200}123", "Literal \u{E200}123"),
             (
                 "Keep space \u{E200}cite\u{E202}turn0search0\u{E201}*.rs in command",
                 "Keep space *.rs in command",
             ),
+            (&overflow_spaces, &overflow_spaces_expected),
+            (&oversized_marker, &oversized_marker),
         ];
 
         for (raw, expected) in cases {
             assert_eq!(strip_batch(raw), expected, "batch: {raw:?}");
             assert_eq!(strip_char_by_char(raw), expected, "streaming: {raw:?}");
+            if let Some(map) = raw_to_clean_scalar_map(raw) {
+                assert_eq!(map.len(), raw.chars().count() + 1);
+                assert_eq!(*map.last().unwrap() as usize, expected.chars().count());
+            }
         }
     }
 
@@ -552,10 +717,16 @@ mod tests {
     }
 
     #[test]
-    fn streaming_withholds_incomplete_marker_until_closed() {
+    fn consecutive_removed_markers_discard_immediately_without_allocations() {
         let mut s = StreamSanitizer::new();
-        assert_eq!(s.push("Answer \u{E200}ci"), "Answer");
-        assert_eq!(s.push("te\u{E202}turn0search0\u{E201}"), "");
+        assert_eq!(s.push("OK"), "OK");
+        let mut total_capacity = 0usize;
+        for i in 0..256 {
+            let out = s.push(&format!(" \u{E200}cite\u{E202}turn0search{i}\u{E201}"));
+            assert!(out.is_empty());
+            total_capacity += out.capacity();
+        }
+        assert_eq!(total_capacity, 0);
         assert_eq!(s.push("."), ".");
         assert_eq!(s.finish(), "");
     }
