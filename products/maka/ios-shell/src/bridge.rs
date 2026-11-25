@@ -29,7 +29,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex as SyncMutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -42,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
 const PROGRESS_WINDOW: u64 = 8;
+const PROGRESS_ACK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
     "ios.beginPairing",
@@ -267,6 +268,7 @@ struct Bridge {
     channel: HostChannel,
     snapshot_revision: Arc<AtomicU64>,
     shutdown: CancellationToken,
+    progress_ack_stall_timeout: Duration,
     runtime: Handle,
 }
 
@@ -276,10 +278,14 @@ struct MutationProgress<'a> {
     delivery_id: u64,
     retired: CancellationToken,
     ack: watch::Receiver<u64>,
+    stalled: AtomicBool,
 }
 
 impl MutationProgress<'_> {
     async fn emit(&self, bridge: &Bridge, root: &str, generation: u64, value: Value) {
+        if self.stalled.load(Ordering::Relaxed) {
+            return;
+        }
         let mut ack = self.ack.clone();
         let mut event = json!({
             "rootId": root, "generation": generation, "progressId": self.progress_id,
@@ -308,8 +314,7 @@ impl MutationProgress<'_> {
                 return;
             }
             drop(state);
-            // Stop delivering if the recipient is gone, but keep reading the
-            // mutation stream for its terminal receipt or error.
+            // A dead or stalled consumer must not hold up the terminal receipt.
             tokio::select! {
                 biased;
                 _ = self.retired.cancelled() => return,
@@ -318,6 +323,14 @@ impl MutationProgress<'_> {
                     if changed.is_err() {
                         return;
                     }
+                }
+                _ = tokio::time::sleep(bridge.progress_ack_stall_timeout) => {
+                    self.stalled.store(true, Ordering::Relaxed);
+                    log::warn!(
+                        "iOS mutation progress ACK stalled for Host {root}, delivery {}; continuing without progress",
+                        self.delivery_id,
+                    );
+                    return;
                 }
             }
         }
@@ -329,6 +342,20 @@ impl HostBridge {
         channel: HostChannel,
         support_dir: PathBuf,
         runtime: Handle,
+    ) -> Result<Self, String> {
+        Self::attach_with_progress_stall_timeout(
+            channel,
+            support_dir,
+            runtime,
+            PROGRESS_ACK_STALL_TIMEOUT,
+        )
+    }
+
+    fn attach_with_progress_stall_timeout(
+        channel: HostChannel,
+        support_dir: PathBuf,
+        runtime: Handle,
+        progress_ack_stall_timeout: Duration,
     ) -> Result<Self, String> {
         let identity = crate::identity::load(&support_dir)?;
         let profile_path = support_dir.join("hosts.json");
@@ -352,6 +379,7 @@ impl HostBridge {
             channel: channel.clone(),
             snapshot_revision: Arc::new(AtomicU64::new(0)),
             shutdown: CancellationToken::new(),
+            progress_ack_stall_timeout,
         };
         for &name in ALLOWED_HOST_CALLS {
             let bridge = bridge.clone();
@@ -616,6 +644,7 @@ impl Bridge {
                         delivery_id,
                         retired,
                         ack,
+                        stalled: AtomicBool::new(false),
                     }
                 });
             (root, id, calls, receipt_scope, progress)
@@ -1663,7 +1692,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn progress_backpressure_is_lossless_and_isolated_to_the_call() {
-        let (_dir, host, app, mut events) = progress_fixture();
+        let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
         let bridge = &host.bridge;
         let a = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let b = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1728,7 +1757,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retiring_the_host_wakes_unacked_progress_without_masking_the_error() {
-        let (_dir, host, app, mut events) = progress_fixture();
+        let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1770,7 +1799,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn detaching_the_app_or_dropping_the_bridge_wakes_unacked_progress() {
         for detach_app in [true, false] {
-            let (_dir, host, app, mut events) = progress_fixture();
+            let (_dir, host, app, mut events) = progress_fixture(PROGRESS_ACK_STALL_TIMEOUT);
             let bridge = host.bridge.clone();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -1795,7 +1824,57 @@ mod tests {
         }
     }
 
-    fn progress_fixture() -> (
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_progress_leaves_the_terminal_host_error_visible() {
+        let stall_timeout = Duration::from_millis(50);
+        let (_dir, host, _app, mut events) = progress_fixture(stall_timeout);
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (generation, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            let (mut call, _) =
+                start_progress(bridge, &listener, "root", generation, session).await;
+            for step in 0..PROGRESS_WINDOW {
+                send_frame(&mut call, json!({"kind":"progress","value":step})).await;
+                assert_progress(
+                    &events.recv().await.unwrap(),
+                    "root",
+                    generation,
+                    json!(step),
+                );
+            }
+
+            let start = tokio::time::Instant::now();
+            for step in PROGRESS_WINDOW..2 * PROGRESS_WINDOW {
+                send_frame(&mut call, json!({"kind":"progress","value":step})).await;
+            }
+            send_frame(
+                &mut call,
+                json!({"kind":"aborted","reason":"Host aborted the mutation"}),
+            )
+            .await;
+
+            let reply = events.recv().await.unwrap();
+            assert_eq!(reply["rootId"], "root");
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Host aborted the mutation")
+            );
+            assert!(start.elapsed() >= stall_timeout);
+            assert!(
+                events.try_recv().is_err(),
+                "stalled call exceeded the progress window"
+            );
+        })
+        .await
+        .expect("stalled progress blocked the terminal Host error");
+    }
+
+    fn progress_fixture(
+        stall_timeout: Duration,
+    ) -> (
         tempfile::TempDir,
         HostBridge,
         nsh_testing::Headless,
@@ -1803,8 +1882,13 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let channel = HostChannel::new();
-        let host =
-            HostBridge::attach(channel.clone(), dir.path().into(), Handle::current()).unwrap();
+        let host = HostBridge::attach_with_progress_stall_timeout(
+            channel.clone(),
+            dir.path().into(),
+            Handle::current(),
+            stall_timeout,
+        )
+        .unwrap();
         let bundle = nsh_engine::Bundle::source(
             r#"
             import { host } from 'nsh';
