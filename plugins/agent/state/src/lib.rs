@@ -418,6 +418,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 59,
+        description: "drop redundant duplicate and prefix indexes",
+        sql: include_str!("../migrations/0059_drop_duplicate_indexes.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -429,7 +436,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=57) {
+        for through in [0, 41].into_iter().chain(46..=58) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

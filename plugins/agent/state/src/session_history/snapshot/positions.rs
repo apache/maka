@@ -24,6 +24,8 @@ use maka_agent_facts::{
 };
 use serde::Deserialize;
 
+const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
+
 pub(super) fn capture(
     c: &Connection,
     scope: &HistoryNamespace,
@@ -34,7 +36,7 @@ pub(super) fn capture(
         return Err(invalid("snapshot position cut belongs to another session"));
     }
     crate::recall::checked_source_cut(c, &scope.owner, cut)?;
-    let mut statement=c.prepare_cached("SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id FROM agent_recall_messages d INDEXED BY agent_recall_message_order JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal")?;
+    let mut statement = c.prepare_cached(CAPTURE_POSITIONS_SQL)?;
     let mut rows = statement.query(params![
         serde_json::to_string(&scope.owner)?,
         scope.session,
@@ -308,5 +310,46 @@ impl Query for Positions {
             });
         }
         Ok(positions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CAPTURE_POSITIONS_SQL;
+    use rusqlite::{Connection, params};
+
+    #[test]
+    fn capture_positions_scans_recall_ordered_without_temp_sort() {
+        let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
+            .iter()
+            .chain(crate::MIGRATIONS)
+            .copied()
+            .collect();
+        let db = Connection::open_in_memory().unwrap();
+        maka_event_log::migration::run(&db, &catalog).unwrap();
+        let mut stmt = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {CAPTURE_POSITIONS_SQL}"))
+            .unwrap();
+        let details: Vec<String> = stmt
+            .query_map(params!["\"owner\"", "session", 100_i64], |r| {
+                r.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            details.iter().any(|line| {
+                (line.contains("SEARCH d USING INDEX sqlite_autoindex_agent_recall_messages_1")
+                    || line.contains(
+                        "SEARCH d USING COVERING INDEX sqlite_autoindex_agent_recall_messages_1",
+                    ))
+                    && line.contains("(owner=? AND session=? AND sequence<?)")
+            }),
+            "expected capture query to seek agent_recall_messages via UNIQUE(owner,session,sequence,ordinal), got: {details:?}"
+        );
+        assert!(
+            !details.iter().any(|line| line.contains("TEMP B-TREE")),
+            "expected capture query to avoid temp sort, got: {details:?}"
+        );
     }
 }
