@@ -498,7 +498,13 @@ export function createConversationController(rootId: string, sessionId: string) 
   ) => {
     busyInteractionIds.update((prev) => ({ ...prev, [requestId]: true }));
     try {
-      await hostMutate('agent', 'respond', { sessionId, requestId, answer }, { rootId });
+      const result = await hostMutate<{ kind: 'recorded' } | { kind: 'rejected'; reason: unknown }>(
+        'agent',
+        'respond',
+        { sessionId, requestId, answer },
+        { rootId },
+      );
+      if (result.kind === 'rejected') throw new Error(String(result.reason));
       hapticNotification(kind);
       const hostName = hostById(rootId)?.hostName ?? rootId;
       await Promise.all([

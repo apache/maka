@@ -143,6 +143,7 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
+            "botOutbox" => json!({"isBot":false,"through":0,"readThrough":0,"preview":"","messages":[]}),
             "list" => json!({
                 "revision": "1",
                 "sessions": [session],
@@ -209,6 +210,9 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     app.wait_for("label:Conversation: Locale conversation")
         .unwrap();
 
+    assert!(!app.shows("label:All"));
+    assert!(!app.shows("label:Locale Host"));
+
     // Tab 2: Pending Inbox shows both interactions with localized descriptions.
     app.press("label:Pending").unwrap();
     app.wait_for("text:Allow service call Fixture?").unwrap();
@@ -217,7 +221,20 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
 
     // Tab 3: Settings shows Paired Computers, This iPhone (no steer-while-running), and Computer Settings.
     app.press("label:Settings").unwrap();
-    app.wait_for("text:Paired Computers").unwrap();
+    app.wait_for("label:Computer: Locale Host").unwrap();
+    assert!(!app.shows("text:Paired Computers"));
+    for title in [
+        "General",
+        "Models & Connections",
+        "Subagents",
+        "Plugins",
+        "MCP",
+        "Skills",
+        "Web Search",
+        "Network Proxy",
+    ] {
+        app.wait_for(&format!("text:{title}")).unwrap();
+    }
     app.wait_for("text:This iPhone").unwrap();
     app.wait_for("text:Computer Settings").unwrap();
     assert!(!app.shows("Steer while the agent is running"));
@@ -225,7 +242,7 @@ async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     // Switch language to Japanese and confirm live re-render across Settings, Inbox, Recovery, and Pairing.
     app.press("label:Language").unwrap();
     app.choose_menu_item("日本語").unwrap();
-    app.wait_for("text:ペアリング済みコンピュータ").unwrap();
+    app.wait_for("text:Locale Host").unwrap();
     app.wait_for("text:この iPhone").unwrap();
     app.wait_for("text:コンピュータ設定").unwrap();
 

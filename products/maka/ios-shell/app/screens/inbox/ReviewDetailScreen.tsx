@@ -21,19 +21,12 @@ import { cleanup, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh'
 import { Input, NavPage } from 'nsh/base';
 import { describeChildDecision, describePermissions } from '../../approval';
 import { hostQuery, onSubscriptionItem, type AgentInteractionRecord } from '../../bridge';
+import { ApprovalButton, ApprovalOutcome } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
-import {
-  ActionButton,
-  BannerNotice,
-  GroupRow,
-  Icon,
-  InsetGroup,
-  ScreenHeader,
-  StatusDot,
-} from '../../ui';
+import { ActionButton, GroupRow, Icon, InsetGroup, ScreenHeader, StatusDot } from '../../ui';
 
 function badgeLabel(kind: InboxItem['summary']['kind']): string {
   switch (kind) {
@@ -120,9 +113,10 @@ export function ReviewDetailScreen(props: {
 
   const record = () => liveRecord() ?? props.item.record;
   const req = () => record()?.request;
+  const settled = signal<{ title: string; accepted: boolean } | null>(null);
   const isResolvedRemotely = () => {
     const out = record()?.outcome;
-    return out !== null && out !== undefined;
+    return !!settled() || (out !== null && out !== undefined);
   };
   const busy = () => isInboxItemBusy(props.item.key);
 
@@ -201,8 +195,16 @@ export function ReviewDetailScreen(props: {
     if (isResolvedRemotely() || busy()) return;
     const ok = await respondInboxItem(props.item, payload, kind);
     if (ok) {
+      const request = req();
+      if (request?.kind === 'question' || request?.kind === 'form') {
+        props.onBack();
+      } else {
+        settled.set({
+          title: kind === 'success' ? tr('Allowed') : tr('Denied'),
+          accepted: kind === 'success',
+        });
+      }
       await refreshAuthoritativeRecord();
-      props.onBack();
     }
   };
 
@@ -236,11 +238,15 @@ export function ReviewDetailScreen(props: {
         >
           {/* Authoritative Remote Resolution Banner */}
           <If when={isResolvedRemotely()}>
-            <BannerNotice
-              tone="success"
-              title={outcomeSummary(record()?.outcome)}
-              detail={tr('No further action is needed on this iPhone.')}
-            />
+            <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 16 }}>
+              <ApprovalOutcome
+                title={settled()?.title ?? outcomeSummary(record()?.outcome)}
+                accepted={
+                  settled()?.accepted ??
+                  outcomeSummary(record()?.outcome) === tr('Approved on another device')
+                }
+              />
+            </View>
           </If>
 
           {/* Source Attribution */}
@@ -382,27 +388,35 @@ export function ReviewDetailScreen(props: {
               !isResolvedRemotely() && !questionItem() && (allowPayload('once') || denyPayload())
             }
           >
-            <View style={{ paddingHorizontal: spacing.pageX, gap: 10 }}>
+            <View
+              style={{
+                paddingHorizontal: spacing.pageX,
+                gap: 8,
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+              }}
+            >
               <If when={allowPayload('once')}>
-                <ActionButton
+                <ApprovalButton
                   title={tr('Allow once')}
-                  disabled={busy()}
+                  kind="allow"
+                  busy={busy()}
                   onPress={() => void submitAnswer(allowPayload('once')!, 'success')}
                 />
               </If>
               <If when={req()?.kind === 'permissions' || req()?.kind === 'computer_app'}>
-                <ActionButton
-                  title={tr('Allow for this session')}
-                  variant="secondary"
-                  disabled={busy()}
+                <ApprovalButton
+                  title={tr('This session')}
+                  kind="session"
+                  busy={busy()}
                   onPress={() => void submitAnswer(allowPayload('session')!, 'success')}
                 />
               </If>
               <If when={denyPayload()}>
-                <ActionButton
+                <ApprovalButton
                   title={tr('Deny')}
-                  variant="destructive"
-                  disabled={busy()}
+                  kind="deny"
+                  busy={busy()}
                   onPress={() => void submitAnswer(denyPayload()!, 'warning')}
                 />
               </If>

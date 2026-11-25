@@ -17,19 +17,35 @@
  * under the License.
  */
 
-import { effect, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, untracked, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, MenuButton, Sheet, type MenuButtonItem, type SheetDetent } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
-import { hasAgentEndpoint, type AgentProject, type AgentWorkspaceSelection } from '../../bridge';
+import {
+  hasAgentEndpoint,
+  hostMutate,
+  hostQuery,
+  type AgentModelChoice,
+  type AgentWorkspaceSelection,
+} from '../../bridge';
 import { tr } from '../../locale';
-import { connectedHosts, selectedScopeRootId } from '../../state/hostPool';
+import {
+  activeHostInfo,
+  connectedHosts,
+  hostById,
+  savedHosts,
+  selectedScopeRootId,
+} from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import {
   createHostSession,
+  allSessions,
   listHostDirectoryRoots,
   listHostProjects,
   type ScopedSession,
 } from '../../state/sessions';
+import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
+import { settingsRpc } from '../../state/settings/rpc';
+import { SettingChoice } from '../settings/SettingsForm';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, BannerNotice, GroupRow, Icon, InsetGroup, StatusDot } from '../../ui';
 
@@ -40,93 +56,175 @@ interface WorkspaceOption {
   selection: AgentWorkspaceSelection;
 }
 
+let lastUsedRootId: string | undefined;
+
 export function NewChatSheet(props: {
   open: boolean;
   onClose: () => void;
   onCreated: (session: ScopedSession) => void;
 }) {
   const detent = signal<SheetDetent>('large');
-  const targetRootId = signal<string>('');
-  const modeIndex = signal(0); // 0 = Chat, 1 = Room
+  const targetRootId = signal('');
+  const modeIndex = signal(0);
   const title = signal('');
   const workspaces = signal<WorkspaceOption[]>([]);
-  const selectedWorkspaceId = signal<string>('');
+  const selectedWorkspaceId = signal('');
+  const models = signal<AgentModelChoice[]>([]);
+  const defaultModel = signal('');
+  const modelIndex = signal('');
+  const presets = signal<ServiceMethods['agent']['presets']['output']>([]);
+  const memberIds = signal<string[]>([]);
+  const createdRoom = signal<ScopedSession | null>(null);
+  const ready = signal(false);
   const loadingWorkspaces = signal(false);
+  const loadingPresets = signal(false);
   const creating = signal(false);
   const error = signal<string | null>(null);
-
   const eligibleHosts = () =>
-    connectedHosts().filter((entry) => hasAgentEndpoint(entry.connection));
+    connectedHosts().filter(({ connection }) => hasAgentEndpoint(connection));
+  const eligible = (id: string) => eligibleHosts().some(({ host }) => host.rootId === id);
 
   effect(() => {
     if (!props.open) return;
-    error.set(null);
-    const hosts = eligibleHosts();
-    if (!hosts.length) return;
-    const scope = selectedScopeRootId();
-    const cur = targetRootId();
-    if (!cur || !hosts.some((h) => h.host.rootId === cur)) {
-      const preferred = hosts.find((h) => h.host.rootId === scope) ?? hosts[0];
-      targetRootId.set(preferred.host.rootId);
-    }
+    detent.set(untracked(savedHosts).length === 1 ? 'medium' : 'large');
+    const scope = untracked(selectedScopeRootId);
+    const hosts = untracked(eligibleHosts);
+    const preferred =
+      hosts.find(({ host }) => host.rootId === scope) ??
+      hosts.find(({ host }) => host.rootId === lastUsedRootId) ??
+      hosts[0];
+    targetRootId.set(preferred?.host.rootId ?? '');
   });
-
   effect(() => {
     const rootId = targetRootId();
+    const generation = activeHostInfo(rootId)?.generation;
     if (!props.open || !rootId) return;
     let cancelled = false;
+    cleanup(() => {
+      cancelled = true;
+    });
+    error.set(null);
+    workspaces.set([]);
+    selectedWorkspaceId.set('');
+    models.set([]);
+    defaultModel.set('');
+    modelIndex.set('');
     loadingWorkspaces.set(true);
-    void Promise.all([listHostProjects(rootId), listHostDirectoryRoots(rootId)]).then(
-      ([projects, roots]) => {
-        if (cancelled) return;
-        const opts: WorkspaceOption[] = [];
-        for (const p of projects as AgentProject[]) {
-          opts.push({
-            id: 'proj:' + p.reference.id,
-            label: p.name,
-            subtitle: p.path,
-            selection: { kind: 'project', projectId: p.reference.id, path: p.path },
-          });
-        }
-        for (const r of roots) {
-          if (opts.some((o) => o.subtitle === r.path)) continue;
-          opts.push({
-            id: 'dir:' + r.path,
-            label: r.name,
-            subtitle: r.path,
-            selection: { kind: 'directory', path: r.path },
-          });
+    ready.set(false);
+    const rpc = settingsRpc(rootId);
+    const settings = activeHostInfo(rootId)?.endpoints.includes('settings');
+    void Promise.all([
+      listHostProjects(rootId),
+      listHostDirectoryRoots(rootId),
+      hostQuery<{ kind: string; choices: AgentModelChoice[] }>(
+        'agent',
+        'models',
+        { kind: 'start', query: '' },
+        undefined,
+        rootId,
+      ),
+      settings ? rpc.query('settings', 'connections', { kind: 'start' }) : undefined,
+    ])
+      .then(async ([projects, roots, choices, catalog]) => {
+        if (cancelled || generation !== activeHostInfo(rootId)?.generation) return;
+        const target = catalog?.kind === 'ready' ? catalog.defaultTarget : null;
+        const model = target ? await rpc.query('settings', 'resolveModel', target) : null;
+        if (cancelled || generation !== activeHostInfo(rootId)?.generation) return;
+        const opts: WorkspaceOption[] = projects.map((project) => ({
+          id: 'proj:' + project.reference.id,
+          label: project.name,
+          subtitle: project.path,
+          selection: { kind: 'project', projectId: project.reference.id, path: project.path },
+        }));
+        const paths = new Set(opts.map((option) => option.subtitle));
+        for (const root of roots) {
+          if (!paths.has(root.path))
+            opts.push({
+              id: 'dir:' + root.path,
+              label: root.name,
+              subtitle: root.path,
+              selection: { kind: 'directory', path: root.path },
+            });
         }
         workspaces.set(opts);
-        if (opts.length && !opts.some((o) => o.id === selectedWorkspaceId())) {
-          selectedWorkspaceId.set(opts[0].id);
-        }
-        loadingWorkspaces.set(false);
-      },
-      () => {
+        selectedWorkspaceId.set(opts[0]?.id ?? '');
+        if (choices.kind === 'ready') models.set(choices.choices);
+        ready.set(true);
+        if (model?.kind === 'ready') defaultModel.set(model.choice.label);
+      })
+      .catch((cause) => {
+        if (!cancelled) error.set(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
         if (!cancelled) loadingWorkspaces.set(false);
-      },
-    );
-    return () => {
+      });
+  });
+  effect(() => {
+    const rootId = targetRootId();
+    presets.set([]);
+    memberIds.set([]);
+    loadingPresets.set(false);
+    if (!props.open || !rootId || modeIndex() !== 1) return;
+    let cancelled = false;
+    cleanup(() => {
       cancelled = true;
-    };
+    });
+    loadingPresets.set(true);
+    void settingsRpc(rootId)
+      .query('agent', 'presets', {})
+      .then((rows) => {
+        if (!cancelled) presets.set(rows.filter((row) => row.availability.kind === 'available'));
+      })
+      .catch((cause) => {
+        if (!cancelled) error.set(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) loadingPresets.set(false);
+      });
   });
 
-  const selectedHostName = () =>
-    eligibleHosts().find((h) => h.host.rootId === targetRootId())?.host.hostName ?? '';
-
+  const selectedHostName = () => hostById(targetRootId())?.hostName ?? tr('Offline');
   const hostMenuItems = (): MenuButtonItem[] =>
-    eligibleHosts().map((h) => ({
-      id: h.host.rootId,
-      label: h.host.hostName,
-      checked: h.host.rootId === targetRootId(),
+    savedHosts().map((host) => ({
+      id: host.rootId,
+      label: host.hostName,
+      checked: host.rootId === targetRootId(),
       singleSelection: true,
+      disabled: !eligible(host.rootId),
     }));
+  const candidates = () => [
+    ...presets().map((preset) => ({ id: 'preset:' + preset.id, title: preset.name })),
+    ...allSessions()
+      .filter(
+        (item) =>
+          item.rootId === targetRootId() && item.session.kind === 'agent' && !item.session.archived,
+      )
+      .map(({ session }) => ({ id: 'session:' + session.id, title: session.title })),
+  ];
+  const finish = (created: ScopedSession) => {
+    lastUsedRootId = created.rootId;
+    hapticNotification('success');
+    createdRoom.set(null);
+    title.set('');
+    targetRootId.set('');
+    props.onClose();
+    props.onCreated(created);
+  };
 
   const handleCreate = async () => {
     const rootId = targetRootId();
-    if (!rootId || creating()) return;
+    if (
+      !rootId ||
+      !eligible(rootId) ||
+      creating() ||
+      loadingWorkspaces() ||
+      loadingPresets() ||
+      !ready()
+    )
+      return;
     const isRoom = modeIndex() === 1;
+    const members = memberIds();
+    const selectedPresets = presets();
     const picked = workspaces().find((w) => w.id === selectedWorkspaceId());
     const workspace: AgentWorkspaceSelection = picked
       ? picked.selection
@@ -141,11 +239,37 @@ export function NewChatSheet(props: {
         title: cleanTitle || (isRoom ? tr('New Room') : tr('New Chat')),
         automaticTitle: !isRoom && !cleanTitle,
         workspace,
+        backend: modelIndex() === '' ? null : models()[Number(modelIndex())]?.selection,
       });
-      hapticNotification('success');
-      title.set('');
-      props.onClose();
-      props.onCreated(created);
+      if (isRoom && members.length) {
+        createdRoom.set(created);
+        const sessionIds: string[] = [];
+        for (const id of members) {
+          if (id.startsWith('session:')) sessionIds.push(id.slice(8));
+          else {
+            const preset = selectedPresets.find((row) => row.id === id.slice(7))!;
+            const member = await createHostSession({
+              rootId,
+              kind: 'agent',
+              title: preset.name,
+              automaticTitle: false,
+              workspace,
+              presetId: preset.id,
+            });
+            sessionIds.push(member.session.id);
+          }
+        }
+        await hostMutate(
+          'agent',
+          'roomManage',
+          {
+            sessionId: created.session.id,
+            action: { kind: 'add_members', memberSessionIds: sessionIds },
+          },
+          { rootId },
+        );
+      }
+      finish(created);
     } catch (cause) {
       hapticNotification('error');
       error.set(cause instanceof Error ? cause.message : String(cause));
@@ -162,9 +286,13 @@ export function NewChatSheet(props: {
       detent={detent()}
       onDetentChange={(e) => detent.set(e.detent)}
       grabber
-      closeOnSwipe
+      closeOnSwipe={!creating()}
       onOpenChange={({ open }) => {
-        if (!open) props.onClose();
+        if (!open && !creating()) {
+          targetRootId.set('');
+          createdRoom.set(null);
+          props.onClose();
+        }
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
       popupStyle={{
@@ -201,7 +329,9 @@ export function NewChatSheet(props: {
         <View
           role="button"
           accessibilityLabel={tr('Cancel')}
-          onPress={props.onClose}
+          onPress={() => {
+            if (!creating()) props.onClose();
+          }}
           class="active:opacity-60"
           style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
         >
@@ -216,6 +346,31 @@ export function NewChatSheet(props: {
       >
         <If when={error()}>
           <BannerNotice tone="destructive" title={error()!} />
+        </If>
+
+        {/* Target Computer */}
+        <If when={savedHosts().length > 1}>
+          <InsetGroup elevated>
+            <MenuButton
+              accessibilityLabel={tr('Target computer')}
+              title={tr('Target computer')}
+              items={hostMenuItems()}
+              disabled={creating() || !!createdRoom()}
+              onSelect={({ id }) => {
+                if (!eligible(id)) return;
+                hapticSelection();
+                targetRootId.set(id);
+              }}
+            >
+              <GroupRow
+                leading={
+                  <StatusDot kind={eligible(targetRootId()) ? 'online' : 'offline'} size={8} />
+                }
+                title={selectedHostName()}
+                chevron
+              />
+            </MenuButton>
+          </InsetGroup>
         </If>
 
         {/* Chat vs Room Segmented Control */}
@@ -281,27 +436,6 @@ export function NewChatSheet(props: {
           </If>
         </View>
 
-        {/* Target Computer */}
-        <If when={eligibleHosts().length > 0}>
-          <InsetGroup elevated header={tr('Target computer')}>
-            <MenuButton
-              accessibilityLabel={tr('Target computer')}
-              title={tr('Target computer')}
-              items={hostMenuItems()}
-              onSelect={({ id }) => {
-                hapticSelection();
-                targetRootId.set(id);
-              }}
-            >
-              <GroupRow
-                leading={<StatusDot kind="online" size={8} />}
-                title={selectedHostName()}
-                chevron={eligibleHosts().length > 1}
-              />
-            </MenuButton>
-          </InsetGroup>
-        </If>
-
         {/* Workspace / Project Picker */}
         <InsetGroup elevated header={tr('Workspace')}>
           <If
@@ -334,6 +468,53 @@ export function NewChatSheet(props: {
           </If>
         </InsetGroup>
 
+        <InsetGroup elevated>
+          <If
+            when={modeIndex() === 0}
+            else={<GroupRow title={tr('Model')} value={defaultModel() || tr('Default')} />}
+          >
+            <SettingChoice
+              title={tr('Model')}
+              value={modelIndex()}
+              disabled={loadingWorkspaces() || creating()}
+              options={[
+                { id: '', label: defaultModel() || tr('Default') },
+                ...models().map((model, index) => ({ id: String(index), label: model.label })),
+              ]}
+              change={modelIndex.set}
+            />
+          </If>
+        </InsetGroup>
+
+        <If when={modeIndex() === 1}>
+          <InsetGroup elevated header={tr('Room members')}>
+            <If when={loadingPresets()}>
+              <GroupRow title={tr('Loading…')} />
+            </If>
+            <Each of={candidates()} key={(item) => item.id}>
+              {(item) => (
+                <GroupRow
+                  title={item().title}
+                  divider
+                  disabled={creating() || !!createdRoom()}
+                  trailing={
+                    memberIds().includes(item().id) ? (
+                      <Icon name="check" size={16} color={token('primary')} />
+                    ) : undefined
+                  }
+                  onPress={() =>
+                    memberIds.update((ids) =>
+                      ids.includes(item().id)
+                        ? ids.filter((id) => id !== item().id)
+                        : [...ids, item().id],
+                    )
+                  }
+                />
+              )}
+            </Each>
+          </InsetGroup>
+        </If>
+
         {/* Optional Title */}
         <InsetGroup elevated header={tr('Title (optional)')}>
           <View style={{ paddingHorizontal: 16, paddingVertical: 10 }}>
@@ -357,15 +538,31 @@ export function NewChatSheet(props: {
 
         <View style={{ paddingHorizontal: spacing.pageX }}>
           <ActionButton
+            minHeight={46}
             title={
-              creating()
-                ? tr('Creating…')
-                : modeIndex() === 1
-                  ? tr('Create Room')
-                  : tr('Start Chat')
+              createdRoom()
+                ? tr('Open Conversation')
+                : savedHosts().length > 1 && !creating()
+                  ? modeIndex() === 1
+                    ? tr('Create Room on {name}', { name: selectedHostName() })
+                    : tr('Start Chat on {name}', { name: selectedHostName() })
+                  : creating()
+                    ? tr('Creating…')
+                    : modeIndex() === 1
+                      ? tr('Create Room')
+                      : tr('Start Chat')
             }
-            disabled={creating() || !targetRootId()}
-            onPress={() => void handleCreate()}
+            disabled={
+              creating() ||
+              (!createdRoom() &&
+                (!eligible(targetRootId()) || loadingWorkspaces() || loadingPresets() || !ready()))
+            }
+            onPress={() => {
+              if (creating()) return;
+              const room = createdRoom();
+              if (room) finish(room);
+              else void handleCreate();
+            }}
           />
         </View>
       </Scroll>

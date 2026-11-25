@@ -59,10 +59,8 @@ const snapshot = signal<HostStateSnapshot | null>(null);
 const bootstrapped = signal(false);
 const bootstrapError = signal<string | null>(null);
 
-// Shared scope filter across Chats and Inbox ('all' or a specific rootId).
+// Chats scope ('all' or a specific rootId).
 const selectedScope = signal<string>('all');
-// Computer targeted by Tab 3's Computer Settings section.
-const selectedSettingsRoot = signal<string | null>(null);
 
 // Onboarding / "+ Add Computer" pairing state.
 const pairingModalOpen = signal(false);
@@ -98,15 +96,6 @@ export const devicePeerId = computed<string>(() => snapshot()?.devicePeerId ?? '
 export const hasPairedHosts = computed<boolean>(() => savedHosts().length > 0);
 
 export const selectedScopeRootId = () => selectedScope();
-export const selectedSettingsRootId = computed<string | null>(() => {
-  const hosts = savedHosts();
-  if (!hosts.length) return null;
-  const chosen = selectedSettingsRoot();
-  if (chosen && hosts.some((h) => h.rootId === chosen)) return chosen;
-  const connected = hosts.find((h) => isHostConnected(h.rootId));
-  return connected?.rootId ?? hosts[0].rootId;
-});
-
 export const isPairingModalOpen = () => pairingModalOpen();
 export const isAdvancedSheetOpen = () => advancedSheetOpen();
 export const currentIncomingPairUri = () => incomingPairUri();
@@ -129,9 +118,6 @@ export function hostConnectionState(rootId: string): HostConnectionState {
   const item = snap.hosts.find((h) => h.rootId === rootId);
   if (item?.status === 'connecting') return { status: 'connecting' };
   if (item?.status === 'error') return { status: 'error', error: tr('Connection failed') };
-  if (item?.connected && snap.active) {
-    return { status: 'connected', connection: snap.active };
-  }
   return { status: 'offline' };
 }
 
@@ -218,11 +204,6 @@ export function selectScope(scope: string) {
   void setFilter(
     scope === 'all' ? { kind: 'all_computers' } : { kind: 'single_computer', root_id: scope },
   ).catch(() => {});
-}
-
-export function selectSettingsHost(rootId: string) {
-  hapticSelection();
-  selectedSettingsRoot.set(rootId);
 }
 
 export function setDeviceLabel(label: string) {
@@ -373,9 +354,6 @@ export async function confirmPendingPairing(): Promise<boolean> {
     incomingPairUri.set(null);
     pairingModalOpen.set(false);
     advancedSheetOpen.set(false);
-    if (ticket.rootId) {
-      selectedSettingsRoot.set(ticket.rootId);
-    }
     hapticNotification('success');
     showToast(tr('Connected to {name}', { name: ticket.hostName }));
     return true;

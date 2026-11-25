@@ -17,20 +17,18 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, Text, View, token } from 'nsh';
+import { cleanup, computed, effect, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { MenuButton, NavPage, type MenuButtonItem } from 'nsh/base';
 import { Switch } from 'nsh/mobile';
 import { pathLabel } from '../../bridge';
 import { languagePreferenceBusy, languagePreferenceError, tr } from '../../locale';
 import {
   activeHostInfo,
-  hostById,
   hostStatusKind,
   hostStatusText,
   openAddComputerFlow,
   savedHosts,
-  selectedSettingsRootId,
-  selectSettingsHost,
+  isHostConnected,
 } from '../../state/hostPool';
 import {
   appearancePreference,
@@ -39,7 +37,8 @@ import {
   saveHapticsEnabled,
   type AppearancePreference,
 } from '../../state/preferences';
-import { spacing, type } from '../../theme/tokens';
+import { settingsRpc } from '../../state/settings/rpc';
+import { spacing } from '../../theme/tokens';
 import {
   BannerNotice,
   GroupRow,
@@ -48,7 +47,6 @@ import {
   InsetGroup,
   ScreenHeader,
   StatusDot,
-  type IconName,
 } from '../../ui';
 import {
   buildLanguageMenuItems,
@@ -80,19 +78,50 @@ const DOMAIN_ORDER: { domain: HostSettingDomain; badgeToken: string }[] = [
 ];
 
 export function SettingsRootScreen(props: {
+  onOpenComputer: (rootId: string) => void;
   onOpenDevice: (rootId: string) => void;
   onOpenHostSetting: (domain: HostSettingDomain, rootId: string) => void;
 }) {
   const insets = safeAreaInsets();
 
-  const targetHost = () => {
-    const id = selectedSettingsRootId();
-    return id ? hostById(id) : undefined;
-  };
-
+  const defaultModels = signal<Record<string, string>>({});
+  const connectionKey = computed(() =>
+    JSON.stringify(
+      savedHosts().flatMap(({ rootId }) => {
+        const info = activeHostInfo(rootId);
+        return info?.endpoints.includes('settings') ? [[rootId, info.generation]] : [];
+      }),
+    ),
+  );
+  effect(() => {
+    const targets = JSON.parse(connectionKey()) as Array<[string, number]>;
+    if (savedHosts().length < 2) return;
+    let alive = true;
+    cleanup(() => {
+      alive = false;
+    });
+    defaultModels.set({});
+    for (const [rootId] of targets) {
+      const rpc = settingsRpc(rootId);
+      void rpc
+        .query('settings', 'connections', { kind: 'start' })
+        .then(async (page) => {
+          if (!alive || page.kind !== 'ready' || !page.defaultTarget) return;
+          const model = await rpc.query('settings', 'resolveModel', page.defaultTarget);
+          if (alive && model.kind === 'ready')
+            defaultModels.update((prev) => ({ ...prev, [rootId]: model.choice.label }));
+        })
+        .catch((cause) => {
+          if (alive) console.warn('Default model unavailable', cause);
+        });
+    }
+  });
   const hostSubtitle = (rootId: string): string => {
     const info = activeHostInfo(rootId);
-    if (info) return tr('Connected') + ' · ' + pathLabel(info.pathSummary, info.transport);
+    const model = defaultModels()[rootId];
+    if (info && model) return tr('Connected') + ' · ' + model;
+    if (info && savedHosts().length > 1)
+      return tr('Connected') + ' · ' + pathLabel(info.pathSummary, info.transport);
     return hostStatusText(rootId);
   };
 
@@ -103,16 +132,6 @@ export function SettingsRootScreen(props: {
       { id: 'light', label: tr('Light'), checked: current === 'light', singleSelection: true },
       { id: 'dark', label: tr('Dark'), checked: current === 'dark', singleSelection: true },
     ];
-  };
-
-  const hostSwitcherItems = (): MenuButtonItem[] => {
-    const selected = selectedSettingsRootId();
-    return savedHosts().map((host) => ({
-      id: host.rootId,
-      label: host.hostName,
-      checked: host.rootId === selected,
-      singleSelection: true,
-    }));
   };
 
   return (
@@ -138,7 +157,7 @@ export function SettingsRootScreen(props: {
           </If>
 
           {/* Section 1: Paired Computers */}
-          <InsetGroup header={tr('Paired Computers')}>
+          <InsetGroup header={savedHosts().length > 1 ? tr('Paired Computers') : undefined}>
             <Each of={savedHosts()} key={(host) => host.rootId}>
               {(host) => (
                 <GroupRow
@@ -154,19 +173,29 @@ export function SettingsRootScreen(props: {
                   subtitle={hostSubtitle(host().rootId)}
                   trailing={<StatusDot kind={hostStatusKind(host().rootId)} size={8} />}
                   chevron
-                  divider
+                  divider={savedHosts().length > 1}
                   accessibilityLabel={tr('Computer: {name}', { name: host().hostName })}
-                  onPress={() => props.onOpenDevice(host().rootId)}
+                  onPress={() =>
+                    savedHosts().length === 1
+                      ? props.onOpenDevice(host().rootId)
+                      : props.onOpenComputer(host().rootId)
+                  }
                 />
               )}
             </Each>
-            <GroupRow
-              leading={<Icon name="plus" color={token('primary')} size={18} strokeWidth={2.2} />}
-              title={tr('Add Computer…')}
-              tone="primary"
-              onPress={openAddComputerFlow}
-            />
+            <If when={savedHosts().length > 1}>
+              <GroupRow
+                leading={<Icon name="plus" color={token('primary')} size={18} strokeWidth={2.2} />}
+                title={tr('Add Computer…')}
+                tone="primary"
+                onPress={openAddComputerFlow}
+              />
+            </If>
           </InsetGroup>
+
+          <If when={savedHosts().length === 1}>
+            <HostSettingsRows rootId={savedHosts()[0].rootId} onOpen={props.onOpenHostSetting} />
+          </If>
 
           {/* Section 2: This iPhone (Local Preferences) */}
           <InsetGroup header={tr('This iPhone')}>
@@ -229,69 +258,47 @@ export function SettingsRootScreen(props: {
               }
             />
           </InsetGroup>
-
-          {/* Section 3: Computer Settings (Aligned to Desktop) */}
-          <If when={targetHost()}>
-            <InsetGroup
-              header={tr('Computer Settings')}
-              headerTrailing={
-                savedHosts().length > 1 ? (
-                  <MenuButton
-                    accessibilityLabel={tr('Switch target computer')}
-                    title={tr('Target computer')}
-                    items={hostSwitcherItems()}
-                    onSelect={({ id }) => selectSettingsHost(id)}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                      <StatusDot kind={hostStatusKind(targetHost()!.rootId)} size={6} />
-                      <Text
-                        style={{ ...type.footnote, fontWeight: '600', color: token('primary') }}
-                      >
-                        {targetHost()!.hostName}
-                      </Text>
-                      <Icon name="chevronDown" color={token('primary')} size={12} />
-                    </View>
-                  </MenuButton>
-                ) : (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                    <StatusDot kind={hostStatusKind(targetHost()!.rootId)} size={6} />
-                    <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
-                      {targetHost()!.hostName}
-                    </Text>
-                  </View>
-                )
-              }
-              footer={tr(
-                'These settings apply directly to {name} and stay synchronized with Maka Desktop.',
-                { name: targetHost()!.hostName },
-              )}
-            >
-              <Each of={DOMAIN_ORDER} key={(entry) => entry.domain}>
-                {(entry, index) => {
-                  const meta = () => HOST_SETTING_DOMAINS[entry().domain];
-                  const badgeBg = () => token(entry().badgeToken);
-                  return (
-                    <GroupRow
-                      leading={
-                        <IconBadge
-                          name={meta().icon as IconName}
-                          background={badgeBg()}
-                          size={28}
-                          iconSize={15}
-                        />
-                      }
-                      title={meta().title()}
-                      chevron
-                      divider={index() < DOMAIN_ORDER.length - 1}
-                      onPress={() => props.onOpenHostSetting(entry().domain, targetHost()!.rootId)}
-                    />
-                  );
-                }}
-              </Each>
-            </InsetGroup>
-          </If>
         </Scroll>
       </View>
     </NavPage>
+  );
+}
+
+export function HostSettingsRows(props: {
+  rootId: string;
+  onOpen: (domain: HostSettingDomain, rootId: string) => void;
+}) {
+  return (
+    <InsetGroup
+      header={tr('Computer Settings')}
+      footer={
+        !isHostConnected(props.rootId)
+          ? tr('Reconnect this computer to read and edit its settings.')
+          : undefined
+      }
+    >
+      <Each of={DOMAIN_ORDER} key={(entry) => entry.domain}>
+        {(entry, index) => {
+          const meta = () => HOST_SETTING_DOMAINS[entry().domain];
+          return (
+            <GroupRow
+              leading={
+                <IconBadge
+                  name={meta().icon}
+                  background={token(entry().badgeToken)}
+                  size={28}
+                  iconSize={15}
+                />
+              }
+              title={meta().title()}
+              chevron
+              disabled={!isHostConnected(props.rootId)}
+              divider={index() < DOMAIN_ORDER.length - 1}
+              onPress={() => props.onOpen(entry().domain, props.rootId)}
+            />
+          );
+        }}
+      </Each>
+    </InsetGroup>
   );
 }

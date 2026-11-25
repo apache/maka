@@ -26,7 +26,7 @@ import {
   type AgentInteractionSummary,
   type AgentSessionPage,
 } from '../bridge';
-import { connectedHosts, selectedScopeRootId, showToast } from './hostPool';
+import { connectedHosts, showToast } from './hostPool';
 import { hapticNotification } from './preferences';
 import { allSessions, refreshAllSessions } from './sessions';
 
@@ -57,12 +57,6 @@ export const allInboxItems = computed<InboxItem[]>(() => {
   }
   out.sort((a, b) => (b.record?.createdAt ?? 0) - (a.record?.createdAt ?? 0));
   return out;
-});
-
-export const filteredInboxItems = computed<InboxItem[]>(() => {
-  const scope = selectedScopeRootId();
-  if (scope === 'all') return allInboxItems();
-  return allInboxItems().filter((item) => item.rootId === scope);
 });
 
 export const totalPendingCount = computed<number>(() => allInboxItems().length);
@@ -159,7 +153,7 @@ export async function respondInboxItem(
 ): Promise<boolean> {
   busyKeys.update((prev) => ({ ...prev, [item.key]: true }));
   try {
-    await hostMutate(
+    const result = await hostMutate<{ kind: 'recorded' } | { kind: 'rejected'; reason: unknown }>(
       'agent',
       'respond',
       {
@@ -169,6 +163,7 @@ export async function respondInboxItem(
       },
       { rootId: item.rootId },
     );
+    if (result.kind === 'rejected') throw new Error(String(result.reason));
     hapticNotification(successKind);
     await Promise.all([refreshHostInbox(item.rootId, item.hostName), refreshAllSessions()]);
     return true;
