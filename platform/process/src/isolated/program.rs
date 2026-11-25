@@ -123,6 +123,26 @@ impl TaskOwner {
     }
 }
 
+/// Reclaim staged per-task runtime binaries after closure or aborted launch.
+/// Replay and publication only read `owner/`, `baseline/`, `workspace/`, and `home/`.
+pub(super) fn remove_runtime(resource: &Path) -> io::Result<()> {
+    let _resource = super::evidence::open_resource(resource)?;
+    let runtime = resource.join("inputs").join("runtime");
+    match fs::symlink_metadata(&runtime) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "installed runtime path is not an owned directory",
+                ));
+            }
+            fs::remove_dir_all(&runtime)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -95,7 +95,7 @@ pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io:
                 command.env(key, value);
             }
             let command = runtime.apply(command.sandbox(&sandbox).map_err(io::Error::other)?);
-            {
+            let run = async {
                 let status = if let Some(size) = size {
                     let (mut child, io) = crate::pty::spawn(command, size)
                         .await
@@ -183,6 +183,7 @@ pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io:
                 tokio::task::spawn_blocking(move || {
                     let pinned = super::evidence::pin(&original)?;
                     let snapshot = super::evidence::snapshot_identity(&pinned.owner)?;
+                    super::program::remove_runtime(&original)?;
                     let closure = Closure::GroupClosed {
                         resource: original.clone(),
                         snapshot,
@@ -198,8 +199,17 @@ pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io:
                 })
                 .await
                 .map_err(io::Error::other)??;
-                Ok(status.code().unwrap_or(1))
+                Ok::<_, io::Error>(status.code().unwrap_or(1))
             }
+            .await;
+            if run.is_err() {
+                let original = resource.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = super::program::remove_runtime(&original);
+                })
+                .await;
+            }
+            run
         }
     }
 }
@@ -667,22 +677,26 @@ fn publish_control(
 
 #[cfg(windows)]
 pub(super) const SNAPSHOT_UNSTABLE: i32 = 74;
+#[cfg(windows)]
+pub(super) const SNAPSHOT_UNSUPPORTED: i32 = 75;
 
 #[cfg(windows)]
 pub fn run_snapshot(resource: &Path) -> io::Result<i32> {
     use super::{evidence, fs, snapshot};
     use std::io::Write;
     // Only this resource is granted to the sandboxed copier. Its namespace
-    // ancestor and sibling tasks intentionally remain inaccessible.
+    // ancestor, sibling tasks, and protected owner/launch directories stay
+    // inaccessible; Host exchanges request/reply via a temporary `snapshot`
+    // directory and seals the validated proof into protected `owner/`.
     fn context(stage: &'static str) -> impl FnOnce(io::Error) -> io::Error {
         move |error| io::Error::new(error.kind(), format!("{stage}: {error}"))
     }
     let directory = maka_event_log::root::windows::open_nofollow(resource, false)
         .map_err(context("open snapshot resource"))?;
-    let owner =
-        fs::directory(&directory, "owner".as_ref()).map_err(context("open snapshot owner"))?;
+    let exchange = fs::directory(&directory, "snapshot".as_ref())
+        .map_err(context("open snapshot exchange"))?;
     let manifest: Manifest = evidence::read_json(
-        fs::read(&owner, "manifest.json".as_ref(), false)
+        fs::read(&exchange, "manifest.json".as_ref(), false)
             .map_err(context("open snapshot request"))?,
     )?;
     let Manifest::Snapshot { source, policy } = manifest else {
@@ -694,11 +708,17 @@ pub fn run_snapshot(resource: &Path) -> io::Result<i32> {
             Ok(super::Error::CaptureUnstable(path)) => {
                 (serde_json::to_vec(&path), SNAPSHOT_UNSTABLE)
             }
+            Ok(super::Error::CaptureUnsupported(message)) => {
+                (serde_json::to_vec(&message), SNAPSHOT_UNSUPPORTED)
+            }
             Ok(error) => return Err(io::Error::other(error)),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                (serde_json::to_vec(&error.to_string()), SNAPSHOT_UNSUPPORTED)
+            }
             Err(error) => return Err(context("capture workspace")(error)),
         },
     };
-    let mut file = fs::open_output(&owner, "snapshot.json".as_ref())
+    let mut file = fs::open_output(&exchange, "reply.json".as_ref())
         .map_err(context("open snapshot reply"))?;
     file.write_all(&reply.map_err(io::Error::other)?)?;
     file.sync_all()?;

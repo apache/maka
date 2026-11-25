@@ -142,5 +142,46 @@ fn capture_rejects_a_live_writer_and_baseline_pins_the_original_entry()
     )?;
     std::fs::write(resource.join("baseline/file"), b"replacement")?;
     assert!(reader.open_entry(Path::new("file")).is_err());
+
+    let reparse_source = temp.path().join("reparse-source");
+    std::fs::create_dir(&reparse_source)?;
+    let junction = reparse_source.join("link");
+    let mklink = Native::new("cmd.exe")
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&source)
+        .output()?;
+    assert!(mklink.status.success(), "{mklink:?}");
+    let reparse_input = maka_event_log::root::windows::open_nofollow(&reparse_source, false)?;
+    let scratch2 = fs::mkdir(&held, "capture-reparse".as_ref())?;
+    let error = fs::copy_tree(&reparse_input, &scratch2, |_| true).unwrap_err();
+    assert!(
+        matches!(&error, Error::CaptureUnsupported(message) if message.contains("link")),
+        "{error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resource_keeps_protected_boundaries_and_inheritable_home_subdirectories() -> io::Result<()> {
+    use maka_event_log::root::windows::{open_nofollow, validate_protected_private};
+    let temp = tempfile::tempdir()?;
+    let resource = fs::create_resource(&temp.path().join("namespace"))?;
+    let root = open_nofollow(&resource, false)?;
+    validate_protected_private(&root)?;
+    for protected in ["owner", "launch", "workspace", "home", "tmp", "inputs"] {
+        let dir = fs::directory(&root, protected.as_ref())?;
+        validate_protected_private(&dir)?;
+    }
+    let baseline = fs::directory(&root, "baseline".as_ref())?;
+    assert!(validate_protected_private(&baseline).is_err());
+    let home = fs::directory(&root, "home".as_ref())?;
+    for inheritable in [".config", "AppData", "AppData/Roaming", "AppData/Local"] {
+        let dir = fs::open_relative(&home, Path::new(inheritable))?;
+        assert!(
+            validate_protected_private(&dir).is_err(),
+            "{inheritable} must inherit execution account grants from home"
+        );
+    }
     Ok(())
 }

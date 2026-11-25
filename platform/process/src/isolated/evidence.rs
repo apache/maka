@@ -506,7 +506,7 @@ pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
     Ok(resource_fd)
 }
 #[cfg(unix)]
-fn directory_flags() -> rustix::fs::OFlags {
+pub(super) fn directory_flags() -> rustix::fs::OFlags {
     use rustix::fs::OFlags;
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
@@ -525,7 +525,7 @@ fn file_identity(file: &File) -> io::Result<super::FileIdentity> {
     super::fs::identity(file)
 }
 #[cfg(windows)]
-fn check_directory(file: &File, _: bool) -> io::Result<()> {
+pub(super) fn check_directory(file: &File, _: bool) -> io::Result<()> {
     if !file.metadata()?.is_dir() {
         return Err(invalid("expected private directory"));
     }
@@ -544,7 +544,7 @@ pub(super) fn open_optional(owner: &File, name: &str) -> io::Result<Option<File>
 }
 
 #[cfg(unix)]
-fn check_directory(file: &File, private: bool) -> io::Result<()> {
+pub(super) fn check_directory(file: &File, private: bool) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     if !metadata.is_dir()

@@ -1165,6 +1165,100 @@ async fn run_case(crash: bool) {
     }
 }
 
+#[cfg(windows)]
+struct WindowsSandboxGuard {
+    state_root: Option<PathBuf>,
+}
+
+#[cfg(windows)]
+impl WindowsSandboxGuard {
+    async fn setup(state_root: &Path) -> std::io::Result<Self> {
+        if maka_sandbox::windows::mxc::is_available() {
+            return Ok(Self { state_root: None });
+        }
+        let state_root = state_root.to_owned();
+        let setup_root = state_root.clone();
+        tokio::task::spawn_blocking(move || Self::setup_blocking(&setup_root))
+            .await
+            .map_err(std::io::Error::other)??;
+        Ok(Self {
+            state_root: Some(state_root),
+        })
+    }
+
+    fn setup_blocking(state_root: &Path) -> std::io::Result<()> {
+        use maka_host_runtime::sandbox::windows::{Installation, Status};
+        let installation = Installation::new(state_root);
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            if installation.status()? == Status::Removing {
+                Self::remove_blocking(state_root)?;
+            }
+            match installation.begin_setup() {
+                Ok(setup) => {
+                    let result = (|| {
+                        let configured = setup.request().apply()?;
+                        setup.finish(configured)
+                    })();
+                    if result.is_err() {
+                        let _ = Self::remove_blocking(state_root);
+                    }
+                    return result;
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn remove_blocking(state_root: &Path) -> std::io::Result<()> {
+        use maka_host_runtime::sandbox::windows::Installation;
+        let installation = Installation::new(state_root);
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            match installation.begin_removal() {
+                Ok(removal) => {
+                    let receipt = removal
+                        .request()
+                        .map(|request| request.apply())
+                        .transpose()?;
+                    return removal.finish(receipt);
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn teardown(mut self) -> std::io::Result<()> {
+        let Some(state_root) = self.state_root.take() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || Self::remove_blocking(&state_root))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsSandboxGuard {
+    fn drop(&mut self) {
+        if let Some(state_root) = self.state_root.take() {
+            let _ = Self::remove_blocking(&state_root);
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1247,6 +1341,8 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
         commit.arg("--package").arg(package?.path());
     }
     run(&mut commit).await?;
+    #[cfg(windows)]
+    let sandbox_guard = WindowsSandboxGuard::setup(&sandbox.root).await?;
     let mut serve = host::command(&sandbox)?;
     serve
         .args(["application", "serve", "--root"])
@@ -1276,11 +1372,38 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
     })
     .await;
     host.cleanup().await?;
+    #[cfg(windows)]
+    sandbox_guard.teardown().await?;
     assert_eq!(
         result?,
         json!({"kind":"checked","info":{"title":null,"name":"isolated-probe","version":"1"},"methods":[]})
     );
     Ok(())
+}
+
+fn remove_task_resource(root: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fn make_writable(dir: &Path) -> std::io::Result<()> {
+            let mut stack = vec![dir.to_owned()];
+            while let Some(path) = stack.pop() {
+                let meta = std::fs::symlink_metadata(&path)?;
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                if meta.is_dir() {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+                    for entry in std::fs::read_dir(&path)? {
+                        stack.push(entry?.path());
+                    }
+                }
+            }
+            Ok(())
+        }
+        make_writable(root)?;
+    }
+    std::fs::remove_dir_all(root)
 }
 
 fn file_digest(path: &Path) -> std::io::Result<[u8; 32]> {
@@ -1342,6 +1465,9 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     std::fs::create_dir(&state)?;
     std::fs::write(source.join("document"), b"original")?;
     std::fs::write(state.join("secret"), b"private")?;
+    #[cfg(windows)]
+    let sandbox_guard = WindowsSandboxGuard::setup(&state).await?;
+    let outcome: std::result::Result<(), Box<dyn std::error::Error>> = async {
     let mut owner = private_release_task(&source, &state).await?;
     let descriptor = owner.descriptor();
     owner.seed_home([
@@ -1424,6 +1550,10 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     observed??;
     assert!(status.success(), "{status}: {diagnostics}");
 
+    assert!(
+        !descriptor.resource_ref.join("inputs/runtime").exists(),
+        "closed task must reclaim staged inputs/runtime"
+    );
     let evidence = isolated::closed_evidence(&descriptor)
         .await?
         .expect("closed managed task evidence");
@@ -1490,7 +1620,14 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     assert_eq!(contents, "config");
+    drop((file, home, candidate, evidence, child));
+    remove_task_resource(&descriptor.resource_ref)?;
     Ok(())
+    }
+    .await;
+    #[cfg(windows)]
+    sandbox_guard.teardown().await?;
+    outcome
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

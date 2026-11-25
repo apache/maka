@@ -121,7 +121,7 @@ fn open_at(
     let file = unsafe { File::from_raw_handle(handle) };
     if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+            io::ErrorKind::Unsupported,
             "reparse point in task resource",
         ));
     }
@@ -318,7 +318,7 @@ pub(in crate::isolated) fn publish(directory: &File, name: &str, bytes: &[u8]) -
     result
 }
 
-pub(super) fn create_resource(namespace: &Path) -> io::Result<std::path::PathBuf> {
+pub(in crate::isolated) fn ensure_namespace(namespace: &Path) -> io::Result<File> {
     use maka_event_log::root::windows::{create_private_directory, open_nofollow};
     match create_private_directory(namespace) {
         Ok(()) => {}
@@ -327,11 +327,22 @@ pub(super) fn create_resource(namespace: &Path) -> io::Result<std::path::PathBuf
     }
     let parent = open_nofollow(namespace, false)?;
     validate_protected_private(&parent)?;
+    Ok(parent)
+}
+
+pub(super) fn create_resource(namespace: &Path) -> io::Result<std::path::PathBuf> {
+    let parent = ensure_namespace(namespace)?;
     let name = format!("maka-native-task-{}", uuid::Uuid::new_v4());
     let resource = mkdir(&parent, name.as_ref())?;
-    for name in ["workspace", "baseline", "tmp", "owner", "launch", "inputs"] {
+    // Protected child boundaries never inherit account ACEs from `resource`
+    // (`owner`/`launch` stay unreachable during snapshot capture, while
+    // `workspace`/`home`/`tmp`/`inputs` do not inherit `resource`'s Deny ACE
+    // during task execution). `baseline` and initial HOME subdirectories stay
+    // inheritable so snapshot and execution account grants propagate cleanly.
+    for name in ["workspace", "tmp", "owner", "launch", "inputs"] {
         mkdir(&resource, name.as_ref())?;
     }
+    create_entry(&resource, "baseline".as_ref(), true)?;
     let home = mkdir(&resource, "home".as_ref())?;
     for path in super::INITIAL_HOME_DIRECTORIES {
         let path = Path::new(path);
@@ -339,7 +350,11 @@ pub(super) fn create_resource(namespace: &Path) -> io::Result<std::path::PathBuf
         for part in path.parent().expect("HOME directory parent").components() {
             parent = directory(&parent, part.as_os_str())?;
         }
-        mkdir(&parent, path.file_name().expect("initial HOME directory"))?;
+        create_entry(
+            &parent,
+            path.file_name().expect("initial HOME directory"),
+            true,
+        )?;
     }
     Ok(namespace.join(name))
 }

@@ -49,6 +49,7 @@ pub(crate) fn managed_profile_policy() -> std::io::Result<maka_sandbox::filesyst
             ".gemini",
             ".config",
             ".local",
+            #[cfg(target_os = "macos")]
             "Library/Keychains",
         ] {
             rules.push(Rule::subtree(home.join(path), Access::Deny));

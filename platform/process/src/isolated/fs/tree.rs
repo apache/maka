@@ -66,9 +66,11 @@ fn observe(file: &File) -> io::Result<Observation> {
 }
 
 fn changed(path: &Path, error: io::Error) -> Error {
-    if matches!(
+    if error.kind() == io::ErrorKind::Unsupported {
+        Error::CaptureUnsupported(format!("{}: {error}", path.display()))
+    } else if matches!(
         error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::InvalidData
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
     ) || error.raw_os_error()
         == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
     {

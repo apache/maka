@@ -335,6 +335,7 @@ test('Windows process, sandbox and account-guard regressions are selected from t
       plan.suites['windows-shell'].filter,
       /native_task_namespace_can_be_denied_by_policy/,
     );
+    assert.match(plan.suites['windows-shell'].filter, /isolated::tests::/);
     assert.ok(
       plan.suites['windows-shell'].filter.includes(
         '(binary_id(=maka-cli::integration) & test(sandbox::isolated::))',
