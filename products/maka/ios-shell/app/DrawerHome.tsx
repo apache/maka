@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { copy } from './copy';
+import { tr } from './locale';
 import { Scroll, signal, Text, View } from 'nsh';
 import { AlertDialog, ContextMenu, Input, MenuButton } from 'nsh/base';
 import { confirmDestructive } from './ui';
@@ -142,8 +142,8 @@ export function DrawerHome(props: DrawerHomeProps) {
         const name =
           s.workspace?.name ??
           (wsPath
-            ? (wsPath.split('/').filter(Boolean).pop() ?? copy('Workspace', '工作区', '工作區'))
-            : copy('Default workspace', '默认工作区', '預設工作區'));
+            ? (wsPath.split('/').filter(Boolean).pop() ?? tr('Workspace'))
+            : tr('Default workspace'));
         groups.set(key, {
           key,
           name,
@@ -170,31 +170,27 @@ export function DrawerHome(props: DrawerHomeProps) {
 
   const activeHostLabel = (): string => {
     const active = props.hostState().active;
-    if (active) return active.hostName + ' · ' + copy('Online', '在线', '在線');
+    if (active) return tr('{name} · Online', { name: active.hostName });
     const total = props.hostState().hosts.length;
     return total > 0
-      ? copy(
-          `${total} paired ${total === 1 ? 'computer' : 'computers'}`,
-          `${total} 台已配对电脑`,
-          `${total} 台已配對電腦`,
-        )
-      : copy('No connected Host', '未连接电脑', '未連接電腦');
+      ? tr('{count, plural, one {# paired computer} other {# paired computers}}', { count: total })
+      : tr('No connected Host');
   };
 
   const renderSessionRow = (sess: () => AgentSession, indented = false) => {
     const actions = () => [
-      { id: 'rename', label: copy('Rename', '重命名', '重新命名'), icon: 'pencil' },
+      { id: 'rename', label: tr('Rename'), icon: 'pencil' },
       {
         id: 'pin',
-        label: sess().pinned ? copy('Unpin', '取消置顶', '取消置頂') : copy('Pin', '置顶', '置頂'),
+        label: sess().pinned ? tr('Unpin') : tr('Pin'),
         icon: 'pin',
       },
       {
         id: 'archive',
-        label: sess().archived ? copy('Restore', '恢复', '還原') : copy('Archive', '归档', '封存'),
+        label: sess().archived ? tr('Restore') : tr('Archive'),
         icon: 'archivebox',
       },
-      { id: 'delete', label: copy('Delete', '删除', '刪除'), icon: 'trash', destructive: true },
+      { id: 'delete', label: tr('Delete'), icon: 'trash', destructive: true },
     ];
     const select = async ({ id }: { id: string }) => {
       const session = sess();
@@ -207,11 +203,11 @@ export function DrawerHome(props: DrawerHomeProps) {
       switch (id) {
         case 'rename': {
           const result = await AlertDialog.show({
-            title: copy('Rename conversation', '重命名会话', '重新命名對話'),
+            title: tr('Rename conversation'),
             input: { defaultValue: session.title, required: true, selectTextOnFocus: true },
             actions: [
-              { id: 'cancel', label: copy('Cancel', '取消', '取消'), role: 'cancel' },
-              { id: 'save', label: copy('Save', '保存', '儲存') },
+              { id: 'cancel', label: tr('Cancel'), role: 'cancel' },
+              { id: 'save', label: tr('Save') },
             ],
           });
           if (sameAnchor() && result.action === 'save' && result.value?.trim())
@@ -226,10 +222,7 @@ export function DrawerHome(props: DrawerHomeProps) {
           break;
         case 'delete':
           if (
-            (await confirmDestructive(
-              copy('Permanently delete this conversation?', '永久删除此会话？', '永久刪除此對話？'),
-              copy('Delete', '删除', '刪除'),
-            )) &&
+            (await confirmDestructive(tr('Permanently delete this conversation?'), tr('Delete'))) &&
             sameAnchor()
           )
             props.onChangeSessionLifecycle(session, 'remove');
@@ -258,7 +251,7 @@ export function DrawerHome(props: DrawerHomeProps) {
             trigger={
               <View
                 role="button"
-                accessibilityLabel={'Session ' + sess().title}
+                accessibilityLabel={tr('Conversation: {title}', { title: sess().title })}
                 onPress={() => props.onSelectSession(sess())}
                 style={{
                   flex: 1,
@@ -285,7 +278,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                     color: indented ? token('muted-foreground') : token('foreground'),
                   }}
                 >
-                  {(sess().kind === 'room' ? '# ' : '') + sess().title}
+                  {sess().kind === 'room' ? tr('# {title}', { title: sess().title }) : sess().title}
                 </Text>
                 <If when={sess().hasUnread}>
                   <View
@@ -304,7 +297,9 @@ export function DrawerHome(props: DrawerHomeProps) {
           <If when={!indented && childrenOf(sess().id).length > 0}>
             <View
               role="button"
-              accessibilityLabel={'Toggle sub-sessions ' + sess().id}
+              accessibilityLabel={tr('Show or hide sub-conversations for {title}', {
+                title: sess().title,
+              })}
               onPress={() => {
                 const cur = collapsedParents();
                 collapsedParents.set({ ...cur, [sess().id]: !cur[sess().id] });
@@ -312,8 +307,10 @@ export function DrawerHome(props: DrawerHomeProps) {
               style={{ paddingHorizontal: 5, paddingVertical: 4 }}
             >
               <Text style={{ fontSize: 11.5, color: token('subdued') }}>
-                {String(childrenOf(sess().id).length) +
-                  (collapsedParents()[sess().id] ? ' ▸' : ' ▾')}
+                {tr('{count} {arrow}', {
+                  count: childrenOf(sess().id).length,
+                  arrow: collapsedParents()[sess().id] ? '▸' : '▾',
+                })}
               </Text>
             </View>
           </If>
@@ -321,7 +318,7 @@ export function DrawerHome(props: DrawerHomeProps) {
           <MenuButton
             items={actions()}
             onSelect={select}
-            accessibilityLabel={'Session actions ' + sess().title}
+            accessibilityLabel={tr('Actions for {title}', { title: sess().title })}
             class="min-h-11 min-w-11 items-center justify-center"
           >
             <Text class="text-muted-foreground">•••</Text>
@@ -344,12 +341,14 @@ export function DrawerHome(props: DrawerHomeProps) {
           paddingBottom: 8,
         }}
       >
-        <Text style={{ fontSize: 22, fontWeight: '700', color: token('foreground') }}>Maka</Text>
+        <Text style={{ fontSize: 22, fontWeight: '700', color: token('foreground') }}>
+          {tr('Maka')}
+        </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <If when={hasAgentEndpoint(props.hostState().active)}>
             <View
               role="button"
-              accessibilityLabel="New draft conversation"
+              accessibilityLabel={tr('New conversation')}
               onPress={() => props.onStartDraft()}
               style={{
                 width: 34,
@@ -365,7 +364,7 @@ export function DrawerHome(props: DrawerHomeProps) {
           </If>
           <View
             role="button"
-            accessibilityLabel="Add remote Host"
+            accessibilityLabel={tr('Add remote Host')}
             onPress={props.onOpenPairing}
             style={{
               height: 34,
@@ -377,12 +376,12 @@ export function DrawerHome(props: DrawerHomeProps) {
             }}
           >
             <Text style={{ fontSize: 12.5, fontWeight: '500', color: token('muted-foreground') }}>
-              {copy('Pair', '配对', '配對')}
+              {tr('Pair')}
             </Text>
           </View>
           <View
             role="button"
-            accessibilityLabel="Settings"
+            accessibilityLabel={tr('Settings')}
             onPress={props.onOpenSettings}
             style={{
               width: 34,
@@ -402,10 +401,10 @@ export function DrawerHome(props: DrawerHomeProps) {
       <If when={hasAgentEndpoint(props.hostState().active)}>
         <View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
           <Input
-            accessibilityLabel="Search sessions"
+            accessibilityLabel={tr('Search conversations')}
             value={props.catalogQuery()}
             onChange={({ value }: { value: string }) => props.onCatalogQueryChange(value)}
-            placeholder={copy('Search conversations…', '搜索会话标题…', '搜尋對話標題…')}
+            placeholder={tr('Search conversations…')}
             style={{
               minHeight: 36,
               borderRadius: 11,
@@ -419,21 +418,20 @@ export function DrawerHome(props: DrawerHomeProps) {
           <View style={{ flexDirection: 'row', gap: 6 }}>
             {(
               [
-                { id: 'all', label: copy('All', '全部', '全部') },
+                { id: 'all', label: tr('All') },
                 {
                   id: 'needs_you',
                   label:
                     props.needsYouCount() > 0
-                      ? copy('Needs attention ', '待处理 ', '待處理 ') +
-                        String(props.needsYouCount())
-                      : copy('Needs attention', '待处理', '待處理'),
+                      ? tr('Needs attention {count}', { count: props.needsYouCount() })
+                      : tr('Needs attention'),
                 },
-                { id: 'archived', label: copy('Archived', '已归档', '已封存') },
+                { id: 'archived', label: tr('Archived') },
               ] as const
             ).map((tab) => (
               <View
                 role="button"
-                accessibilityLabel={'Filter ' + tab.id}
+                accessibilityLabel={tr('Filter: {label}', { label: tab.label })}
                 onPress={() => props.onCatalogFilterChange(tab.id)}
                 style={{
                   flex: 1,
@@ -489,7 +487,7 @@ export function DrawerHome(props: DrawerHomeProps) {
         {/* Global Entry Row: Maka Bot */}
         <View
           role="button"
-          accessibilityLabel="Open Maka Bot"
+          accessibilityLabel={tr('Open Maka Bot')}
           onPress={props.onOpenBot}
           style={{
             minHeight: 48,
@@ -520,16 +518,12 @@ export function DrawerHome(props: DrawerHomeProps) {
           </View>
           <View style={{ flex: 1, gap: 1 }}>
             <Text style={{ fontSize: 15, fontWeight: '600', color: token('foreground') }}>
-              Maka Bot
+              {tr('Maka Bot')}
             </Text>
             <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
               {props.hostState().active
-                ? copy('Open your remote workspaces', '随时调度所有远端工作区', '開啟遠端工作區')
-                : copy(
-                    'Connect a Host to sync conversations',
-                    '连接电脑后同步跨设备对话',
-                    '連接電腦後同步跨裝置對話',
-                  )}
+                ? tr('Open your remote workspaces')
+                : tr('Connect a Host to sync conversations')}
             </Text>
           </View>
           <If when={props.needsYouCount() > 0 || props.pendingCount() > 0}>
@@ -564,18 +558,16 @@ export function DrawerHome(props: DrawerHomeProps) {
             }}
           >
             <Text style={{ fontSize: 16, fontWeight: '600', color: token('foreground') }}>
-              {copy('Connect your first computer', '连接你的第一台电脑', '連接你的第一台電腦')}
+              {tr('Connect your first computer')}
             </Text>
             <Text style={{ fontSize: 13.5, lineHeight: 20, color: token('muted-foreground') }}>
-              {copy(
+              {tr(
                 'Scan the Maka Desktop pairing QR code or paste a maka://pair/v1 link to open your projects and Agent conversations.',
-                '扫描桌面端 Maka 配对二维码，或粘贴 maka://pair/v1 链接，直连你的项目与 Agent 会话。',
-                '掃描 Maka 桌面版的配對 QR 碼，或貼上 maka://pair/v1 連結，直接開啟專案與 Agent 對話。',
               )}
             </Text>
             <View
               role="button"
-              accessibilityLabel="Pair first computer"
+              accessibilityLabel={tr('Pair your first computer')}
               onPress={props.onOpenPairing}
               style={{
                 minHeight: 44,
@@ -589,7 +581,7 @@ export function DrawerHome(props: DrawerHomeProps) {
               <Text
                 style={{ fontSize: 14.5, fontWeight: '600', color: token('primary-foreground') }}
               >
-                {copy('Scan or paste a pairing link', '扫码或粘贴配对码', '掃描或貼上配對連結')}
+                {tr('Scan or paste a pairing link')}
               </Text>
             </View>
           </View>
@@ -629,7 +621,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                 <If when={hasAgentEndpoint(props.hostState().active)}>
                   <View
                     role="button"
-                    accessibilityLabel="Create new room"
+                    accessibilityLabel={tr('New room')}
                     onPress={props.onOpenNewRoom}
                     style={{
                       paddingHorizontal: 8,
@@ -638,7 +630,9 @@ export function DrawerHome(props: DrawerHomeProps) {
                       backgroundColor: token('hover'),
                     }}
                   >
-                    <Text style={{ fontSize: 11.5, color: token('muted-foreground') }}>+ Room</Text>
+                    <Text style={{ fontSize: 11.5, color: token('muted-foreground') }}>
+                      {tr('+ Room')}
+                    </Text>
                   </View>
                 </If>
               </View>
@@ -656,7 +650,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                           paddingHorizontal: 8,
                         }}
                       >
-                        {copy('Pin', '置顶', '置頂')}
+                        {tr('Pin')}
                       </Text>
                       <Each of={pinnedSessions()} key={(s) => s.id}>
                         {(sess) => renderSessionRow(sess)}
@@ -680,7 +674,11 @@ export function DrawerHome(props: DrawerHomeProps) {
                         >
                           <View
                             role="button"
-                            accessibilityLabel={'Toggle project ' + group().name}
+                            accessibilityLabel={
+                              collapsedProjects()[group().key]
+                                ? tr('Expand {name}', { name: group().name })
+                                : tr('Collapse {name}', { name: group().name })
+                            }
                             onPress={() => {
                               const cur = collapsedProjects();
                               collapsedProjects.set({
@@ -715,7 +713,9 @@ export function DrawerHome(props: DrawerHomeProps) {
 
                           <View
                             role="button"
-                            accessibilityLabel={'New draft in ' + group().name}
+                            accessibilityLabel={tr('New conversation in {name}', {
+                              name: group().name,
+                            })}
                             onPress={() => {
                               const g = group();
                               if (g.projectId && g.path) {
@@ -769,11 +769,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                             <If when={group().sessions.length === 0}>
                               <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
                                 <Text style={{ fontSize: 12.5, color: token('subdued') }}>
-                                  {copy(
-                                    'Tap + to start a conversation',
-                                    '点右侧 + 直接开始新对话',
-                                    '點一下右側的 + 開始新對話',
-                                  )}
+                                  {tr('Tap + to start a conversation')}
                                 </Text>
                               </View>
                             </If>
@@ -815,7 +811,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                   <If when={props.hasMoreSessions()}>
                     <View
                       role="button"
-                      accessibilityLabel="Load more sessions"
+                      accessibilityLabel={tr('Load more conversations')}
                       onPress={props.onLoadMoreSessions}
                       style={{
                         minHeight: 38,
@@ -828,7 +824,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                       }}
                     >
                       <Text style={{ fontSize: 13, color: token('muted-foreground') }}>
-                        {copy('Load more conversations', '加载更多会话', '載入更多對話')}
+                        {tr('Load more conversations')}
                       </Text>
                     </View>
                   </If>
@@ -839,7 +835,7 @@ export function DrawerHome(props: DrawerHomeProps) {
               <If when={!hasAgentEndpoint(props.hostState().active)}>
                 <View
                   role="button"
-                  accessibilityLabel={'Open workspace ' + hostItem().hostName}
+                  accessibilityLabel={tr('Open workspace on {name}', { name: hostItem().hostName })}
                   onPress={props.onOpenActiveWorkspace}
                   style={{
                     marginLeft: 14,
@@ -850,7 +846,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                   }}
                 >
                   <Text style={{ fontSize: 14.5, color: token('foreground') }}>
-                    {copy('Open live workspace →', '打开实时工作区会话 →', '開啟即時工作區對話 →')}
+                    {tr('Open live workspace →')}
                   </Text>
                 </View>
               </If>
@@ -863,7 +859,7 @@ export function DrawerHome(props: DrawerHomeProps) {
           <View style={{ gap: 4, paddingTop: 4 }}>
             <View
               role="button"
-              accessibilityLabel="Toggle saved offline hosts"
+              accessibilityLabel={tr('Show or hide saved offline computers')}
               onPress={() => offlineExpanded.set(!offlineExpanded())}
               style={{
                 flexDirection: 'row',
@@ -877,8 +873,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                 {offlineExpanded() ? '▾' : '▸'}
               </Text>
               <Text style={{ fontSize: 12, fontWeight: '600', color: token('subdued') }}>
-                {copy('Saved computers · ', '已保存电脑 · ', '已儲存電腦 · ') +
-                  String(offlineHosts().length)}
+                {tr('Saved computers · {count}', { count: offlineHosts().length })}
               </Text>
             </View>
 
@@ -888,7 +883,7 @@ export function DrawerHome(props: DrawerHomeProps) {
                   {(hostItem) => (
                     <View
                       role="button"
-                      accessibilityLabel={'Host ' + hostItem().hostName}
+                      accessibilityLabel={tr('Host: {name}', { name: hostItem().hostName })}
                       onPress={() => props.onConnectHost(hostItem())}
                       style={{
                         minHeight: 44,
@@ -918,15 +913,11 @@ export function DrawerHome(props: DrawerHomeProps) {
                           {hostItem().hostName}
                         </Text>
                         <Text style={{ fontSize: 11.5, color: token('subdued') }}>
-                          {copy(
-                            'Saved · Tap to connect',
-                            '已保存 · 点击连接',
-                            '已儲存 · 點一下即可連線',
-                          )}
+                          {tr('Saved · Tap to connect')}
                         </Text>
                       </View>
                       <Text style={{ fontSize: 13, color: token('subdued') }}>
-                        {copy('Connect ›', '连线 ›', '連線 ›')}
+                        {tr('Connect ›')}
                       </Text>
                     </View>
                   )}
@@ -940,7 +931,7 @@ export function DrawerHome(props: DrawerHomeProps) {
         <If when={hasAgentEndpoint(props.hostState().active)}>
           <View
             role="button"
-            accessibilityLabel="Automations"
+            accessibilityLabel={tr('Automations')}
             onPress={props.onOpenAutomations}
             style={{
               minHeight: 44,
@@ -957,7 +948,7 @@ export function DrawerHome(props: DrawerHomeProps) {
             }}
           >
             <Text style={{ fontSize: 14, fontWeight: '500', color: token('foreground') }}>
-              {copy('Schedules and automations', '定时任务与自动化', '排程與自動化')}
+              {tr('Schedules and automations')}
             </Text>
             <Text style={{ fontSize: 13, color: token('subdued') }}>›</Text>
           </View>
@@ -979,7 +970,7 @@ export function DrawerHome(props: DrawerHomeProps) {
       >
         <View
           role="button"
-          accessibilityLabel="Switch host filter"
+          accessibilityLabel={tr('Switch computer filter')}
           onPress={props.onSwitchFilter}
           style={{
             flex: 1,
@@ -1008,9 +999,7 @@ export function DrawerHome(props: DrawerHomeProps) {
             </Text>
           </View>
           <Text style={{ fontSize: 12, color: token('muted-foreground') }}>
-            {props.hostState().filter.kind === 'all_computers'
-              ? copy('All', '全部', '全部')
-              : copy('One Host', '单台', '單台')}
+            {props.hostState().filter.kind === 'all_computers' ? tr('All') : tr('One Host')}
           </Text>
         </View>
       </View>

@@ -25,6 +25,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const CATALOGS = [
   'products/maka/workbench/locales',
+  'products/maka/ios-shell/locales',
   'plugins/shared/manifest-locales',
   'platform/computer-use/locales',
   'plugins/agent/facts/locales',

@@ -23,6 +23,7 @@ import type {
   HistoryRowAddress,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { host } from 'nsh';
+import { currentLocale, tr } from './locale';
 
 export type HostViewFilter =
   | { kind: 'all_computers' }
@@ -56,9 +57,11 @@ export function pathLabel(
   path: PathSummary | null | undefined,
   transport?: ActiveHostInfo['transport'],
 ): string {
-  if (transport === 'websocket') return 'WebSocket';
-  if (!path) return 'QUIC';
-  return (path.kind === 'direct' ? 'Direct QUIC' : 'Relay') + ' · ' + path.rttMs + ' ms';
+  if (transport === 'websocket') return tr('WebSocket');
+  if (!path) return tr('QUIC');
+  return tr(path.kind === 'direct' ? 'Direct QUIC · {latency} ms' : 'Relay · {latency} ms', {
+    latency: new Intl.NumberFormat(currentLocale()).format(path.rttMs),
+  });
 }
 
 export interface HostStateSnapshot {
@@ -71,6 +74,8 @@ export interface HostStateSnapshot {
   disconnectReason?: string;
   disconnectedRootId?: string;
 }
+
+export interface BootstrapSnapshot extends HostStateSnapshot {}
 
 export interface ParsedTicketInfo {
   pairingId: number;
@@ -495,8 +500,8 @@ export interface AgentGitWorkspaceDiff {
 
 /* ---- Low-level nsh/host transport ---- */
 
-export function bootstrap(): Promise<HostStateSnapshot> {
-  return host.call('ios.bootstrap', {}) as Promise<HostStateSnapshot>;
+export function bootstrap(): Promise<BootstrapSnapshot> {
+  return host.call('ios.bootstrap', {}) as Promise<BootstrapSnapshot>;
 }
 
 export function beginPairing(

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { copy } from './copy';
+import { tr } from './locale';
 
 function exactObject(value: unknown, keys: string[]): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -44,21 +44,21 @@ export function describePermissions(value: unknown): string | null {
     )
       return null;
     lines.push(
-      `${rule.access === 'write' ? copy('Read and write', '读写', '讀寫') : copy('Read only', '只读', '唯讀')} · ${rule.scope === 'subtree' ? copy('Directory and descendants', '目录及其子项', '目錄及其子項') : copy('Exact path', '指定路径', '指定路徑')}: ${JSON.stringify(rule.path)}`,
+      tr('{access} · {scope}: {path}', {
+        access: rule.access === 'write' ? tr('Read/write') : tr('Read only'),
+        scope: rule.scope === 'subtree' ? tr('path and descendants') : tr('this exact path'),
+        path: JSON.stringify(rule.path),
+      }),
     );
   }
-  if (!lines.length)
-    lines.push(copy('No additional filesystem access', '无额外文件权限', '無額外檔案權限'));
-  if (grants.network === 'allowed')
-    lines.push(copy('Network: all destinations', '网络：所有目标', '網路：所有目標'));
-  else if (grants.network === 'denied')
-    lines.push(copy('Network: no access', '网络：无访问权限', '網路：無存取權限'));
+  if (!lines.length) lines.push(tr('Filesystem: no additional access'));
+  if (grants.network === 'allowed') lines.push(tr('Network: all destinations'));
+  else if (grants.network === 'denied') lines.push(tr('Network: no access'));
   else {
     const network = exactObject(grants.network, ['restricted']);
     const restricted = exactObject(network?.restricted, ['destinations']);
     if (!restricted || !Array.isArray(restricted.destinations)) return null;
-    if (!restricted.destinations.length)
-      lines.push(copy('Network: no destinations', '网络：无目标', '網路：無目標'));
+    if (!restricted.destinations.length) lines.push(tr('Network: no destinations'));
     for (const item of restricted.destinations) {
       const target = exactObject(item, ['host', 'port']);
       if (
@@ -72,11 +72,10 @@ export function describePermissions(value: unknown): string | null {
       )
         return null;
       lines.push(
-        copy(
-          `Network: exact host ${JSON.stringify(target.host)}, port ${target.port}`,
-          `网络：指定主机 ${JSON.stringify(target.host)}，端口 ${target.port}`,
-          `網路：指定主機 ${JSON.stringify(target.host)}，連接埠 ${target.port}`,
-        ),
+        tr('Network: exact host {host}, port {port}', {
+          host: JSON.stringify(target.host),
+          port: target.port,
+        }),
       );
     }
   }
@@ -86,13 +85,13 @@ export function describePermissions(value: unknown): string | null {
 function scopeLabel(scope: 'once' | 'run' | 'session' | 'always'): string {
   switch (scope) {
     case 'once':
-      return copy('once', '本次', '這次');
+      return tr('This call');
     case 'run':
-      return copy('this turn', '本轮', '這個輪次');
+      return tr('This run');
     case 'session':
-      return copy('this conversation', '本会话', '這段對話');
+      return tr('This session');
     case 'always':
-      return copy('always', '始终', '一律');
+      return tr('Always');
   }
 }
 
@@ -107,21 +106,21 @@ export function describeChildDecision(value: unknown): string | null {
     const detail = describePermissions(decision.permissions);
     return detail === null
       ? null
-      : `${copy('Allow additional permissions · scope:', '允许额外权限 · 范围：', '允許額外權限 · 範圍：')} ${scopeLabel(scope)}\n${detail}`;
+      : [
+          tr('Allow additional permissions · Scope: {scope}', { scope: scopeLabel(scope) }),
+          detail,
+        ].join('\n');
   }
   if (
     answer.kind === 'computer_app' &&
     (answer.decision === 'once' || answer.decision === 'session' || answer.decision === 'always')
   )
-    return `${copy('Allow control of the desktop application · scope:', '允许控制桌面应用 · 范围：', '允許控制桌面應用程式 · 範圍：')} ${scopeLabel(answer.decision)}`;
+    return tr('Allow control of the desktop application · Scope: {scope}', {
+      scope: scopeLabel(answer.decision),
+    });
   if (answer.decision !== 'allow') return null;
-  if (answer.kind === 'service_approval')
-    return copy('Allow this service call only', '仅允许本次服务调用', '僅允許這次服務呼叫');
+  if (answer.kind === 'service_approval') return tr('Allow this service call only');
   if (answer.kind === 'client_capability')
-    return copy(
-      'Allow the requested client capability for this interaction',
-      '允许本次交互使用请求的客户端能力',
-      '允許這次互動使用要求的用戶端功能',
-    );
+    return tr('Allow the requested client capability for this interaction');
   return null;
 }

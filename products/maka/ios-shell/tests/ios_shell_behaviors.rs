@@ -263,8 +263,8 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     app.wait_for("text:Second test Host").unwrap();
 
     app.press("label:Open drawer").unwrap();
-    app.wait_for("label:Host First test Host").unwrap();
-    app.press("label:Host First test Host").unwrap();
+    app.wait_for("label:Host: First test Host").unwrap();
+    app.press("label:Host: First test Host").unwrap();
     app.wait_for("text:First test Host").unwrap();
     let (same_peer, _) = first.sas().await;
     assert_eq!(peer, same_peer);
@@ -291,11 +291,12 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let mut app = Headless::start(config).unwrap();
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
-    app.wait_for("label:Relay Bearer First test Host").unwrap();
-    app.press("label:Relay Bearer First test Host").unwrap();
-    app.type_text("label:Saved Host relay Bearer", RELAY_TOKEN)
+    app.wait_for("label:Relay Bearer for First test Host")
         .unwrap();
-    app.press("label:Connect with Bearer").unwrap();
+    app.press("label:Relay Bearer for First test Host").unwrap();
+    app.type_text("label:Saved Host relay Bearer token", RELAY_TOKEN)
+        .unwrap();
+    app.press("label:Connect with Bearer token").unwrap();
     let (same_peer, _) = first.sas().await;
     assert_eq!(same_peer, peer);
     app.wait_for("label:Host actions").unwrap();
@@ -479,7 +480,7 @@ async fn conversation_consumes_events_and_reconnects_from_the_last_seen_cursor()
     app.wait_for("text:Live user history").unwrap();
     app.wait_for("text:Live assistant history").unwrap();
 
-    app.wait_for("text:/Read and write.*Directory and descendants/")
+    app.wait_for("text:/Read/write.*path and descendants/")
         .unwrap();
     app.wait_for("text:/example.org/").unwrap();
     app.wait_for("label:Allow once").unwrap();
@@ -491,15 +492,15 @@ async fn conversation_consumes_events_and_reconnects_from_the_last_seen_cursor()
         permission["answer"]["decision"]["permissions"]["filesystem"][0]["path"],
         "/private/test"
     );
-    app.wait_for("text:/This permission shape must be reviewed on Desktop/")
+    app.wait_for("text:/Review this permission request on Desktop/")
         .unwrap();
     app.wait_for_gone("label:Allow once", Duration::from_secs(3))
         .unwrap();
     app.wait_for_gone("label:Allow for this turn", Duration::from_secs(3))
         .unwrap();
 
-    app.wait_for("text:/scope: this conversation/").unwrap();
-    app.wait_for("text:/Exact path.*child-root/").unwrap();
+    app.wait_for("text:/Scope: This session/").unwrap();
+    app.wait_for("text:/this exact path.*child-root/").unwrap();
     app.press("label:Approve child decision").unwrap();
     let child = seen_mutations.try_recv().unwrap();
     assert_eq!(child["requestId"], "child");
@@ -511,7 +512,7 @@ async fn conversation_consumes_events_and_reconnects_from_the_last_seen_cursor()
     app.wait_for("label:Question option Local").unwrap();
     app.press("label:Question option Local").unwrap();
     app.press("label:Submit question answer").unwrap();
-    app.wait_for("text:/已回答/").unwrap();
+    app.wait_for("text:/Answered/").unwrap();
     let answer = seen_mutations.try_recv().unwrap();
     assert_eq!(answer["answer"]["answers"], json!(["Local"]));
 
@@ -529,7 +530,7 @@ async fn conversation_consumes_events_and_reconnects_from_the_last_seen_cursor()
     app.press("label:Open queued messages").unwrap();
     app.wait_for("text:Second queued").unwrap();
 
-    app.press("label:Queued message actions two").unwrap();
+    app.press("label:Actions for queued message two").unwrap();
     app.press("text:Move up").unwrap();
     assert_eq!(
         seen_mutations.try_recv().unwrap()["edit"],
@@ -541,7 +542,7 @@ async fn conversation_consumes_events_and_reconnects_from_the_last_seen_cursor()
             {"messageId":"one","kind":"followup","preview":"First queued"}
         ]}}
     })).unwrap();
-    app.press("label:Queued message actions two").unwrap();
+    app.press("label:Actions for queued message two").unwrap();
     app.press("text:Edit").unwrap();
 
     app.wait_for("label:Queued message editor").unwrap();
@@ -598,6 +599,7 @@ async fn pairing_uses_simplified_and_traditional_device_locale() {
         config.environment = Environment {
             os: Os::Ios,
             locale: nsh_core::platform::Locale::parse(language).unwrap(),
+            locale_settings: nsh_core::platform::LocaleSettings::parse(language),
             reduce_motion: true,
             ..Environment::default()
         };
@@ -642,6 +644,7 @@ async fn switching_sessions_releases_pagination_and_keeps_localized_approval_act
                 "order":{"path":[2],"itemIndex":0},"offset":0,
                 "messageId":"latest","role":"user","field":"body","text":format!("Latest in {id}"),
             }],"before":{"cursor":true}}),
+            "goal" => json!({"enabled":false,"current":null}),
             "models" if data["anchorSession"] == "anchor" => json!({
                 "kind":"ready","choices":[{
                     "selection":{"kind":"model","modelId":"old","thinkingLevel":null},
@@ -701,11 +704,17 @@ async fn switching_sessions_releases_pagination_and_keeps_localized_approval_act
             os: Os::Ios,
             reduce_motion: true,
             locale: nsh_core::platform::Locale::parse(locale).unwrap(),
+            locale_settings: nsh_core::platform::LocaleSettings::parse(locale),
             ..Environment::default()
         };
         let mut app = Headless::start(config).unwrap();
-        app.wait_for("label:Session Session A").unwrap();
-        app.press("label:Session Session A").unwrap();
+        let open_a = if locale == "zh-TW" {
+            "label:對話：Session A"
+        } else {
+            "label:Conversation: Session A"
+        };
+        app.wait_for(open_a).unwrap();
+        app.press(open_a).unwrap();
         app.wait_for("text:Latest in Session A").unwrap();
         app.wait_for(&format!("text:{approve}")).unwrap();
         app.press(&format!("label:{approve}")).unwrap();
@@ -723,7 +732,7 @@ async fn switching_sessions_releases_pagination_and_keeps_localized_approval_act
         let (id, earlier_a) = pages.try_recv().unwrap();
         assert_eq!(id, "Session A");
         app.press("label:Open drawer").unwrap();
-        app.press("label:Session Session B").unwrap();
+        app.press("label:Conversation: Session B").unwrap();
         app.wait_for("text:Latest in Session B").unwrap();
         earlier_a.resolve(older_page("Stale A page"));
         app.press("label:Load earlier messages").unwrap();
@@ -735,7 +744,7 @@ async fn switching_sessions_releases_pagination_and_keeps_localized_approval_act
             .unwrap();
 
         let old_interaction = old_interactions.try_recv().unwrap();
-        app.press("label:Select model and thinking").unwrap();
+        app.press("label:Select model and thinking effort").unwrap();
         app.wait_for("label:Model Previous Host model").unwrap();
         app.send_host_event("ios.hostState", switching_host(2, "replacement", true))
             .unwrap();
@@ -883,11 +892,10 @@ async fn drawer_rename_and_delete_confirmations_cannot_cross_hosts() {
             ..Environment::default()
         };
         let mut app = Headless::start(config).unwrap();
-        app.wait_for("label:Session actions Host A conversation")
+        app.wait_for("label:Actions for Host A conversation")
             .unwrap();
         app.answer_dialogs_myself();
-        app.press("label:Session actions Host A conversation")
-            .unwrap();
+        app.press("label:Actions for Host A conversation").unwrap();
         app.choose_menu_item(menu).unwrap();
         let dialog = app.pending_dialog().expect("menu opens confirmation");
         assert_eq!(dialog.title.as_deref(), Some(title));
@@ -974,8 +982,8 @@ async fn room_reactions_round_trip_to_host_even_for_older_messages() {
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
-    app.wait_for("label:Session Fixture Room").unwrap();
-    app.press("label:Session Fixture Room").unwrap();
+    app.wait_for("label:Conversation: Fixture Room").unwrap();
+    app.press("label:Conversation: Fixture Room").unwrap();
     app.wait_for("text:Latest Room post").unwrap();
     app.press("label:Load earlier messages").unwrap();
     app.wait_for("text:Earlier Room post").unwrap();
