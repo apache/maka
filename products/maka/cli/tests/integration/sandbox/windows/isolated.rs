@@ -39,6 +39,26 @@ use tokio_util::sync::CancellationToken;
 mod windows_sandbox;
 use windows_sandbox::WindowsSandboxGuard;
 
+/// After `owner/closure.json` is published, the detached helper process may still
+/// be tearing down its own stdio/directory handles for a few milliseconds.
+fn remove_resource_dir(path: &Path) -> std::io::Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[tokio::test]
 async fn isolated_task_keeps_native_output_and_private_files()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -226,8 +246,8 @@ async fn isolated_task_keeps_native_output_and_private_files()
             process,
             proof,
         ));
-        fs::remove_dir_all(seeded_descriptor.resource_ref)?;
-        fs::remove_dir_all(descriptor.resource_ref)?;
+        remove_resource_dir(&seeded_descriptor.resource_ref)?;
+        remove_resource_dir(&descriptor.resource_ref)?;
         Ok(())
     }
     .await;
@@ -268,7 +288,7 @@ async fn unconfigured_state_root_uses_mxc_or_requires_windows_sandbox_setup()
         assert!(!state.join("windows-sandbox").exists());
         let descriptor = task.descriptor();
         task.into_no_launch_seal().record().await?;
-        fs::remove_dir_all(descriptor.resource_ref)?;
+        remove_resource_dir(&descriptor.resource_ref)?;
     } else {
         let error = match prepared {
             Ok(_) => panic!("unconfigured non-PSEC root must not prepare an isolated task"),
@@ -374,6 +394,6 @@ async fn live_terminal_delivers_interrupt_and_settles_descendant_before_closure(
     proof.stdout.read_to_end(&mut spool)?;
     assert_eq!(spool, output);
     drop(proof);
-    fs::remove_dir_all(descriptor.resource_ref)?;
+    remove_resource_dir(&descriptor.resource_ref)?;
     Ok(())
 }

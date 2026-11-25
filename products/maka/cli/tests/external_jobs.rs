@@ -1315,6 +1315,25 @@ fn remove_task_resource(root: &Path) -> std::io::Result<()> {
         }
         make_writable(root)?;
     }
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::fs::remove_dir_all(root) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error)
+                    if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    #[cfg(not(windows))]
     std::fs::remove_dir_all(root)
 }
 
