@@ -120,11 +120,16 @@ function formatCompactBalance(
   formatNumber: (value: number) => string = (value) => String(Math.round(value * 100) / 100),
 ): string {
   const trimmed = unit?.trim() ?? '';
-  const rounded = Math.abs(amount) >= 10 ? Math.round(amount) : Math.round(amount * 100) / 100;
-  const sign = rounded < 0 ? '-' : '';
-  const formatted = formatNumber(Math.abs(rounded));
+  const value = Math.abs(amount) >= 10 ? Math.sign(amount) * Math.round(Math.abs(amount)) : amount;
+  const formatted = formatNumber(value);
   const symbol =
     COMPACT_CURRENCY_SYMBOLS[trimmed.toUpperCase()] ?? COMPACT_CURRENCY_SYMBOLS[trimmed];
-  if (symbol) return `${sign}${symbol}${formatted}`;
-  return [`${sign}${formatted}`, trimmed].filter(Boolean).join(' ');
+  if (symbol) {
+    const absFormatted = formatNumber(Math.abs(value));
+    if (formatted.endsWith(absFormatted) && formatted.length > absFormatted.length) {
+      return `${formatted.slice(0, formatted.length - absFormatted.length)}${symbol}${absFormatted}`;
+    }
+    return `${symbol}${formatted}`;
+  }
+  return [formatted, trimmed].filter(Boolean).join(' ');
 }

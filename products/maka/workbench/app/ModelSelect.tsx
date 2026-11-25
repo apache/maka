@@ -139,6 +139,10 @@ export function ModelSelect(props: {
     ]
       .filter(Boolean)
       .join(' · ');
+  const triggerLabel = () => {
+    const suffix = useToolbarCompact() ? '' : modifiers();
+    return suffix ? `${model()} · ${suffix}` : model();
+  };
   const tooltipLabel = () =>
     [modelCaption(owner.backend(), owner.modelDetails()), modifiers()].filter(Boolean).join(' · ');
   return (
@@ -178,39 +182,19 @@ export function ModelSelect(props: {
           focusStyle={{ backgroundColor: C.line }}
           activeStyle={{ backgroundColor: C.surface }}
         >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              minWidth: 0,
-              flexShrink: 1,
-              overflow: 'hidden',
-            }}
+          <Text
+            style={[
+              {
+                color: owner.backend() ? C.secondary : C.warning,
+                fontSize: 13,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
-            <Text
-              style={[
-                {
-                  color: owner.backend() ? C.secondary : C.warning,
-                  fontSize: 13,
-                  minWidth: 0,
-                  flexShrink: 1,
-                },
-                { numberOfLines: 1, textOverflow: 'ellipsis' },
-              ]}
-            >
-              {model()}
-            </Text>
-            <If when={modifiers() && !useToolbarCompact()}>
-              <Text
-                style={[
-                  { color: C.secondary, fontSize: 13, flexShrink: 0 },
-                  { numberOfLines: 1, textOverflow: 'ellipsis' },
-                ]}
-              >
-                {` · ${modifiers()}`}
-              </Text>
-            </If>
-          </View>
+            {triggerLabel()}
+          </Text>
           <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
         </Button>
       }
