@@ -238,7 +238,17 @@ fn check_source(
             &source.session,
         ))?)
     } else {
-        c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![catalog.owner_key()?,source.session,sqlite_integer(source.through_sequence)?],|r|r.get::<_,String>(0)).optional()?.ok_or_else(||invalid("lineage canonical source cut unavailable"))?
+        let Some(ns_id) = crate::namespace::find_id(c, &catalog.owner_key()?, &source.session)?
+        else {
+            return Err(invalid("lineage canonical source cut unavailable"));
+        };
+        c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+            params![ns_id, sqlite_integer(source.through_sequence)?],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("lineage canonical source cut unavailable"))?
     };
     if digest != source.digest {
         return Err(StoreError::EventConflict);

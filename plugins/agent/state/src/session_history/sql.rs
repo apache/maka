@@ -222,7 +222,7 @@ fn validate_tail(
     }
     Ok(())
 }
-pub(super) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
+pub(crate) fn check_bytes(bytes: &[u8], digest: &str) -> Result<(), StoreError> {
     if content_digest(bytes) != digest {
         return Err(invalid("canonical history bytes corrupt"));
     }
@@ -242,7 +242,16 @@ pub(super) fn capture(
     } else {
         i64::MAX as u64
     };
-    let row:Option<(u64,String)>=c.query_row("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![owner,history.session,bind_u64(bound)?],|r|Ok((read_u64(r,0)?,r.get(1)?))).optional()?;
+    let row: Option<(u64, String)> = match crate::namespace::find_id(c, &owner, &history.session)? {
+        Some(ns_id) => c
+            .query_row(
+                "SELECT sequence,prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
+                params![ns_id, bind_u64(bound)?],
+                |r| Ok((read_u64(r, 0)?, r.get(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
     validate_tail(c, history, bound, row.as_ref().map_or(0, |row| row.0))?;
     let (through_sequence, digest) = match row {
         Some(row) => row,
@@ -259,7 +268,7 @@ fn check_cut(
     c: &Connection,
     history: &HistoryNamespace,
     cut: &HistoryCut,
-) -> Result<String, StoreError> {
+) -> Result<(String, Option<crate::namespace::NamespaceId>), StoreError> {
     let owner = scope_key(history)?;
     if cut.owner != history.owner
         || cut.session != history.session
@@ -267,15 +276,27 @@ fn check_cut(
     {
         return Err(invalid("foreign or invalid history cut"));
     }
+    let ns_id = crate::namespace::find_id(c, &owner, &history.session)?;
     let expected = if cut.through_sequence == 0 {
         seed(&history.owner, &history.session)?
     } else {
-        c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?.ok_or_else(||invalid("history cut is not retained; explicit rebuild required"))?
+        let Some(ns_id) = ns_id else {
+            return Err(invalid(
+                "history cut is not retained; explicit rebuild required",
+            ));
+        };
+        c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+            params![ns_id, bind_u64(cut.through_sequence)?],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("history cut is not retained; explicit rebuild required"))?
     };
     if cut.digest != expected {
         return Err(StoreError::EventConflict);
     }
-    Ok(owner)
+    Ok((owner, ns_id))
 }
 type HistoryRow = (
     u64,
@@ -348,24 +369,25 @@ pub(super) fn window_items(
     cut: &HistoryCut,
     sequences: &[u64],
 ) -> Result<std::collections::BTreeMap<u64, HistoryItem>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(std::collections::BTreeMap::new());
+    };
     let seed = seed(&history.owner, &history.session)?;
     let mut statement = c.prepare_cached(
         "
         SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,
                b.content_sha256,h.prefix_digest,h.run,h.fact_id,
                (SELECT p.prefix_digest FROM agent_session_history p
-                WHERE p.owner=h.owner AND p.session=h.session AND p.sequence<h.sequence
+                WHERE p.namespace_id=h.namespace_id AND p.sequence<h.sequence
                 ORDER BY p.sequence DESC LIMIT 1)
         FROM json_each(?1) ids
         CROSS JOIN agent_session_history h ON h.sequence=ids.value
         JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id
-        WHERE h.owner=?2 AND h.session=?3 AND h.sequence<=?4",
+        WHERE h.namespace_id=?2 AND h.sequence<=?3",
     )?;
     let mut rows = statement.query(params![
         serde_json::to_string(sequences)?,
-        owner,
-        history.session,
+        ns_id,
         bind_u64(cut.through_sequence)?
     ])?;
     let mut items = std::collections::BTreeMap::new();
@@ -384,14 +406,20 @@ pub(super) fn page(
     after: u64,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     if after > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
-    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![owner,history.session,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
+    let Some(ns_id) = ns_id else {
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let rows: Vec<HistoryRow> = c.prepare_cached("SELECT h.sequence,h.admission_sequence,h.step,h.attempt,f.schema_version,b.payload,b.content_sha256,h.prefix_digest,h.run,h.fact_id FROM agent_session_history h LEFT JOIN agent_facts f ON f.sequence=h.sequence LEFT JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.sequence>? AND h.sequence<=? ORDER BY h.sequence LIMIT ?")?.query_map(params![ns_id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1], history_row)?.collect::<Result<_,_>>()?;
     let more = rows.len() > size as usize;
-    let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![owner,history.session,bind_u64(after)?], |r|r.get(0)).optional()?;
+    let prior: Option<String> = c.query_row("SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT 1", params![ns_id,bind_u64(after)?], |r|r.get(0)).optional()?;
     let mut prefix = match prior {
         Some(prior) => prior,
         None => seed(&history.owner, &history.session)?,
@@ -423,17 +451,19 @@ pub(super) fn request_preparation(
     run: RunId,
     step: StepId,
 ) -> Result<(RequestSpec, UnixMillis), StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     spec(c, history, run)?;
+    let Some(ns_id) = ns_id else {
+        return Err(invalid("request Step is outside captured source cut"));
+    };
     let sequence = c
         .query_row(
             "SELECT sequence FROM agent_session_history INDEXED BY agent_session_history_run
-             WHERE owner=? AND session=? AND run=? AND step=?
+             WHERE namespace_id=? AND run=? AND step=?
                AND kind IN ('step_prepared','proactive_summary_prepared') AND sequence<=?
              ORDER BY sequence LIMIT 1",
             params![
-                owner,
-                history.session,
+                ns_id,
                 run.to_string(),
                 step.to_string(),
                 bind_u64(cut.through_sequence)?
@@ -485,7 +515,7 @@ pub(super) fn validate_source_record(
             "canonical history header scope differs from its original fact",
         ));
     }
-    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT h.owner,h.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+    let (owner,session,actual_owner,actual_session,kind,actual_kind,locator):(String,String,String,String,String,String,Option<String>)=c.prepare_cached("SELECT ns.owner,ns.session,s.owner,s.session,h.kind,json_extract(b.payload,'$.fact.kind'),h.tool_use_id FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?.query_row(params![record.id.to_string(),record.run.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     if owner != actual_owner
         || session != actual_session
         || kind != actual_kind
@@ -624,7 +654,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         Option<String>,
     );
     let existing: Option<IndexedHistoryRow> = c
-        .prepare_cached("SELECT owner,session,run,fact_id,admission_sequence,step,attempt FROM agent_session_history WHERE sequence=?")?
+        .prepare_cached("SELECT ns.owner,ns.session,h.run,h.fact_id,h.admission_sequence,h.step,h.attempt FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id WHERE h.sequence=?")?
         .query_row([bind_u64(sequence)?], |r| {
             Ok((
                 r.get(0)?,
@@ -657,9 +687,10 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
         return Ok(());
     }
     let owner_value: RunOwner = serde_json::from_str(&owner)?;
+    let ns_id = crate::namespace::ensure_id(c, &owner, &session)?;
     let previous: Option<(u64, String)> = c
-        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1")?
-        .query_row(params![owner, session], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
+        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE namespace_id=? ORDER BY sequence DESC LIMIT 1")?
+        .query_row([ns_id], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
         .optional()?;
     let previous = match previous {
         Some((prior, digest)) if prior < sequence => digest,
@@ -678,6 +709,66 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
     };
     // Canonical stored bytes, including typed ids, revision, schema and timestamp,
     // are hashed rather than today's reserialized/redacted semantic projection.
+    let prefix = chain(&previous, sequence, &digest)?;
+    let scope = fact_scope(c, record)?;
+    let locator = tool_locator(c, record)?;
+    let historical = if let Fact::RunAdmitted { spec: expected } = &record.fact {
+        let (value, reference) = spec(
+            c,
+            &HistoryNamespace {
+                owner: owner_value,
+                session: session.clone(),
+            },
+            record.run,
+        )?;
+        if &reference != expected {
+            return Err(invalid("history admission names another Run specification"));
+        }
+        historical_backend(&value)?
+    } else {
+        false
+    };
+    c.prepare_cached(
+        "INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,step,attempt,kind,prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source,historical) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )?
+    .execute(params![
+        ns_id,
+        bind_u64(sequence)?,
+        record.run.to_string(),
+        bind_u64(admission_sequence(c, record.run)?)?,
+        scope.step.map(|v| v.to_string()),
+        scope.attempt.map(|v| v.to_string()),
+        kind,
+        prefix,
+        locator.as_ref().map(|value| value.0.as_str()),
+        locator.as_ref().is_some_and(|value| value.1),
+        false,
+        record.id.to_string(),
+        result_source(&record.fact),
+        historical,
+    ])?;
+    Ok(())
+}
+#[cfg(test)]
+pub(crate) fn index_legacy_owner_session(
+    c: &Connection,
+    record: &RecordedFact,
+) -> Result<(), StoreError> {
+    let (sequence, owner, session, digest, kind): (u64, String, String, String, String) = c
+        .prepare_cached("SELECT f.sequence,s.owner,s.session,b.content_sha256,json_extract(b.payload,'$.fact.kind') FROM agent_facts f JOIN agent_run_specs s ON s.run=f.run JOIN contents b ON b.id=f.body_content_id WHERE f.id=? AND f.run=?")?
+        .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
+            Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+    let owner_value: RunOwner = serde_json::from_str(&owner)?;
+    let previous: Option<(u64, String)> = c
+        .prepare_cached("SELECT sequence,prefix_digest FROM agent_session_history WHERE owner=? AND session=? ORDER BY sequence DESC LIMIT 1")?
+        .query_row(params![owner, session], |r| Ok((read_u64(r, 0)?, r.get(1)?)))
+        .optional()?;
+    let previous = match previous {
+        Some((prior, digest)) if prior < sequence => digest,
+        Some(_) => return Err(invalid("history index requires canonical commit order")),
+        None => seed(&owner_value, &session)?,
+    };
     let prefix = chain(&previous, sequence, &digest)?;
     let scope = fact_scope(c, record)?;
     let locator = tool_locator(c, record)?;
@@ -721,7 +812,7 @@ pub(crate) fn index(c: &Connection, record: &RecordedFact) -> Result<(), StoreEr
 }
 pub(crate) fn index_retained(c: &Connection, record: &RecordedFact) -> Result<(), StoreError> {
     let (sequence, owner, session): (u64, String, String) = c
-        .prepare_cached("SELECT h.sequence,h.owner,h.session FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
+        .prepare_cached("SELECT h.sequence,ns.owner,ns.session FROM agent_session_history h JOIN agent_namespaces ns ON ns.id=h.namespace_id JOIN agent_facts f ON f.sequence=h.sequence WHERE f.id=? AND h.run=?")?
         .query_row(params![record.id.to_string(), record.run.to_string()], |r| {
             Ok((read_u64(r, 0)?, r.get(1)?, r.get(2)?))
         })?;
@@ -1096,10 +1187,12 @@ pub(super) fn rebuild(
     history: &HistoryNamespace,
 ) -> Result<HistoryCut, StoreError> {
     let owner = scope_key(history)?;
-    c.execute(
-        "DELETE FROM agent_session_history WHERE owner=? AND session=?",
-        params![owner, history.session],
-    )?;
+    if let Some(ns_id) = crate::namespace::find_id(c, &owner, &history.session)? {
+        c.execute(
+            "DELETE FROM agent_session_history WHERE namespace_id=?",
+            [ns_id],
+        )?;
+    }
     {
         let mut runs =
             c.prepare_cached("SELECT run FROM agent_run_specs WHERE owner=? AND session=?")?;
@@ -1153,7 +1246,7 @@ pub(super) fn with_content<T>(
     reference: &ContentRef,
     consume: impl FnOnce(&mut CheckedBlob<'_, '_>) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     reference.validate().map_err(invalid)?;
     let row: Option<i64> = c.prepare_cached("SELECT b.id FROM contents b WHERE b.content_sha256=?5 AND length(b.payload)=?6 AND EXISTS(SELECT 1 FROM agent_history_content h WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.content_id=b.id AND h.first_sequence<=?4 AND (h.inherited=1 OR EXISTS(SELECT 1 FROM agent_run_content p WHERE p.run=h.run AND p.content_id=b.id)))")?.query_row(params![owner,history.session,run.to_string(),bind_u64(cut.through_sequence)?,reference.digest,bind_u64(reference.bytes)?], |r|r.get(0)).optional()?;
     let row = row.ok_or_else(|| {
@@ -1278,7 +1371,7 @@ pub(super) fn previous(
     before: Option<u64>,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     let bound = match before {
         Some(0) => {
@@ -1291,8 +1384,17 @@ pub(super) fn previous(
         Some(_) => return Err(invalid("reverse history cursor exceeds captured cut")),
         None => cut.through_sequence,
     };
-    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND sequence<=? ORDER BY sequence DESC LIMIT ?")?
-        .query_map(params![owner,history.session,bind_u64(bound)?,size+1],|row|read_u64(row,0))?
+    let Some(ns_id) = ns_id else {
+        if before.is_none() {
+            validate_tail(c, history, bound, 0)?;
+        }
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND sequence<=? ORDER BY sequence DESC LIMIT ?")?
+        .query_map(params![ns_id,bind_u64(bound)?,size+1],|row|read_u64(row,0))?
         .collect::<Result<_,_>>()?;
     if before.is_none() {
         validate_tail(c, history, bound, positions.first().copied().unwrap_or(0))?;
@@ -1306,7 +1408,11 @@ pub(super) fn previous(
         });
     };
     let first = *positions.last().unwrap();
-    let digest=c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![owner,history.session,bind_u64(last)?],|row|row.get(0))?;
+    let digest = c.query_row(
+        "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+        params![ns_id, bind_u64(last)?],
+        |row| row.get(0),
+    )?;
     let selected = HistoryCut {
         through_sequence: last,
         digest,
@@ -1329,7 +1435,7 @@ pub(super) fn run_revision_through(
     run: RunId,
     through: u64,
 ) -> Result<u64, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     if through > cut.through_sequence {
         return Err(invalid("history cursor exceeds captured cut"));
     }
@@ -1364,7 +1470,18 @@ pub(crate) fn capture_at(
     let digest = if through == 0 {
         seed(owner, session)?
     } else {
-        c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![key,session,bind_u64(through)?],|r|r.get(0)).optional()?.ok_or_else(||invalid("history cut is not an exact boundary in this namespace"))?
+        let Some(ns_id) = crate::namespace::find_id(c, &key, session)? else {
+            return Err(invalid(
+                "history cut is not an exact boundary in this namespace",
+            ));
+        };
+        c.query_row(
+            "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+            params![ns_id, bind_u64(through)?],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("history cut is not an exact boundary in this namespace"))?
     };
     let cut = HistoryCut {
         owner: owner.clone(),
@@ -1454,8 +1571,10 @@ pub(super) fn latest(
     history: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<RunSource>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE owner=? AND session=? AND kind='run_admitted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE namespace_id=? AND kind='run_admitted' AND sequence<=? ORDER BY sequence DESC LIMIT 1",params![ns_id,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
     run.map(|run| run_source(c, history, identity(run)?))
         .transpose()
 }
@@ -1479,7 +1598,7 @@ pub(super) fn recovery_failure_at(
     sequence: u64,
     mask_evidence: bool,
 ) -> Result<Option<String>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (owner, _) = check_cut(c, history, cut)?;
     let head: Option<u64> = c
         .query_row(
             "SELECT revision FROM agent_runs WHERE run=? AND owner=? AND session=?
@@ -1695,9 +1814,13 @@ pub(super) fn tool_call(
     key: &ToolKey,
 ) -> Result<maka_agent_facts::model::ModelToolCall, StoreError> {
     use maka_agent_facts::model::ModelPart;
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Err(invalid(
+            "original model tool call missing or ambiguous in captured cut",
+        ));
+    };
     let use_id = maka_agent_facts::tool_call::tool_use_id(run, &crate::fold::tool_key(key));
-    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![owner,history.session,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
+    let mut rows: Vec<(u32, Vec<u8>, String, String)> = c.prepare_cached("SELECT f.schema_version,b.payload,b.content_sha256,f.id FROM agent_session_history h INDEXED BY agent_session_history_tool JOIN agent_facts f ON f.id=h.fact_id AND f.sequence=h.sequence AND f.run=h.run JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.tool_use_id=? AND h.run=? AND h.attempt=? AND h.tool_start=1 AND h.sequence<=? ORDER BY h.sequence LIMIT 2")?.query_map(params![ns_id,use_id,run.to_string(),key.attempt.to_string(),bind_u64(cut.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<Result<_,_>>()?;
     if rows.len() != 1 {
         return Err(invalid(
             "original model tool call missing or ambiguous in captured cut",
@@ -1724,8 +1847,10 @@ pub(super) fn tool_position(
     cut: &HistoryCut,
     id: &str,
 ) -> Result<Option<maka_agent_facts::history::RowPosition>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND tool_use_id=? AND tool_start=1 AND sequence<=? ORDER BY sequence LIMIT 2")?.query_map(params![owner,history.session,id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND tool_use_id=? AND tool_start=1 AND sequence<=? ORDER BY sequence LIMIT 2")?.query_map(params![ns_id,id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
     if rows.len() > 1 {
         return Err(invalid(
             "tool display identity has multiple original call sources",
@@ -1746,12 +1871,18 @@ pub(super) fn tool_page(
     after: u64,
     size: u32,
 ) -> Result<HistoryPage, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, ns_id) = check_cut(c, history, cut)?;
     let size = limit(size)?;
     if after > cut.through_sequence {
         return Err(invalid("tool history cursor exceeds captured cut"));
     }
-    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND tool_use_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?")?.query_map(params![owner,history.session,id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+    let Some(ns_id) = ns_id else {
+        return Ok(HistoryPage {
+            items: vec![],
+            next: None,
+        });
+    };
+    let mut positions:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND tool_use_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?")?.query_map(params![ns_id,id,bind_u64(after)?,bind_u64(cut.through_sequence)?,size+1],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
     let more = positions.len() > size as usize;
     positions.truncate(size as usize);
     let next = if more {
@@ -1806,7 +1937,9 @@ fn mark_message(c: &Connection, session: &str, run: RunId, fact: &str) -> Result
     }
     let is_message:bool=c.query_row("SELECT json_extract(b.payload,'$.kind')='message' FROM agent_run_content p JOIN contents b ON b.id=p.content_id WHERE p.run=? AND b.content_sha256=? AND length(b.payload)=?",params![run.to_string(),spec.input.digest,bind_u64(spec.input.bytes)?],|r|r.get(0))?;
     if is_message {
-        let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE owner=? AND session=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![serde_json::to_string(&spec.owner)?,session,run.to_string(),fact,run.to_string()])?;
+        let ns_id = crate::namespace::find_owner_id(c, &spec.owner, session)?
+            .ok_or_else(|| invalid("opening consumption has no original indexed Run admission"))?;
+        let changed=c.execute("UPDATE agent_session_history SET opening_message=1 WHERE namespace_id=? AND run=? AND kind='run_admitted' AND sequence=(SELECT sequence FROM agent_facts WHERE id=? AND run=? AND revision=1)",params![ns_id,run.to_string(),fact,run.to_string()])?;
         if changed != 1 {
             return Err(invalid(
                 "opening consumption has no original indexed Run admission",
@@ -1820,8 +1953,10 @@ pub(super) fn first_message(
     history: &HistoryNamespace,
     cut: &HistoryCut,
 ) -> Result<Option<RunSource>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE owner=? AND session=? AND opening_message=1 AND sequence<=? ORDER BY sequence LIMIT 1",params![owner,history.session,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let run:Option<String>=c.query_row("SELECT run FROM agent_session_history WHERE namespace_id=? AND opening_message=1 AND sequence<=? ORDER BY sequence LIMIT 1",params![ns_id,bind_u64(cut.through_sequence)?],|r|r.get(0)).optional()?;
     run.map(|run| run_source(c, history, identity(run)?))
         .transpose()
 }
@@ -1855,8 +1990,10 @@ pub(super) fn fact_sequence(
     run: RunId,
     fact: FactId,
 ) -> Result<Option<u64>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
-    let sequence:Option<u64>=c.query_row("SELECT h.sequence FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence WHERE f.id=? AND f.run=? AND h.owner=? AND h.session=? AND h.sequence<=?",params![fact.to_string(),run.to_string(),owner,history.session,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
+    let sequence:Option<u64>=c.query_row("SELECT h.sequence FROM agent_facts f JOIN agent_session_history h ON h.sequence=f.sequence WHERE f.id=? AND f.run=? AND h.namespace_id=? AND h.sequence<=?",params![fact.to_string(),run.to_string(),ns_id,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
     let Some(sequence) = sequence else {
         return Ok(None);
     };
@@ -1890,20 +2027,17 @@ pub(super) fn tool_result_metadata(
     cut: &HistoryCut,
     sequence: u64,
 ) -> Result<Option<ToolResultMetadata>, StoreError> {
-    let owner = check_cut(c, history, cut)?;
+    let (_, Some(ns_id)) = check_cut(c, history, cut)? else {
+        return Ok(None);
+    };
     let row = c
         .prepare_cached(
             "SELECT m.is_error,m.image,m.images,m.external_settlement
          FROM agent_session_history h JOIN agent_history_tool_metadata m ON m.sequence=h.sequence
-         WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.sequence<=?",
+         WHERE h.namespace_id=? AND h.sequence=? AND h.sequence<=?",
         )?
         .query_row(
-            params![
-                owner,
-                history.session,
-                bind_u64(sequence)?,
-                bind_u64(cut.through_sequence)?
-            ],
+            params![ns_id, bind_u64(sequence)?, bind_u64(cut.through_sequence)?],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -1937,8 +2071,12 @@ pub(super) fn resolve_tool_result(
     if locator.is_empty() || locator.contains('\0') {
         return Err(invalid("invalid opaque tool result locator"));
     }
-    let owner = serde_json::to_string(&scope.namespace.owner)?;
-    let exact:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND result_source=1 AND fact_id=? AND sequence<=?",params![owner,scope.namespace.session,locator,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
+    let Some(ns_id) =
+        crate::namespace::find_owner_id(c, &scope.namespace.owner, &scope.namespace.session)?
+    else {
+        return Ok(None);
+    };
+    let exact:Option<u64>=c.query_row("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND result_source=1 AND fact_id=? AND sequence<=?",params![ns_id,locator,bind_u64(cut.through_sequence)?],|r|read_u64(r,0)).optional()?;
     let sequence = if let Some(exact) = exact {
         exact
     } else {
@@ -1953,7 +2091,7 @@ pub(super) fn resolve_tool_result(
                 bound
             })
         });
-        let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE owner=? AND session=? AND result_source=1 AND fact_id>=? AND (?4 IS NULL OR fact_id<?4) AND sequence<=?5 ORDER BY fact_id LIMIT 2")?.query_map(params![owner,scope.namespace.session,locator,upper,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
+        let rows:Vec<u64>=c.prepare_cached("SELECT sequence FROM agent_session_history WHERE namespace_id=? AND result_source=1 AND fact_id>=? AND (?3 IS NULL OR fact_id<?3) AND sequence<=?4 ORDER BY fact_id LIMIT 2")?.query_map(params![ns_id,locator,upper,bind_u64(cut.through_sequence)?],|r|read_u64(r,0))?.collect::<Result<_,_>>()?;
         match rows.as_slice() {
             [] => return Ok(None),
             [only] => *only,
@@ -1977,13 +2115,12 @@ pub(super) fn resolve_tool_result(
     let starts: Vec<u64> = c
         .prepare_cached(
             "SELECT sequence FROM agent_session_history
-             WHERE owner=? AND session=? AND run=? AND attempt IS ? AND tool_use_id=?
+             WHERE namespace_id=? AND run=? AND attempt IS ? AND tool_use_id=?
                AND tool_start=1 AND sequence<? ORDER BY sequence LIMIT 2",
         )?
         .query_map(
             params![
-                owner,
-                scope.namespace.session,
+                ns_id,
                 item.recorded.run.to_string(),
                 item.scope.attempt.map(|id| id.to_string()),
                 use_id,

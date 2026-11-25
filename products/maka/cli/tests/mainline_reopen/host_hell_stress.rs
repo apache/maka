@@ -348,7 +348,7 @@ fn dump_failed_run_facts(root: &Path, session_id: &str) -> String {
             continue;
         }
         let sql = format!(
-            "SELECT h.run, h.sequence, h.kind, substr(CAST(c.payload AS TEXT), 1, 260) FROM agent_session_history h JOIN agent_facts f ON f.id = h.fact_id JOIN contents c ON c.id = f.body_content_id WHERE h.session = '{}' ORDER BY h.sequence DESC LIMIT 40;",
+            "SELECT h.run, h.sequence, h.kind, substr(CAST(c.payload AS TEXT), 1, 260) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id = h.namespace_id JOIN agent_facts f ON f.id = h.fact_id JOIN contents c ON c.id = f.body_content_id WHERE ns.session = '{}' ORDER BY h.sequence DESC LIMIT 40;",
             session_id.replace('\'', "''")
         );
         if let Ok(res) = std::process::Command::new("sqlite3")

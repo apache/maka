@@ -22,7 +22,12 @@ impl Query for Latest {
     type Output = Option<RunSource>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
-        let run:Option<String>=c.query_row("SELECT h.run FROM agent_session_history h INDEXED BY agent_session_history_historical WHERE h.owner=? AND h.session=? AND h.historical=1 AND h.sequence<=? ORDER BY h.sequence DESC LIMIT 1",params![serde_json::to_string(&self.0.owner)?,self.0.session,sql::bind_u64(self.1.through_sequence)?],|r|r.get(0)).optional()?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(None);
+        };
+        let run:Option<String>=c.query_row("SELECT h.run FROM agent_session_history h INDEXED BY agent_session_history_historical WHERE h.namespace_id=? AND h.historical=1 AND h.sequence<=? ORDER BY h.sequence DESC LIMIT 1",params![namespace_id,sql::bind_u64(self.1.through_sequence)?],|r|r.get(0)).optional()?;
         let Some(run) = run else { return Ok(None) };
         let source = sql::run_source(c, &self.0, sql::identity(run)?)?;
         if !sql::historical_backend(&source.spec)? || source.spec.origin == RunOrigin::Local {
@@ -51,7 +56,11 @@ impl Query for LivePositions {
     type Output = Vec<SnapshotPosition>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         crate::recall::checked_source_cut(c, &self.0.owner, &self.1)?;
-        let owner = serde_json::to_string(&self.0.owner)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(Vec::new());
+        };
         let bound = self.2.unwrap_or(if self.3 {
             (self.1.through_sequence, i64::MAX as u64)
         } else {
@@ -70,14 +79,14 @@ impl Query for LivePositions {
             ""
         };
         let (constraint, run, attempt) = match self.7.run() {
-            None => ("?8 IS NULL AND ?9 IS NULL", None, None),
-            Some(RunRows::Only { run, .. }) => ("d.run=?8 AND ?9 IS NULL", Some(run), None),
+            None => ("?7 IS NULL AND ?8 IS NULL", None, None),
+            Some(RunRows::Only { run, .. }) => ("d.run=?7 AND ?8 IS NULL", Some(run), None),
             Some(RunRows::Folded { run, attempt }) => (
-                r#"(d.run<>?8 OR (
+                r#"(d.run<>?7 OR (
                     d.role='"compaction"'
                     OR (d.role='"user"' AND coalesce(json_extract(d.origin_json,'$.kind'),'')
                         NOT IN ('session','session_completion','automation','bot_worker','discovery_report'))
-                    OR (d.role='"assistant"' AND d.internal=0 AND h.attempt=?9)
+                    OR (d.role='"assistant"' AND d.internal=0 AND h.attempt=?8)
                 ))"#,
                 Some(run),
                 Some(attempt),
@@ -86,16 +95,15 @@ impl Query for LivePositions {
         let mut statement = c.prepare_cached(&format!(
             "SELECT d.run,d.sequence,h.admission_sequence,h.fact_id,d.ordinal,d.internal
              FROM agent_recall_messages d
-             JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
-             WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND h.admission_sequence>?4
-               AND (d.sequence,d.ordinal){comparison}(?5,?6){visible}{cell_steps} AND {constraint}
-             ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?7"
+             JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence
+             WHERE d.namespace_id=?1 AND d.sequence<=?2 AND h.admission_sequence>?3
+               AND (d.sequence,d.ordinal){comparison}(?4,?5){visible}{cell_steps} AND {constraint}
+             ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?6"
         ))?;
         let rows = statement
             .query_map(
                 params![
-                    owner,
-                    self.0.session,
+                    namespace_id,
                     sql::bind_u64(self.1.through_sequence)?,
                     sql::bind_u64(self.5)?,
                     sql::bind_u64(bound.0)?,
@@ -133,8 +141,7 @@ impl Query for LivePositions {
             .collect::<Result<_, StoreError>>()?;
         let unsealed = crate::recall::index::unsealed_external_segment_headers(
             c,
-            &owner,
-            &self.0.session,
+            namespace_id,
             self.1.through_sequence,
             self.5,
         )?;
@@ -218,8 +225,13 @@ impl Query for LiveToolPositions {
     type Output = Vec<SnapshotPosition>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         crate::recall::checked_source_cut(c, &self.0.owner, &self.1)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(Vec::new());
+        };
         let bound = self.3.unwrap_or((0, 0));
-        let rows:Vec<(String,u64,u64,String,u64,bool)>=c.prepare_cached("SELECT d.run,d.sequence,h.admission_sequence,h.fact_id,d.ordinal,d.internal FROM agent_session_history h INDEXED BY agent_session_history_tool CROSS JOIN agent_recall_messages d ON d.owner=h.owner AND d.session=h.session AND d.sequence=h.sequence WHERE h.owner=?1 AND h.session=?2 AND h.tool_use_id=?3 AND h.sequence<=?4 AND h.admission_sequence>?5 AND (d.sequence,d.ordinal)>(?6,?7) ORDER BY d.sequence,d.ordinal LIMIT ?8")?.query_map(params![serde_json::to_string(&self.0.owner)?,self.0.session,self.2,sql::bind_u64(self.1.through_sequence)?,sql::bind_u64(self.4)?,sql::bind_u64(bound.0)?,sql::bind_u64(bound.1)?,i64::from(self.5)],|r|Ok((r.get(0)?,sql::read_u64(r,1)?,sql::read_u64(r,2)?,r.get(3)?,sql::read_u64(r,4)?,r.get(5)?)))?.collect::<Result<_,_>>()?;
+        let rows:Vec<(String,u64,u64,String,u64,bool)>=c.prepare_cached("SELECT d.run,d.sequence,h.admission_sequence,h.fact_id,d.ordinal,d.internal FROM agent_session_history h INDEXED BY agent_session_history_tool CROSS JOIN agent_recall_messages d ON d.namespace_id=h.namespace_id AND d.sequence=h.sequence WHERE h.namespace_id=?1 AND h.tool_use_id=?2 AND h.sequence<=?3 AND h.admission_sequence>?4 AND (d.sequence,d.ordinal)>(?5,?6) ORDER BY d.sequence,d.ordinal LIMIT ?7")?.query_map(params![namespace_id,self.2,sql::bind_u64(self.1.through_sequence)?,sql::bind_u64(self.4)?,sql::bind_u64(bound.0)?,sql::bind_u64(bound.1)?,i64::from(self.5)],|r|Ok((r.get(0)?,sql::read_u64(r,1)?,sql::read_u64(r,2)?,r.get(3)?,sql::read_u64(r,4)?,r.get(5)?)))?.collect::<Result<_,_>>()?;
         rows.into_iter()
             .map(
                 |(run, sequence, admission_sequence, fact, item_index, internal)| {
@@ -246,7 +258,12 @@ impl Query for EventExists {
     type Output = bool;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
-        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history WHERE owner=? AND session=? AND sequence=? AND sequence<=?)",params![serde_json::to_string(&self.0.owner)?,self.0.session,sql::bind_u64(self.2)?,sql::bind_u64(self.1.through_sequence)?],|r|r.get(0))?)
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(false);
+        };
+        Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM agent_session_history WHERE namespace_id=? AND sequence=? AND sequence<=?)",params![namespace_id,sql::bind_u64(self.2)?,sql::bind_u64(self.1.through_sequence)?],|r|r.get(0))?)
     }
 }
 
@@ -259,7 +276,12 @@ impl Query for TerminatedAt {
     type Output = Option<(UnixMillis, Terminal)>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
-        let row: Option<(u32, Vec<u8>, String)> = c.query_row("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.run=? AND h.step IS NULL AND h.kind='run_terminated' AND h.sequence<=?",params![serde_json::to_string(&self.0.owner)?,self.0.session,self.2.to_string(),sql::bind_u64(self.1.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(None);
+        };
+        let row: Option<(u32, Vec<u8>, String)> = c.query_row("SELECT f.schema_version,b.payload,b.content_sha256 FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents b ON b.id=f.body_content_id WHERE h.namespace_id=? AND h.run=? AND h.step IS NULL AND h.kind='run_terminated' AND h.sequence<=?",params![namespace_id,self.2.to_string(),sql::bind_u64(self.1.through_sequence)?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         let Some((version, bytes, digest)) = row else {
             return Ok(None);
         };
@@ -314,12 +336,17 @@ pub(super) struct FinalAttemptAt(
 impl Query for FinalAttemptAt {
     type Output = Option<ModelAttemptId>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(None);
+        };
         let attempt: Option<String> = c
             .query_row(
                 r#"SELECT r.current_attempt
                FROM agent_runs r
                JOIN agent_session_history h
-                 ON h.owner=r.owner AND h.session=r.session AND h.run=r.run
+                 ON h.namespace_id=?5 AND h.run=r.run
                  AND h.step IS NULL AND h.kind='run_terminated'
                WHERE r.run=?1 AND r.owner=?2 AND r.session=?3 AND h.sequence<=?4
                  AND r.terminal='"completed"' AND r.current_attempt IS NOT NULL"#,
@@ -327,7 +354,8 @@ impl Query for FinalAttemptAt {
                     self.2.to_string(),
                     serde_json::to_string(&self.0.owner)?,
                     self.0.session,
-                    sql::bind_u64(self.1.through_sequence)?
+                    sql::bind_u64(self.1.through_sequence)?,
+                    namespace_id,
                 ],
                 |row| row.get(0),
             )
@@ -340,8 +368,8 @@ impl Query for FinalAttemptAt {
 // Cell completion can bind an image without being a transcript tool result.
 const TOOL_IMAGE_BINDINGS: &str = "
     FROM agent_artifact_run_bindings b INDEXED BY agent_artifact_bindings_fact
-    CROSS JOIN agent_session_history h INDEXED BY agent_session_history_result
-      ON h.owner=?1 AND h.session=b.session AND h.fact_id=b.fact
+    CROSS JOIN agent_session_history h
+      ON h.fact_id=b.fact AND h.namespace_id=?1
     CROSS JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
     WHERE b.session=?2 AND b.run=?3 AND h.sequence<=?4 AND h.result_source=1
       AND b.origin IN ('tool','cell')
@@ -361,7 +389,11 @@ impl Query for CompletedWorkAt {
 
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
-        let owner = serde_json::to_string(&self.namespace.owner)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.namespace.owner, &self.namespace.session)?
+        else {
+            return Ok(None);
+        };
         let run = self.run.to_string();
         let through = sql::bind_u64(self.cut.through_sequence)?;
         let Some(attempt) =
@@ -378,22 +410,22 @@ impl Query for CompletedWorkAt {
                             h.tool_use_id, h.tool_start, h.attempt
                      FROM agent_recall_messages d INDEXED BY agent_recall_turn
                      JOIN agent_session_history h
-                       ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
-                     WHERE d.owner=?1 AND d.session=?2 AND d.turn=?3 AND d.sequence<=?4 AND d.run=?5
+                       ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence
+                     WHERE d.namespace_id=?1 AND d.turn=?2 AND d.sequence<=?3 AND d.run=?4
                    )
                    SELECT count(CASE WHEN internal AND trim(body)<>'' THEN 1 END),
                           count(CASE WHEN role='"user"' AND activity THEN 1 END),
                           count(DISTINCT CASE WHEN tool_start THEN tool_use_id END),
-                          count(CASE WHEN role='"assistant"' AND NOT internal AND attempt<>?6 THEN 1 END)
+                          count(CASE WHEN role='"assistant"' AND NOT internal AND attempt<>?5 THEN 1 END)
                    FROM visible
-                   HAVING count(CASE WHEN role='"assistant"' AND NOT internal AND attempt=?6 THEN 1 END)>0"#,
-                params![owner,self.namespace.session,self.turn,through,run,attempt.to_string()],
+                   HAVING count(CASE WHEN role='"assistant"' AND NOT internal AND attempt=?5 THEN 1 END)>0"#,
+                params![namespace_id,self.turn,through,run,attempt.to_string()],
                 |row| Ok((sql::read_u64(row, 0)?, sql::read_u64(row, 1)?, sql::read_u64(row, 2)?, sql::read_u64(row, 3)?)),
             ).optional()?.unwrap_or_default();
         if earlier_output + thoughts + tools + messages == 0 {
             return Ok(None);
         }
-        let bindings = params![owner, self.namespace.session, run, through];
+        let bindings = params![namespace_id, self.namespace.session, run, through];
         let image_count = c.query_row(
             &format!("SELECT count(DISTINCT b.artifact) {TOOL_IMAGE_BINDINGS}"),
             bindings,
@@ -442,13 +474,18 @@ impl Query for ImageSourcesAt {
 
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.namespace.owner, &self.namespace.session)?
+        else {
+            return Ok(Vec::new());
+        };
         c.prepare_cached(&format!(
             "SELECT DISTINCT h.sequence,h.fact_id {TOOL_IMAGE_BINDINGS}
              AND h.sequence>?5 ORDER BY h.sequence LIMIT ?6"
         ))?
         .query_map(
             params![
-                serde_json::to_string(&self.namespace.owner)?,
+                namespace_id,
                 self.namespace.session,
                 self.run.to_string(),
                 sql::bind_u64(self.cut.through_sequence)?,
@@ -480,17 +517,21 @@ impl Query for ReportedModelAt {
     type Output = Option<String>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::validate_cut(c, &self.0.owner, &self.0.session, &self.1)?;
+        let Some(namespace_id) =
+            crate::namespace::find_owner_id(c, &self.0.owner, &self.0.session)?
+        else {
+            return Ok(None);
+        };
         let row: Option<(u32, Vec<u8>, String)> = c
             .query_row(
                 "SELECT f.schema_version,b.payload,b.content_sha256
              FROM agent_session_history h INDEXED BY agent_session_history_run
              JOIN agent_facts f ON f.sequence=h.sequence
              JOIN contents b ON b.id=f.body_content_id
-             WHERE h.owner=?1 AND h.session=?2 AND h.run=?3 AND h.step=?4
-               AND h.kind='model_closed' AND h.attempt=?5 AND h.sequence<=?6",
+             WHERE h.namespace_id=?1 AND h.run=?2 AND h.step=?3
+               AND h.kind='model_closed' AND h.attempt=?4 AND h.sequence<=?5",
                 params![
-                    serde_json::to_string(&self.0.owner)?,
-                    self.0.session,
+                    namespace_id,
                     self.2.to_string(),
                     self.3.to_string(),
                     self.4.to_string(),

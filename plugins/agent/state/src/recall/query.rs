@@ -19,8 +19,9 @@
 use super::*;
 use rusqlite::{OptionalExtension, params};
 use std::cmp::Ordering;
-const ORIGINAL: &str = "LEFT JOIN agent_session_history h ON h.sequence=d.sequence
- AND h.owner=d.owner AND h.session=d.session AND h.run=d.run";
+const ORIGINAL: &str = "CROSS JOIN agent_namespaces ns ON ns.id=d.namespace_id
+ LEFT JOIN agent_session_history h ON h.sequence=d.sequence
+ AND h.namespace_id=d.namespace_id AND h.run=d.run";
 // The Recall index also serves original history. Only shareable checkpoints may
 // contribute an anchor or adjacent text to a different model conversation.
 const SHARED_CONTEXT: &str = r#"CASE WHEN d.role='"compaction"' THEN EXISTS (
@@ -34,18 +35,13 @@ const COLUMNS: &str = concat!(
  (SELECT json_group_array(json_array(start,end)) FROM (",
     crate::memory::recall::restricted_spans_sql!(
         "SELECT s.start,s.end FROM",
-        "s.namespace=d.owner AND s.fact=h.fact_id AND s.ordinal=d.ordinal",
+        "s.namespace=ns.owner AND s.fact=h.fact_id AND s.ordinal=d.ordinal",
     ),
     ")),
- EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=d.owner AND r.fact=h.fact_id),
- h.fact_id,d.body_ref_sequence,d.body_ref_start,d.body_ref_end"
+ EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=ns.owner AND r.fact=h.fact_id),
+ h.fact_id,d.body_ref_sequence,d.body_ref_start,d.body_ref_end,d.namespace_id"
 );
-pub(super) fn read_message(
-    c: &Connection,
-    owner: &str,
-    session: &str,
-    row: &rusqlite::Row<'_>,
-) -> Result<Message, StoreError> {
+pub(super) fn read_message(c: &Connection, row: &rusqlite::Row<'_>) -> Result<Message, StoreError> {
     let get = |i| -> Result<String, StoreError> { Ok(row.get(i)?) };
     let sequence = unsigned(row.get(1)?)?;
     let fields: Vec<FieldSpan> = serde_json::from_str(&get(10)?)?;
@@ -58,8 +54,8 @@ pub(super) fn read_message(
         if let Some(ref_seq) = row.get::<_, Option<i64>>(15)? {
             let ref_start: Option<i64> = row.get(16)?;
             let ref_end: Option<i64> = row.get(17)?;
-            body =
-                index::resolve_body_ref(c, owner, session, sequence, ref_seq, ref_start, ref_end)?;
+            let ns_id: crate::namespace::NamespaceId = row.get(18)?;
+            body = index::resolve_body_ref(c, ns_id, sequence, ref_seq, ref_start, ref_end)?;
         }
         if let spans = row.get::<_, String>(12)?
             && spans != "[]"
@@ -93,7 +89,7 @@ pub(super) fn read_message(
 fn unsealed_message_from_header(
     c: &Connection,
     owner: &str,
-    session: &str,
+    ns_id: crate::namespace::NamespaceId,
     header: &index::ExternalSegmentHeader,
     since: Option<u64>,
     until: Option<u64>,
@@ -123,7 +119,7 @@ fn unsealed_message_from_header(
         Vec::new()
     };
     let Some(mut delta) =
-        index::hydrate_external_segment(c, owner, session, header, since, until, &restrictions)?
+        index::hydrate_external_segment(c, ns_id, header, since, until, &restrictions)?
     else {
         return Ok(None);
     };
@@ -161,13 +157,13 @@ fn unsealed_message_from_header(
 
 fn visible_unsealed_segments(
     c: &Connection,
-    owner: &str,
+    ns_id: crate::namespace::NamespaceId,
     session: &str,
     through: u64,
     exclude: Option<&ExcludedTail>,
 ) -> Result<Vec<index::ExternalSegmentHeader>, StoreError> {
     let mut out: Vec<index::ExternalSegmentHeader> =
-        index::unsealed_external_segment_headers(c, owner, session, through, 0)?
+        index::unsealed_external_segment_headers(c, ns_id, through, 0)?
             .into_iter()
             .filter(|seg| !is_excluded(exclude, session, &seg.turn_id, seg.sequence))
             .collect();
@@ -175,9 +171,7 @@ fn visible_unsealed_segments(
         && excl.session_id == session
         && excl.covered_through < through
     {
-        for seg in
-            index::unsealed_external_segment_headers(c, owner, session, excl.covered_through, 0)?
-        {
+        for seg in index::unsealed_external_segment_headers(c, ns_id, excl.covered_through, 0)? {
             if seg.turn_id == excl.turn_id
                 && !out.iter().any(|existing| existing.sequence == seg.sequence)
             {
@@ -228,7 +222,16 @@ pub(crate) fn checked_source_cut(
             .ok_or_else(|| {
                 invalid("Recall index is incomplete for this cut; explicit rebuild required")
             })?;
-        let expected:Option<String>=c.query_row("SELECT prefix_digest FROM agent_session_history WHERE owner=? AND session=? AND sequence=?",params![owner,cut.session,sequence],|r|r.get(0)).optional()?;
+        let expected: Option<String> = match crate::namespace::find_id(c, &owner, &cut.session)? {
+            Some(ns_id) => c
+                .query_row(
+                    "SELECT prefix_digest FROM agent_session_history WHERE namespace_id=? AND sequence=?",
+                    params![ns_id, sequence],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
         if expected.as_ref() != Some(&digest) {
             return Err(StoreError::EventConflict);
         }
@@ -266,10 +269,12 @@ pub(super) fn context(
     }
     checked_cut(c, &store, &cut)?;
     let owner = store.key()?;
-    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.message=? AND {SHARED_CONTEXT} AND d.sequence<=? AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
+    let Some(ns_id) = crate::namespace::find_id(c, &owner, &session)? else {
+        return Err(invalid("Recall anchor not visible in this exact cut").into());
+    };
+    let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.namespace_id=? AND d.message=? AND {SHARED_CONTEXT} AND d.sequence<=? AND NOT(ns.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))"))?;
     let mut rows = statement.query(params![
-        owner,
-        session,
+        ns_id,
         anchor,
         number(cut.through_sequence)?,
         exclude.as_ref().map(|x| x.session_id.as_str()),
@@ -280,11 +285,11 @@ pub(super) fn context(
             .transpose()?
     ])?;
     let anchor = match rows.next()? {
-        Some(row) => read_message(c, &owner, &session, row)?,
+        Some(row) => read_message(c, row)?,
         None => {
             let found = visible_unsealed_segments(
                 c,
-                &owner,
+                ns_id,
                 &session,
                 cut.through_sequence,
                 exclude.as_ref(),
@@ -292,7 +297,7 @@ pub(super) fn context(
             .into_iter()
             .find(|seg| seg.fact.to_string() == anchor)
             .ok_or_else(|| invalid("Recall anchor not visible in this exact cut"))?;
-            unsealed_message_from_header(c, &owner, &session, &found, None, None)?
+            unsealed_message_from_header(c, &owner, ns_id, &found, None, None)?
                 .ok_or_else(|| invalid("Recall anchor not visible in this exact cut"))?
         }
     };
@@ -324,12 +329,15 @@ fn neighbors(
     stop: &CancellationToken,
 ) -> Result<(Vec<Message>, bool, bool), StoreError> {
     let owner = store.key()?;
+    let Some(ns_id) = crate::namespace::find_id(c, &owner, &cut.session)? else {
+        return Ok((vec![anchor.clone()], false, false));
+    };
     let seq = number(anchor.position.source_sequence)?;
     let ordinal = number(anchor.position.item_index)?;
     let mut sides = [vec![], vec![]];
     let mut more = [false, false];
     let unsealed_in_turn: Vec<index::ExternalSegmentHeader> =
-        visible_unsealed_segments(c, &owner, &cut.session, cut.through_sequence, exclude)?
+        visible_unsealed_segments(c, ns_id, &cut.session, cut.through_sequence, exclude)?
             .into_iter()
             .filter(|seg| seg.turn_id == anchor.turn_id)
             .collect();
@@ -339,15 +347,14 @@ fn neighbors(
         } else {
             (">", "ASC")
         };
-        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.owner=? AND d.session=? AND d.turn=? AND {SHARED_CONTEXT} AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
+        let mut statement=c.prepare_cached(&format!("SELECT {COLUMNS} FROM agent_recall_messages d {ORIGINAL} WHERE d.namespace_id=? AND d.turn=? AND {SHARED_CONTEXT} AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) AND NOT(ns.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
         let cap = size
             .checked_add(1)
             .ok_or_else(|| invalid("Recall context limit overflow"))?;
         let cap =
             i64::try_from(cap).map_err(|_| invalid("Recall context size exceeds SQLite range"))?;
         let mut rows = statement.query(params![
-            owner,
-            cut.session,
+            ns_id,
             anchor.turn_id,
             number(cut.through_sequence)?,
             seq,
@@ -363,7 +370,7 @@ fn neighbors(
                 more[side] = true;
                 break;
             }
-            sides[side].push(read_message(c, &owner, &cut.session, row)?);
+            sides[side].push(read_message(c, row)?);
         }
     }
     if !unsealed_in_turn.is_empty() {
@@ -371,14 +378,12 @@ fn neighbors(
         for seg in unsealed_in_turn {
             let key = (seg.sequence, 0);
             if key < anchor_key {
-                if let Some(msg) =
-                    unsealed_message_from_header(c, &owner, &cut.session, &seg, None, None)?
+                if let Some(msg) = unsealed_message_from_header(c, &owner, ns_id, &seg, None, None)?
                 {
                     sides[0].push(msg);
                 }
             } else if key > anchor_key
-                && let Some(msg) =
-                    unsealed_message_from_header(c, &owner, &cut.session, &seg, None, None)?
+                && let Some(msg) = unsealed_message_from_header(c, &owner, ns_id, &seg, None, None)?
             {
                 sides[1].push(msg);
             }
@@ -548,7 +553,7 @@ pub(super) fn search(
     let mut cuts = BTreeMap::new();
     let mut gaps = BTreeMap::new();
     // Detect missing indexes even when they yield no FTS candidate.
-    let mut failures=c.prepare_cached("SELECT DISTINCT r.session FROM agent_run_specs r JOIN session_control s ON s.id=r.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE r.owner=? AND r.session>=? AND r.session<? AND substr(r.session,1,length(?))=? AND (? IS NULL OR r.session=?) AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) AND EXISTS(SELECT 1 FROM agent_facts f WHERE f.run=r.run) AND (COALESCE((SELECT sequence FROM agent_recall_heads x WHERE x.owner=r.owner AND x.session=r.session),0)<>(SELECT MAX((SELECT f.sequence FROM agent_facts f WHERE f.run=spec.run ORDER BY f.revision DESC LIMIT 1)) FROM agent_run_specs spec WHERE spec.owner=r.owner AND spec.session=r.session) OR COALESCE((SELECT digest FROM agent_recall_heads x WHERE x.owner=r.owner AND x.session=r.session),'')<>COALESCE((SELECT prefix_digest FROM agent_session_history h WHERE h.owner=r.owner AND h.session=r.session ORDER BY h.sequence DESC LIMIT 1),''))")?;
+    let mut failures=c.prepare_cached("SELECT DISTINCT r.session FROM agent_run_specs r JOIN session_control s ON s.id=r.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE r.owner=? AND r.session>=? AND r.session<? AND substr(r.session,1,length(?))=? AND (? IS NULL OR r.session=?) AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) AND EXISTS(SELECT 1 FROM agent_facts f WHERE f.run=r.run) AND (COALESCE((SELECT sequence FROM agent_recall_heads x WHERE x.owner=r.owner AND x.session=r.session),0)<>(SELECT MAX((SELECT f.sequence FROM agent_facts f WHERE f.run=spec.run ORDER BY f.revision DESC LIMIT 1)) FROM agent_run_specs spec WHERE spec.owner=r.owner AND spec.session=r.session) OR COALESCE((SELECT digest FROM agent_recall_heads x WHERE x.owner=r.owner AND x.session=r.session),'')<>COALESCE((SELECT prefix_digest FROM agent_session_history h WHERE h.namespace_id=(SELECT id FROM agent_namespaces ns WHERE ns.owner=r.owner AND ns.session=r.session) ORDER BY h.sequence DESC LIMIT 1),''))")?;
     let mut failed = failures.query(params![
         owner,
         store.prefix,
@@ -598,7 +603,7 @@ pub(super) fn search(
     let (seg_cols, seg_join, until_expr) = if has_time_window {
         (
             ",seg.task,seg.message_id,seg.is_thinking,seg.tail_start_sequence,seg.tail_end_sequence,seg.tail_start_at",
-            " LEFT JOIN agent_recall_external_segments seg ON seg.owner=d.owner AND seg.session=d.session AND seg.tail_end_sequence=d.sequence AND seg.sealed=1",
+            " LEFT JOIN agent_recall_external_segments seg ON seg.namespace_id=d.namespace_id AND seg.tail_end_sequence=d.sequence AND seg.sealed=1",
             "COALESCE(seg.tail_start_at,d.at)",
         )
     } else {
@@ -607,7 +612,23 @@ pub(super) fn search(
     let mut cursor = 0i64;
     loop {
         let sql = format!(
-            "SELECT {COLUMNS},d.session,d.id{settlement_col}{seg_cols} FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL}{seg_join} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR {until_expr}<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>?{transcript_filter} AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
+            r#"SELECT {COLUMNS},ns.session,d.id{settlement_col}{seg_cols}
+               FROM agent_recall_terms
+               CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid
+               {ORIGINAL}{seg_join}
+               CROSS JOIN session_control s ON s.id=ns.session
+               CROSS JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1
+               WHERE agent_recall_terms MATCH ?
+                 AND d.role<>'"compaction"'
+                 AND ns.owner=?
+                 AND ns.session>=? AND ns.session<? AND substr(ns.session,1,length(?))=?
+                 AND (? IS NULL OR ns.session=?)
+                 AND (? IS NULL OR d.at>=?)
+                 AND (? IS NULL OR {until_expr}<=?)
+                 AND NOT(ns.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0))
+                 AND agent_recall_terms.rowid>?{transcript_filter}
+                 AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)
+               ORDER BY agent_recall_terms.rowid LIMIT 128"#
         );
         let mut statement = c.prepare_cached(&sql)?;
         let since = query.since.map(number).transpose()?;
@@ -638,8 +659,9 @@ pub(super) fn search(
         while let Some(row) = rows.next()? {
             check(&stop)?;
             count += 1;
-            let session: String = row.get(18)?;
-            cursor = row.get(19)?;
+            let ns_id: crate::namespace::NamespaceId = row.get(18)?;
+            let session: String = row.get(19)?;
+            cursor = row.get(20)?;
             if !cuts.contains_key(&session) && !gaps.contains_key(&session) {
                 let cut = crate::session_history::capture_at(c, &store.owner, &session, None)?;
                 match checked_cut(c, &store, &cut) {
@@ -660,8 +682,8 @@ pub(super) fn search(
             if gaps.contains_key(&session) {
                 continue;
             }
-            let needs_settlement_check: bool = row.get(20)?;
-            let mut message = read_message(c, &owner, &session, row)?;
+            let needs_settlement_check: bool = row.get(21)?;
+            let mut message = read_message(c, row)?;
             if message.fields.iter().all(|f| f.internal) {
                 continue;
             }
@@ -672,19 +694,19 @@ pub(super) fn search(
             }
             if has_time_window
                 && !row.get::<_, bool>(13)?
-                && let Some(task_str) = row.get::<_, Option<String>>(21)?
+                && let Some(task_str) = row.get::<_, Option<String>>(22)?
             {
-                let start_at = unsigned(row.get::<_, i64>(26)?)?;
+                let start_at = unsigned(row.get::<_, i64>(27)?)?;
                 let straddles = query.since.is_some_and(|s| start_at < s)
                     || query.until.is_some_and(|u| message.timestamp > u);
                 if straddles {
                     let span = index::SealedSegmentSpan {
                         run: message.run,
                         task: crate::sql::identity(task_str)?,
-                        message_id: row.get::<_, String>(22)?,
-                        is_thinking: row.get::<_, bool>(23)?,
-                        tail_start_sequence: unsigned(row.get::<_, i64>(24)?)?,
-                        tail_end_sequence: unsigned(row.get::<_, i64>(25)?)?,
+                        message_id: row.get::<_, String>(23)?,
+                        is_thinking: row.get::<_, bool>(24)?,
+                        tail_start_sequence: unsigned(row.get::<_, i64>(25)?)?,
+                        tail_end_sequence: unsigned(row.get::<_, i64>(26)?)?,
                     };
                     let spans_json: String = row.get(12)?;
                     let restrictions: Vec<(u64, u64)> = if spans_json != "[]" {
@@ -694,8 +716,7 @@ pub(super) fn search(
                     };
                     let Some((sliced_body, sliced_ts)) = index::slice_sealed_external_segment(
                         c,
-                        &owner,
-                        &session,
+                        ns_id,
                         &span,
                         query.since,
                         query.until,
@@ -739,20 +760,22 @@ pub(super) fn search(
                 [&excl.session_id],
                 |r| r.get(0),
             )?;
-            if visible && ensure_session_cut(c, &store, &excl.session_id, &mut cuts, &mut gaps)? {
+            if visible
+                && ensure_session_cut(c, &store, &excl.session_id, &mut cuts, &mut gaps)?
+                && let Some(excl_ns_id) = crate::namespace::find_id(c, &owner, &excl.session_id)?
+            {
                 let since = query.since.map(number).transpose()?;
                 let until = query.until.map(number).transpose()?;
                 let covered_i64 = number(excl.covered_through)?;
                 let mut stmt = c.prepare_cached(&format!(
                     "SELECT {COLUMNS}
                      FROM agent_recall_messages d {ORIGINAL}
-                     WHERE d.owner=?1 AND d.session=?2 AND d.turn=?3
-                       AND d.sequence<=?4 AND d.body_ref_sequence>?4
-                       AND (?5 IS NULL OR d.at>=?6) AND (?7 IS NULL OR d.at<=?8){transcript_filter}"
+                     WHERE d.namespace_id=?1 AND d.turn=?2
+                       AND d.sequence<=?3 AND d.body_ref_sequence>?3
+                       AND (?4 IS NULL OR d.at>=?5) AND (?6 IS NULL OR d.at<=?7){transcript_filter}"
                 ))?;
                 let mut rows = stmt.query(params![
-                    owner,
-                    excl.session_id,
+                    excl_ns_id,
                     excl.turn_id,
                     covered_i64,
                     since,
@@ -762,7 +785,7 @@ pub(super) fn search(
                 ])?;
                 while let Some(row) = rows.next()? {
                     check(&stop)?;
-                    let message = read_message(c, &owner, &excl.session_id, row)?;
+                    let message = read_message(c, row)?;
                     if !message.fields.iter().all(|f| f.internal) {
                         consider_candidate(
                             excl.session_id.clone(),
@@ -775,8 +798,7 @@ pub(super) fn search(
                 }
                 for seg in index::unsealed_external_segment_headers(
                     c,
-                    &owner,
-                    &excl.session_id,
+                    excl_ns_id,
                     excl.covered_through,
                     0,
                 )? {
@@ -787,7 +809,7 @@ pub(super) fn search(
                     if let Some(message) = unsealed_message_from_header(
                         c,
                         &owner,
-                        &excl.session_id,
+                        excl_ns_id,
                         &seg,
                         query.since,
                         query.until,
@@ -808,21 +830,22 @@ pub(super) fn search(
     // Uses `agent_recall_external_segments_open` and returns 0 rows in steady state.
     {
         let mut active_stmt = c.prepare_cached(
-            "SELECT DISTINCT seg.session
+            "SELECT DISTINCT seg.namespace_id, ns.session
              FROM agent_recall_external_segments seg
-             JOIN session_control s ON s.id=seg.session
+             JOIN agent_namespaces ns ON ns.id=seg.namespace_id
+             JOIN session_control s ON s.id=ns.session
              JOIN session_creations route
                ON route.session_id=s.id AND route.ready=1 AND route.visible=1
-             WHERE seg.owner=?1 AND seg.session>=?2 AND seg.session<?3
-               AND substr(seg.session,1,length(?4))=?5
-               AND (?6 IS NULL OR seg.session=?7)
+             WHERE ns.owner=?1 AND ns.session>=?2 AND ns.session<?3
+               AND substr(ns.session,1,length(?4))=?5
+               AND (?6 IS NULL OR ns.session=?7)
                AND seg.sealed=0 AND seg.tail_start_sequence IS NOT NULL
                AND NOT EXISTS(
                  SELECT 1 FROM session_retirements retired
                  WHERE retired.session_id=s.id AND retired.remove_session=1
                )",
         )?;
-        let active_sessions: Vec<String> = active_stmt
+        let active_sessions: Vec<(crate::namespace::NamespaceId, String)> = active_stmt
             .query_map(
                 params![
                     owner,
@@ -833,10 +856,10 @@ pub(super) fn search(
                     query.session_id,
                     query.session_id
                 ],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )?
             .collect::<Result<_, _>>()?;
-        for session in active_sessions {
+        for (ns_id, session) in active_sessions {
             check(&stop)?;
             if gaps.contains_key(&session)
                 || !ensure_session_cut(c, &store, &session, &mut cuts, &mut gaps)?
@@ -844,21 +867,16 @@ pub(super) fn search(
                 continue;
             }
             let through = cuts[&session].through_sequence;
-            for seg in index::unsealed_external_segment_headers(c, &owner, &session, through, 0)? {
+            for seg in index::unsealed_external_segment_headers(c, ns_id, through, 0)? {
                 check(&stop)?;
                 if seg.is_thinking
                     || is_excluded(query.exclude.as_ref(), &session, &seg.turn_id, seg.sequence)
                 {
                     continue;
                 }
-                if let Some(message) = unsealed_message_from_header(
-                    c,
-                    &owner,
-                    &session,
-                    &seg,
-                    query.since,
-                    query.until,
-                )? {
+                if let Some(message) =
+                    unsealed_message_from_header(c, &owner, ns_id, &seg, query.since, query.until)?
+                {
                     consider_candidate(session.clone(), message, &query, &mut ranked, &stop)?;
                 }
             }
@@ -967,7 +985,16 @@ pub(super) fn exclusion(
     let bytes:Vec<u8>=c.query_row("SELECT x.payload FROM agent_run_specs r JOIN contents x ON x.id=r.spec_content_id WHERE r.run=? AND r.owner=?",params![run.to_string(),store.key()?],|r|r.get(0))?;
     let spec: RunSpec = serde_json::from_slice(&bytes)?;
     store.session(&spec.session_id)?;
-    let row:Option<(String,Vec<u8>)>=c.query_row("SELECT f.run,x.payload FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents x ON x.id=f.body_content_id WHERE h.owner=? AND h.session=? AND h.kind='context_compacted' ORDER BY h.sequence DESC LIMIT 1",params![store.key()?,spec.session_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(String, Vec<u8>)> = match crate::namespace::find_id(c, &store.key()?, &spec.session_id)? {
+        Some(ns_id) => c
+            .query_row(
+                "SELECT f.run,x.payload FROM agent_session_history h JOIN agent_facts f ON f.sequence=h.sequence JOIN contents x ON x.id=f.body_content_id WHERE h.namespace_id=? AND h.kind='context_compacted' ORDER BY h.sequence DESC LIMIT 1",
+                params![ns_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?,
+        None => None,
+    };
     let covered_through = if let Some((source, bytes)) = row {
         let fact: RecordedFact = serde_json::from_slice(&bytes)?;
         let Fact::ContextCompacted { baseline } = fact.fact else {

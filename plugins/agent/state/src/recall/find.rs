@@ -116,15 +116,22 @@ pub(crate) fn find_index(
         .case_insensitive(!input.case_sensitive)
         .build()
         .map_err(|e| invalid(e.to_string()))?;
-    let all_unsealed = index::unsealed_external_segment_headers(
-        c,
-        owner_key,
-        &cut.session,
-        cut.through_sequence,
-        min_admission,
-    )?;
+    let ns_id = crate::namespace::find_id(c, owner_key, &cut.session)?;
+    let all_unsealed = match ns_id {
+        Some(ns_id) => {
+            index::unsealed_external_segment_headers(c, ns_id, cut.through_sequence, min_admission)?
+        }
+        None => Vec::new(),
+    };
     if let Some(after) = input.after {
-        let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?)",params![owner_key,cut.session,number(after.source_sequence)?,number(after.item_index)?],|r|r.get(0))?;
+        let exists: bool = match ns_id {
+            Some(ns_id) => c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_recall_messages WHERE namespace_id=? AND sequence=? AND ordinal=?)",
+                params![ns_id, number(after.source_sequence)?, number(after.item_index)?],
+                |r| r.get(0),
+            )?,
+            None => false,
+        };
         let in_unsealed = after.item_index == 0
             && all_unsealed
                 .iter()
@@ -135,6 +142,16 @@ pub(crate) fn find_index(
             ));
         }
     }
+    let Some(ns_id) = ns_id else {
+        check(stop)?;
+        return Ok((
+            FindPage {
+                matches: Vec::new(),
+                next_after: None,
+            },
+            input.after,
+        ));
+    };
     let after = input.after.unwrap_or(RowPosition {
         source_sequence: 0,
         item_index: 0,
@@ -171,13 +188,7 @@ pub(crate) fn find_index(
             }
             (true, None)
         } else if ids.len() <= FIND_BATCH as usize {
-            let extra = index::superseded_rows_for_targets(
-                c,
-                owner_key,
-                &cut.session,
-                &ids,
-                cut.through_sequence,
-            )?;
+            let extra = index::superseded_rows_for_targets(c, ns_id, &ids, cut.through_sequence)?;
             ids.extend(extra);
             ids.sort_unstable();
             ids.dedup();
@@ -199,24 +210,23 @@ pub(crate) fn find_index(
             " AND d.internal=0"
         };
         let source = if candidate_ids.is_some() {
-            "json_each(?8) candidate CROSS JOIN agent_recall_messages d ON d.id=candidate.value"
+            "json_each(?7) candidate CROSS JOIN agent_recall_messages d ON d.id=candidate.value"
         } else {
             "agent_recall_messages d"
         };
         let mut statement = c.prepare_cached(&format!(
-            "SELECT d.sequence,d.ordinal,COALESCE(d.body_ref_end-COALESCE(d.body_ref_start,0),octet_length(d.body)),h.fact_id FROM {source}
-             CROSS JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
-             WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND (d.sequence,d.ordinal)>(?4,?5)
-               AND h.admission_sequence>?6 AND (d.body_ref_sequence IS NULL OR d.body_ref_sequence>?3){visible} AND d.role<>'\"compaction\"'
-             ORDER BY d.sequence,d.ordinal LIMIT ?7"
+            r#"SELECT d.sequence,d.ordinal,COALESCE(d.body_ref_end-COALESCE(d.body_ref_start,0),octet_length(d.body)),h.fact_id FROM {source}
+             CROSS JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence
+             WHERE d.namespace_id=?1 AND d.sequence<=?2 AND (d.sequence,d.ordinal)>(?3,?4)
+               AND h.admission_sequence>?5 AND (d.body_ref_sequence IS NULL OR d.body_ref_sequence>?2){visible} AND d.role<>'"compaction"'
+             ORDER BY d.sequence,d.ordinal LIMIT ?6"#
         ))?;
         let encoded = candidate_ids
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
         let bounds = params![
-            owner_key,
-            cut.session,
+            ns_id,
             number(cut.through_sequence)?,
             number(after.source_sequence)?,
             number(after.item_index)?,
@@ -283,7 +293,6 @@ pub(crate) fn find_index(
     for entry in &entries {
         let _ = entry.sort_key()?;
     }
-
     let restrictions = if let Some(owner) = reader {
         let mut keys = Vec::with_capacity(entries.len());
         for (i, entry) in entries.iter().enumerate() {
@@ -312,9 +321,7 @@ pub(crate) fn find_index(
     let mut next_after = None;
     let mut position = input.after;
     let mut statement = c.prepare_cached(
-        "SELECT body,fields_json,body_ref_sequence,body_ref_start,body_ref_end
-         FROM agent_recall_messages
-         WHERE owner=? AND session=? AND sequence=? AND ordinal=?",
+        "SELECT body,fields_json,body_ref_sequence,body_ref_start,body_ref_end FROM agent_recall_messages WHERE namespace_id=? AND sequence=? AND ordinal=?"
     )?;
     for (index, entry) in entries.into_iter().enumerate() {
         check(stop)?;
@@ -335,8 +342,7 @@ pub(crate) fn find_index(
                     source_sequence: seq,
                     item_index: unsigned(ordinal)?,
                 };
-                let mut rows =
-                    statement.query(params![owner_key, cut.session, sequence, ordinal])?;
+                let mut rows = statement.query(params![ns_id, sequence, ordinal])?;
                 let row = rows.next()?.ok_or(StoreError::EventConflict)?;
                 let mut body: String = row.get(0)?;
                 let fields: Vec<FieldSpan> = serde_json::from_str(&row.get::<_, String>(1)?)?;
@@ -348,15 +354,7 @@ pub(crate) fn find_index(
                     if unsigned(ref_seq)? <= cut.through_sequence {
                         continue;
                     }
-                    body = index::resolve_body_ref(
-                        c,
-                        owner_key,
-                        &cut.session,
-                        seq,
-                        ref_seq,
-                        ref_start,
-                        ref_end,
-                    )?;
+                    body = index::resolve_body_ref(c, ns_id, seq, ref_seq, ref_start, ref_end)?;
                 }
                 if let Some(spans) = restrictions.get(&index) {
                     if spans.iter().any(|&(a, b)| a == 0 && b >= body.len() as u64) {
@@ -394,15 +392,8 @@ pub(crate) fn find_index(
                     item_index: 0,
                 };
                 position = Some(locator);
-                let Some(delta) = index::hydrate_external_segment(
-                    c,
-                    owner_key,
-                    &cut.session,
-                    &seg,
-                    None,
-                    None,
-                    &[],
-                )?
+
+                let Some(delta) = index::hydrate_external_segment(c, ns_id, &seg, None, None, &[])?
                 else {
                     continue;
                 };
@@ -500,58 +491,55 @@ pub(crate) fn landmarks_selected_index(
     if !(1..=64).contains(&limit) {
         return Err(invalid("landmark limit must be 1..=64"));
     }
+    let Some(ns_id) = crate::namespace::find_id(c, owner_key, &cut.session)? else {
+        return Ok(vec![]);
+    };
     let sql = "WITH prompts AS (
         SELECT d.turn, MIN(d.sequence) AS first
         FROM agent_recall_messages d
-        WHERE d.owner=?1 AND d.session=?2 AND d.sequence<=?3 AND d.internal=0
+        WHERE d.namespace_id=?1 AND d.sequence<=?2 AND d.internal=0
           AND d.role='\"user\"' AND d.origin_json IS NULL
           AND EXISTS(SELECT 1 FROM agent_session_history h
-                     WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
-                       AND h.admission_sequence>?5)
+                     WHERE h.namespace_id=d.namespace_id AND h.sequence=d.sequence
+                       AND h.admission_sequence>?4)
         GROUP BY d.turn
     ), ranked AS (
         SELECT *, row_number() OVER(ORDER BY first,turn)-1 AS ordinal, count(*) OVER() AS total
         FROM prompts
     ), sampled AS (
         SELECT * FROM ranked
-        WHERE (?6 IS NULL AND (total<=?4 OR ordinal=0 OR ordinal=total-1
-               OR (ordinal*(?4-1)/(total-1))<>((ordinal-1)*(?4-1)/(total-1))))
-           OR ordinal IN(SELECT value FROM json_each(?6))
-        ORDER BY first,turn LIMIT ?4
+        WHERE (?5 IS NULL AND (total<=?3 OR ordinal=0 OR ordinal=total-1
+               OR (ordinal*(?3-1)/(total-1))<>((ordinal-1)*(?3-1)/(total-1))))
+           OR ordinal IN(SELECT value FROM json_each(?5))
+        ORDER BY first,turn LIMIT ?3
     )
     SELECT s.turn, s.first, (
         SELECT d.sequence FROM agent_recall_messages d INDEXED BY agent_recall_turn
-        WHERE d.owner=?1 AND d.session=?2 AND d.turn=s.turn AND d.sequence<=?3 AND d.internal=0
+        WHERE d.namespace_id=?1 AND d.turn=s.turn AND d.sequence<=?2 AND d.internal=0
           AND EXISTS(SELECT 1 FROM agent_session_history h
-                     WHERE h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence
-                       AND h.admission_sequence>?5)
+                     WHERE h.namespace_id=d.namespace_id AND h.sequence=d.sequence
+                       AND h.admission_sequence>?4)
         ORDER BY d.sequence DESC LIMIT 1
     )
     FROM sampled s ORDER BY s.first,s.turn";
     let mut statement = c.prepare_cached(sql)?;
     let mut rows = statement.query(params![
-        owner_key,
-        cut.session,
+        ns_id,
         number(cut.through_sequence)?,
         i64::from(limit),
         number(min_admission)?,
         ranks.map(serde_json::to_string).transpose()?
     ])?;
-    let unsealed = index::unsealed_external_segment_headers(
-        c,
-        owner_key,
-        &cut.session,
-        cut.through_sequence,
-        min_admission,
-    )?;
+    let unsealed =
+        index::unsealed_external_segment_headers(c, ns_id, cut.through_sequence, min_admission)?;
     let mut out = vec![];
     while let Some(row) = rows.next()? {
         check(stop)?;
         let turn: String = row.get(0)?;
         let first: i64 = row.get(1)?;
         let last: i64 = row.get(2)?;
-        let (ordinal,body,origin):(i64,String,Option<String>)=c.query_row(r#"SELECT ordinal,substr(body,1,96),origin_json FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0 AND role='"user"' AND origin_json IS NULL ORDER BY ordinal LIMIT 1"#,params![owner_key,cut.session,turn,first],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-        let last_ordinal:i64=c.query_row("SELECT MAX(ordinal) FROM agent_recall_messages WHERE owner=? AND session=? AND turn=? AND sequence=? AND internal=0",params![owner_key,cut.session,turn,last],|r|r.get(0))?;
+        let (ordinal,body,origin):(i64,String,Option<String>)=c.query_row(r#"SELECT ordinal,substr(body,1,96),origin_json FROM agent_recall_messages WHERE namespace_id=? AND turn=? AND sequence=? AND internal=0 AND role='"user"' AND origin_json IS NULL ORDER BY ordinal LIMIT 1"#,params![ns_id,turn,first],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let last_ordinal:i64=c.query_row("SELECT MAX(ordinal) FROM agent_recall_messages WHERE namespace_id=? AND turn=? AND sequence=? AND internal=0",params![ns_id,turn,last],|r|r.get(0))?;
         let mut last_position = RowPosition {
             source_sequence: unsigned(last)?,
             item_index: unsigned(last_ordinal)?,
@@ -603,16 +591,22 @@ impl Query for ReadPositions {
         {
             return Err(invalid("invalid indexed history window"));
         }
-        let owner = store.key()?;
-        let unsealed = index::unsealed_external_segment_headers(
-            c,
-            &owner,
-            &cut.session,
-            cut.through_sequence,
-            0,
-        )?;
+        let ns_id = crate::namespace::find_id(c, &store.key()?, &cut.session)?;
+        let unsealed = match ns_id {
+            Some(ns_id) => {
+                index::unsealed_external_segment_headers(c, ns_id, cut.through_sequence, 0)?
+            }
+            None => Vec::new(),
+        };
         if let Some(anchor) = anchor {
-            let exists:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM agent_recall_messages WHERE owner=? AND session=? AND sequence=? AND ordinal=?)",params![owner,cut.session,number(anchor.source_sequence)?,number(anchor.item_index)?],|r|r.get(0))?;
+            let exists: bool = match ns_id {
+                Some(ns_id) => c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_recall_messages WHERE namespace_id=? AND sequence=? AND ordinal=?)",
+                    params![ns_id, number(anchor.source_sequence)?, number(anchor.item_index)?],
+                    |r| r.get(0),
+                )?,
+                None => false,
+            };
             let in_unsealed = anchor.item_index == 0
                 && unsealed
                     .iter()
@@ -621,6 +615,9 @@ impl Query for ReadPositions {
                 return Err(invalid("history window anchor is not a source row"));
             }
         }
+        let Some(ns_id) = ns_id else {
+            return Ok(vec![]);
+        };
         let (comparison, order) = if reverse {
             ("<=", "DESC")
         } else {
@@ -642,10 +639,9 @@ impl Query for ReadPositions {
         } else {
             "AND d.internal=0"
         };
-        let mut statement=c.prepare_cached(&format!("SELECT d.sequence,d.ordinal FROM agent_recall_messages d WHERE d.owner=? AND d.session=? AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) {visible} ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
+        let mut statement=c.prepare_cached(&format!("SELECT d.sequence,d.ordinal FROM agent_recall_messages d WHERE d.namespace_id=? AND d.sequence<=? AND (d.sequence,d.ordinal){comparison}(?,?) {visible} ORDER BY d.sequence {order},d.ordinal {order} LIMIT ?"))?;
         let mut rows = statement.query(params![
-            owner,
-            cut.session,
+            ns_id,
             number(cut.through_sequence)?,
             number(bound.source_sequence)?,
             number(bound.item_index)?,
@@ -700,7 +696,10 @@ pub(crate) fn landmarks_count_index(
     cut: &HistoryCut,
     min_admission: u64,
 ) -> Result<u64, StoreError> {
-    let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.turn FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence<=? AND h.admission_sequence>? AND d.internal=0 AND d.role='\"user\"' AND d.origin_json IS NULL GROUP BY d.turn)",params![owner_key,cut.session,number(cut.through_sequence)?,number(min_admission)?],|r|r.get(0))?;
+    let Some(ns_id) = crate::namespace::find_id(c, owner_key, &cut.session)? else {
+        return Ok(0);
+    };
+    let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.turn FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence WHERE d.namespace_id=? AND d.sequence<=? AND h.admission_sequence>? AND d.internal=0 AND d.role='\"user\"' AND d.origin_json IS NULL GROUP BY d.turn)",params![ns_id,number(cut.through_sequence)?,number(min_admission)?],|r|r.get(0))?;
     unsigned(count)
 }
 pub(crate) fn landmark_ranks(total: u64, limit: u32) -> Vec<u64> {

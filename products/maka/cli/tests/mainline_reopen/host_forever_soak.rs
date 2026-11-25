@@ -2328,7 +2328,7 @@ async fn real_host_forever_running_o1_soak() {
             Some(db) => match sqlite_query_u64_checked(
                 db,
                 &format!(
-                    "SELECT count(*) FROM agent_session_history WHERE session='{escaped_immortal}' AND kind='context_compacted';"
+                    "SELECT count(*) FROM agent_session_history h JOIN agent_namespaces ns ON ns.id = h.namespace_id WHERE ns.session='{escaped_immortal}' AND h.kind='context_compacted';"
                 ),
             ) {
                 Ok(n) => n,
