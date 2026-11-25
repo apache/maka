@@ -1869,13 +1869,14 @@ function App() {
   };
 
   let savedConnectionGeneration = 0;
-  const connectingSavedHost = signal(false);
+  const connectingSavedHost = signal<string | null>(null);
   const cancelSavedConnection = () => {
-    if (!connectingSavedHost()) return;
+    const rootId = connectingSavedHost();
+    if (!rootId) return;
     savedConnectionGeneration++;
-    connectingSavedHost.set(false);
+    connectingSavedHost.set(null);
     busy.set(false);
-    cancelPairing().catch((err) => setStatusBanner(String(err)));
+    cancelPairing(rootId).catch((err) => setStatusBanner(String(err)));
   };
   const relayHost = signal<SavedHostItem | null>(null);
   const savedRelayUrl = signal('');
@@ -1892,13 +1893,13 @@ function App() {
   };
   const runConnectSaved = (hostItem: SavedHostItem, relayUrl?: string, relayToken?: string) => {
     const generation = ++savedConnectionGeneration;
-    connectingSavedHost.set(true);
+    connectingSavedHost.set(hostItem.rootId);
     busy.set(true);
     setStatusBanner(null);
     connectHost(hostItem.rootId, relayUrl, relayToken).then(
       (snap) => {
         if (generation !== savedConnectionGeneration) return;
-        connectingSavedHost.set(false);
+        connectingSavedHost.set(null);
         const applied = applyHostState(snap);
         busy.set(false);
         closeRelayPrompt();
@@ -1911,7 +1912,7 @@ function App() {
       },
       (err: Error) => {
         if (generation !== savedConnectionGeneration) return;
-        connectingSavedHost.set(false);
+        connectingSavedHost.set(null);
         setStatusBanner(err.message);
         busy.set(false);
       },
@@ -4104,7 +4105,7 @@ function App() {
           onBack={() => route.set(hostState().active ? 'chat' : 'home')}
         />
       </Panel>
-      <If when={connectingSavedHost() && !relayHost()}>
+      <If when={connectingSavedHost() !== null && !relayHost()}>
         <Action title={tr('Cancel connection')} onPress={cancelSavedConnection} />
       </If>
       <Panel open={relayHost() !== null} close={closeRelayPrompt}>

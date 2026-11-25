@@ -39,6 +39,7 @@ uuid.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-packages.workspace = true
+maka-plugin-core.workspace = true
 hex.workspace = true
 maka-remote-transport = { workspace = true, features = ["host", "relay-server"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"] }

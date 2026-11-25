@@ -59,6 +59,8 @@ tempfile.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-packages.workspace = true
+maka-web.workspace = true
+maka-web-api.workspace = true
 maka-remote-transport = { workspace = true, features = ["host", "relay-server"] }
 uuid.workspace = true
 hex.workspace = true

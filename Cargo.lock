@@ -9663,6 +9663,8 @@ dependencies = [
  "maka-remote-pairing",
  "maka-remote-transport",
  "maka-ui-build",
+ "maka-web",
+ "maka-web-api",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
@@ -10043,6 +10045,7 @@ dependencies = [
  "maka-event-log",
  "maka-host-runtime",
  "maka-packages",
+ "maka-plugin-core",
  "maka-remote-pairing",
  "maka-remote-transport",
  "rcgen",
@@ -11724,7 +11727,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-ios"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",

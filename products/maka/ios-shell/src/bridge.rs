@@ -18,8 +18,8 @@
  */
 
 use maka_remote_client::{
-    DeviceIdentity, HostProfile, PendingPairing, RelayAuthorization, RemoteCallHandle,
-    RemoteClientError, RemoteHostConnection, SavedHosts, TlsTrust,
+    Attachments, DeviceIdentity, HostProfile, PendingPairing, ReadResource, RelayAuthorization,
+    RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts, TlsTrust,
 };
 use nsh_engine::{HostCall, HostChannel};
 use serde::Deserialize;
@@ -38,6 +38,7 @@ use tokio::{
     sync::{Mutex, oneshot},
     task::AbortHandle,
 };
+use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
@@ -97,11 +98,26 @@ struct ConnectHost {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Rpc {
-    anchor_session: String,
+    root_id: Option<RootId>,
+    anchor_session: Option<String>,
     endpoint: String,
     method: String,
     input: Value,
     subscription_id: Option<String>,
+    progress_id: Option<String>,
+}
+
+type RootId = String;
+
+struct Attempt {
+    id: u64,
+    cancel: CancellationToken,
+}
+
+enum Admission {
+    Connecting(Attempt),
+    Offline,
+    Error(String),
 }
 
 struct RelayCredential {
@@ -124,13 +140,21 @@ struct Pending {
     credential: Option<Arc<RelayCredential>>,
 }
 
-struct Active {
+struct ActiveHost {
     id: u64,
-    root: String,
     info: Value,
     calls: RemoteCallHandle,
     receipt_scope: Option<ReceiptScope>,
-    stop: oneshot::Sender<()>,
+    _stop: oneshot::Sender<()>,
+    subscriptions: BTreeMap<String, (u64, AbortHandle)>,
+}
+
+impl Drop for ActiveHost {
+    fn drop(&mut self) {
+        for (_, task) in self.subscriptions.values() {
+            task.abort();
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,30 +165,63 @@ struct ReceiptScope {
 
 #[derive(Default)]
 struct State {
-    attempt: u64,
-    attempt_cancel: tokio_util::sync::CancellationToken,
+    generation: u64,
+    pairing: Option<Attempt>,
     pending: Option<Pending>,
-    active: Option<Active>,
-    profiles: BTreeMap<String, HostProfile>,
-    credentials: BTreeMap<String, Arc<RelayCredential>>,
-    filter: Option<String>,
+    // The legacy pairing screen also uses cancelPairing for manual WebSocket admission.
+    manual: Option<RootId>,
+    active_root: Option<RootId>,
+    connections: BTreeMap<RootId, ActiveHost>,
+    admissions: BTreeMap<RootId, Admission>,
+    profiles: BTreeMap<RootId, HostProfile>,
+    credentials: BTreeMap<RootId, Arc<RelayCredential>>,
+    filter: Option<RootId>,
     uncertain: BTreeMap<ReceiptScope, Vec<Value>>,
-    subscriptions: BTreeMap<String, (u64, AbortHandle)>,
-    subscription_id: u64,
 }
 
 impl State {
-    fn cancel_attempt(&mut self) {
-        self.attempt += 1;
-        self.attempt_cancel.cancel();
+    fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    fn cancel_pairing(&mut self) {
+        if let Some(pairing) = self.pairing.take() {
+            pairing.cancel.cancel();
+        }
         self.pending = None;
     }
 
-    fn clear_active(&mut self) -> Option<Active> {
-        for (_, (_, task)) in std::mem::take(&mut self.subscriptions) {
-            task.abort();
+    fn start_admission(&mut self, root: &str, cancel: CancellationToken) -> u64 {
+        self.clear_admission(root);
+        let id = self.next_generation();
+        self.admissions
+            .insert(root.into(), Admission::Connecting(Attempt { id, cancel }));
+        id
+    }
+
+    fn clear_admission(&mut self, root: &str) {
+        if let Some(Admission::Connecting(attempt)) = self.admissions.remove(root) {
+            attempt.cancel.cancel();
         }
-        self.active.take()
+        if self.manual.as_deref() == Some(root) {
+            self.manual = None;
+        }
+    }
+
+    fn admitting(&self, root: &str, id: u64) -> bool {
+        matches!(self.admissions.get(root), Some(Admission::Connecting(attempt)) if attempt.id == id)
+    }
+
+    fn remove_connection(&mut self, root: &str) {
+        self.connections.remove(root);
+        if self.active_root.as_deref() == Some(root) {
+            self.active_root = None;
+        }
+    }
+
+    fn current(&self, root: &str, id: u64) -> Option<&ActiveHost> {
+        self.connections.get(root).filter(|active| active.id == id)
     }
 }
 
@@ -254,8 +311,13 @@ impl Drop for HostBridge {
         let state = self.bridge.state.clone();
         self.bridge.runtime.spawn(async move {
             let mut state = state.lock().await;
-            state.cancel_attempt();
-            stop(state.clear_active());
+            state.cancel_pairing();
+            for admission in std::mem::take(&mut state.admissions).into_values() {
+                if let Admission::Connecting(attempt) = admission {
+                    attempt.cancel.cancel();
+                }
+            }
+            state.connections.clear();
         });
     }
 }
@@ -268,19 +330,48 @@ impl Bridge {
     }
 
     fn snapshot(&self, state: &State) -> Value {
-        let hosts: Vec<_> = state.profiles.values().map(|host| json!({
-            "rootId": host.root_id(),
-            "hostName": host.host_name(),
-            "peerId": host.host_peer_id(),
-            "endpoints": host.direct_endpoints(),
-            "relayUrls": host.relays().iter().map(|relay| &relay.url).collect::<Vec<_>>(),
-            "connected": state.active.as_ref().is_some_and(|active| active.root == host.root_id()),
-        })).collect();
+        let mut connections = BTreeMap::new();
+        for (root, admission) in &state.admissions {
+            let info = match admission {
+                Admission::Connecting(_) => json!({"status": "connecting"}),
+                Admission::Offline => json!({"status": "offline"}),
+                Admission::Error(reason) => json!({"status": "error", "error": reason}),
+            };
+            connections.insert(root.clone(), info);
+        }
+        for (root, active) in &state.connections {
+            connections.insert(
+                root.clone(),
+                json!({"status": "connected", "connection": active.info}),
+            );
+        }
+        let hosts: Vec<_> = state
+            .profiles
+            .values()
+            .map(|host| {
+                let root = host.root_id();
+                let status = connections
+                    .entry(root.to_owned())
+                    .or_insert_with(|| json!({"status": "offline"}));
+                json!({
+                    "rootId": root,
+                    "hostName": host.host_name(),
+                    "peerId": host.host_peer_id(),
+                    "endpoints": host.direct_endpoints(),
+                    "relayUrls": host.relays().iter().map(|relay| &relay.url).collect::<Vec<_>>(),
+                    // The existing drawer only renders the selected Host as live.
+                    "connected": state.active_root.as_deref() == Some(root),
+                    "status": status["status"],
+                })
+            })
+            .collect();
         json!({
             "revision": self.snapshot_revision.fetch_add(1, Ordering::Relaxed) + 1,
             "devicePeerId": self.peer_id,
             "hosts": hosts,
-            "active": state.active.as_ref().map(|active| &active.info),
+            "activeRootId": state.active_root,
+            "active": state.active_root.as_ref().and_then(|root| state.connections.get(root)).map(|active| &active.info),
+            "connections": connections,
             "filter": match &state.filter {
                 Some(root) => json!({"kind": "single_computer", "root_id": root}),
                 None => json!({"kind": "all_computers"}),
@@ -301,15 +392,34 @@ impl Bridge {
             "ios.confirmPairing" => self.confirm(decode(data)?).await,
             "ios.cancelPairing" => {
                 let mut state = self.state.lock().await;
-                state.cancel_attempt();
+                if let Some(root) = optional_root(&data)? {
+                    if matches!(state.admissions.get(root), Some(Admission::Connecting(_))) {
+                        state.clear_admission(root);
+                        self.emit("ios.hostState", self.snapshot(&state));
+                    }
+                } else if state.pairing.is_some() {
+                    state.cancel_pairing();
+                } else if let Some(root) = state.manual.take() {
+                    state.clear_admission(&root);
+                    self.emit("ios.hostState", self.snapshot(&state));
+                }
                 Ok(Value::Null)
             }
             "ios.connectHost" => self.connect(decode(data)?).await,
             "ios.connectWebSocket" => self.direct(decode(data)?).await,
             "ios.disconnectHost" => {
                 let mut state = self.state.lock().await;
-                state.cancel_attempt();
-                stop(state.clear_active());
+                if let Some(root) = optional_root(&data)?
+                    .map(str::to_owned)
+                    .or_else(|| state.active_root.clone())
+                {
+                    if state.connections.contains_key(&root) || state.admissions.contains_key(&root)
+                    {
+                        state.clear_admission(&root);
+                        state.remove_connection(&root);
+                        state.admissions.insert(root, Admission::Offline);
+                    }
+                }
                 Ok(self.snapshot(&state))
             }
             "ios.removeHost" => {
@@ -326,30 +436,39 @@ impl Bridge {
                 };
                 Ok(self.snapshot(&state))
             }
-            "ios.hostQuery" | "ios.hostMutate" => {
-                let rpc: Rpc = decode(data)?;
-                let (id, calls, receipt_scope) = self.calls(&rpc.anchor_session).await?;
-                let result = if name == "ios.hostQuery" {
-                    calls.query(&rpc.endpoint, &rpc.method, rpc.input).await
-                } else {
-                    calls.mutate(&rpc.endpoint, &rpc.method, rpc.input).await
-                };
-                if let Err(RemoteClientError::MutationUncertain { reference, .. }) = &result
-                    && let Some(scope) = receipt_scope
-                {
-                    self.register_uncertain(id, scope, reference.clone()).await;
-                }
-                let value = result.map_err(error)?;
-                self.check_active(id).await?;
+            "ios.hostQuery" => {
+                let rpc = read_only_rpc(data)?;
+                let (root, id, calls, _) = self.calls(&rpc).await?;
+                let value = calls
+                    .query(&rpc.endpoint, &rpc.method, rpc.input)
+                    .await
+                    .map_err(error)?;
+                self.check_active(&root, id).await?;
                 Ok(json!({"value": value}))
             }
+            "ios.hostMutate" => self.mutate(data).await,
             "ios.unsubscribe" => {
-                let task = self
-                    .state
-                    .lock()
-                    .await
-                    .subscriptions
-                    .remove(field(&data, "subscriptionId")?);
+                let id = field(&data, "subscriptionId")?;
+                let mut state = self.state.lock().await;
+                let root = match optional_root(&data)? {
+                    Some(root) => Some(root.to_owned()),
+                    None => {
+                        let mut matching = state
+                            .connections
+                            .iter()
+                            .filter(|(_, active)| active.subscriptions.contains_key(id));
+                        let root = matching.next().map(|(root, _)| root.clone());
+                        if matching.next().is_some() {
+                            return Err(
+                                "rootId is required for an ambiguous subscription ID".into()
+                            );
+                        }
+                        root
+                    }
+                };
+                let task = root
+                    .and_then(|root| state.connections.get_mut(&root))
+                    .and_then(|active| active.subscriptions.remove(id));
                 if let Some((_, task)) = &task {
                     task.abort();
                 }
@@ -359,11 +478,65 @@ impl Bridge {
         }
     }
 
-    async fn new_attempt(&self) -> (u64, tokio_util::sync::CancellationToken) {
+    async fn mutate(&self, mut data: Value) -> Result<Value, String> {
+        // Do not feed a credential to serde's diagnostics or the Host's JSON input.
+        let secret = match data.as_object_mut().and_then(|data| data.remove("secret")) {
+            Some(Value::String(secret)) => Some(secret),
+            None | Some(Value::Null) => None,
+            Some(_) => return Err("secret must be UTF-8 text".into()),
+        };
+        let rpc: Rpc = decode(data)?;
+        let attachments = credential_attachments(&rpc, secret)?;
+        let (root, id, calls, receipt_scope) = self.calls(&rpc).await?;
+        let result = calls
+            .mutate_with(
+                &rpc.endpoint,
+                &rpc.method,
+                rpc.input,
+                attachments,
+                |value| {
+                    if let Some(progress_id) = &rpc.progress_id {
+                        self.emit(
+                            "ios.mutationProgress",
+                            json!({
+                                "rootId": root, "progressId": progress_id, "value": value,
+                            }),
+                        );
+                    }
+                },
+            )
+            .await;
+        if let Err(RemoteClientError::MutationUncertain { reference, .. }) = &result
+            && let Some(scope) = receipt_scope
+        {
+            self.register_uncertain(id, scope, reference.clone()).await;
+        }
+        let value = result.map_err(error)?;
+        self.check_active(&root, id).await?;
+        Ok(json!({"value": value}))
+    }
+
+    async fn new_pairing(&self) -> (u64, CancellationToken) {
         let mut state = self.state.lock().await;
-        state.cancel_attempt();
-        state.attempt_cancel = tokio_util::sync::CancellationToken::new();
-        (state.attempt, state.attempt_cancel.clone())
+        state.cancel_pairing();
+        let id = state.next_generation();
+        let cancel = CancellationToken::new();
+        state.pairing = Some(Attempt {
+            id,
+            cancel: cancel.clone(),
+        });
+        (id, cancel)
+    }
+
+    async fn finish_pairing(&self, id: u64) {
+        let mut state = self.state.lock().await;
+        if state
+            .pairing
+            .as_ref()
+            .is_some_and(|attempt| attempt.id == id)
+        {
+            state.cancel_pairing();
+        }
     }
 
     async fn begin(&self, begin: Begin) -> Result<Value, String> {
@@ -372,7 +545,21 @@ impl Bridge {
             (Some(url), Some(token)) => Some(Arc::new(RelayCredential { url, token })),
             _ => return Err("relay authorization requires both URL and Bearer token".into()),
         };
-        let (id, cancel) = self.new_attempt().await;
+        let (id, cancel) = self.new_pairing().await;
+        let result = self.begin_pairing(begin.uri, credential, id, cancel).await;
+        if result.is_err() {
+            self.finish_pairing(id).await;
+        }
+        result
+    }
+
+    async fn begin_pairing(
+        &self,
+        uri: String,
+        credential: Option<Arc<RelayCredential>>,
+        id: u64,
+        cancel: CancellationToken,
+    ) -> Result<Value, String> {
         let path = self.profile_path.clone();
         let saved = tokio::task::spawn_blocking(move || SavedHosts::load(path))
             .await
@@ -387,7 +574,7 @@ impl Bridge {
         let pairing = cancel
             .run_until_cancelled(PendingPairing::begin(
                 &self.identity,
-                begin.uri.trim(),
+                uri.trim(),
                 now,
                 credential.as_deref().map(RelayCredential::authorization),
                 &saved,
@@ -396,7 +583,7 @@ impl Bridge {
             .ok_or("connection cancelled")?
             .map_err(error)?;
         let mut state = self.state.lock().await;
-        if state.attempt != id {
+        if cancel.is_cancelled() {
             return Err("pairing was superseded".into());
         }
         let info = json!({
@@ -414,7 +601,7 @@ impl Bridge {
     }
 
     async fn confirm(&self, confirm: Confirm) -> Result<Value, String> {
-        let (pending, cancel) = {
+        let (pending, root, id, cancel) = {
             let mut state = self.state.lock().await;
             if !state
                 .pending
@@ -423,26 +610,48 @@ impl Bridge {
             {
                 return Err("there is no matching pairing to confirm".into());
             }
-            (
-                state.pending.take().expect("matched pending pairing"),
-                state.attempt_cancel.clone(),
-            )
+            let pending = state.pending.take().expect("matched pending pairing");
+            let root = pending.pairing.root_id().to_owned();
+            let cancel = state
+                .pairing
+                .as_ref()
+                .expect("pending pairing has an attempt")
+                .cancel
+                .child_token();
+            let id = state.start_admission(&root, cancel.clone());
+            self.emit("ios.hostState", self.snapshot(&state));
+            (pending, root, id, cancel)
         };
+        let pairing_id = pending.id;
+        let result = self
+            .confirm_pairing(pending, &root, id, &cancel, &confirm.sas)
+            .await;
+        self.finish_admission(&root, id, &cancel, &result).await;
+        self.finish_pairing(pairing_id).await;
+        result
+    }
+
+    async fn confirm_pairing(
+        &self,
+        pending: Pending,
+        root: &str,
+        id: u64,
+        cancel: &CancellationToken,
+        sas: &str,
+    ) -> Result<Value, String> {
         let redeemed = cancel
-            .run_until_cancelled(
-                pending
-                    .pairing
-                    .redeem(&confirm.sas, Some("Maka for iOS".into())),
-            )
+            .run_until_cancelled(pending.pairing.redeem(sas, Some("Maka for iOS".into())))
             .await
             .ok_or("pairing cancelled")?
             .map_err(error)?;
         // Once a receipt is acknowledged the invite has been spent. Save the
         // authenticated profile even if the user cancels subsequent admission.
         let profile = redeemed.profile().clone();
-        let root = profile.root_id().to_owned();
         let name = profile.host_name().to_owned();
         let edit = self.profile_edits.lock().await;
+        if !self.state.lock().await.admitting(root, id) {
+            return Err("pairing was superseded".into());
+        }
         let saved = self.saved.clone();
         let to_save = profile.clone();
         tokio::task::spawn_blocking(move || saved.lock().expect("saved Host lock").save(to_save))
@@ -451,13 +660,13 @@ impl Bridge {
             .map_err(error)?;
         {
             let mut state = self.state.lock().await;
-            state.profiles.insert(root.clone(), profile);
+            state.profiles.insert(root.to_owned(), profile);
             match pending.credential {
                 Some(credential) => {
-                    state.credentials.insert(root, credential);
+                    state.credentials.insert(root.to_owned(), credential);
                 }
                 None => {
-                    state.credentials.remove(&root);
+                    state.credentials.remove(root);
                 }
             }
             self.emit("ios.hostState", self.snapshot(&state));
@@ -468,7 +677,7 @@ impl Bridge {
             .await
             .ok_or("pairing saved; connection cancelled")?
             .map_err(error)?;
-        self.install(pending.id, name, connection, "quic").await
+        self.install(id, name, connection, "quic", None).await
     }
 
     async fn connect(&self, request: ConnectHost) -> Result<Value, String> {
@@ -478,60 +687,102 @@ impl Bridge {
             (Some(url), Some(token)) => Some(Arc::new(RelayCredential { url, token })),
             _ => return Err("relay authorization requires both URL and Bearer token".into()),
         };
-        let (id, cancel) = self.new_attempt().await;
-        let (profile, credential) = {
-            let state = self.state.lock().await;
-            (
-                state
-                    .profiles
-                    .get(root)
-                    .cloned()
-                    .ok_or("unknown paired Host")?,
-                supplied.or_else(|| state.credentials.get(root).cloned()),
-            )
-        };
-        let connection = cancel
-            .run_until_cancelled(profile.reconnect(
-                &self.identity,
-                credential.as_deref().map(RelayCredential::authorization),
-            ))
-            .await
-            .ok_or("connection cancelled")?
-            .map_err(error)?;
-        let snapshot = self
-            .install(id, profile.host_name().to_owned(), connection, "quic")
-            .await?;
-        if let Some(credential) = credential {
+        let cancel = CancellationToken::new();
+        let (id, profile, credential) = {
             let mut state = self.state.lock().await;
-            if state.active.as_ref().is_some_and(|active| active.id == id) {
-                state.credentials.insert(root.clone(), credential);
-            }
+            let profile = state
+                .profiles
+                .get(root)
+                .cloned()
+                .ok_or("unknown paired Host")?;
+            let credential = supplied.or_else(|| state.credentials.get(root).cloned());
+            let id = state.start_admission(root, cancel.clone());
+            self.emit("ios.hostState", self.snapshot(&state));
+            (id, profile, credential)
+        };
+        let result = async {
+            let connection = cancel
+                .run_until_cancelled(profile.reconnect(
+                    &self.identity,
+                    credential.as_deref().map(RelayCredential::authorization),
+                ))
+                .await
+                .ok_or("connection cancelled")?
+                .map_err(error)?;
+            self.install(
+                id,
+                profile.host_name().to_owned(),
+                connection,
+                "quic",
+                credential,
+            )
+            .await
         }
-        Ok(snapshot)
+        .await;
+        self.finish_admission(root, id, &cancel, &result).await;
+        result
     }
 
     async fn direct(&self, direct: Direct) -> Result<Value, String> {
-        let (id, cancel) = self.new_attempt().await;
-        let connection = cancel
-            .run_until_cancelled(RemoteHostConnection::connect_websocket(
-                direct.endpoint.trim(),
-                TlsTrust::System,
-                direct.bearer.into(),
-                direct.root_id.trim(),
-                direct
-                    .client_instance
-                    .map_or_else(|| self.peer_id.clone(), Into::into),
-            ))
-            .await
-            .ok_or("connection cancelled")?
-            .map_err(error)?;
-        self.install(id, "WebSocket".into(), connection, "websocket")
-            .await
+        let root = direct.root_id.trim();
+        if root.is_empty() {
+            return Err("missing rootId".into());
+        }
+        let cancel = CancellationToken::new();
+        let id = {
+            let mut state = self.state.lock().await;
+            let id = state.start_admission(root, cancel.clone());
+            state.manual = Some(root.into());
+            self.emit("ios.hostState", self.snapshot(&state));
+            id
+        };
+        let result = async {
+            let connection = cancel
+                .run_until_cancelled(RemoteHostConnection::connect_websocket(
+                    direct.endpoint.trim(),
+                    TlsTrust::System,
+                    direct.bearer.into(),
+                    root,
+                    direct
+                        .client_instance
+                        .map_or_else(|| self.peer_id.clone(), Into::into),
+                ))
+                .await
+                .ok_or("connection cancelled")?
+                .map_err(error)?;
+            self.install(id, "WebSocket".into(), connection, "websocket", None)
+                .await
+        }
+        .await;
+        self.finish_admission(root, id, &cancel, &result).await;
+        result
+    }
+
+    async fn finish_admission(
+        &self,
+        root: &str,
+        id: u64,
+        cancel: &CancellationToken,
+        result: &Result<Value, String>,
+    ) {
+        let Err(reason) = result else {
+            return;
+        };
+        let mut state = self.state.lock().await;
+        if state.admitting(root, id) {
+            let cancelled = cancel.is_cancelled();
+            state.clear_admission(root);
+            if !cancelled && !state.connections.contains_key(root) {
+                state
+                    .admissions
+                    .insert(root.into(), Admission::Error(reason.clone()));
+            }
+            self.emit("ios.hostState", self.snapshot(&state));
+        }
     }
 
     async fn remove(&self, root: String) -> Result<Value, String> {
         let _edit = self.profile_edits.lock().await;
-        self.new_attempt().await;
         let saved = self.saved.clone();
         let key = root.clone();
         tokio::task::spawn_blocking(move || saved.lock().expect("saved Host lock").remove(&key))
@@ -543,12 +794,14 @@ impl Bridge {
         state.credentials.remove(&root);
         state.uncertain.retain(|scope, _| scope.root != root);
         if state
-            .active
+            .pending
             .as_ref()
-            .is_some_and(|active| active.root == root)
+            .is_some_and(|pending| pending.pairing.root_id() == root)
         {
-            stop(state.clear_active());
+            state.cancel_pairing();
         }
+        state.clear_admission(&root);
+        state.remove_connection(&root);
         if state.filter.as_deref() == Some(&root) {
             state.filter = None;
         }
@@ -561,15 +814,21 @@ impl Bridge {
         name: String,
         connection: RemoteHostConnection,
         transport: &str,
+        credential: Option<Arc<RelayCredential>>,
     ) -> Result<Value, String> {
         let (stop_tx, stop_rx) = oneshot::channel();
         let endpoints = connection.endpoint_names();
         let (snapshot, reconcile) = {
             let mut state = self.state.lock().await;
-            if state.attempt != id {
+            let root = connection.root_id();
+            if !matches!(state.admissions.get(root), Some(Admission::Connecting(attempt)) if attempt.id == id && !attempt.cancel.is_cancelled())
+            {
                 return Err("connection was superseded".into());
             }
-            stop(state.clear_active());
+            state.clear_admission(root);
+            if let Some(credential) = credential {
+                state.credentials.insert(root.into(), credential);
+            }
             let receipt_scope =
                 if transport == "quic" && endpoints.iter().any(|endpoint| endpoint == "receipts") {
                     state
@@ -589,12 +848,13 @@ impl Bridge {
                     connection.call_handle(),
                 ))
             });
-            state.active = Some(Active {
+            state.active_root = Some(root.into());
+            state.connections.insert(root.into(), ActiveHost {
                 id,
-                root: connection.root_id().to_owned(),
                 calls: connection.call_handle(),
                 receipt_scope,
-                stop: stop_tx,
+                _stop: stop_tx,
+                subscriptions: BTreeMap::new(),
                 info: json!({
                     "rootId": connection.root_id(), "hostName": name, "epoch": connection.epoch(),
                     "session": connection.session(), "endpoints": endpoints,
@@ -630,8 +890,8 @@ impl Bridge {
                     .or_default()
                     .push(reference.clone());
                 state
-                    .active
-                    .as_ref()
+                    .connections
+                    .get(&scope.root)
                     .filter(|active| {
                         active.id != id && active.receipt_scope.as_ref() == Some(&scope)
                     })
@@ -642,7 +902,6 @@ impl Bridge {
         };
         if let Some((active, calls)) = late {
             let bridge = self.clone();
-            let reference = reference.clone();
             self.runtime.spawn(async move {
                 bridge
                     .reconcile(active, scope, vec![reference], calls)
@@ -660,7 +919,7 @@ impl Bridge {
     ) {
         let mut settled = 0;
         for reference in references {
-            if self.check_active(id).await.is_err() {
+            if self.check_active(&scope.root, id).await.is_err() {
                 return;
             }
             match calls.query("receipts", "read", reference.clone()).await {
@@ -681,12 +940,12 @@ impl Bridge {
             }
         }
         let state = self.state.lock().await;
-        if let Some(active) = state.active.as_ref().filter(|active| active.id == id) {
+        if let Some(active) = state.current(&scope.root, id) {
             let pending = state.uncertain.get(&scope).map_or(0, Vec::len);
             self.emit(
                 "ios.operationRecovery",
                 json!({
-                    "session": active.info["session"], "settled": settled, "pending": pending
+                    "rootId": scope.root, "session": active.info["session"], "settled": settled, "pending": pending
                 }),
             );
         }
@@ -698,6 +957,7 @@ impl Bridge {
         mut connection: RemoteHostConnection,
         mut stop: oneshot::Receiver<()>,
     ) {
+        let root = connection.root_id().to_owned();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             let path = path_summary(connection.path_summary());
@@ -713,19 +973,26 @@ impl Bridge {
                 }
                 disconnected = connection.disconnected() => {
                     let mut state = self.state.lock().await;
-                    if state.active.as_ref().is_some_and(|active| active.id == id) {
-                        let root = state.active.as_ref().expect("matching active Host").root.clone();
-                        state.clear_active();
+                    if state.current(&root, id).is_some() {
+                        let selected = state.active_root.as_ref() == Some(&root);
+                        state.remove_connection(&root);
+                        let error = disconnected.err().map(|err| err.to_string());
+                        state.admissions.entry(root.clone()).or_insert_with(|| match &error {
+                            Some(reason) => Admission::Error(reason.clone()),
+                            None => Admission::Offline,
+                        });
                         let mut snapshot = self.snapshot(&state);
-                        snapshot["disconnectedRootId"] = json!(root);
-                        snapshot["disconnectReason"] = json!(disconnected.err().map_or_else(|| "Host closed the connection".into(), |err| err.to_string()));
+                        if selected {
+                            snapshot["disconnectedRootId"] = json!(root);
+                            snapshot["disconnectReason"] = json!(error.as_deref().unwrap_or("Host closed the connection"));
+                        }
                         self.emit("ios.hostState", snapshot);
                     }
                     return;
                 }
                 _ = interval.tick() => {
                     let mut state = self.state.lock().await;
-                    if let Some(active) = state.active.as_mut().filter(|active| active.id == id)
+                    if let Some(active) = state.connections.get_mut(&root).filter(|active| active.id == id)
                         && active.info["pathSummary"] != path
                     {
                         active.info["pathSummary"] = path;
@@ -738,33 +1005,45 @@ impl Bridge {
 
     async fn calls(
         &self,
-        anchor_session: &str,
-    ) -> Result<(u64, RemoteCallHandle, Option<ReceiptScope>), String> {
-        self.state
-            .lock()
-            .await
-            .active
-            .as_ref()
-            .filter(|active| active.info["session"] == anchor_session)
-            .map(|active| {
-                (
-                    active.id,
-                    active.calls.clone(),
-                    active.receipt_scope.clone(),
-                )
+        rpc: &Rpc,
+    ) -> Result<(RootId, u64, RemoteCallHandle, Option<ReceiptScope>), String> {
+        let state = self.state.lock().await;
+        // Without an explicit root, require the selected anchor as before.
+        // Explicit-root callers can independently pin a connection generation.
+        let target = match &rpc.root_id {
+            Some(root) => state.connections.get_key_value(root),
+            None => state
+                .active_root
+                .as_ref()
+                .and_then(|root| state.connections.get_key_value(root))
+                .filter(|(_, active)| {
+                    rpc.anchor_session
+                        .as_ref()
+                        .is_some_and(|session| active.info["session"] == *session)
+                }),
+        };
+        let (root, active) = target
+            .filter(|(_, active)| {
+                rpc.anchor_session
+                    .as_ref()
+                    .is_none_or(|session| active.info["session"] == *session)
             })
-            .ok_or_else(|| "remote Host anchor no longer matches UI".into())
+            .ok_or_else(|| match &rpc.root_id {
+                Some(root) if !state.connections.contains_key(root) => {
+                    "remote Host is not connected".to_owned()
+                }
+                _ => "remote Host anchor no longer matches UI".to_owned(),
+            })?;
+        Ok((
+            root.clone(),
+            active.id,
+            active.calls.clone(),
+            active.receipt_scope.clone(),
+        ))
     }
 
-    async fn check_active(&self, id: u64) -> Result<(), String> {
-        if self
-            .state
-            .lock()
-            .await
-            .active
-            .as_ref()
-            .is_some_and(|active| active.id == id)
-        {
+    async fn check_active(&self, root: &str, id: u64) -> Result<(), String> {
+        if self.state.lock().await.current(root, id).is_some() {
             Ok(())
         } else {
             Err("remote Host changed during the call".into())
@@ -775,26 +1054,22 @@ impl Bridge {
         &self,
         data: Value,
     ) -> Result<(String, u64, oneshot::Sender<()>), String> {
-        let rpc: Rpc = decode(data)?;
+        let rpc = read_only_rpc(data)?;
+        let (root, active, calls, _) = self.calls(&rpc).await?;
         let id = rpc.subscription_id.ok_or("missing subscription ID")?;
-        let (active, calls, _) = self.calls(&rpc.anchor_session).await?;
         let mut subscription = calls
             .subscribe(&rpc.endpoint, &rpc.method, rpc.input)
             .await
             .map_err(error)?;
         let mut state = self.state.lock().await;
-        if !state
-            .active
-            .as_ref()
-            .is_some_and(|current| current.id == active)
-        {
+        if state.current(&root, active).is_none() {
             return Err("remote Host changed during subscription setup".into());
         }
-        state.subscription_id += 1;
-        let generation = state.subscription_id;
+        let generation = state.next_generation();
         let (start, wait) = oneshot::channel::<()>();
         let bridge = self.clone();
         let key = id.clone();
+        let host_root = root.clone();
         let task = self.runtime.spawn(async move {
             if wait.await.is_err() {
                 return;
@@ -804,7 +1079,7 @@ impl Bridge {
                     Ok(Some(item)) => bridge.emit(
                         "ios.subscriptionItem",
                         json!({
-                            "subscriptionId": key, "generation": generation, "item": item,
+                            "rootId": host_root, "subscriptionId": key, "generation": generation, "item": item,
                         }),
                     ),
                     Ok(None) => break None,
@@ -812,21 +1087,23 @@ impl Bridge {
                 }
             };
             let mut state = bridge.state.lock().await;
-            if state
-                .subscriptions
-                .get(&key)
-                .is_some_and(|(current, _)| *current == generation)
+            if let Some(host) = state.connections.get_mut(&host_root)
+                && host.subscriptions.get(&key).is_some_and(|(current, _)| *current == generation)
             {
-                state.subscriptions.remove(&key);
+                host.subscriptions.remove(&key);
                 bridge.emit(
                     "ios.subscriptionEnded",
                     json!({
-                        "subscriptionId": key, "generation": generation, "error": outcome,
+                        "rootId": host_root, "subscriptionId": key, "generation": generation, "error": outcome,
                     }),
                 );
             }
         });
-        if let Some((_, replaced)) = state
+        let host = state
+            .connections
+            .get_mut(&root)
+            .expect("matched active Host");
+        if let Some((_, replaced)) = host
             .subscriptions
             .insert(id.clone(), (generation, task.abort_handle()))
         {
@@ -836,9 +1113,48 @@ impl Bridge {
     }
 }
 
-fn stop(active: Option<Active>) {
-    if let Some(active) = active {
-        let _ = active.stop.send(());
+fn optional_root(data: &Value) -> Result<Option<&str>, String> {
+    match data.get("rootId") {
+        Some(Value::String(root)) => Ok(Some(root)),
+        None | Some(Value::Null) => Ok(None),
+        _ => Err("invalid rootId".into()),
+    }
+}
+
+fn read_only_rpc(data: Value) -> Result<Rpc, String> {
+    if data.get("secret").is_some() || data["input"].get("secret").is_some() {
+        return Err("only credential mutations accept a secret attachment".into());
+    }
+    let rpc: Rpc = decode(data)?;
+    if rpc.progress_id.is_some() {
+        return Err("progress is only available for mutations".into());
+    }
+    Ok(rpc)
+}
+
+fn credential_attachments(rpc: &Rpc, secret: Option<String>) -> Result<Attachments, String> {
+    if rpc.input.get("secret").is_some() {
+        return Err("secret belongs in the request attachment, not JSON input".into());
+    }
+    let required = match (rpc.endpoint.as_str(), rpc.method.as_str()) {
+        ("settings", "saveCredential" | "saveUsageCredential") | ("web", "saveKey") => true,
+        ("settings", "updateNetwork") => {
+            match rpc.input.get("credential").and_then(Value::as_str) {
+                Some("replace") => true,
+                Some("keep" | "delete") => false,
+                _ => return Err("settings network credential action is invalid".into()),
+            }
+        }
+        _ => false,
+    };
+    match (required, secret) {
+        (true, Some(secret)) => Ok(Attachments::from([(
+            "secret".into(),
+            ReadResource::utf8(secret),
+        )])),
+        (false, None) => Ok(Attachments::new()),
+        (true, None) => Err("this mutation requires a secret attachment".into()),
+        (false, Some(_)) => Err("this mutation does not accept a secret attachment".into()),
     }
 }
 
@@ -986,6 +1302,132 @@ mod tests {
         serde_json::from_slice(&ws.next().await.unwrap().unwrap().into_data()).unwrap()
     }
 
+    #[tokio::test]
+    async fn another_host_can_disconnect_while_a_query_and_a_mutation_are_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let attached =
+            HostBridge::attach(HostChannel::new(), dir.path().into(), Handle::current()).unwrap();
+        let bridge = &attached.bridge;
+        let a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let session_a = Uuid::new_v4();
+            let session_b = Uuid::new_v4();
+            let connect = |listener: &TcpListener, root: &str| {
+                let mut args = input(listener);
+                args["rootId"] = json!(root);
+                bridge.dispatch("ios.connectWebSocket", args)
+            };
+            let (a_state, b_state, anchor_a, _anchor_b) = tokio::join!(
+                connect(&a, "a"),
+                connect(&b, "b"),
+                admit_anchor(&a, "a", session_a),
+                admit_anchor(&b, "b", session_b),
+            );
+            a_state.unwrap();
+            b_state.unwrap();
+            let args = |method| {
+                json!({
+                    "rootId": "b", "endpoint": "agent", "method": method, "input": {}
+                })
+            };
+            let (query, mutation, ()) =
+                tokio::join!(
+                    bridge.dispatch("ios.hostQuery", args("read")),
+                    bridge.dispatch("ios.hostMutate", args("write")),
+                    async {
+                        let (method, first) = open_rpc(&b, session_b).await;
+                        let (other, second) = open_rpc(&b, session_b).await;
+                        assert_ne!(method, other);
+                        let (mut query, mut mutation) = if method == "read" {
+                            (first, second)
+                        } else {
+                            (second, first)
+                        };
+                        let reference = json!({"operation": Uuid::new_v4()});
+                        send_frame(
+                            &mut mutation,
+                            json!({"kind":"prepared","reference":reference}),
+                        )
+                        .await;
+                        assert_eq!(read_frame(&mut mutation).await["kind"], "confirm");
+
+                        drop(anchor_a);
+                        loop {
+                            let state = bridge.dispatch("ios.bootstrap", json!({})).await.unwrap();
+                            if state["connections"]["a"]["status"] != "connected" {
+                                assert_eq!(
+                                    state["connections"]["b"]["connection"]["session"],
+                                    session_b.to_string()
+                                );
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+
+                        send_frame(&mut query, json!({
+                        "kind":"finished","result":{"Ok":"read result"},"cleanup":{"Ok":null}
+                    })).await;
+                        send_frame(
+                            &mut mutation,
+                            json!({
+                                "kind":"mutation","cleanup":{"Ok":null},
+                                "reply":{"reference":reference,"receipt":{
+                                    "kind":"recorded","outcome":{"kind":"returned",
+                                        "result":{"kind":"success","value":"write result"}}
+                                }}
+                            }),
+                        )
+                        .await;
+                    },
+                );
+            assert_eq!(query.unwrap()["value"], "read result");
+            assert_eq!(mutation.unwrap()["value"], "write result");
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn admit_anchor(
+        listener: &TcpListener,
+        root: &str,
+        session: Uuid,
+    ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+        let mut ws = open_anchor(listener).await;
+        send_frame(
+            &mut ws,
+            json!({"kind":"connected", "value":{
+                "version":1,"epoch":Uuid::new_v4(),"session":session,
+                "source":{"stateDomain":root,"deployment":Uuid::new_v4(),"revision":1},
+                "consumers":{"agent":[Uuid::new_v4()]},
+                "catalogue":{"endpoints":{"agent":{"registration_epoch":Uuid::new_v4()}}},
+            }}),
+        )
+        .await;
+        ws
+    }
+
+    async fn open_rpc(
+        listener: &TcpListener,
+        session: Uuid,
+    ) -> (
+        String,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(socket).await.unwrap();
+        assert_eq!(
+            read_frame(&mut ws).await["request"]["session"],
+            session.to_string()
+        );
+        send_frame(&mut ws, json!({"kind":"accepted"})).await;
+        let call = read_frame(&mut ws).await;
+        assert_eq!(read_frame(&mut ws).await, json!({}));
+        send_frame(&mut ws, json!({"kind":"ready"})).await;
+        (call["method"].as_str().unwrap().to_owned(), ws)
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn receipts_are_read_for_both_early_and_late_registrations() {
         let dir = tempfile::tempdir().unwrap();
@@ -997,7 +1439,7 @@ mod tests {
             root: "root".into(),
             host_peer_id: host_peer_id.clone(),
         };
-        let original = bridge.new_attempt().await.0;
+        let original = bridge.state.lock().await.next_generation();
         bridge.state.lock().await.profiles.insert(scope.root.clone(), serde_json::from_value(json!({
             "rootId":"root","hostName":"test","hostPeerId":host_peer_id,"relays":[],"directEndpoints":[]
         })).unwrap());
@@ -1009,7 +1451,11 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}/runtime-host", listener.local_addr().unwrap());
-        let new = bridge.new_attempt().await.0;
+        let new = bridge
+            .state
+            .lock()
+            .await
+            .start_admission("root", CancellationToken::new());
         let connecting = tokio::spawn({
             let bridge = bridge.clone();
             async move {
@@ -1025,7 +1471,7 @@ mod tests {
                 // Use the local wire fixture for RPC bytes; production uses the same
                 // receipt query framing over the admitted QUIC connection.
                 bridge
-                    .install(new, "test".into(), connection, "quic")
+                    .install(new, "test".into(), connection, "quic", None)
                     .await
                     .unwrap()
             }
