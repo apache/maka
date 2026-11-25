@@ -811,6 +811,8 @@ export function Conversation(props: ConversationProps) {
     () => {
       const wait = waitActivity(run(), execution());
       if (wait) return { kind: wait, detail: '' };
+      // A question or approval keeps its tool call running, yet the turn waits for the user.
+      if (interactions().entries.length > 0) return { kind: 'waiting_for_user', detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
         if (part.runId !== runId()) continue;
