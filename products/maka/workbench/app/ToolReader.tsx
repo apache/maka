@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { formatCount } from './numberFormat';
 import { tr } from './locale';
 import { platform, Scroll, signal, Text, View } from 'nsh';
 import { Button, DiffView } from 'nsh/base';
@@ -496,13 +495,10 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
     );
   const summary =
     value.operation === 'write'
-      ? [tr('Recorded write'), tr('{count} bytes', { count: formatCount(value.bytes) })]
+      ? [tr('Recorded write'), tr('{count} bytes', { count: value.bytes })]
       : [
           tr('Recorded edit'),
-          tr('tool.replacements_count', {
-            count: value.replacements,
-            formatted: formatCount(value.replacements),
-          }),
+          tr('tool.replacements_count', { count: value.replacements }),
           value.startLine !== null && value.endLine !== null
             ? value.startLine === value.endLine
               ? tr('Recorded line {line}', { line: value.startLine })

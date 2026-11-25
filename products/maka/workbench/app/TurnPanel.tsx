@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { formatCount } from './numberFormat';
 import { formatDuration } from './duration';
 import { ExecutorTokenCounts } from './TurnUsage';
 import { FadingText, LoadingIndicator, ThinkingMark, ThinkingPeek } from './Loading';
@@ -164,13 +163,9 @@ function activityCountLabel({
   messages,
 }: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
-    thoughts
-      ? tr('turn.thoughts_count', { count: thoughts, formatted: formatCount(thoughts) })
-      : '',
-    tools ? tr('turn.tools_count', { count: tools, formatted: formatCount(tools) }) : '',
-    messages
-      ? tr('turn.agent_messages_count', { count: messages, formatted: formatCount(messages) })
-      : '',
+    thoughts ? tr('turn.thoughts_count', { count: thoughts }) : '',
+    tools ? tr('turn.tools_count', { count: tools }) : '',
+    messages ? tr('turn.agent_messages_count', { count: messages }) : '',
   ]
     .filter(Boolean)
     .join(' · ');

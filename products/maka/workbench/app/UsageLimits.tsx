@@ -22,6 +22,7 @@ import { cleanup, effect, lifecycle, platform, signal, Text, View } from 'nsh';
 import { usageSeverity } from './composerUsageSummary';
 import { useHost } from './host';
 import { currentLocale, tr } from './locale';
+import { formatDecimal } from './numberFormat';
 import {
   usageTargetKey,
   watchUsageLimits,
@@ -54,10 +55,6 @@ function usageWindow(seconds: number) {
 
 export type UsageLimit = Extract<UsageResult, { kind: 'ready' }>['limits'][number];
 
-export function usageNumber(value: number) {
-  return new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 2 }).format(value);
-}
-
 export function usageLabel(limit: UsageLimit) {
   if (limit.kind === 'balance') return limit.label ?? tr('Balance');
   if (limit.kind === 'unlimited') return limit.label ?? tr('Usage limit');
@@ -76,16 +73,16 @@ function remainingShare(usedPercent: number) {
 
 export function usageValue(limit: UsageLimit) {
   if (limit.kind === 'balance')
-    return [usageNumber(limit.amount), limit.unit].filter(Boolean).join(' ');
+    return [formatDecimal(limit.amount, 2), limit.unit].filter(Boolean).join(' ');
   if (limit.kind === 'unlimited') return tr('Unlimited');
   if (limit.kind === 'disabled') return tr('Disabled');
   const percent = tr('{percent}% remaining', {
-    percent: usageNumber(remainingShare(limit.usedPercent)),
+    percent: formatDecimal(remainingShare(limit.usedPercent), 2),
   });
   if (!limit.quantity) return percent;
   const { used, limit: total, unit } = limit.quantity;
   const left = Math.max(0, total - used);
-  return `${percent} · ${usageNumber(left)} / ${usageNumber(total)}${unit ? ` ${unit}` : ''}`;
+  return `${percent} · ${formatDecimal(left, 2)} / ${formatDecimal(total, 2)}${unit ? ` ${unit}` : ''}`;
 }
 
 export function useUsageLimits(target: () => UsageTarget | null) {
@@ -204,7 +201,7 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[] }) {
           const summary = () => {
             const limit = entry();
             return tokenQuantity() && limit.kind === 'window'
-              ? tr('{percent}% remaining', { percent: usageNumber(remaining() ?? 0) })
+              ? tr('{percent}% remaining', { percent: formatDecimal(remaining() ?? 0, 2) })
               : usageValue(limit);
           };
           const barColor = () => {

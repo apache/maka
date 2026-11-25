@@ -19,31 +19,60 @@
 
 import { currentLocale } from './locale';
 
+const MAX_FORMATTER_CACHE = 64;
 const compactCache = new Map<string, Intl.NumberFormat>();
 const groupedCache = new Map<string, Intl.NumberFormat>();
+const decimalCache = new Map<string, Intl.NumberFormat>();
 
 function getFormatter(
   cache: Map<string, Intl.NumberFormat>,
+  key: string,
   locale: string,
   options: Intl.NumberFormatOptions,
 ): Intl.NumberFormat {
-  let formatter = cache.get(locale);
+  let formatter = cache.get(key);
   if (!formatter) {
+    if (cache.size >= MAX_FORMATTER_CACHE) cache.clear();
     formatter = new Intl.NumberFormat(locale, options);
-    cache.set(locale, formatter);
+    cache.set(key, formatter);
   }
   return formatter;
 }
 
+function normalizeNumber(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  return value === 0 ? 0 : value;
+}
+
 export function formatCount(value: number): string {
-  return getFormatter(groupedCache, currentLocale(), { maximumFractionDigits: 20 }).format(value);
+  const normalized = normalizeNumber(value);
+  if (normalized === null) return String(value);
+  const locale = currentLocale();
+  return getFormatter(groupedCache, locale, locale, { maximumFractionDigits: 20 }).format(
+    normalized,
+  );
 }
 
 export function formatCompactCount(value: number): string {
-  return getFormatter(compactCache, currentLocale(), {
+  const normalized = normalizeNumber(value);
+  if (normalized === null) return String(value);
+  const locale = currentLocale();
+  return getFormatter(compactCache, locale, locale, {
     notation: 'compact',
     maximumFractionDigits: 1,
   })
-    .format(value)
+    .format(normalized)
     .replace(/([KMBT])$/, (unit) => unit.toLowerCase());
+}
+
+export function formatDecimal(value: number, maxFractionDigits = 2, minFractionDigits = 0): string {
+  const normalized = normalizeNumber(value);
+  if (normalized === null) return String(value);
+  const max = Math.max(0, Math.min(20, Math.trunc(maxFractionDigits)));
+  const min = Math.max(0, Math.min(max, Math.trunc(minFractionDigits)));
+  const locale = currentLocale();
+  return getFormatter(decimalCache, `${locale}:${min}:${max}`, locale, {
+    minimumFractionDigits: min,
+    maximumFractionDigits: max,
+  }).format(normalized);
 }

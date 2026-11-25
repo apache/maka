@@ -169,8 +169,10 @@ export function resolveLocale(configured: string | null | undefined, native: unk
 
 const MAX_PLURAL_RULES_CACHE = 64;
 const pluralRulesCache = new Map<string, Intl.PluralRules>();
+const MAX_NUMBER_FORMAT_CACHE = 64;
+const numberFormatCache = new Map<string, Intl.NumberFormat>();
 
-function pluralLocaleTag(locale: string): string {
+function intlLocaleTag(locale: string): string {
   const normalized = normalizeLocaleTag(locale);
   const builtin = negotiateLocale(locale);
   if (!normalized || builtin.startsWith('zh-')) return builtin;
@@ -184,10 +186,23 @@ function pluralLocaleTag(locale: string): string {
   return base.join('-');
 }
 
+function formatLocalizedNumber(locale: string, value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  const normalized = value === 0 ? 0 : value;
+  const tag = intlLocaleTag(locale);
+  let formatter = numberFormatCache.get(tag);
+  if (!formatter) {
+    if (numberFormatCache.size >= MAX_NUMBER_FORMAT_CACHE) numberFormatCache.clear();
+    formatter = new Intl.NumberFormat(tag, { maximumFractionDigits: 20 });
+    numberFormatCache.set(tag, formatter);
+  }
+  return formatter.format(normalized);
+}
+
 /** CLDR 45+ cardinal plural category via Intl.PluralRules, preserving regional rules like pt-PT vs pt-BR. */
 export function pluralCategory(locale: string, count: number): PluralCategory {
   if (!Number.isFinite(count)) return 'other';
-  const tag = pluralLocaleTag(locale);
+  const tag = intlLocaleTag(locale);
   let rules = pluralRulesCache.get(tag);
   if (!rules) {
     if (pluralRulesCache.size >= MAX_PLURAL_RULES_CACHE) pluralRulesCache.clear();
@@ -489,11 +504,17 @@ function evalNodes(
       case 'lit':
         out += node.text;
         break;
-      case 'var':
-        out += values && node.name in values ? String(values[node.name]) : '{' + node.name + '}';
+      case 'var': {
+        if (!values || !(node.name in values)) {
+          out += '{' + node.name + '}';
+          break;
+        }
+        const val = values[node.name];
+        out += typeof val === 'number' ? formatLocalizedNumber(locale, val) : String(val);
         break;
+      }
       case 'hash':
-        out += activeCount !== undefined ? String(activeCount) : '#';
+        out += activeCount !== undefined ? formatLocalizedNumber(locale, activeCount) : '#';
         break;
       case 'plural': {
         const raw = values?.[node.name];
@@ -516,7 +537,11 @@ function evalNodes(
   return out;
 }
 
-/** Format an ICU MessageFormat string for locale. Static strings skip parsing completely. */
+/**
+ * Format an ICU MessageFormat string for locale. Numeric values and `#` are locale-formatted
+ * automatically; pass pre-formatted strings or identifiers as `string` to keep them verbatim.
+ * Static strings skip parsing completely.
+ */
 export function formatMessage(
   template: string,
   locale: string,

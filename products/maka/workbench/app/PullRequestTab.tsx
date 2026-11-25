@@ -370,7 +370,7 @@ export function PullRequestTab(props: {
     if (s.kind === 'error') return s.message;
     if (s.kind === 'ready' && s.result.kind !== 'ready') {
       if (s.result.kind === 'not_found')
-        return tr('Pull request #{number} was not found.', { number: props.number });
+        return tr('Pull request #{number} was not found.', { number: String(props.number) });
       return s.result.message;
     }
     return '';

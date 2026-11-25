@@ -108,8 +108,6 @@ function goalState(state: unknown): string | null {
   }
 }
 
-const numberText = (value: number) => value.toLocaleString(currentLocale());
-
 function goalResult(value: unknown): ToolSection[] | null {
   const result = record(value);
   if (result?.current === null)
@@ -317,10 +315,7 @@ function botResult(value: unknown): ToolSection[] | null {
       text:
         result.duplicate === true
           ? tr('Message already sent')
-          : tr('tool.sent_messages_count', {
-              count: result.count,
-              formatted: numberText(result.count),
-            }),
+          : tr('tool.sent_messages_count', { count: result.count }),
     },
   ];
 }
@@ -444,10 +439,7 @@ export const nativeToolPresentations: Record<string, ActivityPresentation> = {
           label: tr('Find tools'),
           text:
             activated.length > 0
-              ? tr('tool.tools_made_available_count', {
-                  count: activated.length,
-                  formatted: numberText(activated.length),
-                })
+              ? tr('tool.tools_made_available_count', { count: activated.length })
               : tr('No additional tools found'),
         },
       ];
