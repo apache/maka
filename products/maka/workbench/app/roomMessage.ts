@@ -18,7 +18,9 @@
  */
 
 import type {
+  AgentRoomMember,
   AgentRoomMessage,
+  AgentSession,
   OperationReply,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
@@ -70,15 +72,143 @@ export function roomMentionAt(text: string, selection: { start: number; end: num
   return { start: at, end: selection.start, query };
 }
 
-/** Escape Markdown link brackets inside an inline mention token label. */
+/** Escape Markdown link brackets and control characters inside an inline token label. */
 function escapeMentionLabel(label: string): string {
-  return label.replace(/[\\[\]\r\n]/g, (ch) => (ch === '\r' || ch === '\n' ? ' ' : `\\${ch}`));
+  return label.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').replace(/[\\[\]]/g, '\\$&');
 }
 
-/** Format an inline clickable mention token understood by both SkillInput and the Host. */
-export function formatInlineMention(sessionId: string, title: string): string {
+/** Format an inline clickable mention (`@`) or Room reference (`#`) token understood by SkillInput and the Host. */
+export function formatInlineMention(
+  sessionId: string,
+  title: string,
+  kind: 'agent' | 'room' = 'agent',
+): string {
   const clean = escapeMentionLabel(title.trim() || sessionId);
-  return `[@${clean}](maka://session/${sessionId}) `;
+  const marker = kind === 'room' ? '#' : '@';
+  return `[${marker}${clean}](maka://session/${sessionId}) `;
+}
+
+export type RoomMentionChoice =
+  | {
+      kind: 'all';
+      id: '__all__';
+      ids: string[];
+      title: string;
+    }
+  | {
+      kind: 'agent';
+      id: string;
+      title: string;
+      presetName?: string | null;
+      workspacePath: string;
+      activity: 'idle' | 'working' | 'waiting';
+      isMember: boolean;
+    }
+  | {
+      kind: 'room';
+      id: string;
+      title: string;
+      workspacePath: string;
+    };
+
+/** Build grouped @-picker choices for a Room: room members, other rooms, and other conversations. */
+export function buildRoomMentionChoices(options: {
+  roomId: string;
+  members: readonly AgentRoomMember[];
+  sessions: readonly AgentSession[];
+  alreadyMentioned: ReadonlySet<string>;
+  query: string;
+  allLabel: string;
+  allKeywords: readonly string[];
+  sectionLimit?: number;
+}): RoomMentionChoice[] {
+  const limit = options.sectionLimit ?? 8;
+  const needle = options.query.trim().toLowerCase();
+  const activeMembers = options.members.filter(
+    (member) => !member.unavailable && !member.archived && member.sessionId !== options.roomId,
+  );
+  const memberIds = new Set(activeMembers.map((member) => member.sessionId));
+  const unmentionedMembers = activeMembers.filter(
+    (m) => !options.alreadyMentioned.has(m.sessionId),
+  );
+  const rows: RoomMentionChoice[] = [];
+
+  if (
+    unmentionedMembers.length >= 2 &&
+    (!needle || 'all'.startsWith(needle) || options.allKeywords.some((kw) => kw.includes(needle)))
+  ) {
+    rows.push({
+      kind: 'all',
+      id: '__all__',
+      ids: unmentionedMembers.map((m) => m.sessionId),
+      title: options.allLabel,
+    });
+  }
+
+  for (const member of unmentionedMembers) {
+    if (
+      !needle ||
+      member.title.toLowerCase().includes(needle) ||
+      (member.presetName?.toLowerCase().includes(needle) ?? false)
+    ) {
+      rows.push({
+        kind: 'agent',
+        id: member.sessionId,
+        title: member.title,
+        presetName: member.presetName,
+        workspacePath: member.workspacePath,
+        activity: member.activity,
+        isMember: true,
+      });
+    }
+  }
+
+  const seenRooms = new Set<string>();
+  let roomCount = 0;
+  for (const session of options.sessions) {
+    if (
+      session.kind !== 'room' ||
+      session.id === options.roomId ||
+      session.archived ||
+      seenRooms.has(session.id)
+    )
+      continue;
+    seenRooms.add(session.id);
+    rows.push({
+      kind: 'room',
+      id: session.id,
+      title: session.title,
+      workspacePath: session.workspace.path,
+    });
+    if (++roomCount >= limit) break;
+  }
+
+  const seenAgents = new Set<string>();
+  let agentCount = 0;
+  for (const session of options.sessions) {
+    if (
+      session.kind === 'room' ||
+      session.id === options.roomId ||
+      options.alreadyMentioned.has(session.id) ||
+      memberIds.has(session.id) ||
+      session.archived ||
+      seenAgents.has(session.id)
+    )
+      continue;
+    seenAgents.add(session.id);
+    rows.push({
+      kind: 'agent',
+      id: session.id,
+      title: session.title,
+      presetName: session.appliedPreset?.name ?? null,
+      workspacePath: session.workspace.path,
+      activity: session.activity,
+      isMember: false,
+    });
+    if (++agentCount >= limit) break;
+  }
+
+  return rows;
 }
 
 const INLINE_MENTION_RE = /\[@(?:\\[^\r\n]|[^\]\\\r\n])+\]\(maka:\/\/session\/([A-Za-z0-9_-]+)\)/g;
