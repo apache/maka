@@ -54,6 +54,7 @@ use tokio::process::{Child, Command};
 use uuid::Uuid;
 
 const EVAL_CONNECTION_SLUG: &str = "eval-target";
+const UNBOUNDED_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +210,20 @@ async fn run_before_deadline<T>(
     }
 }
 
+async fn run_startup_stage<T>(
+    deadline: Option<Deadline>,
+    stage: &str,
+    unbounded_timeout_error: &str,
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    match deadline {
+        Some(d) => d.run(stage, fut).await,
+        None => tokio::time::timeout(UNBOUNDED_STARTUP_TIMEOUT, fut)
+            .await
+            .map_err(|_| unbounded_timeout_error.to_owned())?,
+    }
+}
+
 async fn sleep_deadline(deadline: Option<Deadline>) -> NonZeroU64 {
     match deadline {
         Some(d) => {
@@ -339,6 +354,7 @@ async fn execute(
                 &state_root,
                 &canonical_workspace,
                 &req,
+                deadline,
             ),
         )
         .await?;
@@ -381,20 +397,23 @@ async fn run_session(
     host_proc: &HostServerProcess,
     deadline: Option<Deadline>,
 ) -> Result<GuestRunResult, String> {
-    let host_client = run_before_deadline(deadline, "host readiness", async {
-        let mut host_client = HostClient::connect(
-            Path::new(&host_proc.socket_path),
-            Some(host_proc.host_epoch),
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "failed to connect to maka host socket {}: {e}",
-                host_proc.socket_path
+    let host_client = run_startup_stage(
+        deadline,
+        "host readiness",
+        "timed out waiting for Host readiness",
+        async {
+            let mut host_client = HostClient::connect(
+                Path::new(&host_proc.socket_path),
+                Some(host_proc.host_epoch),
             )
-        })?;
+            .await
+            .map_err(|e| {
+                format!(
+                    "failed to connect to maka host socket {}: {e}",
+                    host_proc.socket_path
+                )
+            })?;
 
-        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 if let Some(error) = host_client.catalogue().startup_error() {
                     return Err(format!("Host startup: {error:?}"));
@@ -409,7 +428,7 @@ async fn run_session(
                         .is_some();
                 }
                 if registered {
-                    return Ok::<(), String>(());
+                    return Ok(host_client);
                 }
                 host_client
                     .refresh()
@@ -417,12 +436,8 @@ async fn run_session(
                     .map_err(|e| format!("Host refresh failed: {e}"))?;
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-        })
-        .await
-        .map_err(|_| "timed out waiting for Host readiness".to_owned())??;
-
-        Ok(host_client)
-    })
+        },
+    )
     .await?;
 
     let journal = Journal::open(journal_path)
@@ -1129,7 +1144,14 @@ async fn init_host(
     state_root: &Path,
     canonical_workspace: &Path,
     req: &GuestRunRequest,
+    deadline: Option<Deadline>,
 ) -> Result<(), String> {
+    let init_timeout_ms = match deadline {
+        // Bounded by `maka --timeout-ms` CLI range (1..=600_000).
+        Some(d) => d.remaining("host init")?.as_millis().clamp(1, 600_000) as u64,
+        None => UNBOUNDED_STARTUP_TIMEOUT.as_millis() as u64,
+    };
+    let init_timeout_arg = init_timeout_ms.to_string();
     let settings = build_init_settings(req, canonical_workspace);
     let payload = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
 
@@ -1139,7 +1161,7 @@ async fn init_host(
             "init",
             "--settings-stdin",
             "--timeout-ms",
-            "15000",
+            &init_timeout_arg,
             "--root",
         ])
         .arg(state_root)
@@ -1249,35 +1271,40 @@ async fn spawn_host_serve(
         .map_err(|e| format!("failed to spawn maka host serve: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("missing host stdout pipe")?;
-    let handshake: Result<(tokio::task::JoinHandle<()>, String, Uuid), String> =
-        run_before_deadline(deadline, "host startup", async {
+    let handshake: Result<(tokio::task::JoinHandle<()>, String, Uuid), String> = run_startup_stage(
+        deadline,
+        "host startup",
+        "timed out waiting for maka host serve ready line",
+        async {
             let mut stdout_lines = BufReader::new(stdout).lines();
-            let ready_line = tokio::time::timeout(Duration::from_secs(30), async {
-                while let Some(line) = stdout_lines
-                    .next_line()
-                    .await
-                    .map_err(|e| format!("failed reading host stdout: {e}"))?
+            let mut ready_line = None;
+            while let Some(line) = stdout_lines
+                .next_line()
+                .await
+                .map_err(|e| format!("failed reading host stdout: {e}"))?
+            {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&line)
+                    && parsed["kind"].as_str() == Some("ready")
                 {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(&line)
-                        && parsed["kind"].as_str() == Some("ready")
-                    {
-                        return Ok::<Value, String>(parsed);
+                    ready_line = Some(parsed);
+                    break;
+                }
+            }
+            let ready_line = match ready_line {
+                Some(parsed) => parsed,
+                None => {
+                    let stderr_text = tokio::fs::read_to_string(&stderr_path)
+                        .await
+                        .unwrap_or_default();
+                    let trimmed = stderr_text.trim();
+                    if trimmed.is_empty() {
+                        return Err("maka host serve exited before printing ready line".into());
                     }
-                }
-                let stderr_text = tokio::fs::read_to_string(&stderr_path)
-                    .await
-                    .unwrap_or_default();
-                let trimmed = stderr_text.trim();
-                if trimmed.is_empty() {
-                    Err("maka host serve exited before printing ready line".into())
-                } else {
-                    Err(format!(
+                    return Err(format!(
                         "maka host serve exited before printing ready line: {trimmed}"
-                    ))
+                    ));
                 }
-            })
-            .await
-            .map_err(|_| "timed out waiting for maka host serve ready line".to_owned())??;
+            };
 
             let socket_path = ready_line["socketPath"]
                 .as_str()
@@ -1296,8 +1323,9 @@ async fn spawn_host_serve(
                 );
 
             Ok((stdout_drain, socket_path, host_epoch))
-        })
-        .await;
+        },
+    )
+    .await;
 
     match handshake {
         Ok((stdout_drain, socket_path, host_epoch)) => Ok(HostServerProcess {
@@ -1417,6 +1445,27 @@ mod tests {
             settle_usage(&sample_models(), &settled, (1, 0), true)
                 .unwrap_err()
                 .contains("input_missing=1")
+        );
+
+        // Missing cache_read on a priced model leaves cost unvalued -> LowerBound and omits cache_tokens.
+        let mut no_cache = sample_models();
+        no_cache.cache_read = Tokens {
+            known: 0,
+            missing: 1,
+        };
+        no_cache.cost = Cost {
+            known_usd: 0.0,
+            unvalued: 1,
+            unpriced: 0,
+        };
+        assert_eq!(
+            settle_usage(&no_cache, &settled, (0, 0), true).unwrap(),
+            UsageSettlement {
+                metering: Metering::LowerBound,
+                input_tokens: Some(100),
+                cache_tokens: None,
+                output_tokens: Some(20),
+            }
         );
 
         // Unpriced model completes with cost_usd: None while preserving settled tokens.

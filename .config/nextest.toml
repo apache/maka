@@ -29,7 +29,7 @@ threads-required = "num-test-threads"
 # These fixtures own multi-threaded Hosts, databases and child processes.
 # Account for that work instead of oversubscribing them as single-thread tests.
 [[profile.default.overrides]]
-filter = 'package(maka-host-runtime) | package(maka-host-js) | package(maka-agent-native) | package(maka-agent-engine) | package(maka-cli)'
+filter = 'package(maka-host-runtime) | package(maka-host-js) | package(maka-agent-native) | package(maka-agent-engine) | package(maka-cli) | package(maka-eval)'
 threads-required = 3
 
 [profile.ci]

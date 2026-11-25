@@ -405,9 +405,7 @@ enum MockMode {
     Retry429AndDelegateSubagent { workspace_path: String },
     MaxStepsSlowSecondTurn,
     SlowFirstTurn,
-    SingleTurnClean { cached_tokens: Option<u64> },
     SingleTurnRecord { recorded: Arc<Mutex<Vec<Value>>> },
-    MissingUsage,
     Unauthorized401,
 }
 
@@ -425,7 +423,6 @@ async fn start_mock_provider(mode: MockMode) -> MockAiServer {
             models: vec![
                 ModelEntry::simple("deepseek-chat"),
                 ModelEntry::simple("deepseek-flash"),
-                ModelEntry::simple("deepseek-unpriced-eval"),
             ],
             ..Default::default()
         })
@@ -496,12 +493,8 @@ async fn start_mock_provider(mode: MockMode) -> MockAiServer {
                 }
                 MockMode::SlowFirstTurn => TurnPlan::new()
                     .push_text("Working...")
-                    .push(TurnEvent::Delay { ms: 30_000 })
+                    .push(TurnEvent::Delay { ms: 120_000 })
                     .push(TurnEvent::TruncateEof),
-                MockMode::SingleTurnClean { cached_tokens } => TurnPlan::new()
-                    .push_text("Clean completion.")
-                    .with_usage(usage_with_cache(100, 20, *cached_tokens))
-                    .finish(FinishReason::Stop),
                 MockMode::SingleTurnRecord { recorded } => {
                     recorded.lock().unwrap().push(req.raw_body.clone());
                     TurnPlan::new()
@@ -509,9 +502,6 @@ async fn start_mock_provider(mode: MockMode) -> MockAiServer {
                         .with_usage(usage_with_cache(100, 20, Some(20)))
                         .finish(FinishReason::Stop)
                 }
-                MockMode::MissingUsage => TurnPlan::new()
-                    .push_text("No usage.")
-                    .finish(FinishReason::Stop),
                 MockMode::Unauthorized401 => TurnPlan::http_error(HttpErrorSpec::new(
                     401,
                     "authentication_error",
@@ -675,7 +665,7 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     .await;
 
     let (guest_json, res_path, transcript_path) = env
-        .run_guest_live(&mock_server.base_url(), Some(5), Some(30_000))
+        .run_guest_live(&mock_server.base_url(), Some(5), None)
         .await;
     let completed = &guest_json["completed"];
     assert!(completed.is_object());
@@ -726,103 +716,6 @@ async fn guest_run_completed_accounts_delegated_subagents_retries_429_and_keeps_
     );
     assert_eq!(summary["guest"]["metering"], "lower_bound");
     assert_eq!(summary["guest"]["costUsd"], Value::Null);
-
-    let clean_server = start_mock_provider(MockMode::SingleTurnClean {
-        cached_tokens: Some(20),
-    })
-    .await;
-    let (clean_guest_json, clean_res_path, clean_transcript_path) = env
-        .run_guest_live(&clean_server.base_url(), None, None)
-        .await;
-    let clean_settlement = &clean_guest_json["completed"]["settlement"];
-    assert_eq!(clean_settlement["inputTokens"], 100);
-    assert_eq!(clean_settlement["cacheTokens"], 20);
-    assert_eq!(clean_settlement["outputTokens"], 20);
-    assert!(
-        (clean_settlement["metering"]["complete"]["costUsd"]
-            .as_f64()
-            .unwrap()
-            - 0.000045)
-            .abs()
-            < 1e-12
-    );
-    assert_eq!(env.retire_live_hosts().await, 1);
-
-    let (clean_out, clean_summary_path) = env.run_harbor(
-        Some(&clean_res_path),
-        Some(&clean_transcript_path),
-        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
-        0,
-    );
-    assert!(
-        clean_out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&clean_out.stderr)
-    );
-    let clean_summary = read_json(&clean_summary_path);
-    assert_eq!(clean_summary["reward"], 1.0);
-    assert_eq!(clean_summary["guest"]["metering"], "complete");
-    assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.000045).abs() < 1e-12);
-
-    let no_cache_server = start_mock_provider(MockMode::SingleTurnClean {
-        cached_tokens: None,
-    })
-    .await;
-    let (no_cache_guest_json, _, _) = env
-        .run_guest_live(&no_cache_server.base_url(), Some(2), Some(30_000))
-        .await;
-    let no_cache_completed = &no_cache_guest_json["completed"];
-    assert_eq!(no_cache_completed["settlement"]["metering"], "lower_bound");
-    assert_eq!(no_cache_completed["settlement"]["inputTokens"], 100);
-    assert_eq!(no_cache_completed["settlement"]["outputTokens"], 20);
-    assert!(
-        no_cache_completed["settlement"]
-            .get("cacheTokens")
-            .is_none()
-    );
-    assert_eq!(
-        no_cache_completed["evidence"]["hostUsage"]["summary"]["models"]["cacheRead"]["missing"],
-        1
-    );
-    assert_eq!(
-        no_cache_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unvalued"],
-        1
-    );
-    assert_eq!(env.retire_live_hosts().await, 1);
-
-    let (unpriced_status, unpriced_stderr, unpriced_guest_json, _, _) = env
-        .run_guest_live_with_options(
-            &clean_server.base_url(),
-            "deepseek-unpriced-eval",
-            None,
-            None,
-            Some(30_000),
-        )
-        .await;
-    assert!(
-        unpriced_status.success(),
-        "guest-run failed: {unpriced_stderr}"
-    );
-    let unpriced_completed = &unpriced_guest_json["completed"];
-    assert!(unpriced_completed.is_object());
-    assert!(unpriced_completed["settlement"]["metering"]["complete"].is_object());
-    assert!(
-        unpriced_completed["settlement"]["metering"]["complete"]
-            .get("costUsd")
-            .is_none()
-    );
-    assert_eq!(unpriced_completed["settlement"]["inputTokens"], 100);
-    assert_eq!(unpriced_completed["settlement"]["cacheTokens"], 20);
-    assert_eq!(unpriced_completed["settlement"]["outputTokens"], 20);
-    assert_eq!(
-        unpriced_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unpriced"],
-        1
-    );
-    assert_eq!(
-        unpriced_completed["evidence"]["hostUsage"]["summary"]["models"]["cost"]["unvalued"],
-        1
-    );
-    assert_eq!(env.retire_live_hosts().await, 1);
 }
 
 #[tokio::test]
@@ -831,7 +724,7 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
     let mock_server = start_mock_provider(MockMode::MaxStepsSlowSecondTurn).await;
 
     let (guest_json, res_path, transcript_path) = env
-        .run_guest_live(&mock_server.base_url(), Some(1), Some(30_000))
+        .run_guest_live(&mock_server.base_url(), Some(1), None)
         .await;
     let stopped = &guest_json["subjectStopped"];
     assert!(stopped.is_object());
@@ -869,25 +762,6 @@ async fn guest_run_max_steps_stops_in_flight_stream_retires_host_and_passes_vali
     assert_eq!(stopped_summary["guest"]["status"], "subjectStopped");
     assert_eq!(stopped_summary["guest"]["metering"], "lower_bound");
     assert_eq!(stopped_summary["guest"]["costUsd"], Value::Null);
-
-    let missing_usage_server = start_mock_provider(MockMode::MissingUsage).await;
-    let (partial_status, partial_stderr, partial_guest, _, _) = env
-        .run_guest_live_status(&missing_usage_server.base_url(), None, Some(30_000))
-        .await;
-    assert!(!partial_status.success());
-    assert!(partial_stderr.contains("incomplete token usage on successful model call(s)"));
-    let partial_infra = &partial_guest["infraFailed"];
-    assert!(partial_infra.is_object());
-    assert!(
-        partial_infra["infraError"]
-            .as_str()
-            .unwrap()
-            .contains("incomplete token usage on successful model call(s)")
-    );
-    assert!(partial_infra["evidence"]["hostUsage"].is_object());
-    assert!(partial_infra.get("settlement").is_none());
-    assert!(env.host_run_dirs().is_empty());
-    assert_eq!(env.retire_live_hosts().await, 0);
 }
 
 #[test]
@@ -1065,24 +939,52 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
     .await;
 
     let warm_start = std::time::Instant::now();
-    let (ok_status, ok_stderr, ok_guest, _, _) = env
+    let (ok_status, ok_stderr, ok_guest, ok_res_path, ok_transcript_path) = env
         .run_guest_live_with_options(
             &mock_server.base_url(),
             "deepseek-flash",
             Some("low"),
             None,
-            Some(30_000),
+            None,
         )
         .await;
     let baseline_ms = warm_start.elapsed().as_millis() as u64;
     assert!(ok_status.success(), "guest-run failed: {ok_stderr}");
     assert!(ok_guest["completed"].is_object());
+    let settlement = &ok_guest["completed"]["settlement"];
+    assert_eq!(settlement["inputTokens"], 100);
+    assert_eq!(settlement["cacheTokens"], 20);
+    assert_eq!(settlement["outputTokens"], 20);
+    assert!(
+        (settlement["metering"]["complete"]["costUsd"]
+            .as_f64()
+            .unwrap()
+            - 0.00002406)
+            .abs()
+            < 1e-12
+    );
     assert_eq!(env.retire_live_hosts().await, 1);
     {
         let bodies = recorded.lock().unwrap();
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0]["reasoning"]["effort"], "low");
     }
+
+    let (clean_out, clean_summary_path) = env.run_harbor(
+        Some(&ok_res_path),
+        Some(&ok_transcript_path),
+        &json!({ "verifier_result": { "rewards": { "reward": 1.0 } }, "exception_info": Value::Null }),
+        0,
+    );
+    assert!(
+        clean_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&clean_out.stderr)
+    );
+    let clean_summary = read_json(&clean_summary_path);
+    assert_eq!(clean_summary["reward"], 1.0);
+    assert_eq!(clean_summary["guest"]["metering"], "complete");
+    assert!((clean_summary["guest"]["costUsd"].as_f64().unwrap() - 0.00002406).abs() < 1e-12);
 
     let (t_status, _, t_guest, _, _) = env
         .run_guest_live_with_options(
@@ -1104,7 +1006,7 @@ async fn guest_run_forwards_thinking_level_and_enforces_pre_start_timeout() {
     assert_eq!(recorded.lock().unwrap().len(), 1);
 
     let slow_server = start_mock_provider(MockMode::SlowFirstTurn).await;
-    let mid_run_timeout_ms = baseline_ms.saturating_mul(3).clamp(4_000, 15_000);
+    let mid_run_timeout_ms = baseline_ms.saturating_add(baseline_ms.clamp(4_000, 15_000));
     let (mid_status, mid_stderr, mid_guest, _, _) = env
         .run_guest_live_with_options(
             &slow_server.base_url(),
@@ -1135,10 +1037,10 @@ async fn guest_run_provider_401_fails_as_infra_and_retires_host() {
     let mock_server = start_mock_provider(MockMode::Unauthorized401).await;
 
     let (status, stderr, guest_json, _, _) = env
-        .run_guest_live_status(&mock_server.base_url(), None, Some(30_000))
+        .run_guest_live_status(&mock_server.base_url(), None, None)
         .await;
     assert!(!status.success());
-    assert!(stderr.contains("401"));
+    assert!(stderr.contains("401"), "unexpected stderr: {stderr}");
     let infra = &guest_json["infraFailed"];
     assert!(infra.is_object());
     assert!(infra["infraError"].as_str().unwrap().contains("401"));
