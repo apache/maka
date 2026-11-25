@@ -74,6 +74,7 @@ test('device and simulator use their own platform and deployment target', () => 
     assert.equal(info.CFBundleExecutable, 'maka-ios-shell');
     assert.equal(info.CFBundleShortVersionString, '1.2.3');
     assert.deepEqual(info.CFBundleURLTypes[0].CFBundleURLSchemes, ['maka']);
+    assert.equal(info.NSCameraUsageDescription, 'Scan a QR code to pair with your Maka Host.');
     assert.deepEqual(info.NSAppTransportSecurity, {
       NSAllowsLocalNetworking: true,
     });
@@ -298,30 +299,32 @@ test('ad-hoc simulator signing produces no entitlements', {
   }
 });
 
-test('stages localized network prompts for every Apple bundle localization', {
+test('stages localized network and camera prompts for every Apple bundle localization', {
   skip: process.platform !== 'darwin',
 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-localized-plist-'));
   try {
     await stageLocalizations(dir);
     const info = appInfo(options(['--target', 'ios', '--app-version', '1.2.3'], {}));
-    const localizedDescription = (tag) =>
+    const localizedDescription = (tag, field) =>
       execFileSync(
         'plutil',
-        [
-          '-extract',
-          'NSLocalNetworkUsageDescription',
-          'raw',
-          '-o',
-          '-',
-          join(dir, tag + '.lproj', 'InfoPlist.strings'),
-        ],
+        ['-extract', field, 'raw', '-o', '-', join(dir, tag + '.lproj', 'InfoPlist.strings')],
         { encoding: 'utf8' },
       ).trim();
-    for (const tag of info.CFBundleLocalizations) assert.ok(localizedDescription(tag));
-    assert.equal(localizedDescription('en'), info.NSLocalNetworkUsageDescription);
-    assert.notEqual(localizedDescription('zh-Hans'), localizedDescription('en'));
-    assert.equal(localizedDescription('zh-HK'), localizedDescription('zh-Hant'));
+    for (const field of ['NSLocalNetworkUsageDescription', 'NSCameraUsageDescription']) {
+      for (const tag of info.CFBundleLocalizations) assert.ok(localizedDescription(tag, field));
+      assert.equal(localizedDescription('en', field), info[field]);
+      assert.notEqual(localizedDescription('zh-Hans', field), localizedDescription('en', field));
+    }
+    assert.equal(
+      localizedDescription('zh-HK', 'NSLocalNetworkUsageDescription'),
+      localizedDescription('zh-Hant', 'NSLocalNetworkUsageDescription'),
+    );
+    assert.notEqual(
+      localizedDescription('zh-HK', 'NSCameraUsageDescription'),
+      localizedDescription('zh-Hant', 'NSCameraUsageDescription'),
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

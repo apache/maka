@@ -293,6 +293,7 @@
   "Saved Host relay URL": "保存済みホストのリレー URL",
   "Saved computers · {count}": "保存済みのコンピュータ · {count} 台",
   "Saved · Tap to connect": "保存済み · タップして接続",
+  "Scan a QR code to pair with your Maka Host.": "QRコードを読み取って、このデバイスをMakaホストとペアリングします。",
   "Scan or paste a pairing link": "QR コードをスキャンするか、ペアリングリンクをペースト",
   "Scan the Maka Desktop pairing QR code or paste a maka://pair/v1 link to open your projects and Agent conversations.": "デスクトップ版 Maka のペアリング用 QR コードをスキャンするか、maka://pair/v1 リンクをペーストすると、プロジェクトやエージェントとの会話を開けます。",
   "Schedules and automations": "スケジュールと自動化",

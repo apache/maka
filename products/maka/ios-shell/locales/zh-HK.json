@@ -37,6 +37,7 @@
   "Root {id}": "根 ID：{id}",
   "Save queued message": "儲存隊列訊息",
   "Saved · Tap to connect": "已儲存 · 點一下即可連接",
+  "Scan a QR code to pair with your Maka Host.": "掃描 QR Code，將這部裝置與你的 Maka 主機配對。",
   "Set up a model connection on the remote Host, then try again.": "請在遠端 Host 設定模型連接後再試一次。",
   "The queue changed again. Review the message again.": "隊列再次變更，請重新查看訊息。",
   "The queue changed. Review the current message again.": "隊列已變更，請重新查看目前的訊息。",
