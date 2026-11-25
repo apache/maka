@@ -811,7 +811,7 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      const wait = waitActivity(run(), execution());
+      const wait = waitActivity(run(), execution(), interactions().entries.length > 0);
       if (wait) return { kind: wait, detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
@@ -1339,6 +1339,7 @@ export function Conversation(props: ConversationProps) {
     workingRowActive({
       run: run(),
       quietWait: quietWaits(execution()).length > 0,
+      waitingForUser: interactions().entries.length > 0,
       pendingCount: pendingMessages().length,
       outgoingCount: outgoing().length,
     });
@@ -5058,6 +5059,9 @@ export function Conversation(props: ConversationProps) {
                   }
                   return liveActivityTitle(live, tool);
                 }}
+                waiting={() =>
+                  initial.turnKey === runTurn() && activity().kind === 'waiting_for_user'
+                }
                 images={{
                   sessionId,
                   through: () => latestKnown,

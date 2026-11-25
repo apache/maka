@@ -198,6 +198,8 @@ export function TurnSummary(props: {
   canFold: () => boolean;
   /** What the turn is doing right now, for its row while its work is folded. */
   doing?: () => string | null;
+  /** The turn at work waits for the user: its header says so even with its work open. */
+  waiting?: () => boolean;
   toggle(open: boolean): void;
   /** Folded work keeps its images in reach; open work shows them on each tool. */
   images?: {
@@ -229,7 +231,11 @@ export function TurnSummary(props: {
   // the groups under it do.
   const marked = computed(() => platform.idiom !== 'terminal' && running());
   const activeTitle = computed(() =>
-    !props.expanded() ? (props.doing?.() ?? tr('Working…')) : tr('Working…'),
+    props.waiting?.()
+      ? tr('Waiting for your response')
+      : !props.expanded()
+        ? (props.doing?.() ?? tr('Working…'))
+        : tr('Working…'),
   );
   const stableDoing = stableActivityTitle(activeTitle, () => marked() && !props.expanded(), 600);
   const elapsedLabel = () => {
@@ -240,6 +246,10 @@ export function TurnSummary(props: {
     const turn = props.turn();
     if (running()) {
       const time = elapsed(turn, clock());
+      if (props.waiting?.())
+        return time !== null && time >= 1000
+          ? `${tr('Waiting for your response')} · ${formatDuration(time)}`
+          : tr('Waiting for your response');
       return time !== null && time >= 1000
         ? tr('Working for {duration}', { duration: formatDuration(time) })
         : tr('Working…');
@@ -346,7 +356,12 @@ export function TurnSummary(props: {
           <View
             style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 }}
           >
-            <FadingText text={stableDoing()} style={captionTextStyle} color={C.secondary} shimmer />
+            <FadingText
+              text={stableDoing()}
+              style={captionTextStyle}
+              color={C.secondary}
+              shimmer={!props.waiting?.()}
+            />
             <If when={elapsedLabel() !== null}>
               <Text style={{ ...captionTextStyle, color: C.muted, flexShrink: 0 }}>
                 {`· ${elapsedLabel()!}`}

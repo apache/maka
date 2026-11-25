@@ -296,4 +296,35 @@ test('working row bridges idle queued receipt into admitted run and clears on re
     workingRowActive({ run: 'idle', quietWait: false, pendingCount: 0, outgoingCount: 0 }),
     false,
   );
+  // A pending user interaction pauses the working row even while its tool call stays open.
+  assert.equal(
+    workingRowActive({
+      run: 'running',
+      quietWait: false,
+      waitingForUser: true,
+      pendingCount: 0,
+      outgoingCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({
+      run: 'waiting',
+      quietWait: true,
+      waitingForUser: true,
+      pendingCount: 0,
+      outgoingCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({
+      run: 'running',
+      quietWait: false,
+      waitingForUser: true,
+      pendingCount: 1,
+      outgoingCount: 0,
+    }),
+    true,
+  );
 });
