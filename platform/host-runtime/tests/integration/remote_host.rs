@@ -43,7 +43,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, sync::mpsc};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::mpsc,
+};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -347,6 +350,26 @@ async fn wait_for_server(server: tokio::task::JoinHandle<Result<(), String>>) {
         .expect("Host did not finish serving")
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn oversized_native_opening_is_rejected_without_waiting_for_its_body() {
+    let (_dir, host, _) = logs_host().await;
+    let (sender, ingress) = mpsc::channel(1);
+    let server = tokio::spawn(async move {
+        host.serve_peer_streams(ingress, CancellationToken::new())
+            .await
+    });
+
+    // No body means there is no Opening to identify. A reader without the
+    // bound would wait for more bytes until the Host handshake timeout.
+    let mut stream = peer_channel(&sender, PeerId::new("unpaired".into()).unwrap())
+        .await
+        .unwrap();
+    stream.write_u32(64 * 1024 + 1).await.unwrap();
+    assert_peer_closed(stream).await;
+    drop(sender);
+    wait_for_server(server).await;
 }
 
 #[tokio::test]

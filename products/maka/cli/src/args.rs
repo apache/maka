@@ -19,7 +19,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use maka_host_runtime::HostError;
-use std::{future::Future, net::SocketAddr, path::PathBuf, pin::Pin, process::ExitCode};
+use std::{future::Future, path::PathBuf, pin::Pin, process::ExitCode};
 
 use crate::{candidate, code, serve};
 
@@ -48,6 +48,8 @@ enum Command {
     /// Author, inspect and serve plugin applications.
     #[command(subcommand)]
     Application(crate::application::Command),
+    /// Run a self-hosted relay for remote access.
+    Relay(crate::relay::Relay),
     /// Manage the native runtime host.
     #[command(subcommand)]
     Host(HostCommand),
@@ -123,12 +125,7 @@ enum HostCommand {
     #[command(hide = true)]
     ServiceRun(crate::deployment::ServiceRun),
     /// Serve a native State Root over a private local endpoint.
-    Serve {
-        #[command(flatten)]
-        root: Root,
-        #[arg(long)]
-        websocket: Option<SocketAddr>,
-    },
+    Serve(serve::Serve),
 }
 
 #[derive(Args)]
@@ -158,6 +155,7 @@ impl Cli {
             Some(
                 Command::Host(_)
                     | Command::Application(crate::application::Command::Serve(_))
+                    | Command::Relay(_)
                     | Command::Code(_)
                     | Command::Acp(_)
                     | Command::Run(_)
@@ -178,7 +176,7 @@ impl Cli {
             return Err("terminal options cannot be combined with a CLI command".into());
         }
         let finite = matches!(&self.command, Some(Command::Host(command)) if !matches!(command,
-            HostCommand::Candidate(_) | HostCommand::Serve { .. } | HostCommand::ServiceRun(_)
+            HostCommand::Candidate(_) | HostCommand::Serve(_) | HostCommand::ServiceRun(_)
             | HostCommand::Connect(_) | HostCommand::Ensure(_))
             && !matches!(command, HostCommand::Logs(logs) if logs.follow));
         if finite {
@@ -237,6 +235,7 @@ impl Cli {
             }
             Command::Run(args) => command_exit(args.run()),
             Command::Application(args) => command_exit(args.run()),
+            Command::Relay(args) => command_exit(args.run()),
             Command::Sandbox(args) => Box::pin(args.run(self.timeout_ms)),
             Command::Host(HostCommand::Fetch(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Access(args)) => command_exit(args.run()),
@@ -261,11 +260,7 @@ impl Cli {
                 command_exit(args.run(crate::deployment::ControlAction::Uninstall))
             }
             Command::Host(HostCommand::Init(args)) => command_exit(args.run()),
-            Command::Host(HostCommand::Serve { root, websocket }) => command_exit(async move {
-                #[cfg(windows)]
-                crate::windows::own_process_tree()?;
-                serve::run(&root.root, websocket, None).await
-            }),
+            Command::Host(HostCommand::Serve(args)) => command_exit(args.run()),
             Command::Host(HostCommand::ServiceRun(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Status(args)) => command_exit(args.run()),
             Command::Host(HostCommand::Logs(args)) => command_exit(args.run()),

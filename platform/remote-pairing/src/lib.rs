@@ -163,7 +163,6 @@ impl PairingTicketPayload {
 }
 
 fn validate_endpoints(relays: &[RelayEndpoint], direct: &[String]) -> Result<(), PairingError> {
-    use PairingError::Field;
     if relays.is_empty() {
         return Err(PairingError::NoNativeRelay);
     }
@@ -171,21 +170,27 @@ fn validate_endpoints(relays: &[RelayEndpoint], direct: &[String]) -> Result<(),
         relay.validate()?;
     }
     for endpoint in direct {
-        let (url, authority) = endpoint_url(endpoint).ok_or(Field("directEndpoints"))?;
-        match (url.scheme(), url.host()) {
-            ("wss", _) => {}
-            ("ws", Some(url::Host::Domain("localhost"))) => {}
-            ("ws", Some(url::Host::Ipv4(ip))) if ip.is_loopback() => {
-                // WHATWG normalizes non-canonical IPv4 forms like 127.1.
-                if authority.split(':').next() != url.host_str() {
-                    return Err(Field("directEndpoints"));
-                }
-            }
-            ("ws", Some(url::Host::Ipv6(ip))) if ip.is_loopback() => {}
-            _ => return Err(Field("directEndpoints")),
-        }
+        parse_websocket_url(endpoint)?;
     }
     Ok(())
+}
+
+pub fn parse_websocket_url(raw: &str) -> Result<Url, PairingError> {
+    let invalid = PairingError::Field("directEndpoints");
+    let (url, authority) = endpoint_url(raw).ok_or(invalid)?;
+    let allowed = match (url.scheme(), url.host()) {
+        ("wss", _) | ("ws", Some(url::Host::Domain("localhost"))) => true,
+        ("ws", Some(url::Host::Ipv4(ip))) if ip.is_loopback() => {
+            // WHATWG normalizes non-canonical IPv4 forms like 127.1.
+            authority.split(':').next() == url.host_str()
+        }
+        ("ws", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
+        _ => false,
+    };
+    if !allowed {
+        return Err(PairingError::Field("directEndpoints"));
+    }
+    Ok(url)
 }
 
 fn endpoint_url(raw: &str) -> Option<(Url, &str)> {

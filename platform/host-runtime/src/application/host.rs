@@ -594,10 +594,17 @@ impl Host {
     {
         let (input, mut output) = tokio::io::split(stream);
         let mut input = wire::Reader::new(input);
+        // Local administration may submit whole application configurations.
+        const MAX_NATIVE_OPENING: usize = 64 * 1024;
+        let limit = if matches!(authority, Authority::AuthenticatedPeer { .. }) {
+            MAX_NATIVE_OPENING
+        } else {
+            usize::MAX
+        };
         let opening: Opening = tokio::select! {
             biased;
             () = self.accept_closed.cancelled() => return Err("Host is closing".into()),
-            value = tokio::time::timeout(self.options.handshake_timeout, input.read()) => value.map_err(|_| "Host handshake timed out")??,
+            value = tokio::time::timeout(self.options.handshake_timeout, input.read_bounded(limit)) => value.map_err(|_| "Host handshake timed out")??,
         };
         if opening.version != VERSION || opening.epoch.is_some_and(|epoch| epoch != self.epoch) {
             return Err("Host protocol or incarnation changed".into());
