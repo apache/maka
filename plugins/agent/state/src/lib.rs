@@ -426,6 +426,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 60,
+        description: "discovery watch deadlines, file guards and confirmation authority",
+        sql: include_str!("../migrations/0060_discovery_watch_runner.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -437,7 +444,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=58) {
+        for through in [0, 41].into_iter().chain(46..=59) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

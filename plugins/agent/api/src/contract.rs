@@ -2388,6 +2388,8 @@ pub fn contract() -> Contract {
                 ("chooseDossierOption".into(), method::<DossierChoose, ()>(MethodMode::Mutation)),
                 ("setDiscoveryNotifications".into(), method::<DiscoveryNotifications, ()>(MethodMode::Mutation)),
                 ("dropDiscoveryLead".into(), method::<DiscoveryLead, DossierRead>(MethodMode::Mutation)),
+                ("confirmPendingAction".into(), method::<PendingActionRequest, ConfirmPendingActionResult>(MethodMode::Mutation)),
+                ("dismissPendingAction".into(), method::<PendingActionRequest, ()>(MethodMode::Mutation)),
                 ("openDossierThread".into(), method::<DossierThreadOpen, DossierThread>(MethodMode::Mutation)),
                 (
                     "schedules".into(),

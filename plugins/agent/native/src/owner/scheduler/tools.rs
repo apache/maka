@@ -118,7 +118,11 @@ impl ToolPreparer for Scheduler {
                 | super::super::discovery::FINISH
                 | super::super::discovery::LIST
                 | super::super::discovery::READ
+                | super::super::discovery::REGISTER
+                | super::super::discovery::PENDING
                 | super::super::discovery::STAGE
+                | super::super::discovery::WATCH_SCOPE
+                | super::super::discovery::WORKSPACE_MAP
                 | super::super::discovery::PREFERENCES
         ) {
             return self.prepare_dossier_tool(name, input, context, cancellation);

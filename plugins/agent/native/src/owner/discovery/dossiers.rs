@@ -81,7 +81,11 @@ enum Call {
     Upsert { input: Upsert, fingerprint: String },
     Finish(Finish),
     Stage(artifacts::StageArtifact),
+    Register(watches::RegisterWatch),
+    Pending(actions::StagePendingAction),
     Preferences(preferences::Update),
+    WatchScope(watch_scope::Update),
+    WorkspaceMap(workspace_map::Update),
     List,
     Read(ReadTopic),
 }
@@ -90,20 +94,28 @@ impl scheduler::Scheduler {
     pub(in crate::owner) fn dossier_tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         [
             (UPSERT,
-             "Save one topic with expected_revision (zero for creation). schedule_ops can revise the intent_body of linked once tasks or cancel them. Use interrupt when the user needs to act now.",
-             schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep),
+             "Save one topic with expected_revision (0 for creation). title must concisely name the project/subject and core problem (16-32 chars, e.g. 'ETF 轮动明早开跑：缺 4 只 CSV 与 pandas'); NEVER start title with timestamps, rev numbers, or correction words ('更正'/'撤回'/'补坑'/'上一版'). Omit title on updates (expected_revision>0) to keep the existing stable title unless the core subject changed; put what changed into change_note (1 short line). Write summary_md as a self-contained current-state brief without internal revision archaeology. Existing staged artifacts are preserved and merged by path unless replace_artifacts is true. When asking the user to pick concrete actions, populate choices (2-3 clickable options with key, label, detail, recommended, resolves, instruction). schedule_ops can revise linked once tasks or cancel them. Use interrupt only when the user needs to act now.",
+             schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
-             schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep),
+             schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+            (REGISTER, "Monitor an existing topic without a model. Pass predicate as a JSON object matching kind: file_hash -> {expected_hash: null|sha256}; deadline -> {trigger_at_ms: <unix_ms>}; http_check -> {status_code?, contains_text?, not_contains_text?, json_pointer_equals?}. HTTP intervals are in seconds.",
+             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+            (PENDING, "Stage an exact connector mutation for desktop confirmation and finish this turn. Include every source file, staged input and overwrite destination. Use workspace paths or staging/<topic_id>/<path> for staged files.",
+             schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
+            (WATCH_SCOPE, "Inspect or adjust this workspace’s discovery watch scope. Use concrete content directories and a brief reason for each. mark_surveyed can add includes and exclusions together.",
+             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+            (WORKSPACE_MAP, "Inspect or update the durable workspace semantic map (sources, recheck_hints, unfinished frontier, and onboarding readiness). Independent of WatchScope's 16-root limit. Use upsert_sources / record_frontier during onboarding and mark_ready once primary areas are mapped; use mark_verified after checking a mapped source.",
+             schemars::schema_for!(workspace_map::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
-             schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep),
+             schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (FINISH,
              "End the investigation turn cleanly after saving all UpsertDossier updates (or when nothing material changed). Pass checked_topic_ids for topics reviewed without further material changes.",
-             schemars::schema_for!(Finish), ToolSemantics::FinishTurn),
+             schemars::schema_for!(Finish), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
             (LIST, "List compact discovery topics and user leads in urgency order.",
-             schemars::schema_for!(DossiersRead), ToolSemantics::Parallel),
+             schemars::schema_for!(DossiersRead), ToolSemantics::Parallel, ToolNesting::Nestable),
             (READ, "Read one topic with its summary, artifacts, linked reminders, watches and pending actions.",
-             schemars::schema_for!(ReadTopic), ToolSemantics::Parallel),
-        ].into_iter().map(|(name, description, schema, semantics)| ToolRegistration {
+             schemars::schema_for!(ReadTopic), ToolSemantics::Parallel, ToolNesting::Nestable),
+        ].into_iter().map(|(name, description, schema, semantics, nesting)| ToolRegistration {
             definition: ToolDefinition {
                 provider: None,
                 name: name.into(),
@@ -112,7 +124,7 @@ impl scheduler::Scheduler {
                 output_schema: None,
                 freeform: None,
             },
-            nesting: ToolNesting::DirectOnly,
+            nesting,
             semantics,
             handler: ToolHandler::Prepared(self.clone()),
         }).collect()
@@ -137,7 +149,11 @@ impl scheduler::Scheduler {
                     ));
                     serde_json::from_value(input).map(|input| Call::Upsert { input, fingerprint })
                 }
+                REGISTER => serde_json::from_value(input).map(Call::Register),
+                PENDING => serde_json::from_value(input).map(Call::Pending),
                 STAGE => serde_json::from_value(input).map(Call::Stage),
+                WATCH_SCOPE => serde_json::from_value(input).map(Call::WatchScope),
+                WORKSPACE_MAP => serde_json::from_value(input).map(Call::WorkspaceMap),
                 PREFERENCES => serde_json::from_value(input).map(Call::Preferences),
                 FINISH => serde_json::from_value(input).map(Call::Finish),
                 LIST => serde_json::from_value::<DossiersRead>(input).map(|_| Call::List),
@@ -186,7 +202,11 @@ impl Owner {
         cancel: CancellationToken,
     ) -> Result<Value, ToolError> {
         match call {
+            Call::Register(input) => self.register_watch(&context, input, cancel).await,
+            Call::Pending(input) => self.stage_pending_action(&context, input, cancel).await,
             Call::Stage(stage) => self.stage_artifact(&context, stage, cancel).await,
+            Call::WatchScope(update) => self.update_watch_scope(&context, update, cancel).await,
+            Call::WorkspaceMap(update) => self.update_workspace_map(&context, update, cancel).await,
             Call::Preferences(update) => {
                 self.update_discovery_preferences(&context, update, cancel)
                     .await
@@ -212,6 +232,9 @@ impl Owner {
                 Ok(serde_json::json!({"recorded":true}))
             }
             Call::Upsert { input, fingerprint } => {
+                if !input.dossier.title.trim().is_empty() {
+                    validate_stable_title(&input.dossier.title)?;
+                }
                 let mut paths = BTreeSet::new();
                 for artifact in &input.dossier.artifacts {
                     artifacts::validate_path(&input.dossier.topic_id, &artifact.path)
@@ -247,9 +270,6 @@ impl Owner {
                 }
                 if input.dossier.expected_revision.is_none() {
                     return Err(ToolError::Failed("expected_revision is required".into()));
-                }
-                if !input.dossier.title.trim().is_empty() {
-                    validate_stable_title(&input.dossier.title)?;
                 }
                 let custody = context
                     .custody
@@ -337,6 +357,7 @@ impl Owner {
 }
 fn starts_with_clock_or_rev(s: &str) -> bool {
     let bytes = s.as_bytes();
+    // HH:MM...
     if bytes.len() >= 5
         && bytes[0].is_ascii_digit()
         && bytes[1].is_ascii_digit()
@@ -346,6 +367,7 @@ fn starts_with_clock_or_rev(s: &str) -> bool {
     {
         return true;
     }
+    // rev1 / rev 1 / v2 / v2:
     let lower = s.to_ascii_lowercase();
     for prefix in ["rev", "v"] {
         if let Some(rest) = lower.strip_prefix(prefix) {
@@ -648,9 +670,9 @@ impl Owner {
                 window_at: None,
                 summary_md: summary,
                 change_note: None,
+                choices: vec![],
                 artifacts: vec![],
                 replace_artifacts: false,
-                choices: vec![],
                 linked_task_ids: None,
             },
             None,
@@ -745,6 +767,7 @@ impl Owner {
         session: &str,
         request: &mut maka_agent_state::queue::PreparedRequest,
         summary: String,
+        elevated: bool,
         contents: &mut Vec<maka_agent_state::ContentBlob>,
     ) -> Result<(), String> {
         use maka_agent_facts::input::{QuoteRef, RunInput};
@@ -777,8 +800,27 @@ impl Owner {
             .await
             .map_err(reason)?
             .ok_or("discovery_thread_unbound")?;
+        let execution_note = if elevated {
+            match request.spec.language {
+                Language::ZH_CN => {
+                    "\n\n用户已明确确认执行本方案，当前会话已具备常规工作区执行权限，可直接修改工作区文件、运行命令或调用工具落地结果，无需再次向用户做多余的确认弹窗。"
+                }
+                Language::ZH_TW => {
+                    "\n\n使用者已明確確認執行此方案，目前會話已具備常規工作區執行權限，可直接修改工作區檔案、執行命令或呼叫工具落地結果，無須再次向使用者重複確認。"
+                }
+                _ => {
+                    "\n\nThe user has explicitly confirmed this action and elevated this thread to normal session permissions. Execute directly using workspace tools without asking for redundant confirmation."
+                }
+            }
+        } else {
+            ""
+        };
         let quote = QuoteRef {
-            text: format!("topic_id: {}\n\n{summary}", topic.0),
+            text: format!(
+                "topic_id: {}\n\n{summary}\n\n{}{execution_note}",
+                topic.0,
+                monitoring_prompt(request.spec.language)
+            ),
             label: None,
             source_message_id: None,
             source_turn_id: None,
@@ -796,5 +838,105 @@ impl Owner {
         request.spec.input = input.reference().clone();
         contents.extend([source, input]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    fn find_boolean_subschema<'a>(schema: &'a Value, path: &str, out: &mut Vec<String>) {
+        if schema.is_boolean() {
+            out.push(path.to_owned());
+            return;
+        }
+        let Some(obj) = schema.as_object() else {
+            return;
+        };
+        for key in ["properties", "$defs", "definitions"] {
+            if let Some(map) = obj.get(key).and_then(Value::as_object) {
+                for (name, sub) in map {
+                    find_boolean_subschema(sub, &format!("{path}.{key}.{name}"), out);
+                }
+            }
+        }
+        for key in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+            if let Some(list) = obj.get(key).and_then(Value::as_array) {
+                for (idx, sub) in list.iter().enumerate() {
+                    find_boolean_subschema(sub, &format!("{path}.{key}[{idx}]"), out);
+                }
+            }
+        }
+        if let Some(items) = obj.get("items") {
+            find_boolean_subschema(items, &format!("{path}.items"), out);
+        }
+    }
+
+    #[test]
+    fn all_discovery_tool_schemas_avoid_boolean_subschemas() {
+        let schemas: [(&str, serde_json::Value); 10] = [
+            (UPSERT, schemars::schema_for!(Upsert).into()),
+            (
+                STAGE,
+                schemars::schema_for!(artifacts::StageArtifact).into(),
+            ),
+            (
+                REGISTER,
+                schemars::schema_for!(watches::RegisterWatch).into(),
+            ),
+            (
+                PENDING,
+                schemars::schema_for!(actions::StagePendingAction).into(),
+            ),
+            (
+                WATCH_SCOPE,
+                schemars::schema_for!(watch_scope::Update).into(),
+            ),
+            (
+                WORKSPACE_MAP,
+                schemars::schema_for!(workspace_map::Update).into(),
+            ),
+            (
+                PREFERENCES,
+                schemars::schema_for!(preferences::Update).into(),
+            ),
+            (FINISH, schemars::schema_for!(Finish).into()),
+            (LIST, schemars::schema_for!(DossiersRead).into()),
+            (READ, schemars::schema_for!(ReadTopic).into()),
+        ];
+        for (name, raw_schema) in schemas {
+            let inlined = maka_tool_catalog::input::inline_refs(raw_schema);
+            let (_, projected) = maka_tool_catalog::input::Projection::project(inlined);
+            let mut booleans = Vec::new();
+            find_boolean_subschema(&projected, name, &mut booleans);
+            assert!(
+                booleans.is_empty(),
+                "tool {name} emitted boolean JSON subschemas: {booleans:?}\nschema: {projected}"
+            );
+            if name == PENDING {
+                assert_eq!(projected["properties"]["params"]["type"], "object");
+            }
+            if name == REGISTER {
+                let variants = projected["properties"]["request"]["oneOf"]
+                    .as_array()
+                    .or_else(|| projected["oneOf"].as_array())
+                    .expect("watch oneOf");
+                let http = variants
+                    .iter()
+                    .find(|v| v["properties"]["kind"]["const"] == "http_check")
+                    .expect("http_check variant");
+                let ptr_field =
+                    &http["properties"]["predicate"]["properties"]["json_pointer_equals"];
+                let ptr_schema = ptr_field["anyOf"]
+                    .as_array()
+                    .and_then(|arr| arr.iter().find(|s| s["properties"].is_object()))
+                    .unwrap_or(ptr_field);
+                let ptr_value = &ptr_schema["properties"]["value"];
+                assert!(
+                    ptr_value.is_object() && !ptr_value.is_boolean(),
+                    "PointerEquals.value must be a schema object, got {ptr_value} in {http}"
+                );
+            }
+        }
     }
 }

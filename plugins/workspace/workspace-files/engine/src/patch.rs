@@ -132,13 +132,57 @@ enum FailureBoundary {
     StoppedBefore(AppliedOperation),
 }
 
+#[derive(Default)]
+struct PatchVersions {
+    paths: std::collections::BTreeMap<String, usize>,
+    digests: Vec<Option<String>>,
+}
+
+enum PatchStep {
+    Applied,
+    Stale(String),
+}
+
 pub(crate) fn run(
     authority: &Authority,
     coordinator: &WriteCoordinator,
     batch: Batch,
     cancellation: &CancellationToken,
     started: &AtomicBool,
-) -> Result<Value, ToolError> {
+    confirmed: Option<&crate::write::ConfirmedInputs>,
+) -> Result<crate::write::WriteOutcome, ToolError> {
+    use crate::write::WriteOutcome;
+    let mut versions = PatchVersions::default();
+    if let Some(inputs) = confirmed {
+        let mut entries = std::collections::BTreeMap::new();
+        for path in batch.paths() {
+            let display = authority.write_display_path(path)?;
+            if versions.paths.contains_key(&display) {
+                continue;
+            }
+            let Some(hash) = inputs.hashes.get(&display) else {
+                return Ok(WriteOutcome::Stale(vec![display]));
+            };
+            let mut target = crate::write_target::Target::capture(
+                authority,
+                path,
+                crate::write_target::ReadMode::Required,
+            )?;
+            let digest = format!("sha256:{hash}");
+            if !target.matches_digest(Some(&digest), cancellation)? {
+                return Ok(WriteOutcome::Stale(vec![display]));
+            }
+            // Distinct spellings can name one directory entry on case-insensitive volumes.
+            let slot = target
+                .single_link_identity()?
+                .map(|id| *entries.entry(id).or_insert(versions.digests.len()))
+                .unwrap_or(versions.digests.len());
+            if slot == versions.digests.len() {
+                versions.digests.push(Some(digest));
+            }
+            versions.paths.insert(display, slot);
+        }
+    }
     let mut applied = Vec::new();
     for operation in batch.operations {
         let fact = AppliedOperation::from_operation(&operation);
@@ -149,12 +193,26 @@ pub(crate) fn run(
             )
         } else {
             (
-                apply_one(authority, coordinator, operation, cancellation, started),
+                apply_one(
+                    authority,
+                    coordinator,
+                    operation,
+                    cancellation,
+                    started,
+                    confirmed.map(|_| &mut versions),
+                ),
                 FailureBoundary::Failed(fact.clone()),
             )
         };
+        let result = match result {
+            Ok(PatchStep::Stale(path)) if applied.is_empty() => {
+                return Ok(WriteOutcome::Stale(vec![path]));
+            }
+            Ok(PatchStep::Stale(path)) => Err(failed(format!("Confirmed file changed: {path}"))),
+            other => other,
+        };
         match result {
-            Ok(()) => applied.push(fact),
+            Ok(_) => applied.push(fact),
             Err(ToolError::Failed(error) | ToolError::Io { message: error, .. })
                 if !applied.is_empty() =>
             {
@@ -163,6 +221,7 @@ pub(crate) fn run(
                     boundary,
                     error,
                 })
+                .map(WriteOutcome::Returned)
                 .map_err(patch_error);
             }
             Err(error) => return Err(error),
@@ -173,7 +232,9 @@ pub(crate) fn run(
         applied.len(),
         if applied.len() == 1 { "" } else { "s" }
     );
-    serde_json::to_value(BatchResult::Completed { applied, output }).map_err(patch_error)
+    serde_json::to_value(BatchResult::Completed { applied, output })
+        .map(WriteOutcome::Returned)
+        .map_err(patch_error)
 }
 
 fn apply_one(
@@ -182,48 +243,80 @@ fn apply_one(
     operation: PatchOperation,
     cancellation: &CancellationToken,
     started: &AtomicBool,
-) -> Result<(), ToolError> {
+    versions: Option<&mut PatchVersions>,
+) -> Result<PatchStep, ToolError> {
     use crate::write_target::Target;
     let path = operation_path(&operation);
     let output_path = authority.write_display_path(path)?;
+    let expected = if let Some(versions) = versions {
+        let Some(slot) = versions.paths.get(&output_path) else {
+            return Ok(PatchStep::Stale(output_path));
+        };
+        Some(&mut versions.digests[*slot])
+    } else {
+        None
+    };
     let mut target = Target::capture(
         authority,
         path,
-        if matches!(operation, PatchOperation::Update { .. }) {
+        if expected.is_some() || matches!(operation, PatchOperation::Update { .. }) {
             crate::write_target::ReadMode::Required
         } else {
             crate::write_target::ReadMode::None
         },
     )?;
-    let _guard = coordinator
-        .mutation
-        .lock()
-        .map_err(|_| failed("Write coordinator poisoned"))?;
+    let _guard = expected
+        .is_none()
+        .then(|| {
+            coordinator
+                .mutation
+                .lock()
+                .map_err(|_| failed("Write coordinator poisoned"))
+        })
+        .transpose()?;
     crate::write::check_cancelled(cancellation)?;
     let local_started = AtomicBool::new(false);
     let mutation = match operation {
         PatchOperation::Delete { .. } => {
+            if let Some(expected) = expected {
+                if !target.matches_digest(expected.as_deref(), cancellation)? {
+                    return Ok(PatchStep::Stale(output_path));
+                }
+                *expected = None;
+            }
             target.require_existing()?;
-            // A panic after entering a mutation boundary is conservatively
-            // unknown, even if prior operations completed successfully.
             started.store(true, Ordering::SeqCst);
-            return target.delete(cancellation, &local_started);
+            return target
+                .delete(cancellation, &local_started)
+                .map(|()| PatchStep::Applied);
         }
-        PatchOperation::Add { content, .. } => {
-            target.require_missing()?;
-            Mutation::complete_write(output_path.clone(), content)
-        }
+        PatchOperation::Add { content, .. } => target
+            .require_missing()
+            .map(|()| Mutation::complete_write(output_path.clone(), content)),
         PatchOperation::Update { chunks, .. } => {
-            target.require_existing()?;
-            Mutation::PatchUpdate {
+            target.require_existing().map(|()| Mutation::PatchUpdate {
                 path: output_path.clone(),
                 chunks,
-            }
+            })
         }
     };
-    let (content, _) = target.prepare(mutation, &output_path, cancellation)?;
+    let prepared =
+        mutation.and_then(|mutation| target.prepare(mutation, &output_path, cancellation));
+    if let Some(expected) = expected.as_deref()
+        && !target.matches_digest(expected.as_deref(), cancellation)?
+    {
+        return Ok(PatchStep::Stale(output_path));
+    }
+    let (content, _) = prepared?;
+    if let Some(expected) = expected {
+        *expected = Some(maka_agent_facts::artifact::content_digest(
+            content.as_bytes(),
+        ));
+    }
     started.store(true, Ordering::SeqCst);
-    target.apply(content.as_bytes(), cancellation, &local_started)
+    target
+        .apply(content.as_bytes(), cancellation, &local_started)
+        .map(|()| PatchStep::Applied)
 }
 
 fn operation_path(operation: &PatchOperation) -> &std::path::Path {

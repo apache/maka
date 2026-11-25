@@ -265,6 +265,7 @@ impl RunAccess {
         use maka_sandbox::Sandbox;
 
         let current = self.live_configuration().await?;
+        let restricted_dossier = current.is_restricted_dossier_thread();
         let workspace = current.workspace;
         let mode = current.permissions.access;
         let root = self.state_root()?;
@@ -275,7 +276,7 @@ impl RunAccess {
             .store
             .checkpoint_execution()
             .map(|execution| execution.grant().permissions.sandbox.clone());
-        let approved = if file_approvals {
+        let approved = if file_approvals && !restricted_dossier {
             self.spec.filesystem_approval_ceiling.clone()
         } else {
             None
@@ -1084,13 +1085,12 @@ impl Access for RunAccess {
                 return Err(ToolError::Failed("Permission boundary changed".into()));
             }
             let owner = self.owner().map_err(ToolError::Failed)?;
-            let grants = owner
+            let mut grants = owner
                 .durable
                 .interactions()
                 .permission_grants(&self.execution, Some(target), basis, source)
                 .await
-                .map_err(|error| ToolError::Persistence(error.to_string()))?;
-            Ok(grants
+                .map_err(|error| ToolError::Persistence(error.to_string()))?
                 .into_iter()
                 .map(|grant| PermissionGrant {
                     approval_id: grant.approval_id,
@@ -1098,7 +1098,38 @@ impl Access for RunAccess {
                     permissions: grant.permissions,
                     scope: grant.scope,
                 })
-                .collect())
+                .collect::<Vec<_>>();
+            // Proactive discovery workers run non-interactively (`approval: Never`),
+            // and elevated dossier threads were explicitly confirmed by the user.
+            // Grant Web-only access when permitted by the run's network approval ceiling
+            // so WebFetch/WebSearch work without redundant approval prompts.
+            let is_discovery_worker = owner
+                .scheduler
+                .investigation_profile(&self.execution.session_id)
+                .is_some();
+            let is_elevated_dossier =
+                configuration.dossier_seed.is_some() && configuration.dossier_elevated;
+            if source == PermissionSource::Web && (is_discovery_worker || is_elevated_dossier) {
+                let web_allowed = is_elevated_dossier
+                    || configuration.tools.as_ref().is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .any(|t| matches!(t.as_str(), "WebFetch" | "WebSearch"))
+                    });
+                let network = self.network_approval_ceiling()?;
+                if web_allowed && network != maka_sandbox::Network::Denied {
+                    grants.push(PermissionGrant {
+                        approval_id: None,
+                        request_id: format!("discovery_web_grant_{}", self.execution.run_id),
+                        permissions: maka_sandbox::grant::Permissions {
+                            filesystem: Vec::new(),
+                            network,
+                        },
+                        scope: maka_agent_facts::interaction::PermissionScope::Session,
+                    });
+                }
+            }
+            Ok(grants)
         })
     }
 }

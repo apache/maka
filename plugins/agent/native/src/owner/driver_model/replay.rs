@@ -509,7 +509,11 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         .expect("discovery child observation")
                         .lock()
                         .unwrap()
-                        .child_returned(after, read, name == crate::owner::discovery::UPSERT);
+                        .child_returned(
+                            after,
+                            read,
+                            crate::owner::driver::discovery::is_productive_write_tool(name),
+                        );
                     Ok(())
                 })
             }

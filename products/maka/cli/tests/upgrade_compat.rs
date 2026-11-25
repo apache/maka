@@ -193,6 +193,8 @@ struct CapsuleManifest {
 struct DiscoveryCapsule {
     topic_id: String,
     thread_session_id: String,
+    #[serde(default)]
+    additional_deltas: usize,
 }
 
 struct FixtureSecret;
@@ -876,7 +878,7 @@ async fn open_compat_settings(root: &Path) -> ConfigurationStore {
     ConfigurationStore::for_root(Arc::new(owner)).await.unwrap()
 }
 
-async fn create_discovery_capsule(client: &Client, nonce: &str) -> DiscoveryCapsule {
+async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCapsule, Value) {
     let lead = call(
         client,
         "agent",
@@ -911,18 +913,33 @@ async fn create_discovery_capsule(client: &Client, nonce: &str) -> DiscoveryCaps
         Attachments::new(),
     )
     .await;
-    DiscoveryCapsule {
-        topic_id,
-        thread_session_id,
-    }
+    let observed = call(
+        client,
+        "agent",
+        "observe",
+        json!({"sessionId":thread_session_id}),
+        Attachments::new(),
+    )
+    .await;
+    let session = &observed["session"];
+    let target = json!({"sessionId":thread_session_id,"workspace":session["workspace"],"permissions":session["permissions"],"boundaryRevision":session["boundaryRevision"],"binding":session["binding"]});
+    (
+        DiscoveryCapsule {
+            topic_id,
+            thread_session_id,
+            additional_deltas: 17,
+        },
+        target,
+    )
 }
 
 // No public RPC creates tracking records. Seed them while the capsule's Host is stopped.
 const COMPAT_DRAFT: &str = "Review the revised contract annex.\n";
 const COMPAT_RULE: &str = "- [global] 2026-11-23 Review contract changes on Fridays.\n";
 
-fn seed_discovery_tracking(root: &Path, topic: &str) {
+fn seed_discovery_tracking(root: &Path, saved: &DiscoveryCapsule, target: Value) {
     use sha2::{Digest, Sha256};
+    let topic = saved.topic_id.as_str();
     let discovery = root.join("discovery");
     let staging = discovery.join("staging").join(topic);
     fs::create_dir_all(&staging).unwrap();
@@ -954,10 +971,25 @@ fn seed_discovery_tracking(root: &Path, topic: &str) {
         [&owner],
     )
     .unwrap();
+    for i in 0..saved.additional_deltas {
+        tx.execute(
+            "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at)
+             VALUES (?1,?2,'v1',1,'created',1)",
+            [&owner, &format!("compat-inbox/{i}.md")],
+        )
+        .unwrap();
+    }
+    let auth = json!({"target":target,"read_floor":{"kind":"disabled"},"effect_ceiling":{"kind":"disabled"},"workspace_reads":true,"plan":null});
     tx.execute(
-        "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,on_trigger,last_state_hash,created_at,updated_at)
-         VALUES (?1,'compat-watch',?2,'file_hash','annex.md','{}','invalidate_action','v1',1,1)",
-        [owner.as_str(), topic],
+        "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,on_trigger,next_check_at,authority_json,created_at,updated_at)
+         VALUES (?1,'compat-watch',?2,'deadline','Cold restart','{\"trigger_at_ms\":1}','notify_direct',1,?3,1,1)",
+        [owner.as_str(), topic, &auth.to_string()],
+    ).unwrap();
+    tx.execute(
+        "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
+        VALUES (?1,'interrupted',?2,'review','{}','{}','crash-key','executing',100,1,1),
+               (?1,'expired',?2,'review','{}','{}','expired-key','awaiting_confirm',100,1,1)",
+        [owner.as_str(),topic],
     ).unwrap();
     tx.execute(
         "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,
@@ -974,6 +1006,7 @@ async fn verify_dossiers(
     nonce: &str,
     post_nonce: &str,
     staged: bool,
+    guards: bool,
 ) {
     let page = call(client, "agent", "dossiers", json!({}), Attachments::new()).await;
     if let Some(saved) = saved {
@@ -1001,7 +1034,62 @@ async fn verify_dossiers(
             assert_eq!(preview, COMPAT_DRAFT);
         }
         assert!(detail["summaryMd"].as_str().unwrap().contains(nonce));
-        assert_eq!(detail["watches"][0]["lastStateHash"], "v1");
+        if guards {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let current = call(
+                        client,
+                        "agent",
+                        "dossier",
+                        topic.clone(),
+                        Attachments::new(),
+                    )
+                    .await;
+                    if current["watches"][0]["lastStateHash"] == "fired" {
+                        assert!(current["watches"][0]["expiresAt"].is_number());
+                        assert_eq!(current["lastNotifiedRevision"], 0);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("persisted deadline did not fire");
+            let interrupted = call(
+                client,
+                "agent",
+                "confirmPendingAction",
+                json!({"actionId":"interrupted"}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(interrupted["outcome"], "unknown_pending_receipt");
+            call(
+                client,
+                "agent",
+                "dismissPendingAction",
+                json!({"actionId":"expired"}),
+                Attachments::new(),
+            )
+            .await;
+            let current = call(
+                client,
+                "agent",
+                "dossier",
+                topic.clone(),
+                Attachments::new(),
+            )
+            .await;
+            assert!(
+                current["pendingActions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|a| a["actionId"] != "expired")
+            );
+        } else {
+            assert_eq!(detail["watches"][0]["lastStateHash"], "v1");
+        }
         assert_eq!(detail["pendingActions"][0]["inputHashes"]["annex.md"], "v1");
         assert_eq!(
             detail["pendingActions"][0]["status"],
@@ -1038,6 +1126,50 @@ async fn verify_dossiers(
     .await;
     let detail = call(client, "agent", "dossier", lead, Attachments::new()).await;
     assert_eq!(detail["revision"], 1);
+}
+
+async fn consume_upgraded_discovery_deltas(root: &Path, owner: &str, expected: usize) {
+    use maka_agent_facts::{discovery::SourceUri, durable::UnixMillis};
+    use maka_agent_state::discovery::{
+        DiscoveryStore,
+        changes::{ChangeQuery, OpeningSources},
+    };
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+
+    let restored = RootOwner::open(root, &RootNamespaces::for_current_account().unwrap()).unwrap();
+    let store =
+        maka_transport::open_store(Arc::new(restored), &maka_product_native::root_migrations())
+            .await
+            .unwrap();
+    let data = store.data_writer().unwrap();
+    let discovery =
+        DiscoveryStore::new(data.clone(), &serde_json::from_str(owner).unwrap()).unwrap();
+    let at = UnixMillis(1);
+    let snapshot = || {
+        discovery.change_snapshot(at, ChangeQuery::Opening { limit: 15 }, |path, _| {
+            path == Path::new("annex.md") || path.starts_with("compat-inbox")
+        })
+    };
+    let mut remaining = expected;
+    loop {
+        let ready = snapshot().await.unwrap();
+        assert_eq!(ready.deltas.len(), remaining.min(15));
+        assert_eq!(ready.omitted_deltas, remaining - ready.deltas.len());
+        if remaining == 0 {
+            break;
+        }
+        remaining = ready.omitted_deltas;
+        data.write(discovery.record_opening(OpeningSources::FollowUp(ready.deltas), false, at))
+            .await
+            .unwrap();
+    }
+    let cursor = discovery
+        .get_source_cursor(SourceUri("annex.md".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cursor.last_hash.as_deref(), Some("v1"));
+    store.shutdown().await.unwrap();
 }
 
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
@@ -1308,7 +1440,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         .await;
         assert_eq!(room_post["kind"], "posted", "{room_post}");
 
-        let discovery = create_discovery_capsule(&client, &nonce).await;
+        let (discovery, target) = create_discovery_capsule(&client, &nonce).await;
 
         // 5. Subagent Preset.
         let preset = call(
@@ -1449,7 +1581,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             .await
             .unwrap();
         settings.close().await.unwrap();
-        seed_discovery_tracking(&dirs.root, &discovery.topic_id);
+        seed_discovery_tracking(&dirs.root, &discovery, target);
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -1609,8 +1741,8 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "assistantPreferences lost across upgrade: {prefs}"
         );
 
-        let staged = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v| v.contains(&55));
-        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce, staged).await;
+        let staged = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v| v.contains(&58));
+        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce, staged,manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v|v.contains(&59))).await;
         if staged {
             assert_eq!(fs::read_to_string(dirs.root.join("discovery/preferences.md")).unwrap(), COMPAT_RULE);
             assert!(fs::read_to_string(dirs.root.join("discovery/outcomes.md")).unwrap().contains("opened a staged artifact"));
@@ -2175,15 +2307,23 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "SELECT count(*) FROM discovery_source_cursors WHERE source_uri='annex.md' AND delta_kind='modified' AND delta_at=1",
             [], |row| row.get(0),
         ).unwrap();
-        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&54));
+        let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&57));
         assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
-        if let Some(dossier) = &manifest.discovery {
-            let (cycle, explored): (u8, i64) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at FROM discovery_dossiers d
+        let owner = if let Some(dossier) = &manifest.discovery {
+            let (cycle, explored, owner): (u8, i64, String) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at,d.owner FROM discovery_dossiers d
                 JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)
-                WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
             assert_eq!((cycle,explored), if staged { (3,42) } else { (0,0) });
-        }
+            Some((owner, 1 + dossier.additional_deltas))
+        } else {
+            None
+        };
         drop(conn);
+        if let Some((owner, expected)) = owner
+            && captured_changes
+        {
+            consume_upgraded_discovery_deltas(&dirs.root, &owner, expected).await;
+        }
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {
             let now_versions = upgraded_migrations

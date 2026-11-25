@@ -101,8 +101,9 @@ impl Progress {
             return;
         }
         self.through = step.revision;
-        let new_read =
-            observation.read_target && self.reads.insert((observation.target, observation.output));
+        let new_read = observation
+            .read_target
+            .is_some_and(|target| self.reads.insert((target, observation.output)));
         let new_output = observation.output.is_some_and(|o| self.outputs.insert(o));
         self.productive |= observation.wrote || new_read || new_output;
         if !step.last {
@@ -139,8 +140,7 @@ pub(in crate::owner) struct SettledStep {
 }
 
 pub(in crate::owner) struct Observation {
-    target: u64,
-    read_target: bool,
+    read_target: Option<u64>,
     output: Option<u64>,
     wrote: bool,
 }
@@ -150,6 +150,17 @@ fn hash<T: Hash + ?Sized>(v: &T) -> u64 {
     h.finish()
 }
 
+pub(in crate::owner) fn is_productive_write_tool(name: &str) -> bool {
+    matches!(
+        name,
+        crate::owner::discovery::UPSERT
+            | crate::owner::discovery::WORKSPACE_MAP
+            | crate::owner::discovery::WATCH_SCOPE
+            | crate::owner::discovery::STAGE
+            | crate::owner::discovery::REGISTER
+    )
+}
+
 impl Observation {
     pub(in crate::owner) fn new(
         call: &ModelToolCall,
@@ -157,16 +168,17 @@ impl Observation {
         success: bool,
         workspace: &Path,
     ) -> Self {
-        let args = call.input.as_json();
-        let address = canonical_target(&call.name, args, workspace);
         let output = success.then(|| evidence(output)).flatten();
+        let read_target = if success && (output.is_some() || call.name.eq_ignore_ascii_case("Read"))
+        {
+            canonical_target(&call.name, call.input.as_json(), workspace)
+        } else {
+            None
+        };
         Self {
-            target: address.unwrap_or_else(|| hash(&(call.name.trim().to_ascii_lowercase(), args))),
-            read_target: success
-                && address.is_some()
-                && (output.is_some() || call.name.eq_ignore_ascii_case("Read")),
+            read_target,
             output,
-            wrote: success && call.name == crate::owner::discovery::UPSERT,
+            wrote: success && is_productive_write_tool(&call.name),
         }
     }
 }

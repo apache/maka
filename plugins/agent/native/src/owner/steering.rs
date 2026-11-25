@@ -113,7 +113,7 @@ impl Owner {
                 }));
             }
         };
-        let dossier_reply = basis.dossier_thread && origin.is_none();
+        let dossier_reply = basis.dossier_thread.is_dossier() && origin.is_none();
         let source = RootSourceMessage {
             message: DeliveredMessage {
                 origin,

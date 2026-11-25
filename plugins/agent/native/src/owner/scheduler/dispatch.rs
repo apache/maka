@@ -567,9 +567,14 @@ impl Owner {
                         plan.task.next_fire_at = None;
                         plan.task.last_error = Some("scheduler_authorization_changed".into());
                     }
+                    let overdue = plan.task.status == Status::Active
+                        && plan.task.next_fire_at.is_some_and(|at| at <= loaded_at);
                     self.scheduler
                         .commit(&mut catalog, &id, Some(plan), None)
                         .await?;
+                    if overdue {
+                        self.scheduler.wake.notify_one();
+                    }
                     retries.remove(&id);
                 }
                 Ok(None) => {

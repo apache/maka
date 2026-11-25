@@ -623,6 +623,32 @@ fn source_value(source: &str) -> Result<PermissionSource, StoreError> {
         _ => Err(invalid("unknown permission source")),
     }
 }
+pub(super) fn session_allows_web(
+    c: &Connection,
+    session: &str,
+    basis: PermissionBasis,
+    destination: &maka_sandbox::Destination,
+) -> Result<bool, StoreError> {
+    id(session)?;
+    basis.validate().map_err(invalid)?;
+    if current_basis(c, session)? != Some(basis) {
+        return Ok(false);
+    }
+    let mut stmt = c.prepare_cached("SELECT permissions FROM agent_interaction_grants WHERE session=?1 AND basis=?2 AND scope='session' AND source=?3")?;
+    let mut rows = stmt.query(params![
+        session,
+        encode(&basis)?,
+        source_name(PermissionSource::Web)
+    ])?;
+    while let Some(row) = rows.next()? {
+        let grant: Permissions = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        if grant.network.allows(destination) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn grants(
     c: &Connection,
     execution: &ExecutionIdentity,

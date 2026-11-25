@@ -406,6 +406,62 @@ fn resume_keeps_the_original_pending_fire_for_reconciliation() {
 }
 
 #[test]
+fn discovery_events_preserve_the_broad_deadline_across_settlement_and_restart() {
+    use super::FireSource;
+    const MIN: i64 = 60_000;
+    for source in [FireSource::FileChange, FireSource::Watch] {
+        let mut plan = plan(Delivery::Work("discovery".into()));
+        plan.task.schedule = Schedule::Interval {
+            every_seconds: 1800,
+            start_at: 30 * MIN,
+            cadence: IntervalCadence::AfterCompletion,
+        };
+        plan.task.next_fire_at = Some(30 * MIN);
+        plan.task.expires_at = None;
+        plan.task.max_fires = None;
+        let fire = plan
+            .claim_preserving_schedule(29 * MIN, source)
+            .unwrap()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (fire.scheduled_at, fire.preserved_next_fire_at),
+            (29 * MIN, Some(30 * MIN))
+        );
+        let mut reopened: TaskPlan<Delivery, u64> =
+            serde_json::from_value(serde_json::to_value(plan).unwrap()).unwrap();
+        for (end, max, status) in [
+            (Some(31 * MIN), None, Status::Expired),
+            (None, Some(1), Status::Completed),
+        ] {
+            let mut limited = reopened.clone();
+            limited.task.expires_at = end;
+            limited.task.max_fires = max;
+            limited.settle(outcome(fire.id.clone(), 32 * MIN)).unwrap();
+            assert_eq!(
+                (limited.task.status, limited.task.next_fire_at),
+                (status, None)
+            );
+        }
+        reopened.settle(outcome(fire.id, 32 * MIN)).unwrap();
+        assert_eq!(reopened.task.next_fire_at, Some(30 * MIN));
+        assert!(
+            reopened
+                .claim_preserving_schedule(32 * MIN, source)
+                .unwrap()
+                .is_none()
+        );
+        let broad = reopened.claim(32 * MIN).unwrap().unwrap().clone();
+        assert_eq!(
+            (broad.source, broad.scheduled_at),
+            (FireSource::Schedule, 30 * MIN)
+        );
+        reopened.settle(outcome(broad.id, 33 * MIN)).unwrap();
+        assert_eq!(reopened.task.next_fire_at, Some(63 * MIN));
+    }
+}
+
+#[test]
 fn completion_interval_counts_from_settlement_and_survives_edit_and_reopen() {
     let mut plan = plan(Delivery::Work("work".into()));
     plan.task.expires_at = None;

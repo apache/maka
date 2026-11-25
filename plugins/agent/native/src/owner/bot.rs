@@ -44,6 +44,8 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ListDossiers",
     "ReadDossier",
     "UpdateDiscoveryPreferences",
+    "UpdateWatchScope",
+    "UpdateWorkspaceMap",
     "CreateGoal",
     "GetGoal",
     "GoalStatus",
@@ -1171,6 +1173,16 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
     }
     if has(&["DiscoveryMemory"]) {
         text.push_str(maka_agent_facts::i18n::bot::prompt_discovery_memory(
+            language,
+        ));
+    }
+    if has(&[
+        "UpdateDiscoveryPreferences",
+        "ListDossiers",
+        "UpdateWatchScope",
+        "UpdateWorkspaceMap",
+    ]) {
+        text.push_str(maka_agent_facts::i18n::bot::prompt_discovery_coordination(
             language,
         ));
     }

@@ -78,7 +78,7 @@ fn column_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
-fn now() -> Result<UnixMillis, StoreError> {
+pub(crate) fn now() -> Result<UnixMillis, StoreError> {
     let value = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| invalid("clock precedes epoch"))?

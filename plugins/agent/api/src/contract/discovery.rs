@@ -99,3 +99,23 @@ pub struct DossierThreadOpen {
 pub struct DossierThread {
     pub session_id: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingActionRequest {
+    pub action_id: maka_agent_facts::discovery::ActionId,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "outcome",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ConfirmPendingActionResult {
+    Done { receipt: serde_json::Value },
+    Stale { changed_paths: Vec<String> },
+    Failed { error: String },
+    UnknownPendingReceipt { error: String },
+}

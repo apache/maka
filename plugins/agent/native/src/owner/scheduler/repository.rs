@@ -229,7 +229,7 @@ impl Scheduler {
     pub(in crate::owner) async fn load(&self) -> Result<Catalog, String> {
         self.load_selected(Selection::All).await
     }
-    pub(super) async fn load_ready(&self, at: i64) -> Result<Catalog, String> {
+    pub(in crate::owner) async fn load_ready(&self, at: i64) -> Result<Catalog, String> {
         self.load_selected(Selection::Due(at)).await
     }
     pub(in crate::owner) async fn load_change_plans(&self) -> Result<Catalog, String> {
@@ -352,6 +352,21 @@ impl Scheduler {
         Ok(())
     }
 }
+impl Catalog {
+    pub(in crate::owner) fn has_pending_discovery(&self) -> bool {
+        self.plans.values().any(|saved| {
+            saved
+                .plan
+                .pending
+                .as_ref()
+                .is_some_and(|fire| matches!(fire.effect, ScheduledEffect::Discovery { .. }))
+        })
+    }
+    pub(in crate::owner) fn watch_fire(&self, plan: &Plan) -> Result<Vec<Mutation>, String> {
+        Ok(prepare_commit(self, &plan.task.id, Some(plan))?.0)
+    }
+}
+
 fn prepare_commit(
     catalog: &Catalog,
     id: &str,

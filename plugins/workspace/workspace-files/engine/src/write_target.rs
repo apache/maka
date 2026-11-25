@@ -188,6 +188,55 @@ impl Target {
         self.visible(expected)
     }
 
+    pub(crate) fn single_link_identity(&self) -> Result<Option<(u64, u64)>, ToolError> {
+        let metadata = self
+            .existing
+            .as_ref()
+            .map(|file| file.metadata())
+            .transpose()
+            .map_err(io_error)?;
+        Ok(metadata.filter(|m| m.nlink() == 1).map(|m| identity(&m)))
+    }
+
+    pub(crate) fn matches_digest(
+        &mut self,
+        expected: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, ToolError> {
+        use std::io::Seek;
+        if !self.confirmation_visible()? {
+            return Ok(false);
+        }
+        let matches = match (self.existing.as_mut(), expected) {
+            (None, None) => true,
+            (Some(file), Some(expected)) => {
+                use std::io::Read;
+                let before = file.metadata().map_err(io_error)?;
+                file.rewind().map_err(io_error)?;
+                let actual = crate::publication::hash_reader(
+                    &mut (&mut *file).take(before.len()),
+                    cancellation,
+                )?;
+                file.rewind().map_err(io_error)?;
+                let after = file.metadata().map_err(io_error)?;
+                actual.digest == expected
+                    && actual.bytes == before.len()
+                    && after.len() == before.len()
+                    && after.modified().map_err(io_error)? == before.modified().map_err(io_error)?
+            }
+            _ => false,
+        };
+        Ok(matches && self.confirmation_visible()?)
+    }
+
+    fn confirmation_visible(&self) -> Result<bool, ToolError> {
+        match self.validate() {
+            Ok(()) => Ok(true),
+            Err(ToolError::Failed(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn prepare(
         &mut self,
         mutation: crate::mutation::Mutation,

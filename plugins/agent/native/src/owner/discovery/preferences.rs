@@ -30,6 +30,7 @@ use maka_event_log::{
     writeback::{Prepared, Statement},
 };
 use std::io;
+use std::path::Path;
 
 const RULES: &str = "preferences.md";
 const OUTCOMES: &str = "outcomes.md";
@@ -96,6 +97,7 @@ impl Update {
         let scope = self.scope.as_deref().unwrap_or(default_scope).trim();
         let rule = self.rule.trim();
         if scope.is_empty()
+            || scope == "watch-scope"
             || scope.len() > 160
             || scope.contains(['[', ']'])
             || scope.chars().any(char::is_control)
@@ -122,6 +124,55 @@ impl Update {
             format!("{}\n", lines.join("\n"))
         })
     }
+}
+
+pub(super) fn sync_watch_scope(
+    state: &RootOwner,
+    root: &Path,
+    home: bool,
+    current: impl FnOnce() -> Arc<watch_scope::WatchScope>,
+) -> io::Result<()> {
+    edit_file(state, RULES, |old| {
+        // Concurrent mirrors can arrive out of order. Read the committed scope under the file lock.
+        let scope = current();
+        let prefix = format!("- [watch-scope] {} | ", serde_json::json!(root));
+        let surveyed = scope
+            .surveyed_at
+            .and_then(|at| context::timestamp(at.try_into().ok()?))
+            .unwrap_or_else(|| "pending".into());
+        let baseline = if home {
+            "top-level user folders"
+        } else {
+            "workspace recursively"
+        };
+        let mut summary = format!("{prefix}{baseline} | survey: {surveyed}");
+        let entries = scope
+            .include_roots
+            .iter()
+            .map(|r| ("include", r))
+            .chain(scope.exclude_roots.iter().map(|r| ("exclude", r)));
+        for (i, (kind, entry)) in entries.enumerate() {
+            let relative = entry.path.strip_prefix(root).unwrap_or(&entry.path);
+            let item = format!(
+                " | {kind} {} ({})",
+                serde_json::json!(relative),
+                entry.reason
+            );
+            if summary.len() + item.len() > prefix.len() + 2048 {
+                summary.push_str(&format!(
+                    " | +{} more (UpdateWatchScope inspect)",
+                    scope.include_roots.len() + scope.exclude_roots.len() - i
+                ));
+                break;
+            }
+            summary.push_str(&item);
+        }
+        old.lines()
+            .filter(|line| !line.starts_with(&prefix))
+            .chain([summary.as_str()])
+            .map(|line| format!("{line}\n"))
+            .collect()
+    })
 }
 
 fn outcome(state: &RootOwner, topic: &TopicId, action: &str) -> io::Result<()> {
@@ -156,14 +207,19 @@ fn excerpt(dir: &Dir) -> io::Result<String> {
         ),
         ("Recent user outcomes", outcomes.as_str(), EXCERPT),
     ] {
-        if source.trim().is_empty() {
+        let mut lines = source
+            .lines()
+            .rev()
+            .filter(|line| !line.trim().is_empty() && !line.starts_with("- [watch-scope] "))
+            .peekable();
+        if lines.peek().is_none() {
             continue;
         }
         if !text.is_empty() {
             text.push('\n');
         }
         text.push_str(heading);
-        for line in source.lines().rev() {
+        for line in lines {
             let remaining = end.saturating_sub(text.len() + 1);
             if remaining == 0 {
                 break;

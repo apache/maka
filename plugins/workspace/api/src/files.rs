@@ -33,6 +33,11 @@ pub enum FileResult {
     Completed {
         value: Value,
     },
+    /// A confirmed file mutation observed changed inputs before applying any operation.
+    Stale {
+        #[serde(rename = "changedPaths")]
+        changed_paths: Vec<String>,
+    },
     /// A known completed failure. Uncertain external effects use the original receipt.
     Failed {
         message: String,

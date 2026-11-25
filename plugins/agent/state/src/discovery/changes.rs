@@ -22,7 +22,7 @@ use super::*;
 use std::{collections::BTreeMap, path::Path};
 
 const BURST_THRESHOLD: usize = 5;
-const READY_CHANGE: &str = "d.owner=?1 AND d.delta_kind IS NOT NULL AND d.probe_at IS NULL AND d.cooldown_until<=?2
+const READY_CHANGE: &str = "d.owner=?1 AND d.delta_kind IS NOT NULL AND d.delta_at<=?2 AND d.probe_at IS NULL AND d.cooldown_until<=?2
     AND (d.delta_kind!='directory' OR NOT EXISTS(SELECT 1 FROM discovery_source_cursors AS f INDEXED BY discovery_cursor_pending_children
         WHERE f.owner=d.owner AND f.parent_uri=d.source_uri AND f.probe_at IS NOT NULL AND f.updated_at<=d.cooldown_until))";
 
@@ -86,11 +86,21 @@ pub struct Delta {
 pub struct ChangeSnapshot {
     pub deltas: Vec<Delta>,
     pub cooling: Vec<(String, UnixMillis)>,
+    pub omitted_deltas: usize,
+}
+
+pub enum ChangeQuery {
+    FirstReady,
+    /// Retain at most this many rows per section and count the omitted eligible deltas.
+    Opening {
+        limit: usize,
+    },
 }
 
 pub enum OpeningSources {
     FollowUp(Vec<Delta>),
     Wander(Vec<String>),
+    Onboard,
 }
 
 pub struct IndexedDossier {
@@ -187,7 +197,8 @@ impl DiscoveryStore {
     pub async fn next_change_deadline(&self, at: UnixMillis) -> Result<Option<i64>, StoreError> {
         self.read(move |c,owner| Ok(c.query_row(
             "SELECT min(t) FROM (SELECT min(probe_at) t FROM discovery_source_cursors WHERE owner=?1 AND probe_at IS NOT NULL
-             UNION ALL SELECT min(cooldown_until) FROM discovery_source_cursors INDEXED BY discovery_cursor_cooldowns WHERE owner=?1 AND cooldown_until>0 AND cooldown_until>?2 AND delta_kind='directory')",
+             UNION ALL SELECT min(cooldown_until) FROM discovery_source_cursors INDEXED BY discovery_cursor_cooldowns WHERE owner=?1 AND cooldown_until>0 AND cooldown_until>?2 AND delta_kind='directory'
+             UNION ALL SELECT min(delta_at) FROM discovery_source_cursors WHERE owner=?1 AND delta_kind IS NOT NULL AND delta_at>?2)",
             params![owner,at.0], |r| r.get(0))?)).await
     }
 
@@ -205,27 +216,36 @@ impl DiscoveryStore {
     pub async fn change_snapshot(
         &self,
         at: UnixMillis,
-        limit: usize,
-        allowed: impl Fn(&Path) -> bool + Send + 'static,
+        query: ChangeQuery,
+        mut allowed: impl FnMut(&Path, DeltaKind) -> bool + Send + 'static,
     ) -> Result<ChangeSnapshot, StoreError> {
-        self.read(move |c,owner| {
+        self.read(move |c, owner| {
             let mut snapshot = ChangeSnapshot::default();
             let mut stmt = c.prepare_cached(&format!(
                 "SELECT source_uri,delta_kind,delta_at FROM discovery_source_cursors AS d INDEXED BY discovery_cursor_deltas
                  WHERE {READY_CHANGE} ORDER BY delta_at DESC,source_uri"))?;
-            let mut rows = stmt.query(params![owner,at.0])?;
-            while snapshot.deltas.len() < limit && let Some(r) = rows.next()? {
-                let path: String = r.get(0)?;
-                if allowed(Path::new(&path)) {
-                    snapshot.deltas.push(Delta{path,kind:vocabulary(r,1)?,at:UnixMillis(r.get(2)?)});
+            let mut rows = stmt.query(params![owner, at.0])?;
+            while let Some(r) = rows.next()? {
+                let path = r.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
+                let kind = vocabulary(r, 1)?;
+                if allowed(Path::new(path), kind) {
+                    if matches!(query, ChangeQuery::Opening { limit } if snapshot.deltas.len() >= limit) {
+                        snapshot.omitted_deltas += 1;
+                        continue;
+                    }
+                    snapshot.deltas.push(Delta { path: path.to_owned(), kind, at: UnixMillis(r.get(2)?) });
+                    if matches!(query, ChangeQuery::FirstReady) { return Ok(snapshot); }
                 }
             }
+            let ChangeQuery::Opening { limit } = query else { return Ok(snapshot); };
             let mut stmt = c.prepare_cached("SELECT source_uri,cooldown_until FROM discovery_source_cursors INDEXED BY discovery_cursor_cooldowns
                 WHERE owner=?1 AND cooldown_until>0 AND cooldown_until>?2 ORDER BY cooldown_until DESC")?;
-            let mut rows = stmt.query(params![owner,at.0])?;
+            let mut rows = stmt.query(params![owner, at.0])?;
             while snapshot.cooling.len() < limit && let Some(r) = rows.next()? {
-                let path: String = r.get(0)?;
-                if allowed(Path::new(&path)) { snapshot.cooling.push((path, UnixMillis(r.get(1)?))); }
+                let path = r.get_ref(0)?.as_str().map_err(rusqlite::Error::from)?;
+                if allowed(Path::new(path), DeltaKind::Directory) {
+                    snapshot.cooling.push((path.to_owned(), UnixMillis(r.get(1)?)));
+                }
             }
             Ok(snapshot)
         }).await
@@ -234,9 +254,9 @@ impl DiscoveryStore {
     /// A new write between snapshot and job creation must survive acknowledgement.
     pub fn acknowledge_changes(
         &self,
-        shown: Vec<Delta>,
+        deltas: Vec<Delta>,
     ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
-        self.record_opening(OpeningSources::FollowUp(shown), false, UnixMillis(0))
+        self.record_opening(OpeningSources::FollowUp(deltas), false, UnixMillis(0))
     }
 
     pub async fn broad_cycle(&self) -> Result<u8, StoreError> {
@@ -256,12 +276,12 @@ impl DiscoveryStore {
         &self,
         at: UnixMillis,
         limit: usize,
-        allowed: impl Fn(&Path) -> bool + Send + 'static,
+        mut allowed: impl FnMut(&Path) -> bool + Send + 'static,
     ) -> Result<Vec<String>, StoreError> {
         self.read(move |c, owner| {
             let mut stmt = c.prepare_cached(
                 "SELECT source_uri FROM discovery_source_cursors
-                WHERE owner=?1 AND probe_at IS NULL AND cooldown_until<=?2 ORDER BY last_explored_at,source_uri",
+                WHERE owner=?1 AND probe_at IS NULL AND cooldown_until<=?2 ORDER BY last_explored_at,last_mtime_ms DESC,source_uri",
             )?;
             let mut rows = stmt.query(params![owner, at.0])?;
             let mut cold = Vec::new();
@@ -274,6 +294,47 @@ impl DiscoveryStore {
                 }
             }
             Ok(cold)
+        })
+        .await
+    }
+
+    /// Delete stale cursors (and any pending deltas on them) matching `should_remove`,
+    /// e.g. newly excluded roots or deleted directories/worktrees.
+    pub async fn prune_cursors_matching(
+        &self,
+        mut should_remove: impl FnMut(&Path) -> bool + Send + 'static,
+    ) -> Result<usize, StoreError> {
+        self.data
+            .write(self.mutation(false, move |c, owner| {
+                let mut select = c.prepare_cached(
+                    "SELECT source_uri FROM discovery_source_cursors WHERE owner=?1",
+                )?;
+                let candidates: Vec<String> = select
+                    .query_map([owner], |r| r.get(0))?
+                    .collect::<Result<_, _>>()?;
+                let mut delete = c.prepare_cached(
+                    "DELETE FROM discovery_source_cursors WHERE owner=?1 AND source_uri=?2",
+                )?;
+                let mut removed = 0usize;
+                for path in candidates {
+                    if should_remove(Path::new(&path)) {
+                        removed += delete.execute(params![owner, path])?;
+                    }
+                }
+                Ok(removed)
+            }))
+            .await
+    }
+
+    pub async fn oldest_active_dossier_check_at(&self) -> Result<Option<UnixMillis>, StoreError> {
+        self.read(|c, owner| {
+            Ok(c.query_row(
+                "SELECT min(last_checked_at) FROM discovery_dossiers
+                 WHERE owner=?1 AND signal IN ('red','yellow','green')",
+                [owner],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(UnixMillis))
         })
         .await
     }
@@ -311,12 +372,12 @@ impl DiscoveryStore {
                     params![owner, at.0])?;
             }
             match sources {
-                OpeningSources::FollowUp(shown) => {
+                OpeningSources::FollowUp(deltas) => {
                     let mut stmt = c.prepare_cached(
                         "UPDATE discovery_source_cursors SET delta_kind=NULL,delta_at=NULL
                         WHERE owner=?1 AND source_uri=?2 AND delta_at=?3 AND delta_kind=?4",
                     )?;
-                    for delta in shown {
+                    for delta in deltas {
                         stmt.execute(params![owner, delta.path, delta.at.0, delta.kind.as_str()])?;
                     }
                 }
@@ -326,7 +387,7 @@ impl DiscoveryStore {
                         WHERE owner=?1 AND source_uri=?2")?;
                     for path in paths { stmt.execute(params![owner, path, at.0])?; }
                 }
-                OpeningSources::Wander(_) => (),
+                OpeningSources::Wander(_) | OpeningSources::Onboard => (),
             }
             Ok(())
         })

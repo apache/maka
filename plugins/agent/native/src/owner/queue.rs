@@ -48,6 +48,7 @@ impl Owner {
         if self.store.checkpoint_execution().is_none() {
             self.start_goals();
             self.start_schedules();
+            self.start_watch_runner();
             self.start_change_tracker();
             self.start_bot_wake();
             self.start_completion_notifications();
@@ -406,8 +407,14 @@ impl Owner {
             && matches!(queued.spec.trigger, Trigger::Message { .. })
             && let Some(seed) = current.configuration.dossier_seed
         {
-            self.seed_dossier_input(session, &mut queued, seed, &mut replacements)
-                .await?;
+            self.seed_dossier_input(
+                session,
+                &mut queued,
+                seed,
+                current.configuration.dossier_elevated,
+                &mut replacements,
+            )
+            .await?;
         }
         let (lease, effects) = scope.accept(self.stop.child_token());
         let committed: Result<Option<RunId>, String> = async {

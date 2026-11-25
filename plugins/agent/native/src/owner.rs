@@ -127,10 +127,39 @@ pub(crate) fn resolve_session(
         .map_err(|_| "agent_workspace_binding_unavailable".into())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DossierThreadMode {
+    None,
+    /// Initial read-only dossier consultation / staging mode.
+    Restricted,
+    /// User-confirmed execution mode on the same thread session (full normal session permissions).
+    Elevated,
+}
+
+impl DossierThreadMode {
+    pub(super) fn from_config(config: &ResolvedConfiguration) -> Self {
+        if config.dossier_seed.is_none() {
+            Self::None
+        } else if config.dossier_elevated {
+            Self::Elevated
+        } else {
+            Self::Restricted
+        }
+    }
+
+    pub(super) fn is_dossier(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub(super) fn is_restricted(self) -> bool {
+        matches!(self, Self::Restricted)
+    }
+}
+
 /// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
 #[derive(Clone)]
 struct CapturedRun {
-    dossier_thread: bool,
+    dossier_thread: DossierThreadMode,
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     mcp_revision: Option<String>,
     client_mcp: Option<crate::mcp::ClientGeneration>,
@@ -261,6 +290,8 @@ pub(crate) struct Owner {
     pub(super) durable: maka_agent_state::Store,
     pub(crate) discovery: maka_agent_state::discovery::DiscoveryStore,
     pub(super) services: maka_host_runtime::application::NativeServices,
+    watch_runner: discovery::watches::WatchRunner,
+    watch_scopes: discovery::watch_scope::WatchScopes,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
     pub recall: Arc<recall::Recall>,
@@ -480,14 +511,20 @@ impl Owner {
         let import_specs = settings.import_roots.clone();
         let managed = managed_worktrees.clone();
         let root_path = root.canonical_path().to_owned();
-        let (workspace_roots, import_roots) = tokio::task::spawn_blocking(move || {
-            Ok::<_, String>((
-                workspace::open_projects(workspace_specs, &managed)?,
-                workspace::open(import_specs, &root_path)?,
-            ))
-        })
-        .await
-        .map_err(|_| "agent_workspace_configuration_worker_failed")??;
+        let owned_root = root.clone();
+        let (workspace_roots, import_roots, watch_scopes) =
+            tokio::task::spawn_blocking(move || {
+                let roots = workspace::open_projects(workspace_specs, &managed)?;
+                let watch_scopes = discovery::watch_scope::WatchScopes::open(&roots, &owned_root)
+                    .map_err(|e| e.to_string())?;
+                Ok::<_, String>((
+                    roots,
+                    workspace::open(import_specs, &root_path)?,
+                    watch_scopes,
+                ))
+            })
+            .await
+            .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
         let stop = persistence
@@ -559,6 +596,7 @@ impl Owner {
             persistence.store().clone(),
             prefix.clone(),
         ));
+        watch_scopes.restore(&scheduler).await?;
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
@@ -566,7 +604,12 @@ impl Owner {
             settings.scheduled_tasks
                 || matches!(
                     tool.definition.name.as_str(),
-                    discovery::STAGE | discovery::PREFERENCES
+                    discovery::STAGE
+                        | discovery::REGISTER
+                        | discovery::PENDING
+                        | discovery::WATCH_SCOPE
+                        | discovery::WORKSPACE_MAP
+                        | discovery::PREFERENCES
                 )
         }));
         let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
@@ -723,6 +766,8 @@ impl Owner {
             model_reader_process,
             durable,
             services: context.services().clone(),
+            watch_runner: Default::default(),
+            watch_scopes,
             wake_notify: tokio::sync::Notify::new(),
             physical_changes: tokio::sync::watch::channel(()).0,
             prefix,
@@ -1412,14 +1457,16 @@ impl Owner {
     fn select_catalog_tools(
         &self,
         catalog: &crate::tools::Declarations,
-        session: Option<(&str, bool)>,
+        session: Option<(&str, DossierThreadMode)>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
         let bot = session.is_some_and(|(id, _)| self.bot.is(id));
         let investigation =
             session.is_some_and(|(id, _)| self.scheduler.investigation_profile(id).is_some());
-        let dossier_thread = session.is_some_and(|(_, dossier)| dossier);
+        let dossier_mode = session.map_or(DossierThreadMode::None, |(_, mode)| mode);
+        let dossier_thread = dossier_mode.is_dossier();
+        let dossier_restricted = dossier_mode.is_restricted();
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
@@ -1428,7 +1475,22 @@ impl Owner {
                 let memory = *name == discovery::MEMORY;
                 (discovery::WORKER_TOOLS.contains(name)
                     && !investigation
-                    && !(*name == discovery::STAGE && dossier_thread))
+                    && !(*name == discovery::WATCH_SCOPE && (bot || dossier_thread))
+                    && !(*name == discovery::WORKSPACE_MAP && bot)
+                    && !(matches!(
+                        *name,
+                        discovery::STAGE | discovery::REGISTER | discovery::PENDING
+                    ) && dossier_thread))
+                    || (dossier_restricted
+                        && !matches!(
+                            *name,
+                            discovery::STAGE
+                                | discovery::REGISTER
+                                | discovery::PENDING
+                                | discovery::WATCH_SCOPE
+                                | discovery::PREFERENCES
+                        )
+                        && !self.permits_discovery_tool(name))
                     || (*name == discovery::PREFERENCES && !(bot || dossier_thread))
                     || (matches!(*name, discovery::LIST | discovery::READ)
                         && !(bot || investigation))
