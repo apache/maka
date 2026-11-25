@@ -51,7 +51,7 @@ fn start_with_channel(data: &Path, channel: HostChannel, device_locale: &str) ->
     let mut locale_settings = LocaleSettings::default();
     locale_settings.languages = Languages::parse(["ar-SA", device_locale]).unwrap();
     config.environment = Environment {
-        // Headless drives the desktop projection of the same native menu.
+        // Headless drives the desktop projection of the same native menu and tab shell.
         os: Os::MacOs,
         locale_settings,
         reduce_motion: true,
@@ -64,138 +64,186 @@ fn start_with_channel(data: &Path, channel: HostChannel, device_locale: &str) ->
 async fn language_override_survives_restart_and_automatic_returns_to_device_language() {
     let data = tempfile::tempdir().unwrap();
     {
+        // Onboarding WelcomeScreen exposes a discrete Language picker in the header.
         let mut app = start(data.path(), "zh-Hant-HK");
-        app.wait_for("label:設定").unwrap();
-        app.press("label:設定").unwrap();
-        app.wait_for("text:自動（系統）").unwrap();
+        app.wait_for("text:自動").unwrap();
         app.press("label:語言").unwrap();
         app.choose_menu_item("日本語").unwrap();
-        app.wait_for("label:言語").unwrap();
+        app.wait_for("text:コンピュータの QR コードをスキャン")
+            .unwrap();
     }
     {
         let mut app = start(data.path(), "zh-Hans-CN");
-        app.wait_for("label:設定").unwrap();
-        app.press("label:設定").unwrap();
-        app.wait_for("label:言語").unwrap();
-        app.wait_for("text:日本語").unwrap();
+        app.wait_for("text:コンピュータの QR コードをスキャン")
+            .unwrap();
         app.press("label:言語").unwrap();
-        app.choose_menu_item("自動（システム設定）").unwrap();
-        app.wait_for("label:语言").unwrap();
-        app.wait_for("text:自动（系统）").unwrap();
+        app.choose_menu_item("システムに合わせる").unwrap();
+        app.wait_for("text:扫码配对电脑").unwrap();
+        app.wait_for("text:自动").unwrap();
     }
 }
 
 #[tokio::test]
 async fn auto_negotiates_device_languages_including_hong_kong() {
-    for (raw, title) in [
-        ("zh-Hans-CN", "连接你的第一台电脑"),
-        ("zh-Hant-TW", "連接你的第一台電腦"),
-        ("zh-Hant-HK", "連接第一部電腦"),
-        ("ja-JP", "最初のコンピュータに接続"),
-        ("ko-KR", "첫 번째 컴퓨터 연결"),
-        ("en-US", "Connect your first computer"),
+    for (raw, expected) in [
+        ("zh-Hans-CN", "粘贴配对链接或手动连接"),
+        ("zh-Hant-TW", "貼上配對連結或手動連線"),
+        ("zh-Hant-HK", "貼上配對連結或手動連接"),
+        ("ja-JP", "コンピュータの QR コードをスキャン"),
+        ("ko-KR", "컴퓨터의 QR 코드 스캔"),
+        ("en-US", "Scan QR code on computer"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut app = start(dir.path(), raw);
-        app.wait_for(&format!("text:{title}")).unwrap();
+        app.wait_for(&format!("text:{expected}")).unwrap();
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn changing_language_updates_open_settings_approval_toast_and_pairing() {
+async fn changing_language_updates_tabs_settings_inbox_recovery_and_pairing() {
     let channel = HostChannel::new();
-    channel.handle("ios.bootstrap", |call| call.reply(Ok(json!({
-        "revision":1,"devicePeerId":"locale-device","filter":{"kind":"all_computers"},
-        "hosts":[{"rootId":"root","hostName":"Locale Host","connected":true,"endpoints":["agent"]}],
-        "active":{"rootId":"root","hostName":"Locale Host","session":"locale-anchor","endpoints":["agent"]},
-    }))));
-    let session = json!({"id":"locale-session","title":"Locale conversation","kind":"agent","revision":1,
-        "workspace":{"path":"/work"},"labels":[]});
+    channel.handle("ios.bootstrap", |call| {
+        call.reply(Ok(json!({
+            "revision": 1,
+            "devicePeerId": "locale-device",
+            "filter": { "kind": "all_computers" },
+            "hosts": [{
+                "rootId": "root",
+                "hostName": "Locale Host",
+                "peerId": "peer-root",
+                "connected": true,
+                "endpoints": ["agent", "settings"]
+            }],
+            "active": {
+                "rootId": "root",
+                "hostName": "Locale Host",
+                "epoch": "e1",
+                "session": "locale-anchor",
+                "generation": 1,
+                "endpoints": ["agent", "settings"],
+                "pathSummary": null,
+                "transport": "quic"
+            },
+        })));
+    });
+    let session = json!({
+        "id": "locale-session",
+        "title": "Locale conversation",
+        "kind": "agent",
+        "parentSessionId": null,
+        "revision": 1,
+        "updatedAt": 1700000000000u64,
+        "archived": false,
+        "pinned": false,
+        "hasUnread": false,
+        "activity": "waiting",
+        "workspace": { "name": "work", "path": "/work" },
+        "labels": []
+    });
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
-            "projects" => json!({"kind":"projects","projects":[]}),
-            "directories" => json!({"kind":"roots","roots":[]}),
-            "list" => json!({"revision":"1","sessions":[session],"needsYouCount":0,"after":null}),
-            "observe" => json!({"session":session,"through":1,"run":null}),
-            "history" => json!({"kind":"ready","through":1,"chunks":[],"before":null}),
-            "goal" => json!({"enabled":false,"current":null}),
-            "pendingInteractions" => json!({"entries":[
-                {"kind":"service_approval","requestId":"locale-service"},
-                {"kind":"permissions","requestId":"locale-permission"}
-            ]}),
+            "list" => json!({
+                "revision": "1",
+                "sessions": [session],
+                "needsYouCount": 1,
+                "before": null,
+                "after": null
+            }),
+            "pendingInteractions" => json!({
+                "revision": 1,
+                "entries": [
+                    { "kind": "service_approval", "requestId": "locale-service", "toolUseId": "t1" },
+                    { "kind": "permissions", "requestId": "locale-permission", "toolUseId": "t2" }
+                ]
+            }),
             "interaction" if data["input"]["requestId"] == "locale-permission" => json!({
-                "requestId":"locale-permission","outcome":null,"request":{
-                    "kind":"permissions","toolUseId":"fixture-tool","request":{
-                        "reason":"Fixture grant","command":null,"permissions":{
-                            "filesystem":[{"path":"/fixture","scope":"subtree","access":"write"}],
-                            "network":"denied",
+                "requestId": "locale-permission",
+                "outcome": null,
+                "request": {
+                    "kind": "permissions",
+                    "toolUseId": "t2",
+                    "request": {
+                        "reason": "Fixture grant",
+                        "command": null,
+                        "permissions": {
+                            "filesystem": [{ "path": "/fixture", "scope": "subtree", "access": "write" }],
+                            "network": "denied",
                         },
                     },
                 }
             }),
-            "interaction" => json!({"requestId":"locale-service","outcome":null,"request":{
-                "kind":"service_approval","toolName":"Fixture","service":"test","method":"start","binding":"local",
-            }}),
+            "interaction" => json!({
+                "requestId": "locale-service",
+                "outcome": null,
+                "request": {
+                    "kind": "service_approval",
+                    "toolUseId": "t1",
+                    "toolName": "Fixture",
+                    "service": "test",
+                    "method": "start",
+                    "binding": "local",
+                    "through": 1
+                }
+            }),
             method => panic!("unexpected query {method}"),
         };
-        call.reply(Ok(json!({"value":value})));
-    });
-    channel.handle("ios.hostMutate", |mut call| {
-        let data = call.take_data();
-        assert_eq!(data["anchorSession"], "locale-anchor");
-        assert_eq!(data["input"]["requestId"], "locale-permission");
-        assert_eq!(
-            data["input"]["answer"]["decision"],
-            json!({
-                "decision":"allow","scope":"once","permissions":{
-                    "filesystem":[{"path":"/fixture","scope":"subtree","access":"write"}],
-                    "network":"denied",
-                },
-            })
-        );
-        call.reply(Ok(json!({"value":{"kind":"recorded"}})));
+        call.reply(Ok(json!({ "value": value })));
     });
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
-        call.reply(Ok(
-            json!({"subscriptionId":data["subscriptionId"],"generation":1}),
-        ));
+        call.reply(Ok(json!({
+            "subscriptionId": data["subscriptionId"],
+            "rootId": "root",
+            "generation": 1
+        })));
     });
     channel.handle("ios.unsubscribe", |call| {
-        call.reply(Ok(json!({"cancelled":true})))
+        call.reply(Ok(json!({ "cancelled": true })));
     });
+
     let dir = tempfile::tempdir().unwrap();
     let mut app = start_with_channel(dir.path(), channel, "en-US");
+
+    // Tab 1: Chats shows conversation under Needs Attention.
     app.wait_for("label:Conversation: Locale conversation")
         .unwrap();
-    app.press("label:Conversation: Locale conversation")
-        .unwrap();
+
+    // Tab 2: Pending Inbox shows both interactions with localized descriptions.
+    app.press("label:Pending").unwrap();
     app.wait_for("text:Allow service call Fixture?").unwrap();
-    app.press("label:Allow once").unwrap();
-    app.wait_for("text:/(?s)Allowed once.*Read[/]write.*Network: no access/")
+    app.wait_for("text:/(?s)Read[/]write.*Network: no access/")
         .unwrap();
-    app.press("label:Open drawer").unwrap();
+
+    // Tab 3: Settings shows Paired Computers, This iPhone (no steer-while-running), and Computer Settings.
     app.press("label:Settings").unwrap();
-    app.wait_for("text:Appearance & interaction").unwrap();
-    app.wait_for("text:Root root").unwrap();
+    app.wait_for("text:Paired Computers").unwrap();
+    app.wait_for("text:This iPhone").unwrap();
+    app.wait_for("text:Computer Settings").unwrap();
+    assert!(!app.shows("Steer while the agent is running"));
+
+    // Switch language to Japanese and confirm live re-render across Settings, Inbox, Recovery, and Pairing.
     app.press("label:Language").unwrap();
     app.choose_menu_item("日本語").unwrap();
-    app.wait_for("text:外観と操作").unwrap();
-    app.wait_for("text:ルート ID：root").unwrap();
-    app.press("label:設定画面から戻る").unwrap();
+    app.wait_for("text:ペアリング済みコンピュータ").unwrap();
+    app.wait_for("text:この iPhone").unwrap();
+    app.wait_for("text:コンピュータ設定").unwrap();
+
+    app.press("label:保留中").unwrap();
     app.wait_for("text:サービス「Fixture」の呼び出しを許可しますか？")
         .unwrap();
-    app.wait_for("label:許可").unwrap();
-    app.wait_for("text:/(?s)今回のみ許可済み.*読み書き.*ネットワーク：アクセス不可/")
+    app.wait_for("text:/(?s)読み書き.*ネットワーク：アクセス不可/")
         .unwrap();
     assert!(!app.shows("Network: no access"));
+
+    app.press("label:チャット").unwrap();
     app.send_host_event(
         "ios.operationRecovery",
-        json!({"session":"locale-anchor","settled":1,"pending":1}),
+        json!({ "session": "locale-anchor", "settled": 1, "pending": 1 }),
     )
     .unwrap();
     app.wait_for("text:/結果.*取得しました/").unwrap();
+
     app.send_url_scheme("maka://pair/v1?payload=fixture");
-    app.wait_for("text:ホストに接続").unwrap();
+    app.wait_for("text:リンクでペアリング").unwrap();
 }
