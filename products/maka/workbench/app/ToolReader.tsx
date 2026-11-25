@@ -433,6 +433,11 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
                 <If when={file().operation === 'delete'}>
                   <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Delete file')}</Text>
                 </If>
+                <If when={file().operation === 'create' && file().hunks.length === 0}>
+                  <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                    {tr('Empty file.')}
+                  </Text>
+                </If>
                 <Each of={file().hunks} key="index">
                   {(hunk) => (
                     <View style={{ gap: 4 }}>

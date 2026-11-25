@@ -74,7 +74,7 @@ export function installation(
     'files',
     'applyPatch',
     'ApplyPatch',
-    'Apply a structured patch (create, update, or delete) in the selected workspace. Parent directories must exist when creating files; paths cannot contain ".." or cross symlinks.',
+    'Apply a patch to create, update, or delete one or more files in the selected workspace. Pass `patch` wrapped in `*** Begin Patch` and `*** End Patch`, using sections `*** Add File: <path>` (every line prefixed with `+`), `*** Update File: <path>` (contextual `@@` hunks with ` `, `-`, `+` line prefixes; optional `*** End of File`), and `*** Delete File: <path>`. Parent directories must exist when adding files; paths cannot contain ".." or cross symlinks; moves are unsupported.',
   );
   add('processes', 'execute', 'Shell', 'Run a command under the selected workspace permissions.');
   add(

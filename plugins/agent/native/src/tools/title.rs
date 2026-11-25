@@ -43,13 +43,23 @@ impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
         let target = match self {
-            Self::Read | Self::Write | Self::Edit | Self::List => &input["path"],
-            Self::Patch => &input["operation"]["path"],
-            Self::Glob => &input["pattern"],
-            Self::Fetch => &input["url"],
-            Self::CreateSession | Self::ForkSession => &input["title"],
-            Self::SendSession => &input["message"],
-            Self::Search => &input["query"],
+            Self::Read | Self::Write | Self::Edit | Self::List => input["path"].as_str(),
+            Self::Patch => {
+                let mut paths = maka_fs_tools::patch_paths(input["patch"].as_str()?)
+                    .ok()?
+                    .into_iter();
+                let first = paths.next()?;
+                let target = match paths.len() {
+                    0 => first,
+                    extra => format!("{first} (+{extra})"),
+                };
+                return self.render_target(&target, false);
+            }
+            Self::Glob => input["pattern"].as_str(),
+            Self::Fetch => input["url"].as_str(),
+            Self::CreateSession | Self::ForkSession => input["title"].as_str(),
+            Self::SendSession => input["message"].as_str(),
+            Self::Search => input["query"].as_str(),
         };
         let continuation = match self {
             Self::Read => ReadInput::deserialize(input)
@@ -61,12 +71,11 @@ impl Kind {
         if matches!(self, Self::CreateSession)
             && input.get("forkFrom").is_some_and(Value::is_object)
         {
-            let title = target.as_str()?;
-            return Self::ForkSession.render_target(title, false);
+            return Self::ForkSession.render_target(target?, false);
         }
         let target = continuation
             .as_ref()
-            .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
+            .map_or(target, |read| Some(read.path()))?;
         if matches!(self, Self::SendSession) {
             let line = target.lines().find(|line| !line.trim().is_empty())?.trim();
             let mut chars = line.chars();
@@ -133,6 +142,32 @@ mod tests {
         assert_eq!(
             Kind::Read.render(&next).unwrap().fallback,
             "Read file · src/main.rs · continued"
+        );
+    }
+
+    #[test]
+    fn patch_title_covers_single_and_multi_file_envelopes() {
+        let single = json!({
+            "patch": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch"
+        });
+        assert_eq!(
+            Kind::Patch.render(&single).unwrap().fallback,
+            "Patch file · src/main.rs"
+        );
+
+        let multi = json!({
+            "patch": "*** Begin Patch\n*** Add File: a.rs\n+1\n*** Update File: b.rs\n@@\n-1\n+2\n*** Update File: a.rs\n@@\n-1\n+3\n*** Delete File: c.rs\n*** End Patch"
+        });
+        assert_eq!(
+            Kind::Patch.render(&multi).unwrap().fallback,
+            "Patch file · a.rs (+2)"
+        );
+
+        assert!(Kind::Patch.render(&json!({"patch": "invalid"})).is_none());
+        assert!(
+            Kind::Patch
+                .render(&json!({"patch": "*** Add File: src/a.rs\n+hi"}))
+                .is_none()
         );
     }
 }

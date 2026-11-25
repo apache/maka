@@ -18,55 +18,30 @@
  */
 
 use crate::{failed, mutation::Mutation, scoped::Authority, write::WriteCoordinator};
-use apply_patch::{PatchOperation, parse_create, parse_patch, parse_update};
+use apply_patch::{PatchOperation, parse_patch};
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 
 pub const PATCH_NAME: &str = "apply_patch";
-pub const PATCH_DESCRIPTION: &str = "Apply a create_file, update_file or delete_file operation within the Session's write roots. Updates use contextual patches and preserve existing inode and line endings. Create is exclusive; parent directories must exist. Symlinks, parent (..) components and moves are unsupported. callId is opaque provider metadata, not execution authority.";
+pub const PATCH_DESCRIPTION: &str = "Apply a patch to create, update, or delete one or more files within the Session's write roots. Pass `patch` wrapped in `*** Begin Patch` and `*** End Patch`, with sections `*** Add File: <path>` (prefix every line with `+`), `*** Update File: <path>` (contextual `@@` hunks using ` `, `-`, `+` line prefixes; optional `*** End of File`), and `*** Delete File: <path>`. Updates preserve existing inode and line endings. Adding is exclusive; parent directories must exist. Symlinks, parent (..) components and moves are unsupported.";
 
 pub fn patch_schema() -> Value {
-    schemars::schema_for!(NativeInput).into()
+    schemars::schema_for!(PatchInput).into()
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct NativeInput {
+#[serde(deny_unknown_fields)]
+struct PatchInput {
+    /// Patch text wrapped in `*** Begin Patch` ... `*** End Patch`.
     #[schemars(length(min = 1))]
-    call_id: String,
-    operation: NativeOperation,
+    patch: String,
 }
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum NativeOperation {
-    #[serde(rename = "create_file")]
-    Create {
-        #[schemars(length(min = 1))]
-        path: String,
-        diff: String,
-    },
-    #[serde(rename = "update_file")]
-    Update {
-        #[schemars(length(min = 1))]
-        path: String,
-        diff: String,
-    },
-    #[serde(rename = "delete_file")]
-    Delete {
-        #[schemars(length(min = 1))]
-        path: String,
-    },
-}
-enum BatchMode {
-    Native,
-    Envelope,
-}
+
 pub(crate) struct Batch {
     operations: Vec<PatchOperation>,
-    mode: BatchMode,
 }
 
 impl Batch {
@@ -74,44 +49,37 @@ impl Batch {
         self.operations.iter().map(operation_path)
     }
 
-    pub(crate) fn parse(input: Value) -> Result<Self, ToolError> {
-        let batch = if let Value::String(patch) = input {
-            Self {
-                operations: parse_patch(&patch).map_err(patch_error)?,
-                mode: BatchMode::Envelope,
-            }
-        } else {
-            let NativeInput { call_id, operation } =
-                serde_json::from_value(input).map_err(patch_error)?;
-            if call_id.is_empty() {
-                return Err(failed("apply_patch callId must be nonempty"));
-            }
-            let operation = match operation {
-                NativeOperation::Create { path, diff } => PatchOperation::Add {
-                    path: path.into(),
-                    content: parse_create(&diff).map_err(patch_error)?,
-                },
-                NativeOperation::Update { path, diff } => PatchOperation::Update {
-                    path: path.into(),
-                    chunks: parse_update(&diff).map_err(patch_error)?,
-                },
-                NativeOperation::Delete { path } => PatchOperation::Delete { path: path.into() },
-            };
-            Self {
-                operations: vec![operation],
-                mode: BatchMode::Native,
-            }
-        };
-        for operation in &batch.operations {
-            let path = operation_path(operation)
+    fn parse_envelope(patch: &str) -> Result<Self, ToolError> {
+        let operations = parse_patch(patch).map_err(patch_error)?;
+        for operation in &operations {
+            if operation_path(operation)
                 .to_str()
-                .ok_or_else(|| failed("patch requires a UTF-8 path"))?;
-            if path.is_empty() || path.contains('\0') || path.contains("://") {
+                .is_none_or(|path| path.contains("://"))
+            {
                 return Err(failed("patch requires filesystem paths"));
             }
         }
-        Ok(batch)
+        Ok(Self { operations })
     }
+
+    pub(crate) fn parse(input: Value) -> Result<Self, ToolError> {
+        let PatchInput { patch } = serde_json::from_value(input).map_err(patch_error)?;
+        Self::parse_envelope(&patch)
+    }
+}
+
+/// Parse a patch envelope with the authoritative parser and return distinct target paths in order.
+pub fn patch_paths(patch: &str) -> Result<Vec<String>, ToolError> {
+    let batch = Batch::parse_envelope(patch)?;
+    let mut paths = Vec::new();
+    for path in batch.paths() {
+        if let Some(path) = path.to_str()
+            && !paths.iter().any(|seen| seen == path)
+        {
+            paths.push(path.to_owned());
+        }
+    }
+    Ok(paths)
 }
 
 #[derive(Clone, Serialize)]
@@ -187,7 +155,9 @@ pub(crate) fn run(
         };
         match result {
             Ok(()) => applied.push(fact),
-            Err(ToolError::Failed(error)) if matches!(batch.mode, BatchMode::Envelope) => {
+            Err(ToolError::Failed(error) | ToolError::Io { message: error, .. })
+                if !applied.is_empty() =>
+            {
                 return serde_json::to_value(BatchResult::Failed {
                     applied,
                     boundary,
@@ -198,17 +168,12 @@ pub(crate) fn run(
             Err(error) => return Err(error),
         }
     }
-    match batch.mode {
-        BatchMode::Native => Ok(json!({"status":"completed"})),
-        BatchMode::Envelope => {
-            let output = format!(
-                "Applied {} file operation{}.",
-                applied.len(),
-                if applied.len() == 1 { "" } else { "s" }
-            );
-            serde_json::to_value(BatchResult::Completed { applied, output }).map_err(patch_error)
-        }
-    }
+    let output = format!(
+        "Applied {} file operation{}.",
+        applied.len(),
+        if applied.len() == 1 { "" } else { "s" }
+    );
+    serde_json::to_value(BatchResult::Completed { applied, output }).map_err(patch_error)
 }
 
 fn apply_one(
