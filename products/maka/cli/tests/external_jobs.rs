@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 #[path = "support/host.rs"]
 mod host;
@@ -1186,6 +1186,7 @@ async fn run_case(crash: bool) {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quitting_host_reaps_the_active_original_external_process() {
     let mut rig = Rig::new().await.expect("owned external job fixture");
@@ -1251,6 +1252,7 @@ async fn quitting_host_reaps_the_active_original_external_process() {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exact_stop_isolates_parallel_original_external_jobs() {
     run_case(false).await;
@@ -1343,6 +1345,7 @@ async fn antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close() {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sigkill_reopens_original_external_transcript_without_resubmission() {
     run_case(true).await;

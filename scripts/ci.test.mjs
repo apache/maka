@@ -227,7 +227,7 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS-only external_jobs run on native-macos without duplicating Linux recovery suites', () => {
+test('external_jobs run on macOS and the Linux ACP subset runs on linux-checks', () => {
   const plan = full();
   assert.equal(
     plan.workers.find((worker) => worker.id === 'native-macos-agent'),
@@ -238,6 +238,16 @@ test('macOS-only external_jobs run on native-macos without duplicating Linux rec
   assert.ok(!worker.suites.includes('macos-nsh'));
   assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
   assert.equal(plan.suites['macos-agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
+  const linux = plan.workers.find(({ id }) => id === 'linux-checks');
+  assert.ok(linux.suites.includes('linux-agent-execution'));
+  assert.match(
+    plan.suites['linux-agent-execution'].filter,
+    /test\(=antigravity_can_continue_after_host_restarts_during_a_prompt\)/,
+  );
+  assert.match(
+    plan.suites['linux-agent-execution'].filter,
+    /test\(=antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close\)/,
+  );
 });
 
 test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
@@ -821,6 +831,7 @@ test('Linux consolidates root verification workers and reuses the root compiler 
     'native-build',
     'native',
     'linux-desktop',
+    'linux-agent-execution',
     'bridge',
   ]);
   assert.equal(worker.dependencies, 'headless');

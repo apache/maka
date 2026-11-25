@@ -797,8 +797,11 @@ impl TaskOwner {
     }
 
     /// Retain original HOME custody before consuming this owner in spawn.
-    pub fn home_capture(&self) -> Option<&HomeCapture> {
-        self.home_capture.as_ref()
+    pub fn home_capture(&self) -> HomeCapture {
+        self.home_capture
+            .as_ref()
+            .expect("managed task has private HOME custody")
+            .clone()
     }
 
     /// Stream a broker-authorized immutable profile into this fresh HOME.

@@ -409,6 +409,20 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
+  'linux-agent-execution': {
+    workspace: 'root',
+    packages: ['maka-cli'],
+    cargoArgs: ['--locked', '-p', 'maka-cli', '--test', 'external_jobs'],
+    targetArgs: ['--test', 'external_jobs'],
+    filter:
+      'binary_id(=maka-cli::external_jobs) & (' +
+      [
+        'test(=antigravity_can_continue_after_host_restarts_during_a_prompt)',
+        'test(=antigravity_keeps_the_peer_alive_while_a_worker_fails_to_close)',
+      ].join(' | ') +
+      ')',
+    extraInputs: [...nonWorkbenchProductInputs, ...skillInputs, externalCodexFixture],
+  },
   'macos-agent-execution': {
     workspace: 'root',
     packages: ['maka-cli'],
@@ -470,7 +484,15 @@ export const suites = {
 export const workers = [
   {
     id: 'linux-checks',
-    suites: ['contracts', 'product', 'native-build', 'native', 'linux-desktop', 'bridge'],
+    suites: [
+      'contracts',
+      'product',
+      'native-build',
+      'native',
+      'linux-desktop',
+      'linux-agent-execution',
+      'bridge',
+    ],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',

@@ -97,10 +97,15 @@ let job = null,
   mcp = null,
   session = null,
   protocol = null;
+// The controller observes processes from outside the Linux PID namespace.
+const visiblePid =
+  process.platform === 'linux'
+    ? Number(/^NSpid:\s+(\d+)/m.exec(await readFile('/proc/self/status', 'utf8'))[1])
+    : process.pid;
 const record = (kind, fields = {}) =>
   new Promise((resolve, reject) =>
     socket.write(
-      JSON.stringify({ kind, job: job?.label ?? null, pid: process.pid, ...fields }) + '\n',
+      JSON.stringify({ kind, job: job?.label ?? null, pid: visiblePid, ...fields }) + '\n',
       (error) => (error ? reject(error) : resolve()),
     ),
   );
