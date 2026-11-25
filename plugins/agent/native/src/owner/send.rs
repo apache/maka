@@ -616,7 +616,7 @@ impl Owner {
         }
         // Check known fixed inputs for immediate feedback. The queue carries only
         // eligibility; the scheduler freezes the projection for the actual Run.
-        basis.check_pinned_model()?;
+        self.check_pinned_model(&id, &basis)?;
         basis.memory = None;
         basis.memory_admission = queued_eligibility;
         let (message, required_tools) = match self

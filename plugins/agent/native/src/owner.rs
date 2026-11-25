@@ -598,14 +598,29 @@ impl Owner {
             .chain(mcp_registrations.iter())
             .map(|tool| tool.definition.clone())
             .collect();
-        let prepared_tools = crate::tools::catalog(context.services(), &settings.tools, additional)
-            .and_then(|mut catalog| {
-                catalog.tools = catalog
-                    .tools
-                    .with_additional(mcp_registrations)
-                    .map_err(|_| "agent_tool_catalog_invalid".to_owned())?;
-                Ok(catalog)
-            });
+        let always_visible: Vec<_> = [bot::SEND_USER, bot::SLEEP]
+            .into_iter()
+            .chain(discovery::VISIBLE_TOOLS.iter().copied())
+            .chain(
+                goal::tools::NAMES
+                    .iter()
+                    .copied()
+                    .filter(|_| settings.goals),
+            )
+            .collect();
+        let prepared_tools = crate::tools::catalog(
+            context.services(),
+            &settings.tools,
+            additional,
+            &always_visible,
+        )
+        .and_then(|mut catalog| {
+            catalog.tools = catalog
+                .tools
+                .with_additional(mcp_registrations)
+                .map_err(|_| "agent_tool_catalog_invalid".to_owned())?;
+            Ok(catalog)
+        });
         let crate::tools::Catalog {
             tools,
             prepared: tool_catalog,

@@ -163,7 +163,7 @@ impl Owner {
         input: RunInput,
         parent: &Scope,
     ) -> Result<(RunSpec, Vec<ContentBlob>), String> {
-        basis.check_pinned_model()?;
+        self.check_pinned_model(&execution.session_id, basis)?;
         let trigger = match &input {
             RunInput::Continuation { claim, .. } => Trigger::Continuation {
                 source: claim.source.execution.run_id,

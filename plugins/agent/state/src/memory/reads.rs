@@ -150,7 +150,7 @@ impl Statement for RecordHistory {
             // The first read fences the next provider send, even after a freshly masked read.
             changed |= c.execute(
                 "INSERT OR IGNORE INTO agent_memory_session_reads VALUES(?,?,?)",
-                params![run, session, revision],
+                params![run, session, crate::recall::number(revision)?],
             )? != 0;
         }
         Ok(Prepared {
@@ -229,13 +229,14 @@ impl Query for Visibility {
         .query_row([self.0], |row| row.get(0))
         .optional()?
         .ok_or(StoreError::SessionNotFound)
+        .and_then(crate::recall::unsigned)
     }
 }
 pub struct SearchVisibility;
 impl Query for SearchVisibility {
     type Output = u64;
     fn execute(self, c: &Connection) -> Result<u64, StoreError> {
-        Ok(c.query_row(
+        crate::recall::unsigned(c.query_row(
             "SELECT revision FROM agent_memory_visibility WHERE id=1",
             [],
             |row| row.get(0),
@@ -330,16 +331,13 @@ pub struct ExternalConversation(pub String);
 impl Query for ExternalConversation {
     type Output = String;
     fn execute(self, c: &Connection) -> Result<String, StoreError> {
-        let epoch: Option<u64> = c
+        let epoch: Option<i64> = c
             .prepare_cached("SELECT revision FROM agent_memory_external_epochs WHERE session=?")?
             .query_row([&self.0], |row| row.get(0))
             .optional()?;
-        // Session IDs cannot contain a slash. Keep v53 journals addressable
-        // until a read in that specific remote context is revoked.
         Ok(match epoch {
             None => self.0,
-            Some(0) => format!("memory-v53/{}", self.0),
-            Some(revision) => format!("memory-v54/{revision}/{}", self.0),
+            Some(revision) => format!("memory/{}/{}", crate::recall::unsigned(revision)?, self.0),
         })
     }
 }
@@ -376,7 +374,7 @@ mod tests {
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, Option<u64>>(1)?,
+                    r.get::<_, Option<i64>>(1)?,
                     r.get::<_, Option<String>>(2)?,
                 ))
             })
@@ -468,7 +466,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(journal(), "memory-v53/remote");
+        assert_eq!(journal(), "memory/0/remote");
         assert!(CheckReads(last.run_id).execute(&db).unwrap().history);
         read(&middle, "first", Some(before)).unwrap();
         db.execute("UPDATE session_control SET archived=1 WHERE id='first'", [])
@@ -487,7 +485,7 @@ mod tests {
             Err(StoreError::InvalidTransition(_))
         ));
         let rotated = journal();
-        assert_ne!(rotated, "memory-v53/remote");
+        assert_ne!(rotated, "memory/0/remote");
         db.execute(
             "UPDATE session_control SET archived=1 WHERE id='middle'",
             [],

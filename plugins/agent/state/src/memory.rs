@@ -649,6 +649,16 @@ mod tests {
         assert!(projection.check_window(Some(8), 0).is_err());
         assert!(projection.check_window(Some(256), 250).is_err());
         assert!(projection.check_window(None, 0).is_err());
+        let system = maka_agent_facts::execution::SystemPrompt {
+            text: "x".repeat(768),
+            policy_revision: 1,
+            sources: vec![],
+        };
+        assert!(
+            projection
+                .check_admitted_window(Some(256), Some(&system), 0)
+                .is_err()
+        );
     }
 
     #[test]

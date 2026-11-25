@@ -3229,6 +3229,7 @@ mod tests {
         );
         assert_eq!(
             RestrictedArchives {
+                snapshot: None,
                 owner: spec_a.owner.clone(),
                 facts: vec![prep_a_id],
             }
@@ -3315,7 +3316,7 @@ mod tests {
             diag_b,
         );
         assert!(
-            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0)], &[])
+            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0, None)], &[])
                 .unwrap()
                 .contains_key(&0),
             "RunTerminated restriction must propagate to late Observed"
@@ -3352,13 +3353,14 @@ mod tests {
             diag_b,
         );
         assert!(
-            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0)], &[])
+            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0, None)], &[])
                 .unwrap()
                 .contains_key(&0),
             "Observed restriction must propagate to RunTerminated"
         );
         assert_eq!(
             RestrictedArchives {
+                snapshot: None,
                 owner: spec_b.owner.clone(),
                 facts: vec![prep_b_id],
             }

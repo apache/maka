@@ -1492,6 +1492,7 @@ fn fallback_model_level(step: StepId, request: &ContentRef) -> ModelLevel {
             source: request.clone(),
         },
         request: Some(RequestSpec {
+            memory_replay: maka_agent_facts::memory::MemoryReplay::Shared,
             schema_version: SCHEMA_VERSION,
             step,
             composition: RequestComposition {

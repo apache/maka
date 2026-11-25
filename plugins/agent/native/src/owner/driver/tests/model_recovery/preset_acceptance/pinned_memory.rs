@@ -634,11 +634,17 @@ async fn queued_and_promoted_messages_load_their_runs_projection() -> TestResult
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pinned_window_accounts_for_fixed_instructions_at_send() -> TestResult<()> {
+async fn pinned_window_accounts_for_tool_schemas_at_send() -> TestResult<()> {
     let mut rig = Rig::new()?;
     let provider = Provider::start().await?;
     let base = rig.directory.path().to_owned();
-    let boot = bootstrap_with(&base, provider.server.base_url(), |_| {}).await?;
+    let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
+        config["tools"] = json!([{
+            "name":"Read","description":"Read a workspace file.","input":"json","result":"image",
+            "confirmation":"preapproved","target":{"kind":"import","name":"files"},"method":"read"
+        }]);
+    })
+    .await?;
     attach(&mut rig, &boot).await?;
     let client = rig.client.as_ref().unwrap();
     let model = model_options(
@@ -648,8 +654,7 @@ async fn pinned_window_accounts_for_fixed_instructions_at_send() -> TestResult<(
         json!({"contextWindow":500}),
     )
     .await?;
-    let preset = preset(client, &model, &"x".repeat(900)).await?;
-    let selected = create(client, &base, &model, Some(&preset)).await?;
+    let selected = create(client, &base, &model, None).await?;
     let session = selected["id"].as_str().unwrap();
     enable_and_pin(client, session, &"a".repeat(850)).await?;
     let result = call(

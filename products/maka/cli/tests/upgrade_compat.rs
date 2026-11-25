@@ -730,6 +730,16 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     );
                 }
             }
+            if has_runs > 0 && versions.contains(&57) {
+                let invalid: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM agent_memory_external_epochs WHERE revision < 0",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(invalid, 0, "invalid external memory epoch on {rel}");
+            }
             if has_runs > 0 && versions.contains(&55) {
                 for view in [
                     "agent_memory_operation_field_source",
@@ -1630,7 +1640,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "settings",
             "updateAssistantPreferences",
             json!({
-                "expectedRevision": prefs["revision"],
+                "expectedRevision": prefs_after["revision"],
                 "mutation": {"kind": "memory", "value": {"enabled": true, "agentReadEnabled": true}}
             }),
             Attachments::new(),

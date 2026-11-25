@@ -254,7 +254,7 @@ impl Owner {
         mcp: &crate::mcp::Catalog,
         frozen: &crate::tools::SelectionSnapshot,
     ) -> Result<maka_tools::ToolCatalog, RunError> {
-        let mut live = self
+        let live = self
             .tool_catalog
             .for_run(
                 self.configuration.clone(),
@@ -262,13 +262,6 @@ impl Owner {
                 access.clone(),
             )
             .map_err(RunError::InvalidInput)?;
-        // Keep Goal tool visibility static across turns so starting or completing a Goal
-        // never mutates the tool catalog or exec.description prefix cache.
-        if self.settings.goals {
-            live = live
-                .with_always_visible(super::goal::tools::NAMES)
-                .map_err(|error| RunError::InvalidInput(error.to_string()))?;
-        }
         let live_tools = mcp
             .for_run(access.clone(), live)
             .map_err(RunError::InvalidInput)?;
@@ -390,14 +383,14 @@ impl Owner {
                 publication_store = state.clone();
                 preflight_stage = Some(AuthorityStage::InputCodec);
                 let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = failure.stage; failure.cause })?;
-                if let Err(error) = basis.check_pinned_model() {
-                    // The message has a durable Run now. An incompatible projection
-                    // is a terminal input rejection, so the next message can run.
-                    preflight_stage = None;
-                    return Err(RunError::InvalidInput(error));
-                }
                 preflight_stage = Some(AuthorityStage::ToolBindings);
                 let catalog = self.run_catalog(access.clone(), basis.mcp_catalog.as_ref().ok_or_else(|| RunError::InvalidInput("current MCP capability is unavailable".into()))?, &selection)?;
+                if let Some(memory) = &basis.memory {
+                    preflight_stage = None;
+                    let model = basis.model.as_ref().ok_or_else(|| RunError::InvalidInput("agent_memory_executor_unavailable".into()))?;
+                    let tokens = self.tool_catalog.fixed_schema_tokens(model, basis.tool_discovery, catalog.definitions());
+                    memory.check_admitted_window(model.input_limit, basis.behavior.as_ref(), tokens).map_err(RunError::InvalidInput)?;
+                }
                 preflight_stage = Some(AuthorityStage::BackendScope);
                 let cleanup = Evidence::default();
                 let workers = TaskTracker::new();

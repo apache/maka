@@ -340,12 +340,14 @@ impl LoadedMemory {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PinnedMemory {
     pub loaded: LoadedMemory,
     pub body: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MemoryProjection {
     pub policy_revision: u64,
     pub entries: Vec<PinnedMemory>,
@@ -356,6 +358,7 @@ impl MemoryProjection {
         &self,
         limit: Option<u64>,
         system: Option<&crate::execution::SystemPrompt>,
+        tool_tokens: u64,
     ) -> Result<(), String> {
         let fixed = system.map_or(0, |system| {
             crate::context::measure::estimate(&[crate::model::prompt::Message::System {
@@ -363,7 +366,7 @@ impl MemoryProjection {
                 provider_options: None,
             }])
         });
-        self.check_window(limit, fixed)
+        self.check_window(limit, fixed.saturating_add(tool_tokens))
     }
 
     pub fn check_window(&self, limit: Option<u64>, fixed_tokens: u64) -> Result<(), String> {

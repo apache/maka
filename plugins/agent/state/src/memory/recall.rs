@@ -897,7 +897,7 @@ mod tests {
             if reusable {
                 assert_eq!(key, session);
             } else {
-                assert_eq!(key, format!("memory-v53/{session}"));
+                assert_eq!(key, format!("memory/0/{session}"));
             }
         }
     }
@@ -990,7 +990,7 @@ mod tests {
                 .execute(&db)
                 .unwrap()
         };
-        assert_eq!(external_key("chat"), "memory-v53/chat");
+        assert_eq!(external_key("chat"), "memory/0/chat");
         assert_eq!(external_key("other"), "other");
         // A post-upgrade reader can observe a pre-index source before its assertion is retired.
         db.execute_batch(r#"INSERT INTO agent_memory_history_reads SELECT 'clean',revision FROM agent_memory_visibility;

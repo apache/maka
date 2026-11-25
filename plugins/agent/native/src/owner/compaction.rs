@@ -360,7 +360,15 @@ impl super::driver::NativeDriver {
                 .run_content(view.run, &view.spec.system_prompt)
                 .await?;
             memory
-                .check_admitted_window(source.accepted.input_limit, system.as_ref())
+                .check_admitted_window(
+                    source.accepted.input_limit,
+                    system.as_ref(),
+                    owner.tool_catalog.fixed_schema_tokens(
+                        &source.accepted,
+                        view.spec.tool_discovery,
+                        selection.definitions.iter(),
+                    ),
+                )
                 .map_err(RunError::InvalidInput)?;
         }
         let memory = memory.as_deref().map(ContentBlob::json).transpose()?;

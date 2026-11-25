@@ -149,7 +149,8 @@ impl RunAccess {
             .runtime_policy()
             .await
             .map_err(|e| source_authority_changed(e.to_string()))?;
-        loop {
+        const MAX_POLICY_CHECKS: usize = 3;
+        for _ in 0..MAX_POLICY_CHECKS {
             if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
                 return Err(RunError::FrozenMemoryDenied(
                     "admitted memory read permission revoked".into(),
@@ -216,6 +217,9 @@ impl RunAccess {
             }
             policy = current_policy;
         }
+        Err(RunError::FrozenMemoryDenied(
+            "memory policy changed repeatedly during authorization; retry in a new Run".into(),
+        ))
     }
 
     pub(in crate::owner) async fn validate_model_tools(

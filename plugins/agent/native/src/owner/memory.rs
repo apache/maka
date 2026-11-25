@@ -42,17 +42,25 @@ async fn project_scope(
     resolved.identity().map_err(|e| e.to_string())
 }
 
-impl CapturedRun {
-    pub(super) fn check_pinned_model(&self) -> Result<(), String> {
-        if let Some(memory) = &self.memory {
-            let model = self.model.as_ref().ok_or("agent_memory_executor_unavailable: executor lacks a per-provider-send revocation check")?;
-            memory.check_admitted_window(model.input_limit, self.behavior.as_ref())?;
+impl Owner {
+    pub(super) fn check_pinned_model(
+        &self,
+        session: &str,
+        basis: &CapturedRun,
+    ) -> Result<(), String> {
+        if let Some(memory) = &basis.memory {
+            let model = basis.model.as_ref().ok_or("agent_memory_executor_unavailable: executor lacks a per-provider-send revocation check")?;
+            let catalog = self.selected_tools(session, basis, model.editing_tools)?;
+            let tokens = self.tool_catalog.fixed_schema_tokens(
+                model,
+                basis.tool_discovery,
+                catalog.definitions(),
+            );
+            memory.check_admitted_window(model.input_limit, basis.behavior.as_ref(), tokens)?;
         }
         Ok(())
     }
-}
 
-impl Owner {
     pub(super) fn memory_admission(
         &self,
         session: &str,
