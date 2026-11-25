@@ -297,7 +297,12 @@ impl Owner {
                 .filter(|name| catalog.tools.contains(name))
                 .collect()
         });
-        let ceiling = policy.permissions;
+        // A user fork keeps the access the user already gave the parent; only an
+        // agent's fork is capped by the calling session.
+        let ceiling = match scope.identity.agent() {
+            None => parent.permissions.clone(),
+            Some(_) => policy.permissions,
+        };
         let access = match (parent.permissions.access, ceiling.access) {
             (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
                 WorkspaceAccess::ReadOnly
