@@ -118,6 +118,10 @@ export type WorkspaceBrowserProps = {
   /** The conversations open beside the selected one, marked like a selected row. */
   beside?(): readonly string[];
   openBeside?(sessionId: string): void;
+  /** Whether a side question can open as a card beside its parent. */
+  canOpenSideQuestion?(): boolean;
+  /** Opens a side question of the selected conversation as its card. */
+  openSideQuestion?(sessionId: string): void;
   /**
    * The keys of the collapsed workspace groups, kept by the owner, whose
    * next and previous conversation skip them.
@@ -377,6 +381,19 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const select = async ({ id, origin }: { id: string; origin: string | null }) => {
     if (!alive || props.selected() !== origin || props.switching()) return;
+    // A side question opens as a card beside its parent, so the user stays on the main line.
+    const branch = sessionsById().get(id)?.branch;
+    const parent = branch?.side && props.canOpenSideQuestion?.() ? branch.sessionId : null;
+    if (parent !== null) {
+      await props.selectSession(parent, origin);
+      if (!alive) return;
+      if (props.selected() === parent) {
+        props.openSideQuestion?.(id);
+        return;
+      }
+      // The parent cannot open (for example it was deleted): open the side question itself.
+      if (props.selected() !== origin) return;
+    }
     await props.selectSession(id, origin);
     // In Desktop docked mode the conversation stays visible and reports draft blocks directly.
     if (alive && id !== origin && props.selected() === origin && !props.docked()) {
@@ -1490,7 +1507,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   activityKnown() && current.activity === 'waiting'
                     ? sessionStatusCaption.waiting
                     : '',
-                  current.branch && !hasForkPrefix(current.title) ? tr('Fork') : '',
+                  current.branch?.side
+                    ? tr('Side question')
+                    : current.branch && !hasForkPrefix(current.title)
+                      ? tr('Fork')
+                      : '',
                   current.pinned || sortByTime() ? workspaceLabel(current.workspace) : '',
                 ]
                   .filter(Boolean)
@@ -1665,9 +1686,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                       ? `${sessionStatusCaption.waiting} · `
                                       : ''}
                                 {/* Forks renamed or titled before the prefix still read as forks. */}
-                                {session()?.branch && !hasForkPrefix(session()!.title)
-                                  ? `${tr('Fork')} · `
-                                  : ''}
+                                {session()?.branch?.side
+                                  ? `${tr('Side question')} · `
+                                  : session()?.branch && !hasForkPrefix(session()!.title)
+                                    ? `${tr('Fork')} · `
+                                    : ''}
                                 {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
                                   session()?.workspace.path}
                               </Text>

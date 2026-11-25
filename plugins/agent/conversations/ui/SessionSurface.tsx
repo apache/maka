@@ -2258,6 +2258,8 @@ export function createConversationUi(
     canOpenBeside: () => !!shell()?.openBeside,
     beside: () => shell()?.besideSessionIds?.() ?? [],
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
+    canOpenSideQuestion: () => !!shell()?.openSideQuestion,
+    openSideQuestion: (sessionId) => shell()?.openSideQuestion?.(sessionId),
     collapsedGroups,
     expandedProjects,
     foldedFamilies,
