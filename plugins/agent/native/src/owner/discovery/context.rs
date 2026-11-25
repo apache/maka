@@ -19,7 +19,7 @@
 
 use super::*;
 use jiff::{Timestamp, tz::TimeZone};
-use maka_agent_state::discovery::changes::{ChangeSnapshot, Delta, IndexedDossier};
+use maka_agent_state::discovery::changes::{ChangeSnapshot, Delta, IndexedDossier, OpeningSources};
 use std::path::Path;
 
 pub(super) fn timestamp(ms: u64) -> Option<String> {
@@ -53,9 +53,35 @@ const ROW_LIMIT: usize = 15;
 impl Owner {
     pub(super) async fn discovery_opening(
         &self,
+        mode: &DiscoveryMode,
         job: &Job,
         tools: &[String],
-    ) -> Result<(String, Vec<Delta>), String> {
+    ) -> Result<(String, OpeningSources), String> {
+        if let DiscoveryMode::Wander { sources } = mode {
+            let cold = if self.discovery_reads_files(tools) {
+                sources.clone()
+            } else {
+                Vec::new()
+            };
+            let root = Path::new(&job.approval.target.workspace.path);
+            let displayed: Vec<_> = cold
+                .iter()
+                .map(|p| {
+                    let rel = Path::new(p).strip_prefix(root).expect("authorized source");
+                    clipped(&rel.to_string_lossy(), 360, true)
+                })
+                .collect();
+            let label = match job.approval.language {
+                Language::ZH_CN => "冷门探索起点",
+                Language::ZH_TW => "冷門探索起點",
+                _ => "Cold starting points",
+            };
+            return Ok((
+                format!("{label}\n{}", serde_json::json!(displayed)),
+                OpeningSources::Wander(cold),
+            ));
+        }
+
         let changes = if self.discovery_reads_files(tools) {
             self.discovery_changes(&job.approval, UnixMillis(now() as i64), ROW_LIMIT)
                 .await?
@@ -70,12 +96,18 @@ impl Owner {
         } else {
             Vec::new()
         };
-        Ok(header(
+        let (mut prompt, shown) = header(
             job.approval.language,
             Path::new(&job.approval.target.workspace.path),
             changes,
             &dossiers,
-        ))
+        );
+        let excerpt = self.discovery_preferences_excerpt().await?;
+        if !excerpt.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&excerpt);
+        }
+        Ok((prompt, OpeningSources::FollowUp(shown)))
     }
 }
 

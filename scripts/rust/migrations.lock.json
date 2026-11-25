@@ -229,6 +229,10 @@
       "plugins/agent/state/migrations/0058_discovery_changes.sql": {
         "version": 58,
         "sha384": "3a27e49d1e7bec82c6b4ff6cea38f19f2e0965d2fe75c92cf33382c20dcd205e41b0297626a314da5f571d3cd7ada7ea"
+      },
+      "plugins/agent/state/migrations/0059_discovery_staging.sql": {
+        "version": 59,
+        "sha384": "94781185752f12ec1d1b59216415c003ddb64fb440fcfc45886a1f0d43df847da62fc7693b965d8cb8680a43246951f9"
       }
     },
     "checkpoint-repository": {

@@ -130,6 +130,7 @@ pub(crate) fn resolve_session(
 /// Live preparation captured by this activation; durable inputs are frozen into RunSpec separately.
 #[derive(Clone)]
 struct CapturedRun {
+    dossier_thread: bool,
     mcp_catalog: Option<Arc<crate::mcp::Catalog>>,
     mcp_revision: Option<String>,
     client_mcp: Option<crate::mcp::ClientGeneration>,
@@ -561,6 +562,13 @@ impl Owner {
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
+        additional.extend(scheduler.dossier_tools().into_iter().filter(|tool| {
+            settings.scheduled_tasks
+                || matches!(
+                    tool.definition.name.as_str(),
+                    discovery::STAGE | discovery::PREFERENCES
+                )
+        }));
         let todo = Arc::new(todo::Todo::new(persistence.store().clone(), prefix.clone()));
         if settings.todo {
             additional.extend(todo.tools());
@@ -1391,7 +1399,7 @@ impl Owner {
         };
         let selected = self.select_catalog_tools(
             &catalog.tools,
-            Some(session),
+            Some((session, basis.dossier_thread)),
             basis.allowed_tools.as_deref(),
             editing,
         );
@@ -1404,20 +1412,24 @@ impl Owner {
     fn select_catalog_tools(
         &self,
         catalog: &crate::tools::Declarations,
-        session: Option<&str>,
+        session: Option<(&str, bool)>,
         allowed_tools: Option<&[String]>,
         editing: Option<maka_agent_facts::execution::EditingTools>,
     ) -> crate::tools::Declarations {
-        let bot = session.is_some_and(|session| self.bot.is(session));
+        let bot = session.is_some_and(|(id, _)| self.bot.is(id));
         let investigation =
-            session.is_some_and(|id| self.scheduler.investigation_profile(id).is_some());
+            session.is_some_and(|(id, _)| self.scheduler.investigation_profile(id).is_some());
+        let dossier_thread = session.is_some_and(|(_, dossier)| dossier);
         let excluded: Vec<_> = catalog
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
                 let bot_only = *name == bot::SEND_USER || *name == bot::SLEEP;
                 let memory = *name == discovery::MEMORY;
-                (discovery::WORKER_TOOLS.contains(name) && !investigation)
+                (discovery::WORKER_TOOLS.contains(name)
+                    && !investigation
+                    && !(*name == discovery::STAGE && dossier_thread))
+                    || (*name == discovery::PREFERENCES && !(bot || dossier_thread))
                     || (matches!(*name, discovery::LIST | discovery::READ)
                         && !(bot || investigation))
                     || (memory && (!self.settings.scheduled_tasks || !(bot || investigation)))

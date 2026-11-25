@@ -35,6 +35,13 @@ pub struct DossierRead {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierArtifactRead {
+    pub topic_id: TopicId,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossiersUpdate {
     #[serde(flatten)]
     pub state: Dossiers,

@@ -59,7 +59,7 @@ struct ChangeTracker {
     timing: Timing,
 }
 
-fn ignored(path: &Path, private: &[PathBuf]) -> bool {
+pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
     private.iter().any(|p| path.starts_with(p))
         || path.components().any(|part| {
             matches!(
@@ -232,7 +232,15 @@ fn fingerprint(
     let Some((root, dir)) = roots.iter().find(|(p, _)| path.starts_with(p)) else {
         return Ok(None);
     };
-    let mut relative = path.strip_prefix(root).expect("matched root").components();
+    fingerprint_in(dir, path.strip_prefix(root).expect("matched root"), stop)
+}
+
+pub(super) fn fingerprint_in(
+    dir: &Dir,
+    path: &Path,
+    stop: &CancellationToken,
+) -> io::Result<Option<Fingerprint>> {
+    let mut relative = path.components();
     let Some(Component::Normal(name)) = relative.next_back() else {
         return Ok(None);
     };
@@ -410,6 +418,88 @@ impl Owner {
             .map_err(reason)
     }
 
+    pub(super) async fn wander_sources(
+        &self,
+        approval: &BackgroundApproval,
+    ) -> Result<Vec<String>, String> {
+        let selected = &approval.target.workspace;
+        let dir =
+            workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
+                .await?;
+        let root = PathBuf::from(&selected.path);
+        let state = self.store.owned_root().map_err(reason)?;
+        let private = vec![
+            state.canonical_path().into(),
+            state.control_directory().into(),
+            state.lock_path().into(),
+        ];
+        let reserved = access::reserved_sandbox_floor(&self.store, selected).await?;
+        let ceiling = match &approval.sandbox_ceiling {
+            Some(maka_sandbox::Sandbox::External { .. }) => return Ok(vec![]),
+            Some(ceiling) => reserved.intersect(ceiling).map_err(reason)?,
+            None => reserved,
+        };
+        let maka_sandbox::Sandbox::Managed { filesystem, .. } = ceiling else {
+            return Ok(vec![]);
+        };
+        let policy = Arc::new(filesystem.compile().map_err(reason)?);
+        let can_list_root = policy.access(&root).can_read() && !ignored(&root, &private);
+        let base = root.clone();
+        let allowed = move |p: &Path| {
+            p != base
+                && p.starts_with(&base)
+                && !ignored(p, &private)
+                && policy.access(p).can_read()
+        };
+        let at = UnixMillis(now() as i64);
+        let mut cold = self
+            .discovery
+            .cold_sources(at, 4, allowed.clone())
+            .await
+            .map_err(reason)?;
+        if cold.len() > 3 || !can_list_root {
+            cold.truncate(3);
+            return Ok(cold);
+        }
+        let permit = allowed.clone();
+        let (batches, mut pending) = mpsc::channel(1);
+        let scan = tokio::task::spawn_blocking(move || {
+            let mut paths = Vec::with_capacity(BATCH);
+            for entry in dir.entries()? {
+                let entry = entry?;
+                let path = root.join(entry.file_name());
+                if permit(&path)
+                    && let Some(path) = path.to_str()
+                {
+                    let kind = entry.file_type()?;
+                    if kind.is_dir() || kind.is_file() {
+                        paths.push(path.to_owned());
+                        if paths.len() == BATCH {
+                            batches
+                                .blocking_send(std::mem::take(&mut paths))
+                                .map_err(io::Error::other)?;
+                        }
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                batches.blocking_send(paths).map_err(io::Error::other)?;
+            }
+            Ok::<_, io::Error>(())
+        });
+        while let Some(paths) = pending.recv().await {
+            self.discovery
+                .seed_cold_sources(paths, at)
+                .await
+                .map_err(reason)?;
+        }
+        scan.await.map_err(reason)?.map_err(reason)?;
+        self.discovery
+            .cold_sources(at, 3, allowed)
+            .await
+            .map_err(reason)
+    }
+
     async fn wake_changed_discovery(&self, at: UnixMillis) -> Result<(), String> {
         if self.scheduler.investigation.read().unwrap().is_some()
             || !self.discovery.has_ready_changes(at).await.map_err(reason)?
@@ -464,6 +554,9 @@ impl Owner {
             let id = plan.task.id.clone();
             plan.task.next_fire_at = Some(at.0);
             plan.claim(at.0).map_err(reason)?;
+            if let Some(fire) = &mut plan.pending {
+                fire.source = maka_scheduler::plan::FireSource::FileChange;
+            }
             self.scheduler
                 .commit(&mut catalog, &id, Some(plan), None)
                 .await?;
@@ -492,7 +585,8 @@ mod tests {
     fn discovery_ignores_internal_outputs_and_temporary_files_at_any_depth() {
         let private = [PathBuf::from("/work/state")];
         for path in [
-            "state/staging/a.md",
+            "state/discovery/staging/topic/draft.md",
+            "state/discovery/preferences.md",
             "state/runtime-rust.sqlite-wal",
             ".git/refs/t",
             "p/node_modules/a",

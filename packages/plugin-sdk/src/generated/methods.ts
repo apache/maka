@@ -4156,6 +4156,14 @@ export interface ServiceMethods {
       input: Runtime.AgentQueueMessage;
       output: Runtime.AgentQueueMessageResult;
     };
+    readDossierArtifact: {
+      mode: 'query';
+      input: {
+        topicId: string;
+        path: string;
+      };
+      output: string;
+    };
     readFile: {
       mode: 'subscription';
       /**

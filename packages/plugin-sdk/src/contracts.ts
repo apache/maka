@@ -35974,6 +35974,30 @@ export const contracts: {
           },
           resources: {},
         },
+        readDossierArtifact: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierArtifactRead',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              path: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'string',
+            type: 'string',
+          },
+          resources: {},
+        },
         readFile: {
           mode: 'subscription',
           input: {

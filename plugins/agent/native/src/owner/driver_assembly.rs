@@ -156,10 +156,12 @@ impl Owner {
                 .into());
             }
         };
-        let read_only_discovery = self.scheduler.investigation_profile(&view.spec.session_id)
-            == Some(DiscoveryWorkerTools::ReadOnly);
+        let investigation = self
+            .scheduler
+            .investigation_profile(&view.spec.session_id)
+            .is_some();
         let external_bridge = matches!(&view.spec.backend, BackendSpec::Executor { selection, .. } if selection.executor == "external");
-        let host_tools = !read_only_discovery && (model.is_some() || external_bridge);
+        let host_tools = !investigation && (model.is_some() || external_bridge);
         let catalog = if !host_tools {
             self.mcp_projects.base.clone()
         } else {
@@ -205,6 +207,7 @@ impl Owner {
             _ => String::new(),
         };
         let basis = CapturedRun {
+            dossier_thread: current.configuration.dossier_seed.is_some(),
             mcp_catalog: Some(catalog.clone()),
             mcp_revision: view.spec.mcp_revision.clone(),
             client_mcp: catalog.client_mcp,

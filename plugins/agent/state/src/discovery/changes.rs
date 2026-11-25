@@ -88,6 +88,11 @@ pub struct ChangeSnapshot {
     pub cooling: Vec<(String, UnixMillis)>,
 }
 
+pub enum OpeningSources {
+    FollowUp(Vec<Delta>),
+    Wander(Vec<String>),
+}
+
 pub struct IndexedDossier {
     pub topic_id: TopicId,
     pub title: String,
@@ -231,13 +236,97 @@ impl DiscoveryStore {
         &self,
         shown: Vec<Delta>,
     ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
-        self.mutation(false, move |c, owner| {
+        self.record_opening(OpeningSources::FollowUp(shown), false, UnixMillis(0))
+    }
+
+    pub async fn broad_cycle(&self) -> Result<u8, StoreError> {
+        self.read(|c, owner| {
+            Ok(c.query_row(
+                "SELECT broad_cycle FROM discovery_preferences WHERE owner=?1",
+                [owner],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+        })
+        .await
+    }
+
+    pub async fn cold_sources(
+        &self,
+        at: UnixMillis,
+        limit: usize,
+        allowed: impl Fn(&Path) -> bool + Send + 'static,
+    ) -> Result<Vec<String>, StoreError> {
+        self.read(move |c, owner| {
             let mut stmt = c.prepare_cached(
-                "UPDATE discovery_source_cursors SET delta_kind=NULL,delta_at=NULL
-                WHERE owner=?1 AND source_uri=?2 AND delta_at=?3 AND delta_kind=?4",
+                "SELECT source_uri FROM discovery_source_cursors
+                WHERE owner=?1 AND probe_at IS NULL AND cooldown_until<=?2 ORDER BY last_explored_at,source_uri",
             )?;
-            for delta in shown {
-                stmt.execute(params![owner, delta.path, delta.at.0, delta.kind.as_str()])?;
+            let mut rows = stmt.query(params![owner, at.0])?;
+            let mut cold = Vec::new();
+            while cold.len() < limit
+                && let Some(row) = rows.next()?
+            {
+                let path: String = row.get(0)?;
+                if allowed(Path::new(&path)) {
+                    cold.push(path);
+                }
+            }
+            Ok(cold)
+        })
+        .await
+    }
+
+    pub async fn seed_cold_sources(
+        &self,
+        paths: Vec<String>,
+        at: UnixMillis,
+    ) -> Result<(), StoreError> {
+        self.data
+            .write(self.mutation(false, move |c, owner| {
+                let mut insert = c.prepare_cached(
+                    "INSERT INTO discovery_source_cursors(owner,source_uri,updated_at)
+                VALUES (?1,?2,?3) ON CONFLICT(owner,source_uri) DO NOTHING",
+                )?;
+                for path in paths {
+                    insert.execute(params![owner, path, at.0])?;
+                }
+                Ok(())
+            }))
+            .await
+    }
+
+    /// Commit with the frozen opening so recovery consumes neither a second slot nor a second sample.
+    pub fn record_opening(
+        &self,
+        sources: OpeningSources,
+        advance_broad_cycle: bool,
+        at: UnixMillis,
+    ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
+        self.mutation(false, move |c, owner| {
+            if advance_broad_cycle {
+                c.execute("INSERT INTO discovery_preferences(owner,broad_cycle,updated_at) VALUES (?1,1,?2)
+                    ON CONFLICT(owner) DO UPDATE SET broad_cycle=(broad_cycle+1)%4, updated_at=max(updated_at,?2)",
+                    params![owner, at.0])?;
+            }
+            match sources {
+                OpeningSources::FollowUp(shown) => {
+                    let mut stmt = c.prepare_cached(
+                        "UPDATE discovery_source_cursors SET delta_kind=NULL,delta_at=NULL
+                        WHERE owner=?1 AND source_uri=?2 AND delta_at=?3 AND delta_kind=?4",
+                    )?;
+                    for delta in shown {
+                        stmt.execute(params![owner, delta.path, delta.at.0, delta.kind.as_str()])?;
+                    }
+                }
+                OpeningSources::Wander(paths) if advance_broad_cycle => {
+                    let mut stmt = c.prepare_cached("UPDATE discovery_source_cursors SET last_explored_at=?3,
+                        updated_at=CASE WHEN probe_at IS NULL THEN max(updated_at+1,?3) ELSE updated_at END
+                        WHERE owner=?1 AND source_uri=?2")?;
+                    for path in paths { stmt.execute(params![owner, path, at.0])?; }
+                }
+                OpeningSources::Wander(_) => (),
             }
             Ok(())
         })

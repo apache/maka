@@ -424,3 +424,46 @@ async fn discovery_snapshot_retains_concurrent_topic_interrupts_after_quiet_revi
         assert_eq!(row.revision, if row.title == "alpha" { 2 } else { 1 });
     }
 }
+
+#[tokio::test]
+async fn discovery_cold_openings_preserve_other_cursor_fields_and_cycle_independently_of_followups()
+{
+    use changes::OpeningSources;
+    let (_dir, _root, s) = fixture().await;
+    let paths = ["a", "b", "c", "d", "e", "f"].map(str::to_owned);
+    s.seed_cold_sources(paths.to_vec(), UnixMillis(10))
+        .await
+        .unwrap();
+    let cold = |at| s.cold_sources(UnixMillis(at), 3, |_| true);
+    let first = cold(11).await.unwrap();
+    assert_eq!(first, paths[..3]);
+    for n in 1..=3 {
+        s.data
+            .write(s.record_opening(OpeningSources::FollowUp(vec![]), true, UnixMillis(12)))
+            .await
+            .unwrap();
+        assert_eq!(s.broad_cycle().await.unwrap(), n);
+    }
+    s.data
+        .write(s.record_opening(OpeningSources::FollowUp(vec![]), false, UnixMillis(13)))
+        .await
+        .unwrap();
+    assert_eq!(s.broad_cycle().await.unwrap(), 3);
+    s.data
+        .write(s.record_opening(OpeningSources::Wander(first), true, UnixMillis(14)))
+        .await
+        .unwrap();
+    s.seed_cold_sources(paths.to_vec(), UnixMillis(15))
+        .await
+        .unwrap();
+    assert_eq!(s.broad_cycle().await.unwrap(), 0);
+    assert_eq!(cold(16).await.unwrap(), paths[3..]);
+    assert_eq!(
+        s.get_source_cursor(SourceUri("a".into()))
+            .await
+            .unwrap()
+            .unwrap()
+            .last_explored_at,
+        UnixMillis(14)
+    );
+}

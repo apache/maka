@@ -918,7 +918,16 @@ async fn create_discovery_capsule(client: &Client, nonce: &str) -> DiscoveryCaps
 }
 
 // No public RPC creates tracking records. Seed them while the capsule's Host is stopped.
+const COMPAT_DRAFT: &str = "Review the revised contract annex.\n";
+const COMPAT_RULE: &str = "- [global] 2026-11-23 Review contract changes on Fridays.\n";
+
 fn seed_discovery_tracking(root: &Path, topic: &str) {
+    use sha2::{Digest, Sha256};
+    let discovery = root.join("discovery");
+    let staging = discovery.join("staging").join(topic);
+    fs::create_dir_all(&staging).unwrap();
+    fs::write(staging.join("annex.md"), COMPAT_DRAFT).unwrap();
+    fs::write(discovery.join("preferences.md"), COMPAT_RULE).unwrap();
     let conn = Connection::open(root.join(maka_event_log::root::ROOT_DATABASE)).unwrap();
     let tx = conn.unchecked_transaction().unwrap();
     let owner: String = tx
@@ -928,9 +937,20 @@ fn seed_discovery_tracking(root: &Path, topic: &str) {
             |row| row.get(0),
         )
         .unwrap();
+    let artifacts = json!([{"path":"annex.md","purpose":"Review the annex","sha256":hex::encode(Sha256::digest(COMPAT_DRAFT)),"inputHashes":{}}]);
     tx.execute(
-        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at)
-         VALUES (?1,'annex.md','v1',1,'modified',1)",
+        "UPDATE discovery_dossiers SET artifacts_json=?2 WHERE topic_id=?1",
+        [topic, &artifacts.to_string()],
+    )
+    .unwrap();
+    tx.execute(
+        "UPDATE discovery_preferences SET broad_cycle=3 WHERE owner=?1",
+        [&owner],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO discovery_source_cursors(owner,source_uri,last_hash,updated_at,delta_kind,delta_at,last_explored_at)
+         VALUES (?1,'annex.md','v1',1,'modified',1,42)",
         [&owner],
     )
     .unwrap();
@@ -953,6 +973,7 @@ async fn verify_dossiers(
     saved: Option<&DiscoveryCapsule>,
     nonce: &str,
     post_nonce: &str,
+    staged: bool,
 ) {
     let page = call(client, "agent", "dossiers", json!({}), Attachments::new()).await;
     if let Some(saved) = saved {
@@ -967,6 +988,18 @@ async fn verify_dossiers(
         )
         .await;
         assert_eq!(detail["muted"], true);
+        if staged {
+            assert_eq!(detail["artifacts"][0]["path"], "annex.md");
+            let preview = call(
+                client,
+                "agent",
+                "readDossierArtifact",
+                json!({"topicId":saved.topic_id,"path":"annex.md"}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(preview, COMPAT_DRAFT);
+        }
         assert!(detail["summaryMd"].as_str().unwrap().contains(nonce));
         assert_eq!(detail["watches"][0]["lastStateHash"], "v1");
         assert_eq!(detail["pendingActions"][0]["inputHashes"]["annex.md"], "v1");
@@ -1576,7 +1609,12 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "assistantPreferences lost across upgrade: {prefs}"
         );
 
-        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce).await;
+        let staged = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|v| v.contains(&55));
+        verify_dossiers(&client, manifest.discovery.as_ref(), &manifest.nonce, &post_nonce, staged).await;
+        if staged {
+            assert_eq!(fs::read_to_string(dirs.root.join("discovery/preferences.md")).unwrap(), COMPAT_RULE);
+            assert!(fs::read_to_string(dirs.root.join("discovery/outcomes.md")).unwrap().contains("opened a staged artifact"));
+        }
 
         // Sessions & full history deserialization.
         for session_id in [
@@ -2139,6 +2177,12 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         ).unwrap();
         let captured_changes = manifest.migrations.get(maka_event_log::root::ROOT_DATABASE).is_some_and(|versions|versions.contains(&54));
         assert_eq!(pending, i64::from(manifest.discovery.is_some() && captured_changes));
+        if let Some(dossier) = &manifest.discovery {
+            let (cycle, explored): (u8, i64) = conn.query_row("SELECT p.broad_cycle,c.last_explored_at FROM discovery_dossiers d
+                JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)
+                WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!((cycle,explored), if staged { (3,42) } else { (0,0) });
+        }
         drop(conn);
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {

@@ -124,6 +124,7 @@ test('built installation publishes the session methods on the original Agent exp
     ['watchSchedules', 'subscription'],
     ['dossiers', 'query'],
     ['dossier', 'query'],
+    ['readDossierArtifact', 'query'],
     ['watchDossiers', 'subscription'],
     ['setDossierMuted', 'mutation'],
     ['setDossierResolved', 'mutation'],

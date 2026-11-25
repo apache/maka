@@ -880,6 +880,10 @@ impl Handler for Agent {
                         .map_err(|e| e.to_string())?,
                 )
             }),
+            "readDossierArtifact" => json_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                encode(owner.read_dossier_artifact(decode(input)?).await?)
+            }),
             "watchDossiers" => json_rpc(&mut args, |owner, input, context| async move {
                 discovery_desktop(&context)?;
                 let _: DossiersRead = decode(input)?;
@@ -916,19 +920,7 @@ impl Handler for Agent {
                 discovery_desktop(&context)?;
                 context.operation().ok_or("agent_mutation_required")?;
                 let input: DossierMute = decode(input)?;
-                let state = owner.discovery.mute_statement(
-                    input.topic_id,
-                    input.muted,
-                    maka_agent_facts::durable::UnixMillis(maka_agent_authority::now() as i64),
-                );
-                context.complete_change(
-                    Value::Null,
-                    owner
-                        .store
-                        .data_writer()
-                        .map_err(|e| e.to_string())?
-                        .prepare(state),
-                )
+                context.complete_change(Value::Null, owner.prepare_dossier_mute(input)?)
             }),
             "setDossierResolved" => handler_rpc(&mut args, |owner, input, context| async move {
                 discovery_desktop(&context)?;
