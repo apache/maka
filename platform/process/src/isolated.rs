@@ -32,6 +32,8 @@ pub use evidence::{
 mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+mod publication;
 #[cfg(unix)]
 pub(crate) use helper::ExternalOwner;
 #[cfg(unix)]
@@ -1273,7 +1275,6 @@ async fn write_json_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
 fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
     use std::io::Write;
-    use std::os::fd::AsRawFd;
     let pinned = evidence::pin(resource)?;
     let owner = &pinned.owner;
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
@@ -1296,22 +1297,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
         let written = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: both owned directory FDs are pinned for this call; the C strings
-            // remain live. EXCL atomically refuses replacement of immutable evidence.
-            if unsafe {
-                libc::renameatx_np(
-                    owner.as_raw_fd(),
-                    from.as_ptr(),
-                    owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            publication::rename_without_replace(owner, &pending, name)?;
             Ok(())
         })();
         if written.is_err() {

@@ -447,7 +447,7 @@ fn publish_control(
     interrupt: bool,
 ) -> (u64, io::Result<()>) {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
-    use std::{io::Write, os::fd::AsRawFd};
+    use std::io::Write;
     let result = (|| {
         let successor = next
             .checked_add(1)
@@ -465,22 +465,7 @@ fn publish_control(
         let written = (|| {
             file.write_all(if interrupt { b"I" } else { b"T" })?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: the pinned owner FD and owned C strings live through the call;
-            // EXCL refuses to overwrite any original control publication.
-            if unsafe {
-                libc::renameatx_np(
-                    pinned.owner.as_raw_fd(),
-                    from.as_ptr(),
-                    pinned.owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            super::publication::rename_without_replace(&pinned.owner, &pending, &name)?;
             // Handoff precedes directory durability and cannot be rolled back.
             next = successor;
             pinned.owner.sync_all()
