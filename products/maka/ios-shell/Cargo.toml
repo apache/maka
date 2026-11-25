@@ -43,15 +43,24 @@ tokio-util.workspace = true
 maka-ui-build.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2 = "0.6.5"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "AVAnimation", "AVCaptureDevice", "AVCaptureInput", "AVCaptureMetadataOutput",
+    "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureVideoPreviewLayer",
+    "AVMediaFormat", "AVMetadataObject", "block2", "dispatch2", "objc2-quartz-core",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFCGTypes"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSError", "NSObject", "NSString", "NSURL", "NSValue"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer", "objc2-core-foundation"] }
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = ["UIResponder", "UIView", "objc2-quartz-core"] }
 core-foundation = "0.10.1"
 security-framework = "3.7.0"
 security-framework-sys = "2.17.0"
 zeroize = "1"
 nsh-platform-apple = { path = "../../../third-party/nsh/crates/nsh-platform-apple" }
 nsh-platform-ios = { path = "../../../third-party/nsh/crates/nsh-platform-ios", default-features = false, features = ["js", "math"] }
-
-[target.'cfg(all(target_os = "ios", target_abi = "sim"))'.dependencies]
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSError", "NSString", "NSURL", "NSValue"] }
 
 [target.'cfg(not(target_os = "ios"))'.dev-dependencies]
 nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing" }

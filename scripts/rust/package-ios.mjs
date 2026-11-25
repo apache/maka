@@ -32,7 +32,10 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 const executable = 'maka-ios-shell';
 const ipaName = 'Maka-ios-arm64.ipa';
 const minimumOS = '15.0';
-const networkUsageMessage = 'Connect to your Maka Host and discover a direct connection.';
+const localizedUsageDescriptions = {
+  NSLocalNetworkUsageDescription: 'Connect to your Maka Host and discover a direct connection.',
+  NSCameraUsageDescription: 'Scan a QR code to pair with your Maka Host.',
+};
 const targets = {
   ios: {
     triple: 'aarch64-apple-ios',
@@ -180,7 +183,7 @@ export function appInfo({ platform, bundleId, appVersion, buildNumber }) {
       },
     ],
     NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
-    NSLocalNetworkUsageDescription: networkUsageMessage,
+    ...localizedUsageDescriptions,
   };
 }
 
@@ -444,18 +447,17 @@ export async function stageLocalizations(app) {
     catalogs.set(tag, JSON.parse(await readFile(join(directory, tag + '.json'), 'utf8')));
   }
   for (const { tag, appleLocalization, fallbacks } of localeManifest.locales) {
-    const name = [tag, ...fallbacks].find((locale) =>
-      Object.hasOwn(catalogs.get(locale), networkUsageMessage),
-    );
-    if (!name) throw new Error(`Missing network usage description for ${tag}`);
+    const descriptions = {};
+    for (const [field, message] of Object.entries(localizedUsageDescriptions)) {
+      const name = [tag, ...fallbacks].find((locale) =>
+        Object.hasOwn(catalogs.get(locale), message),
+      );
+      if (!name) throw new Error(`Missing ${field} for ${tag}`);
+      descriptions[field] = catalogs.get(name)[message];
+    }
     const directory = join(app, `${appleLocalization}.lproj`);
     await mkdir(directory);
-    await writeFile(
-      join(directory, 'InfoPlist.strings'),
-      plist({
-        NSLocalNetworkUsageDescription: catalogs.get(name)[networkUsageMessage],
-      }),
-    );
+    await writeFile(join(directory, 'InfoPlist.strings'), plist(descriptions));
   }
 }
 

@@ -293,6 +293,7 @@
   "Saved Host relay URL": "URL del relay dell’Host salvato",
   "Saved computers · {count}": "Computer salvati · {count}",
   "Saved · Tap to connect": "Salvato · Tocca per connetterti",
+  "Scan a QR code to pair with your Maka Host.": "Scansiona un codice QR per abbinare questo dispositivo al tuo host Maka.",
   "Scan or paste a pairing link": "Scansiona un codice QR o incolla un link di abbinamento",
   "Scan the Maka Desktop pairing QR code or paste a maka://pair/v1 link to open your projects and Agent conversations.": "Scansiona il codice QR di abbinamento di Maka Desktop o incolla un link maka://pair/v1 per aprire i tuoi progetti e le conversazioni con gli agenti.",
   "Schedules and automations": "Pianificazioni e automazioni",

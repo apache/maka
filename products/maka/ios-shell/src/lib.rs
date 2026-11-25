@@ -19,6 +19,8 @@
 
 pub mod bridge;
 mod identity;
+#[cfg(any(target_os = "ios", test))]
+mod scanner;
 
 use nsh_engine::{Bundle, Capabilities, EngineConfig, HostChannel, Limits, Policy};
 
@@ -77,6 +79,7 @@ pub fn run() {
         bridge.queue_pairing_uri(uri);
     }
     nsh_platform_ios::set_ui_sets(ui_sets());
+    nsh_platform_ios::set_components(scanner::register);
     run_app(
         AppSource::Bundle(ios_bundle()),
         AppOptions {

@@ -293,6 +293,7 @@
   "Saved Host relay URL": "Сохранённый URL ретранслятора хоста",
   "Saved computers · {count}": "Сохранённые компьютеры · {count}",
   "Saved · Tap to connect": "Сохранено · Коснитесь для подключения",
+  "Scan a QR code to pair with your Maka Host.": "Отсканируйте QR-код, чтобы связать это устройство с хостом Maka.",
   "Scan or paste a pairing link": "Отсканируйте QR-код или вставьте ссылку",
   "Scan the Maka Desktop pairing QR code or paste a maka://pair/v1 link to open your projects and Agent conversations.": "Отсканируйте QR-код сопряжения в настольной версии Maka или вставьте ссылку maka://pair/v1, чтобы открыть проекты и диалоги с агентом.",
   "Schedules and automations": "Расписания и автоматизация",

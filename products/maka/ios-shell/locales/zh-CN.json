@@ -293,6 +293,7 @@
   "Saved Host relay URL": "已保存的 Host 中继 URL",
   "Saved computers · {count}": "已保存电脑 · {count}",
   "Saved · Tap to connect": "已保存 · 点击连接",
+  "Scan a QR code to pair with your Maka Host.": "扫描二维码，将此设备与你的 Maka 主机配对。",
   "Scan or paste a pairing link": "扫码或粘贴配对码",
   "Scan the Maka Desktop pairing QR code or paste a maka://pair/v1 link to open your projects and Agent conversations.": "扫描桌面端 Maka 配对二维码，或粘贴 maka://pair/v1 链接，直连你的项目与 Agent 会话。",
   "Schedules and automations": "定时任务与自动化",
