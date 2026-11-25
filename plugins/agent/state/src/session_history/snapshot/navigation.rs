@@ -25,12 +25,170 @@ use maka_agent_facts::{
     history_snapshot::{ImportedTurnOrdinal, SnapshotPosition},
     message::MessageOrigin,
 };
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::{Arc, LazyLock, Weak},
+};
 use tokio_util::sync::CancellationToken;
 mod produce;
 mod query;
 pub(in crate::session_history) use query::{FindInput, LocalFindPage, LocalFound, LocalLandmark};
 const VERSION: i64 = 4;
 const CHUNK_BYTES: usize = 32 * 1024;
+
+pub(crate) enum IndexedRead<T> {
+    Ready(T),
+    NeedsRebuild(Vec<Snapshot>),
+}
+
+impl<T> IndexedRead<T> {
+    pub(crate) fn from_result(result: Result<T, IndexedReadError>) -> Result<Self, StoreError> {
+        match result {
+            Ok(value) => Ok(Self::Ready(value)),
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => Ok(Self::NeedsRebuild(snapshots)),
+            Err(IndexedReadError::Store(error)) => Err(error),
+        }
+    }
+}
+
+pub(crate) enum IndexedReadError {
+    Store(StoreError),
+    NeedsRebuild(Vec<Snapshot>),
+}
+
+impl IndexedReadError {
+    pub(crate) fn needs_rebuild(snapshot: Snapshot) -> Self {
+        Self::NeedsRebuild(vec![snapshot])
+    }
+
+    pub(crate) fn into_store(self, message: &str) -> StoreError {
+        match self {
+            Self::Store(error) => error,
+            Self::NeedsRebuild(_) => invalid(message),
+        }
+    }
+}
+
+impl From<StoreError> for IndexedReadError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<rusqlite::Error> for IndexedReadError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Store(error.into())
+    }
+}
+
+impl From<serde_json::Error> for IndexedReadError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Store(error.into())
+    }
+}
+
+pub(crate) async fn run_with_snapshot_rebuild<T, F, Fut>(
+    stop: CancellationToken,
+    mut attempt: F,
+) -> Result<T, StoreError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<IndexedRead<T>, StoreError>>,
+{
+    let mut rebuilt = HashSet::new();
+    loop {
+        match attempt().await? {
+            IndexedRead::Ready(value) => return Ok(value),
+            IndexedRead::NeedsRebuild(snapshots) => {
+                let mut batch = Vec::new();
+                let mut seen_in_batch = HashSet::new();
+                for snapshot in snapshots {
+                    if seen_in_batch.insert(snapshot.id()) {
+                        batch.push(snapshot);
+                    }
+                }
+                if batch.is_empty() {
+                    return Err(invalid(
+                        "snapshot derived index rebuild requested without a target snapshot",
+                    ));
+                }
+                for snapshot in batch {
+                    if !rebuilt.insert(snapshot.id()) {
+                        return Err(invalid(
+                            "snapshot derived index remained unavailable after cold rebuild",
+                        ));
+                    }
+                    // Keep the cold-rebuild future out of hot-path read state machines.
+                    Box::pin(snapshot.ensure_navigation(stop.clone())).await?;
+                }
+            }
+        }
+    }
+}
+
+static REBUILD_LOCKS: LazyLock<
+    std::sync::Mutex<HashMap<SnapshotId, Weak<tokio::sync::Mutex<()>>>>,
+> = LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn prune_rebuild_lock(id: SnapshotId) {
+    let mut locks = REBUILD_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    if locks.get(&id).is_some_and(|weak| weak.strong_count() == 0) {
+        locks.remove(&id);
+    }
+}
+
+struct LockSlot {
+    id: SnapshotId,
+    mutex: Option<Arc<tokio::sync::Mutex<()>>>,
+}
+impl Drop for LockSlot {
+    fn drop(&mut self) {
+        drop(self.mutex.take());
+        prune_rebuild_lock(self.id);
+    }
+}
+
+struct RebuildGuard {
+    id: SnapshotId,
+    permit: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+impl Drop for RebuildGuard {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        prune_rebuild_lock(self.id);
+    }
+}
+
+async fn lock_rebuild(
+    id: SnapshotId,
+    stop: &CancellationToken,
+) -> Result<RebuildGuard, StoreError> {
+    let slot = LockSlot {
+        id,
+        mutex: Some({
+            let mut locks = REBUILD_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = locks.get(&id).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let created = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(id, Arc::downgrade(&created));
+                created
+            }
+        }),
+    };
+    let lock_fut = Arc::clone(slot.mutex.as_ref().expect("slot holds rebuild mutex")).lock_owned();
+    let permit = tokio::select! {
+        biased;
+        () = stop.cancelled() => return Err(invalid("source navigation cancelled")),
+        permit = lock_fut => permit,
+    };
+    drop(slot);
+    Ok(RebuildGuard {
+        id,
+        permit: Some(permit),
+    })
+}
 
 pub(super) fn key(row: &SnapshotPosition) -> (&'static str, u64, u64) {
     match row {
@@ -83,7 +241,17 @@ impl Snapshot {
         if self.data.query(Ready(self.clone())).await? {
             return Ok(());
         }
+        let _guard = lock_rebuild(self.id, &stop).await?;
+        if self.data.query(Ready(self.clone())).await? {
+            return Ok(());
+        }
         self.ensure_metrics_metadata(stop.clone()).await?;
+        self.data
+            .write(Write {
+                snapshot: self.clone(),
+                edit: Edit::Reset,
+            })
+            .await?;
         let mut after = None;
         let mut first = true;
         let mut producer = produce::Producer::new(self.clone(), stop.clone()).await?;
@@ -97,7 +265,7 @@ impl Snapshot {
                 if !first && Some((major, minor)) == after {
                     continue;
                 }
-                producer.document(&row).await?;
+                Box::pin(producer.document(&row)).await?;
                 last = Some((major, minor));
             }
             if !full {
@@ -136,7 +304,10 @@ impl Query for Ready {
             && catalog::is_ready(c, &self.0)?)
     }
 }
-pub(super) fn require_ready(c: &Connection, snapshot: &Snapshot) -> Result<Manifest, StoreError> {
+pub(super) fn require_ready(
+    c: &Connection,
+    snapshot: &Snapshot,
+) -> Result<Manifest, IndexedReadError> {
     let manifest = read::Header(snapshot.clone()).execute(c)?;
     let ready = c
         .query_row(
@@ -146,13 +317,12 @@ pub(super) fn require_ready(c: &Connection, snapshot: &Snapshot) -> Result<Manif
         )
         .optional()?;
     if ready != Some(VERSION) || !catalog::is_ready(c, snapshot)? {
-        return Err(invalid(
-            "snapshot navigation index is unavailable; rebuild required",
-        ));
+        return Err(IndexedReadError::needs_rebuild(snapshot.clone()));
     }
     Ok(manifest)
 }
 enum Edit {
+    Reset,
     Document {
         row: SnapshotPosition,
         metadata: Metadata,
@@ -194,6 +364,30 @@ impl Statement for Write {
     fn execute(self, c: &Connection) -> Result<Prepared<i64>, StoreError> {
         read::Header(self.snapshot.clone()).execute(c)?;
         let value = match self.edit {
+            Edit::Reset => {
+                let snapshot = self.snapshot.id.to_string();
+                c.execute(
+                    "DELETE FROM agent_history_snapshot_nav_heads WHERE snapshot=?",
+                    [&snapshot],
+                )?;
+                // Delete chunks directly so the AFTER DELETE trigger clears FTS5
+                // `agent_history_snapshot_nav_terms` (recursive_triggers is off).
+                c.execute(
+                    "DELETE FROM agent_history_snapshot_nav_chunks
+                     WHERE document IN (SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=?)",
+                    [&snapshot],
+                )?;
+                c.execute(
+                    "DELETE FROM agent_history_snapshot_nav_fields
+                     WHERE document IN (SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=?)",
+                    [&snapshot],
+                )?;
+                c.execute(
+                    "DELETE FROM agent_history_snapshot_nav_documents WHERE snapshot=?",
+                    [&snapshot],
+                )?;
+                0
+            }
             Edit::Document { row, metadata } => {
                 let (kind, major, minor) = key(&row);
                 c.execute("INSERT INTO agent_history_snapshot_nav_documents(snapshot,kind,major,minor,turn,turn_ordinal,role,label,complete,origin_json) VALUES(?,?,?,?,?,?,?,'',0,?) ON CONFLICT(snapshot,kind,major,minor) DO NOTHING",params![self.snapshot.id.to_string(),kind,bind_u64(major)?,bind_u64(minor)?,metadata.turn,metadata.imported_turn.map(|v|bind_u64(v.0)).transpose()?,serde_json::to_string(&metadata.role)?,metadata.origin.map(|v|serde_json::to_string(&v)).transpose()?])?;
@@ -479,5 +673,67 @@ impl FieldWriter<'_> {
             })
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod rebuild_lock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn rebuild_lock_serializes_concurrent_waiters_and_prunes_on_drop_and_cancel() {
+        let id = SnapshotId::new();
+        let stop_holder = CancellationToken::new();
+        let guard = lock_rebuild(id, &stop_holder).await.unwrap();
+
+        let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let waiter = tokio::spawn(async move {
+            let stop = CancellationToken::new();
+            let _guard = lock_rebuild(id, &stop).await.unwrap();
+            let _ = acquired_tx.send(());
+            let _ = release_rx.await;
+        });
+
+        let stop_cancelled = CancellationToken::new();
+        let cancel_trigger = stop_cancelled.clone();
+        let cancelled_waiter = tokio::spawn(async move { lock_rebuild(id, &stop_cancelled).await });
+
+        // Dropped waiter simulates an externally aborted caller future.
+        let dropped_waiter = tokio::spawn(async move {
+            let stop = CancellationToken::new();
+            let _ = lock_rebuild(id, &stop).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            acquired_rx.try_recv().is_err(),
+            "second waiter must stay blocked while first guard is held"
+        );
+
+        cancel_trigger.cancel();
+        let err = cancelled_waiter
+            .await
+            .unwrap()
+            .err()
+            .expect("cancelled waiter must fail");
+        assert!(err.to_string().contains("cancelled"), "{err}");
+
+        dropped_waiter.abort();
+        let _ = dropped_waiter.await;
+
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(2), &mut acquired_rx)
+            .await
+            .expect("waiter should acquire after holder releases")
+            .unwrap();
+        let _ = release_tx.send(());
+        waiter.await.unwrap();
+
+        assert!(
+            REBUILD_LOCKS.lock().unwrap().get(&id).is_none(),
+            "rebuild lock table must prune released snapshot entry"
+        );
     }
 }

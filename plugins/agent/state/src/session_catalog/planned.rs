@@ -19,9 +19,10 @@
 use super::*;
 use crate::session_history::{
     SessionHistory,
-    snapshot::{AdoptSnapshot, Snapshot},
+    snapshot::{AdoptSnapshot, IndexedRead, IndexedReadError, Snapshot, run_with_snapshot_rebuild},
 };
 use maka_sandbox::workspace::{BindingRef, BindingStamp};
+use tokio_util::sync::CancellationToken;
 
 /// An inert projection of the original historical source, not a published Session.
 pub struct PlannedCatalog {
@@ -77,14 +78,15 @@ impl SessionCatalog {
             ));
         }
         adoption.adoption()?;
-        self.data
-            .query(ReadPlanned {
+        run_with_snapshot_rebuild(CancellationToken::new(), || {
+            self.data.query(ReadPlanned {
                 catalog: self.clone(),
                 source: source.clone(),
                 session: spec.session_id.clone(),
                 binding: spec.permission_basis.binding,
             })
-            .await
+        })
+        .await
     }
 }
 
@@ -207,15 +209,17 @@ struct ReadPlanned {
     binding: BindingStamp,
 }
 impl Query for ReadPlanned {
-    type Output = PlannedCatalog;
+    type Output = IndexedRead<PlannedCatalog>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        Ok(PlannedCatalog {
-            catalog: self.catalog,
-            control: None,
-            session: self.session,
-            binding: Some(self.binding),
-            history: PlannedHistory::Adopted(self.source.catalog_summary_in_snapshot(c)?),
-        })
+        IndexedRead::from_result(self.source.catalog_summary_in_snapshot(c).map(|summary| {
+            PlannedCatalog {
+                catalog: self.catalog,
+                control: None,
+                session: self.session,
+                binding: Some(self.binding),
+                history: PlannedHistory::Adopted(summary),
+            }
+        }))
     }
 }
 
@@ -225,7 +229,7 @@ pub(super) fn overlay(
     mut record: Record,
     marker: Option<RunId>,
     source_unread: bool,
-) -> Result<Record, StoreError> {
+) -> Result<Record, IndexedReadError> {
     if let Some(marker) = marker {
         let history = SessionHistory::new(
             catalog.data.clone(),

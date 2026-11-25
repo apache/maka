@@ -49,7 +49,7 @@ pub(in crate::session_history) enum ModelMetadata {
 pub(in crate::session_history) fn require_ready(
     c: &Connection,
     snapshot: &Snapshot,
-) -> Result<(), StoreError> {
+) -> Result<(), IndexedReadError> {
     navigation::require_ready(c, snapshot).map(|_| ())
 }
 

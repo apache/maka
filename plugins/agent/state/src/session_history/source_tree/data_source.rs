@@ -370,15 +370,22 @@ impl HistoryDataSource {
         summary_step: StepId,
         adopted_sequence: u64,
     ) -> Result<u64, StoreError> {
-        let query = CompactionDuration(
-            self.clone(),
-            run,
-            summary_run,
-            summary_step,
-            adopted_sequence,
-        );
         match self {
-            Self::Live { history, .. } => history.data.query(query).await,
+            Self::Live { history, .. } => {
+                snapshot::run_with_snapshot_rebuild(
+                    tokio_util::sync::CancellationToken::new(),
+                    || {
+                        history.data.query(CompactionDuration(
+                            self.clone(),
+                            run,
+                            summary_run,
+                            summary_step,
+                            adopted_sequence,
+                        ))
+                    },
+                )
+                .await
+            }
             Self::Snapshot(snapshot) => {
                 snapshot
                     .compaction_duration_ms(run, summary_run, summary_step, adopted_sequence)
@@ -550,8 +557,22 @@ impl CompactionDuration {
     }
 }
 impl Query for CompactionDuration {
-    type Output = u64;
-    fn execute(self, c: &Connection) -> Result<u64, StoreError> {
+    type Output = snapshot::IndexedRead<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if let HistoryDataSource::Snapshot(snapshot) = &self.0 {
+            match snapshot::metrics_metadata::require_ready(c, snapshot) {
+                Ok(()) => {}
+                Err(snapshot::IndexedReadError::NeedsRebuild(snapshots)) => {
+                    return Ok(snapshot::IndexedRead::NeedsRebuild(snapshots));
+                }
+                Err(snapshot::IndexedReadError::Store(error)) => return Err(error),
+            }
+        }
+        self.compute(c).map(snapshot::IndexedRead::Ready)
+    }
+}
+impl CompactionDuration {
+    fn compute(self, c: &Connection) -> Result<u64, StoreError> {
         use maka_agent_facts::context::ModelPurpose;
         let source = match &self.0 {
             HistoryDataSource::Live { history, cut } => {

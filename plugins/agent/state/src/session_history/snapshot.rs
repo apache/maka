@@ -42,6 +42,7 @@ pub use archive::ExportedSnapshot;
 pub(crate) use imported::ImportedSessionIds;
 pub use imported::{IMPORT_TAPE_MAGIC, ImportedCaptureRequest, ImportedSessions};
 pub use install::{AdoptSnapshot, Adoption};
+pub(crate) use navigation::{IndexedRead, IndexedReadError, run_with_snapshot_rebuild};
 mod positions;
 mod read;
 mod subset;
@@ -250,15 +251,16 @@ impl Snapshot {
         step: StepId,
         sequence: u64,
     ) -> Result<u64, StoreError> {
-        self.data
-            .query(super::source_tree::CompactionDuration(
+        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
+            self.data.query(super::source_tree::CompactionDuration(
                 super::source_tree::HistoryDataSource::Snapshot(self.clone()),
                 run,
                 summary_run,
                 step,
                 sequence,
             ))
-            .await
+        })
+        .await
     }
     pub(in crate::session_history) fn manifest_in_snapshot(
         &self,
@@ -403,7 +405,10 @@ impl Snapshot {
         &self,
         query: super::metrics::ReadRequestTraces,
     ) -> Result<super::metrics::ModelRequestTracePage, StoreError> {
-        self.data.query(query).await
+        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
+            self.data.query(query.clone())
+        })
+        .await
     }
     pub async fn view_at(&self, run: RunId) -> Result<crate::fold::RunView, StoreError> {
         self.data.query(read::View(self.clone(), run)).await
@@ -436,7 +441,10 @@ impl Snapshot {
         &self,
         run: RunId,
     ) -> Result<Option<(UnixMillis, Terminal)>, StoreError> {
-        self.data.query(read::Terminated(self.clone(), run)).await
+        run_with_snapshot_rebuild(tokio_util::sync::CancellationToken::new(), || {
+            self.data.query(read::Terminated(self.clone(), run))
+        })
+        .await
     }
     pub async fn history(
         &self,

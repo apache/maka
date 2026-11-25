@@ -300,7 +300,10 @@ pub(super) fn control(
     }
     let event = match &command.edit {
         ControlEdit::MarkRead { message_id } => {
-            let tail = query::records_in_snapshot(c, catalog, &[session.to_owned()])?
+            let tail = query::records_in_snapshot(c, catalog, &[session.to_owned()])
+                .map_err(|error| {
+                    error.into_store("snapshot catalog index is unavailable; cold rebuild required")
+                })?
                 .into_iter()
                 .next()
                 .and_then(|record| record.last_message)

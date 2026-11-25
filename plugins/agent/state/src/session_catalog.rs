@@ -206,16 +206,20 @@ impl SessionCatalog {
         filter: Filter,
         limit: u32,
     ) -> Result<Page, StoreError> {
-        self.data
-            .query(ReadPage {
-                catalog: self.clone(),
-                scope,
-                expected_revision,
-                position,
-                filter,
-                limit,
-            })
-            .await
+        crate::session_history::snapshot::run_with_snapshot_rebuild(
+            tokio_util::sync::CancellationToken::new(),
+            || {
+                self.data.query(ReadPage {
+                    catalog: self.clone(),
+                    scope: scope.clone(),
+                    expected_revision: expected_revision.clone(),
+                    position: position.clone(),
+                    filter: filter.clone(),
+                    limit,
+                })
+            },
+        )
+        .await
     }
     pub async fn record(&self, session: &str) -> Result<Option<Record>, StoreError> {
         let page = self
@@ -247,6 +251,9 @@ impl SessionCatalog {
         self.data.prepare(self.control_statement(session, command))
     }
     pub async fn apply(&self, session: String, command: ControlCommand) -> Result<u64, StoreError> {
+        if matches!(command.edit, ControlEdit::MarkRead { .. }) {
+            let _ = self.record(&session).await?;
+        }
         self.data
             .write(self.control_statement(session, command))
             .await
@@ -285,8 +292,8 @@ struct ReadPage {
     limit: u32,
 }
 impl Query for ReadPage {
-    type Output = Page;
-    fn execute(self, c: &Connection) -> Result<Page, StoreError> {
+    type Output = crate::session_history::snapshot::IndexedRead<Page>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         query::page(c, self)
     }
 }

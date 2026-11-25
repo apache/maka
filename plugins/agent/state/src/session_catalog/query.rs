@@ -17,6 +17,7 @@
  * under the License.
  */
 use super::*;
+use crate::session_history::snapshot::{IndexedRead, IndexedReadError};
 use maka_agent_facts::artifact::content_digest;
 use maka_event_log::{sessions::CatalogSelection, workspace_bindings::WorkspaceBinding};
 use maka_sandbox::workspace::BindingRef;
@@ -284,7 +285,7 @@ impl Selection {
         }
         Ok(keys)
     }
-    fn records(&self, c: &Connection, keys: &[Key]) -> Result<Vec<Record>, StoreError> {
+    fn records(&self, c: &Connection, keys: &[Key]) -> Result<Vec<Record>, IndexedReadError> {
         if keys.is_empty() {
             return Ok(vec![]);
         }
@@ -321,17 +322,25 @@ impl Selection {
                 .query_map(params_from_iter(values), Raw::read)?
                 .collect::<Result<Vec<_>, _>>()?
         };
-        rows.into_iter()
-            .map(|mut raw| {
-                let marker = raw
-                    .source_run
-                    .take()
-                    .map(|run| serde_json::from_value(Value::String(run)))
-                    .transpose()?;
-                let source_unread = raw.source_unread;
-                planned::overlay(c, &self.catalog, raw.decode()?, marker, source_unread)
-            })
-            .collect()
+        let mut records = Vec::with_capacity(rows.len());
+        let mut stale = Vec::new();
+        for mut raw in rows {
+            let marker = raw
+                .source_run
+                .take()
+                .map(|run| serde_json::from_value(Value::String(run)))
+                .transpose()?;
+            let source_unread = raw.source_unread;
+            match planned::overlay(c, &self.catalog, raw.decode()?, marker, source_unread) {
+                Ok(record) => records.push(record),
+                Err(IndexedReadError::NeedsRebuild(snapshots)) => stale.extend(snapshots),
+                Err(IndexedReadError::Store(error)) => return Err(IndexedReadError::Store(error)),
+            }
+        }
+        if !stale.is_empty() {
+            return Err(IndexedReadError::NeedsRebuild(stale));
+        }
+        Ok(records)
     }
     fn pending_count(&self, c: &Connection) -> Result<u64, StoreError> {
         let count: i64 = c
@@ -554,7 +563,7 @@ pub(super) fn revision(
     Selection::new(catalog, scope, filter)?.revision(c, scope, filter)
 }
 
-pub(super) fn page(c: &Connection, read: ReadPage) -> Result<Page, StoreError> {
+pub(super) fn page(c: &Connection, read: ReadPage) -> Result<IndexedRead<Page>, StoreError> {
     if !(1..=256).contains(&read.limit) {
         return Err(invalid("catalog page size must be 1..=256"));
     }
@@ -603,22 +612,28 @@ pub(super) fn page(c: &Connection, read: ReadPage) -> Result<Page, StoreError> {
     } else {
         None
     };
-    let sessions = selection.records(c, &keys)?;
+    let sessions = match selection.records(c, &keys) {
+        Ok(sessions) => sessions,
+        Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+            return Ok(IndexedRead::NeedsRebuild(snapshots));
+        }
+        Err(IndexedReadError::Store(error)) => return Err(error),
+    };
     let pending_session_count = selection.pending_count(c)?;
-    Ok(Page {
+    Ok(IndexedRead::Ready(Page {
         revision,
         sessions,
         pending_session_count,
         next_cursor,
         previous_cursor,
-    })
+    }))
 }
 
 pub(crate) fn records_in_snapshot(
     c: &Connection,
     catalog: &SessionCatalog,
     ids: &[String],
-) -> Result<Vec<Record>, StoreError> {
+) -> Result<Vec<Record>, IndexedReadError> {
     let read = ReadPage {
         catalog: catalog.clone(),
         scope: CatalogScope::Profile,
@@ -638,6 +653,7 @@ pub(crate) fn records_in_snapshot(
     };
     let selected = Selection::new(&read.catalog, &read.scope, &read.filter)?;
     let mut records = Vec::new();
+    let mut stale = Vec::new();
     for chunk in ids.chunks(128) {
         for id in chunk {
             catalog.check_session(id)?;
@@ -650,7 +666,14 @@ pub(crate) fn records_in_snapshot(
                 id: id.clone(),
             })
             .collect::<Vec<_>>();
-        records.extend(selected.records(c, &keys)?);
+        match selected.records(c, &keys) {
+            Ok(chunk_records) => records.extend(chunk_records),
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => stale.extend(snapshots),
+            Err(IndexedReadError::Store(error)) => return Err(IndexedReadError::Store(error)),
+        }
+    }
+    if !stale.is_empty() {
+        return Err(IndexedReadError::NeedsRebuild(stale));
     }
     Ok(records)
 }
