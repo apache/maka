@@ -39,6 +39,8 @@ import type {
   AgentModelChoice,
   AgentRoomMessage,
 } from '../../bridge';
+import { ApprovalFeedback, approvalFeedback } from '../../ui/ApprovalCard';
+import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { tr } from '../../locale';
 import {
   createConversationController,
@@ -164,7 +166,7 @@ function CollapsibleActivity(props: {
   };
 
   return (
-    <If when={props.thinking.trim().length > 0 || props.tools.length > 0}>
+    <If when={props.live || props.thinking.trim().length > 0 || props.tools.length > 0}>
       <View style={{ marginBottom: 8 }}>
         <View
           role="button"
@@ -187,12 +189,17 @@ function CollapsibleActivity(props: {
             gap: 6,
           }}
         >
-          <If when={props.live}>
-            <StatusDot kind="working" size={6} />
+          <If
+            when={props.live}
+            else={
+              <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
+                {summaryText()}
+              </Text>
+            }
+          >
+            <ThinkingMark size={14} />
+            <ShimmerText text={summaryText()} style={type.footnote} />
           </If>
-          <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
-            {summaryText()}
-          </Text>
           <Icon
             name={expanded() ? 'chevronDown' : 'chevronRight'}
             color={token('tertiary-foreground')}
@@ -447,18 +454,13 @@ function InlineInteractionCard(props: {
         denyLabel={tr('Deny')}
         onAllow={() => props.onRespond(allowAnswer('once'), 'success')}
         onDeny={() => props.onRespond(denyAnswer(), 'warning')}
+        sessionLabel={tr('This session')}
+        onAllowSession={
+          req().kind === 'permissions' || req().kind === 'computer_app'
+            ? () => props.onRespond(allowAnswer('session'), 'success')
+            : undefined
+        }
       />
-      <If when={req().kind === 'permissions' || req().kind === 'computer_app'}>
-        <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
-          <ActionButton
-            title={tr('Allow for this session')}
-            variant="secondary"
-            compact
-            disabled={props.busy}
-            onPress={() => props.onRespond(allowAnswer('session'), 'success')}
-          />
-        </View>
-      </If>
     </View>
   );
 }
@@ -472,6 +474,7 @@ export function ChatScreen(props: {
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const ctrl = createConversationController(rootId, sessionId);
+  const feedback = approvalFeedback();
 
   const atBottom = signal(true);
   const queueSheetOpen = signal(false);
@@ -491,7 +494,7 @@ export function ChatScreen(props: {
   const draft = () => getDraft(rootId, sessionId);
   const hasLivePreview = () => {
     const p = ctrl.livePreview();
-    return Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
+    return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
   const currentModelLabel = () => {
@@ -796,10 +799,15 @@ export function ChatScreen(props: {
                   when={turn().role === 'user'}
                   else={
                     <View style={{ width: '100%', gap: 4 }}>
+                      <Text style={{ ...type.caption, color: token('muted-foreground') }}>
+                        Maka
+                      </Text>
                       <CollapsibleActivity thinking={turn().thinking} tools={turn().tools} />
                       <If when={turn().body.length > 0}>
                         <TextView
                           markdown={turn().body}
+                          classes={{ codeBlockHeader: 'px-3 text-foreground' }}
+                          codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
                           selectable
                           style={{ color: token('foreground'), fontSize: 16, lineHeight: 24 }}
                           onLinkPress={({ url }) => void openUrl(url)}
@@ -874,6 +882,8 @@ export function ChatScreen(props: {
               <If when={ctrl.livePreview().body.trim().length > 0}>
                 <TextView
                   markdown={ctrl.livePreview().body}
+                  classes={{ codeBlockHeader: 'px-3 text-foreground' }}
+                  codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
                   selectable
                   style={{ color: token('foreground'), fontSize: 16, lineHeight: 24 }}
                   onLinkPress={({ url }) => void openUrl(url)}
@@ -890,12 +900,19 @@ export function ChatScreen(props: {
                 hostName={props.item.hostName}
                 sessionTitle={sessionTitle()}
                 busy={Boolean(ctrl.busyInteractionIds()[rec().requestId])}
-                onRespond={(answer, kind) =>
-                  void ctrl.respondInteraction(rec().requestId, answer, kind)
-                }
+                onRespond={async (answer, kind) => {
+                  const request = rec().request;
+                  if (
+                    (await ctrl.respondInteraction(rec().requestId, answer, kind)) &&
+                    request.kind !== 'question' &&
+                    request.kind !== 'form'
+                  )
+                    feedback.show(kind === 'success');
+                }}
               />
             )}
           </Each>
+          <ApprovalFeedback accepted={feedback.outcome()} />
         </Scroll>
 
         {/* Subtle Floating Jump-to-Latest Pill when user scrolled up */}
@@ -1044,7 +1061,7 @@ export function ChatScreen(props: {
                   paddingVertical: 6,
                   borderRadius: 21,
                   borderCurve: 'continuous',
-                  backgroundColor: token('grouped-bg'),
+                  backgroundColor: token('surface'),
                   justifyContent: 'center',
                 }}
               >

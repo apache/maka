@@ -264,7 +264,7 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     assert!(!support.path().join("hosts.json").exists());
 
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:First test Host").unwrap();
+    app.wait_for("text:First test Host · Online").unwrap();
     assert_eq!(first.host.list_peer_access().await.unwrap().len(), 1);
     assert!(matches!(
         first.handshakes.try_recv(),
@@ -572,7 +572,7 @@ async fn close_during_pairing_admission_cancels_and_ignores_late_admission() {
     app.wait_for("text:123456").unwrap();
     app.press("label:Confirm & Connect").unwrap();
     let confirm = confirming.try_recv().unwrap();
-    app.press("label:Close").unwrap();
+    app.press("label:Cancel").unwrap();
     cancelled.try_recv().unwrap();
     confirm.resolve(json!({
         "revision": 2,
@@ -626,6 +626,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     channel.handle("ios.setFilter", |call| {
         call.reply(Ok(json!({ "revision": 1, "devicePeerId": "ios-device", "filter": { "kind": "all_computers" }, "hosts": [], "active": null })));
     });
+    channel.handle("ios.ackMutationProgress", |_| {});
     let approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let approved_q = approved.clone();
     channel.handle("ios.hostQuery", move |mut call| {
@@ -634,6 +635,25 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         let method = data["method"].as_str().unwrap();
         let is_approved = approved_q.load(std::sync::atomic::Ordering::SeqCst);
         let value = match (root, method) {
+            ("root-a" | "root-b", "botOutbox") => json!({
+                "sessionId": null, "isBot": false, "through": 0, "readThrough": 0, "preview": "", "messages": []
+            }),
+            ("root-a" | "root-b", "projects") => json!({
+                "kind": "projects", "projects": [{
+                    "reference": {"id": "same-project-id"}, "name": if root == "root-a" { "Apple workspace" } else { "Linux workspace" },
+                    "path": if root == "root-a" { "/apple" } else { "/linux" }
+                }]
+            }),
+            ("root-a" | "root-b", "directories") => json!({"kind":"roots","roots":[]}),
+            ("root-a" | "root-b", "models") => json!({"kind":"ready","choices":[]}),
+            ("root-a" | "root-b", "connections") => json!({"kind":"ready","revision":9,"connections":[],"defaultTarget":null,"next":null}),
+            ("root-b", "assistantPreferences") => json!({
+                "revision": 7, "language": "en", "resolvedLanguage":"en", "workspaceInstructions":true,
+                "defaultSandboxMode":"workspace-write", "shell":{"titles":true}, "predictions":{"enabled":true},
+                "defaultCompactionPrompt":"Summarize.", "compactionPrompt":"Summarize."
+            }),
+            ("root-b", "globalInstructions") => json!({"kind":"available","source":"agents","revision":"etag","content":"Original instructions","exists":true}),
+
             ("root-a", "list") => json!({
                 "revision": "1",
                 "needsYouCount": 0,
@@ -683,9 +703,16 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     let approved_m = approved.clone();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
-        approved_m.store(true, std::sync::atomic::Ordering::SeqCst);
+        if data["method"] == "respond" {
+            approved_m.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let outcome = if data["method"] == "updateGlobalInstructions" {
+            "saved"
+        } else {
+            "recorded"
+        };
         mutate_tx.send(data).unwrap();
-        call.reply(Ok(json!({ "value": { "kind": "recorded" } })));
+        call.reply(Ok(json!({ "value": { "kind": outcome } })));
     });
     channel.handle("ios.subscribe", |mut call| {
         let data = call.take_data();
@@ -712,15 +739,22 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.wait_for("text:Auth refactor").unwrap();
     app.wait_for("text:Deploy migration").unwrap();
 
+    app.press("label:New Chat").unwrap();
+    app.wait_for("text:Apple workspace").unwrap();
+    app.press("label:Target computer").unwrap();
+    app.choose_menu_item("Linux Workstation").unwrap();
+    app.wait_for("text:Linux workspace").unwrap();
+    app.wait_for_gone("text:Apple workspace", Duration::from_secs(2))
+        .unwrap();
+    app.press("label:Cancel").unwrap();
+
     // Filter to MacBook Pro hides Linux Workstation's conversation.
     app.press("label:MacBook Pro").unwrap();
     app.wait_for_gone("text:Deploy migration", Duration::from_secs(2))
         .unwrap();
     app.wait_for("text:Auth refactor").unwrap();
 
-    // Switch back to All Computers and open Tab 2 Pending Inbox (live badge shows 1).
-    app.press("label:All Computers").unwrap();
-    app.wait_for("text:Deploy migration").unwrap();
+    // Pending stays aggregated even while Chats is scoped to the other computer.
     app.press("label:Pending").unwrap();
     app.wait_for("text:Allow service call DeployRunner?")
         .unwrap();
@@ -730,7 +764,33 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     let mutation = mutate_rx.recv().await.unwrap();
     assert_eq!(mutation["rootId"], "root-b");
     assert_eq!(mutation["input"]["requestId"], "req-b");
+    app.wait_for("text:Allowed").unwrap();
     app.wait_for("text:All caught up").unwrap();
+
+    app.press("label:Settings").unwrap();
+    app.wait_for("text:Paired Computers").unwrap();
+    assert!(!app.shows("text:General"));
+    app.press("label:Computer: Linux Workstation").unwrap();
+    app.wait_for("text:Computer Settings").unwrap();
+    app.press("label:General").unwrap();
+    app.wait_for("label:AGENTS.md").unwrap();
+    app.type_text("label:AGENTS.md", "Linux only").unwrap();
+    app.press("label:Save").unwrap();
+    let write = tokio::time::timeout(Duration::from_secs(2), mutate_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(write["rootId"], "root-b");
+    assert_eq!(write["endpoint"], "agent");
+    assert_eq!(write["method"], "updateGlobalInstructions");
+    assert_eq!(write["input"]["source"], "agents");
+    assert_eq!(write["input"]["revision"], "etag");
+    assert!(
+        write["input"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Linux only")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1049,4 +1109,182 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.wait_for_gone("label:Allow once", Duration::from_secs(2))
         .unwrap();
     app.wait_for("label:Open Conversation").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let connection = json!({
+            "rootId":"root", "hostName":"Settings Host", "peerId":"peer", "connected":true,
+            "epoch":"e", "session":"s", "generation":7,
+            "endpoints":["agent","settings","authentication","setup","web"], "transport":"quic"
+        });
+        call.resolve(json!({
+            "revision":1, "devicePeerId":"device", "hosts":[connection], "active":connection,
+            "connections":{"root":{"status":"connected","connection":connection}},
+        }));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let input = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","subscriptionId":input["subscriptionId"],"generation":7}),
+        );
+    });
+    channel.handle("ios.ackMutationProgress", |_| {});
+    let identity =
+        json!({"packageId":"test.provider","entryId":"provider","scope":"root","name":"fixture"});
+    let target = json!({"connectionId":"c1","revision":9,"slug":"fixture","configuration":{},"provider":identity});
+    let query_identity = identity.clone();
+    let query_target = target.clone();
+    let web = json!({"revision":6,"settings":{"enabled":true,"source":"custom","backend":{"kind":"tavily"}},"credential":{"configured":false,"revision":null},"presets":[]});
+    let query_web = web.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root");
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[]}),
+            "botOutbox" => json!({"isBot":false,"preview":"","through":0,"readThrough":0,"messages":[]}),
+            "connections" => json!({"kind":"ready","revision":12,"defaultTarget":null,"next":null,
+                "connections":[{"name":"Fixture provider","editable":true,"basis":{"connectionId":"c1","revision":9},
+                    "provider":query_identity,"enabled":true,"enabledModelCount":0}]}),
+            "models" => json!({"kind":"ready","revision":12,"choices":[],"next":null}),
+            "externalAgents" => json!({"runtimes":[],"state":{"kind":"disabled"}}),
+            "connection" => json!({"kind":"ready","target":query_target,"name":"Fixture provider","enabled":true,"enabledModelCount":0,
+                "editing":{"enabledModelIds":[],"discoveredModelIds":[],"modelOverrides":null,"requestBodyOverlay":null}}),
+            "provider" => json!({"identity":query_identity,"descriptor":{"label":"Fixture","configurationDefaults":{},"configurationSchema":{},
+                "authentication":[{"id":"api_key","label":"API Key","interactive":false},{"id":"device","label":"Sign in with device code","interactive":true}],
+                "discovery":true,"anonymous":false}}),
+            "credentialStatus" => json!({"kind":"status","status":{"locator":data["input"]["locator"],"configured":false,"credentialId":null,"revision":null}}),
+            "network" => json!({"revision":4,"rootId":"root","rootPath":"/work","proxy":{"enabled":true,"protocol":"https",
+                "host":"proxy.example","port":443,"bypassList":[],"autoBypassDomains":[],"authEnabled":true,"username":"phone"},
+                "credential":{"configured":false,"credentialId":null,"revision":null}}),
+            "snapshot" => query_web.clone(),
+            other => panic!("unexpected query {other}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let events = channel.clone();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        let result = match data["method"].as_str().unwrap() {
+            "saveCredential" => json!({"kind":"saved"}),
+            "saveKey" => json!({"kind":"updated","snapshot":web}),
+            "updateNetwork" => json!({"kind":"applied","result":{"kind":"committed","revision":5}}),
+            method @ ("discoverModels" | "loginCredential") => {
+                assert_eq!(data["generation"], 7);
+                let event = if method == "discoverModels" {
+                    json!({"message":"Reading provider catalog"})
+                } else {
+                    json!({"url":"https://example.com/device","userCode":"ABCD-1234"})
+                };
+                events.send("ios.mutationProgress", json!({
+                    "rootId":"root", "generation":7, "progressId":data["progressId"], "value":event,
+                    "sequence":1, "deliveryId":1
+                })).unwrap();
+                tx.send((data, call.into_reply())).unwrap();
+                return;
+            }
+            other => panic!("unexpected mutation {other}"),
+        };
+        tx.send((data, None)).unwrap();
+        call.resolve(json!({"value":result}));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.wait_for("label:Models & Connections").unwrap();
+    app.press("label:Models & Connections").unwrap();
+    app.wait_for("label:Fixture provider").unwrap();
+    app.press("label:Fixture provider").unwrap();
+    app.wait_for("label:API Key").unwrap();
+    app.type_text("label:API Key", "provider-fixture-secret")
+        .unwrap();
+    app.press("label:Save API key").unwrap();
+    let (call, _) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call["rootId"], "root");
+    assert_eq!(call["endpoint"], "settings");
+    assert_eq!(call["method"], "saveCredential");
+    assert_eq!(call["secret"], "provider-fixture-secret");
+    assert_eq!(
+        call["input"],
+        json!({"expected":target, "expectedCredential":null})
+    );
+
+    app.press("label:Discover models").unwrap();
+    app.wait_for("text:Reading provider catalog").unwrap();
+    let (call, reply) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call["endpoint"], "setup");
+    assert_eq!(call["input"], target);
+    reply
+        .unwrap()
+        .resolve(json!({"value":{"kind":"ready","connection":{"connectionId":"c1","revision":9}}}));
+    app.wait_for_gone("text:Reading provider catalog", Duration::from_secs(2))
+        .unwrap();
+
+    app.press("label:Sign in with device code").unwrap();
+    app.wait_for("text:ABCD-1234").unwrap();
+    app.wait_for("label:Copy code").unwrap();
+    app.wait_for("label:Open sign-in page").unwrap();
+    let (call, reply) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call["endpoint"], "authentication");
+    assert_eq!(call["input"]["method"], "device");
+    reply.unwrap().resolve(json!({"value":{"kind":"saved"}}));
+    app.wait_for_gone("text:ABCD-1234", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("label:Models & Connections").unwrap();
+    app.press("label:Models & Connections").unwrap();
+    app.press("label:Settings").unwrap();
+
+    app.press("label:Web Search").unwrap();
+    app.wait_for("label:API Key").unwrap();
+    app.type_text("label:API Key", "web-fixture-secret")
+        .unwrap();
+    app.press("label:Save API key").unwrap();
+    let (call, _) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call["rootId"], "root");
+    assert_eq!(call["endpoint"], "web");
+    assert_eq!(call["method"], "saveKey");
+    assert_eq!(call["secret"], "web-fixture-secret");
+    assert_eq!(call["input"], json!({"settingsRevision":6,"revision":null}));
+    app.press("label:Settings").unwrap();
+
+    app.press("label:Network Proxy").unwrap();
+    app.wait_for("label:Password").unwrap();
+    app.type_text("label:Password", "proxy-fixture-secret")
+        .unwrap();
+    app.press("label:Save").unwrap();
+    let (call, _) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call["rootId"], "root");
+    assert_eq!(call["endpoint"], "settings");
+    assert_eq!(call["method"], "updateNetwork");
+    assert_eq!(call["secret"], "proxy-fixture-secret");
+    assert_eq!(call["input"]["credential"], "replace");
+    assert_eq!(call["input"]["expectedPolicyRevision"], 4);
+    assert_eq!(call["input"]["networkProxy"]["host"], "proxy.example");
+    assert!(!call["input"].to_string().contains("proxy-fixture-secret"));
 }

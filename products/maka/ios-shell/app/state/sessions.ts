@@ -33,7 +33,15 @@ import {
   type AgentWorkspaceSelection,
   type SubscriptionHandle,
 } from '../bridge';
-import { connectedHosts, hostById, selectedScopeRootId, showToast } from './hostPool';
+import {
+  activeHostInfo,
+  connectedHosts,
+  hostById,
+  savedHosts,
+  selectedScopeRootId,
+  showToast,
+} from './hostPool';
+import type { ServiceMethods } from '../../../../../packages/plugin-sdk/src/generated/methods';
 import { hapticNotification, hapticSelection } from './preferences';
 
 export interface ScopedSession {
@@ -44,11 +52,57 @@ export interface ScopedSession {
 }
 
 const sessionsByHost = signal<Record<string, ScopedSession[]>>({});
+type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
+const botsByHost = signal<Record<string, BotOutbox>>({});
+
+export const scopedBots = computed(() =>
+  connectedHosts()
+    .filter(
+      ({ host, connection }) =>
+        hasAgentEndpoint(connection) &&
+        (selectedScopeRootId() === 'all' || selectedScopeRootId() === host.rootId),
+    )
+    .map(({ host }) => {
+      const outbox = botsByHost()[host.rootId];
+      const session = outbox?.sessionId
+        ? findScopedSession(host.rootId, outbox.sessionId)
+        : undefined;
+      return { host, outbox, session };
+    }),
+);
+
+export async function openHostBot(rootId: string, hostName: string): Promise<ScopedSession> {
+  const result = await hostMutate<ServiceMethods['agent']['openBot']['output']>(
+    'agent',
+    'openBot',
+    {},
+    { rootId },
+  );
+  if (result.kind !== 'opened') throw new Error(result.reason);
+  const observed = await hostQuery<{ session: AgentSession }>(
+    'agent',
+    'observe',
+    { sessionId: result.sessionId },
+    undefined,
+    rootId,
+  );
+  await refreshHostSessions(rootId, hostName);
+  return { key: rootId + '::' + result.sessionId, rootId, hostName, session: observed.session };
+}
+
 const loading = signal(false);
 const searchQuery = signal('');
 const showArchived = signal(false);
 
-const activeSubscriptions = new Map<string, { generation: number; handle: SubscriptionHandle }>();
+const activeSubscriptions = new Map<
+  string,
+  {
+    generation: number | undefined;
+    catalogId: string;
+    botId: string;
+    handles: SubscriptionHandle[];
+  }
+>();
 let subSeq = 0;
 let initialized = false;
 
@@ -68,8 +122,8 @@ export function setShowingArchivedSessions(archived: boolean) {
 export const allSessions = computed<ScopedSession[]>(() => {
   const byHost = sessionsByHost();
   const merged: ScopedSession[] = [];
-  for (const list of Object.values(byHost)) {
-    for (const item of list) merged.push(item);
+  for (const host of savedHosts()) {
+    for (const item of byHost[host.rootId] ?? []) merged.push(item);
   }
   merged.sort((a, b) => (b.session.updatedAt ?? 0) - (a.session.updatedAt ?? 0));
   return merged;
@@ -80,6 +134,7 @@ export const filteredSessions = computed<ScopedSession[]>(() => {
   const q = searchQuery().trim().toLowerCase();
   const archived = showArchived();
   return allSessions().filter((item) => {
+    if (botsByHost()[item.rootId]?.sessionId === item.session.id) return false;
     if (scope !== 'all' && item.rootId !== scope) return false;
     if (Boolean(item.session.archived) !== archived) return false;
     if (!q) return true;
@@ -127,21 +182,30 @@ export function findScopedSession(rootId: string, sessionId: string): ScopedSess
 
 export async function refreshHostSessions(rootId: string, hostName: string) {
   try {
-    const page = await hostQuery<AgentSessionPage>(
-      'agent',
-      'list',
-      {
-        kind: null,
-        filter: showArchived() ? 'archived' : 'all',
-        includeArchived: showArchived(),
-        rootsOnly: false,
-        position: { kind: 'start' },
-        scope: { kind: 'all' },
-        titleQuery: '',
-      },
-      undefined,
-      rootId,
-    );
+    const generation = activeHostInfo(rootId)?.generation;
+    const [page, outbox] = await Promise.all([
+      hostQuery<AgentSessionPage>(
+        'agent',
+        'list',
+        {
+          kind: null,
+          filter: showArchived() ? 'archived' : 'all',
+          includeArchived: showArchived(),
+          rootsOnly: false,
+          position: { kind: 'start' },
+          scope: { kind: 'all' },
+          titleQuery: '',
+        },
+        undefined,
+        rootId,
+      ),
+      hostQuery<BotOutbox>('agent', 'botOutbox', { limit: 0 }, undefined, rootId).catch((cause) => {
+        console.warn('Bot outbox unavailable', cause);
+        return undefined;
+      }),
+    ]);
+    if (activeHostInfo(rootId)?.generation !== generation) return;
+    if (outbox) botsByHost.update((prev) => ({ ...prev, [rootId]: outbox }));
     const items: ScopedSession[] = (page?.sessions ?? []).map((session) => ({
       key: rootId + '::' + session.id,
       rootId,
@@ -249,35 +313,41 @@ export async function deleteSession(item: ScopedSession): Promise<boolean> {
 }
 
 export async function listHostProjects(rootId: string): Promise<AgentProject[]> {
-  try {
-    const page = await hostQuery<{ kind: string; projects?: AgentProject[] }>(
-      'agent',
-      'projects',
-      { kind: 'list', cursor: null },
-      undefined,
-      rootId,
-    );
-    return page && page.kind === 'projects' && Array.isArray(page.projects) ? page.projects : [];
-  } catch {
-    return [];
-  }
+  const page = await hostQuery<ServiceMethods['agent']['projects']['output']>(
+    'agent',
+    'projects',
+    { kind: 'list', cursor: null },
+    undefined,
+    rootId,
+  );
+  if (page.kind !== 'projects') throw new Error(page.kind);
+  return page.projects;
 }
 
 export async function listHostDirectoryRoots(
   rootId: string,
 ): Promise<{ name: string; path: string }[]> {
-  try {
-    const page = await hostQuery<{ kind: string; roots?: { name: string; path: string }[] }>(
-      'agent',
-      'directories',
-      { kind: 'roots' },
-      undefined,
-      rootId,
-    );
-    return page && page.kind === 'roots' && Array.isArray(page.roots) ? page.roots : [];
-  } catch {
-    return [];
-  }
+  const page = await hostQuery<ServiceMethods['agent']['directories']['output']>(
+    'agent',
+    'directories',
+    { kind: 'roots' },
+    undefined,
+    rootId,
+  );
+  if (page.kind !== 'roots') throw new Error(page.kind);
+  return page.roots;
+}
+
+export async function roomMembers(rootId: string, sessionId: string) {
+  const result = await hostQuery<ServiceMethods['agent']['history']['output']>(
+    'agent',
+    'history',
+    { sessionId, position: { kind: 'tail' }, view: 'chat', includeThinking: false },
+    undefined,
+    rootId,
+  );
+  if (result.kind !== 'room') throw new Error(result.kind);
+  return result.page.participants ?? [];
 }
 
 export async function listHostDirectoryChildren(
@@ -311,6 +381,7 @@ export async function createHostSession(params: {
   kind: 'agent' | 'room';
   workspace: AgentWorkspaceSelection;
   automaticTitle: boolean;
+  presetId?: string;
   backend?: AgentBackendPreference | null;
 }): Promise<ScopedSession> {
   const res = await hostMutate<
@@ -323,7 +394,7 @@ export async function createHostSession(params: {
     {
       incognito: false,
       kind: params.kind,
-      presetId: null,
+      presetId: params.presetId ?? null,
       backend: params.kind === 'room' ? null : (params.backend ?? null),
       automaticTitle: params.kind === 'room' ? false : params.automaticTitle,
       tools: null,
@@ -361,66 +432,67 @@ export function startSessionsStore() {
   initialized = true;
 
   onSubscriptionItem((payload) => {
-    if (!payload.subscriptionId.startsWith('catalog:')) return;
     const rootId = payload.rootId;
     if (!rootId) return;
-    const entry = connectedHosts().find((c) => c.host.rootId === rootId);
-    if (entry) {
-      void refreshHostSessions(rootId, entry.host.hostName);
+    const sub = activeSubscriptions.get(rootId);
+    if (!sub || activeHostInfo(rootId)?.generation !== sub.generation) return;
+    if (payload.subscriptionId === sub.botId) {
+      const outbox = payload.item as BotOutbox;
+      botsByHost.update((prev) => ({ ...prev, [rootId]: outbox }));
+    } else if (payload.subscriptionId === sub.catalogId) {
+      const host = hostById(rootId);
+      if (host) void refreshHostSessions(rootId, host.hostName);
     }
   });
 
-  onSubscriptionEnded((payload) => {
-    if (!payload.subscriptionId.startsWith('catalog:')) return;
-    if (payload.rootId) {
-      const existing = activeSubscriptions.get(payload.rootId);
-      if (existing && existing.handle.subscriptionId === payload.subscriptionId) {
-        activeSubscriptions.delete(payload.rootId);
-      }
-    }
+  onSubscriptionEnded(({ rootId, subscriptionId }) => {
+    if (!rootId) return;
+    const sub = activeSubscriptions.get(rootId);
+    if (sub) sub.handles = sub.handles.filter((handle) => handle.subscriptionId !== subscriptionId);
   });
 
   effect(() => {
-    const current = connectedHosts().filter((entry) => hasAgentEndpoint(entry.connection));
-    const currentRoots = new Set(current.map((entry) => entry.host.rootId));
-
-    for (const [rootId, sub] of [...activeSubscriptions.entries()]) {
-      if (!currentRoots.has(rootId)) {
-        activeSubscriptions.delete(rootId);
-        void unsubscribe(sub.handle).catch(() => {});
+    const current = connectedHosts().filter(({ connection }) => hasAgentEndpoint(connection));
+    const roots = new Map(
+      current.map(({ host, connection }) => [host.rootId, connection.generation]),
+    );
+    for (const [rootId, sub] of activeSubscriptions) {
+      if (roots.has(rootId) && roots.get(rootId) === sub.generation) continue;
+      activeSubscriptions.delete(rootId);
+      for (const handle of sub.handles) {
+        void unsubscribe(handle).catch((cause) =>
+          console.warn('Could not stop session watch', cause),
+        );
       }
     }
-
-    for (const entry of current) {
-      const { rootId, hostName } = entry.host;
-      const gen = entry.connection.generation ?? 0;
-      const existing = activeSubscriptions.get(rootId);
-      if (existing && existing.generation === gen) continue;
-      if (existing) {
-        activeSubscriptions.delete(rootId);
-        void unsubscribe(existing.handle).catch(() => {});
-      }
+    for (const { host, connection } of current) {
+      const { rootId, hostName } = host;
+      if (activeSubscriptions.has(rootId)) continue;
+      const sub = {
+        generation: connection.generation,
+        catalogId: 'catalog:' + rootId + ':' + String(++subSeq),
+        botId: 'bot:' + rootId + ':' + String(subSeq),
+        handles: [] as SubscriptionHandle[],
+      };
+      activeSubscriptions.set(rootId, sub);
       void refreshHostSessions(rootId, hostName);
-      const subscriptionId = 'catalog:' + rootId + ':' + String(++subSeq);
-      void subscribe(
-        subscriptionId,
-        'agent',
-        'catalog',
-        {
-          kind: null,
-          filter: 'all',
-          includeArchived: false,
-          rootsOnly: false,
-          position: { kind: 'start' },
-          scope: { kind: 'all' },
-          titleQuery: '',
-        },
-        rootId,
-      )
-        .then((handle) => {
-          activeSubscriptions.set(rootId, { generation: gen, handle });
-        })
-        .catch(() => {});
+      const watch = (id: string, method: string, input: Record<string, unknown>) =>
+        subscribe(id, 'agent', method, input, rootId)
+          .then((handle) => {
+            if (activeSubscriptions.get(rootId) === sub) sub.handles.push(handle);
+            else return unsubscribe(handle);
+          })
+          .catch((cause) => console.warn('Could not watch ' + method, cause));
+      void watch(sub.catalogId, 'catalog', {
+        kind: null,
+        filter: 'all',
+        includeArchived: false,
+        rootsOnly: false,
+        position: { kind: 'start' },
+        scope: { kind: 'all' },
+        titleQuery: '',
+      });
+      void watch(sub.botId, 'watchBotOutbox', { limit: 0 });
     }
   });
 }

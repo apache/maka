@@ -31,6 +31,7 @@ export function ActionButton(props: {
   icon?: IconName;
   disabled?: boolean;
   compact?: boolean;
+  minHeight?: number;
   accessibilityLabel?: string;
   testID?: string;
 }) {
@@ -73,7 +74,7 @@ export function ActionButton(props: {
       onPress={props.onPress}
       class="active:opacity-70 transition-opacity duration-150 disabled:opacity-45"
       style={{
-        minHeight: compact() ? 40 : spacing.buttonMinHeight,
+        minHeight: props.minHeight ?? (compact() ? 40 : spacing.buttonMinHeight),
         paddingHorizontal: compact() ? 14 : 18,
         paddingVertical: compact() ? 9 : 13,
         borderRadius: spacing.controlRadius,

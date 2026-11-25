@@ -153,6 +153,7 @@ export function DiffScreen(props: {
         <DiffView
           patch={normalizedPatch()}
           layout="unified"
+          softWrap
           inline="wordAlt"
           indicators="sign"
           fontSize={12.5}
@@ -192,7 +193,7 @@ export function DiffScreen(props: {
           }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Icon name="quote" color={token('primary')} size={15} />
+            <Icon name="quote" color={token('primary')} size={18} />
             <Text
               style={{
                 ...type.footnote,

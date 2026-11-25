@@ -34,13 +34,17 @@ export function ScopePills(props: {
   onSelect: (id: string) => void;
 }) {
   return (
-    <Scroll horizontal scrollbar={false} style={{ marginBottom: 12 }}>
+    <Scroll
+      horizontal
+      scrollbar={false}
+      style={{ marginBottom: 12 }}
+      contentStyle={{ paddingHorizontal: spacing.pageX }}
+    >
       <View
         style={{
           flexDirection: 'row',
           alignItems: 'center',
           gap: 8,
-          paddingHorizontal: spacing.pageX,
         }}
       >
         <Each of={[...props.items]} key={(item) => item.id}>

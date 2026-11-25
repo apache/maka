@@ -20,13 +20,13 @@
 import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { describeChildDecision, describePermissions } from '../../approval';
+import { ApprovalFeedback, approvalFeedback } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
-import { hostStatusKind, savedHosts, selectedScopeRootId, selectScope } from '../../state/hostPool';
+import { savedHosts } from '../../state/hostPool';
 import {
-  filteredInboxItems,
+  allInboxItems,
   inboxLoading,
   isInboxItemBusy,
-  pendingCountForHost,
   refreshAllInbox,
   respondInboxItem,
   type InboxItem,
@@ -104,7 +104,10 @@ function interactionDetail(item: InboxItem): { text?: string; mono?: boolean } {
   return {};
 }
 
-function buildAllowAnswer(item: InboxItem): Record<string, unknown> | null {
+function buildAllowAnswer(
+  item: InboxItem,
+  scope: 'once' | 'session' = 'once',
+): Record<string, unknown> | null {
   const req = item.record?.request;
   if (!req) return null;
   switch (req.kind) {
@@ -113,7 +116,7 @@ function buildAllowAnswer(item: InboxItem): Record<string, unknown> | null {
         kind: 'permissions',
         decision: {
           decision: 'allow',
-          scope: 'once',
+          scope,
           permissions: req.request.permissions,
         },
       };
@@ -122,7 +125,7 @@ function buildAllowAnswer(item: InboxItem): Record<string, unknown> | null {
     case 'client_capability':
       return { kind: 'client_capability', decision: 'allow' };
     case 'computer_app':
-      return { kind: 'computer_app', decision: 'once' };
+      return { kind: 'computer_app', decision: scope };
     case 'session_approval':
       return { kind: 'session_approval', decision: 'approve' };
     default:
@@ -153,8 +156,17 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
   const category = signal<CategoryFilter>('all');
 
+  const feedback = approvalFeedback();
+  const respond = async (
+    item: InboxItem,
+    answer: Record<string, unknown>,
+    kind: 'success' | 'warning',
+  ) => {
+    if (await respondInboxItem(item, answer, kind)) feedback.show(kind === 'success');
+  };
+
   const visibleItems = () => {
-    const list = filteredInboxItems();
+    const list = allInboxItems();
     if (category() === 'questions') {
       return list.filter((i) => i.summary.kind === 'question');
     }
@@ -164,18 +176,8 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
     return list;
   };
 
-  const scopeItems = (): ScopePillItem[] => [
-    { id: 'all', label: tr('All Computers') },
-    ...savedHosts().map((host) => ({
-      id: host.rootId,
-      label: host.hostName,
-      status: hostStatusKind(host.rootId),
-      count: pendingCountForHost(host.rootId),
-    })),
-  ];
-
   const categoryItems = (): ScopePillItem[] => {
-    const all = filteredInboxItems();
+    const all = allInboxItems();
     const qCount = all.filter((i) => i.summary.kind === 'question').length;
     const aCount = all.length - qCount;
     return [
@@ -206,15 +208,7 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
             paddingBottom: insets().bottom + spacing.tabBarClearance,
           }}
         >
-          <If when={savedHosts().length > 0}>
-            <ScopePills
-              items={scopeItems()}
-              selectedId={selectedScopeRootId()}
-              onSelect={selectScope}
-            />
-          </If>
-
-          <If when={filteredInboxItems().length > 0}>
+          <If when={allInboxItems().length > 0}>
             <ScopePills
               items={categoryItems()}
               selectedId={category()}
@@ -225,10 +219,15 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
             />
           </If>
 
+          <If when={feedback.outcome() !== null}>
+            <View style={{ paddingHorizontal: spacing.pageX, paddingBottom: 12 }}>
+              <ApprovalFeedback accepted={feedback.outcome()} />
+            </View>
+          </If>
           <If
             when={visibleItems().length > 0}
             else={
-              <View style={{ flex: 1, justifyContent: 'center', paddingBottom: 150 }}>
+              <View style={{ flex: 1, justifyContent: 'center' }}>
                 <EmptyState
                   icon="checkCircle"
                   tint="success"
@@ -245,9 +244,18 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                 {(item, index) => {
                   const detail = () => interactionDetail(item());
                   const allow = () => buildAllowAnswer(item());
+                  const allowSession = () => {
+                    const kind = item().record?.request.kind;
+                    return kind === 'permissions' || kind === 'computer_app'
+                      ? buildAllowAnswer(item(), 'session')
+                      : null;
+                  };
                   const deny = () => buildDenyAnswer(item());
                   const source = () =>
-                    [item().hostName, item().workspaceName, item().sessionTitle]
+                    [
+                      savedHosts().length > 1 ? item().hostName : '',
+                      item().workspaceName || item().sessionTitle,
+                    ]
                       .filter(Boolean)
                       .join(' · ');
                   return (
@@ -258,16 +266,20 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                       detail={detail().text}
                       monospaceDetail={detail().mono}
                       busy={isInboxItemBusy(item().key)}
-                      allowLabel={allow() ? tr('Allow') : undefined}
-                      denyLabel={deny() ? tr('Deny') : undefined}
-                      onAllow={
-                        allow()
-                          ? () => void respondInboxItem(item(), allow()!, 'success')
+                      allowLabel={
+                        allow() ? (allowSession() ? tr('Allow once') : tr('Allow')) : undefined
+                      }
+                      sessionLabel={tr('This session')}
+                      onAllowSession={
+                        allowSession()
+                          ? () => void respond(item(), allowSession()!, 'success')
                           : undefined
                       }
-                      onDeny={
-                        deny() ? () => void respondInboxItem(item(), deny()!, 'warning') : undefined
+                      denyLabel={deny() ? tr('Deny') : undefined}
+                      onAllow={
+                        allow() ? () => void respond(item(), allow()!, 'success') : undefined
                       }
+                      onDeny={deny() ? () => void respond(item(), deny()!, 'warning') : undefined}
                       onPress={() => props.onOpenItem(item())}
                       divider={index() < visibleItems().length - 1}
                     />

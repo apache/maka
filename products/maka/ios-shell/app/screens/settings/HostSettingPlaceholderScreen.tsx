@@ -122,6 +122,7 @@ export function HostSettingPlaceholderScreen(props: {
   domain: HostSettingDomain;
   rootId: string;
   onBack: () => void;
+  backLabel: string;
 }) {
   const insets = safeAreaInsets();
   const meta = () => HOST_SETTING_DOMAINS[props.domain];
@@ -136,7 +137,7 @@ export function HostSettingPlaceholderScreen(props: {
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
       header={
-        <ScreenHeader title={meta().title()} backLabel={tr('Settings')} onBack={props.onBack} />
+        <ScreenHeader title={meta().title()} backLabel={props.backLabel} onBack={props.onBack} />
       }
     >
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>

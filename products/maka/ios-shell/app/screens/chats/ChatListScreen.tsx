@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { SegmentedControl, isAvailable } from 'nsh/mobile';
+import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { AlertDialog, ContextMenu, Input, NavPage, Sheet } from 'nsh/base';
 import { hasAgentEndpoint } from '../../bridge';
 import { currentLocale, tr } from '../../locale';
@@ -33,6 +35,7 @@ import {
   isHostConnected,
   openAddComputerFlow,
   savedHosts,
+  showToast,
   selectedScopeRootId,
   selectScope,
 } from '../../state/hostPool';
@@ -50,6 +53,10 @@ import {
   showingArchivedSessions,
   togglePinSession,
   workingSessions,
+  filteredSessions,
+  scopedBots,
+  openHostBot,
+  roomMembers,
   type ScopedSession,
 } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
@@ -58,6 +65,7 @@ import {
   BannerNotice,
   EmptyState,
   GroupDivider,
+  GroupRow,
   Icon,
   InsetGroup,
   ScopePills,
@@ -96,12 +104,29 @@ function SessionRow(props: {
   const s = () => props.item.session;
   const workspaceName = () =>
     s().workspace?.name || s().workspace?.path?.split('/').filter(Boolean).pop() || '';
+  const showComputer = () => savedHosts().length > 1 && selectedScopeRootId() === 'all';
   const attribution = () =>
-    workspaceName() ? props.item.hostName + ' · ' + workspaceName() : props.item.hostName;
+    [showComputer() ? props.item.hostName : '', workspaceName()].filter(Boolean).join(' · ');
+
+  const memberSummary = signal('');
+  effect(() => {
+    const { rootId, session } = props.item;
+    if (session.kind !== 'room' || !isHostConnected(rootId)) return;
+    let cancelled = false;
+    cleanup(() => {
+      cancelled = true;
+    });
+    void roomMembers(rootId, session.id)
+      .then((members) => {
+        if (!cancelled) memberSummary.set(members.map((member) => member.title).join(', '));
+      })
+      .catch((cause) => {
+        if (!cancelled) console.warn('Room members unavailable', cause);
+      });
+  });
 
   const statusKind = () => {
     if (s().activity === 'waiting') return 'waiting' as const;
-    if (s().activity === 'working') return 'working' as const;
     return null;
   };
 
@@ -142,7 +167,13 @@ function SessionRow(props: {
           <If when={statusKind()}>
             <StatusDot kind={statusKind()!} size={8} />
           </If>
-          <If when={s().pinned && !statusKind()}>
+          <If when={s().kind === 'room'}>
+            <Icon name="users" color={token('muted-foreground')} size={14} />
+          </If>
+          <If when={s().activity === 'working'}>
+            <ThinkingMark size={14} />
+          </If>
+          <If when={s().pinned && s().activity === 'idle'}>
             <Icon name="pin" color={token('primary')} size={13} />
           </If>
           <Text
@@ -162,7 +193,7 @@ function SessionRow(props: {
               style={{
                 ...type.caption,
                 fontVariant: ['tabular-nums'],
-                color: token('tertiary-foreground'),
+                color: token('muted-foreground'),
               }}
             >
               {formatRelativeTime(s().updatedAt)}
@@ -171,7 +202,9 @@ function SessionRow(props: {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Icon name="laptop" color={token('muted-foreground')} size={13} />
+          <If when={showComputer()}>
+            <Icon name="laptop" color={token('muted-foreground')} size={13} />
+          </If>
           <Text
             style={{
               ...type.footnote,
@@ -189,9 +222,7 @@ function SessionRow(props: {
             </Text>
           </If>
           <If when={s().activity === 'working'}>
-            <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
-              {tr('Running')}
-            </Text>
+            <ShimmerText text={tr('Running')} style={type.caption} surface="surface" />
           </If>
           <If when={s().kind === 'room' && s().activity === 'idle'}>
             <Text style={{ ...type.caption, color: token('primary') }}>{tr('Room')}</Text>
@@ -270,10 +301,29 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
   const renameValue = signal('');
   const renamingBusy = signal(false);
 
-  const canCompose = () => connectedHosts().some((c) => hasAgentEndpoint(c.connection));
+  const category = signal(0);
+  const hasRooms = () => filteredSessions().some((item) => item.session.kind === 'room');
+  const inCategory = (items: ScopedSession[]) =>
+    !hasRooms() || category() === 0
+      ? items
+      : items.filter((item) => item.session.kind === (category() === 2 ? 'room' : 'agent'));
+  const canCompose = () =>
+    connectedHosts().some(
+      (c) =>
+        hasAgentEndpoint(c.connection) &&
+        (selectedScopeRootId() === 'all' || c.host.rootId === selectedScopeRootId()),
+    );
+  const botStrip = () => savedHosts().length > 1 && selectedScopeRootId() === 'all';
+  const openBot = async (rootId: string, hostName: string) => {
+    try {
+      props.onOpenSession(await openHostBot(rootId, hostName));
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
 
   const scopeItems = (): ScopePillItem[] => [
-    { id: 'all', label: tr('All Computers') },
+    { id: 'all', label: tr('All') },
     ...savedHosts().map((host) => ({
       id: host.rootId,
       label: host.hostName,
@@ -282,10 +332,10 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
   ];
 
   const hasAnySessions = () =>
-    needsAttentionSessions().length > 0 ||
-    workingSessions().length > 0 ||
-    pinnedSessions().length > 0 ||
-    recentSessions().length > 0;
+    inCategory(needsAttentionSessions()).length > 0 ||
+    inCategory(workingSessions()).length > 0 ||
+    inCategory(pinnedSessions()).length > 0 ||
+    inCategory(recentSessions()).length > 0;
 
   const selectedOfflineHost = () => {
     const scope = selectedScopeRootId();
@@ -420,12 +470,98 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
             onChange={setSessionSearchQuery}
           />
 
-          <If when={savedHosts().length > 0}>
+          <If when={savedHosts().length > 1}>
             <ScopePills
               items={scopeItems()}
               selectedId={selectedScopeRootId()}
               onSelect={selectScope}
             />
+          </If>
+
+          <If
+            when={
+              !showingArchivedSessions() &&
+              scopedBots().length > 0 &&
+              (!hasRooms() || category() !== 2)
+            }
+          >
+            <Scroll
+              horizontal={botStrip()}
+              scrollbar={false}
+              style={{ flexGrow: 0, flexShrink: 0, marginBottom: 12 }}
+              contentStyle={{ paddingHorizontal: spacing.pageX }}
+            >
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <Each of={scopedBots()} key={(bot) => bot.host.rootId}>
+                  {(bot) => (
+                    <View
+                      style={{
+                        flexGrow: botStrip() ? 0 : 1,
+                        borderRadius: 12,
+                        backgroundColor: token('surface'),
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <GroupRow
+                        leading={
+                          bot().session?.session.activity === 'working' ? (
+                            <ThinkingMark />
+                          ) : (
+                            <Icon name="sparkles" color={token('primary')} size={16} />
+                          )
+                        }
+                        title={
+                          botStrip() ? tr('{name} Bot', { name: bot().host.hostName }) : 'Maka Bot'
+                        }
+                        accessibilityLabel={
+                          botStrip() ? 'Maka Bot · ' + bot().host.hostName : 'Maka Bot'
+                        }
+                        subtitle={botStrip() ? undefined : bot().outbox?.preview || undefined}
+                        trailing={
+                          bot().session?.session.activity === 'working' ? (
+                            <ShimmerText
+                              text={tr('Running')}
+                              style={type.caption}
+                              surface="surface"
+                            />
+                          ) : (bot().outbox?.through ?? 0) > (bot().outbox?.readThrough ?? 0) ||
+                            bot().session?.session.hasUnread ? (
+                            <StatusDot kind="working" size={7} />
+                          ) : undefined
+                        }
+                        chevron={!botStrip()}
+                        onPress={() => void openBot(bot().host.rootId, bot().host.hostName)}
+                      />
+                    </View>
+                  )}
+                </Each>
+              </View>
+            </Scroll>
+          </If>
+
+          <If when={hasRooms()}>
+            <If
+              when={isAvailable}
+              else={
+                <ScopePills
+                  items={[
+                    { id: '0', label: tr('All') },
+                    { id: '1', label: tr('Chats') },
+                    { id: '2', label: tr('Rooms') },
+                  ]}
+                  selectedId={String(category())}
+                  onSelect={(id) => category.set(Number(id))}
+                />
+              }
+            >
+              <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 12 }}>
+                <SegmentedControl
+                  items={[{ title: tr('All') }, { title: tr('Chats') }, { title: tr('Rooms') }]}
+                  selectedIndex={category()}
+                  onChange={({ index }) => category.set(index)}
+                />
+              </View>
+            </If>
           </If>
 
           <If when={currentRecoveryNotice()}>
@@ -453,25 +589,25 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
 
           <SessionSection
             title={tr('Needs Attention')}
-            items={needsAttentionSessions()}
+            items={inCategory(needsAttentionSessions())}
             onOpen={props.onOpenSession}
             onRequestRename={openRename}
           />
           <SessionSection
             title={tr('Running')}
-            items={workingSessions()}
+            items={inCategory(workingSessions())}
             onOpen={props.onOpenSession}
             onRequestRename={openRename}
           />
           <SessionSection
             title={tr('Pinned')}
-            items={pinnedSessions()}
+            items={inCategory(pinnedSessions())}
             onOpen={props.onOpenSession}
             onRequestRename={openRename}
           />
           <SessionSection
             title={showingArchivedSessions() ? tr('Archived') : tr('Recent')}
-            items={recentSessions()}
+            items={inCategory(recentSessions())}
             onOpen={props.onOpenSession}
             onRequestRename={openRename}
           />

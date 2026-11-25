@@ -31,11 +31,21 @@ import { AdvancedConnectSheet } from './screens/onboarding/AdvancedConnectSheet'
 import { ConfirmDeviceScreen } from './screens/onboarding/ConfirmDeviceScreen';
 import { ScanScreen } from './screens/onboarding/ScanScreen';
 import { WelcomeScreen } from './screens/onboarding/WelcomeScreen';
+import { ComputerSettingsScreen } from './screens/settings/ComputerSettingsScreen';
 import { DeviceDetailScreen } from './screens/settings/DeviceDetailScreen';
 import {
   HostSettingPlaceholderScreen,
   type HostSettingDomain,
 } from './screens/settings/HostSettingPlaceholderScreen';
+import { GeneralSettingsScreen } from './screens/settings/GeneralSettingsScreen';
+import { ModelsSettingsScreen, ProviderPicker } from './screens/settings/ModelsSettingsScreen';
+import {
+  ConnectionFormScreen,
+  type ConnectionTarget,
+} from './screens/settings/ConnectionFormScreen';
+import { ConnectionModelScreen } from './screens/settings/ConnectionModelScreen';
+import { WebSearchSettingsScreen } from './screens/settings/WebSearchSettingsScreen';
+import { NetworkSettingsScreen } from './screens/settings/NetworkSettingsScreen';
 import { SettingsRootScreen } from './screens/settings/SettingsRootScreen';
 import type { ParsedDiffFile } from './state/chat';
 import {
@@ -49,6 +59,7 @@ import {
   isBootstrapped,
   isPairingModalOpen,
   startHostPool,
+  hostById,
 } from './state/hostPool';
 import { startInboxStore, totalPendingCount, type InboxItem } from './state/inbox';
 import { hapticSelection } from './state/preferences';
@@ -66,7 +77,17 @@ type InboxRoute = { name: 'list' } | { name: 'review'; item: InboxItem };
 type SettingsRoute =
   | { name: 'root' }
   | { name: 'device'; rootId: string }
-  | { name: 'hostSetting'; domain: HostSettingDomain; rootId: string };
+  | { name: 'computer'; rootId: string }
+  | { name: 'hostSetting'; domain: HostSettingDomain; rootId: string; backLabel?: string }
+  | { name: 'providers'; rootId: string; catalogRevision: number }
+  | { name: 'connection'; rootId: string; target: ConnectionTarget; backLabel?: string }
+  | {
+      name: 'model';
+      rootId: string;
+      connectionId: string;
+      modelId: string;
+      connectionName: string;
+    };
 
 function OnboardingFlow(props: { isModal: boolean }) {
   const nav = createNavStack<OnboardingRoute>([{ name: 'welcome' }]);
@@ -129,6 +150,8 @@ function MainTabShell() {
   const activeTab = signal(0);
   const chatsNav = createNavStack<ChatsRoute>([{ name: 'list' }]);
   const inboxNav = createNavStack<InboxRoute>([{ name: 'list' }]);
+  const modelSettingsRevision = signal(0);
+  const modelSettingsChanged = () => modelSettingsRevision.update((value) => value + 1);
   const settingsNav = createNavStack<SettingsRoute>([{ name: 'root' }]);
 
   const tabItems = (): TabBarItem[] => {
@@ -291,13 +314,131 @@ function MainTabShell() {
       >
         <NavStack state={settingsNav} style={{ flex: 1 }}>
           {(route) => {
+            if (route.name === 'computer') {
+              return (
+                <ComputerSettingsScreen
+                  rootId={route.rootId}
+                  onBack={() => settingsNav.pop()}
+                  onOpen={(domain, rootId) =>
+                    settingsNav.push({
+                      name: 'hostSetting',
+                      domain,
+                      rootId,
+                      backLabel: hostById(rootId)?.hostName,
+                    })
+                  }
+                />
+              );
+            }
             if (route.name === 'device') {
               return <DeviceDetailScreen rootId={route.rootId} onBack={() => settingsNav.pop()} />;
             }
+            const back = () => settingsNav.pop();
+            if (route.name === 'providers') {
+              return (
+                <ProviderPicker
+                  rootId={route.rootId}
+                  backLabel={tr('Models & Connections')}
+                  onBack={back}
+                  onSelect={(provider) =>
+                    settingsNav.push({
+                      name: 'connection',
+                      rootId: route.rootId,
+                      target: { provider, catalogRevision: route.catalogRevision },
+                      backLabel: tr('Provider'),
+                    })
+                  }
+                />
+              );
+            }
+            if (route.name === 'connection') {
+              return (
+                <ConnectionFormScreen
+                  rootId={route.rootId}
+                  onBack={back}
+                  target={route.target}
+                  backLabel={route.backLabel ?? tr('Models & Connections')}
+                  version={modelSettingsRevision()}
+                  onChanged={modelSettingsChanged}
+                  openModel={(connectionId, connectionName, modelId) =>
+                    settingsNav.push({
+                      name: 'model',
+                      rootId: route.rootId,
+                      connectionId,
+                      connectionName,
+                      modelId,
+                    })
+                  }
+                />
+              );
+            }
+            if (route.name === 'model') {
+              return (
+                <ConnectionModelScreen
+                  rootId={route.rootId}
+                  onBack={back}
+                  backLabel={route.connectionName}
+                  connectionId={route.connectionId}
+                  modelId={route.modelId}
+                  onSaved={modelSettingsChanged}
+                />
+              );
+            }
             if (route.name === 'hostSetting') {
+              const backLabel = route.backLabel ?? tr('Settings');
+              switch (route.domain) {
+                case 'general':
+                  return (
+                    <GeneralSettingsScreen
+                      rootId={route.rootId}
+                      onBack={back}
+                      backLabel={backLabel}
+                    />
+                  );
+                case 'models':
+                  return (
+                    <ModelsSettingsScreen
+                      rootId={route.rootId}
+                      onBack={back}
+                      backLabel={backLabel}
+                      revision={modelSettingsRevision()}
+                      openConnection={(row) =>
+                        settingsNav.push({
+                          name: 'connection',
+                          rootId: route.rootId,
+                          target: { connectionId: row.basis.connectionId },
+                        })
+                      }
+                      openProviders={(catalogRevision) =>
+                        settingsNav.push({
+                          name: 'providers',
+                          rootId: route.rootId,
+                          catalogRevision,
+                        })
+                      }
+                    />
+                  );
+                case 'network':
+                  return (
+                    <NetworkSettingsScreen
+                      rootId={route.rootId}
+                      onBack={back}
+                      backLabel={backLabel}
+                    />
+                  );
+                case 'web_search':
+                  return (
+                    <WebSearchSettingsScreen
+                      rootId={route.rootId}
+                      onBack={back}
+                      backLabel={backLabel}
+                    />
+                  );
+              }
               return (
                 <HostSettingPlaceholderScreen
                   domain={route.domain}
+                  backLabel={backLabel}
                   rootId={route.rootId}
                   onBack={() => settingsNav.pop()}
                 />
@@ -305,6 +446,7 @@ function MainTabShell() {
             }
             return (
               <SettingsRootScreen
+                onOpenComputer={(rootId) => settingsNav.push({ name: 'computer', rootId })}
                 onOpenDevice={(rootId) => settingsNav.push({ name: 'device', rootId })}
                 onOpenHostSetting={(domain, rootId) =>
                   settingsNav.push({ name: 'hostSetting', domain, rootId })
@@ -315,79 +457,88 @@ function MainTabShell() {
         </NavStack>
       </View>
 
-      {/* Native iOS UITabBar (Liquid Glass on iOS 26+) */}
       <If
-        when={isAvailable}
-        else={
-          <View
+        when={
+          (activeTab() === 0 && chatsNav.routes().length === 1) ||
+          (activeTab() === 1 && inboxNav.routes().length === 1) ||
+          (activeTab() === 2 && settingsNav.routes().length === 1)
+        }
+      >
+        {/* Native iOS UITabBar (Liquid Glass on iOS 26+) */}
+        <If
+          when={isAvailable}
+          else={
+            <View
+              testID="main-tab-bar"
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 54,
+                backgroundColor: token('surface'),
+                borderTopWidth: 0.5,
+                borderTopColor: token('separator'),
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-around',
+              }}
+            >
+              <Each of={tabItems()} key={(item) => item.title}>
+                {(item, index) => (
+                  <View
+                    role="button"
+                    accessibilityLabel={item().title}
+                    onPress={() => handleTabChange(index())}
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexDirection: 'row',
+                      gap: 4,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        ...type.footnote,
+                        fontWeight: activeTab() === index() ? '600' : '400',
+                        color:
+                          activeTab() === index() ? token('primary') : token('muted-foreground'),
+                      }}
+                    >
+                      {item().title}
+                    </Text>
+                    <If when={item().badge}>
+                      <Text
+                        style={{
+                          ...type.caption,
+                          fontWeight: '700',
+                          color: token('primary'),
+                        }}
+                      >
+                        {item().badge}
+                      </Text>
+                    </If>
+                  </View>
+                )}
+              </Each>
+            </View>
+          }
+        >
+          <TabBar
             testID="main-tab-bar"
+            items={tabItems()}
+            selectedIndex={activeTab()}
+            onChange={({ index }) => handleTabChange(index)}
             style={{
               position: 'absolute',
               left: 0,
               right: 0,
               bottom: 0,
-              height: 54,
-              backgroundColor: token('surface'),
-              borderTopWidth: 0.5,
-              borderTopColor: token('separator'),
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-around',
             }}
-          >
-            <Each of={tabItems()} key={(item) => item.title}>
-              {(item, index) => (
-                <View
-                  role="button"
-                  accessibilityLabel={item().title}
-                  onPress={() => handleTabChange(index())}
-                  style={{
-                    flex: 1,
-                    minHeight: 44,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexDirection: 'row',
-                    gap: 4,
-                  }}
-                >
-                  <Text
-                    style={{
-                      ...type.footnote,
-                      fontWeight: activeTab() === index() ? '600' : '400',
-                      color: activeTab() === index() ? token('primary') : token('muted-foreground'),
-                    }}
-                  >
-                    {item().title}
-                  </Text>
-                  <If when={item().badge}>
-                    <Text
-                      style={{
-                        ...type.caption,
-                        fontWeight: '700',
-                        color: token('primary'),
-                      }}
-                    >
-                      {item().badge}
-                    </Text>
-                  </If>
-                </View>
-              )}
-            </Each>
-          </View>
-        }
-      >
-        <TabBar
-          testID="main-tab-bar"
-          items={tabItems()}
-          selectedIndex={activeTab()}
-          onChange={({ index }) => handleTabChange(index)}
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-          }}
-        />
+          />
+        </If>
       </If>
     </View>
   );
