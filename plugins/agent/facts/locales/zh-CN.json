@@ -145,6 +145,7 @@
     "create_automation": "创建自动化",
     "create_automation_titled": "创建自动化 · {title}",
     "list_automations": "列出自动化",
+    "test_automation_script": "测试自动化脚本",
     "pause_automation": "暂停自动化",
     "resume_automation": "恢复自动化",
     "delete_automation": "删除自动化",

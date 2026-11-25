@@ -145,6 +145,7 @@
     "create_automation": "建立自動化",
     "create_automation_titled": "建立自動化 · {title}",
     "list_automations": "列出自動化",
+    "test_automation_script": "測試自動化指令碼",
     "pause_automation": "暫停自動化",
     "resume_automation": "恢復自動化",
     "delete_automation": "刪除自動化",

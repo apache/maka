@@ -1392,6 +1392,31 @@ async fn discovery_memory_tool_searches_record_text_and_relationships() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduler_dry_run_rejects_oversize_state_without_saving_a_task() {
+    let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
+    let mut f = Fixture::new(&server).await;
+    f.send("Preview this automation", json!([])).await;
+    let (turn, _) = next(&mut server).await;
+    tool(
+        turn,
+        "ScheduledTask",
+        json!({"request":{"mode":"test_script",
+        "source":"console.log(true)", "state":"x".repeat(65_535)}}),
+    );
+    let (turn, body) = next(&mut server).await;
+    let preview = output(&body);
+    assert_eq!(preview["ok"], false, "{preview}");
+    assert_eq!(preview["error"], "state exceeds 65536 JSON bytes");
+    assert!(preview["durationMs"].is_u64());
+    assert_eq!(
+        f.query("schedules", json!({"kind":"list"})).await["tasks"],
+        json!([])
+    );
+    quiet(&f, &mut server, turn).await;
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discovery_model_proposals_require_bot_identity_and_human_approval() {
     let mut server = MockAiBuilder::new().interactive(8).start().await.unwrap();
     let mut f = Fixture::new(&server).await;

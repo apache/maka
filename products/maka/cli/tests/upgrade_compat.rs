@@ -130,6 +130,8 @@ struct CapsuleManifest {
     #[serde(default)]
     operation_ref: Option<Value>,
     #[serde(default)]
+    script_task_id: Option<String>,
+    #[serde(default)]
     execution_authority: Option<execution_compat::Capsule>,
     migrations: BTreeMap<String, Vec<i64>>,
     #[serde(default)]
@@ -344,6 +346,33 @@ async fn wait_run_completed(client: &Client, session: &str, message_id: &str) ->
             other => panic!("unexpected workReadiness {other}: {readiness}"),
         }
     }
+}
+
+async fn wait_successful_script_check(client: &Client, task_id: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut first_due = None;
+        loop {
+            let detail = call(
+                client,
+                "agent",
+                "schedules",
+                json!({"kind":"get","taskId":task_id}),
+                Attachments::new(),
+            )
+            .await;
+            let task = &detail["detail"]["task"];
+            assert_eq!(task["status"], "active", "{detail}");
+            assert_eq!(task["fireCount"], 0, "{detail}");
+            assert!(task["lastError"].is_null(), "{detail}");
+            let next = task["nextFireAt"].as_i64().unwrap();
+            if next > *first_due.get_or_insert(next) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("script did not complete its next check");
 }
 
 async fn recall_search(client: &Client, term: &str) -> Value {
@@ -1152,8 +1181,27 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             "checkpoint export failed: {}",
             String::from_utf8_lossy(&export_out.stderr)
         );
-
+        let seed = dirs.workspace.join("compat-script-seed");
+        tokio::fs::write(&seed, &nonce).await.unwrap();
+        let session = &observed["session"];
+        let script = call(&client, "agent", "schedule", json!({"kind":"create","input":{
+            "timezone":"UTC","misfire":"skip","task":{"title":"Compat script cursor","intentBody":"Report a match",
+                "schedule":{"kind":"script","everySeconds":1,"startAt":0,
+                    "source":format!(r#"const prior = Deno.env.get("MAKA_AUTOMATION_STATE");
+                        if (prior === undefined) console.log(JSON.stringify({{trigger:false,state:await Deno.readTextFile("compat-script-seed")}}));
+                        else if (JSON.parse(prior) === "{nonce}") console.log(false);
+                        else throw Error("Wrong persisted script cursor");"#)},
+                "effect":{"kind":"session","target":{"sessionId":primary_session_id,
+                    "workspace":session["workspace"],"permissions":session["permissions"],
+                    "binding":session["binding"],"boundaryRevision":session["boundaryRevision"]},
+                    "model":{"connectionId":connection_id,"modelId":"gpt-4.1"}}}
+        }}), Attachments::new()).await;
+        assert_eq!(script["kind"], "committed", "{script}");
+        let script_task_id = script["taskId"].as_str().unwrap().to_owned();
+        wait_successful_script_check(&client, &script_task_id).await;
         host.quit(&mut client).await.expect("Host quit");
+        // Only the persisted cursor can satisfy the first check after upgrading.
+        tokio::fs::remove_file(seed).await.unwrap();
 
         let execution_authority = Some(execution_compat::produce(capsule_dir).await);
         let host_peer_id = format!("compat-peer-{nonce}");
@@ -1188,6 +1236,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
             operation_ref,
+            script_task_id: Some(script_task_id),
             execution_authority,
             migrations,
             host_peer_id: Some(host_peer_id),
@@ -1262,6 +1311,9 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         verify_queued_after_upgrade(&queued_before);
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
+        if let Some(id) = &manifest.script_task_id {
+            wait_successful_script_check(&client, id).await;
+        }
         let catalog = call(
             &client,
             "settings",

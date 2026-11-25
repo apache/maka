@@ -198,6 +198,8 @@ function scheduleArguments(value: unknown): ToolSection[] | null {
     case 'resume':
     case 'delete':
       return [];
+    case 'test_script':
+      return section(tr('Script condition'), request.source);
     case 'create': {
       const timezone = typeof request.timezone === 'string' ? request.timezone : undefined;
       const schedule = record(request.schedule);

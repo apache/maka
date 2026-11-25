@@ -62,6 +62,7 @@ pub(super) fn inherit(
                 && !matches!(
                     upper.as_str(),
                     "MAKA_CODEX_AUTH_FILE"
+                        | "MAKA_AUTOMATION_STATE"
                         | "OPENAI_IDENTITY_TOKEN_FILE"
                         | "OPENAI_WORKLOAD_IDENTITY_CONTEXT"
                         | "OPENAI_FEDERATION_RULE_ID"
@@ -87,6 +88,7 @@ mod tests {
             ("OPENROUTER_API_KEY", "key"),
             ("api_ToKeN", "token"),
             ("MAKA_RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD", "7"),
+            ("MAKA_AUTOMATION_STATE", "42"),
             ("SSH_AUTH_SOCK", "/agent.sock"),
             ("Database_Password", "password"),
             ("OPENAI_WORKLOAD_IDENTITY_CONTEXT", "context"),
