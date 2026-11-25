@@ -334,15 +334,12 @@ pub(super) fn create_resource(namespace: &Path) -> io::Result<std::path::PathBuf
     let parent = ensure_namespace(namespace)?;
     let name = format!("maka-native-task-{}", uuid::Uuid::new_v4());
     let resource = mkdir(&parent, name.as_ref())?;
-    // Protected child boundaries never inherit account ACEs from `resource`
-    // (`owner`/`launch` stay unreachable during snapshot capture, while
-    // `workspace`/`home`/`tmp`/`inputs` do not inherit `resource`'s Deny ACE
-    // during task execution). `baseline` and initial HOME subdirectories stay
-    // inheritable so snapshot and execution account grants propagate cleanly.
-    for name in ["workspace", "tmp", "owner", "launch", "inputs"] {
+    // Protected child boundaries never inherit `resource`'s Deny ACE (nor
+    // expose `owner`/`launch` during snapshot capture). Only initial HOME
+    // subdirectories stay inheritable so `home`'s execution grant propagates.
+    for name in ["workspace", "baseline", "tmp", "owner", "launch", "inputs"] {
         mkdir(&resource, name.as_ref())?;
     }
-    create_entry(&resource, "baseline".as_ref(), true)?;
     let home = mkdir(&resource, "home".as_ref())?;
     for path in super::INITIAL_HOME_DIRECTORIES {
         let path = Path::new(path);

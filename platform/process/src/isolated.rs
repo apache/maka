@@ -280,8 +280,15 @@ pub struct TaskOwner {
 
 struct BoundCommand {
     identity: std::sync::Arc<()>,
-    executable: PathBuf,
-    _file: std::fs::File,
+    target: BoundTarget,
+}
+
+enum BoundTarget {
+    Selected {
+        executable: PathBuf,
+        _file: std::fs::File,
+    },
+    Installed(std::sync::Arc<InstalledProgram>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -383,7 +390,6 @@ impl NoLaunchSeal {
                 let _ = frozen.set(evidence::snapshot_identity(&pinned.owner)?);
             }
             let snapshot = *frozen.get().expect("original frozen snapshot identity");
-            program::remove_runtime(&resource)?;
             publish_proof(
                 &resource,
                 "closure.json",
@@ -635,17 +641,25 @@ impl TaskOwner {
             // never to the source read ceiling recorded in SnapshotProof.
             let namespace = resource.parent().expect("task resource has a namespace");
             os::allow_traversal(&mut copy_policy, namespace);
+            #[cfg(unix)]
             copy_policy
                 .rules
                 .push(Rule::subtree(&resource, Access::Write));
             #[cfg(windows)]
             {
-                // `workspace` has a protected DACL so execution-time `resource`
-                // denials never propagate into it; grant it explicitly for capture,
-                // while keeping `owner` and `launch` denied to the copier.
+                // Keep `resource` private to the Host account and grant the
+                // copier only its dedicated protected boundaries so Account
+                // slots never write Allow ACEs to `resource` root or expose
+                // `owner`/`launch`.
                 copy_policy
                     .rules
-                    .push(Rule::subtree(resource.join("workspace"), Access::Write));
+                    .push(Rule::subtree(&resource, Access::Deny));
+                os::allow_traversal(&mut copy_policy, &resource);
+                for child in ["workspace", "baseline", "snapshot"] {
+                    copy_policy
+                        .rules
+                        .push(Rule::subtree(resource.join(child), Access::Write));
+                }
                 copy_policy
                     .deny_globs
                     .push(literal_glob(&resource.join("owner"))?);
@@ -674,7 +688,7 @@ impl TaskOwner {
                 let file = tokio::task::spawn_blocking(move || -> io::Result<std::fs::File> {
                     use std::io::Write;
                     let pinned = evidence::pin(&path)?;
-                    let exchange = fs::create_entry(&pinned.resource, "snapshot".as_ref(), true)?;
+                    let exchange = fs::mkdir(&pinned.resource, "snapshot".as_ref())?;
                     let mut request = fs::create_entry(&exchange, "manifest.json".as_ref(), false)?;
                     request.write_all(&manifest)?;
                     request.sync_all()?;
@@ -932,8 +946,10 @@ impl TaskOwner {
         }
         self.bound_command = Some(BoundCommand {
             identity,
-            executable,
-            _file: file,
+            target: BoundTarget::Selected {
+                executable,
+                _file: file,
+            },
         });
         Ok(())
     }
@@ -1025,22 +1041,21 @@ impl TaskOwner {
     }
 
     async fn spawn(
-        self,
+        mut self,
         mut command: Command,
         size: Option<maka_plugin_core::terminal::TerminalSize>,
     ) -> Result<crate::pipe::Spawned, SpawnError> {
         if self.cancellation.is_cancelled() {
             return Err(self.close_spawn(Error::Cancelled).await);
         }
-        if let Some(bound) = &self.bound_command {
-            if selected_identity_differs(&command, &bound.identity) {
-                return Err(self
-                    .close_spawn(Error::IsolationUnavailable(
-                        "private spawn changed its original selected command".into(),
-                    ))
-                    .await);
-            }
-            command.executable = bound.executable.clone();
+        if let Some(bound) = &self.bound_command
+            && selected_identity_differs(&command, &bound.identity)
+        {
+            return Err(self
+                .close_spawn(Error::IsolationUnavailable(
+                    "private spawn changed its original selected command".into(),
+                ))
+                .await);
         }
         if matches!(self.home_seed, home::SeedState::Failed) {
             return Err(self
@@ -1062,6 +1077,43 @@ impl TaskOwner {
             Ok(sandbox) => sandbox,
             Err(error) => return Err(self.close_spawn(sandbox_error(error)).await),
         };
+        if let Some(bound) = self.bound_command.take() {
+            match bound.target {
+                BoundTarget::Selected { executable, _file } => {
+                    command.executable = executable.clone();
+                    self.bound_command = Some(BoundCommand {
+                        identity: bound.identity,
+                        target: BoundTarget::Selected { executable, _file },
+                    });
+                }
+                BoundTarget::Installed(program) => {
+                    let directory = self.inputs().join("runtime");
+                    let private = self.resource.join("owner");
+                    let stop = self.cancellation.clone();
+                    let delivered = tokio::task::spawn_blocking(move || {
+                        program.deliver(&private, &directory, &stop)?;
+                        let executable = directory.join(program.executable.name);
+                        let file = std::fs::File::open(&executable)?;
+                        Ok::<_, Error>((executable, file))
+                    })
+                    .await
+                    .map_err(|error| Error::Io(io::Error::other(error)))
+                    .and_then(|result| result);
+                    let (executable, file) = match delivered {
+                        Ok(delivered) => delivered,
+                        Err(error) => return Err(self.close_spawn(error).await),
+                    };
+                    command.executable = executable.clone();
+                    self.bound_command = Some(BoundCommand {
+                        identity: bound.identity,
+                        target: BoundTarget::Selected {
+                            executable,
+                            _file: file,
+                        },
+                    });
+                }
+            }
+        }
         if self.live_workspace.is_none() {
             let home = self.home();
             for (key, path) in [
@@ -1594,11 +1646,10 @@ fn ensure_namespace(namespace: &Path) -> io::Result<std::fs::File> {
 #[cfg(all(test, windows))]
 mod windows_tests;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn ensure_namespace_rejects_group_writable_and_symlink_directories() -> io::Result<()> {
         use std::os::unix::fs::{PermissionsExt, symlink};
@@ -1625,41 +1676,6 @@ mod tests {
             std::fs::metadata(&fresh)?.permissions().mode() & 0o777,
             0o700
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn no_launch_seal_reclaims_staged_runtime_and_preserves_closure()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        let source = temp.path().join("source");
-        let state = temp.path().join("state");
-        std::fs::create_dir(&source)?;
-        std::fs::create_dir(&state)?;
-        let owner = TaskOwner::prepare_live(
-            &source,
-            &state,
-            &std::env::current_exe()?,
-            CancellationToken::new(),
-        )
-        .await?;
-        let descriptor = owner.descriptor();
-        let runtime = owner.inputs().join("runtime");
-        std::fs::create_dir(&runtime)?;
-        std::fs::write(runtime.join("server"), b"staged-binary")?;
-        std::fs::write(runtime.join("helper"), b"staged-helper")?;
-
-        let seal = owner.into_no_launch_seal();
-        seal.record().await?;
-        assert!(!runtime.exists());
-        assert!(matches!(
-            cleanup_evidence(&descriptor).await?,
-            Some(CleanupEvidence::NeverLaunched { .. })
-        ));
-        // Idempotent second call succeeds even after inputs/runtime is gone.
-        seal.record().await?;
-        drop(seal);
-        std::fs::remove_dir_all(descriptor.resource_ref)?;
         Ok(())
     }
 }

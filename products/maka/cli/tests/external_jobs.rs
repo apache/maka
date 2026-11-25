@@ -1166,98 +1166,10 @@ async fn run_case(crash: bool) {
 }
 
 #[cfg(windows)]
-struct WindowsSandboxGuard {
-    state_root: Option<PathBuf>,
-}
-
+#[path = "support/windows_sandbox.rs"]
+mod windows_sandbox;
 #[cfg(windows)]
-impl WindowsSandboxGuard {
-    async fn setup(state_root: &Path) -> std::io::Result<Self> {
-        if maka_sandbox::windows::mxc::is_available() {
-            return Ok(Self { state_root: None });
-        }
-        let state_root = state_root.to_owned();
-        let setup_root = state_root.clone();
-        tokio::task::spawn_blocking(move || Self::setup_blocking(&setup_root))
-            .await
-            .map_err(std::io::Error::other)??;
-        Ok(Self {
-            state_root: Some(state_root),
-        })
-    }
-
-    fn setup_blocking(state_root: &Path) -> std::io::Result<()> {
-        use maka_host_runtime::sandbox::windows::{Installation, Status};
-        let installation = Installation::new(state_root);
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            if installation.status()? == Status::Removing {
-                Self::remove_blocking(state_root)?;
-            }
-            match installation.begin_setup() {
-                Ok(setup) => {
-                    let result = (|| {
-                        let configured = setup.request().apply()?;
-                        setup.finish(configured)
-                    })();
-                    if result.is_err() {
-                        let _ = Self::remove_blocking(state_root);
-                    }
-                    return result;
-                }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    fn remove_blocking(state_root: &Path) -> std::io::Result<()> {
-        use maka_host_runtime::sandbox::windows::Installation;
-        let installation = Installation::new(state_root);
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            match installation.begin_removal() {
-                Ok(removal) => {
-                    let receipt = removal
-                        .request()
-                        .map(|request| request.apply())
-                        .transpose()?;
-                    return removal.finish(receipt);
-                }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn teardown(mut self) -> std::io::Result<()> {
-        let Some(state_root) = self.state_root.take() else {
-            return Ok(());
-        };
-        tokio::task::spawn_blocking(move || Self::remove_blocking(&state_root))
-            .await
-            .map_err(std::io::Error::other)?
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsSandboxGuard {
-    fn drop(&mut self) {
-        if let Some(state_root) = self.state_root.take() {
-            let _ = Self::remove_blocking(&state_root);
-        }
-    }
-}
+use windows_sandbox::WindowsSandboxGuard;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
@@ -1531,6 +1443,10 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
     owner
         .bind_installed_program(&mut command, Arc::new(program))
         .await?;
+    assert!(
+        !descriptor.resource_ref.join("inputs/runtime").exists(),
+        "bind must defer runtime staging until spawn"
+    );
     let mut watch = EvidenceWatch::open(&descriptor, EvidenceInterest::Cleanup).await?;
     let process = owner.spawn_pipe(command).await?;
     let maka_process::pipe::Spawned {

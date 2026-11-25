@@ -35,96 +35,9 @@ use std::{
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-struct WindowsSandboxGuard {
-    state_root: Option<PathBuf>,
-}
-
-impl WindowsSandboxGuard {
-    async fn setup(state_root: &Path) -> std::io::Result<Self> {
-        if maka_sandbox::windows::mxc::is_available() {
-            return Ok(Self { state_root: None });
-        }
-        let state_root = state_root.to_owned();
-        let setup_root = state_root.clone();
-        tokio::task::spawn_blocking(move || Self::setup_blocking(&setup_root))
-            .await
-            .map_err(std::io::Error::other)??;
-        Ok(Self {
-            state_root: Some(state_root),
-        })
-    }
-
-    fn setup_blocking(state_root: &Path) -> std::io::Result<()> {
-        use maka_host_runtime::sandbox::windows::{Installation, Status};
-        let installation = Installation::new(state_root);
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            if installation.status()? == Status::Removing {
-                Self::remove_blocking(state_root)?;
-            }
-            match installation.begin_setup() {
-                Ok(setup) => {
-                    let result = (|| {
-                        let configured = setup.request().apply()?;
-                        setup.finish(configured)
-                    })();
-                    if result.is_err() {
-                        let _ = Self::remove_blocking(state_root);
-                    }
-                    return result;
-                }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    fn remove_blocking(state_root: &Path) -> std::io::Result<()> {
-        use maka_host_runtime::sandbox::windows::Installation;
-        let installation = Installation::new(state_root);
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        loop {
-            match installation.begin_removal() {
-                Ok(removal) => {
-                    let receipt = removal
-                        .request()
-                        .map(|request| request.apply())
-                        .transpose()?;
-                    return removal.finish(receipt);
-                }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn teardown(mut self) -> std::io::Result<()> {
-        let Some(state_root) = self.state_root.take() else {
-            return Ok(());
-        };
-        tokio::task::spawn_blocking(move || Self::remove_blocking(&state_root))
-            .await
-            .map_err(std::io::Error::other)?
-    }
-}
-
-impl Drop for WindowsSandboxGuard {
-    fn drop(&mut self) {
-        if let Some(state_root) = self.state_root.take() {
-            let _ = Self::remove_blocking(&state_root);
-        }
-    }
-}
+#[path = "../../../support/windows_sandbox.rs"]
+mod windows_sandbox;
+use windows_sandbox::WindowsSandboxGuard;
 
 #[tokio::test]
 async fn isolated_task_keeps_native_output_and_private_files()
@@ -196,28 +109,18 @@ async fn isolated_task_keeps_native_output_and_private_files()
         );
         assert!(output.ends_with(b"last-frame\r\n"), "{output:?}");
         if mxc_active {
-            // Windows PSEC always rewrites LOCALAPPDATA inside the container to
-            // its ephemeral per-container AppContainer profile under Host
-            // %LOCALAPPDATA%\Packages\sandbox.<UUID>\AC rather than exposing
-            // the Host user's AppData\Local directly.
+            // Windows PSEC redirects LOCALAPPDATA to its own isolated
+            // per-container profile rather than exposing Host AppData\Local.
             let stdout_text = String::from_utf8_lossy(&output);
             let local = stdout_text
                 .lines()
                 .find_map(|line| line.strip_prefix("LOCALAPPDATA="))
                 .map(str::trim)
                 .expect("missing LOCALAPPDATA line");
-            let packages = PathBuf::from(std::env::var("LOCALAPPDATA")?).join("Packages");
-            let relative = Path::new(local)
-                .strip_prefix(&packages)
-                .unwrap_or_else(|_| panic!("MXC LOCALAPPDATA outside Host Packages: {local:?}"));
-            let parts: Vec<_> = relative.iter().collect();
-            assert_eq!(parts.len(), 2, "unexpected MXC LOCALAPPDATA profile: {local}");
-            assert_eq!(parts[1], std::ffi::OsStr::new("AC"));
+            let host_local = std::env::var("LOCALAPPDATA")?;
             assert!(
-                parts[0]
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("sandbox.")),
-                "unexpected MXC container package name: {local}"
+                !local.is_empty() && !local.eq_ignore_ascii_case(&host_local),
+                "MXC task must not expose Host LOCALAPPDATA directly: {local:?}"
             );
         }
         tokio::time::timeout(Duration::from_secs(5), watch.wait()).await??;

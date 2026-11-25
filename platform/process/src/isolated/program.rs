@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{BoundCommand, Error, TaskOwner};
+use super::{BoundCommand, BoundTarget, Error, TaskOwner};
 use crate::Command;
 use sha2::{Digest, Sha256};
 use std::{
@@ -79,7 +79,12 @@ impl ProgramFile {
 }
 
 impl InstalledProgram {
-    fn deliver(&self, owner: &Path, runtime: &Path, stop: &CancellationToken) -> Result<(), Error> {
+    pub(super) fn deliver(
+        &self,
+        owner: &Path,
+        runtime: &Path,
+        stop: &CancellationToken,
+    ) -> Result<(), Error> {
         // Publish the pair together, after verifying exactly the bytes written.
         let staging = tempfile::tempdir_in(owner)?;
         self.executable.deliver(staging.path(), stop)?;
@@ -100,24 +105,12 @@ impl TaskOwner {
                 "installed program requires an unbound isolated task".into(),
             ));
         }
-        let directory = self.inputs().join("runtime");
-        let private = self.resource.join("owner");
-        let stop = self.cancellation.clone();
-        let helper_env = program.helper_env;
-        let (executable, file, helper) = tokio::task::spawn_blocking(move || {
-            program.deliver(&private, &directory, &stop)?;
-            let executable = directory.join(program.executable.name);
-            let file = File::open(&executable)?;
-            Ok::<_, Error>((executable, file, directory.join(program.helper.name)))
-        })
-        .await
-        .map_err(io::Error::other)??;
-        command.env(helper_env, helper);
+        let helper = self.inputs().join("runtime").join(program.helper.name);
+        command.env(program.helper_env, helper);
         let identity = command.selection.get_or_init(|| Arc::new(())).clone();
         self.bound_command = Some(BoundCommand {
             identity,
-            executable,
-            _file: file,
+            target: BoundTarget::Installed(program),
         });
         Ok(())
     }

@@ -183,7 +183,9 @@ pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io:
                 tokio::task::spawn_blocking(move || {
                     let pinned = super::evidence::pin(&original)?;
                     let snapshot = super::evidence::snapshot_identity(&pinned.owner)?;
-                    super::program::remove_runtime(&original)?;
+                    if let Err(error) = super::program::remove_runtime(&original) {
+                        eprintln!("Private task runtime cleanup failed: {error}");
+                    }
                     let closure = Closure::GroupClosed {
                         resource: original.clone(),
                         snapshot,
@@ -691,9 +693,7 @@ pub fn run_snapshot(resource: &Path) -> io::Result<i32> {
     fn context(stage: &'static str) -> impl FnOnce(io::Error) -> io::Error {
         move |error| io::Error::new(error.kind(), format!("{stage}: {error}"))
     }
-    let directory = maka_event_log::root::windows::open_nofollow(resource, false)
-        .map_err(context("open snapshot resource"))?;
-    let exchange = fs::directory(&directory, "snapshot".as_ref())
+    let exchange = maka_event_log::root::windows::open_nofollow(&resource.join("snapshot"), false)
         .map_err(context("open snapshot exchange"))?;
     let manifest: Manifest = evidence::read_json(
         fs::read(&exchange, "manifest.json".as_ref(), false)

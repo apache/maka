@@ -592,7 +592,7 @@ pub(super) fn open_regular(owner: &File, name: &str) -> io::Result<File> {
     })
 }
 pub(super) fn read_json<T: serde::de::DeserializeOwned>(file: File) -> io::Result<T> {
-    serde_json::from_reader(file).map_err(io::Error::other)
+    serde_json::from_reader(io::BufReader::new(file)).map_err(io::Error::other)
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

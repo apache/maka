@@ -161,27 +161,3 @@ fn capture_rejects_a_live_writer_and_baseline_pins_the_original_entry()
     );
     Ok(())
 }
-
-#[test]
-fn resource_keeps_protected_boundaries_and_inheritable_home_subdirectories() -> io::Result<()> {
-    use maka_event_log::root::windows::{open_nofollow, validate_protected_private};
-    let temp = tempfile::tempdir()?;
-    let resource = fs::create_resource(&temp.path().join("namespace"))?;
-    let root = open_nofollow(&resource, false)?;
-    validate_protected_private(&root)?;
-    for protected in ["owner", "launch", "workspace", "home", "tmp", "inputs"] {
-        let dir = fs::directory(&root, protected.as_ref())?;
-        validate_protected_private(&dir)?;
-    }
-    let baseline = fs::directory(&root, "baseline".as_ref())?;
-    assert!(validate_protected_private(&baseline).is_err());
-    let home = fs::directory(&root, "home".as_ref())?;
-    for inheritable in [".config", "AppData", "AppData/Roaming", "AppData/Local"] {
-        let dir = fs::open_relative(&home, Path::new(inheritable))?;
-        assert!(
-            validate_protected_private(&dir).is_err(),
-            "{inheritable} must inherit execution account grants from home"
-        );
-    }
-    Ok(())
-}

@@ -106,13 +106,12 @@ pub(super) fn capture(
     resource: &Path,
     policy: &Policy,
 ) -> io::Result<SnapshotProof> {
-    use super::fs::{copy_tree, directory, identity};
+    use super::fs::{copy_tree, identity};
     use maka_event_log::root::windows::open_nofollow;
     let policy = policy.compile().map_err(io::Error::other)?;
     let input = open_nofollow(source, false)?;
-    let held = open_nofollow(resource, false)?;
-    let base = directory(&held, "baseline".as_ref())?;
-    let work = directory(&held, "workspace".as_ref())?;
+    let base = open_nofollow(&resource.join("baseline"), false)?;
+    let work = open_nofollow(&resource.join("workspace"), false)?;
     let (files, bytes) = copy_tree(&input, &base, |p| policy.access(&source.join(p)).can_read())
         .map_err(io::Error::other)?;
     for entry in &files {

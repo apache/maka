@@ -114,10 +114,18 @@ async fn official_receipt_delivers_both_release_files_to_the_private_task()
         Err(install::Error::Integrity)
     ));
     let program = install::installed_program(&kv, &data, executable).await?;
-    let expected = [
-        (program.executable.name, program.executable.sha256),
-        (program.helper.name, program.helper.sha256),
-    ];
+    assert_eq!(
+        super::file_digest(executable)?,
+        program.executable.sha256,
+        "{}",
+        program.executable.name
+    );
+    assert_eq!(
+        super::file_digest(&executable.with_file_name(program.helper.name))?,
+        program.helper.sha256,
+        "{}",
+        program.helper.name
+    );
     store.shutdown().await?;
 
     let source = dir.join("workspace");
@@ -126,10 +134,7 @@ async fn official_receipt_delivers_both_release_files_to_the_private_task()
     let mut command = maka_process::Command::private_task(executable);
     task.bind_installed_program(&mut command, Arc::new(program))
         .await?;
-    let runtime = task.inputs().join("runtime");
-    for (name, digest) in expected {
-        assert_eq!(super::file_digest(&runtime.join(name))?, digest, "{name}");
-    }
+    assert!(!task.inputs().join("runtime").exists());
     task.into_no_launch_seal().record().await?;
     Ok(())
 }
