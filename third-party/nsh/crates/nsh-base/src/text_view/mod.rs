@@ -37,8 +37,10 @@ pub use self::{
     selection::{TextSelectionFormat, TextSelectionOptions},
     view::{
         CodeHighlighter, TextView, TextViewApi, TextViewCodeAction, TextViewCodeActionEvent,
-        TextViewElement, TextViewEvent, TextViewImageContext, TextViewImageFlow, TextViewLabels,
-        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
-        TextViewSelectionEvent, TextViewTaskPressEvent, text_view,
+        TextViewElement, TextViewEvent, TextViewHeading, TextViewHeadingsEvent,
+        TextViewImageContext, TextViewImageFlow, TextViewLabels, TextViewLinkPressEvent,
+        TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
+        TextViewScrollToBlockOptions, TextViewSelectionEvent, TextViewTaskPressEvent,
+        TextViewVisibleBlocksEvent, text_view,
     },
 };

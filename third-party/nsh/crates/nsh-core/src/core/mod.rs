@@ -12202,6 +12202,20 @@ impl<M: TextEngine> Core<M> {
         if list.dirty || !self.list_cells_settled(list) {
             return false;
         }
+        if list.parent
+            && let Some(outer) = list.outer
+            && let Some(outer_node) = self.nodes.get(outer.view as usize)
+            && (outer_node
+                .scroll
+                .as_ref()
+                .is_some_and(|s| s.asked.is_some())
+                || outer_node
+                    .list
+                    .as_ref()
+                    .is_some_and(|l| l.dirty || !self.list_cells_settled(l)))
+        {
+            return false;
+        }
         let Some((first, last)) = list.viewport_items() else {
             return true;
         };

@@ -117,6 +117,7 @@ import {
   acceptedSend,
   activityMessage,
   applyWorkTailThought,
+  hasTextPrefix,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -223,6 +224,8 @@ import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
+import { MarkdownToc } from '../../../../products/maka/workbench/app/MarkdownToc';
+import { createTurnToc } from '../../../../products/maka/workbench/app/turnToc';
 import { compactTranscriptSize } from '../../../../products/maka/workbench/app/QuickBar';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import { SideNotes, SideQuoteTray } from '../../../../products/maka/workbench/app/SideQuestionCard';
@@ -1800,6 +1803,7 @@ export function Conversation(props: ConversationProps) {
   const entryTurn = (key: string) => {
     const entry = displayEntry(key);
     if (entry?.kind === 'process') return entry.group.turnKey;
+    if (entry?.kind === 'bot') return entry.turnId;
     if (entry && 'turnKey' in entry) return entry.turnKey ?? null;
     return null;
   };
@@ -4894,18 +4898,70 @@ export function Conversation(props: ConversationProps) {
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
   );
+  const turnToc = createTurnToc({
+    enabled: () => !props.compact && ready() && reading() === 'chat',
+    listRef: () => list,
+    listWidth: historyWidth,
+    viewportHeight: () => readingSize().height,
+    railInset,
+    atBottom: () => !historyBelow(),
+    isTerminal: () => platform.idiom === 'terminal',
+    rowTurnKey: entryTurn,
+    turnOutputRowKeys: (turnKey) => {
+      if (botView() === 'bot') {
+        return bot.forTurn(turnKey).length > 0 ? [`bot/${turnKey}`] : [];
+      }
+      const turn = projectedTurn(turnKey);
+      if (!turn) return [];
+      const ids = turn.finalOutputIds.length > 0 ? turn.finalOutputIds : turn.answerOutputIds;
+      return ids.filter((id) => !currentRow(id)?.sourceCitation);
+    },
+    rowOutputSources: (rowKey) => {
+      if (rowKey.startsWith('bot/')) {
+        const turnKey = rowKey.slice(4);
+        return bot.forTurn(turnKey).map((message) => ({
+          keyPrefix: `${message.sequence}:`,
+          text: message.text,
+          streaming: false,
+        }));
+      }
+      if (rowStates.get(rowKey)?.sourceMode()) return [];
+      const row = currentRow(rowKey);
+      if (
+        !row ||
+        row.role !== 'assistant' ||
+        row.field !== 'body' ||
+        row.tool ||
+        row.sourceCitation ||
+        !hasTextPrefix(row)
+      ) {
+        return [];
+      }
+      return [{ keyPrefix: '', text: row.text, streaming: true }];
+    },
+    scrollToRow: (rowKey) => {
+      const index = displayKeys().indexOf(rowKey);
+      if (index < 0 || !list) return false;
+      list.scrollToIndex({ index, viewPosition: 0, animated: false });
+      return true;
+    },
+    onBeforeJump: () => {
+      cancelNavigation();
+      historyScrollInput = 'idle';
+      batch(() => {
+        historyFollowPaused.set(true);
+        innerReader.set(null);
+      });
+    },
+  });
   const transcriptSize = props.compact ? compactTranscriptSize() : undefined;
   const entryRow = (key: () => string) => (
-    <View
-      style={readingColumn}
-      onLayout={
-        transcriptSize
-          ? ({ bounds }) => transcriptSize.measure(key(), bounds.size.height)
-          : undefined
-      }
-    >
-      <Each of={[key()]} key={(id: string) => id}>
-        {(ownedKey) => {
+    <Each of={[key()]} key={(id: string) => id}>
+      {(ownedKey) => {
+        const rowId = ownedKey();
+        const tocRow = !props.compact ? turnToc.bindRow(rowId) : undefined;
+        if (tocRow) cleanup(tocRow.dispose);
+        const renderEntryBody = () => {
           const initial = displayEntry(ownedKey());
           if (!initial) return <View />;
           const entry = () => displayEntry(ownedKey()) ?? initial;
@@ -5185,6 +5241,7 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
+                bindToc={tocRow?.bindTextView}
                 metrics={
                   props.compact
                     ? (at) => {
@@ -5253,11 +5310,20 @@ export function Conversation(props: ConversationProps) {
           const first = currentRow(initial.rowId);
           if (!first) return <View />;
           const row = () => currentRow(initial.rowId) ?? first;
+          const bindToc =
+            tocRow &&
+            first.role === 'assistant' &&
+            first.field === 'body' &&
+            !first.tool &&
+            !first.sourceCitation
+              ? tocRow.bindTextView
+              : undefined;
           return (
             <MessageRow
               item={row}
               compactChat={props.compact}
               beside={props.side}
+              bindToc={bindToc}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -5412,9 +5478,22 @@ export function Conversation(props: ConversationProps) {
               }
             />
           );
-        }}
-      </Each>
-    </View>
+        };
+        const body = renderEntryBody();
+        return (
+          <View
+            ref={tocRow ? tocRow.onRef : undefined}
+            style={readingColumn}
+            onLayout={({ bounds }) => {
+              if (transcriptSize) transcriptSize.measure(rowId, bounds.size.height);
+              tocRow?.onHeight(bounds.size.height);
+            }}
+          >
+            {body}
+          </View>
+        );
+      }}
+    </Each>
   );
   if (props.compact)
     return (
@@ -5662,11 +5741,13 @@ export function Conversation(props: ConversationProps) {
                   if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
                 }
                 changedReadExposure();
+                turnToc.onViewportChange();
               }}
               each={historyList()}
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                turnToc.cancelPendingJump();
                 cancelNavigation();
                 historyScrollInput = 'dragging';
                 historyScrolled = true;
@@ -5678,6 +5759,7 @@ export function Conversation(props: ConversationProps) {
                   historyScrollInput = offset.y === historyOffset ? 'idle' : 'pending';
               }}
               onScrollIntent={(event) => {
+                turnToc.cancelPendingJump();
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
@@ -5702,15 +5784,17 @@ export function Conversation(props: ConversationProps) {
               }}
               onViewableItemsChange={(event) => {
                 const turns = new Set<string>();
-                for (const { item } of event.viewableItems) {
+                const keys = event.viewableItems.map(({ item }) => {
                   const turn = entryTurn(item);
                   if (turn !== null) turns.add(turn);
-                }
+                  return item;
+                });
                 if (turns.size > 0) {
                   visibleTurns.set(turns);
                 }
-                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+                visibleRows.set(new Set(keys));
                 changedReadExposure();
+                turnToc.onVisibleRowsChange(keys);
               }}
               estimatedItemSize={
                 reading() === 'trajectory' ? (platform.idiom === 'terminal' ? 16 : 32) : 96
@@ -5774,6 +5858,7 @@ export function Conversation(props: ConversationProps) {
                 )
                   innerReader.set(null);
                 changedReadExposure();
+                turnToc.onScroll();
               }}
               empty={
                 <If
@@ -5801,6 +5886,22 @@ export function Conversation(props: ConversationProps) {
             </If>
             <If when={platform.idiom !== 'terminal' && historyBelow()}>
               <HistoryEdgeFade inset={railInset} bottom />
+            </If>
+            <If when={turnToc.shown()}>
+              <View
+                style={[
+                  { position: 'absolute', top: 0, bottom: 0, left: 0 },
+                  { pointerEvents: 'box-none', flexDirection: 'row' },
+                ]}
+              >
+                <MarkdownToc
+                  turnKey={turnToc.turnKey}
+                  items={turnToc.items}
+                  active={turnToc.activeId}
+                  mode={turnToc.mode}
+                  select={(item) => turnToc.jumpTo(item.id)}
+                />
+              </View>
             </If>
             <If when={railShown()}>
               <View
@@ -5832,7 +5933,10 @@ export function Conversation(props: ConversationProps) {
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}
-                activate={inputAction(ownHandle.jumpLatest, null)}
+                activate={inputAction(() => {
+                  turnToc.cancelPendingJump();
+                  ownHandle.jumpLatest(null);
+                }, null)}
               />
             </View>
           </View>
