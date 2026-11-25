@@ -89,6 +89,13 @@ All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/
 - Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
 - Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 
+### Remote Access motion
+
+- Press, hover, focus and category selection reuse the shared Settings controls and rail.
+- The footer, revoke confirmation and loading state use the shared Settings body and loading indicator.
+- Relay rows and QR appear in place without moving focus; the QR stays still while visible so the camera can lock on.
+- Connection status, SAS and expiry update in place without animation. No gestures or additional motion in reduced motion mode.
+
 ## Visual verification
 
 Inspect UI changes in the native desktop renderer across both light and dark themes at narrow and wide viewport widths. Shared-edge invariants belong in automated layout-bound assertions (such as `shell_shares_its_lines` in the desktop integration suite) rather than eyeball checks alone. On macOS, the offscreen test backend rasterizes Helvetica rather than SF Pro, so check optical text-to-icon centering in a real desktop window.

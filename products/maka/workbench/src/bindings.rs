@@ -30,6 +30,7 @@ mod mutation;
 mod permission_window;
 mod plugins;
 mod quick_tools;
+mod remote_access;
 mod resources;
 mod system_permission;
 mod terminal;
@@ -374,6 +375,37 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub fn valid_remote_relay_url(&self, url: String) -> bool {
+        maka_host_runtime::application::host::remote_access::valid_relay_url(url)
+    }
+
+    pub async fn remote_access_status(this: Instance<Self>) -> Result<JsonValue, String> {
+        remote_access::control(this, remote_access::Action::Status).await
+    }
+
+    pub async fn update_remote_access(
+        this: Instance<Self>,
+        config: JsonValue,
+        tokens: Vec<Option<String>>,
+    ) -> Result<JsonValue, String> {
+        remote_access::update(this, config, tokens).await
+    }
+
+    pub async fn prepare_device_pairing(this: Instance<Self>) -> Result<JsonValue, String> {
+        remote_access::control(this, remote_access::Action::Pair).await
+    }
+
+    pub async fn list_paired_devices(this: Instance<Self>) -> Result<JsonValue, String> {
+        remote_access::control(this, remote_access::Action::List).await
+    }
+
+    pub async fn revoke_paired_device(
+        this: Instance<Self>,
+        peer_id: String,
+    ) -> Result<JsonValue, String> {
+        remote_access::control(this, remote_access::Action::Revoke(peer_id)).await
+    }
+
     pub async fn community_plugins(
         this: Instance<Self>,
         query: String,
