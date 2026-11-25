@@ -205,12 +205,24 @@ import { sameValue } from '../../../shared/value';
 import { DiscoveryPanel } from '../../../../products/maka/workbench/app/DiscoveryPanel';
 import { quoteBotMessage } from '../../../../products/maka/workbench/app/botTranscriptCore';
 import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import type { SideQuestionRequest } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import {
+  clearGathered,
+  dropGathered,
+  type GatheredPassage,
+  gatheredPassages,
+  gatherPassage,
+  sideAnchor,
+  sideQuestionsAt,
+  sideTitle,
+} from '../../../../products/maka/workbench/app/sideQuestions';
 import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { compactTranscriptSize } from '../../../../products/maka/workbench/app/QuickBar';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import { SideNotes, SideQuoteTray } from '../../../../products/maka/workbench/app/SideQuestionCard';
 import {
   MessageEdit,
   MessageEditor,
@@ -272,6 +284,8 @@ import type {
   AgentHistoryLandmark,
   AgentMarkReadResult,
   AgentSession,
+  AgentSessionPage,
+  AgentSessionPosition,
   AgentRunBackend,
   Cursor as HistoryCursor,
   HistoryPosition,
@@ -379,6 +393,7 @@ type ConversationProps = {
     send: boolean;
     files?: StagedFile[];
     first?: boolean;
+    quotes?: readonly QuoteRef[];
   } | null;
   commands(): void;
   openPreset?(
@@ -404,6 +419,13 @@ type ConversationProps = {
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
+  /** With `compact`, a side question's card: only what was asked in it shows. */
+  side?: boolean;
+  /** Opens the card where a side question is asked beside this conversation. */
+  askBeside?(request: SideQuestionRequest): void;
+  openSideQuestion?(sessionId: string): void;
+  /** The side question whose card is open beside this conversation. */
+  sideQuestionId?(): string | null;
   knownSession?(sessionId: string): AgentSession | undefined;
   /** Opens a conversation in this pane, for when no side pane fits. */
   openSessionHere?(sessionId: string): void;
@@ -1037,6 +1059,176 @@ export function Conversation(props: ConversationProps) {
   );
   // A worker or sender opens beside this conversation when a side pane fits, otherwise in
   // this pane (the Bot stays pinned in the sidebar to switch back).
+  // Side questions asked beside this conversation's replies. Its lists leave
+  // them out, so they are read here for the replies that show them.
+  const sideQuestions = signal<AgentSession[]>([]);
+  let sideLoad = 0;
+  const loadSideQuestions = async () => {
+    const version = ++sideLoad;
+    const sessions: AgentSession[] = [];
+    let position: AgentSessionPosition = { kind: 'start' };
+    for (;;) {
+      const page: AgentSessionPage = await host.query('agent', 'list', {
+        filter: 'all',
+        position,
+        scope: { kind: 'side_questions', sessionId },
+      });
+      if (!alive || version !== sideLoad) return;
+      sessions.push(...page.sessions);
+      if (!page.after) break;
+      position = { kind: 'after', revision: page.revision, cursor: page.after };
+    }
+    sideQuestions.set(sessions);
+    void loadSideQuotes(sessions);
+  };
+  // What each side question quotes, read once from its first message: the
+  // branch records where it was asked, not about which words. A passage
+  // gathered as this view was open names its reply's turn; the history does
+  // not, so quotes read from it are looked for in the reply asked beside.
+  type SideQuote = { text: string; turnId?: string };
+  const sideQuotes = signal<ReadonlyMap<string, readonly SideQuote[]>>(new Map());
+  const loadSideQuotes = async (sessions: readonly AgentSession[]) => {
+    for (const session of sessions) {
+      if (!alive) return;
+      if (sideQuotes().has(session.id)) continue;
+      let quotes: SideQuote[] = [];
+      try {
+        const readPage = (through: number | null, position: HistoryPosition) =>
+          host.query('agent', 'history', {
+            sessionId: session.id,
+            through,
+            position,
+            includeThinking: false,
+            view: 'conversation',
+          });
+        let first: AgentHistoryChunk | undefined;
+        let position: HistoryPosition = { kind: 'tail' };
+        let through: number | null = null;
+        for (let pages = 0; pages < 8; pages += 1) {
+          const page = await readPage(through, position);
+          if (!alive) return;
+          if (page.kind !== 'ready') break;
+          const liveUser = page.chunks.find(
+            (chunk) =>
+              chunk.role === 'user' && chunk.position.kind === 'live' && chunk.offset === 0,
+          );
+          if (liveUser) first = liveUser;
+          const earliest = page.chunks[0];
+          if (!page.before || !earliest || earliest.position.kind !== 'live') break;
+          through = page.through;
+          position = { kind: 'before', cursor: page.before };
+        }
+        quotes = (first?.quotes ?? []).map((quote) => ({
+          text: quote.truncated ? quote.text.replace(/(…|\.\.\.)$/, '') : quote.text,
+        }));
+      } catch (reason) {
+        console.warn("A side question's quotes were not read:", reason);
+        continue;
+      }
+      if (!alive) return;
+      sideQuotes.set(new Map(sideQuotes()).set(session.id, quotes));
+    }
+  };
+  // A side question about several replies forks through the latest of them.
+  const latestOf = (positions: readonly HistoryRowAddress[]) => {
+    const at = (position: HistoryRowAddress) =>
+      rows().findIndex((row) => row.position && sameHistoryRow(row.position, position));
+    return positions.reduce((best, next) => (at(best) >= at(next) ? best : next));
+  };
+  const askAbout = (position: HistoryRowAddress, passages: readonly GatheredPassage[]) =>
+    props.askBeside!({
+      quotes: passages.map((passage) => ({
+        text: passage.text,
+        ...(passage.turnId ? { sourceTurnId: passage.turnId } : {}),
+      })),
+      ask: async (question) => {
+        const observed = await host.query('agent', 'observe', { sessionId });
+        const forked = await props.control('fork', {
+          sessionId,
+          expectedRevision: observed.session.revision,
+          position: { kind: 'through_source_turn', position },
+          title: sideTitle(question),
+          labels: [],
+          side: true,
+        });
+        if (forked.kind !== 'forked')
+          throw new UiError('Conversation creation rejected: {reason}', {
+            reason: forked.reason ?? forked.kind,
+          });
+        clearGathered(sessionId);
+        sideQuotes.set(
+          new Map(sideQuotes()).set(
+            forked.session.id,
+            passages.map((passage) => ({ text: passage.text, turnId: passage.turnId })),
+          ),
+        );
+        sideQuestions.set([forked.session, ...sideQuestions()]);
+        return forked.session.id as string;
+      },
+      discard: async (id) => {
+        const observed = await host.query('agent', 'observe', { sessionId: id });
+        await props.control('changeSession', {
+          sessionId: id,
+          expectedRevision: observed.session.revision,
+          action: 'remove',
+        });
+        if (alive) sideQuestions.set(sideQuestions().filter((session) => session.id !== id));
+      },
+    });
+  const sideActions =
+    props.askBeside && !props.side
+      ? {
+          ask: (row: Row, passage: string | null) => {
+            if (!row.position) return;
+            const here = passage
+              ? [{ position: row.position, turnId: row.turnId, text: passage }]
+              : [];
+            const passages = [...gatheredPassages(sessionId), ...here];
+            askAbout(latestOf([row.position, ...passages.map((item) => item.position)]), passages);
+          },
+          gather: (row: Row, passage: string) => {
+            if (row.position)
+              gatherPassage(sessionId, {
+                position: row.position,
+                turnId: row.turnId,
+                text: passage,
+              });
+          },
+          askGathered: () => {
+            const passages = gatheredPassages(sessionId);
+            if (passages.length > 0)
+              askAbout(latestOf(passages.map((item) => item.position)), passages);
+          },
+          asked: (position: HistoryRowAddress) => sideQuestionsAt(sideQuestions(), position),
+          // A side question marks the reply it was asked beside, and each
+          // other reply a passage of it was gathered from.
+          marks: (row: Row) =>
+            sideQuestions()
+              .toReversed()
+              .flatMap((item) => {
+                const anchor = sideAnchor(item);
+                const beside =
+                  anchor !== null && !!row.position && sameHistoryRow(anchor, row.position);
+                const quotes = (sideQuotes().get(item.id) ?? [])
+                  .filter((quote) => (quote.turnId ? quote.turnId === row.turnId : beside))
+                  .map((quote) => quote.text);
+                return beside || quotes.length > 0 ? [{ item, quotes }] : [];
+              }),
+          open: (id: string) => {
+            props.openSideQuestion?.(id);
+          },
+          shown: () => props.sideQuestionId?.() ?? null,
+        }
+      : undefined;
+  if (sideActions) {
+    // A discarded side question leaves its reply when its card closes.
+    effect(() => {
+      props.sideQuestionId?.();
+      void loadSideQuestions().catch((reason) =>
+        console.warn('Side questions were not listed:', reason),
+      );
+    });
+  }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
@@ -1470,8 +1662,37 @@ export function Conversation(props: ConversationProps) {
       }
     }
   });
+  // A side question's card shows what was asked in it. What its conversation
+  // inherited is read from a snapshot, so those turns have wrapped keys.
+  const ownEntries = new WeakMap<DisplayEntry[], DisplayEntry[]>();
+  const ownSections = (sections: DisplayEntry[][]) =>
+    sections.map((entries) => {
+      let own = ownEntries.get(entries);
+      if (own) return own;
+      const inherited = (entry: DisplayEntry) =>
+        (entry.kind === 'summary' || entry.kind === 'row'
+          ? entry.turnKey
+          : entry.kind === 'process'
+            ? entry.group.turnKey
+            : undefined
+        )?.startsWith('[');
+      // An entry with no turn of its own goes with the one before it.
+      let kept = !entries.some((entry) => inherited(entry) === true);
+      own = entries.filter((entry) => {
+        const from = inherited(entry);
+        if (from !== undefined) kept = !from;
+        return kept;
+      });
+      if (own.length === entries.length) own = entries;
+      ownEntries.set(entries, own);
+      return own;
+    });
   const displaySections = computed(() =>
-    ordinaryChat() ? ordinaryChatSections() : [otherDisplay()],
+    ordinaryChat()
+      ? props.side
+        ? ownSections(ordinaryChatSections())
+        : ordinaryChatSections()
+      : [otherDisplay()],
   );
   const entriesByKey = new Map<string, DisplayEntry>();
   const indexedSections = computed((previous: Set<DisplayEntry[]> | undefined) => {
@@ -2641,6 +2862,10 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
+    // A side question's card hides inherited snapshot turns; stop paging back
+    // once the loaded window already reaches the snapshot boundary.
+    if (edge === 'before' && props.side && historyRows().ordered[0]?.position?.kind !== 'live')
+      return null;
     return (edge === 'before' ? !deferOlderUntilScroll : historyScrolled) &&
       owner?.[edge] &&
       ownsWindow(owner.identity) &&
@@ -4586,6 +4811,7 @@ export function Conversation(props: ConversationProps) {
         if (prefill) {
           try {
             if (empty) {
+              if (prefill.quotes?.length) quotes.set([...prefill.quotes]);
               changeDraft(prefill.text);
               for (const file of prefill.files ?? [])
                 attachments.observeIntake(client.beginStagedUpload(file), () => {});
@@ -5027,6 +5253,7 @@ export function Conversation(props: ConversationProps) {
             <MessageRow
               item={row}
               compactChat={props.compact}
+              beside={props.side}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -5064,6 +5291,34 @@ export function Conversation(props: ConversationProps) {
                   return;
                 innerReader.set(key);
               }}
+              sideMarks={
+                sideActions
+                  ? (row) =>
+                      sideActions.marks(row).map(({ item, quotes }) => ({
+                        id: item.id as string,
+                        title: item.title as string,
+                        quotes,
+                        open: sideActions.shown() === item.id,
+                      }))
+                  : undefined
+              }
+              openSide={sideActions?.open}
+              replyNotes={
+                sideActions
+                  ? (row, marked) => (
+                      <SideNotes
+                        questions={() => {
+                          const position = row().position;
+                          return position
+                            ? sideActions.asked(position).filter((item) => !marked().has(item.id))
+                            : [];
+                        }}
+                        shown={sideActions.shown}
+                        open={sideActions.open}
+                      />
+                    )
+                  : undefined
+              }
               finalActions={(row, ownerKey, menu) => (
                 <FinalActions
                   compact={props.compact}
@@ -5071,8 +5326,9 @@ export function Conversation(props: ConversationProps) {
                   ownerKey={ownerKey}
                   sessionId={sessionId}
                   through={() => latestKnown}
-                  fork={props.fork}
+                  fork={props.side ? undefined : props.fork}
                   menu={menu}
+                  side={sideActions}
                   extra={
                     platform.idiom !== 'terminal' && props.edit ? (
                       <MessageEdit
@@ -5155,7 +5411,7 @@ export function Conversation(props: ConversationProps) {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          borderTopWidth: historyList().length ? 1 : 0,
+          borderTopWidth: historyList().length && !props.side ? 1 : 0,
           borderTopColor: C.line,
         }}
       >
@@ -5576,6 +5832,18 @@ export function Conversation(props: ConversationProps) {
               </View>
             )}
           </Each>
+          <If when={sideActions !== undefined && gatheredPassages(sessionId).length > 0}>
+            <View style={{ paddingLeft: railInset() }}>
+              <View style={[readingColumn, { paddingRight: 16 }]}>
+                <SideQuoteTray
+                  quotes={() => gatheredPassages(sessionId).map((passage) => passage.text)}
+                  ask={() => sideActions?.askGathered()}
+                  remove={(index) => dropGathered(sessionId, index)}
+                  clear={() => clearGathered(sessionId)}
+                />
+              </View>
+            </View>
+          </If>
         </View>
         <Each
           of={selectedTrajectory() === null ? [] : [selectedTrajectory()!]}

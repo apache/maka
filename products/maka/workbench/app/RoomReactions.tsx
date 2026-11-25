@@ -146,7 +146,7 @@ function reactionBurstColor(emoji: string): string {
  * Ephemeral 56x56 native UI-thread Canvas burst (1 expanding ring + 6 soft sparks)
  * mounted only on reaction add/toggle-on and unmounted after 420ms.
  */
-function RoomReactionBurst(props: { emoji: string; onDone(): void }) {
+export function RoomReactionBurst(props: { emoji: string; onDone(): void }) {
   const p = createAnimatedValue(0);
   const color = reactionBurstColor(props.emoji);
   const ringRadius = p.interpolate({ inputRange: [0, 1], outputRange: [6, 22] });

@@ -405,7 +405,7 @@ impl Cut {
                 Inline::Text { text } => self.take(text).map(Inline::text),
                 Inline::Keyboard { text } => self.take(text).map(|text| Inline::Keyboard { text }),
                 Inline::Code { code } => self.take(code).map(|code| Inline::Code { code }),
-                Inline::Source { content, .. } => {
+                Inline::Source { content, .. } | Inline::Mark { content, .. } => {
                     out.extend(self.inlines(content));
                     None
                 }
@@ -816,7 +816,7 @@ fn md_inline(inline: &Inline, out: &mut String) {
         let _ = write!(out, "</{name}>");
     };
     match inline {
-        Inline::Source { content, .. } => md_inlines(content, out),
+        Inline::Source { content, .. } | Inline::Mark { content, .. } => md_inlines(content, out),
         Inline::Text { text } => out.push_str(&escape_markdown(text)),
         Inline::Strong { content } => wrap("**", content, out),
         Inline::Emphasis { content } => wrap("*", content, out),
@@ -1083,7 +1083,7 @@ fn html_inline(inline: &Inline, out: &mut String) {
         let _ = write!(out, "</{name}>");
     };
     match inline {
-        Inline::Source { content, .. } => html_inlines(content, out),
+        Inline::Source { content, .. } | Inline::Mark { content, .. } => html_inlines(content, out),
         Inline::Text { text } => escape(text, out),
         Inline::Strong { content } => tag("strong", content, out),
         Inline::Emphasis { content } => tag("em", content, out),

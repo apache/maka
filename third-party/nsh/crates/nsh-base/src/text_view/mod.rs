@@ -9,6 +9,7 @@ mod formula;
 mod highlight;
 mod html;
 mod markdown;
+mod marks;
 #[cfg(feature = "math")]
 mod math;
 mod parse;
@@ -31,6 +32,7 @@ pub use self::{
         MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins, ParseContext, Parser,
         mdast,
     },
+    marks::{TextViewMark, TextViewMarkPressEvent, TextViewMarksMatchEvent},
     parts::{PartStyle, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles},
     selection::{TextSelectionFormat, TextSelectionOptions},
     view::{

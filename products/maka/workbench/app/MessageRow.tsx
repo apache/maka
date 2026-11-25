@@ -19,11 +19,12 @@
 
 import { messageDateTime, messageTime, tr } from './locale';
 import { CompactionDivider, NoteDivider } from './CompactionDivider';
-import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, Clipboard, computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
+import { selectedPassage, type SideMark } from './sideQuestions';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import {
@@ -169,6 +170,7 @@ export function MessageRow({
   item,
   localQuickReply,
   compactChat,
+  beside,
   citations,
   hasSources,
   openSources,
@@ -189,12 +191,17 @@ export function MessageRow({
   onToolReading,
   inspectTool,
   finalActions,
+  replyNotes,
+  sideMarks,
+  openSide,
   editMessage,
   messageEditor,
   failureActions,
 }: {
   item: () => Row;
   compactChat?: boolean;
+  /** Drawn in a card beside the conversation, on the sidebar's tone. */
+  beside?: boolean;
   localQuickReply?: boolean;
   citations?(): readonly InlineCitation[] | undefined;
   hasSources?(): boolean;
@@ -217,6 +224,11 @@ export function MessageRow({
   onToolReading?(key: string): void;
   inspectTool?(key: string): void;
   finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  /** What stays under a reply whether or not its actions show. */
+  replyNotes?(row: () => Row, marked: () => ReadonlySet<string>): JSX.Element;
+  /** The side questions asked beside a reply, to underline what they quote. */
+  sideMarks?(row: Row): readonly SideMark[];
+  openSide?(sessionId: string): void;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** What takes a user message's place while `viewState.edit` holds an edit of it. */
@@ -521,6 +533,55 @@ export function MessageRow({
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
+        const Item = (props: { label: string; disabled?: boolean; select(): void }) => (
+          <MenuItem
+            accessibilityLabel={props.label}
+            disabled={props.disabled}
+            onSelect={props.select}
+            style={{ ...menuRowStyle(), minWidth: 160 }}
+            hoverStyle={menuRowHoverStyle()}
+            focusStyle={menuRowHoverStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
+          </MenuItem>
+        );
+        // The passage selected as the menu opened; the selection may go as it opens.
+        const copySelection = () => {
+          const passage = selectedPassage(sessionId, row().turnId);
+          return passage ? () => void Clipboard.writeText(passage) : null;
+        };
+        const marks = () => (sideMarks && !user() ? sideMarks(row()) : []);
+        // The side questions whose passage TextView underlined in the reply.
+        const marked = signal<ReadonlySet<string>>(new Set());
+        const withMenu = (trigger: JSX.Element) => (
+          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={trigger}>
+            <If when={copySelection() !== null}>
+              <Item label={tr('Copy selection')} select={() => copySelection()?.()} />
+            </If>
+            <Each
+              of={menu!.commands().filter((command) => command.action() !== null)}
+              key={(command) => command.kind}
+            >
+              {(command) => (
+                <Item
+                  label={command().label()}
+                  disabled={command().busy()}
+                  select={command().action()!}
+                />
+              )}
+            </Each>
+            <If when={compactChat && hasSources?.() && replyActions()}>
+              <Item label={tr('Sources')} select={() => openSources?.()} />
+            </If>
+            <If when={!user()}>
+              <Item
+                label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}
+                select={toggleSource()}
+              />
+            </If>
+          </ContextMenu>
+        );
         const message = (
           <View
             class={menu && 'group'}
@@ -569,6 +630,10 @@ export function MessageRow({
                               sourceId={sourceId()}
                               openLink={openLink}
                               userScroll={userScroll}
+                              menu={menu ? withMenu : undefined}
+                              marks={marks}
+                              openSide={openSide}
+                              onMarksMatch={(ids) => marked.set(ids)}
                             />
                           </If>
                         }
@@ -576,6 +641,9 @@ export function MessageRow({
                         <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
+                      </If>
+                      <If when={replyNotes !== undefined && replyActions()}>
+                        {replyNotes?.(row, marked)}
                       </If>
                       <If
                         when={localQuickReply && row().role === 'assistant'}
@@ -796,7 +864,7 @@ export function MessageRow({
                         paddingHorizontal: 16,
                         paddingVertical: compactChat ? 10 : 16,
                         borderRadius: compactChat ? 17 : 20,
-                        backgroundColor: highlighted?.() ? C.cardRaised : C.card,
+                        backgroundColor: highlighted?.() ? C.cardRaised : beside ? C.panel : C.card,
                         gap: 8,
                       }}
                     >
@@ -888,44 +956,7 @@ export function MessageRow({
           </View>
         );
         if (!menu) return message;
-        const Item = (props: { label: string; disabled?: boolean; select(): void }) => (
-          <MenuItem
-            accessibilityLabel={props.label}
-            disabled={props.disabled}
-            onSelect={props.select}
-            style={{ ...menuRowStyle(), minWidth: 160 }}
-            hoverStyle={menuRowHoverStyle()}
-            focusStyle={menuRowHoverStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Text style={{ ...captionTextStyle, color: C.text }}>{props.label}</Text>
-          </MenuItem>
-        );
-        return (
-          <ContextMenu offset={4} margin={8} popupStyle={floatingStyle()} trigger={message}>
-            <Each
-              of={menu.commands().filter((command) => command.action() !== null)}
-              key={(command) => command.kind}
-            >
-              {(command) => (
-                <Item
-                  label={command().label()}
-                  disabled={command().busy()}
-                  select={command().action()!}
-                />
-              )}
-            </Each>
-            <If when={compactChat && hasSources?.() && replyActions()}>
-              <Item label={tr('Sources')} select={() => openSources?.()} />
-            </If>
-            <If when={!user()}>
-              <Item
-                label={sourceMode() ? tr('Show formatted message') : tr('Show message source')}
-                select={toggleSource()}
-              />
-            </If>
-          </ContextMenu>
-        );
+        return withMenu(message);
       }}
     </Each>
   );

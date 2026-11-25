@@ -149,6 +149,10 @@ parts! {
     small => Small,
     /// Links (in the theme's link color, underlined).
     link => Link,
+    /// Marked prose passages (`marks`: surrounding ink, accent underline).
+    mark => Mark,
+    /// Active marked prose passages (`marks` with `active: true`).
+    active_mark => ActiveMark,
     /// Images: alone in a paragraph or a cell, as wide as they ask (their
     /// natural size when they ask for nothing), at most the text's width;
     /// in a line of text, the size they ask for, else three quarters of a

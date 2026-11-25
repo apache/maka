@@ -107,6 +107,7 @@ const icons = {
   reply: { custom: 'reply', glyph: '↩' },
   warning: { custom: 'warning', glyph: '!' },
   info: { custom: 'info', glyph: 'i' },
+  ask: { custom: 'ask', glyph: '❝' },
 } satisfies Record<
   string,
   | { lucide: keyof typeof lucide; glyph: string }
@@ -193,6 +194,14 @@ const customIcons = {
     { tag: 'line', x1: 15, y1: 9, x2: 15.01, y2: 9 },
     { tag: 'path', d: 'M16 5h6' },
     { tag: 'path', d: 'M19 2v6' },
+  ],
+  ask: [
+    {
+      tag: 'path',
+      d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z',
+    },
+    { tag: 'path', d: 'M14 13a2 2 0 0 0 2-2V9h-2' },
+    { tag: 'path', d: 'M8 13a2 2 0 0 0 2-2V9H8' },
   ],
   reply: [
     { tag: 'polyline', points: '9 17 4 12 9 7' },

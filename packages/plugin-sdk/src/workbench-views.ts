@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import type { AgentSessionKind, InstanceId, ModelSelection } from './generated/runtime.js';
+import type {
+  AgentSessionKind,
+  InstanceId,
+  ModelSelection,
+  QuoteRef,
+} from './generated/runtime.js';
 import { defineUiViewContract } from './workbench.js';
 import type { ComposerViewInput } from './composer-view.js';
 
@@ -47,6 +52,22 @@ export interface ConversationShell {
   besideSessionIds?(): readonly string[];
   /** Present on a pane the shell opened beside another: closes that pane. */
   closePane?(): void;
+  /** Opens the card where a side question is asked, beside this conversation. */
+  askBeside?(request: SideQuestionRequest): void;
+  /** Opens the card of a side question that was asked before. */
+  openSideQuestion?(sessionId: string): void;
+  /** The side question whose card is open beside this conversation. */
+  sideQuestionId?(): string | null;
+}
+
+/** A side question that is not asked yet. Its conversation is created when it is. */
+export interface SideQuestionRequest {
+  /** The passages it asks about. */
+  readonly quotes: readonly QuoteRef[];
+  /** Creates the side question's conversation and returns its id. */
+  ask(question: string): Promise<string>;
+  /** Discards a side question that `ask` created after its card had closed. */
+  discard(sessionId: string): Promise<void>;
 }
 
 export interface ConversationSessionHandle {
@@ -57,6 +78,8 @@ export interface ConversationSessionHandle {
   openBot(): Promise<string>;
   /** Floating mini-conversation and composer overlaid when the workspace stage is fullscreen. */
   floatingComposer?(): unknown;
+  /** Adds text to the end of the selected conversation's draft and focuses it. */
+  appendToDraft?(text: string): boolean;
 }
 
 export type QuickIcon =
@@ -185,6 +208,13 @@ export interface ConversationNavigationInput<Element = unknown> {
 export interface ConversationCompact {
   expand(): void;
   close(): void;
+  /** Present on a side question's card. */
+  side?: ConversationSideCard;
+}
+
+export interface ConversationSideCard {
+  /** Puts a reference to this side question in the draft of the conversation it was asked from. */
+  attach(reference: string): boolean;
 }
 
 export interface ConversationSessionInput {
@@ -193,6 +223,8 @@ export interface ConversationSessionInput {
   active?(): boolean;
   /** Sent once the pane can send, in a conversation with no draft. */
   readonly firstMessage?: string | undefined;
+  /** Passages that go with `firstMessage`. */
+  readonly firstQuotes?: readonly QuoteRef[] | undefined;
   readonly compact?: ConversationCompact | undefined;
   attach(handle: ConversationSessionHandle): void;
 }

@@ -21,7 +21,8 @@ use nsh_core::{
 
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
-    ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table,
+    ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table, TextViewMark,
+    TextViewMarkPressEvent, TextViewMarksMatchEvent,
     markdown::{Projection, ProjectionKind},
     parse::{DocumentState, SourceOrigin},
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
@@ -59,6 +60,10 @@ pub struct TextViewProps {
     /// `renderCustom` (mentions, charts, callouts, ...).
     #[prop(default)]
     pub extensions: Prop<Vec<MarkdownExtension>>,
+    /// Clickable prose passage marks overlaid on the parsed document without
+    /// altering Markdown source or `afterByte` anchors.
+    #[prop(default)]
+    pub marks: Prop<Vec<TextViewMark>>,
     /// Tailwind classes by part (`{ heading1: "text-2xl font-bold", code:
     /// "font-mono bg-muted" }`), after the part's own styles.
     #[prop(default)]
@@ -262,6 +267,12 @@ pub enum TextViewEvent {
     /// view's selection is the one there is, and it reports it.
     #[args(event)]
     SelectionChange(TextViewSelectionEvent),
+    /// A marked prose passage (`marks`) was pressed.
+    #[args(event)]
+    MarkPress(TextViewMarkPressEvent),
+    /// Which `marks` ids matched at least one passage in the current document.
+    #[args(event)]
+    MarksMatch(TextViewMarksMatchEvent),
 }
 
 /// The methods of a [`TextView`]'s ref.
@@ -454,12 +465,55 @@ pub struct TextViewCodeActionEvent {
 pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElement {
     let plugins = use_context::<MarkdownPlugins>().unwrap_or_default();
     let parsed = super::parse::document(props, plugins.clone(), cx);
-    let document = parsed.document;
+    let source_document = parsed.document;
+    #[derive(Clone, Copy)]
+    struct DisplayDocument {
+        source: Signal<Projection>,
+        marked: Memo<Option<(Projection, Vec<SharedString>)>>,
+    }
+    impl DisplayDocument {
+        fn with<R>(&self, f: impl FnOnce(&Projection) -> R) -> R {
+            self.marked.with(|entry| match entry {
+                Some((projected, _)) => f(projected),
+                None => self.source.with(f),
+            })
+        }
+    }
+    let marked = computed(move || {
+        props.marks.with(|marks| {
+            if marks.is_empty() {
+                return None;
+            }
+            source_document.with(|projection| {
+                let mut projected = projection.clone();
+                let matched = super::marks::apply(&mut projected.document, marks);
+                Some((projected, matched))
+            })
+        })
+    });
+    let document = DisplayDocument {
+        source: source_document,
+        marked,
+    };
+    let last_matched = RefCell::new(Vec::<SharedString>::new());
+    effect(move || {
+        let ids = marked.with(|entry| {
+            entry
+                .as_ref()
+                .map(|(_, ids)| ids.clone())
+                .unwrap_or_default()
+        });
+        let mut previous = last_matched.borrow_mut();
+        if *previous != ids {
+            *previous = ids.clone();
+            cx.emit(TextViewEvent::MarksMatch(TextViewMarksMatchEvent { ids }));
+        }
+    });
     let plugins = Rc::new(plugins);
     let math_loaded = signal(false);
     let reported = Rc::new(RefCell::new(Reported::default()));
     cx.methods(TextViewApi {
-        document,
+        document: source_document,
         props,
         reported: reported.clone(),
     });
@@ -467,9 +521,9 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
         parsed.track_source();
         // User choices belong to the source, not to a recycled list cell.
         // Signals and event owners are still made under each logical row.
-        let choices = BlockChoices::new(document);
+        let choices = BlockChoices::new(source_document);
         let prune = choices.clone();
-        effect(move || document.with(|document| prune.retain(document)));
+        effect(move || source_document.with(|document| prune.retain(document)));
         let visible = computed(move || {
             let terminal = is_terminal();
             let custom_image = props.render_image.with(Option::is_some);
@@ -1059,6 +1113,21 @@ impl Cx {
             if links == TextViewLinks::Open && !url.starts_with('#') {
                 drop(open_url(url.to_string()));
             }
+        }
+    }
+
+    fn mark_press(&self, id: SharedString) -> impl Fn(&PressEvent) + Clone + 'static {
+        let scope = self.scope;
+        let owner = Owner::current();
+        let origin = self.source.origin();
+        move |press: &PressEvent| {
+            if !origin.is_current() || !owner.is_live() {
+                return;
+            }
+            scope.emit(TextViewEvent::MarkPress(TextViewMarkPressEvent {
+                id: id.clone(),
+                modifiers: press.modifiers,
+            }));
         }
     }
 
@@ -2648,6 +2717,37 @@ impl Cx {
                     .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
             }
+            Inline::Mark {
+                id,
+                title,
+                active,
+                content,
+            } => {
+                let id = SharedString::from(id.clone());
+                let span = self.span(content, key);
+                let mut label = String::new();
+                super::document::inline_text(content, &mut label);
+                let active = *active;
+                let hint = (!is_terminal() && title.is_some()).then(|| {
+                    let title = title.clone().map(SharedString::from);
+                    link_hint(|| None, move || title.clone(), HintAt::Pointer)
+                });
+                let el = span
+                    .focusable(true)
+                    .when(active, |t| t.text_color(move || theme().primary))
+                    .underline()
+                    .text_decoration_color(move || {
+                        theme().primary.opacity(if active { 0.65 } else { 0.45 })
+                    })
+                    .text_decoration_thickness(px(1.0))
+                    .role(AccessibilityRole::Button)
+                    .label(SharedString::from(label))
+                    .when_some(title.clone(), |t, title| t.hint(title))
+                    .when_some(hint, |t, hint| t.child(hint))
+                    .on_press(self.mark_press(id));
+                self.part(el, if active { Part::ActiveMark } else { Part::Mark })
+                    .into_element()
+            }
             Inline::Image(image) => {
                 let link = self.link.borrow().clone();
                 self.image(image, link, ImageFlow::Inline(self.line.get()), key)
@@ -3264,7 +3364,8 @@ fn inline_source_bounds(content: &[Inline]) -> Option<(u64, u64)> {
             | Inline::Superscript { content }
             | Inline::Subscript { content }
             | Inline::Small { content }
-            | Inline::Link { content, .. } => {
+            | Inline::Link { content, .. }
+            | Inline::Mark { content, .. } => {
                 if let Some((s, e)) = inline_source_bounds(content) {
                     extend(s, e);
                 }
