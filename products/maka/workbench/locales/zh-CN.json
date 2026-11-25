@@ -8,6 +8,7 @@
   "A new message closed the question.": "收到新消息后结束提问。",
   "A provider credential is stored. Sign in again to replace it.": "已保存提供商凭据。重新登录可替换凭据。",
   "A proxy password is stored. Its value is never read back.": "已存储代理密码，且不会读取其值。",
+  "A question for you": "有个问题要问你",
   "A server with this name already exists at this location.": "此位置已存在同名服务器。",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "快捷键可在任何应用中直接运行命令。输入别名即可找到命令；留空时使用内置别名。",
   "A subagent with this name already exists.": "已存在同名子 Agent。",

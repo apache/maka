@@ -110,7 +110,8 @@ export function InteractionAction(props: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        backgroundColor: props.primary ? C.accent : props.selected ? C.cardRaised : C.card,
+        backgroundColor:
+          props.primary && !props.disabled ? C.accent : props.selected ? C.cardRaised : C.card,
       }}
       hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.cardRaised }}
       focusStyle={props.primary ? { backgroundColor: C.accentHover } : cardFocusStyle()}
@@ -711,7 +712,7 @@ export function InteractionComposer({
           session_approval: tr('Review child decision'),
           service_approval: tr('Review tool call'),
           permissions: tr('Review additional access'),
-          question: 'A question for you',
+          question: tr('A question for you'),
           form: tr('Form request'),
           client_capability: tr('Capability request'),
           computer_app: tr('Application access request'),

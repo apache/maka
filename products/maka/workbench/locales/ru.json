@@ -8,6 +8,7 @@
   "A new message closed the question.": "Новое сообщение закрыло вопрос.",
   "A provider credential is stored. Sign in again to replace it.": "Учётные данные провайдера сохранены. Войдите снова, чтобы заменить их.",
   "A proxy password is stored. Its value is never read back.": "Пароль прокси сохранён. Его значение никогда не считывается обратно.",
+  "A question for you": "Вопрос к вам",
   "A server with this name already exists at this location.": "Сервер с таким именем уже существует в этом расположении.",
   "A shortcut runs the command from any app. Typing the alias finds it; left empty, the built-in alias is used.": "Сочетание клавиш запускает команду из любого приложения. Ввод псевдонима находит её; если оставить пустым, используется встроенный псевдоним.",
   "A subagent with this name already exists.": "Субагент с таким именем уже существует.",
