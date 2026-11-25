@@ -33,6 +33,7 @@ import type { ComposerSession } from '../../../../packages/plugin-sdk/src/compos
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { RoomReactionBurst } from './RoomReactions';
+import { sessionStatusCaption } from './sessionStatus';
 import { motionEnabled, ROOM_SPRING } from './roomMotion';
 import { sideFollowUps, type SideFollowUp } from './sideQuestions';
 import { errorText, renderText } from './text';
@@ -538,7 +539,7 @@ export function SideComposer(props: {
  */
 export function SideNotes(props: {
   /** Those not underlined in the reply: asked about all of it, or about text not found in it. */
-  questions(): readonly { id: string; title: string }[];
+  questions(): readonly { id: string; title: string; activity?: string }[];
   /** The side question whose card is open. */
   shown(): string | null;
   open(sessionId: string): void;
@@ -578,6 +579,11 @@ export function SideNotes(props: {
               >
                 {item().title}
               </Text>
+              <If when={item().activity === 'waiting'}>
+                <Text style={{ ...captionTextStyle, color: C.warning, flexShrink: 0 }}>
+                  {sessionStatusCaption.waiting}
+                </Text>
+              </If>
             </Button>
           )}
         </Each>

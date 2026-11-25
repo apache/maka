@@ -62,8 +62,9 @@ pub struct Filter {
 pub enum SideQuestions {
     /// Side questions and other sessions alike.
     Any,
-    /// Leave out side questions whose parent conversation still exists. One
-    /// whose parent was removed is listed as an ordinary conversation.
+    /// Leave out side questions whose parent conversation still exists,
+    /// except while one waits for the user. One whose parent was removed is
+    /// listed as an ordinary conversation.
     Hidden,
     /// Only the side questions of this parent.
     Of(String),

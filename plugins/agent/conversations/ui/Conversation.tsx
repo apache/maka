@@ -1228,6 +1228,34 @@ export function Conversation(props: ConversationProps) {
         console.warn('Side questions were not listed:', reason),
       );
     });
+    // What a side question is doing follows the catalog, also with its card
+    // closed: one that waits for the user says so under its reply.
+    let sideStream: Subscription | null = null;
+    let watching = true;
+    cleanup(() => {
+      watching = false;
+      void sideStream?.close().catch(() => {});
+    });
+    void (async () => {
+      try {
+        sideStream = await host.subscribe('agent', 'catalog', {
+          filter: 'all',
+          position: { kind: 'start' },
+          scope: { kind: 'side_questions', sessionId },
+        });
+        if (!watching) return void sideStream.close();
+        let revision: string | null = null;
+        for (;;) {
+          const next = (await sideStream.next()) as AgentSessionPage | null;
+          if (!watching || next === null) return;
+          if (next.revision === revision) continue;
+          revision = next.revision;
+          await loadSideQuestions();
+        }
+      } catch (reason) {
+        if (watching) console.warn('Side question updates ended:', reason);
+      }
+    })();
   }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
@@ -5309,8 +5337,13 @@ export function Conversation(props: ConversationProps) {
                       <SideNotes
                         questions={() => {
                           const position = row().position;
+                          // An underlined one is listed too while it waits for the user.
                           return position
-                            ? sideActions.asked(position).filter((item) => !marked().has(item.id))
+                            ? sideActions
+                                .asked(position)
+                                .filter(
+                                  (item) => !marked().has(item.id) || item.activity === 'waiting',
+                                )
                             : [];
                         }}
                         shown={sideActions.shown}
