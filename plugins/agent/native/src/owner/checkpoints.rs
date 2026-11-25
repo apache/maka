@@ -137,6 +137,7 @@ impl Owner {
                         include_archived: true,
                     },
                     needs_you_only: false,
+                    side: maka_agent_state::session_catalog::SideQuestions::Any,
                 },
                 1,
             )

@@ -1191,6 +1191,7 @@ impl Owner {
                         position,
                         title: input.title,
                         labels: input.labels,
+                        side: false,
                     },
                     operation,
                     scope,

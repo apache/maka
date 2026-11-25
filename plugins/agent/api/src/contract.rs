@@ -285,6 +285,12 @@ pub enum SessionListScope {
         #[schemars(length(min = 1))]
         session_id: String,
     },
+    /// Side questions asked beside an owned session. Every other scope leaves
+    /// out side questions whose parent conversation still exists.
+    SideQuestions {
+        #[schemars(length(min = 1))]
+        session_id: String,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

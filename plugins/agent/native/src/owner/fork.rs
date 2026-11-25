@@ -362,6 +362,7 @@ impl Owner {
                         origin: BranchOrigin {
                             parent_session_id: input.session_id.clone(),
                             position: input.position.clone(),
+                            side: input.side,
                         },
                     },
                     source: captured.guard_cut().clone(),

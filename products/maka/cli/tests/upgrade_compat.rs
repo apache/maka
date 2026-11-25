@@ -95,6 +95,9 @@ struct CapsuleManifest {
     connection_slug: String,
     primary_session_id: String,
     forked_session_id: String,
+    /// Capsules sealed before side questions existed have none.
+    #[serde(default)]
+    side_session_id: Option<String>,
     room_id: String,
     room_pre_message: String,
     preset_id: String,
@@ -915,6 +918,34 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         assert_eq!(forked["kind"], "forked", "{forked}");
         let forked_session_id = forked["session"]["id"].as_str().unwrap().to_owned();
 
+        // 3b. Side question (a fork whose lineage carries `side`).
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let side = call(
+            &client,
+            "agent",
+            "fork",
+            json!({
+                "sessionId": primary_session_id,
+                "expectedRevision": observed["session"]["revision"],
+                "position": {"kind": "end"},
+                "title": format!("Compat Side {nonce}"),
+                "labels": [],
+                "side": true
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(side["kind"], "forked", "{side}");
+        assert_eq!(side["session"]["branch"]["side"], true, "{side}");
+        let side_session_id = side["session"]["id"].as_str().unwrap().to_owned();
+
         // 4. Multi-participant Room + persisted message.
         let room = call(
             &client,
@@ -1049,6 +1080,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             connection_slug: "compat-loopback".into(),
             primary_session_id,
             forked_session_id,
+            side_session_id: Some(side_session_id),
             room_id,
             room_pre_message,
             preset_id,
@@ -1204,6 +1236,50 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
                 serialized.contains(&manifest.nonce),
                 "pre-upgrade history missing nonce for {session_id}: {hist}"
             );
+        }
+
+        // A side question stays one: listed under its conversation, not among the others.
+        if let Some(side_session_id) = &manifest.side_session_id {
+            let ids = |page: &Value| {
+                page["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|session| session["id"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            let beside = call(
+                &client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "all",
+                    "position": {"kind": "start"},
+                    "scope": {"kind": "side_questions", "sessionId": manifest.primary_session_id}
+                }),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(ids(&beside), [side_session_id.clone()], "{beside}");
+            let all = call(
+                &client,
+                "agent",
+                "list",
+                json!({"filter": "all", "position": {"kind": "start"}}),
+                Attachments::new(),
+            )
+            .await;
+            assert!(!ids(&all).contains(side_session_id), "{all}");
+            assert!(ids(&all).contains(&manifest.forked_session_id), "{all}");
+            let observed = call(
+                &client,
+                "agent",
+                "observe",
+                json!({"sessionId": side_session_id}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(observed["session"]["branch"]["side"], true, "{observed}");
         }
 
         // Presets sweep.
