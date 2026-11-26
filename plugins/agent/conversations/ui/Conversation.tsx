@@ -1142,7 +1142,10 @@ export function Conversation(props: ConversationProps) {
             passages.map((passage) => ({ text: passage.text, turnId: passage.turnId })),
           ),
         );
-        sideQuestions.set([forked.session, ...sideQuestions()]);
+        sideQuestions.set([
+          forked.session,
+          ...sideQuestions().filter((session) => session.id !== forked.session.id),
+        ]);
         return forked.session.id as string;
       },
       discard: async (id) => {
