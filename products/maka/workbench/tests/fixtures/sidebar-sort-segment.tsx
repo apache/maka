@@ -105,7 +105,7 @@ mount(() => (
         attach={() => {}}
         close={() => {}}
         collapse={() => {}}
-        selectSession={async () => {}}
+        selectSession={async () => true}
         create={async () => {}}
         newConversation={() => {}}
         settings={() => {}}
