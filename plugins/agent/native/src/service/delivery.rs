@@ -126,11 +126,10 @@ pub(super) fn recorded_settlement(
     reply: &maka_agent_facts::operation::RecordedOperationReply,
 ) -> Option<ToolSettlement> {
     use maka_plugin_core::operation::{OperationOutcome, Receipt};
+    if !maka_agent_facts::operation::has_recorded_settlement(reply) {
+        return None;
+    }
     Some(match &reply.receipt {
-        Receipt::Recorded {
-            outcome: OperationOutcome::Unresolved,
-            ..
-        } => return None,
         Receipt::Recorded {
             outcome: OperationOutcome::Returned { result },
             ..

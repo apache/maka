@@ -1802,6 +1802,8 @@ pub enum HistoryPage {
         after: Option<Cursor>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_thought: Option<Box<maka_agent_ports::session::history::WorkThought>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_anchor: Option<maka_agent_facts::history::HistoryRowAddress>,
     },
 }
 
@@ -2041,12 +2043,14 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             before,
             after,
             tail_thought,
+            resolved_anchor,
         } = value;
         HistoryPage::Ready {
             through,
             before,
             after,
             tail_thought,
+            resolved_anchor,
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {

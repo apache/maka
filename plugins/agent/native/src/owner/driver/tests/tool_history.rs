@@ -5388,17 +5388,18 @@ async fn recall_jump_anchors_verify_for_executor_deltas_and_hidden_facts() {
             .append(&exec_claim, (&exec_view).into(), exec_facts, vec![])
             .await?;
 
-        // 2. Native model turn with a visible ToolCall, a shorter hidden CellEvent::Started
-        // sharing the same term (would outscore ToolCall by density if not filtered),
-        // and a hidden ModelInterrupted diagnostic.
+        // 2. Native model turn with a visible ToolCall, a hidden CellEvent::Started whose
+        // higher term density beats the visible ToolCall unless filtered, and a hidden
+        // ModelInterrupted diagnostic.
         let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+        let padding = "x".repeat(400);
         let (cell_tool, _) = rig
             .tool(
                 attempt,
                 "exec",
                 "exec-call-1",
                 json!({
-                    "code": "const token = 'CellSharedNeedle'; // extra padding so CellEvent::Started has higher density"
+                    "code": format!("const token = 'CellSharedNeedle'; // {padding}")
                 }),
             )
             .await?;
@@ -5413,7 +5414,11 @@ async fn recall_jump_anchors_verify_for_executor_deltas_and_hidden_facts() {
             attempt,
         };
         let cell = CellId::for_agent(link, &cell_tool.call);
-        let cell_source = ContentBlob::new(b"CellSharedNeedle".to_vec());
+        let cell_source = ContentBlob::new(
+            "CellSharedNeedle CellSharedNeedle CellSharedNeedle CellSharedNeedle"
+                .as_bytes()
+                .to_vec(),
+        );
         driver
             .state
             .append(
@@ -5467,57 +5472,62 @@ async fn recall_jump_anchors_verify_for_executor_deltas_and_hidden_facts() {
             let rig = &rig;
             let session = &session;
             async move {
-            let page = query(
-                rig,
-                "history",
-                json!({
-                    "sessionId": session,
-                    "through": passage["through"],
-                    "position": {
-                        "kind": "row",
-                        "position": passage["anchorPosition"],
-                        "field": "body",
-                    },
-                    "includeThinking": true,
-                    "view": "conversation",
-                }),
-            )
-            .await?;
-            assert_eq!(page["kind"], "ready", "history page not ready: {page}");
-            let chunks = page["chunks"].as_array().ok_or("missing chunks")?;
-            assert!(
-                chunks.iter().any(|chunk| {
-                    chunk["messageId"] == passage["anchorMessageId"]
-                        && chunk["field"] == "body"
-                        && chunk["offset"] == 0
-                        && chunk["position"] == passage["anchorPosition"]
-                }),
-                "Recall passage anchor could not be verified in history page.
-passage={passage}
-page={page}"
-            );
-            Ok::<_, Box<dyn Error + Send + Sync>>(())
+                let page = query(
+                    rig,
+                    "history",
+                    json!({
+                        "sessionId": session,
+                        "through": passage["through"],
+                        "position": {
+                            "kind": "row",
+                            "position": passage["anchorPosition"],
+                            "field": "body",
+                        },
+                        "includeThinking": true,
+                        "view": "conversation",
+                    }),
+                )
+                .await?;
+                assert_eq!(page["kind"], "ready", "history page not ready: {page}");
+                let chunks = page["chunks"].as_array().ok_or("missing chunks")?;
+                let resolved = page.get("resolvedAnchor").filter(|value| !value.is_null());
+                assert!(
+                    chunks.iter().any(|chunk| {
+                        let matches_row = match resolved {
+                            Some(target) => chunk["position"] == *target,
+                            None => {
+                                chunk["messageId"] == passage["anchorMessageId"]
+                                    && chunk["position"] == passage["anchorPosition"]
+                            }
+                        };
+                        matches_row && chunk["field"] == "body" && chunk["offset"] == 0
+                    }),
+                    "Recall passage anchor could not be verified in history page.\npassage={passage}\npage={page}"
+                );
+                Ok::<Value, Box<dyn Error + Send + Sync>>(page)
             }
         };
 
         let expected_exec_msg_id =
             maka_agent_facts::executor::message_id(exec_run, task, &message_id);
 
-        // First OutputDelta match
+        // First OutputDelta match: History resolves the executor message on demand.
         let first_page =
             recall_page(json!({"terms": ["OpeningGamma"], "session_id": session})).await?;
         let first_passage = &first_page["passages"].as_array().unwrap()[0];
-        assert_eq!(first_passage["anchorMessageId"], expected_exec_msg_id);
-        verify_passage(first_passage.clone()).await?;
+        let first_history = verify_passage(first_passage.clone()).await?;
+        assert_eq!(first_history["resolvedAnchor"], first_passage["anchorPosition"]);
+        assert_eq!(first_history["chunks"][0]["messageId"], expected_exec_msg_id);
 
-        // Second (continuation) OutputDelta match must resolve to the first delta's anchor
+        // Second (continuation) OutputDelta match: Recall keeps the continuation excerpt,
+        // and History resolves the jump lazily onto the first delta's visible row.
         let cont_page =
             recall_page(json!({"terms": ["ContinuationDelta"], "session_id": session})).await?;
         let cont_passage = &cont_page["passages"].as_array().unwrap()[0];
-        assert_eq!(cont_passage["anchorMessageId"], expected_exec_msg_id);
-        assert_eq!(
+        assert_ne!(
             cont_passage["anchorPosition"],
-            first_passage["anchorPosition"]
+            first_passage["anchorPosition"],
+            "recall search should not eagerly rewrite continuation anchors"
         );
         assert!(
             cont_passage["excerpt"]
@@ -5526,9 +5536,40 @@ page={page}"
                 .contains("ContinuationDelta"),
             "excerpt should still show matched continuation text: {cont_passage}"
         );
-        verify_passage(cont_passage.clone()).await?;
+        let cont_history = verify_passage(cont_passage.clone()).await?;
+        assert_eq!(cont_history["resolvedAnchor"], first_passage["anchorPosition"]);
+        assert_eq!(cont_history["chunks"][0]["messageId"], expected_exec_msg_id);
 
-        // Hidden CellEvent::Started must not shadow the visible ModelPart::ToolCall
+        // Verify the unfiltered search genuinely picks hidden CellEvent::Started first...
+        let store = maka_agent_state::recall::RecallStore::new(
+            driver.owner.store.data_writer()?,
+            driver.owner.recall.owner.clone(),
+            driver.owner.prefix.clone(),
+        )?;
+        let unfiltered_cell = store
+            .search(
+                maka_agent_state::recall::SearchQuery {
+                    terms: vec!["CellSharedNeedle".into()],
+                    session_id: Some(session.clone()),
+                    since: None,
+                    until: None,
+                    exclude: None,
+                    limit: None,
+                    transcript_only: false,
+                },
+                0,
+                0,
+                CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(unfiltered_cell.hits.len(), 1);
+        assert_eq!(
+            unfiltered_cell.hits[0].anchor.fact,
+            cell.started_fact_id(),
+            "fixture must ensure hidden CellEvent::Started wins without transcript filtering"
+        );
+
+        // ...while UI recall filters it out and returns the verifiable visible ToolCall.
         let cell_page =
             recall_page(json!({"terms": ["CellSharedNeedle"], "session_id": session})).await?;
         let cell_passages = cell_page["passages"].as_array().unwrap();
@@ -5537,22 +5578,26 @@ page={page}"
             1,
             "expected visible tool call hit: {cell_page}"
         );
+        assert_ne!(
+            cell_passages[0]["anchorPosition"]["fact"],
+            cell.started_fact_id().to_string()
+        );
         verify_passage(cell_passages[0].clone()).await?;
 
-        // Hidden ModelInterrupted must be excluded from UI recall...
+        // Hidden ModelInterrupted must be excluded cleanly (complete=true, no gaps)...
         let intr_page =
             recall_page(json!({"terms": ["HiddenInterruptNeedle"], "session_id": session})).await?;
+        assert_eq!(intr_page["complete"], true, "recall reported incomplete: {intr_page}");
+        assert!(
+            intr_page["gaps"].as_array().unwrap().is_empty(),
+            "recall reported unexpected gaps: {intr_page}"
+        );
         assert!(
             intr_page["passages"].as_array().unwrap().is_empty(),
             "hidden ModelInterrupted should not appear in UI recall: {intr_page}"
         );
 
         // ...while model-facing RecallStore search (transcript_only: false) still finds it.
-        let store = maka_agent_state::recall::RecallStore::new(
-            driver.owner.store.data_writer()?,
-            driver.owner.recall.owner.clone(),
-            driver.owner.prefix.clone(),
-        )?;
         let raw = store
             .search(
                 maka_agent_state::recall::SearchQuery {
