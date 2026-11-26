@@ -169,7 +169,7 @@ function ShortcutRecorder(props: {
           alignItems: 'center',
           justifyContent: 'center',
         }}
-        hoverStyle={{ backgroundColor: C.raised }}
+        hoverStyle={{ backgroundColor: C.cardRaised }}
       >
         <Text
           style={{

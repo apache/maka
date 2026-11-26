@@ -118,9 +118,11 @@ function App(
   const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
   windowTitle(() =>
-    workspaceMode() === 'rooms'
-      ? (roomWorkspace()?.title() ?? tr('Rooms'))
-      : (session()?.title() ?? null),
+    settingsOpened()
+      ? tr('Settings')
+      : workspaceMode() === 'rooms'
+        ? (roomWorkspace()?.title() ?? tr('Rooms'))
+        : (session()?.title() ?? null),
   );
   const restoredSides = platform.idiom === 'terminal' ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map((id) => createSide(id)));
@@ -212,7 +214,10 @@ function App(
   };
   const previewDialog = createPreviewDialog({
     shown: previewShown,
-    suppressed: () => plugins.panel() === null && (preview()?.modalSuppressed() ?? false),
+    suppressed: () =>
+      settingsOpened() ||
+      workspaceMode() !== 'conversations' ||
+      (plugins.panel() === null && (preview()?.modalSuppressed() ?? false)),
     focused: () => plugins.panel() !== null || (preview()?.focused() ?? false),
     cardWidth: sideCardBudget,
     close: closePreview,
@@ -490,6 +495,7 @@ function App(
     openSession,
     openSettings(model, page) {
       if (!alive || blocked()) return;
+      if (settingsOpened() && model === undefined && page === undefined) return;
       navigationGeneration++;
       batch(() => {
         settingsModel.set(model);
@@ -715,7 +721,7 @@ function App(
           closed={launcherClosed}
         />
       </If>
-      <WorkspaceSurface visible={() => workspaceMode() === 'conversations'}>
+      <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'conversations'}>
         <Workbench
           expanded={sidebarExpanded}
           sidebarHover={sidebarHover}
@@ -772,7 +778,7 @@ function App(
           )}
         </Workbench>
       </WorkspaceSurface>
-      <WorkspaceSurface visible={() => workspaceMode() === 'rooms'}>
+      <WorkspaceSurface visible={() => !settingsOpened() && workspaceMode() === 'rooms'}>
         {runtime.renderView(configuration.rooms, roomWorkspaceView, {
           initialSessionId: saved?.roomSessionId ?? null,
           agentSessionId: selected,
@@ -790,6 +796,28 @@ function App(
             if (roomWorkspace() !== handle) roomWorkspace.set(handle);
           },
         })}
+      </WorkspaceSurface>
+      <WorkspaceSurface visible={settingsOpened}>
+        {runtime.renderView(
+          configuration.settings,
+          settingsViewContract,
+          {
+            opened: settingsOpened,
+            navigation: settingsNavigation,
+            close: () => {
+              if (!alive || blocked()) return;
+              navigationGeneration++;
+              settingsOpened.set(false);
+            },
+            get model() {
+              return settingsModel();
+            },
+            get page() {
+              return settingsPage();
+            },
+          },
+          { loading: false },
+        )}
       </WorkspaceSurface>
       <If when={platform.idiom === 'terminal' && runtime.updateError() !== null}>
         <View
@@ -838,26 +866,6 @@ function App(
           docked: false,
           attach(handle) {
             if (preview() !== handle) preview.set(handle);
-          },
-        },
-        { loading: false },
-      )}
-      {runtime.renderView(
-        configuration.settings,
-        settingsViewContract,
-        {
-          opened: settingsOpened,
-          navigation: settingsNavigation,
-          close: () => {
-            if (!alive || blocked()) return;
-            navigationGeneration++;
-            settingsOpened.set(false);
-          },
-          get model() {
-            return settingsModel();
-          },
-          get page() {
-            return settingsPage();
           },
         },
         { loading: false },

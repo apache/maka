@@ -42,6 +42,8 @@ use tokio::sync::{Notify, watch};
 
 #[path = "desktop_new_session/rooms.rs"]
 mod rooms;
+#[path = "desktop_new_session/settings.rs"]
+mod settings;
 
 macro_rules! native {
     ($ty:path { $($field:ident: $value:expr),* $(,)? }) => {{
@@ -3031,7 +3033,7 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.press("Confirm permissions and enable").await;
     desktop.control("Disable Antigravity").await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Focus message composer").await;
     desktop
         .until(
@@ -3050,7 +3052,7 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     desktop.press("Disable Antigravity").await;
     desktop.control("Enable Antigravity").await;
 
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
     desktop.control("Add a model connection").await;
 
     // Enabling an external agent from another client on the same Host updates
@@ -3916,6 +3918,7 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
 pub(crate) const CASES: &[&str] = &[
     "desktop_external_agent_satisfies_new_session_connection_prompt",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
+    "desktop_settings_page_shell_preserves_state_and_overlays",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
     "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
@@ -3951,6 +3954,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
+        }
+        "desktop_settings_page_shell_preserves_state_and_overlays" => {
+            runtime.block_on(settings::desktop_settings_page_shell_preserves_state_and_overlays())
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())

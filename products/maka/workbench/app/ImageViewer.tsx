@@ -19,8 +19,9 @@
 
 import { cleanup, createAnimatedValue, Image, inputAction, keymap, signal, Text, View } from 'nsh';
 import type { PinchEvent, PressEvent, ViewRef, WheelEvent } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT } from './chrome';
+import { WindowDialog } from './ModalDialog';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { createText } from './text';
@@ -273,7 +274,7 @@ export function ImageViewer(props: {
       : { top: 16, left: 16, right: 16 }),
   } as const;
   return (
-    <Dialog
+    <WindowDialog
       animation="none"
       onOpen={() => {
         if (alive) closeButton?.focus();
@@ -511,6 +512,6 @@ export function ImageViewer(props: {
           </View>
         </View>
       </View>
-    </Dialog>
+    </WindowDialog>
   );
 }

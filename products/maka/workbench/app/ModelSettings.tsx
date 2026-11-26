@@ -22,7 +22,9 @@ import {
   computed,
   effect,
   inputAction,
+  keymap,
   platform,
+  Scroll,
   signal,
   Text,
   untracked,
@@ -31,7 +33,7 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button } from 'nsh/base';
+import { Button, TitleBar } from 'nsh/base';
 import type {
   UiContext,
   UiContributionRef,
@@ -50,10 +52,10 @@ import type { SettingsOperations } from './settingsOperations';
 import { contributionTitle } from './plugins/context';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { dialogTop } from './chrome';
-import { InlineCallout, Toaster } from './Feedback';
-import { ModalDialog } from './ModalDialog';
-import { createToastStore } from './toastStore';
+import { controlsRight, ownTitleBar, PANEL_INSET, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { InlineCallout } from './Feedback';
+import { hasOpenModalSurface } from './ModalDialog';
+import { toast } from './toastStore';
 import { SettingsButton, settingsGutter, settingsInset } from './SettingsPage';
 import {
   C,
@@ -61,8 +63,10 @@ import {
   captionTextStyle,
   controlStyle,
   controlHoverStyle,
-  controlFocusStyle,
   controlDisabledStyle,
+  quietActiveStyle,
+  quietFocusStyle,
+  quietHoverStyle,
   textTooltip,
 } from './ui';
 
@@ -71,8 +75,8 @@ type BackAction = { key: string | null; navigation: string | null };
 const matches = (item: UiContributionRef, route: SettingsRoute | null) =>
   route !== null && item.id === route.id && sameValue(item.instance.instance, route.instance);
 
-// Page navigation is registered by the rendered contribution. The dialog owns
-// focus and the original journal; pages own their forms and unsaved drafts.
+// Page navigation is registered by the rendered contribution. The shell owns
+// Escape navigation and the original journal; pages own their forms and unsaved drafts.
 export function ModelSettings(props: {
   context: UiContext<UiHost, JSX.Element>;
   input: SettingsViewInput;
@@ -190,7 +194,18 @@ export function ModelSettings(props: {
       return;
     if (page()?.back() ?? true) close();
   };
-  const cancel = (request: BackAction) => () => back(request);
+  const terminal = platform.idiom === 'terminal';
+  // Overlays (Select, Popover, Menu) take Escape ahead of JS keymaps in NSH;
+  // unbind while any main-window modal dialog is open so it owns Escape, and let
+  // desktop inputs blur on first Escape before navigating back.
+  effect(() => {
+    if (!props.input.opened() || hasOpenModalSurface()) return;
+    cleanup(
+      keymap.bind('escape', () => back(backAction()), {
+        when: terminal ? 'always' : 'notEditing',
+      }),
+    );
+  });
   const input = (contribution: UiContributionRef): SettingsPageInput => ({
     settings: {
       attach(value) {
@@ -205,123 +220,243 @@ export function ModelSettings(props: {
   const title = () =>
     page()?.title() ?? (contributed() ? contributionTitle(contributed()!) : tr('Settings'));
   const action = () => page()?.action?.() ?? null;
-  const settingsToasts = createToastStore();
+  const SETTINGS_NOTICE_TOAST_ID = 'settings.notice';
   let lastNotice = '';
   effect(() => {
     const message = operations.notice();
     if (!message) {
-      lastNotice = '';
+      if (lastNotice) {
+        lastNotice = '';
+        toast.dismiss(SETTINGS_NOTICE_TOAST_ID);
+      }
       return;
     }
     if (message === lastNotice) return;
     lastNotice = message;
-    settingsToasts.show({ id: 'settings.notice', tone: 'info', message });
+    toast.show({ id: SETTINGS_NOTICE_TOAST_ID, tone: 'info', message });
   });
   cleanup(() => {
-    settingsToasts.dispose();
+    if (lastNotice) toast.dismiss(SETTINGS_NOTICE_TOAST_ID);
+    if (!operations.pending().length) operations.notice.set('');
   });
-  const terminal = platform.idiom === 'terminal';
   const iconButton = {
     ...controlStyle,
     width: 32,
+    ...(terminal ? { minHeight: 16, paddingVertical: 0, borderRadius: 0 } : {}),
     paddingHorizontal: 8,
     alignItems: 'center',
   } as const;
-  return (
-    <ModalDialog
-      size="page"
-      height={800}
-      onCancel={cancel(backAction())}
-      outside={<Toaster store={settingsToasts} top={dialogTop(12)} right={16} />}
+  const backToApp = (fullWidth: boolean) => (
+    <Button
+      accessibilityLabel={tr('Back to app')}
+      disabled={busy()}
+      onPress={inputAction(close, null)}
       style={{
-        flexDirection: rail() ? 'row' : 'column',
-        padding: 0,
-        gap: 0,
-        // Shaped as a window: its pane sits 8 in, concentric with this corner.
-        borderRadius: compact() ? 12 : 24,
-        // The border takes a whole terminal row but only one point of layout:
-        // the rest of that row keeps the title off it and rows on whole cells.
-        paddingTop: terminal ? 15 : 0,
+        ...controlStyle,
+        ...(terminal
+          ? { minHeight: 16, paddingHorizontal: 8, paddingVertical: 0, borderRadius: 0 }
+          : { paddingHorizontal: 8, paddingVertical: 6 }),
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        gap: 8,
+        ...(fullWidth ? { width: '100%' } : { flexShrink: 0 }),
       }}
+      hoverStyle={controlHoverStyle()}
+      activeStyle={quietActiveStyle()}
+      focusStyle={quietFocusStyle()}
+      disabledStyle={controlDisabledStyle}
     >
-      <View
-        style={{
-          flexDirection: rail() ? 'column' : 'row',
-          flexWrap: rail() ? 'nowrap' : 'wrap',
-          width: rail() ? 200 : '100%',
-          flexShrink: 0,
-          paddingHorizontal: rail() ? 12 : 8,
-          paddingTop: rail() ? (terminal ? 0 : 20) : 8,
-          paddingBottom: rail() ? 16 : 0,
-          gap: 2,
-        }}
+      <Icon name="back" color={terminal ? C.secondary : C.muted} />
+      <Text
+        style={[
+          {
+            ...captionTextStyle,
+            lineHeight: terminal ? 16 : 20,
+            color: C.secondary,
+            ...(fullWidth ? { flex: 1, minWidth: 0 } : {}),
+          },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
       >
-        <If when={rail()}>
+        {tr('Back to app')}
+      </Text>
+    </Button>
+  );
+  const sectionButtons = () => (
+    <Each of={pages()} key={(item) => item.key}>
+      {(item) => (
+        <Button
+          accessibilityLabel={tr('Settings section {section}', {
+            section: contributionTitle(item()),
+          })}
+          disabled={busy()}
+          selected={contributed()?.key === item().key}
+          onPress={inputAction(choose, {
+            from: contributed()?.key ?? null,
+            to: item().key,
+          })}
+          style={{
+            ...controlStyle,
+            ...(terminal
+              ? { minHeight: 16, paddingHorizontal: 8, paddingVertical: 0, borderRadius: 0 }
+              : { paddingHorizontal: rail() ? 8 : 12, paddingVertical: 6 }),
+          }}
+          selectedStyle={{ backgroundColor: C.raised }}
+          hoverStyle={controlHoverStyle()}
+          activeStyle={quietActiveStyle()}
+          focusStyle={quietFocusStyle()}
+          disabledStyle={controlDisabledStyle}
+        >
           <Text
+            style={[
+              {
+                ...captionTextStyle,
+                lineHeight: terminal ? 16 : 20,
+                fontWeight: contributed()?.key === item().key ? '500' : undefined,
+                color: contributed()?.key === item().key ? C.text : C.secondary,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
+          >
+            {contributionTitle(item())}
+          </Text>
+        </Button>
+      )}
+    </Each>
+  );
+  const narrowBackBar = () => {
+    if (ownTitleBar) {
+      return (
+        <TitleBar style={{ height: TITLE_BAR_HEIGHT }}>
+          <View
             style={{
-              ...captionTextStyle,
-              fontWeight: '600',
-              color: C.muted,
-              paddingHorizontal: 12,
-              paddingTop: 2,
-              paddingBottom: 12,
+              flex: 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              paddingHorizontal: 8,
             }}
           >
-            {tr('Settings')}
-          </Text>
-        </If>
-        <Each of={pages()} key={(item) => item.key}>
-          {(item) => (
-            <Button
-              accessibilityLabel={tr('Settings section {section}', {
-                section: contributionTitle(item()),
-              })}
-              disabled={busy()}
-              selected={contributed()?.key === item().key}
-              onPress={inputAction(choose, {
-                from: contributed()?.key ?? null,
-                to: item().key,
-              })}
-              style={{ ...controlStyle, paddingVertical: 6 }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-              disabledStyle={controlDisabledStyle}
-            >
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  lineHeight: terminal ? 16 : 20,
-                  fontWeight: contributed()?.key === item().key ? '500' : undefined,
-                  color: contributed()?.key === item().key ? C.text : C.secondary,
-                }}
-              >
-                {contributionTitle(item())}
-              </Text>
-            </Button>
-          )}
-        </Each>
+            {backToApp(false)}
+          </View>
+        </TitleBar>
+      );
+    }
+    if (terminal) return null;
+    return (
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: 8,
+          paddingTop: 8,
+        }}
+      >
+        {backToApp(false)}
       </View>
+    );
+  };
+  const headerPaddingRight = () =>
+    terminal
+      ? 0
+      : rail()
+        ? Math.max(settingsGutter, controlsRight(true) - PANEL_INSET)
+        : settingsGutter;
+  return (
+    <View
+      style={{
+        flex: 1,
+        minHeight: 0,
+        flexDirection: rail() ? 'row' : 'column',
+        backgroundColor: terminal ? C.background : C.chrome,
+      }}
+    >
+      <If
+        when={rail()}
+        else={
+          <View
+            style={{
+              flexShrink: 0,
+              backgroundColor: terminal ? C.background : C.chrome,
+              ...(terminal ? { borderBottomWidth: 1, borderBottomColor: C.line } : {}),
+            }}
+          >
+            {narrowBackBar()}
+            <View
+              style={{
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                paddingHorizontal: 8,
+                paddingTop: terminal ? 0 : ownTitleBar ? 0 : 4,
+                paddingBottom: terminal ? 0 : 8,
+                gap: terminal ? 8 : 2,
+              }}
+            >
+              {terminal ? backToApp(false) : null}
+              {sectionButtons()}
+            </View>
+          </View>
+        }
+      >
+        <View
+          style={{
+            width: 224,
+            flexShrink: 0,
+            backgroundColor: terminal ? C.background : C.chrome,
+            paddingTop: terminal ? 0 : ownTitleBar ? 0 : 12,
+            gap: terminal ? 0 : 8,
+            ...(terminal ? { borderRightWidth: 1, borderRightColor: C.line } : {}),
+          }}
+        >
+          {ownTitleBar ? (
+            <TitleBar style={{ height: TITLE_BAR_HEIGHT }}>
+              <View />
+            </TitleBar>
+          ) : null}
+          <View
+            style={{
+              paddingHorizontal: terminal ? 8 : 12,
+              ...(terminal ? { paddingBottom: 16 } : {}),
+            }}
+          >
+            {backToApp(true)}
+          </View>
+          <Scroll
+            style={{ flex: 1, minHeight: 0 }}
+            contentStyle={{
+              paddingHorizontal: terminal ? 8 : 12,
+              paddingBottom: terminal ? 16 : 12,
+              gap: terminal ? 0 : 2,
+            }}
+          >
+            {sectionButtons()}
+          </Scroll>
+        </View>
+      </If>
       <View
         style={{
           flex: 1,
           minWidth: 0,
           minHeight: 0,
-          margin: terminal ? 0 : 8,
-          marginLeft: terminal || rail() ? 0 : 8,
-          backgroundColor: terminal ? undefined : C.background,
-          borderRadius: terminal ? 0 : 16,
+          margin: terminal ? 0 : PANEL_INSET,
+          marginLeft: terminal || rail() ? 0 : PANEL_INSET,
+          marginTop: terminal ? 0 : rail() ? PANEL_INSET : 0,
+          ...(terminal && rail() ? { paddingLeft: 16 } : {}),
+          backgroundColor: terminal ? undefined : C.panel,
+          borderRadius: terminal ? 0 : 12,
           overflow: 'hidden',
         }}
       >
         <View
+          desktop={rail() ? windowDrag : undefined}
           style={{
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            minHeight: terminal ? 16 : compact() ? 48 : 64,
+            minHeight: terminal ? 16 : rail() ? 56 : 48,
             paddingLeft: settingsGutter + settingsInset,
-            paddingRight: terminal ? 0 : 12,
+            paddingRight: headerPaddingRight(),
           }}
         >
           <If when={page()?.nested() ?? false}>
@@ -330,15 +465,20 @@ export function ModelSettings(props: {
               accessibilityLabel={page()?.backLabel?.() ?? tr('Back')}
               tooltip={textTooltip(() => tr('Back'))}
               onPress={inputAction(back, backAction())}
-              style={{ ...iconButton, marginLeft: terminal ? 0 : -8 }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
+              style={{
+                ...iconButton,
+                marginLeft: terminal ? 0 : -8,
+              }}
+              hoverStyle={quietHoverStyle()}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="back" color={C.secondary} />
             </Button>
           </If>
           <Text
+            role="header"
             style={[
               {
                 flex: 1,
@@ -346,7 +486,7 @@ export function ModelSettings(props: {
                 color: C.text,
                 fontWeight: '600',
                 fontSize: 18,
-                lineHeight: 24,
+                lineHeight: terminal ? 16 : 24,
               },
               { numberOfLines: 1, textOverflow: 'ellipsis' },
             ]}
@@ -360,18 +500,6 @@ export function ModelSettings(props: {
               onPress={() => action()?.run()}
             />
           </If>
-          <Button
-            disabled={busy()}
-            accessibilityLabel={tr('Close settings')}
-            tooltip={textTooltip(() => tr('Close settings'))}
-            onPress={inputAction(close, null)}
-            style={iconButton}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-          >
-            <Icon name="close" color={C.secondary} />
-          </Button>
         </View>
         <If
           when={
@@ -383,7 +511,7 @@ export function ModelSettings(props: {
             style={{
               paddingLeft: settingsGutter + settingsInset,
               paddingRight: settingsGutter,
-              paddingBottom: terminal ? 4 : 8,
+              paddingBottom: terminal ? 0 : 8,
             }}
           >
             <InlineCallout
@@ -401,6 +529,6 @@ export function ModelSettings(props: {
           </Each>
         </View>
       </View>
-    </ModalDialog>
+    </View>
   );
 }
