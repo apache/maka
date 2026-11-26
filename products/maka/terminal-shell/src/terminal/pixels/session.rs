@@ -851,6 +851,7 @@ mod fallback_tests {
         assert_eq!(resize, Some((72, 20)));
         let (commands, frames) = crate::terminal::ui::spawn(
             returned,
+            Default::default(),
             Arc::new(AtomicBool::new(false)),
             std::thread::current(),
             false,

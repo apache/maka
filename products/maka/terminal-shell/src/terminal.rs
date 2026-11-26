@@ -23,6 +23,7 @@
 
 pub(crate) mod activation;
 mod adapter;
+mod colors;
 mod frame_trace;
 mod graphics;
 mod input;
@@ -256,7 +257,7 @@ pub(crate) fn run(
     config.context = config.context.with(maka_workbench::Foreground(
         presentation.activation.subscribe(),
     ));
-    let setup = [SETUP, graphics::QUERY].concat();
+    let setup = [SETUP, colors::QUERY, graphics::QUERY].concat();
     let setup = {
         let mut setup = setup;
         let mut state = presentation.state.lock().unwrap();
@@ -292,8 +293,10 @@ pub(crate) fn run(
             }
         }
         let pending = Arc::new(AtomicBool::new(false));
-        let (commands, frames) = ui::spawn(config, pending.clone(), thread::current(), tmux)
-            .map_err(|error| error.to_string())?;
+        let colors = presentation.state.lock().unwrap().colors;
+        let (commands, frames) =
+            ui::spawn(config, colors, pending.clone(), thread::current(), tmux)
+                .map_err(|error| error.to_string())?;
         // Returning drops both channel endpoints without joining either
         // blocked owner, including startup errors after terminal mutation.
         drive(&mut output, &presentation, &commands, &frames, &pending)
@@ -561,6 +564,7 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                         presentation.activation.observe(&event);
                         presentation.wake_driver();
                         inbox.graphics.observe(&event);
+                        inbox.colors.observe(&event);
                         {
                             let graphics_response =
                                 inbox.pixel_probe.check_graphics_response(&event);
