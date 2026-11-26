@@ -8686,6 +8686,7 @@ async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
                         until: None,
                         exclude: None,
                         limit: None,
+                        transcript_only: false,
                     },
                     0,
                     0,

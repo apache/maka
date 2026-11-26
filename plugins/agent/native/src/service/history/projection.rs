@@ -507,7 +507,7 @@ pub(super) async fn project(
                     if source_messages.is_empty() {
                         let id = match &source.spec.trigger {
                             Trigger::Message { message_id } => Some(message_id.clone()),
-                            _ => None,
+                            _ => Some(item.recorded.id.to_string()),
                         };
                         result.push(user(item, turn, 0, &content, id, None, address)?);
                     } else {

@@ -2779,13 +2779,16 @@ export function Conversation(props: ConversationProps) {
     let failure: { reason: unknown } | null = null;
     try {
       // Recall may have opened its exact window before initial history arrived.
-      while (windowTask !== null) await windowTask;
+      while (windowTask !== null) await windowTask.catch(() => {});
       if (!alive) return;
       if (ready()) {
         if (latestKnown > (historyWindow()?.through ?? -1) || refreshFrom !== null) await follow();
       } else if (
-        !historyDestination.explicit &&
-        (await resetHistory(historyDestination.position, observed.through))
+        (!historyDestination.explicit || historyDestination.failed) &&
+        (await resetHistory(
+          historyDestination.failed ? { kind: 'tail' } : historyDestination.position,
+          observed.through,
+        ))
       ) {
         list?.scrollToEnd({ animated: false });
       }
@@ -2982,12 +2985,29 @@ export function Conversation(props: ConversationProps) {
       if (turn) unfoldTurn(turn);
     }
     const id = stableRowId(row);
-    const entry = display().find((item) =>
-      item.kind === 'row'
-        ? item.rowId === id
-        : item.kind === 'process' &&
-          item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
-    );
+    const items = display();
+    const citation = row.sourceCitation ? answerSource(row, id) : undefined;
+    const entry =
+      items.find((item) =>
+        item.kind === 'row'
+          ? item.rowId === id
+          : item.kind === 'process' &&
+            item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
+      ) ??
+      (citation
+        ? items.find(
+            (item) =>
+              (item.kind === 'sources' || item.kind === 'row') &&
+              item.sources?.some((source) => source.key === citation.key),
+          )
+        : undefined) ??
+      (row.role === 'failure'
+        ? items.find((item) => {
+            if (item.kind !== 'row' || item.turnKey !== rowTurn) return false;
+            const candidate = currentRow(item.rowId);
+            return candidate?.role === 'failure' && candidate.text === row.text;
+          })
+        : undefined);
     if (!entry) throw new UiError('The original message is not available in this conversation.');
     if (entry.kind === 'process') {
       // A hidden script opens its group from the top.
