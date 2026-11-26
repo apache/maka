@@ -3825,11 +3825,7 @@ impl ObservationProtocol {
                 == Some("commentary")
             && let Some(p) = self.progress.as_ref().and_then(std::sync::Weak::upgrade)
         {
-            let prefix: String = text.chunks().flat_map(str::chars).take(96).collect();
-            if let Some(end) = prefix.find(['。', '！', '？', '.', '!', '?']) {
-                let sentence = &prefix[..end + prefix[end..].chars().next().unwrap().len_utf8()];
-                p.commentary(super::worker_progress::short(sentence));
-            }
+            p.commentary(text.chunks().flat_map(str::chars));
         }
     }
 

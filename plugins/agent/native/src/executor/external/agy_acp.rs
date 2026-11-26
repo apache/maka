@@ -510,6 +510,16 @@ impl Turn {
                 return Err(Error::Unknown);
             }
             let update = &params["update"];
+            if update["sessionUpdate"] == "plan"
+                && let Some(entries) = update["entries"].as_array()
+            {
+                output.current_plan_item(
+                    entries
+                        .iter()
+                        .find(|entry| entry["status"] == "in_progress")
+                        .and_then(|entry| entry["content"].as_str()),
+                );
+            }
             if update["sessionUpdate"] == "usage_update" {
                 if self.context
                     && let (Some(used), Some(window)) = (
@@ -751,6 +761,28 @@ mod tests {
         json!({"method":"session/update","params":{"sessionId":"session","update":update}})
     }
 
+    #[tokio::test]
+    async fn worker_progress_uses_acp_plan_and_active_tool() {
+        let (sink, rows) = crate::owner::worker_progress::tests::worker();
+        let mut turn = Turn::new("session".into(), 4, true);
+        for (event, expected) in [
+            (
+                json!({"sessionUpdate":"plan","entries":[{"status":"in_progress","content":"Run all tests","priority":"high"}]}),
+                "Run all tests",
+            ),
+            (
+                json!({"sessionUpdate":"tool_call","toolCallId":"cmd","name":"run_command","status":"in_progress","title":"cargo test","rawInput":{"CommandLine":"cargo test","toolSummary":"Test agent"}}),
+                "Test agent",
+            ),
+            (
+                json!({"sessionUpdate":"tool_call_update","toolCallId":"cmd","status":"completed"}),
+                "Run all tests",
+            ),
+        ] {
+            turn.event(update(event), sink.as_ref()).await.unwrap();
+            assert_eq!(rows.borrow()["child"].detail, expected);
+        }
+    }
     #[tokio::test]
     async fn replays_only_the_bound_prompt_with_the_same_activity_as_live() {
         let prior = update(json!({"sessionUpdate":"agent_message_chunk",

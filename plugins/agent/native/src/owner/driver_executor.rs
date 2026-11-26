@@ -288,6 +288,19 @@ impl Publications {
     }
 }
 impl OutputSink for Publications {
+    fn commentary(&self, completed_text: &str) {
+        if let Some(run) = self.progress.as_ref().and_then(std::sync::Weak::upgrade) {
+            run.commentary(completed_text.chars());
+        }
+    }
+    fn current_plan_item(&self, item: Option<&str>) {
+        if let Some(run) = self.progress.as_ref().and_then(std::sync::Weak::upgrade) {
+            run.todo(
+                item.map(super::worker_progress::short)
+                    .filter(|s| !s.is_empty()),
+            );
+        }
+    }
     fn turn_usage(
         &self,
         usage: maka_agent_facts::executor::TurnUsage,

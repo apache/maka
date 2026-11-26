@@ -52,11 +52,17 @@ impl Registry {
 }
 
 type Hint = (Kind, String);
+pub(super) struct RunningTool {
+    id: String,
+    hint: Hint,
+    // A provider TodoWrite takes effect only on a successful tool result.
+    todo: Option<TodoWrite>,
+}
 #[derive(Default)]
 struct State {
     sequence: u64,
     waits: BTreeMap<String, Kind>,
-    tools: Vec<(String, Hint)>,
+    tools: Vec<RunningTool>,
     todo: Option<String>,
     commentary: Option<String>,
     phase: Kind,
@@ -66,8 +72,8 @@ impl State {
         if let Some(kind) = self.waits.values().next() {
             return (*kind, "");
         }
-        if let Some((_, (kind, detail))) = self.tools.last() {
-            return (*kind, detail);
+        if let Some(tool) = self.tools.last() {
+            return (tool.hint.0, &tool.hint.1);
         }
         if let Some(text) = self.todo.as_deref().or(self.commentary.as_deref()) {
             return (Kind::Summary, text);
@@ -170,9 +176,14 @@ impl Run {
     pub fn todo(&self, text: Option<String>) {
         self.update(|s| s.todo = text);
     }
-    pub fn commentary(&self, text: String) {
-        if !text.is_empty() {
-            self.update(|s| s.commentary = Some(text));
+    pub fn commentary(&self, chars: impl Iterator<Item = char>) {
+        let prefix: String = chars.take(96).collect();
+        if let Some((end, punctuation)) = prefix
+            .char_indices()
+            .find(|(_, ch)| matches!(ch, '。' | '！' | '？' | '.' | '!' | '?'))
+        {
+            let sentence = short(&prefix[..end + punctuation.len_utf8()]);
+            self.update(|s| s.commentary = Some(sentence));
         }
     }
     pub fn interaction(&self, record: &InteractionRecord) {
@@ -192,22 +203,39 @@ impl Run {
         });
     }
     pub fn start(&self, id: &str, name: &str, input: &Value) {
-        self.start_hint(id, tool(name, input));
+        self.start_tool(RunningTool {
+            id: id.into(),
+            hint: tool(name, input),
+            todo: None,
+        });
     }
-    fn start_hint(&self, id: &str, hint: Hint) {
+    fn start_tool(&self, tool: RunningTool) {
         self.update(|s| {
-            s.tools.retain(|(key, _)| key != id);
-            s.tools.push((id.to_owned(), hint));
+            if let Some(existing) = s.tools.iter_mut().find(|active| active.id == tool.id) {
+                *existing = tool;
+            } else {
+                s.tools.push(tool);
+            }
         });
     }
     pub fn finish(&self, id: &str) {
-        self.update(|s| s.tools.retain(|(key, _)| key != id));
+        self.finish_tool(id, false);
+    }
+    fn finish_tool(&self, id: &str, success: bool) {
+        self.update(|s| {
+            if let Some(index) = s.tools.iter().position(|tool| tool.id == id) {
+                let tool = s.tools.remove(index);
+                if success && let Some(todo) = tool.todo {
+                    s.todo = todo.current;
+                }
+            }
+        });
     }
     pub(super) fn observe(&self, event: ExecutorProgress) {
         match event {
             ExecutorProgress::Phase(phase) => self.phase(phase),
-            ExecutorProgress::Start(id, hint) => self.start_hint(&id, hint),
-            ExecutorProgress::Finish(id) => self.finish(&id),
+            ExecutorProgress::Start(tool) => self.start_tool(tool),
+            ExecutorProgress::Finish(id, success) => self.finish_tool(&id, success),
         }
     }
     #[cfg(test)]
@@ -217,10 +245,13 @@ impl Run {
         }
     }
 }
+struct TodoWrite {
+    current: Option<String>,
+}
 pub(super) enum ExecutorProgress {
     Phase(Kind),
-    Start(String, Hint),
-    Finish(String),
+    Start(RunningTool),
+    Finish(String, bool),
 }
 impl ExecutorProgress {
     pub fn from_output(output: &Output) -> Option<Self> {
@@ -231,8 +262,34 @@ impl ExecutorProgress {
                 tool_call_id,
                 name,
                 input,
-            } => Self::Start(tool_call_id.clone(), tool(name, input)),
-            Output::ToolResult { tool_call_id, .. } => Self::Finish(tool_call_id.clone()),
+            } => {
+                let todo = if name == "TodoWrite" {
+                    input["todos"].as_array().map(|items| TodoWrite {
+                        current: items
+                            .iter()
+                            .find(|item| item["status"] == "in_progress")
+                            .and_then(|item| {
+                                item["activeForm"]
+                                    .as_str()
+                                    .or_else(|| item["content"].as_str())
+                            })
+                            .map(short)
+                            .filter(|text| !text.is_empty()),
+                    })
+                } else {
+                    None
+                };
+                Self::Start(RunningTool {
+                    id: tool_call_id.clone(),
+                    hint: tool(name, input),
+                    todo,
+                })
+            }
+            Output::ToolResult {
+                tool_call_id,
+                is_error,
+                ..
+            } => Self::Finish(tool_call_id.clone(), !is_error),
             _ => return None,
         })
     }
@@ -259,7 +316,11 @@ impl Run {
         let run = Arc::downgrade(self);
         move || {
             if let Some(current) = run.upgrade() {
-                current.start_hint(&id, hint);
+                current.start_tool(RunningTool {
+                    id: id.clone(),
+                    hint,
+                    todo: None,
+                });
             }
             ActiveTool { run, id }
         }
@@ -310,7 +371,7 @@ fn tool(name: &str, input: &Value) -> Hint {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use maka_agent_facts::{durable::RunId, interaction::InteractionOutcome};
     use serde_json::json;
@@ -321,6 +382,28 @@ mod tests {
             run_id: RunId::new(),
         }
     }
+    pub(crate) fn worker() -> (Arc<Run>, watch::Receiver<Rows>) {
+        let group = Arc::new(Group::default());
+        let rows = group.rows.subscribe();
+        (Run::new(group, execution()), rows)
+    }
+
+    impl maka_agent_ports::executor::OutputSink for Run {
+        fn emit(
+            &self,
+            output: Output,
+        ) -> futures_util::future::BoxFuture<'_, Result<(), maka_agent_ports::executor::Error>>
+        {
+            self.output(&output);
+            Box::pin(async { Ok(()) })
+        }
+        fn commentary(&self, text: &str) {
+            self.commentary(text.chars());
+        }
+        fn current_plan_item(&self, item: Option<&str>) {
+            self.todo(item.map(short));
+        }
+    }
     #[test]
     fn native_and_executor_tools_fall_back_without_output_noise() {
         let registry = Registry::default();
@@ -328,7 +411,8 @@ mod tests {
         let run = Run::new(group.clone(), execution());
         let mut rx = group.rows.subscribe();
         run.phase(Kind::Thinking);
-        run.commentary("Checking the build.".into());
+        run.commentary("Checking the build. Another sentence.".chars());
+        run.commentary("Incomplete commentary".chars());
         run.todo(Some("Full test suite".into()));
         run.start("native", "Shell", &json!({"command":"cargo test"}));
         for (name, input, kind, text) in [
@@ -399,6 +483,27 @@ mod tests {
         assert_eq!(rx.borrow()["child"].detail, "Full test suite");
         run.todo(None);
         assert_eq!(rx.borrow()["child"].detail, "Checking the build.");
+        for success in [false, true] {
+            run.output(&Output::ToolStart {
+                tool_call_id: "plan".into(), name: "TodoWrite".into(), input: json!({
+                    "todos": [{"status": "in_progress", "content": "test", "activeForm": "Running tests"}]
+                }),
+            });
+            run.output(&Output::ToolResult {
+                tool_call_id: "plan".into(),
+                is_error: !success,
+                text: String::new(),
+                details: None,
+            });
+            assert_eq!(
+                rx.borrow()["child"].detail,
+                if success {
+                    "Running tests"
+                } else {
+                    "Checking the build."
+                }
+            );
+        }
         let replacement = Run::new(group, execution());
         run.start("late", "Bash", &json!({"command":"late"}));
         drop(run);
