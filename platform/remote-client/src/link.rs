@@ -106,6 +106,13 @@ impl RemoteHostConnection {
         let endpoint =
             WebSocketEndpoint::new(endpoint, trust).map_err(RemoteClientError::Transport)?;
         let link = Link::WebSocket(Arc::new(WebSocketLink { endpoint, bearer }));
+        if root_id.trim().is_empty() {
+            return Err(RemoteClientError::EmptyField("expected_root_id"));
+        }
+        if client_instance.trim().is_empty() {
+            return Err(RemoteClientError::EmptyField("client_instance"));
+        }
+        crate::client::finalize_websocket_access(&link, &client_instance).await?;
         Self::connect(link, root_id, client_instance).await
     }
 }

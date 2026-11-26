@@ -185,24 +185,36 @@ async fn bind(
     if routes.is_empty() {
         return Err(RemoteClientError::NoNativeRoute);
     }
-    if let Some(auth) = &authorization
-        && !routes.iter().any(|route| route.url == auth.relay_url)
-    {
+    let canonical = |value: &str| {
+        maka_remote_pairing::RelayEndpoint {
+            url: value.to_owned(),
+            quic_port: None,
+            cert_sha256: None,
+        }
+        .validate()
+        .map(|route| route.url)
+        .map_err(|error| RemoteClientError::Protocol(error.to_string()))
+    };
+    let authorized = authorization
+        .as_ref()
+        .map(|auth| canonical(auth.relay_url))
+        .transpose()?;
+    let mut matched = false;
+    let mut relays = Vec::with_capacity(routes.len());
+    for route in routes {
+        let bearer = if authorized.as_ref() == Some(&canonical(&route.url)?) {
+            matched = true;
+            authorization.as_ref().map(|auth| auth.bearer.to_owned())
+        } else {
+            None
+        };
+        relays.push(Relay::new(route, None, bearer).map_err(RemoteClientError::Transport)?);
+    }
+    if authorized.is_some() && !matched {
         return Err(RemoteClientError::Protocol(
             "relay authorization has no matching route".into(),
         ));
     }
-    let relays = routes
-        .iter()
-        .map(|route| {
-            let bearer = authorization
-                .as_ref()
-                .filter(|auth| auth.relay_url == route.url)
-                .map(|auth| auth.bearer.to_owned());
-            Relay::new(route, None, bearer)
-        })
-        .collect::<maka_remote_transport::Result<Vec<_>>>()
-        .map_err(RemoteClientError::Transport)?;
     PeerEndpoint::bind(identity, &relays, false)
         .await
         .map_err(RemoteClientError::Transport)

@@ -171,7 +171,7 @@ export function ModelsSettingsScreen(
                   ...detail.editing.modelOverrides,
                   [target.modelId]: {
                     ...detail.editing.modelOverrides?.[target.modelId],
-                    defaultThinkingLevel: level,
+                    defaultThinkingLevel: level || undefined,
                   },
                 };
                 const result = await rpc.mutate('settings', 'update', {

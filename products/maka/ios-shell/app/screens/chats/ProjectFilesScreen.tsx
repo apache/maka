@@ -230,8 +230,6 @@ export function ProjectFilesScreen(props: {
         <If when={segment() === 0}>
           <Scroll
             style={{ flex: 1 }}
-            refreshing={diffLoading()}
-            onRefresh={() => void loadDiff()}
             contentStyle={{
               flexGrow: 1,
               paddingBottom: Math.max(insets().bottom, 20) + 24,
@@ -354,8 +352,6 @@ export function ProjectFilesScreen(props: {
         <If when={segment() === 1}>
           <Scroll
             style={{ flex: 1 }}
-            refreshing={dirLoading()}
-            onRefresh={() => void loadDirectory(currentDir())}
             contentStyle={{
               flexGrow: 1,
               paddingBottom: Math.max(insets().bottom, 20) + 24,

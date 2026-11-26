@@ -454,9 +454,6 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          keyboardDismissMode="interactive"
-          refreshing={sessionsLoading()}
-          onRefresh={() => void refreshAllSessions()}
           contentStyle={{
             flexGrow: 1,
             paddingTop: 8,

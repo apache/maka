@@ -34,7 +34,7 @@ export interface SavedHostItem {
   hostName: string;
   peerId: string;
   endpoints: string[];
-  connected: boolean; // Legacy selected-Host projection.
+  ephemeral?: boolean;
   status?: HostConnectionState['status'];
   relayUrls?: string[];
 }
@@ -77,7 +77,6 @@ export interface HostStateSnapshot {
   filter: HostViewFilter;
   hosts: SavedHostItem[];
   active: ActiveHostInfo | null;
-  activeRootId?: string | null;
   connections?: Record<string, HostConnectionState>;
   pendingPairUri?: string;
   disconnectReason?: string;
@@ -116,6 +115,12 @@ export interface SubscriptionEndedPayload {
   error?: string;
 }
 
+import type {
+  AgentModelChoice,
+  AgentBackendPreference,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
+export type { AgentModelChoice, AgentBackendPreference };
+
 /* ---- Agent contract wire models (aligned 1:1 with plugins/agent/api & facts) ---- */
 
 export interface AgentProject {
@@ -124,31 +129,6 @@ export interface AgentProject {
   archived: boolean;
   available: boolean;
   path: string | null;
-}
-
-export type AgentBackendPreference =
-  | {
-      kind: 'model';
-      connectionId: string;
-      modelId: string;
-      serviceTier?: string | null;
-      thinkingLevel?: string | null;
-    }
-  | {
-      kind: 'executor';
-      selection: {
-        executor: string;
-        settings?: Record<string, unknown>;
-      };
-    };
-
-export interface AgentModelChoice {
-  selection: AgentBackendPreference;
-  aliases?: AgentBackendPreference[];
-  sourceName: string;
-  label: string;
-  thinkingLevels: string[];
-  defaultThinkingLevel: string | null;
 }
 
 export type AgentWorkspaceSelection =
@@ -452,6 +432,8 @@ export type AgentInteractionRequest =
       toolUseId: string;
       target: {
         providerId?: string;
+        contractId?: string;
+        scope?: string;
         toolName?: string;
         capability?: string;
         serverId?: string;
@@ -461,6 +443,7 @@ export type AgentInteractionRequest =
       kind: 'computer_app';
       toolUseId: string;
       nativeOperationId: string;
+      target?: import('../../../../packages/plugin-sdk/src/generated/runtime').GrantTarget;
       display: {
         name: string;
         appPath: string;
@@ -524,8 +507,16 @@ export function beginPairing(
   return host.call('ios.beginPairing', { uri, relayUrl, relayToken }) as Promise<ParsedTicketInfo>;
 }
 
-export function confirmPairing(pairingId: number, sas: string): Promise<HostStateSnapshot> {
-  return host.call('ios.confirmPairing', { pairingId, sas }) as Promise<HostStateSnapshot>;
+export function confirmPairing(
+  pairingId: number,
+  sas: string,
+  deviceLabel: string,
+): Promise<HostStateSnapshot> {
+  return host.call('ios.confirmPairing', {
+    pairingId,
+    sas,
+    deviceLabel,
+  }) as Promise<HostStateSnapshot>;
 }
 
 export function cancelPairing(rootId?: string): Promise<unknown> {
@@ -617,7 +608,7 @@ function progressKey(rootId: string, generation: number, progressId: string) {
 }
 
 host.on('ios.mutationProgress', (data) => {
-  const progress = data as MutationProgress & { deliveryId: number; sequence: number };
+  const progress = data as unknown as MutationProgress & { deliveryId: number; sequence: number };
   try {
     if (connection(progress.rootId)?.generation === progress.generation) {
       progressListeners.get(
@@ -649,7 +640,7 @@ export async function hostMutate<T = unknown>(
     onProgress?: ProgressListener;
   } = {},
 ): Promise<T> {
-  const target = onProgress ? connection(rootId) : undefined;
+  const target = connection(rootId);
   let key: string | undefined;
   if (onProgress) {
     if (!target) throw new Error('remote Host is not connected');
@@ -703,7 +694,7 @@ export function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: bo
 export function onHostState(listener: (state: HostStateSnapshot) => void): () => void {
   return host.on('ios.hostState', (payload) => {
     if (payload && typeof payload === 'object') {
-      listener(payload as HostStateSnapshot);
+      listener(payload as unknown as HostStateSnapshot);
     }
   });
 }
@@ -722,7 +713,7 @@ export function onSubscriptionItem(
 ): () => void {
   return host.on('ios.subscriptionItem', (payload) => {
     if (payload && typeof payload === 'object') {
-      listener(payload as SubscriptionItemPayload);
+      listener(payload as unknown as SubscriptionItemPayload);
     }
   });
 }
@@ -732,7 +723,7 @@ export function onSubscriptionEnded(
 ): () => void {
   return host.on('ios.subscriptionEnded', (payload) => {
     if (payload && typeof payload === 'object') {
-      listener(payload as SubscriptionEndedPayload);
+      listener(payload as unknown as SubscriptionEndedPayload);
     }
   });
 }
@@ -1056,4 +1047,16 @@ export function agentGitWorkspaceDiff(sessionId: string): Promise<AgentGitWorksp
     area: null,
     worktreePath: null,
   });
+}
+
+export function onHostPath(
+  listener: (event: {
+    rootId: string;
+    generation: number;
+    pathSummary: PathSummary | null;
+  }) => void,
+) {
+  return host.on('ios.hostPath', (event) =>
+    listener(event as unknown as Parameters<typeof listener>[0]),
+  );
 }

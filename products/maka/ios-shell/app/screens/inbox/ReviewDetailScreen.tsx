@@ -19,7 +19,7 @@
 
 import { cleanup, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, NavPage } from 'nsh/base';
-import { describeChildDecision, describePermissions } from '../../approval';
+import { approvalControls, approvalDetail } from '../../approval';
 import { hostQuery, onSubscriptionItem, type AgentInteractionRecord } from '../../bridge';
 import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
@@ -141,55 +141,8 @@ export function ReviewDetailScreen(props: {
     }
   };
 
-  const scopeDetail = (): { command?: string; permissions?: string } => {
-    const r = req();
-    if (!r) return {};
-    if (r.kind === 'permissions') {
-      return {
-        command: r.request.command?.command || undefined,
-        permissions: describePermissions(r.request.permissions) || undefined,
-      };
-    }
-    if (r.kind === 'service_approval') {
-      return { command: r.service + '.' + r.method + ' (' + r.binding + ')' };
-    }
-    if (r.kind === 'session_approval') {
-      return { permissions: describeChildDecision(r.answer) || undefined };
-    }
-    if (r.kind === 'computer_app') {
-      return { permissions: r.display.warning || r.display.appPath };
-    }
-    return {};
-  };
-
-  const allowPayload = (scope: 'once' | 'session'): Record<string, unknown> | null => {
-    const r = req();
-    if (!r) return null;
-    switch (r.kind) {
-      case 'permissions':
-        return {
-          kind: 'permissions',
-          decision: { decision: 'allow', scope, permissions: r.request.permissions },
-        };
-      case 'service_approval':
-        return { kind: 'service_approval', decision: 'allow' };
-      case 'client_capability':
-        return { kind: 'client_capability', decision: 'allow' };
-      case 'computer_app':
-        return { kind: 'computer_app', decision: scope };
-      case 'session_approval':
-        return { kind: 'session_approval', decision: 'approve' };
-      default:
-        return null;
-    }
-  };
-
-  const denyPayload = (): Record<string, unknown> | null => {
-    const r = req();
-    if (!r || r.kind === 'question' || r.kind === 'form') return null;
-    if (r.kind === 'permissions') return { kind: 'permissions', decision: { decision: 'deny' } };
-    return { kind: r.kind, decision: 'deny' };
-  };
+  const scopeDetail = () => (req() ? approvalDetail(req()!) : {});
+  const controls = () => approvalControls(req());
 
   const submitAnswer = async (payload: Record<string, unknown>, kind: 'success' | 'warning') => {
     if (isResolvedRemotely() || busy()) return;
@@ -230,7 +183,6 @@ export function ReviewDetailScreen(props: {
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          keyboardDismissMode="interactive"
           contentStyle={{
             paddingTop: 16,
             paddingBottom: Math.max(insets().bottom, 20) + 28,
@@ -387,25 +339,25 @@ export function ReviewDetailScreen(props: {
           {/* Approval Actions (hidden/disabled once resolved remotely) */}
           <If
             when={
-              !isResolvedRemotely() && !questionItem() && (allowPayload('once') || denyPayload())
+              !isResolvedRemotely() && !questionItem() && (controls().primary || controls().deny)
             }
           >
             <View style={{ paddingHorizontal: spacing.pageX }}>
               <ApprovalActions
-                allowLabel={tr('Allow once')}
+                allowLabel={controls().primary?.label}
                 denyLabel={tr('Deny')}
                 busy={busy()}
                 onAllow={
-                  allowPayload('once')
-                    ? () => void submitAnswer(allowPayload('once')!, 'success')
+                  controls().primary
+                    ? () => void submitAnswer(controls().primary!.answer, 'success')
                     : undefined
                 }
                 onDeny={
-                  denyPayload() ? () => void submitAnswer(denyPayload()!, 'warning') : undefined
+                  controls().deny ? () => void submitAnswer(controls().deny!, 'warning') : undefined
                 }
                 onAllowSession={
-                  req()?.kind === 'permissions' || req()?.kind === 'computer_app'
-                    ? () => void submitAnswer(allowPayload('session')!, 'success')
+                  controls().session
+                    ? () => void submitAnswer(controls().session!, 'success')
                     : undefined
                 }
               />

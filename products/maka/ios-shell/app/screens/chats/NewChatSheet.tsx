@@ -337,11 +337,7 @@ export function NewChatSheet(props: {
         </View>
       </View>
 
-      <Scroll
-        style={{ flex: 1 }}
-        keyboardDismissMode="interactive"
-        contentStyle={{ paddingBottom: 36 }}
-      >
+      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 36 }}>
         <If when={error()}>
           <BannerNotice tone="destructive" title={error()!} />
         </If>

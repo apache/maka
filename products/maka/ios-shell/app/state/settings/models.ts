@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type * as Runtime from '../../../../../../packages/plugin-sdk/src/generated/runtime';
 import type {
   ConnectionCredentialKind,
   ConnectionCredentialTarget,
@@ -145,15 +146,16 @@ export async function setExternalRuntime(rpc: SettingsRpc, runtime: string, enab
   if (!details.runtimes.some(({ id }) => id === runtime))
     throw new Error('External agent unavailable');
   const path = target.path as [string, ...string[]];
+  const change: Runtime.SettingChange = {
+    path: [...path, 'runtimes', runtime],
+    value: { kind: 'boolean', value: enabled },
+  };
   const result = await rpc.mutate('deploymentManager', 'configureBatch', {
     expectedRevision: after.revision,
     edits: [
       {
         instance: target.source.namespace,
-        changes: [
-          ...(!details.configured ? [{ path }] : []),
-          { path: [...path, 'runtimes', runtime], value: { kind: 'boolean', value: enabled } },
-        ],
+        changes: details.configured ? [change] : [{ path }, change],
       },
     ],
   });

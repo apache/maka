@@ -180,6 +180,16 @@ export function findScopedSession(rootId: string, sessionId: string): ScopedSess
   return (sessionsByHost()[rootId] ?? []).find((s) => s.session.id === sessionId);
 }
 
+function applySessionPage(rootId: string, hostName: string, page: AgentSessionPage) {
+  const items: ScopedSession[] = page.sessions.map((session) => ({
+    key: rootId + '::' + session.id,
+    rootId,
+    hostName,
+    session,
+  }));
+  sessionsByHost.update((prev) => ({ ...prev, [rootId]: items }));
+}
+
 export async function refreshHostSessions(rootId: string, hostName: string) {
   try {
     const generation = activeHostInfo(rootId)?.generation;
@@ -206,15 +216,9 @@ export async function refreshHostSessions(rootId: string, hostName: string) {
     ]);
     if (activeHostInfo(rootId)?.generation !== generation) return;
     if (outbox) botsByHost.update((prev) => ({ ...prev, [rootId]: outbox }));
-    const items: ScopedSession[] = (page?.sessions ?? []).map((session) => ({
-      key: rootId + '::' + session.id,
-      rootId,
-      hostName,
-      session,
-    }));
-    sessionsByHost.update((prev) => ({ ...prev, [rootId]: items }));
-  } catch {
-    // Keep prior snapshot on transient error; host connection status shows disconnects.
+    if (page) applySessionPage(rootId, hostName, page);
+  } catch (cause) {
+    console.warn('Could not refresh sessions', cause);
   }
 }
 
@@ -451,7 +455,8 @@ export function startSessionsStore() {
       botsByHost.update((prev) => ({ ...prev, [rootId]: outbox }));
     } else if (payload.subscriptionId === sub.catalogId) {
       const host = hostById(rootId);
-      if (host) void refreshHostSessions(rootId, host.hostName);
+      if (host && !showArchived())
+        applySessionPage(rootId, host.hostName, payload.item as AgentSessionPage);
     }
   });
 
@@ -469,6 +474,16 @@ export function startSessionsStore() {
     for (const [rootId, sub] of activeSubscriptions) {
       if (roots.has(rootId) && roots.get(rootId) === sub.generation) continue;
       activeSubscriptions.delete(rootId);
+      sessionsByHost.update((prev) => {
+        const next = { ...prev };
+        delete next[rootId];
+        return next;
+      });
+      botsByHost.update((prev) => {
+        const next = { ...prev };
+        delete next[rootId];
+        return next;
+      });
       for (const handle of sub.handles) {
         void unsubscribe(handle).catch((cause) =>
           console.warn('Could not stop session watch', cause),

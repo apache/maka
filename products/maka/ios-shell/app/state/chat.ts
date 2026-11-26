@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
@@ -498,13 +499,16 @@ export function createConversationController(rootId: string, sessionId: string) 
   ) => {
     busyInteractionIds.update((prev) => ({ ...prev, [requestId]: true }));
     try {
-      const result = await hostMutate<{ kind: 'recorded' } | { kind: 'rejected'; reason: unknown }>(
+      const result = await hostMutate<AgentInteractionResult>(
         'agent',
         'respond',
         { sessionId, requestId, answer },
         { rootId },
       );
-      if (result.kind === 'rejected') throw new Error(String(result.reason));
+      if (result.kind === 'rejected') {
+        void loadInteractions();
+        throw new Error(result.reason);
+      }
       hapticNotification(kind);
       const hostName = hostById(rootId)?.hostName ?? rootId;
       await Promise.all([

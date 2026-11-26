@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { AgentInteractionRequest } from './bridge';
 import { tr } from './locale';
 
 function exactObject(value: unknown, keys: string[]): Record<string, unknown> | null {
@@ -123,4 +124,100 @@ export function describeChildDecision(value: unknown): string | null {
   if (answer.kind === 'client_capability')
     return tr('Allow the requested client capability for this interaction');
   return null;
+}
+
+export function approvalDetail(request: AgentInteractionRequest): {
+  command?: string;
+  permissions?: string;
+} {
+  switch (request.kind) {
+    case 'permissions':
+      return {
+        command: request.request.command?.command,
+        permissions: describePermissions(request.request.permissions) ?? tr('Review on Desktop'),
+      };
+    case 'session_approval':
+      return { permissions: describeChildDecision(request.answer) ?? tr('Review on Desktop') };
+    case 'service_approval':
+      return { command: request.service + '.' + request.method + ' (' + request.binding + ')' };
+    case 'client_capability':
+      return {
+        permissions: [
+          request.target.providerId,
+          request.target.contractId,
+          request.target.serverId,
+          request.target.toolName,
+          request.target.capability,
+          request.target.scope,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      };
+    case 'computer_app':
+      return {
+        permissions: [
+          request.display.appPath,
+          request.target?.toolName,
+          request.target?.serverId,
+          request.display.risk,
+          request.display.warning,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      };
+    default:
+      return {};
+  }
+}
+
+export function approvalControls(request: AgentInteractionRequest | undefined) {
+  if (!request) return {};
+  const allow = (label: string, answer: Record<string, unknown>) => ({ label, answer });
+  const deny = { kind: request.kind, decision: 'deny' };
+  switch (request.kind) {
+    case 'permissions': {
+      const denied = { kind: request.kind, decision: { decision: 'deny' } };
+      if (describePermissions(request.request.permissions) === null) return { deny: denied };
+      const answer = (scope: 'once' | 'session') => ({
+        kind: request.kind,
+        decision: { decision: 'allow', scope, permissions: request.request.permissions },
+      });
+      return request.toolUseId == null
+        ? { primary: allow(tr('This session'), answer('session')), deny: denied }
+        : {
+            primary: allow(tr('Allow once'), answer('once')),
+            session: answer('session'),
+            deny: denied,
+          };
+    }
+    case 'session_approval': {
+      if (describeChildDecision(request.answer) === null) return { deny };
+      const answer =
+        request.answer as import('../../../../packages/plugin-sdk/src/generated/runtime').SessionApprovalAnswer;
+      const scope =
+        answer.kind === 'permissions'
+          ? answer.decision.scope
+          : answer.kind === 'computer_app'
+            ? answer.decision
+            : 'once';
+      return {
+        primary: allow(scope === 'once' ? tr('Allow once') : scopeLabel(scope), {
+          kind: request.kind,
+          decision: 'allow',
+        }),
+        deny,
+      };
+    }
+    case 'computer_app':
+      return {
+        primary: allow(tr('Allow once'), { kind: request.kind, decision: 'once' }),
+        session: { kind: request.kind, decision: 'session' },
+        deny,
+      };
+    case 'service_approval':
+    case 'client_capability':
+      return { primary: allow(tr('Allow'), { kind: request.kind, decision: 'allow' }), deny };
+    default:
+      return {};
+  }
 }
