@@ -447,11 +447,20 @@ impl Owner {
                                         if cell.owner.run() != Some(current.run) {
                                             continue;
                                         }
-                                        if matches!(cell.status, maka_agent_facts::cells::CellStatus::Running)
-                                            || cell.children.values().any(|child| !child.known())
-                                        {
+                                        if cell.has_unsettled_effects() {
                                             match cells.observe_original_cell(&current, cell).await {
                                                 Ok(_) | Err(RunError::Blocked(_)) => {}
+                                                Err(RunError::Tool(
+                                                    error @ (maka_agent_facts::tools::ToolError::OutcomeUnknown(_)
+                                                    | maka_agent_facts::tools::ToolError::OperationUnknown { .. }),
+                                                )) => {
+                                                    tracing::warn!(
+                                                        run = %current.run,
+                                                        cell = %cell.id,
+                                                        %error,
+                                                        "Original Cell child outcome is unavailable while retiring replaced executor"
+                                                    );
+                                                }
                                                 Err(error) => return Err(error),
                                             }
                                         }

@@ -4258,7 +4258,7 @@ mod model_recovery {
         facts: Vec<Value>,
     }
 
-    async fn root(base: &Path, create: bool) -> TestResult<Arc<RootStore>> {
+    pub(super) async fn root(base: &Path, create: bool) -> TestResult<Arc<RootStore>> {
         let base = base.to_path_buf();
         let owner = tokio::task::spawn_blocking(move || {
             let namespaces = RootNamespaces {
@@ -4283,7 +4283,7 @@ mod model_recovery {
     pub(super) async fn bootstrap(base: &Path, base_url: String, todo: bool) -> TestResult<Boot> {
         bootstrap_with(base, base_url, |config| config["todo"] = json!(todo)).await
     }
-    async fn bootstrap_with(
+    pub(super) async fn bootstrap_with(
         base: &Path,
         base_url: String,
         configure: impl FnOnce(&mut Value),
@@ -8986,15 +8986,18 @@ async fn same_path_reclone_keeps_conversations_usable_and_grouped_without_marker
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
-    use maka_agent_engine::DriverExit;
-    use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
+mod replaced_antigravity_cell_recovery {
+    use super::*;
+    use crate::owner::driver::PreparedTool;
+    use crate::owner::driver::tests::model_recovery::call;
     use maka_agent_facts::{
-        cells::{CellEvent, CellId, CellOwner},
+        cells::{CellEvent, CellId, CellInterruption, CellOwner, CellStatus, CellVmBinding},
         executor::{Selection, Settings},
         external_effects::{ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey},
+        tool_call::ToolOrigin,
+        tools::{ToolExecutor, ToolFuture},
     };
+
     struct Gate {
         entered: StdMutex<Option<oneshot::Sender<()>>>,
         release: StdMutex<Option<oneshot::Receiver<()>>>,
@@ -9017,21 +9020,76 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
             })
         }
     }
-    let mut rig = Rig::new().unwrap();
-    let (release, gate) = oneshot::channel();
-    let (entered, started) = oneshot::channel();
-    let mut release = Some(release);
-    let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
-        let session = rig
-            .start_configured(None, |config| {
+
+    struct Seed {
+        owner: Arc<Owner>,
+        session: String,
+        run: RunId,
+        claim: maka_agent_state::DriverClaim,
+        spec: RunSpec,
+        task: ExternalTaskId,
+        key: ExternalEffectKey,
+        cell: CellId,
+    }
+
+    async fn setup_replaced_run_with_files(
+        rig: &mut Rig,
+        with_workspace_tools: bool,
+    ) -> Result<Seed, Box<dyn Error + Send + Sync>> {
+        let session = if with_workspace_tools {
+            let base = rig.directory.path().to_path_buf();
+            let boot =
+                model_recovery::bootstrap_with(&base, "http://127.0.0.1:1/v1".into(), |config| {
+                    config["external"] = json!({"runtimes": {"antigravity": true}});
+                    config["permissions"]["requestPermissions"] = json!(false);
+                    config["tools"] = json!([{
+                        "name": "Write",
+                        "description": "Write local file",
+                        "target": {"kind": "import", "name": "files"},
+                        "method": "write",
+                        "nestable": true,
+                        "result": "json",
+                        "confirmation": "preapproved"
+                    }]);
+                })
+                .await?;
+            rig.attach_host(
+                model_recovery::root(&base, false).await?,
+                boot.deployment,
+                boot.gateway,
+                true,
+                None,
+            )
+            .await?;
+            let client = rig.client.as_ref().ok_or("catalog client missing")?;
+            let created = call(
+                client,
+                "agent",
+                "create",
+                json!({
+                    "title": "cleanup recovery",
+                    "labels": [],
+                    "workspace": {"kind": "directory", "path": base.join("workspace")}
+                }),
+            )
+            .await?;
+            created["session"]["id"]
+                .as_str()
+                .ok_or("created session id missing")?
+                .to_owned()
+        } else {
+            rig.start_configured(None, |config| {
                 config["external"] = json!({"runtimes": {"antigravity": true}});
             })
-            .await?;
+            .await?
+        };
         rig.assemble(&session).await?;
         let driver = rig.driver.take().unwrap();
         let owner = rig.captured.lock().unwrap().clone().unwrap();
-        let template_run = driver.access.execution().run_id;
-        let original = driver.state.frontier(template_run).await?;
+        let original = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
         let mut spec = original.spec.clone();
         let selection = Selection {
             executor: "external".into(),
@@ -9050,7 +9108,7 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
         for reference in [
             Some(&spec.input),
             Some(&spec.system_prompt),
-            Some(&spec.tool_selection),
+            (!with_workspace_tools).then_some(&spec.tool_selection),
             spec.compaction_prompt.as_ref(),
         ]
         .into_iter()
@@ -9063,7 +9121,25 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
                     .await?,
             ));
         }
-        // Finish the template run and release its work lease before driving the replaced Run.
+        if with_workspace_tools {
+            let live_catalog = owner.tool_catalog.for_run(
+                owner.configuration.clone(),
+                owner.workers.clone(),
+                driver.access.clone(),
+            )?;
+            let selection_blob = ContentBlob::json(&crate::tools::SelectionSnapshot {
+                definitions: live_catalog.definitions().cloned().collect(),
+                direct_only: live_catalog.direct_only().names().into_iter().collect(),
+                services: owner
+                    .tool_basis
+                    .iter()
+                    .map(crate::tools::SelectedTool::declaration)
+                    .collect(),
+                internal_bindings: Default::default(),
+            })?;
+            spec.tool_selection = selection_blob.reference().clone();
+            contents.push(selection_blob);
+        }
         driver
             .state
             .append(
@@ -9095,7 +9171,6 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
         if let Some(lease) = rig.lease.take() {
             lease.finish();
         }
-
         spec.turn_id = Uuid::new_v4().to_string();
         spec.trigger = Trigger::Message {
             message_id: Uuid::new_v4().to_string(),
@@ -9104,17 +9179,20 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
             selection,
             descriptor: backend_descriptor.reference().clone(),
         };
+        let ordered = owner.runs.ordered(&session).await;
         let admitted = owner
             .durable
             .admit(Admission::new(spec.clone(), at(), contents))
             .await?;
         let run = admitted.facts[0].run;
         let claim = owner.durable.claim(run).await?;
+        drop(ordered);
         let task = ExternalTaskId::new();
         let key = ExternalEffectKey {
             task,
             operation: Uuid::new_v4(),
         };
+        let cell = CellId::for_external(run, key);
         let task_source = maka_agent_facts::executor::Binding {
             executor_id: "external".to_string().try_into()?,
             package_id: "maka.agent".into(),
@@ -9156,45 +9234,12 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
             catalog_digest: maka_agent_engine::digest(&json!({}))?,
             resources: vec![],
         })?;
-        let returned_output = ContentBlob::json(&json!({
-            "kind": "failure",
-            "settlement": "failed",
-            "diagnostic": "Cell observation cancelled"
-        }))?;
-        let cell = CellId::for_external(run, key);
-        let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
-        let context = maka_code_runtime::CellContext::new(
-            store,
-            vec![maka_code_runtime::ToolMetadata {
-                name: "gate".into(),
-                description: "finite original effect".into(),
-            }],
-        )
-        .map_err(|error| error.message)?;
-        let vm = owner
-            .code_executor
-            .prepare_module(
-                "await tools.gate({});".into(),
-                Arc::new(Gate {
-                    entered: StdMutex::new(Some(entered)),
-                    release: StdMutex::new(Some(gate)),
-                }),
-                CancellationToken::new(),
-                context,
-            )
-            .await?;
-        let binding = vm.binding().clone();
-        let source = ContentBlob::json(&"await tools.gate({});")?;
-        let vm_descriptor = ContentBlob::json(&binding.descriptor)?;
-        let stop_id = FactId::new();
-        let auth_blocker = BlockerId::new();
-        let cell_blocker = BlockerId::new();
-        let initial = owner.durable.frontier(run).await?;
+        let head = owner.durable.frontier(run).await?;
         owner
             .durable
             .append(
                 &claim,
-                (&initial).into(),
+                (&head).into(),
                 vec![
                     Change::new(
                         Fact::ExternalTaskPrepared {
@@ -9209,12 +9254,12 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
                 vec![task_descriptor],
             )
             .await?;
-        let after_task = owner.durable.frontier(run).await?;
+        let head = owner.durable.frontier(run).await?;
         owner
             .durable
             .append(
                 &claim,
-                (&after_task).into(),
+                (&head).into(),
                 vec![
                     Change::new(
                         Fact::ExternalEffect {
@@ -9234,172 +9279,792 @@ async fn replaced_antigravity_executor_observes_running_cell_before_retiring() {
                         },
                         at(),
                     ),
-                    Change {
-                        id: cell.started_fact_id(),
-                        at: at(),
-                        fact: Fact::Cell {
-                            event: CellEvent::Started {
-                                cell,
-                                owner: CellOwner::External { run, key },
-                                source: source.reference().clone(),
-                            },
-                        },
-                    },
-                    Change::new(
-                        Fact::Cell {
-                            event: CellEvent::VmBound {
-                                cell,
-                                binding: maka_agent_facts::cells::CellVmBinding {
-                                    runtime: binding.runtime.clone(),
-                                    version: binding.version,
-                                    descriptor: vm_descriptor.reference().clone(),
-                                },
-                            },
-                        },
-                        at(),
-                    ),
-                    Change::new(
-                        Fact::ExternalEffect {
-                            event: ExternalEffectEvent::CleanupObserved {
-                                key,
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                        },
-                        at(),
-                    ),
-                    Change::new(
-                        Fact::ExternalEffect {
-                            event: ExternalEffectEvent::Returned {
-                                key,
-                                output: returned_output.reference().clone(),
-                                finish_turn: false,
-                            },
-                        },
-                        at(),
-                    ),
-                    Change::new(
-                        Fact::ExternalTaskCleanupObserved {
-                            task,
-                            cleanup: OperationCleanup::Confirmed,
-                        },
-                        at(),
-                    ),
-                    Change::new(
-                        Fact::Blocked {
-                            blocker: auth_blocker,
-                            reason: BlockerKind::CurrentAuthorityUnavailable {
-                                stage: AuthorityStage::BackendScope,
-                                diagnostic: "invalid execution input: agent_executor_changed"
-                                    .into(),
-                            },
-                        },
-                        at(),
-                    ),
-                    Change {
-                        id: stop_id,
-                        at: at(),
-                        fact: Fact::StopRequested {
-                            diagnostic: "user_requested_stop".into(),
-                            requester: StopRequester::User,
-                        },
-                    },
-                    Change::new(
-                        Fact::Blocked {
-                            blocker: cell_blocker,
-                            reason: BlockerKind::CodeCellRecoveryUnavailable {
-                                cell: cell.to_string(),
-                            },
-                        },
-                        at(),
-                    ),
-                    Change::new(Fact::StopAssessed { request: stop_id }, at()),
                 ],
-                vec![effect_descriptor, returned_output, source, vm_descriptor],
+                vec![effect_descriptor],
             )
             .await?;
+        Ok(Seed {
+            owner,
+            session,
+            run,
+            claim,
+            spec,
+            task,
+            key,
+            cell,
+        })
+    }
 
-        // Phase 1: While the old Cell VM is still alive, retirement must stay blocked.
-        let vm_task = tokio::spawn(vm.execute_bound());
-        started.await?;
-        let live_view = owner.durable.frontier(run).await?;
-        let (first_exit, first_cleanup) = owner
-            .run_with_capabilities(live_view, claim, CancellationToken::new())
-            .await;
-        assert_eq!(first_cleanup, OperationCleanup::Confirmed);
-        assert!(
-            matches!(first_exit, Ok(DriverExit::Blocked { .. })),
-            "expected blocked while VM is still alive: {first_exit:?}"
-        );
-        let after_first = owner.durable.frontier(run).await?;
-        assert!(after_first.terminal.is_none());
-        assert!(matches!(
-            after_first.cells[&cell].status,
-            maka_agent_facts::cells::CellStatus::Running
-        ));
-        assert!(after_first.blockers[&cell_blocker].resolved_by.is_none());
+    async fn setup_replaced_run(rig: &mut Rig) -> Result<Seed, Box<dyn Error + Send + Sync>> {
+        setup_replaced_run_with_files(rig, false).await
+    }
 
-        // Phase 2: Once the old VM exits, recovery observes closure, resolves the Cell blocker,
-        // and retires the replaced-executor Run cleanly.
+    async fn gone_vm_binding(
+        owner: &Owner,
+    ) -> Result<maka_code_runtime::VmBinding, Box<dyn Error + Send + Sync>> {
+        let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
+        let context =
+            maka_code_runtime::CellContext::new(store, vec![]).map_err(|error| error.message)?;
+        let vm = owner
+            .code_executor
+            .prepare_module(
+                "text('done');".into(),
+                Arc::new(Gate {
+                    entered: StdMutex::new(None),
+                    release: StdMutex::new(None),
+                }),
+                CancellationToken::new(),
+                context,
+            )
+            .await?;
+        let binding = vm.binding().clone();
         let (mut vm_changes, _) = owner.code_executor.physical_changes();
         vm_changes.borrow_and_update();
-        release
-            .take()
-            .unwrap()
-            .send(())
-            .map_err(|_| "gate receiver dropped")?;
-        let _ = vm_task.await?;
+        let _ = vm.execute_bound().await;
         while !matches!(
             owner.code_executor.observe_binding(&binding).await,
             maka_code_runtime::RuntimeVmObservation::Gone(_)
         ) {
             vm_changes.changed().await?;
         }
-        let claim = owner.durable.claim(run).await?;
-        let gone_view = owner.durable.frontier(run).await?;
-        let (second_exit, second_cleanup) = owner
-            .run_with_capabilities(gone_view, claim, CancellationToken::new())
-            .await;
-        assert_eq!(second_cleanup, OperationCleanup::Confirmed);
-        assert!(
-            matches!(
-                second_exit,
-                Ok(DriverExit::Terminal {
-                    terminal: Terminal::Cancelled,
+        Ok(binding)
+    }
+
+    fn close_external_parent(
+        task: ExternalTaskId,
+        key: ExternalEffectKey,
+    ) -> Result<(Vec<Change>, ContentBlob), Box<dyn Error + Send + Sync>> {
+        let returned = ContentBlob::json(&json!({
+            "kind": "failure",
+            "settlement": "failed",
+            "diagnostic": "Cell observation cancelled"
+        }))?;
+        let changes = vec![
+            Change::new(
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::CleanupObserved {
+                        key,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                },
+                at(),
+            ),
+            Change::new(
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Returned {
+                        key,
+                        output: returned.reference().clone(),
+                        finish_turn: false,
+                    },
+                },
+                at(),
+            ),
+            Change::new(
+                Fact::ExternalTaskCleanupObserved {
+                    task,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+                at(),
+            ),
+        ];
+        Ok((changes, returned))
+    }
+
+    async fn drive_via_queue(
+        owner: &Arc<Owner>,
+        session: &str,
+        run: RunId,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut physical = owner.physical_changes();
+        physical.borrow_and_update();
+        owner.wake_run(run).await?;
+        loop {
+            if !owner.runs.state().await.busy(session) {
+                return Ok(());
+            }
+            physical.changed().await?;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retires_gone_cell_via_queue_and_keeps_live_vm_blocked() {
+        let mut rig = Rig::new().unwrap();
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+            let seed = setup_replaced_run(&mut rig).await?;
+            let binding = gone_vm_binding(&seed.owner).await?;
+            let source = ContentBlob::json(&"text('done');")?;
+            let vm_descriptor = ContentBlob::json(&binding.descriptor)?;
+            let stop_id = FactId::new();
+            let cell_blocker = BlockerId::new();
+            let claim = seed.claim;
+            let (mut close_changes, returned_blob) = close_external_parent(seed.task, seed.key)?;
+            let mut changes = vec![
+                Change {
+                    id: seed.cell.started_fact_id(),
+                    at: at(),
+                    fact: Fact::Cell {
+                        event: CellEvent::Started {
+                            cell: seed.cell,
+                            owner: CellOwner::External {
+                                run: seed.run,
+                                key: seed.key,
+                            },
+                            source: source.reference().clone(),
+                        },
+                    },
+                },
+                Change::new(
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell: seed.cell,
+                            binding: CellVmBinding {
+                                runtime: binding.runtime,
+                                version: binding.version,
+                                descriptor: vm_descriptor.reference().clone(),
+                            },
+                        },
+                    },
+                    at(),
+                ),
+            ];
+            changes.append(&mut close_changes);
+            changes.extend([
+                Change::new(
+                    Fact::Blocked {
+                        blocker: BlockerId::new(),
+                        reason: BlockerKind::CurrentAuthorityUnavailable {
+                            stage: AuthorityStage::BackendScope,
+                            diagnostic: "invalid execution input: agent_executor_changed".into(),
+                        },
+                    },
+                    at(),
+                ),
+                Change {
+                    id: stop_id,
+                    at: at(),
+                    fact: Fact::StopRequested {
+                        diagnostic: "user_requested_stop".into(),
+                        requester: StopRequester::User,
+                    },
+                },
+                Change::new(
+                    Fact::Blocked {
+                        blocker: cell_blocker,
+                        reason: BlockerKind::CodeCellRecoveryUnavailable {
+                            cell: seed.cell.to_string(),
+                        },
+                    },
+                    at(),
+                ),
+                Change::new(Fact::StopAssessed { request: stop_id }, at()),
+            ]);
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    changes,
+                    vec![source, vm_descriptor, returned_blob],
+                )
+                .await?;
+            claim.deactivate();
+            drop(claim);
+
+            // Cold-start recovery runs via the real production queue entry.
+            drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
+            let final_view = seed.owner.durable.frontier(seed.run).await?;
+            assert_eq!(final_view.terminal, Some(Terminal::Cancelled));
+            assert!(!final_view.blocks_followup());
+            assert!(!final_view.cells.contains_key(&seed.cell));
+            assert!(!final_view.blockers.contains_key(&cell_blocker));
+            let stored_cell = seed
+                .owner
+                .durable
+                .cells()
+                .read(&seed.session, seed.cell)
+                .await?
+                .ok_or("interrupted cell missing")?;
+            assert!(matches!(stored_cell.status, CellStatus::Interrupted { .. }));
+            let history = seed.owner.durable.history(seed.run, 0, 128).await?;
+            assert!(history.iter().any(|recorded| matches!(
+                &recorded.fact,
+                Fact::BlockerResolved { blocker, .. } if *blocker == cell_blocker
+            )));
+            assert!(seed.owner.runs.state().await.retained_cleanup.is_empty());
+
+            // Follow-up message can now be submitted without being blocked by the retired Run.
+            let client = rig.client.as_ref().ok_or("catalog client missing")?;
+            let sent = call(
+                client,
+                "agent",
+                "send",
+                json!({
+                    "sessionId": seed.session,
+                    "message": "follow up after recovery",
+                    "backend": {
+                        "kind": "executor",
+                        "selection": {
+                            "executor": "external",
+                            "settings": {"runtime": "antigravity"}
+                        }
+                    }
+                }),
+            )
+            .await?;
+            assert!(
+                matches!(sent["kind"].as_str(), Some("started" | "queued")),
+                "follow-up send should succeed after retirement: {sent}"
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+
+        // Live VM must keep the replaced-executor Run blocked (no premature retirement),
+        // and RunCells::original_cleanup_signals must arm its worker signal only once.
+        let mut live_rig = Rig::new().unwrap();
+        let (release, gate) = oneshot::channel();
+        let (entered, started) = oneshot::channel();
+        let mut release = Some(release);
+        let live_outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+            let seed = setup_replaced_run(&mut live_rig).await?;
+            let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
+            let context = maka_code_runtime::CellContext::new(
+                store,
+                vec![maka_code_runtime::ToolMetadata {
+                    name: "gate".into(),
+                    description: "finite original effect".into(),
+                }],
+            )
+            .map_err(|error| error.message)?;
+            let vm = seed
+                .owner
+                .code_executor
+                .prepare_module(
+                    "await tools.gate({});".into(),
+                    Arc::new(Gate {
+                        entered: StdMutex::new(Some(entered)),
+                        release: StdMutex::new(Some(gate)),
+                    }),
+                    CancellationToken::new(),
+                    context,
+                )
+                .await?;
+            let binding = vm.binding().clone();
+            let source = ContentBlob::json(&"await tools.gate({});")?;
+            let vm_descriptor = ContentBlob::json(&binding.descriptor)?;
+            let claim = seed.claim;
+            let (mut close_changes, returned_blob) = close_external_parent(seed.task, seed.key)?;
+            let mut changes = vec![
+                Change {
+                    id: seed.cell.started_fact_id(),
+                    at: at(),
+                    fact: Fact::Cell {
+                        event: CellEvent::Started {
+                            cell: seed.cell,
+                            owner: CellOwner::External {
+                                run: seed.run,
+                                key: seed.key,
+                            },
+                            source: source.reference().clone(),
+                        },
+                    },
+                },
+                Change::new(
+                    Fact::Cell {
+                        event: CellEvent::VmBound {
+                            cell: seed.cell,
+                            binding: CellVmBinding {
+                                runtime: binding.runtime,
+                                version: binding.version,
+                                descriptor: vm_descriptor.reference().clone(),
+                            },
+                        },
+                    },
+                    at(),
+                ),
+            ];
+            changes.append(&mut close_changes);
+            changes.push(Change::new(
+                Fact::StopRequested {
+                    diagnostic: "user_requested_stop".into(),
+                    requester: StopRequester::User,
+                },
+                at(),
+            ));
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    changes,
+                    vec![source, vm_descriptor, returned_blob],
+                )
+                .await?;
+            claim.deactivate();
+            drop(claim);
+
+            let vm_task = tokio::spawn(vm.execute_bound());
+            started.await?;
+            drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
+            let after = seed.owner.durable.frontier(seed.run).await?;
+            assert!(after.terminal.is_none());
+            assert!(matches!(
+                after.cells[&seed.cell].status,
+                CellStatus::Running
+            ));
+            assert!(after.blockers.values().any(|blocker| matches!(
+                &blocker.reason,
+                BlockerKind::CodeCellRecoveryUnavailable { cell } if cell == &seed.cell.to_string()
+            )));
+
+            // Verify preflight RunCells::original_cleanup_signals only arms once.
+            let scope = seed
+                .owner
+                .current_work_scope(
+                    &seed.session,
+                    &seed
+                        .owner
+                        .mutable_session(&seed.session)
+                        .await?
+                        .configuration,
+                )
+                .await?;
+            let (lease, effects) = scope.accept(CancellationToken::new());
+            let claim = seed.owner.durable.claim(seed.run).await?;
+            let access = seed.owner.run_access(Arc::new(seed.spec), claim, &lease)?;
+            let run_cells = crate::owner::driver_cells::RunCells::new(
+                seed.owner.clone(),
+                access,
+                seed.owner.code_executor.clone(),
+                TaskTracker::new(),
+                Evidence::default(),
+            )?;
+            assert_eq!(run_cells.original_cleanup_signals().len(), 1);
+            assert!(run_cells.original_cleanup_signals().is_empty());
+            drop(run_cells);
+            effects.settle().await?;
+            lease.finish();
+
+            let _ = release.take().unwrap().send(());
+            let _ = vm_task.await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        if let Some(release) = release {
+            let _ = release.send(());
+        }
+        let live_cleanup = live_rig.finish().await;
+        assert!(matches!(&live_outcome, Ok(Ok(Ok(())))), "{live_outcome:?}");
+        assert!(live_cleanup.is_empty(), "{live_cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn does_not_cancel_stopped_run_when_local_child_is_unobservable() {
+        let mut rig = Rig::new().unwrap();
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+            let seed = setup_replaced_run(&mut rig).await?;
+            let binding = gone_vm_binding(&seed.owner).await?;
+            let source = ContentBlob::json(&"await tools.todo_read({});")?;
+            let vm_descriptor = ContentBlob::json(&binding.descriptor)?;
+            let child_op = Uuid::new_v4();
+            let child_input = ContentBlob::json(&json!({}))?;
+            let stop_id = FactId::new();
+            let claim = seed.claim;
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    vec![
+                        Change {
+                            id: seed.cell.started_fact_id(),
+                            at: at(),
+                            fact: Fact::Cell {
+                                event: CellEvent::Started {
+                                    cell: seed.cell,
+                                    owner: CellOwner::External {
+                                        run: seed.run,
+                                        key: seed.key,
+                                    },
+                                    source: source.reference().clone(),
+                                },
+                            },
+                        },
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::VmBound {
+                                    cell: seed.cell,
+                                    binding: CellVmBinding {
+                                        runtime: binding.runtime,
+                                        version: binding.version,
+                                        descriptor: vm_descriptor.reference().clone(),
+                                    },
+                                },
+                            },
+                            at(),
+                        ),
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildPrepared {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                    name: "todo_read".into(),
+                                    semantics: ToolSemantics::Parallel,
+                                    input: child_input.reference().clone(),
+                                    resources: vec![],
+                                },
+                            },
+                            at(),
+                        ),
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildAdmitted {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                },
+                            },
+                            at(),
+                        ),
+                    ],
+                    vec![source, vm_descriptor, child_input],
+                )
+                .await?;
+            let (mut close_changes, returned_blob) = close_external_parent(seed.task, seed.key)?;
+            close_changes.push(Change {
+                id: stop_id,
+                at: at(),
+                fact: Fact::StopRequested {
+                    diagnostic: "user_requested_stop".into(),
+                    requester: StopRequester::User,
+                },
+            });
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(&claim, (&head).into(), close_changes, vec![returned_blob])
+                .await?;
+            claim.deactivate();
+            drop(claim);
+
+            // Production queue must keep the Run blocked with CodeCellRecoveryUnavailable
+            // instead of letting fail_after_driver_error cancel it past the unsettled child.
+            drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
+            let after = seed.owner.durable.frontier(seed.run).await?;
+            assert!(
+                after.terminal.is_none(),
+                "unobservable local child must block retirement instead of cancelling: {:?}",
+                after.terminal
+            );
+            assert!(after.has_unsettled_recovery());
+            let stored_cell = seed
+                .owner
+                .durable
+                .cells()
+                .read(&seed.session, seed.cell)
+                .await?
+                .ok_or("cell missing")?;
+            assert!(matches!(stored_cell.status, CellStatus::Running));
+            assert!(!stored_cell.children[&child_op].known());
+            assert!(after.blockers.values().any(|blocker| {
+                blocker.resolved_by.is_none()
+                    && matches!(
+                        &blocker.reason,
+                        BlockerKind::CodeCellRecoveryUnavailable { cell }
+                            if cell == &seed.cell.to_string()
+                    )
+            }));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovers_unconfirmed_child_cleanup_on_interrupted_cell() {
+        let mut rig = Rig::new().unwrap();
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+            let seed = setup_replaced_run_with_files(&mut rig, true).await?;
+            let child_op = Uuid::new_v4();
+            let child_args = json!({"path": "recovered.txt", "content": "confirmed via journal"});
+            let child_input = ContentBlob::json(&child_args)?;
+            let source = ContentBlob::json(&"await tools.Write(...);")?;
+            let claim = seed.claim;
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    vec![
+                        Change {
+                            id: seed.cell.started_fact_id(),
+                            at: at(),
+                            fact: Fact::Cell {
+                                event: CellEvent::Started {
+                                    cell: seed.cell,
+                                    owner: CellOwner::External {
+                                        run: seed.run,
+                                        key: seed.key,
+                                    },
+                                    source: source.reference().clone(),
+                                },
+                            },
+                        },
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildPrepared {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                    name: "Write".into(),
+                                    semantics: ToolSemantics::ExclusiveStep,
+                                    input: child_input.reference().clone(),
+                                    resources: vec![],
+                                },
+                            },
+                            at(),
+                        ),
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildAdmitted {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                },
+                            },
+                            at(),
+                        ),
+                    ],
+                    vec![source, child_input],
+                )
+                .await?;
+
+            // Run a real Write mutation so the Files service journal holds a real CallerIntent
+            // and Recorded { Returned, Confirmed } receipt for this Cell child.
+            let scope = seed
+                .owner
+                .current_work_scope(
+                    &seed.session,
+                    &seed
+                        .owner
+                        .mutable_session(&seed.session)
+                        .await?
+                        .configuration,
+                )
+                .await?;
+            let (lease, effects) = scope.accept(CancellationToken::new());
+            let access =
+                seed.owner
+                    .run_access(Arc::new(seed.spec.clone()), claim.clone(), &lease)?;
+            let view = seed.owner.durable.frontier(seed.run).await?;
+            let (basis, selection) = seed
+                .owner
+                .restored_data(&view)
+                .await
+                .map_err(|failure| failure.cause)?;
+            let mcp = basis
+                .mcp_catalog
+                .as_ref()
+                .ok_or("missing current MCP catalog")?;
+            let catalog = seed.owner.run_catalog(access.clone(), mcp, &selection)?;
+            let prepared = PreparedTool::prepare(
+                &seed.owner,
+                &access,
+                &catalog,
+                "Write".into(),
+                child_args,
+                ToolCallContext {
+                    execution: access.execution().clone(),
+                    operation_id: format!("cell:{}:{child_op}", seed.cell),
+                    call: ToolCallIdentity {
+                        tool_call_id: child_op.to_string(),
+                        origin: ToolOrigin::CodeCell {
+                            cell: seed.cell,
+                            owner: CellOwner::External {
+                                run: seed.run,
+                                key: seed.key,
+                            },
+                            parent_operation_id: format!(
+                                "external:{}:{}",
+                                seed.task, seed.key.operation
+                            ),
+                            parent_tool_call_id: seed.key.operation.to_string(),
+                        },
+                    },
+                    custody: Some(access.custody().clone()),
+                },
+                CancellationToken::new(),
+                ToolSemantics::ExclusiveStep,
+            )
+            .await?;
+            let PreparedTool { effect, .. } = prepared;
+            let (_custody, future) = effect.begin(1, CancellationToken::new())?.execute();
+            let executed = future.await?;
+            let prepared_return = crate::owner::driver_cells::prepare_child_return(
+                executed,
+                access.execution(),
+                seed.cell,
+                child_op,
+            )?;
+            let confirmed_obs = prepared_return
+                .observed
+                .ok_or("missing Write operation observation")?;
+            let mut unconfirmed_obs = confirmed_obs.clone();
+            let Receipt::Recorded { cleanup, .. } = &mut unconfirmed_obs.receipt else {
+                return Err("expected Recorded receipt for Write".into());
+            };
+            *cleanup = OperationCleanup::Unconfirmed;
+            let mut blobs = vec![prepared_return.blob.clone()];
+            if let Some(material) = prepared_return.material {
+                blobs.push(material);
+            }
+            drop(catalog);
+            drop(access);
+            effects.settle().await?;
+            lease.finish();
+
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    vec![
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildBound {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                    reference: unconfirmed_obs.reference.clone(),
+                                },
+                            },
+                            at(),
+                        ),
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildObserved {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                    reply: unconfirmed_obs,
+                                },
+                            },
+                            at(),
+                        ),
+                        Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildResultRecorded {
+                                    cell: seed.cell,
+                                    operation: child_op,
+                                    result: prepared_return.blob.reference().clone(),
+                                    is_error: prepared_return.is_error,
+                                },
+                            },
+                            at(),
+                        ),
+                    ],
+                    blobs,
+                )
+                .await?;
+            let with_child = seed
+                .owner
+                .durable
+                .cells()
+                .read(&seed.session, seed.cell)
+                .await?
+                .ok_or("cell missing before interruption")?;
+            let interruption = ContentBlob::json(&CellInterruption {
+                cell: seed.cell,
+                diagnostic: "Original VM already exited".into(),
+                children: with_child.children,
+                prior_output: None,
+            })?;
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(
+                    &claim,
+                    (&head).into(),
+                    vec![Change::new(
+                        Fact::Cell {
+                            event: CellEvent::Interrupted {
+                                cell: seed.cell,
+                                report: interruption.reference().clone(),
+                            },
+                        },
+                        at(),
+                    )],
+                    vec![interruption],
+                )
+                .await?;
+            let (mut close_changes, returned_blob) = close_external_parent(seed.task, seed.key)?;
+            close_changes.push(Change::new(
+                Fact::StopRequested {
+                    diagnostic: "user_requested_stop".into(),
+                    requester: StopRequester::User,
+                },
+                at(),
+            ));
+            let head = seed.owner.durable.frontier(seed.run).await?;
+            seed.owner
+                .durable
+                .append(&claim, (&head).into(), close_changes, vec![returned_blob])
+                .await?;
+            claim.deactivate();
+            drop(claim);
+
+            // Precondition: Cell is already Interrupted and child is known(),
+            // yet cleanup is Unconfirmed so has_unsettled_effects() is still true.
+            let before_cell = seed
+                .owner
+                .durable
+                .cells()
+                .read(&seed.session, seed.cell)
+                .await?
+                .ok_or("cell missing before recovery")?;
+            assert!(matches!(before_cell.status, CellStatus::Interrupted { .. }));
+            assert!(before_cell.children[&child_op].known());
+            assert!(before_cell.has_unsettled_effects());
+
+            // Production queue selects the Interrupted Cell via has_unsettled_effects(),
+            // reads the Confirmed receipt from the Files service journal, and retires the Run.
+            drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
+            let after = seed.owner.durable.frontier(seed.run).await?;
+            assert_eq!(after.terminal, Some(Terminal::Cancelled));
+            let after_cell = seed
+                .owner
+                .durable
+                .cells()
+                .read(&seed.session, seed.cell)
+                .await?
+                .ok_or("cell missing after recovery")?;
+            assert!(!after_cell.has_unsettled_effects());
+            assert!(matches!(
+                after_cell.children[&child_op]
+                    .reply
+                    .as_ref()
+                    .map(|reply| &reply.receipt),
+                Some(Receipt::Recorded {
+                    cleanup: OperationCleanup::Confirmed,
                     ..
                 })
-            ),
-            "expected replaced executor Run to retire once Cell VM is gone: {second_exit:?}"
-        );
-        let final_view = owner.durable.frontier(run).await?;
-        assert_eq!(final_view.terminal, Some(Terminal::Cancelled));
-        assert!(!final_view.cells.contains_key(&cell));
-        let stored_cell = owner
-            .durable
-            .cells()
-            .read(&session, cell)
-            .await?
-            .ok_or("interrupted cell missing from store")?;
-        assert!(matches!(
-            stored_cell.status,
-            maka_agent_facts::cells::CellStatus::Interrupted { .. }
-        ));
-        assert!(!final_view.blockers.contains_key(&cell_blocker));
-        let history = owner.durable.history(run, 0, 128).await?;
-        assert!(history.iter().any(|recorded| matches!(
-            &recorded.fact,
-            Fact::BlockerResolved { blocker, .. } if *blocker == cell_blocker
-        )));
-        assert!(owner.runs.state().await.retained_cleanup.is_empty());
-        Ok::<_, Box<dyn Error + Send + Sync>>(())
-    }))
-    .catch_unwind()
-    .await;
-    if let Some(release) = release {
-        let _ = release.send(());
+            ));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
     }
-    let cleanup = rig.finish().await;
-    assert!(matches!(&outcome, Ok(Ok(Ok(())))), "{outcome:?}");
-    assert!(cleanup.is_empty(), "{cleanup:?}");
 }
 
 mod preset_test_gate {
