@@ -609,6 +609,126 @@ async fn reorder_preserves_interrupt_handoffs_and_enqueue_times() {
 }
 
 #[tokio::test]
+async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests() {
+    use maka_agent_facts::memory::MemoryAdmission;
+    use rusqlite::params;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open_through(dir.path(), true, 56).await;
+    let (mut spec, contents) = spec();
+    spec.session_id = "chat".into();
+    let owner = serde_json::to_value(&spec.owner).unwrap();
+    exec_sql(&store, move |db| {
+        for blob in contents {
+            blob.store(db)?;
+        }
+        db.execute_batch(
+            "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+             VALUES('chat','test',1,0,0,0,'{}');
+             INSERT INTO application_operation_contracts VALUES('agent','{}');",
+        )?;
+        for (message, actor, session) in [("user","remote","chat"), ("worker","agent","chat"),
+                                         ("cancelled","native","chat"), ("other","native","another")] {
+            let request = json!({"method":"send","export":"agent","origin":{"kind":actor}});
+            let outcome = ContentBlob::json(&json!({"kind":"success","value":{"kind":"queued","sessionId":session,"messageId":message}}))?.store(db)?;
+            db.execute("INSERT INTO application_operations(deployment,namespace,operation,source_revision,request_json,
+                outcome_content_id,outcome_json,cleanup_json,contract_digest) VALUES(?1,?2,?3,1,?4,?5,'{}','{}','agent')",
+                params![owner["deployment"].as_str(),owner["namespace"].to_string(),message,request.to_string(),outcome])?;
+        }
+        Ok(())
+    }).await;
+    for message in ["user", "worker", "other", "cancelled"] {
+        enqueue_at(&store, &spec, message, 1).await;
+    }
+    let (request, blobs) = prepare_message(&spec, "user", None);
+    let edit = QueueCommand {
+        id: FactId::new(),
+        at: UnixMillis(2),
+        expected_revision: store.queue().read("chat".into()).await.unwrap().revision,
+        edit: QueueEdit::Update {
+            request: Box::new(request),
+        },
+    };
+    let commit = store
+        .queue()
+        .execute("chat".into(), edit.clone(), blobs)
+        .await
+        .unwrap();
+    write_queue(
+        &store,
+        "chat",
+        3,
+        None,
+        QueueEdit::Retract {
+            request: RequestId("request-cancelled".into()),
+        },
+        vec![],
+    )
+    .await
+    .unwrap();
+    exec_sql(&store, |db| {
+        db.execute_batch(
+            r#"DELETE FROM agent_history_queue_requests WHERE session='chat';
+             INSERT INTO contents(content_sha256,payload) VALUES
+             ('message-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"message","message_id":"user"},"input":{"digest":"user-input"}}' AS BLOB)),
+             ('user-input',CAST('{"kind":"message","source_messages":[]}' AS BLOB)),
+             ('handoff-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"checkpoint_handoff","source":"original"}}' AS BLOB));
+             INSERT INTO agent_run_specs SELECT 'original',1,'owner','chat',id FROM contents WHERE content_sha256='message-spec'
+              UNION ALL SELECT 'handoff',1,'owner','chat',id FROM contents WHERE content_sha256='handoff-spec';
+             INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,
+              stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+              SELECT run,1,owner,session,1,1,1,0,0,0,0,0,0,'[]',CASE WHEN run='original' THEN 'completed' END FROM agent_run_specs;"#
+        )?;
+        Ok(())
+    }).await;
+    let original_revision = store.queue().read("chat".into()).await.unwrap().revision;
+    drop(store);
+    root.close().await.unwrap();
+
+    let (root, store) = open(dir.path(), false).await;
+    let retry = store
+        .queue()
+        .execute("chat".into(), edit, vec![])
+        .await
+        .unwrap();
+    assert_eq!(retry, commit);
+    let before = store.queue().read("chat".into()).await.unwrap();
+    assert_eq!(before.revision, original_revision);
+    let admissions: Vec<_> = before
+        .entries
+        .iter()
+        .map(|e| {
+            (
+                e.request.message_id.as_str(),
+                e.request.spec.memory_admission,
+            )
+        })
+        .collect();
+    assert_eq!(
+        admissions,
+        [
+            ("user", MemoryAdmission::Disabled),
+            ("worker", MemoryAdmission::Excluded),
+            ("other", MemoryAdmission::Unknown)
+        ]
+    );
+    store.queue().rebuild("chat".into()).await.unwrap();
+    assert_eq!(store.queue().read("chat".into()).await.unwrap(), before);
+    exec_sql(&store, |db| {
+        assert!(db.query_row(
+            "SELECT original_user_run FROM agent_run_specs WHERE run='handoff'",
+            [],
+            |row| row.get::<_, bool>(0)
+        )?);
+        Ok(())
+    })
+    .await;
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
     use crate::queue::Followup;
 
@@ -1944,4 +2064,81 @@ async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
         Some(&serde_json::json!("committed"))
     );
     root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_uses_the_frozen_authority_and_the_actual_history_source() {
+    use crate::session_history::permits_memory_replay;
+    use maka_agent_facts::memory::MemoryReplay::{Run, Shared, Unrecorded};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open(dir.path(), true).await;
+    let (spec, contents) = spec();
+    let live = store.session_history(spec.owner.clone(), spec.session_id.clone());
+    let unrelated = store.session_history(spec.owner.clone(), "unrelated".into());
+    let admission = Admission::new(spec, UnixMillis(1), contents);
+    let producer = admission.run();
+    store.admit(admission).await.unwrap();
+    exec_sql(&store, move |db| {
+        db.execute(
+            "UPDATE agent_run_specs SET unmarked_replay_shared=1 WHERE run=?",
+            [producer.to_string()],
+        )?;
+        Ok(())
+    })
+    .await;
+
+    let other = Some(RunId::new());
+    for (history, recorded, target, allowed) in [
+        (Some(&live), Unrecorded, other, true),
+        (Some(&unrelated), Unrecorded, other, false),
+        (Some(&live), Run(producer), other, false),
+        (Some(&live), Run(producer), None, false),
+        (None, Unrecorded, Some(producer), false),
+        (None, Shared, other, true),
+        (None, Run(producer), Some(producer), true),
+    ] {
+        assert_eq!(
+            permits_memory_replay(history, recorded, producer, target)
+                .await
+                .unwrap(),
+            allowed
+        );
+    }
+    drop(store);
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn admission_records_the_original_receiver_without_changing_the_frozen_spec() {
+    use crate::memory::reads::OriginalUserRun;
+    use maka_agent_facts::memory::MemoryAdmission::{Disabled, Enabled, Excluded, Unknown};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (root, store) = open(dir.path(), true).await;
+    for (kind, expected) in [
+        (Enabled, Some(true)),
+        (Disabled, Some(true)),
+        (Excluded, Some(false)),
+        (Unknown, None),
+    ] {
+        let (mut spec, contents) = spec();
+        spec.session_id = format!("receiver-{kind:?}");
+        spec.memory_admission = kind;
+        let frozen = ContentBlob::json(&spec).unwrap();
+        let admission = Admission::new(spec, UnixMillis(1), contents);
+        let run = admission.run();
+        store.admit(admission).await.unwrap();
+        store.rebuild(run).await.unwrap();
+        assert_eq!(
+            store.data.query(OriginalUserRun(run)).await.unwrap(),
+            expected
+        );
+        assert_eq!(
+            store.frontier(run).await.unwrap().spec_ref.as_ref(),
+            Some(frozen.reference())
+        );
+    }
+    drop(store);
+    root.close().await.unwrap();
 }

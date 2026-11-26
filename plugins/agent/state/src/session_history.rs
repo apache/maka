@@ -314,17 +314,38 @@ impl Query for MaskTerminalDiagnostic {
     }
 }
 
-impl SessionHistory {
-    pub async fn original_replay_is_shared(&self, run: RunId) -> Result<bool, StoreError> {
-        self.data
-            .query(crate::memory::reads::OriginalReplay {
-                run,
-                owner: self.namespace.owner.clone(),
-                session: self.namespace.session.clone(),
-            })
-            .await
+/// Apply the authority frozen in the request or checkpoint. Only live history
+/// can attest to unmarked bytes, and only within its own namespace.
+pub async fn permits_memory_replay(
+    live: Option<&SessionHistory>,
+    recorded: maka_agent_facts::memory::MemoryReplay,
+    producer: RunId,
+    target: Option<RunId>,
+) -> Result<bool, StoreError> {
+    use maka_agent_facts::memory::MemoryReplay;
+    match recorded {
+        MemoryReplay::Shared => Ok(true),
+        MemoryReplay::Run(owner) => Ok(Some(owner) == target),
+        MemoryReplay::Unrecorded => {
+            let Some(history) = live else {
+                return Ok(false);
+            };
+            if Some(producer) == target {
+                return Ok(true);
+            }
+            history
+                .data
+                .query(crate::memory::reads::OriginalReplay {
+                    run: producer,
+                    owner: history.namespace.owner.clone(),
+                    session: history.namespace.session.clone(),
+                })
+                .await
+        }
     }
+}
 
+impl SessionHistory {
     pub async fn has_memory_reads(&self, run: RunId) -> Result<bool, StoreError> {
         self.data.query(crate::memory::reads::HasReads(run)).await
     }

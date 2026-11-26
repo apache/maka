@@ -56,7 +56,7 @@ mod replay_admission;
 pub(super) use replay_admission::{ReplayTarget, append_observed, current_context};
 mod summary_repair;
 mod tool_projection;
-use compacted::CoveredPrefix;
+pub(super) use compacted::CoveredPrefix;
 use history_source::HistorySource;
 use materialize::FrozenMaterializer;
 
@@ -128,7 +128,7 @@ pub(super) struct PreparedContinuation {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FrozenInput {
+pub(super) struct FrozenInput {
     continuing: Option<AcceptedModel>,
     accepted: AcceptedModel,
     adapter: SourceRevision,
@@ -140,8 +140,8 @@ struct FrozenInput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prompt_chunks: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    memory_prefix: bool,
+    #[serde(default, rename = "memoryPrefix", skip_serializing)]
+    legacy_memory_prefix: bool,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
     wire: FrozenWire,
@@ -214,6 +214,27 @@ impl FrozenCellKnowledge {
     }
 }
 impl FrozenInput {
+    pub(super) async fn restore_prompt(
+        &self,
+        io: preparation::PreparationIo,
+        resources: ModelPreparationResources,
+        source: preparation::ContentSource<'_>,
+        run: RunId,
+        cancellation: &CancellationToken,
+    ) -> Result<maka_agent_engine::prepared_prompt::PreparedPrompt, RunError> {
+        preparation::restore_prompt_from(
+            io,
+            resources,
+            source,
+            run,
+            &self.prompt,
+            &self.prompt_chunks,
+            &self.layout,
+            self.legacy_memory_prefix,
+            cancellation,
+        )
+        .await
+    }
     fn content_refs(&self) -> Vec<ContentRef> {
         let mut refs = if self.prompt_chunks.is_empty() {
             vec![self.prompt.clone()]
@@ -851,7 +872,7 @@ impl DriverModel {
                 .map(|_| maka_agent_engine::digest(&prompt.model().identity()))
                 .transpose()?;
             let covered_prefix = if purpose == ModelPurpose::Summary {
-                let covered = CoveredPrefix::capture(&prompt, false).await?;
+                let covered = CoveredPrefix::capture(&prompt).await?;
                 let instruction = self.summary_instruction(view, native_compaction, summary_options.prompt.as_deref()).await?;
                 prompt.initialize_overlays(Some(rendered), true, instruction).await?;
                 let budget = (!native_compaction).then(|| maka_agent_engine::context_input::summary_budget(model.context.as_ref()));
@@ -917,7 +938,7 @@ impl DriverModel {
                 }
             });
             let mut frozen = FrozenInput {
-                memory_prefix: !summary && view.spec.memory_projection.is_some(),
+                legacy_memory_prefix: false,
                 continuing: preflight.map(|_| self.source.accepted.clone()),
                 accepted: source.accepted.clone(),
                 adapter: adapter.source().clone(),
@@ -1717,17 +1738,15 @@ impl DriverModel {
         if request.request_contents != frozen.content_refs() {
             return Err(unsupported("frozen-input-content-dependencies"));
         }
-        let prompt = preparation::restore_prompt_from(
-            self.preparation_io()?,
-            self.resources.clone(),
-            reader.content_source(),
-            run,
-            &frozen.prompt,
-            &frozen.prompt_chunks,
-            &frozen.layout,
-            &self.cancellation,
-        )
-        .await?;
+        let prompt = frozen
+            .restore_prompt(
+                self.preparation_io()?,
+                self.resources.clone(),
+                reader.content_source(),
+                run,
+                &self.cancellation,
+            )
+            .await?;
         Ok(prompt
             .with_frozen_transport(frozen.instructions.as_deref(), frozen.normalization.clone()))
     }
@@ -1758,7 +1777,7 @@ impl DriverModel {
     ) -> Result<(), RunError> {
         if let Some(memory) = &self.memory {
             messages
-                .append(Message::user(memory.message().map_err(RunError::Json)?))
+                .append_pinned_memory(memory.message().map_err(RunError::Json)?)
                 .await?;
         }
         Ok(())
@@ -1778,13 +1797,8 @@ impl DriverModel {
                 .recipes()
                 .ok_or_else(|| unsupported("frozen-recipe-source"))?;
             let mut cursor = source.open(0);
-            let mut memory_prefix = frozen.memory_prefix;
             while let Some(recipe) = cursor.next().await? {
-                if !matches!(
-                    recipe,
-                    maka_agent_facts::model::prompt_source::source::MessageRecipe::System { .. }
-                ) && std::mem::take(&mut memory_prefix)
-                {
+                if recipe.is_pinned_memory() {
                     continue;
                 }
                 if !matches!(
@@ -1889,7 +1903,7 @@ impl DriverModel {
         if let Err(original) = async {
             if let Some(memory) = memory {
                 messages
-                    .append(Message::user(memory.message().map_err(RunError::Json)?))
+                    .append_pinned_memory(memory.message().map_err(RunError::Json)?)
                     .await?;
             }
             self.inherited_messages(

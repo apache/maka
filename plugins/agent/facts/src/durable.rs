@@ -178,7 +178,7 @@ pub struct RunSpec {
     /// the same permission at replay even when the Run had no pinned entries.
     #[serde(
         default,
-        skip_serializing_if = "crate::memory::MemoryAdmission::is_legacy"
+        skip_serializing_if = "crate::memory::MemoryAdmission::is_unknown"
     )]
     pub memory_admission: crate::memory::MemoryAdmission,
     pub system_prompt: ContentRef,
@@ -207,7 +207,7 @@ pub struct RequestSpec {
     /// Frozen tool data in this request is authorized only by its original Run.
     #[serde(
         default,
-        skip_serializing_if = "crate::memory::MemoryReplay::is_legacy"
+        skip_serializing_if = "crate::memory::MemoryReplay::is_unrecorded"
     )]
     pub memory_replay: crate::memory::MemoryReplay,
     pub schema_version: u32,

@@ -214,7 +214,7 @@ pub struct ContextCheckpoint {
 pub struct CompactedContext {
     #[serde(
         default,
-        skip_serializing_if = "crate::memory::MemoryReplay::is_legacy"
+        skip_serializing_if = "crate::memory::MemoryReplay::is_unrecorded"
     )]
     pub memory_replay: crate::memory::MemoryReplay,
     pub source_capture: crate::durable::ContentRef,

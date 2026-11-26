@@ -1180,22 +1180,20 @@ pub(super) async fn project(
                 .map_err(|error| error.to_string())?;
             row.chunk.compaction = Some(wire::Compaction { duration_ms });
             if mask_evidence {
-                use maka_agent_facts::memory::MemoryReplay;
-                let shared = match compact.memory_replay {
-                    MemoryReplay::Shared => true,
-                    MemoryReplay::Run(_) => false,
-                    MemoryReplay::Legacy => match reader {
-                        data::DataSource::Live { history, .. } => history
-                            .original_replay_is_shared(
-                                compact
-                                    .summary_origin
-                                    .map_or(item.recorded.run, |origin| origin.run),
-                            )
-                            .await
-                            .map_err(|e| e.to_string())?,
-                        data::DataSource::Snapshot(_) => false,
-                    },
+                let live = match reader {
+                    data::DataSource::Live { history, .. } => Some(history),
+                    data::DataSource::Snapshot(_) => None,
                 };
+                let shared = maka_agent_state::session_history::permits_memory_replay(
+                    live,
+                    compact.memory_replay,
+                    compact
+                        .summary_origin
+                        .map_or(item.recorded.run, |origin| origin.run),
+                    None,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 if !shared {
                     result.push(row);
                     return Ok(result);

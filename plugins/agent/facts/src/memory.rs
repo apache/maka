@@ -399,17 +399,18 @@ impl MemoryProjection {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryAdmission {
-    /// Source admission predates the recorded eligibility decision.
+    /// The original receiver could not be established.
     #[default]
-    Legacy,
+    #[serde(alias = "legacy")]
+    Unknown,
     Excluded,
     Disabled,
     Enabled,
 }
 
 impl MemoryAdmission {
-    pub fn is_legacy(&self) -> bool {
-        matches!(self, Self::Legacy)
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
     }
 }
 
@@ -418,13 +419,14 @@ impl MemoryAdmission {
 #[serde(rename_all = "snake_case")]
 pub enum MemoryReplay {
     #[default]
-    Legacy,
+    #[serde(rename = "legacy")]
+    Unrecorded,
     Shared,
     Run(crate::durable::RunId),
 }
 
 impl MemoryReplay {
-    pub fn is_legacy(&self) -> bool {
-        matches!(self, Self::Legacy)
+    pub fn is_unrecorded(&self) -> bool {
+        matches!(self, Self::Unrecorded)
     }
 }

@@ -257,23 +257,6 @@ impl Owner {
 }
 
 impl super::driver::NativeDriver {
-    async fn handoff_user_run(
-        &self,
-        view: &maka_agent_state::fold::RunView,
-    ) -> Result<Option<bool>, maka_agent_engine::RunError> {
-        use maka_agent_facts::memory::MemoryAdmission;
-        match view.spec.memory_admission {
-            MemoryAdmission::Disabled | MemoryAdmission::Enabled => Ok(Some(true)),
-            MemoryAdmission::Excluded => Ok(Some(false)),
-            MemoryAdmission::Legacy => Ok(self
-                .access
-                .data_writer()
-                .map_err(maka_agent_engine::RunError::InvalidInput)?
-                .query(maka_agent_state::memory::reads::OriginalAdmission(view.run))
-                .await?),
-        }
-    }
-
     pub(super) async fn resume_after_checkpoint(
         &self,
         view: &maka_agent_state::fold::RunView,
@@ -339,7 +322,10 @@ impl super::driver::NativeDriver {
             .runtime_policy()
             .await
             .map_err(|e| RunError::InvalidInput(e.to_string()))?;
-        let user_run = self.handoff_user_run(view).await?;
+        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
+        let user_run = writer
+            .query(maka_agent_state::memory::reads::OriginalUserRun(view.run))
+            .await?;
         let (mut admission_kind, memory) = owner
             .admit_memory(
                 session,
@@ -353,7 +339,7 @@ impl super::driver::NativeDriver {
             if memory.is_some() {
                 return Err(RunError::InvalidInput("original memory admission unavailable; start a new user Run to load pinned memory".into()));
             }
-            admission_kind = maka_agent_facts::memory::MemoryAdmission::Legacy;
+            admission_kind = maka_agent_facts::memory::MemoryAdmission::Unknown;
         }
         if let Some(memory) = &memory {
             let system: Option<SystemPrompt> = owner
@@ -396,7 +382,6 @@ impl super::driver::NativeDriver {
         let statement =
             self.state
                 .checkpoint_handoff(self.access.claim(), view.into(), baseline, admission)?;
-        let writer = self.access.data_writer().map_err(RunError::InvalidInput)?;
         let _ordered = owner.runs.ordered(session).await;
         if metadata.archived
             || metadata.configuration.permission_basis() != view.spec.permission_basis

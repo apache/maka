@@ -239,7 +239,7 @@ pub(super) async fn images(
 ) -> Result<ui::HistoryImages, String> {
     use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
     const LIMIT: u32 = 24;
-    let history = open(owner, scope, &input.session_id).await?;
+    let (history, before) = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = SourceTree::live(&history, &cut)
         .await
@@ -249,7 +249,7 @@ pub(super) async fn images(
         .await
         .map_err(|error| error.to_string())?;
     let SourceItem::Canonical(item) = item else {
-        authorize(owner, scope, &input.session_id).await?;
+        authorize(owner, scope, &input.session_id, before).await?;
         return Ok(ui::HistoryImages {
             tools: Vec::new(),
             next: None,
@@ -293,7 +293,7 @@ pub(super) async fn images(
         let restricted = restrictions(owner, scope, &tree, positions).await?;
         tools.retain_mut(|tool| !filter_tool(tool, &restricted));
     }
-    authorize(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id, before).await?;
     Ok(ui::HistoryImages { tools, next })
 }
 

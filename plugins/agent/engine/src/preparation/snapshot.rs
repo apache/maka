@@ -264,6 +264,7 @@ pub async fn restore_prompt(
         reference,
         chunks,
         layout,
+        false,
         cancellation,
     )
     .await
@@ -281,6 +282,7 @@ pub async fn restore_prompt_from(
     reference: &ContentRef,
     chunks: &[ContentRef],
     layout: &Layout,
+    legacy_memory_prefix: bool,
     cancellation: &CancellationToken,
 ) -> Result<PreparedPrompt, RunError> {
     reference
@@ -355,8 +357,14 @@ pub async fn restore_prompt_from(
         let source_directory = staging
             .preparation
             .plan_directory(Builder::resident_bytes())?;
-        let body =
-            canonical_prompt::restore(arena.clone(), resources.clone(), layout.clone()).await?;
+        let body = canonical_prompt::restore(
+            arena.clone(),
+            resources.clone(),
+            layout.clone(),
+            legacy_memory_prefix,
+            cancellation,
+        )
+        .await?;
         let source = body
             .recipes()
             .cloned()

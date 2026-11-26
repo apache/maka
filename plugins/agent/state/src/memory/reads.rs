@@ -288,12 +288,12 @@ impl Query for CheckReads {
     }
 }
 
-pub struct OriginalAdmission(pub RunId);
-impl Query for OriginalAdmission {
+pub struct OriginalUserRun(pub RunId);
+impl Query for OriginalUserRun {
     type Output = Option<bool>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         Ok(
-            c.prepare_cached("SELECT ordinary FROM agent_memory_legacy_runs WHERE run=?")?
+            c.prepare_cached("SELECT original_user_run FROM agent_run_specs WHERE run=?")?
                 .query_row([self.0.to_string()], |r| r.get(0))
                 .optional()?
                 .flatten(),
@@ -309,7 +309,7 @@ pub(crate) struct OriginalReplay {
 impl Query for OriginalReplay {
     type Output = bool;
     fn execute(self, c: &Connection) -> Result<bool, StoreError> {
-        Ok(c.prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_memory_legacy_runs l JOIN agent_run_specs s ON s.run=l.run WHERE l.run=? AND l.shared=1 AND s.owner=? AND s.session=?)")?
+        Ok(c.prepare_cached("SELECT EXISTS(SELECT 1 FROM agent_run_specs WHERE run=? AND unmarked_replay_shared=1 AND owner=? AND session=?)")?
             .query_row(params![self.run.to_string(), serde_json::to_string(&self.owner)?, self.session], |r| r.get(0))?)
     }
 }
@@ -420,7 +420,7 @@ mod tests {
             )
             .unwrap();
             db.execute(
-                "INSERT INTO agent_run_specs VALUES(?,1,?,?,?)",
+                "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?,1,?,?,?)",
                 params![
                     run_id.to_string(),
                     serde_json::to_string(&owner).unwrap(),

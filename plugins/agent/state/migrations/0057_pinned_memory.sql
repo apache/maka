@@ -53,11 +53,6 @@ CREATE VIEW agent_memory_selected_readers AS
  SELECT r.run,a.name,a.kind,a.legacy_recap FROM agent_run_specs r CROSS JOIN contents spec ON spec.id=r.spec_content_id
  CROSS JOIN contents selection ON selection.content_sha256=CAST(spec.payload AS TEXT)->>'$.toolSelection.digest'
  CROSS JOIN agent_memory_selection_readers a ON a.selection_id=selection.id;
-DROP TRIGGER agent_memory_read_alias_insert;
-CREATE TRIGGER agent_memory_read_alias_insert AFTER INSERT ON agent_run_specs BEGIN
- INSERT INTO agent_memory_read_aliases SELECT run,name,kind FROM agent_memory_selected_readers
- WHERE run=NEW.run AND kind IS NOT NULL;
-END;
 CREATE TEMP TABLE memory_recap_aliases(run TEXT,name TEXT,PRIMARY KEY(run,name)) WITHOUT ROWID;
 INSERT INTO memory_recap_aliases SELECT run,name FROM agent_memory_selected_readers WHERE legacy_recap;
 INSERT INTO agent_memory_read_aliases SELECT run,name,kind FROM agent_memory_selected_readers
@@ -322,30 +317,19 @@ INSERT INTO legacy_candidates(run)
  SELECT r.run FROM first_read f JOIN agent_runs r
  ON r.owner=f.owner AND r.session=f.session AND r.admission_sequence>=f.first_run;
 
--- A spelling is not a binding. Old file selections have a host-appended
--- paragraph in the frozen definition that was absent from the caller's own
--- declaration. This proves the file contract even for aliases on import slots.
-CREATE TEMP TABLE legacy_bindings (
- run TEXT NOT NULL, name TEXT NOT NULL, reader TEXT NOT NULL, PRIMARY KEY(run,name)
-) WITHOUT ROWID;
-INSERT INTO legacy_bindings
- SELECT r.run,a.value->>'$.selection.name',CASE
-  WHEN a.value->>'$.history_reader'='file' THEN 'file'
-  WHEN a.value->>'$.history_reader'='session' THEN 'opaque'
-  WHEN a.value->>'$.selection.method'='execute' AND a.value->>'$.selection.input'='shell' AND a.value->>'$.selection.result'='json' THEN 'plain'
-  WHEN a.value->>'$.selection.method'='read' AND EXISTS(
-   SELECT 1 FROM json_each(selection.payload,'$.definitions') d
-   WHERE d.value->>'$.name'=a.value->>'$.selection.name' AND d.value->>'$.description'=
-    (a.value->>'$.selection.description') || char(10,10) ||
-    'Also reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.'
-  ) THEN 'file'
-  ELSE 'opaque' END
+CREATE TEMP TABLE legacy_run_selections AS
+ SELECT r.run,selection.id AS selection_id
  FROM legacy_candidates h JOIN agent_run_specs r ON r.run=h.run
  JOIN contents spec ON spec.id=r.spec_content_id
- JOIN contents selection ON selection.content_sha256=spec.payload->>'$.toolSelection.digest'
- CROSS JOIN json_each(selection.payload,'$.services') a;
+ JOIN contents selection ON selection.content_sha256=spec.payload->>'$.toolSelection.digest';
+CREATE UNIQUE INDEX legacy_selection_run ON legacy_run_selections(run);
+CREATE INDEX legacy_selection_content ON legacy_run_selections(selection_id);
+CREATE TEMP TABLE legacy_bindings (
+ selection_id INTEGER NOT NULL, name TEXT NOT NULL, reader TEXT NOT NULL, PRIMARY KEY(selection_id,name)
+) WITHOUT ROWID;
 
 CREATE TEMP TABLE legacy_opaque(run TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE TEMP VIEW legacy_opaque_calls AS
 WITH calls AS (
  SELECT h.owner,h.session,h.run,h.tool_use_id,h.attempt,
   coalesce(b.payload->>'$.fact.part.call.name',b.payload->>'$.fact.event.name',
@@ -358,8 +342,8 @@ WITH calls AS (
  LEFT JOIN contents x ON x.content_sha256=b.payload->>'$.fact.event.descriptor.digest'
  LEFT JOIN contents i ON i.content_sha256=b.payload->>'$.fact.event.input.digest'
 )
-INSERT OR IGNORE INTO legacy_opaque
- SELECT c.run FROM calls c LEFT JOIN legacy_bindings a ON a.run=c.run AND a.name=c.name
+ SELECT c.run FROM calls c LEFT JOIN legacy_run_selections r ON r.run=c.run
+ LEFT JOIN legacy_bindings a ON a.selection_id=r.selection_id AND a.name=c.name
  WHERE CASE a.reader WHEN 'plain' THEN 0 WHEN 'file' THEN CASE WHEN typeof(c.path)='text'
  THEN maka_reads_history_resource(c.path) ELSE 1 END ELSE 1 END
  AND NOT EXISTS (
@@ -379,61 +363,30 @@ INSERT OR IGNORE INTO legacy_opaque SELECT r.run FROM agent_runs r
    SELECT 1 FROM agent_facts f LEFT JOIN agent_session_history h ON h.sequence=f.sequence
    WHERE f.run=r.run AND (h.run IS NOT f.run OR h.fact_id IS NOT f.id)
  ));
-DROP TABLE legacy_bindings;
 
--- Imported text-only inventories have no previous Agent read or checkpoint.
--- Canonical forks, opaque provider context and incomplete inventories stay fenced.
-INSERT OR IGNORE INTO legacy_opaque SELECT r.run FROM agent_runs r
- JOIN legacy_candidates old ON old.run=r.run
- WHERE r.local=0 AND NOT EXISTS (
-  SELECT 1 FROM agent_history_snapshot_adoptions a JOIN agent_history_snapshots s ON s.snapshot=a.snapshot
-  JOIN contents manifest ON manifest.id=s.manifest_content_id
-  WHERE a.run=r.run AND manifest.payload->>'$.origin.kind'='imported'
-  AND EXISTS (SELECT 1 FROM agent_history_snapshot_entries e WHERE e.snapshot=a.snapshot AND e.kind='imported')
-  AND NOT EXISTS (
-   SELECT 1 FROM agent_history_snapshot_entries e
-   LEFT JOIN contents m ON m.content_sha256=e.entry_json->>'$.message.digest'
-   LEFT JOIN json_each(m.payload,'$.parts') part
-   LEFT JOIN contents b ON b.content_sha256=part.value->>'$.digest'
-   WHERE e.snapshot=a.snapshot AND (e.kind IN ('run','fact','source') OR
-     (e.kind='imported' AND (m.payload->>'$.role' IS NOT 'user' OR b.payload->>'$.kind' IS NOT 'input'
-       OR typeof(b.payload->>'$.content.text')!='text' OR m.payload->>'$.providerMetadata' IS NOT NULL
-       OR coalesce(json_array_length(m.payload,'$.media'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.directory_references'),0)>0
-       OR coalesce(json_array_length(b.payload,'$.content.attachments'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.quotes'),0)>0
-       OR coalesce(json_array_length(b.payload,'$.content.inline_references'),0)>0 OR coalesce(json_array_length(b.payload,'$.content.preparation'),0)>0)))
-  )
- );
-
+-- The data callback proves which imported inventories contain only user text.
+CREATE TEMP TABLE legacy_text_imports(snapshot TEXT PRIMARY KEY) WITHOUT ROWID;
 CREATE TEMP TABLE legacy_boundary(owner TEXT,session TEXT,first_run INTEGER,PRIMARY KEY(owner,session)) WITHOUT ROWID;
-INSERT INTO legacy_boundary SELECT r.owner,r.session,min(r.admission_sequence)
- FROM legacy_opaque o JOIN agent_runs r ON r.run=o.run GROUP BY r.owner,r.session;
-INSERT INTO agent_memory_history_reads(run,revision)
- SELECT r.run,-1 FROM legacy_boundary b JOIN agent_runs r ON r.owner=b.owner AND r.session=b.session
- AND r.admission_sequence>=b.first_run JOIN legacy_candidates c ON c.run=r.run;
-INSERT INTO agent_memory_external_epochs(session)
- SELECT DISTINCT r.session FROM legacy_candidates c JOIN agent_run_specs r ON r.run=c.run
- JOIN session_control s ON s.id=r.session WHERE r.session IN (SELECT session FROM legacy_boundary);
-DROP TABLE legacy_candidates;
-DROP TABLE legacy_opaque;
 
--- The immutable request and checkpoint bytes predate the replay field. Record
--- positive evidence once; detached or removed sources have no such authority.
-CREATE TABLE agent_memory_legacy_runs (
- run TEXT PRIMARY KEY REFERENCES agent_run_specs(run) ON DELETE CASCADE,
- shared INTEGER NOT NULL, ordinary INTEGER
-) WITHOUT ROWID;
-INSERT INTO agent_memory_legacy_runs(run,shared)
- SELECT r.run,NOT EXISTS(SELECT 1 FROM legacy_boundary boundary WHERE boundary.owner=r.owner
-                        AND boundary.session=r.session AND boundary.first_run<=r.admission_sequence)
+-- Unmarked request and checkpoint bytes remain content-addressed. Only the
+-- migration can establish permission to reuse them outside their producer.
+ALTER TABLE agent_run_specs ADD COLUMN unmarked_replay_shared INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_run_specs ADD COLUMN original_user_run INTEGER;
 
- FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run JOIN contents spec ON spec.id=s.spec_content_id
- WHERE spec.payload->>'$.memoryAdmission' IS NULL;
-DROP TABLE legacy_boundary;
+DROP TRIGGER agent_memory_read_alias_insert;
+CREATE TRIGGER agent_memory_run_insert AFTER INSERT ON agent_run_specs BEGIN
+ UPDATE agent_run_specs SET original_user_run=CASE CAST(b.payload AS TEXT)->>'$.memoryAdmission'
+  WHEN 'enabled' THEN 1 WHEN 'disabled' THEN 1 WHEN 'excluded' THEN 0 END
+ FROM contents b WHERE run=NEW.run AND b.id=NEW.spec_content_id;
+ INSERT INTO agent_memory_read_aliases SELECT run,name,kind FROM agent_memory_selected_readers
+ WHERE run=NEW.run AND kind IS NOT NULL;
+END;
 
 -- Freeze the original receiver for outstanding handoffs in this transaction.
 WITH RECURSIVE ancestors(target,run) AS (
- SELECT r.run,r.run FROM agent_runs r JOIN agent_memory_legacy_runs a ON a.run=r.run
- WHERE r.local=1 AND r.terminal IS NULL
+ SELECT r.run,r.run FROM agent_runs r JOIN agent_run_specs s ON s.run=r.run
+ JOIN contents b ON b.id=s.spec_content_id
+ WHERE r.local=1 AND r.terminal IS NULL AND b.payload->>'$.memoryAdmission' IS NULL
  UNION
  SELECT a.target,b.payload->>'$.trigger.source' FROM ancestors a JOIN agent_run_specs s ON s.run=a.run
  JOIN contents b ON b.id=s.spec_content_id WHERE b.payload->>'$.trigger.kind'='checkpoint_handoff'
@@ -460,25 +413,22 @@ WITH RECURSIVE ancestors(target,run) AS (
         ON s.session=i.session AND s.source=m.value->>'$.message_id') END AS ordinary
  FROM inputs i
 )
-UPDATE agent_memory_legacy_runs AS r SET ordinary=d.ordinary FROM decisions d WHERE r.run=d.target;
+UPDATE agent_run_specs AS r SET original_user_run=d.ordinary FROM decisions d WHERE r.run=d.target;
 
--- Queue events are immutable. Keep the migrated decision independent of the
--- queue projection so an explicit rebuild can restore it after replay.
-CREATE TABLE agent_memory_legacy_queue (
- session TEXT NOT NULL REFERENCES session_control(id) ON DELETE CASCADE,
- request TEXT NOT NULL, admission TEXT NOT NULL, PRIMARY KEY(session,request)
+-- Record the old receiver on the enqueue fact without changing its frozen payload.
+ALTER TABLE agent_queue_events ADD COLUMN memory_admission TEXT;
+CREATE TEMP TABLE pinned_queue_admissions (
+ session TEXT NOT NULL, request TEXT NOT NULL, admission TEXT NOT NULL, PRIMARY KEY(session,request)
 ) WITHOUT ROWID;
-INSERT INTO agent_memory_legacy_queue
+INSERT INTO pinned_queue_admissions
  SELECT q.session,q.request,CASE
  WHEN q.entry_json->>'$.request.spec.origin.kind'!='local' OR q.entry_json->>'$.request.spec.allowedTools' IS NOT NULL
  OR q.entry_json->>'$.request.spec.trigger.kind'!='message' OR origin.payload->>'$.origin' IS NOT NULL OR s.ordinary=0 THEN 'excluded'
  WHEN q.entry_json->>'$.request.spec.origin.kind'='local' AND q.entry_json->>'$.request.spec.trigger.kind'='message'
  AND q.entry_json->>'$.request.spec.trigger.message_id'=q.message AND origin.payload->>'$.message_id'=q.message
- AND s.ordinary=1 THEN 'disabled' ELSE 'legacy' END FROM agent_queue_items q JOIN session_control c ON c.id=q.session
+ AND s.ordinary=1 THEN 'disabled' ELSE 'unknown' END FROM agent_queue_items q JOIN session_control c ON c.id=q.session
  LEFT JOIN legacy_sources s ON s.session=q.session AND s.source=q.message
  LEFT JOIN contents origin ON origin.content_sha256=q.entry_json->>'$.request.source.digest'
  WHERE q.state='pending' AND json_type(q.entry_json,'$.request.spec')='object'
  AND q.entry_json->>'$.request.spec.memoryAdmission' IS NULL;
-UPDATE agent_queue_items AS q SET entry_json=json_set(entry_json,'$.request.spec.memoryAdmission',l.admission)
- FROM agent_memory_legacy_queue l WHERE q.session=l.session AND q.request=l.request;
 DROP TABLE legacy_sources;

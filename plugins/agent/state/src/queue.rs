@@ -35,7 +35,8 @@ mod sql;
 mod submission;
 pub(crate) use sql::{
     DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
-    rebuild_queue_projections, release_steering, stop_completions, stop_queue,
+    migrate_memory_admissions, rebuild_queue_projections, release_steering, stop_completions,
+    stop_queue,
 };
 pub use submission::{SubmissionKey, WithdrawMessage};
 

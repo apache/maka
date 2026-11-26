@@ -739,6 +739,30 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     )
                     .unwrap();
                 assert_eq!(invalid, 0, "invalid external memory epoch on {rel}");
+                let inconsistent: i64 = conn.query_row(
+                    "WITH pending AS (
+                       SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission
+                       FROM agent_queue_items WHERE state='pending'
+                     ), last_edit AS (
+                       SELECT p.session,p.request,max(e.revision) AS revision
+                       FROM (SELECT DISTINCT session FROM pending) affected
+                       CROSS JOIN agent_queue_events e ON e.session=affected.session
+                       CROSS JOIN contents b ON b.id=e.body_content_id
+                       CROSS JOIN pending p ON p.session=e.session AND p.request=b.payload->>'$.edit.request.id'
+                       WHERE b.payload->>'$.kind'='command' AND b.payload->>'$.edit.kind' IN ('enqueue','update')
+                       GROUP BY p.session,p.request
+                     )
+                     SELECT count(*) FROM pending p LEFT JOIN last_edit l USING(session,request)
+                     LEFT JOIN agent_queue_events e ON e.session=l.session AND e.revision=l.revision
+                     LEFT JOIN contents b ON b.id=e.body_content_id
+                     WHERE l.revision IS NULL OR p.admission IS NOT coalesce(
+                       e.memory_admission,b.payload->>'$.edit.request.spec.memoryAdmission','unknown')",
+                    [], |row| row.get(0),
+                ).unwrap();
+                assert_eq!(
+                    inconsistent, 0,
+                    "pending admission differs from queue history on {rel}"
+                );
             }
             if has_runs > 0 && versions.contains(&55) {
                 for view in [

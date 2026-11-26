@@ -224,7 +224,7 @@
       },
       "plugins/agent/state/migrations/0057_pinned_memory.sql": {
         "version": 57,
-        "sha384": "b3c48b86c429e78d9b3839f70da39d3e2f65188404c8209d7745e755d37a9ef42e47a466455313b662cf0799afe66814"
+        "sha384": "49214f5fb500ad4ddd5a599e884fdf8cdc2975fda72857097b61cc1f5c0e3883da4341744ae4d9c876a8a5823ecb5f24"
       }
     },
     "checkpoint-repository": {

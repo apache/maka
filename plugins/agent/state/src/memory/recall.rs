@@ -703,75 +703,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_handoff_recovers_only_the_original_senders_of_outstanding_messages() {
-        let db = Connection::open_in_memory().unwrap();
-        migrate(&db, 51);
-        db.execute_batch(
-            "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
-             VALUES('chat','test',1,0,0,0,'{}');
-             INSERT INTO application_operation_contracts VALUES('agent','{}');",
-        ).unwrap();
-        let owner = serde_json::json!({"deployment":"installation","namespace":["agent"]});
-        for (message, actor, state, receipt_session) in [
-            ("user", "remote", "pending", "chat"),
-            ("worker", "agent", "pending", "chat"),
-            ("cancelled", "native", "cancelled", "chat"),
-            ("other", "native", "pending", "another"),
-        ] {
-            let source = format!("source-{message}");
-            db.execute(
-                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
-                params![
-                    source,
-                    serde_json::to_vec(&serde_json::json!({"message_id":message})).unwrap()
-                ],
-            )
-            .unwrap();
-            db.execute("INSERT INTO agent_queue_items(session,request,message,owner,position,lane,state,entry_json)
-                VALUES('chat',?1,?1,?2,0,'followup',?3,json_object('request',json_object('spec',json_object('origin',json_object('kind','local'),'trigger',json_object('kind','message','message_id',?1)),'source',json_object('digest',?4))))",params![message,owner.to_string(),state,source]).unwrap();
-            let request =
-                serde_json::json!({"method":"send","export":"agent","origin":{"kind":actor}});
-            let outcome = serde_json::json!({"kind":"success","value":{"kind":"queued","sessionId":receipt_session,"messageId":message}});
-            db.execute(
-                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
-                params![message, serde_json::to_vec(&outcome).unwrap()],
-            )
-            .unwrap();
-            db.execute("INSERT INTO application_operations(deployment,namespace,operation,source_revision,request_json,
-                outcome_content_id,outcome_json,cleanup_json,contract_digest) VALUES('installation',?4,?1,1,?2,?3,'{}','{}','agent')",
-                params![message,request.to_string(),db.last_insert_rowid(),owner["namespace"].to_string()]).unwrap();
-        }
-        db.execute_batch(
-            r#"INSERT INTO contents(content_sha256,payload) VALUES
-             ('message-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"message","message_id":"user"},"input":{"digest":"user-input"}}' AS BLOB)),
-             ('user-input',CAST('{"kind":"message","source_messages":[]}' AS BLOB)),
-             ('handoff-spec',CAST('{"origin":{"kind":"local"},"trigger":{"kind":"checkpoint_handoff","source":"original"}}' AS BLOB));
-             INSERT INTO agent_run_specs SELECT 'original',1,'owner','chat',id FROM contents WHERE content_sha256='message-spec'
-              UNION ALL SELECT 'handoff',1,'owner','chat',id FROM contents WHERE content_sha256='handoff-spec';
-             INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,
-              stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
-              SELECT run,1,owner,session,1,1,1,0,0,0,0,0,0,'[]',CASE WHEN run='original' THEN 'completed' END FROM agent_run_specs;"#
-        ).unwrap();
-        migrate(&db, i64::MAX);
-        let queued = |id: &str| -> Option<String> {
-            db.query_row("SELECT entry_json->>'$.request.spec.memoryAdmission' FROM agent_queue_items WHERE message=?",
-                [id], |r| r.get(0)).unwrap()
-        };
-        assert_eq!(queued("user").as_deref(), Some("disabled"));
-        assert_eq!(queued("worker").as_deref(), Some("excluded"));
-        assert_eq!(queued("other").as_deref(), Some("legacy"));
-        assert_eq!(queued("cancelled"), None);
-        assert!(
-            db.query_row(
-                "SELECT ordinary FROM agent_memory_legacy_runs WHERE run='handoff'",
-                [],
-                |r| r.get::<_, bool>(0)
-            )
-            .unwrap()
-        );
-    }
-
-    #[test]
     fn old_reader_classification_preserves_clean_executor_keys() {
         let suffix = "\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.";
         let db = Connection::open_in_memory().unwrap();
@@ -804,6 +735,8 @@ mod tests {
             ("unknown", "Read", "README.md"),
             ("imported-user", "", ""),
             ("imported-opaque", "", ""),
+            ("imported-missing-part", "", ""),
+            ("imported-mixed", "", ""),
         ]
         .into_iter()
         .enumerate()
@@ -849,13 +782,24 @@ mod tests {
                     [session],
                 )
                 .unwrap();
-                let role = if session == "imported-user" {
-                    "user"
-                } else {
+                let role = if session == "imported-opaque" {
                     "assistant"
+                } else {
+                    "user"
                 };
                 let part = format!("part-{session}");
-                let row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
+                let mut row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
+                if matches!(session, "imported-missing-part" | "imported-mixed") {
+                    row["parts"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!({"digest":session.to_owned()+"-extra"}));
+                }
+                if session == "imported-mixed" {
+                    db.execute("INSERT INTO contents(content_sha256,payload) VALUES(?,?)", params![
+                        session.to_owned()+"-extra",br#"{"kind":"input","content":{"text":"caption","attachments":["photo"]}}"#.as_slice()
+                    ]).unwrap();
+                }
                 db.execute(
                     "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
                     params![
@@ -881,11 +825,13 @@ mod tests {
             "unknown",
             "imported-user",
             "imported-opaque",
+            "imported-missing-part",
+            "imported-mixed",
         ] {
             let reusable = matches!(session, "plain" | "imported-user");
             let shared: bool = db
                 .query_row(
-                    "SELECT shared FROM agent_memory_legacy_runs WHERE run=?",
+                    "SELECT unmarked_replay_shared FROM agent_run_specs WHERE run=?",
                     [session],
                     |r| r.get(0),
                 )
@@ -1025,7 +971,7 @@ mod tests {
         migrate(&db, i64::MAX);
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
-            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);",
+            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);",
         )
         .unwrap();
         let notification = |n: i64, cell: &str| {
@@ -1051,7 +997,7 @@ mod tests {
             VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
             '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"notice-1","itemIndex":0,"start":0,"end":4}}','source');"#).unwrap();
-        db.execute_batch(r#"INSERT INTO agent_run_specs VALUES('reader-run',1,'owner','chat',1);
+        db.execute_batch(r#"INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('reader-run',1,'owner','chat',1);
             INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));
             INSERT INTO agent_facts VALUES(1000,'wait','reader-run',1,1,1,1001);

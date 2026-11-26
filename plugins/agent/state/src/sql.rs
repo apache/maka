@@ -2309,7 +2309,7 @@ mod answer_page_tests {
         maka_event_log::migration::run(&db, &catalog).unwrap();
         db.execute_batch(r#"
             INSERT INTO contents VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
-            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);
+            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);
             INSERT INTO agent_memories VALUES('owner','personal','m',1,1,'user_recall','suppressed',0,0);
             INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
               VALUES('owner','personal','m',1,'sample','{}','digest','suppressed');

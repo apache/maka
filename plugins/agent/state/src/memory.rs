@@ -28,6 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 mod matching;
+pub(crate) mod migrate_pinned;
 pub mod pinned;
 pub mod reads;
 pub mod recall;

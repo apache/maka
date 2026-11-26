@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CoveredPrefix {
+pub(in crate::owner) struct CoveredPrefix {
     message_count: usize,
     digest: String,
 }
@@ -37,7 +37,6 @@ impl CoveredPrefix {
     async fn read(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
         limit: Option<usize>,
-        mut memory_prefix: bool,
     ) -> Result<(Self, usize), RunError> {
         use maka_agent_facts::model::prompt_source::source::MessageRole;
         let directory = prompt
@@ -49,10 +48,7 @@ impl CoveredPrefix {
         let mut count = 0;
         let mut end = 0;
         while let Some(message) = cursor.next().await? {
-            if message.role == MessageRole::System {
-                continue;
-            }
-            if std::mem::take(&mut memory_prefix) {
+            if message.role == MessageRole::System || message.is_pinned_memory {
                 continue;
             }
             hash.update((message.logical_identity.len() as u64).to_le_bytes());
@@ -71,11 +67,10 @@ impl CoveredPrefix {
             end,
         ))
     }
-    pub(super) async fn capture(
+    pub(in crate::owner) async fn capture(
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
-        memory_prefix: bool,
     ) -> Result<Self, RunError> {
-        let (covered, _) = Self::read(prompt, None, memory_prefix).await?;
+        let (covered, _) = Self::read(prompt, None).await?;
         if covered.message_count == 0 {
             return Err(RunError::CompactionFailed(
                 "compaction has no original logical messages".into(),
@@ -86,7 +81,6 @@ impl CoveredPrefix {
     async fn matching_tail_start(
         &self,
         prompt: &maka_agent_engine::prepared_prompt::PreparedPrompt,
-        memory_prefix: bool,
     ) -> Result<Option<usize>, RunError> {
         if self.message_count == 0
             || !maka_agent_facts::archive::valid_projection_digest(&self.digest)
@@ -95,7 +89,7 @@ impl CoveredPrefix {
                 "invalid original compaction coverage".into(),
             ));
         }
-        let (actual, end) = Self::read(prompt, Some(self.message_count), memory_prefix).await?;
+        let (actual, end) = Self::read(prompt, Some(self.message_count)).await?;
         Ok((actual == *self).then_some(end))
     }
 }
@@ -124,10 +118,7 @@ impl DriverModel {
             .covered_prefix
             .as_ref()
             .ok_or_else(|| unsupported("compaction-covered-prefix"))?;
-        if let Some(end) = covered
-            .matching_tail_start(main, main_input.memory_prefix)
-            .await?
-        {
+        if let Some(end) = covered.matching_tail_start(main).await? {
             return Ok(Some(end));
         }
         // Media projection preserves original metadata until the prompt is
@@ -136,12 +127,7 @@ impl DriverModel {
             .restore_frozen(reader, summary_run, summary, summary_input)
             .await?;
         let result = async {
-            let (original, end) = CoveredPrefix::read(
-                &frozen,
-                Some(covered.message_count),
-                summary_input.memory_prefix,
-            )
-            .await?;
+            let (original, end) = CoveredPrefix::read(&frozen, Some(covered.message_count)).await?;
             if original.message_count != covered.message_count {
                 return Ok(None);
             }
@@ -159,9 +145,7 @@ impl DriverModel {
             if suffix.next().await?.is_some() {
                 return Ok(None);
             }
-            original
-                .matching_tail_start(main, main_input.memory_prefix)
-                .await
+            original.matching_tail_start(main).await
         }
         .await;
         match frozen.close().await {
@@ -400,7 +384,14 @@ impl DriverModel {
                 self.append_pinned(&mut builder).await?;
                 self.append_compacted_material(&reader,view.run,compacted,ReplayTarget::new(&model, frozen.operation),frozen.language,&mut builder).await?;
                 let mut tail=directory.open(start);
-                while let Some(recipe)=tail.next().await?{if !matches!(recipe,MessageRecipe::System{..})&& let Some(recipe)=ReplayTarget::new(&model,frozen.operation).recipe(recipe).await?{builder.append_recipe(&recipe).await?;}}
+                while let Some(recipe) = tail.next().await? {
+                    if recipe.is_pinned_memory() || matches!(recipe, MessageRecipe::System { .. }) {
+                        continue;
+                    }
+                    if let Some(recipe) = ReplayTarget::new(&model, frozen.operation).recipe(recipe).await? {
+                        builder.append_recipe(&recipe).await?;
+                    }
+                }
                 if cut_off{builder.append(maka_model::prompt::Message::user(cut_off_note(frozen.language))).await?;}
                 Ok::<(),RunError>(())
             }.await;

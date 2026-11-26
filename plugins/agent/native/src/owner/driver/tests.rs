@@ -6925,6 +6925,129 @@ mod replay_origin_regressions {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_memory_prefix_is_restored_from_untagged_snapshot_content() -> TestResult<()> {
+        use crate::owner::driver_model::FrozenInput;
+        use maka_agent_engine::ports::Preparation;
+        use maka_agent_facts::{
+            history_snapshot::SnapshotId, model::prompt_source::source::MessageRole,
+        };
+        use maka_agent_state::session_history::snapshot::CaptureRequest;
+
+        let mut rig = Rig::new()?;
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let (request, _, _) = rig.record_model_request(Preparation::Initial).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        let history = driver
+            .state
+            .session_history(driver.owner.run_owner(), session);
+        let cancellation = CancellationToken::new();
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: history.capture().await?,
+                },
+                cancellation.clone(),
+            )
+            .await?;
+        let mut manifest: Value =
+            serde_json::from_slice(&driver.state.content(run, request.request).await?)?;
+        assert!(manifest.get("memoryPrefix").is_none());
+        let mut identities = Vec::new();
+        for legacy in [false, true] {
+            if legacy {
+                manifest["memoryPrefix"] = json!(true);
+            }
+            let frozen: FrozenInput = serde_json::from_value(manifest.clone())?;
+            let prompt = frozen
+                .restore_prompt(
+                    preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store())?,
+                    driver.owner.services.model_preparation_resources(),
+                    preparation::ContentSource::Snapshot(&snapshot),
+                    run,
+                    &cancellation,
+                )
+                .await?;
+            let directory = prompt.recipes().ok_or("missing snapshot recipes")?;
+            let mut metadata = directory.open_metadata(0);
+            let mut recipes = directory.open(0);
+            let mut first = true;
+            let mut message_ids = Vec::new();
+            while let Some(message) = metadata.next().await? {
+                let prefix = message.role != MessageRole::System && std::mem::take(&mut first);
+                assert_eq!(message.is_pinned_memory, legacy && prefix);
+                assert_eq!(
+                    recipes.next().await?.unwrap().is_pinned_memory(),
+                    legacy && prefix
+                );
+                message_ids.push(message.logical_identity);
+            }
+            assert!(!first, "fixture must have a non-system message");
+            identities.push(message_ids);
+            drop((metadata, recipes, directory));
+            prompt.close().await?;
+        }
+        assert_eq!(identities[0], identities[1]);
+        assert!(rig.finish().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recapture_keeps_pinned_memory_distinct_from_identical_user_text() -> TestResult<()> {
+        let mut rig = Rig::new()?;
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(90), async {
+            let session = rig.start().await?;
+            rig.assemble(&session).await?;
+            let model = model(&rig, "model", None).await?;
+            let mut source = builder(&rig).await?;
+            source.append(Message::user("same text")).await?;
+            source.append_pinned_memory("same text".into()).await?;
+            let source = source.finish().await?;
+            let recaptured =
+                recapture(&rig, &model, &source.model(), ModelOperation::Inference).await?;
+            let directory = recaptured.recipes().ok_or("missing recaptured directory")?;
+            let mut metadata = directory.open_metadata(0);
+            let mut recipes = directory.open(0);
+            let mut labels = Vec::new();
+            let mut identities = Vec::new();
+            while let Some(message) = metadata.next().await? {
+                labels.push((
+                    message.is_pinned_memory,
+                    recipes.next().await?.unwrap().is_pinned_memory(),
+                ));
+                identities.push(message.logical_identity);
+            }
+            assert_eq!(labels, [(false, false), (false, false), (true, true)]);
+            assert_eq!(identities[1], identities[2]);
+            drop((metadata, recipes, directory));
+            let mut unpinned = builder(&rig).await?;
+            unpinned.append(Message::user("replan boundary")).await?;
+            unpinned.append(Message::user("same text")).await?;
+            let unpinned = unpinned.finish().await?;
+            use crate::owner::driver_model::CoveredPrefix;
+            assert_eq!(
+                CoveredPrefix::capture(&recaptured).await?,
+                CoveredPrefix::capture(&unpinned).await?,
+            );
+            unpinned.close().await?;
+            recaptured.close().await?;
+            source.close().await?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+        match outcome {
+            Ok(result) => result??,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn frozen_replan_does_not_fill_a_producers_missing_hash() {
         let mut rig = Rig::new().expect("owned fixture");
         let result =
@@ -8613,6 +8736,7 @@ async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<Superseded
             .await?,
     )?;
     let baseline_1 = ContentBlob::json(&CompactedContext {
+        memory_replay: s1_request.memory_replay,
         summary_origin: None,
         source_capture: s1_request.source_capture.clone(),
         checkpoint: ContextCheckpoint {
@@ -8738,6 +8862,7 @@ async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<Superseded
             .await?,
     )?;
     let baseline_2 = ContentBlob::json(&CompactedContext {
+        memory_replay: s2_prepared.request.memory_replay,
         summary_origin: None,
         source_capture: s2_prepared.request.source_capture.clone(),
         checkpoint: ContextCheckpoint {

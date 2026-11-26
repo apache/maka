@@ -409,7 +409,7 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         description: "track pinned memory, source visibility and legacy read provenance",
         sql: include_str!("../migrations/0057_pinned_memory.sql"),
         configure: None,
-        data: None,
+        data: Some(memory::migrate_pinned::migrate),
     },
 ];
 

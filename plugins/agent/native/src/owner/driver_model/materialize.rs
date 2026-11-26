@@ -106,22 +106,23 @@ impl FrozenMaterializer {
         cancellation: &CancellationToken,
     ) -> Result<(PreparedPrompt, ModelRequest), RunError> {
         self.authorize_current(cancellation).await?;
-        let mut prompt = preparation::restore_prompt(
-            self.io.clone(),
-            self.resources.clone(),
-            &self.history,
-            &self.cut,
-            self.run,
-            &self.frozen.prompt,
-            &self.frozen.prompt_chunks,
-            &self.frozen.layout,
-            cancellation,
-        )
-        .await?
-        .with_frozen_transport(
-            self.frozen.instructions.as_deref(),
-            self.frozen.normalization.clone(),
-        );
+        let mut prompt = self
+            .frozen
+            .restore_prompt(
+                self.io.clone(),
+                self.resources.clone(),
+                preparation::ContentSource::Live {
+                    history: &self.history,
+                    cut: &self.cut,
+                },
+                self.run,
+                cancellation,
+            )
+            .await?
+            .with_frozen_transport(
+                self.frozen.instructions.as_deref(),
+                self.frozen.normalization.clone(),
+            );
         let result = async {
             let options = self
                 .request

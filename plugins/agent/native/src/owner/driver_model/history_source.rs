@@ -49,18 +49,17 @@ impl<'a> HistorySource<'a> {
         source: RunId,
         target: RunId,
     ) -> Result<bool, RunError> {
-        use maka_agent_facts::memory::MemoryReplay;
-        match authority {
-            MemoryReplay::Shared => Ok(true),
-            MemoryReplay::Run(owner) => Ok(owner == target),
-            MemoryReplay::Legacy => match self {
-                Self::Live { history, .. } => {
-                    Ok(source == target || history.original_replay_is_shared(source).await?)
-                }
-                // A detached snapshot has no live read ledger. Rebuild its filtered history.
-                Self::Snapshot(..) => Ok(false),
-            },
-        }
+        let live = match self {
+            Self::Live { history, .. } => Some(history),
+            Self::Snapshot(..) => None,
+        };
+        Ok(maka_agent_state::session_history::permits_memory_replay(
+            live,
+            authority,
+            source,
+            Some(target),
+        )
+        .await?)
     }
 
     pub(super) fn live(state: &'a Store, cut: &HistoryCut) -> Self {
