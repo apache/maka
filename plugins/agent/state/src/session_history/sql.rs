@@ -554,22 +554,32 @@ fn blocker_attempt(reason: &BlockerKind) -> Option<ModelAttemptId> {
     }
 }
 fn fact_scope(c: &Connection, record: &RecordedFact) -> Result<HistoryScope, StoreError> {
+    fact_scope_with_cell_encoding(c, record, true)
+}
+fn fact_scope_with_cell_encoding(
+    c: &Connection,
+    record: &RecordedFact,
+    encoded_cell_body: bool,
+) -> Result<HistoryScope, StoreError> {
     let attempt = match &record.fact {
         Fact::Cell { event } => {
             use maka_agent_facts::cells::{CellEvent, CellOwner};
             let owner = match event {
                 CellEvent::Started { owner, .. } => owner.clone(),
                 _ => {
-                    let owner: String = c
-                        .prepare_cached(
-                            "SELECT json_extract(c.body,'$.owner') FROM agent_cells c
+                    let sql = if encoded_cell_body {
+                        "SELECT json_extract(maka_content_text(c.body,c.body_encoding),'$.owner') FROM agent_cells c
                          JOIN agent_run_specs s ON s.run=c.run AND s.session=c.session
-                         WHERE c.cell=? AND c.run=?",
-                        )?
-                        .query_row(
-                            params![event.cell().to_string(), record.run.to_string()],
-                            |row| row.get(0),
-                        )?;
+                         WHERE c.cell=? AND c.run=?"
+                    } else {
+                        "SELECT json_extract(c.body,'$.owner') FROM agent_cells c
+                         JOIN agent_run_specs s ON s.run=c.run AND s.session=c.session
+                         WHERE c.cell=? AND c.run=?"
+                    };
+                    let owner: String = c.prepare_cached(sql)?.query_row(
+                        params![event.cell().to_string(), record.run.to_string()],
+                        |row| row.get(0),
+                    )?;
                     serde_json::from_str(&owner)?
                 }
             };
@@ -770,7 +780,7 @@ pub(crate) fn index_legacy_owner_session(
         None => seed(&owner_value, &session)?,
     };
     let prefix = chain(&previous, sequence, &digest)?;
-    let scope = fact_scope(c, record)?;
+    let scope = fact_scope_with_cell_encoding(c, record, false)?;
     let locator = if let Fact::ExternalEffect { event } = &record.fact {
         let key = event.key();
         let original = match event {

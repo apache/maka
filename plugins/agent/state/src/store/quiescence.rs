@@ -204,7 +204,7 @@ pub(crate) fn observe(
             ));
         }
     }
-    let mut cells=c.prepare_cached("SELECT c.body,r.terminal FROM agent_cells c LEFT JOIN agent_runs r ON r.run=c.run WHERE c.session=?2 AND c.pending=1 AND (c.run IS NULL OR (r.owner=?1 AND r.local=1))")?;
+    let mut cells=c.prepare_cached("SELECT maka_content_text(c.body,c.body_encoding),r.terminal FROM agent_cells c LEFT JOIN agent_runs r ON r.run=c.run WHERE c.session=?2 AND c.pending=1 AND (c.run IS NULL OR (r.owner=?1 AND r.local=1))")?;
     let mut rows = cells.query(params![owner, session])?;
     while let Some(row) = rows.next()? {
         let cell: maka_agent_facts::cells::CellView =

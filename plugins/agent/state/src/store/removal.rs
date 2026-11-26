@@ -1206,6 +1206,7 @@ mod tests {
             "agent_usage_aux_events",
             "agent_usage_aux_specs",
             "agent_usage_calls",
+            "agent_usage_json_blobs",
             "agent_usage_results",
         ]
         .into_iter()

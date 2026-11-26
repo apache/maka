@@ -488,30 +488,62 @@ struct Record {
     observation: OperationObservation,
 }
 fn read(connection: &Connection, reference: &RecoveryRef) -> Result<Option<Record>, StoreError> {
+    read_inner(connection, reference, true, true)
+}
+fn read_compat(
+    connection: &Connection,
+    reference: &RecoveryRef,
+) -> Result<Option<Record>, StoreError> {
+    let has_content_enc = crate::content::has_encoding_column(connection)?;
+    let has_request_enc: bool = connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('application_operations') WHERE name = 'request_encoding')",
+        )?
+        .query_row([], |row| row.get(0))?;
+    read_inner(connection, reference, has_content_enc, has_request_enc)
+}
+fn read_inner(
+    connection: &Connection,
+    reference: &RecoveryRef,
+    has_content_enc: bool,
+    has_request_enc: bool,
+) -> Result<Option<Record>, StoreError> {
     let namespace = serde_json::to_string(&reference.namespace)?;
-    let sql = if crate::content::has_encoding_column(connection)? {
-        "SELECT source_revision, contract_digest, request_json, outcome_json, cleanup_json,maka_content_bytes(c.payload, c.encoding) AS outcome_value
-        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?"
-    } else {
-        "SELECT source_revision, contract_digest, request_json, outcome_json, cleanup_json,c.payload AS outcome_value
-        FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?"
+    let sql = match (has_request_enc, has_content_enc) {
+        (true, true) => "SELECT source_revision, contract_digest, request_json, request_encoding, outcome_json, cleanup_json, maka_content_bytes(c.payload, c.encoding) AS outcome_value
+            FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
+        (true, false) => "SELECT source_revision, contract_digest, request_json, request_encoding, outcome_json, cleanup_json, c.payload AS outcome_value
+            FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
+        (false, true) => "SELECT source_revision, contract_digest, request_json, 0, outcome_json, cleanup_json, maka_content_bytes(c.payload, c.encoding) AS outcome_value
+            FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
+        (false, false) => "SELECT source_revision, contract_digest, request_json, 0, outcome_json, cleanup_json, c.payload AS outcome_value
+            FROM application_operations o LEFT JOIN contents c ON c.id=o.outcome_content_id WHERE deployment=? AND namespace=? AND operation=?",
     };
     let row = connection
+        .prepare_cached(sql)?
         .query_row(
-            sql,
             params![
                 reference.source.deployment.to_string(),
                 namespace,
                 reference.operation.to_string()
             ],
             |row| {
+                let req_enc: i64 = row.get(3)?;
+                let request_json = crate::content::decode_inline_text(row.get_ref(2)?, req_enc)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Blob,
+                            Box::new(e),
+                        )
+                    })?;
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
+                    request_json,
                     row.get::<_, String>(4)?,
-                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
                 ))
             },
         )
@@ -857,7 +889,8 @@ impl EventLog {
         let reference = reference.clone();
         self.connection
             .read(move |connection| {
-                read(connection, &reference).map(|record| record.map(|record| record.observation))
+                read_compat(connection, &reference)
+                    .map(|record| record.map(|record| record.observation))
             })
             .await
     }
@@ -909,8 +942,24 @@ impl crate::writeback::Statement for WriteDispatch {
             });
         }
         require_source(connection, &reference.source)?;
-        connection.execute("INSERT INTO application_operation_contracts (digest, contract_json) VALUES (?, ?) ON CONFLICT(digest) DO NOTHING", params![&reference.contract.digest, contract_json.as_ref()])?;
-        connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, request_json, serde_json::to_string(&OperationOutcome::<OperationResult>::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
+        let contract_exists: bool = connection
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM application_operation_contracts WHERE digest=?)",
+            )?
+            .query_row([&reference.contract.digest], |row| row.get(0))?;
+        if !contract_exists {
+            let enc_contract = crate::content::encode(contract_json.as_bytes())?;
+            connection.execute(
+                "INSERT INTO application_operation_contracts (digest, contract_json, contract_encoding) VALUES (?, ?, ?) ON CONFLICT(digest) DO NOTHING",
+                params![
+                    &reference.contract.digest,
+                    enc_contract.payload.as_ref(),
+                    enc_contract.encoding
+                ],
+            )?;
+        }
+        let enc_request = crate::content::encode(request_json.as_bytes())?;
+        connection.execute("INSERT INTO application_operations (deployment, namespace, operation, source_revision, request_json, request_encoding, outcome_json, cleanup_json, contract_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params![reference.source.deployment.to_string(), serde_json::to_string(&reference.namespace)?, reference.operation.to_string(), reference.source.revision as i64, enc_request.payload.as_ref(), enc_request.encoding, serde_json::to_string(&OperationOutcome::<OperationResult>::Unresolved)?, serde_json::to_string(&OperationCleanup::Unconfirmed)?, &reference.contract.digest])?;
 
         // Reserve before COMMIT becomes visible to independent readers. Only
         // committed() issues a claim; an unissued rollback removes this entry.

@@ -179,7 +179,7 @@ const MODELS: &str = "COUNT(*) AS calls,
     COALESCE(SUM(r.cache_write),0) AS cache_write,COUNT(*)-COUNT(r.cache_write) AS cache_write_missing,
     COALESCE(SUM(r.reasoning),0) AS reasoning,COUNT(*)-COUNT(r.reasoning) AS reasoning_missing,
     TOTAL(r.cost_usd) AS usd,COUNT(*)-COUNT(r.cost_usd) AS unvalued,
-    COUNT(*)-COUNT(json_extract(c.quote_json,'$.pricing')) AS unpriced";
+    COUNT(*)-COUNT(json_extract(q.body,'$.pricing')) AS unpriced";
 const TOOLS: &str = "COUNT(*) AS calls,
     COALESCE(SUM(r.outcome='success'),0) AS success,
     COALESCE(SUM(r.outcome='error'),0) AS error,

@@ -454,6 +454,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 66,
+        description: "compress agent_cells bodies and intern usage JSON blobs",
+        sql: include_str!("../migrations/0066_compress_cells_and_usage.sql"),
+        configure: Some(maka_event_log::content::register_sql_functions),
+        data: Some(cells::migrate_v66::migrate_compress_cells_and_usage),
+    },
 ];
 
 #[cfg(test)]
@@ -465,7 +472,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=63) {
+        for through in [0, 41].into_iter().chain(46..=65) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

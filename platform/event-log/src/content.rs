@@ -740,6 +740,33 @@ pub fn decode(
     }
 }
 
+/// Decode an inline encoded JSON column (`BLOB` or `TEXT`) using `encoding` (`0..=3`).
+pub fn decode_inline_text(value: ValueRef<'_>, encoding: i64) -> Result<String, StoreError> {
+    let bytes = match value {
+        ValueRef::Blob(bytes) | ValueRef::Text(bytes) => bytes,
+        other => {
+            return Err(StoreError::InvalidTransition(format!(
+                "unexpected inline payload storage class {:?}",
+                other.data_type()
+            )));
+        }
+    };
+    let decoded = match encoding {
+        ENCODING_RAW => bytes.to_vec(),
+        ENCODING_ZSTD | ENCODING_ZSTD_SEEKABLE | ENCODING_ZSTD_DICT_V1 => {
+            decode_payload(bytes, encoding, None)?
+        }
+        other => {
+            return Err(StoreError::InvalidTransition(format!(
+                "unsupported inline content encoding {other}"
+            )));
+        }
+    };
+    String::from_utf8(decoded).map_err(|err| {
+        StoreError::InvalidTransition(format!("inline payload is not valid UTF-8: {err}"))
+    })
+}
+
 /// Register SQLite scalar UDFs `maka_content_bytes(payload, encoding)` and
 /// `maka_content_text(payload, encoding)` on `connection`.
 ///

@@ -64,9 +64,18 @@ pub(super) fn read(
 ) -> Result<Option<CellView>, StoreError> {
     let body: Option<String> = c
         .query_row(
-            "SELECT body FROM agent_cells WHERE session=? AND cell=?",
+            "SELECT body, body_encoding FROM agent_cells WHERE session=? AND cell=?",
             params![session, cell.to_string()],
-            |r| r.get(0),
+            |r| {
+                let enc: i64 = r.get(1)?;
+                maka_event_log::content::decode_inline_text(r.get_ref(0)?, enc).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(e),
+                    )
+                })
+            },
         )
         .optional()?;
     body.map(|s| serde_json::from_str(&s).map_err(Into::into))
@@ -157,9 +166,9 @@ pub(crate) fn load_run(
         .chain(blocked_cells)
         .collect();
     let query = if all {
-        "SELECT body FROM agent_cells WHERE run=?1"
+        "SELECT body, body_encoding FROM agent_cells WHERE run=?1"
     } else {
-        "SELECT body FROM agent_cells WHERE run=?1 AND pending=1 UNION ALL SELECT body FROM agent_cells WHERE run=?1 AND pending=0 AND cell IN (SELECT value FROM json_each(?2)) UNION ALL SELECT v.body FROM agent_tools t JOIN agent_cells v ON v.run=t.run AND json_extract(v.body,'$.owner.link.attempt')=json_extract(t.body,'$.key.attempt') AND json_extract(v.body,'$.owner.call')=json_extract(t.body,'$.key.call') WHERE t.run=?1 AND t.pending=1 AND json_extract(t.body,'$.admitted')=1 AND v.pending=0 AND v.cell NOT IN (SELECT value FROM json_each(?2))"
+        "SELECT body, body_encoding FROM agent_cells WHERE run=?1 AND pending=1 UNION ALL SELECT body, body_encoding FROM agent_cells WHERE run=?1 AND pending=0 AND cell IN (SELECT value FROM json_each(?2)) UNION ALL SELECT v.body, v.body_encoding FROM agent_tools t JOIN agent_cells v ON v.run=t.run AND v.owner_attempt=json_extract(t.body,'$.key.attempt') AND v.owner_call=json_extract(t.body,'$.key.call') WHERE t.run=?1 AND t.pending=1 AND json_extract(t.body,'$.admitted')=1 AND v.pending=0 AND v.cell NOT IN (SELECT value FROM json_each(?2))"
     };
     let mut stmt = c.prepare_cached(query)?;
     let mut rows = if all {
@@ -169,7 +178,9 @@ pub(crate) fn load_run(
     };
     let mut result = BTreeMap::new();
     while let Some(row) = rows.next()? {
-        let cell: CellView = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        let enc: i64 = row.get(1)?;
+        let body = maka_event_log::content::decode_inline_text(row.get_ref(0)?, enc)?;
+        let cell: CellView = serde_json::from_str(&body)?;
         result.insert(cell.id, cell);
     }
     Ok(result)
@@ -264,7 +275,13 @@ pub(super) fn project(
     if original.is_some_and(|(s, r)| s != session || r != run.map(|r| r.to_string())) {
         return Err(StoreError::EventConflict);
     }
-    c.execute("INSERT INTO agent_cells(cell,session,run,pending,body) VALUES(?,?,?,?,?) ON CONFLICT(cell) DO UPDATE SET pending=excluded.pending,body=excluded.body",params![view.id.to_string(),session,run.map(|r|r.to_string()),view.pending(),serde_json::to_string(view)?])?;
+    let (owner_attempt, owner_call) = match &view.owner {
+        CellOwner::Agent { link, call } => (Some(link.attempt.to_string()), Some(call.as_str())),
+        CellOwner::Standalone { .. } | CellOwner::External { .. } => (None, None),
+    };
+    let raw_body = serde_json::to_string(view)?;
+    let encoded = maka_event_log::content::encode(raw_body.as_bytes())?;
+    c.execute("INSERT INTO agent_cells(cell,session,run,pending,owner_attempt,owner_call,body,body_encoding) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(cell) DO UPDATE SET pending=excluded.pending,owner_attempt=excluded.owner_attempt,owner_call=excluded.owner_call,body=excluded.body,body_encoding=excluded.body_encoding",params![view.id.to_string(),session,run.map(|r|r.to_string()),view.pending(),owner_attempt,owner_call,encoded.payload.as_ref(),encoded.encoding])?;
     match event {
         CellEvent::ChildBound { .. } => {}
         CellEvent::SessionValuePublished { key, value, .. } => {
