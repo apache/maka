@@ -63,8 +63,7 @@ impl Args {
 
     /// Runs on the calling main thread, starting the Host through `launcher`.
     pub async fn run_with_launcher(self, launcher: PathBuf) -> Result<(), String> {
-        self.validate()?;
-        let pixels = self.pixels_enabled()?;
+        let presentation = self.validate()?;
         let stop = Arc::new(AtomicBool::new(false));
         // Install before opening any Host session or entering terminal modes.
         let mut signals = Signals::watch(stop.clone()).map_err(|error| error.to_string())?;
@@ -91,7 +90,7 @@ impl Args {
         } else {
             let mut transport = tokio::task::spawn_blocking(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    terminal::run(config, stop.clone(), jobs, pixels)
+                    terminal::run(config, stop.clone(), jobs, presentation)
                 }));
                 stop.store(true, Ordering::Release);
                 result.unwrap_or_else(|panic| {

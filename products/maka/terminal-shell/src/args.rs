@@ -24,6 +24,12 @@ use std::{
 
 const NO_PIXELS_ENV: &str = "MAKA_TERMINAL_NO_PIXELS";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentationMode {
+    Auto,
+    Cells,
+}
+
 /// Options for the default `maka` entry and the `maka terminal-shell` command.
 #[derive(clap::Parser, Default)]
 #[command(version, about = "Maka terminal application using NSH")]
@@ -41,23 +47,22 @@ pub struct Args {
 }
 
 impl Args {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<PresentationMode, String> {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err("the terminal shell requires a terminal on stdin and stdout".into());
         }
         if self.session.as_ref().is_some_and(String::is_empty) {
             return Err("session must not be empty".into());
         }
-        let _ = self.pixels_enabled()?;
-        Ok(())
+        self.presentation_mode()
     }
 
-    pub fn pixels_enabled(&self) -> Result<bool, String> {
+    fn presentation_mode(&self) -> Result<PresentationMode, String> {
         if self.no_pixels {
-            return Ok(false);
+            return Ok(PresentationMode::Cells);
         }
         let Some(value) = std::env::var_os(NO_PIXELS_ENV) else {
-            return Ok(true);
+            return Ok(PresentationMode::Auto);
         };
         let value = value.to_str().map(str::trim).ok_or_else(|| {
             format!("{NO_PIXELS_ENV} must be valid UTF-8 (one of 1/0, true/false, yes/no, on/off)")
@@ -68,13 +73,13 @@ impl Args {
             || value.eq_ignore_ascii_case("no")
             || value.eq_ignore_ascii_case("off")
         {
-            Ok(true)
+            Ok(PresentationMode::Auto)
         } else if value.eq_ignore_ascii_case("1")
             || value.eq_ignore_ascii_case("true")
             || value.eq_ignore_ascii_case("yes")
             || value.eq_ignore_ascii_case("on")
         {
-            Ok(false)
+            Ok(PresentationMode::Cells)
         } else {
             Err(format!(
                 "{NO_PIXELS_ENV} must be one of 1/0, true/false, yes/no, on/off (got {value:?})"

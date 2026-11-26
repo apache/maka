@@ -30,6 +30,7 @@ pub(super) const QUERY: &[u8] = b"\x1b[c\x1b[16t";
 pub(super) struct Probe(State);
 
 enum State {
+    Disabled,
     Pending(Replies),
     Draining(Replies),
     NeedQuery,
@@ -50,6 +51,10 @@ impl Default for Probe {
 }
 
 impl Probe {
+    pub fn disabled() -> Self {
+        Self(State::Disabled)
+    }
+
     pub fn flushed(&mut self) {
         if let State::Pending(replies) | State::Draining(replies) = &mut self.0 {
             replies.flushed = true;
@@ -59,6 +64,7 @@ impl Probe {
     pub fn resize(&mut self) {
         let state = std::mem::replace(&mut self.0, State::NeedQuery);
         self.0 = match state {
+            State::Disabled => State::Disabled,
             State::Pending(replies) | State::Draining(replies) => State::Draining(replies),
             State::NeedQuery | State::Complete => State::NeedQuery,
         };
