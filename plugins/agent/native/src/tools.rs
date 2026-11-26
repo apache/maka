@@ -151,6 +151,7 @@ fn reads_agent_history(method: &str) -> bool {
             | "historyLandmarks"
             | "historyPrompt"
             | "historyRequests"
+            | "historyImages"
             | "source"
             | "search"
             | "toolImage"

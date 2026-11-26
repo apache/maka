@@ -141,7 +141,7 @@ export function StagedAttachments(props: {
                     </Button>
                     <If when={viewing() && loaded()}>
                       <ImageViewer
-                        image={{ uri: original.imageUri!, ...loaded()!, title: original.name }}
+                        images={[{ uri: original.imageUri!, ...loaded()!, title: original.name }]}
                         close={() => {
                           viewing.set(false);
                           opener?.focus();

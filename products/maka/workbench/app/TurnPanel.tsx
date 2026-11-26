@@ -52,6 +52,7 @@ import {
   disclosureTitleStyle,
 } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
+import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import { LiveToolRow } from './ToolCard';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 import { activityIcon, activityPresentation, activityTitle } from './toolActivityPresentation';
@@ -202,7 +203,7 @@ export function TurnSummary(props: {
     through: () => number;
     refs: () => ToolImageRef[];
     total?: () => number | undefined;
-    preview(image: ImagePreview): void;
+    all?(): Promise<HistoryTool[]>;
   };
 }) {
   const running = computed(() => {
@@ -326,7 +327,7 @@ export function TurnSummary(props: {
                 through={props.images!.through}
                 images={props.images!.refs}
                 total={props.images!.total}
-                preview={props.images!.preview}
+                all={props.images!.all}
               />
             </If>
           </View>

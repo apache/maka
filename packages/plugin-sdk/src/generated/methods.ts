@@ -564,6 +564,7 @@ export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceCons
   | 'unverified';
 export type AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointWorkspaceWarning =
   'external_writers_not_fenced';
+export type AgentHistoryImagesInput_HistoryRowAddress = Runtime.HistoryRowAddress;
 export type AgentHistoryRequestsInput_HistoryRowAddress = Runtime.HistoryRowAddress;
 export type AgentHistoryRequestsOutput_StepId = string;
 export type AgentHistoryRequestsOutput_ModelAttemptId = string;
@@ -3634,6 +3635,26 @@ export interface ServiceMethods {
       output: {
         operation?: AgentHistoryCheckpointLoadReceiptOutput_OperationObservation | null;
         load?: AgentHistoryCheckpointLoadReceiptOutput_AgentCheckpointLoad | null;
+      };
+    };
+    historyImages: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        through: number;
+        /**
+         * Any original row in the Run whose images are listed.
+         */
+        position: AgentHistoryImagesInput_HistoryRowAddress;
+        after?: number | null;
+      };
+      /**
+       * The Run's tool results that produced images, oldest first, each with its call.
+       */
+      output: {
+        tools: Runtime.HistoryTool[];
+        next?: number | null;
+        [k: string]: unknown | undefined;
       };
     };
     historyLandmarks: {

@@ -256,7 +256,7 @@ export function RoomView(props: {
         </Dialog>
       </If>
       <Each of={resources.imageViewer() ? [resources.imageViewer()!] : []} key={(viewer) => viewer}>
-        {(viewer) => <ImageViewer image={viewer().image} close={viewer().close} />}
+        {(viewer) => <ImageViewer images={[viewer().image]} close={viewer().close} />}
       </Each>
     </HostProvider>
   );

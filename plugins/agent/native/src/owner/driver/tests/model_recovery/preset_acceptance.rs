@@ -487,6 +487,98 @@ async fn permission_round(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_turn_pages_only_image_results_and_keeps_its_latest_four() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_path_buf();
+    let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
+        config["tools"] = json!([{"name":"Read","description":"Read local file","target":{"kind":"import","name":"files"},"method":"read","nestable":true,"result":"image","confirmation":"preapproved"}]);
+    }).await?;
+    for i in 0..25 {
+        image::RgbImage::from_pixel(1, 1, image::Rgb([i, 0, 0]))
+            .save(base.join(format!("workspace/{i}.png")))?;
+    }
+    attach(&mut rig, &boot).await?;
+    let client = rig.client.as_ref().unwrap();
+    let model = model_options(
+        client,
+        &provider.server.base_url(),
+        true,
+        json!({"vision":true}),
+    )
+    .await?;
+    let session = create(client, &base, &model, None).await?;
+    let id = session["id"].as_str().unwrap();
+    let sent = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":id,"message":"Read the images."}),
+    )
+    .await?;
+    // Put a cell completion on each side of the 24-result page boundary.
+    for (start, end) in [(0, 12), (12, 25)] {
+        let (_, reply) = provider.next().await?;
+        reply.send_plan(TurnPlan::new().push_tool_call(format!("cell-{start}"), "exec", json!({
+            "code": format!("for (let i={start}; i<{end}; i++) {{ const r = await tools.Read({{path:i+'.png'}}); if (i+1==={end}) image(r); }}"),
+            "yield_time_ms": 30000
+        })).finish(FinishReason::ToolCalls));
+    }
+    provider.next().await?.1.reply_text("Done.");
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        quiescent_message(client, id, &sent["messageId"]),
+    )
+    .await??;
+    let history = call(
+        client,
+        "agent",
+        "history",
+        json!({"sessionId":id,"position":{"kind":"tail"},"view":"chat","includeThinking":false}),
+    )
+    .await?;
+    let summary = history["chunks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["foldedWork"].is_object())
+        .ok_or("missing folded work")?;
+    let mut query =
+        json!({"sessionId":id,"position":summary["position"],"through":history["through"]});
+    let first = call(client, "agent", "historyImages", query.clone()).await?;
+    let page = first["tools"].as_array().unwrap();
+    assert_eq!(page.len(), 24);
+    assert_eq!(first["next"], page[23]["result"]["position"]["sequence"]);
+    query["after"] = first["next"].clone();
+    let last = call(client, "agent", "historyImages", query).await?;
+    let rest = last["tools"].as_array().unwrap();
+    assert_eq!(rest.len(), 1);
+    assert!(last["next"].is_null());
+    let positions: Vec<_> = page
+        .iter()
+        .chain(rest)
+        .map(|tool| &tool["result"]["position"])
+        .collect();
+    assert!(
+        positions
+            .windows(2)
+            .all(|pair| pair[0]["sequence"].as_u64().unwrap()
+                < pair[1]["sequence"].as_u64().unwrap())
+    );
+    assert_eq!(summary["foldedWork"]["imageCount"], 25);
+    let previews = summary["foldedWork"]["images"].as_array().unwrap();
+    assert_eq!(
+        previews
+            .iter()
+            .map(|image| &image["position"])
+            .collect::<Vec<_>>(),
+        positions[21..]
+    );
+    assert!(rig.finish().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_and_preset_tools_share_direct_execution_and_permission_denials() -> TestResult<()>
 {
     tool_matrix(false).await
@@ -653,6 +745,14 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 use base64::Engine as _;
                 let bytes = base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap())?;
                 assert_eq!(bytes, std::fs::read(base.join("workspace/input.png"))?);
+                // The Turn's image list names that same result, with the call that made it.
+                let listed = call(client,"agent","historyImages",json!({
+                    "sessionId":id,"through":history["through"],"position":result["position"]
+                })).await?;
+                let tools = listed["tools"].as_array().unwrap();
+                assert_eq!(tools.len(), 1, "{listed}");
+                assert_eq!((&tools[0]["call"]["name"], &tools[0]["result"]), (&json!("Read"), result), "{listed}");
+                assert!(listed["next"].is_null(), "{listed}");
                 let write = tool_round(&rig,&mut provider,id,code,"Write",json!({"path":"output.txt","content":if allowed {"allowed"} else {"forbidden"}})).await?;
                 let before_web = web_calls.load(Ordering::SeqCst);
                 let web = tool_round(&rig,&mut provider,id,code,"WebFetch",json!({"url":format!("{address}/page")})).await?;

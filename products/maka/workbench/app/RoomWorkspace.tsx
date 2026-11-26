@@ -1844,7 +1844,7 @@ export function RoomTimeline(props: {
 
       <If when={viewer()}>
         <ImageViewer
-          image={{ ...viewer()!, title: tr('Message attachments') }}
+          images={[{ ...viewer()!, title: tr('Message attachments') }]}
           close={() => {
             const original = viewer();
             viewer.set(null);

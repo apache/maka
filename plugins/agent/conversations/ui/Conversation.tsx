@@ -300,6 +300,7 @@ import type {
   HistoryPosition,
   HistoryRowAddress,
   HistoryOrder,
+  HistoryTool,
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
@@ -2236,6 +2237,37 @@ export function Conversation(props: ConversationProps) {
       position: first.position,
       field: 'body',
     });
+  };
+  // Every image-bearing tool of a Turn, read page by page when a viewer asks for them.
+  const turnImageTools = async (key: string): Promise<HistoryTool[]> => {
+    const rows = historyRows().byTurn.get(key) ?? [];
+    const anchor =
+      rows.find((row) => row.foldedWork && row.position) ??
+      rows.find((row) => row.position?.kind === 'live' && row.role !== 'user');
+    if (!anchor?.position || latestKnown === 0) return [];
+    const through = latestKnown;
+    const tools: HistoryTool[] = [];
+    try {
+      let after: number | null = null;
+      do {
+        const page: { tools: HistoryTool[]; next?: number | null } = await host.query(
+          'agent',
+          'historyImages',
+          {
+            sessionId,
+            through,
+            position: anchor.position,
+            ...(after === null ? {} : { after }),
+          },
+        );
+        tools.push(...page.tools);
+        after = page.next ?? null;
+      } while (after !== null && alive);
+    } catch (reason) {
+      report(reason);
+      return [];
+    }
+    return tools;
   };
   const currentProcessGroup = (key: string): ProcessGroup | undefined => {
     const entry = displayEntry(key);
@@ -5131,7 +5163,7 @@ export function Conversation(props: ConversationProps) {
                     (work().length
                       ? work().reduce((total, work) => total + work.imageCount, 0)
                       : undefined),
-                  preview: props.previewImage,
+                  all: () => turnImageTools(initial.turnKey),
                 }}
                 toggle={(open) => {
                   if (open) {
