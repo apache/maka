@@ -8508,6 +8508,444 @@ async fn compaction_checkpoint_survives_stop_and_is_used_by_the_next_message() {
     }
 }
 
+struct SupersededCompactionFixture {
+    session: String,
+    run: RunId,
+    s1_started: UnixMillis,
+    s1_duration_ms: u64,
+    baseline_1: ContentBlob,
+    baseline_2: ContentBlob,
+    main_step: StepId,
+    main_attempt: ModelAttemptId,
+}
+
+async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<SupersededCompactionFixture> {
+    use maka_agent_engine::ports::Preparation;
+    use maka_agent_facts::{
+        context::{CheckpointContent, CheckpointMode, CompactedContext, ContextCheckpoint},
+        durable::AttemptRecovery,
+        history_snapshot::RequestSource,
+        tool_output::{AcceptedToolResult, DurableToolProjection},
+    };
+
+    let session = rig.start().await?;
+    rig.assemble(&session).await?;
+    let driver = rig.driver.as_ref().unwrap();
+    let run = driver.access.execution().run_id;
+    rig.record_model_reply(Preparation::Initial, None).await?;
+    let view = driver.state.frontier(run).await?;
+    let mut pre_main = driver
+        .model()?
+        .prepare_step(&view, Preparation::Initial, driver)
+        .await?;
+    let pre_main_body = ContentBlob::json(&pre_main.request)?;
+    pre_main.contents.push(pre_main_body.clone());
+    rig.append(
+        vec![Fact::StepPrepared {
+            step: pre_main.request.step,
+            request: pre_main_body.reference().clone(),
+            adjudications: vec![],
+        }],
+        pre_main.contents,
+    )
+    .await?;
+
+    // Foreground Summary S1 with a deterministic 420ms execution span.
+    let s1_duration_ms: u64 = 420;
+    let (s1_request, s1_attempt, s1_started) =
+        rig.record_model_request(Preparation::Summary).await?;
+    let s1_closed_at = UnixMillis(s1_started.0 + s1_duration_ms as i64);
+    let s1_text = "First foreground cobalt summary.";
+    let view = driver.state.frontier(run).await?;
+    driver
+        .state
+        .append(
+            driver.access.claim(),
+            (&view).into(),
+            vec![
+                Change::new(
+                    Fact::ModelClosed {
+                        attempt: s1_attempt,
+                        outcome: maka_agent_facts::accounting::Outcome::Success,
+                        diagnostic: None,
+                        usage: Default::default(),
+                        protocol: json!({
+                            "finishReason": "stop",
+                            "summary": { "kind": "text", "summary": { "text": s1_text } },
+                        }),
+                    },
+                    s1_closed_at,
+                ),
+                Change::new(
+                    Fact::ModelCleanupObserved {
+                        attempt: s1_attempt,
+                        cleanup: OperationCleanup::Confirmed,
+                    },
+                    s1_closed_at,
+                ),
+            ],
+            vec![],
+        )
+        .await?;
+
+    let s1_capture: RequestSource = serde_json::from_slice(
+        &driver
+            .state
+            .content(run, s1_request.source_capture.clone())
+            .await?,
+    )?;
+    let baseline_1 = ContentBlob::json(&CompactedContext {
+        summary_origin: None,
+        source_capture: s1_request.source_capture.clone(),
+        checkpoint: ContextCheckpoint {
+            mode: CheckpointMode::PreTurn,
+            covered_through: s1_capture.current.through_sequence,
+            source_digest: s1_request.source_digest.clone(),
+            previous_checkpoint_id: None,
+            summary: CheckpointContent::Text(s1_text.into()),
+            summary_step_id: s1_request.step,
+        },
+        native: None,
+    })?;
+    let cp1_change = Change::new(
+        Fact::ContextCompacted {
+            baseline: baseline_1.reference().clone(),
+        },
+        UnixMillis(s1_closed_at.0 + 10),
+    );
+    let cp1_id = cp1_change.id;
+    let view = driver.state.frontier(run).await?;
+    driver
+        .state
+        .append(
+            driver.access.claim(),
+            (&view).into(),
+            vec![cp1_change],
+            vec![baseline_1.clone()],
+        )
+        .await?;
+
+    // Produce a completed tool exchange after S1 so S2 has logical messages to summarize,
+    // then continue into a Main step that retains compaction_recovery = Some(s1_attempt).
+    let (m1_request, m1_attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+    assert_eq!(m1_request.compaction_recovery, Some(s1_attempt));
+    let (tool, _) = rig
+        .tool(m1_attempt, "exec", "post-s1-call", json!({ "code": "1" }))
+        .await?;
+    rig.finish_model_request(m1_attempt, None).await?;
+    let returned = ContentBlob::json(&ToolReturn {
+        schema_version: SCHEMA_VERSION,
+        artifacts: vec![],
+        body: ReturnedToolResult {
+            output: ToolOutput::Text("Post-S1 tool output.".into()),
+            projection: DurableToolProjection::Text {
+                text: "Post-S1 tool output.".into(),
+            },
+            is_error: false,
+            loaded_tools: Default::default(),
+            display_budget_chars: None,
+        },
+    })?;
+    let accepted = ContentBlob::json(&AcceptedToolResult::Local {
+        result: returned.reference().clone(),
+    })?;
+    rig.append(
+        vec![
+            Fact::LocalToolReturned {
+                tool: tool.clone(),
+                settlement: ToolSettlement::Returned,
+                result: returned.reference().clone(),
+                is_error: false,
+                cell_observation: None,
+            },
+            Fact::ToolResultAccepted {
+                tool,
+                result: accepted.reference().clone(),
+                outcome: AcceptedResult::Succeeded,
+            },
+        ],
+        vec![returned, accepted],
+    )
+    .await?;
+
+    let (main_request, main_attempt, _) = rig
+        .record_model_request(Preparation::ToolContinuation {
+            attempt: m1_attempt,
+        })
+        .await?;
+    assert_eq!(main_request.compaction_recovery, Some(s1_attempt));
+
+    // A later proactive Summary S2 in the same Run supersedes S1 while Main keeps
+    // its original compaction_recovery lineage marker pointing at S1.
+    let view = driver.state.frontier(run).await?;
+    let mut s2_prepared = driver
+        .model()?
+        .prepare_step(&view, Preparation::Summary, driver)
+        .await?;
+    let s2_body = ContentBlob::json(&s2_prepared.request)?;
+    s2_prepared.contents.push(s2_body.clone());
+    let s2_attempt = ModelAttemptId::new();
+    let s2_text = "Second proactive amber summary.";
+    rig.append(
+        vec![
+            Fact::ProactiveSummaryPrepared {
+                step: s2_prepared.request.step,
+                request: s2_body.reference().clone(),
+                attempt: s2_attempt,
+            },
+            Fact::ModelAttemptAdmitted {
+                attempt: s2_attempt,
+                upstream: json!({ "fixture": "proactive-second" }),
+            },
+            Fact::ModelInterrupted {
+                attempt: main_attempt,
+                diagnostic: "context_length_exceeded".into(),
+            },
+            Fact::AttemptRecoveryRecorded {
+                attempt: main_attempt,
+                recovery: AttemptRecovery::ContextOverflow {
+                    observed_output: false,
+                },
+            },
+        ],
+        s2_prepared.contents,
+    )
+    .await?;
+    rig.finish_model_request(s2_attempt, Some(s2_text)).await?;
+
+    let s2_capture: RequestSource = serde_json::from_slice(
+        &driver
+            .state
+            .content(run, s2_prepared.request.source_capture.clone())
+            .await?,
+    )?;
+    let baseline_2 = ContentBlob::json(&CompactedContext {
+        summary_origin: None,
+        source_capture: s2_prepared.request.source_capture.clone(),
+        checkpoint: ContextCheckpoint {
+            mode: CheckpointMode::PreTurn,
+            covered_through: s2_capture.current.through_sequence,
+            source_digest: s2_prepared.request.source_digest.clone(),
+            previous_checkpoint_id: Some(cp1_id.to_string()),
+            summary: CheckpointContent::Text(s2_text.into()),
+            summary_step_id: s2_prepared.request.step,
+        },
+        native: None,
+    })?;
+    rig.append(
+        vec![Fact::ContextCompacted {
+            baseline: baseline_2.reference().clone(),
+        }],
+        vec![baseline_2.clone()],
+    )
+    .await?;
+
+    Ok(SupersededCompactionFixture {
+        session,
+        run,
+        s1_started,
+        s1_duration_ms,
+        baseline_1,
+        baseline_2,
+        main_step: main_request.step,
+        main_attempt,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn superseded_compaction_recovery_is_not_readopted_on_run_termination() {
+    use maka_agent_engine::{DriverExit, Engine};
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let fx = setup_superseded_compaction_run(&mut rig).await?;
+        let driver = rig.driver.as_ref().unwrap();
+
+        // S1 was already superseded by S2; ready_summary must not resurface S1.
+        assert_eq!(
+            driver
+                .state
+                .ready_summary(fx.run, fx.main_step, Some(fx.main_attempt))
+                .await?,
+            None
+        );
+
+        rig.append(
+            vec![Fact::StopRequested {
+                diagnostic: "user_requested_stop".into(),
+                requester: maka_agent_facts::durable::StopRequester::User,
+            }],
+            vec![],
+        )
+        .await?;
+        let exit = Engine::new(driver.state.clone())
+            .drive(
+                driver.access.claim().clone(),
+                driver.clone(),
+                CancellationToken::new(),
+            )
+            .await?;
+        assert!(
+            matches!(
+                exit,
+                DriverExit::Terminal {
+                    terminal: Terminal::Cancelled,
+                    ..
+                }
+            ),
+            "{exit:?}"
+        );
+
+        let history = driver.owner.durable.history(fx.run, 0, 128).await?;
+        let compacted_count = history
+            .iter()
+            .filter(|fact| matches!(fact.fact, Fact::ContextCompacted { .. }))
+            .count();
+        assert_eq!(
+            compacted_count, 2,
+            "run termination must not re-adopt the superseded S1 checkpoint"
+        );
+        let frontier = driver.state.frontier(fx.run).await?;
+        assert_eq!(
+            frontier.baseline.as_ref(),
+            Some(fx.baseline_2.reference()),
+            "latest baseline must remain S2"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result
+            .expect("superseded compaction test timed out")
+            .unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn historical_crossed_compaction_checkpoint_remains_readable_in_live_and_snapshot() {
+    use crate::contract::ForkResult;
+    use maka_agent_facts::session::ForkPosition;
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let fx = setup_superseded_compaction_run(&mut rig).await?;
+        let driver = rig.driver.as_ref().unwrap();
+
+        // Persist the historical shape written by older builds: a third ContextCompacted
+        // re-adopting S1 right before RunTerminated, long after S1 closed and S2 adopted.
+        let readopt_at = UnixMillis(fx.s1_started.0 + 5_000);
+        let view = driver.state.frontier(fx.run).await?;
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&view).into(),
+                vec![
+                    Change::new(
+                        Fact::ModelClosed {
+                            attempt: fx.main_attempt,
+                            outcome: maka_agent_facts::accounting::Outcome::Error,
+                            diagnostic: Some("context_length_exceeded".into()),
+                            usage: Default::default(),
+                            protocol: json!({ "finishReason": "error" }),
+                        },
+                        readopt_at,
+                    ),
+                    Change::new(
+                        Fact::ModelCleanupObserved {
+                            attempt: fx.main_attempt,
+                            cleanup: OperationCleanup::Confirmed,
+                        },
+                        readopt_at,
+                    ),
+                    Change::new(
+                        Fact::ContextCompacted {
+                            baseline: fx.baseline_1.reference().clone(),
+                        },
+                        readopt_at,
+                    ),
+                    Change::new(
+                        Fact::RunTerminated {
+                            terminal: Terminal::Cancelled,
+                            diagnostic: Some("user_requested_stop".into()),
+                        },
+                        readopt_at,
+                    ),
+                ],
+                vec![fx.baseline_1.clone()],
+            )
+            .await?;
+
+        let check_history = async |session_id: &str| -> TestResult<()> {
+            let client = rig.client.as_ref().unwrap();
+            let page = model_recovery::call(
+                client,
+                "agent",
+                "history",
+                json!({
+                    "sessionId": session_id,
+                    "position": { "kind": "tail" },
+                    "includeThinking": false,
+                    "view": "conversation",
+                }),
+            )
+            .await?;
+            let chunks = page["chunks"]
+                .as_array()
+                .ok_or("history response missing chunks")?;
+            let compactions: Vec<_> = chunks
+                .iter()
+                .filter(|chunk| chunk["role"] == "compaction")
+                .collect();
+            assert_eq!(compactions.len(), 3, "{page}");
+            assert_eq!(
+                compactions[2]["compaction"]["durationMs"].as_u64(),
+                Some(fx.s1_duration_ms),
+                "crossed re-adopted compaction must measure S1's actual execution span: {page}"
+            );
+            Ok(())
+        };
+
+        // Live history read must succeed without "compaction timing crossed another adopted checkpoint".
+        check_history(&fx.session).await?;
+
+        // Snapshot history read (via fork) must succeed with the same duration.
+        let client = rig.client.as_ref().unwrap();
+        let fork = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({
+                "sessionId": fx.session,
+                "expectedRevision": driver.owner.session(&fx.session).await?.revision,
+                "position": ForkPosition::End,
+                "title": "Fork with historical crossed compaction",
+                "labels": [],
+            }),
+        )
+        .await?;
+        let ForkResult::Forked { session: forked } = serde_json::from_value(fork.clone())? else {
+            return Err(format!("fork rejected: {fork}").into());
+        };
+        check_history(&forked.id).await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result
+            .expect("historical crossed compaction test timed out")
+            .unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compaction_resumes_with_steering_indexed_at_its_original_delivery() {
     use crate::contract::ForkResult;
