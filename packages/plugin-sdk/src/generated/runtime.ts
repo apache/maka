@@ -7310,6 +7310,7 @@ export interface SetDefaultConnectionTargetInput {
 }
 export interface AgentMcpConfigurations {
   workspace?: AgentWorkspace | null;
+  redacted?: boolean;
 }
 export interface AgentWorkspace {
   /**
@@ -7345,6 +7346,7 @@ export interface AgentMcpConfigurationLocation {
 export interface AgentMcpConfigurationEntry {
   name: string;
   configuration: unknown;
+  hasLiteralCredentials: boolean;
   shadowedBy?: ConfigurationLocation | null;
 }
 export interface AgentProjectMcpTrustStatus {

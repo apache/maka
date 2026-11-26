@@ -675,12 +675,16 @@ impl Host {
                     .await;
                 wire::write(&mut output, &Response::PeerPairingReceipt(result)).await
             }
-            Request::FinalizeAccess => {
+            Request::FinalizeAccess { expected_root_id } => {
                 wire::write(
                     &mut output,
                     &Response::Finalized(
-                        self.finalize_access(&authority, opening.client_instance)
-                            .await,
+                        self.finalize_access(
+                            &authority,
+                            opening.client_instance,
+                            expected_root_id.as_deref(),
+                        )
+                        .await,
                     ),
                 )
                 .await

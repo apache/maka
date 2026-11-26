@@ -267,7 +267,11 @@ impl Host {
         &self,
         authority: &Authority,
         client: Option<String>,
+        expected_root_id: Option<&str>,
     ) -> Result<()> {
+        if expected_root_id.is_some_and(|root| root != self.root_id()) {
+            return Err("Host root does not match expected root".into());
+        }
         let Authority::Remote { hash } = authority else {
             return Err("pairing requires the remote credential".into());
         };

@@ -684,3 +684,76 @@ async fn websocket_bearer_admission_uses_tls_and_the_endpoint_server_name() {
     .await
     .expect("WSS Host test timed out");
 }
+
+#[tokio::test]
+async fn wrong_root_cannot_rotate_a_pending_websocket_bearer() {
+    use maka_host_runtime::{application::host::websocket::WebSocketListener, ipc::LocalListener};
+    use maka_remote_client::TlsTrust;
+
+    timeout(DEADLINE, async {
+        let (dir, host) = logs_host().await;
+        #[cfg(unix)]
+        let socket = dir.path().join("rotate.sock");
+        #[cfg(windows)]
+        let socket = {
+            let _ = &dir;
+            std::path::PathBuf::from(format!(r"\\.\pipe\maka-rotate-{}", Uuid::new_v4()))
+        };
+        let local = LocalListener::bind(&socket).unwrap();
+        let ws = WebSocketListener::bind("127.0.0.1:0".parse().unwrap(), vec![])
+            .await
+            .unwrap();
+        let address = format!("ws://{}/runtime-host", ws.local_addr().unwrap());
+        let root = host.root_id().to_owned();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn({
+            let host = host.clone();
+            let cancel = cancel.clone();
+            async move { host.serve(local, Some(ws), cancel).await }
+        });
+        let old = host.prepare_access("rotate-client".into()).await.unwrap();
+        let old = RemoteHostConnection::connect_websocket(
+            &address,
+            TlsTrust::System,
+            old.credential.into(),
+            &root,
+            "old-client".into(),
+        )
+        .await
+        .unwrap();
+        let pending = host.prepare_access("rotate-client".into()).await.unwrap();
+        let pending: Arc<str> = pending.credential.into();
+        let wrong = RemoteHostConnection::connect_websocket(
+            &address,
+            TlsTrust::System,
+            pending.clone(),
+            "wrong-root",
+            "wrong-client".into(),
+        )
+        .await
+        .err()
+        .expect("wrong root must not finalize");
+        assert!(
+            wrong
+                .to_string()
+                .contains("Host root does not match expected root")
+        );
+        read_logs(&old).await;
+        let new = RemoteHostConnection::connect_websocket(
+            &address,
+            TlsTrust::System,
+            pending,
+            &root,
+            "new-client".into(),
+        )
+        .await
+        .unwrap();
+        read_logs(&new).await;
+        new.close().await.unwrap();
+        drop(old);
+        cancel.cancel();
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}

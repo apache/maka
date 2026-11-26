@@ -109,7 +109,9 @@ struct Opening {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WireRequest {
     Connect,
-    FinalizeAccess,
+    FinalizeAccess {
+        expected_root_id: String,
+    },
     Call {
         session: Uuid,
     },
@@ -386,6 +388,7 @@ pub(crate) async fn redeem_pairing_invite(
 pub(crate) async fn finalize_websocket_access(
     link: &Link,
     client_instance: &str,
+    expected_root_id: &str,
 ) -> Result<(), RemoteClientError> {
     let mut channel = link.open().await?;
     write_frame(
@@ -394,7 +397,9 @@ pub(crate) async fn finalize_websocket_access(
             version: HOST_PROTOCOL_VERSION,
             epoch: None,
             client_instance: Some(client_instance.to_owned()),
-            request: WireRequest::FinalizeAccess,
+            request: WireRequest::FinalizeAccess {
+                expected_root_id: expected_root_id.to_owned(),
+            },
         },
     )
     .await?;
