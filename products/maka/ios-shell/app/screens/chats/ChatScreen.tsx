@@ -50,6 +50,7 @@ import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { currentLocale, tr } from '../../locale';
 import {
+  compareHistoryRows,
   createConversationController,
   getDraft,
   getSavedScrollOffset,
@@ -110,7 +111,12 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
     const sameAssistant = role === 'assistant' && prev && prev.role === 'assistant';
 
     if (role === 'user') {
-      if (ch.offset > 0 && prev?.role === 'user' && prev.key === ch.messageId) {
+      if (
+        ch.offset > 0 &&
+        prev?.role === 'user' &&
+        i > 0 &&
+        compareHistoryRows(chunks[i - 1], ch) === 0
+      ) {
         prev.body += ch.text;
         continue;
       }

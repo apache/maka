@@ -521,7 +521,8 @@ impl Projects {
                     headers,
                     header_env,
                 } => (
-                    url.clone(),
+                    super::display_http_url(url)
+                        .map_or_else(|| "[invalid URL]".into(), |(url, _)| url),
                     Vec::new(),
                     headers
                         .keys()

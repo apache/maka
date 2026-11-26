@@ -1031,17 +1031,26 @@ impl Host {
                 // drains all original calls before releasing the session.
                 session.peer.replace(vec![])?;
                 session.transport.request_close();
-                // A revoked native anchor must carry the reason before it
-                // closes, even if the QUIC connection close hasn't arrived yet.
+                // Give a reading peer the reason before closing the anchor,
+                // but an unreading peer must not hold up session cleanup.
                 let mut output = Some(output);
-                let mut revoked_notice = Ok(());
                 if matches!(authority, Authority::AuthenticatedPeer { .. }) && result != Ok(true) {
                     if session.revoked.load(Ordering::Acquire) {
-                        revoked_notice = wire::write(
-                            output.as_mut().expect("live anchor"),
-                            &Response::PeerAccessRevoked,
+                        match tokio::time::timeout(
+                            Duration::from_millis(100),
+                            wire::write(
+                                output.as_mut().expect("live anchor"),
+                                &Response::PeerAccessRevoked,
+                            ),
                         )
-                        .await;
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                tracing::debug!(%error, "could not notify revoked peer")
+                            }
+                            Err(_) => tracing::debug!("revoked peer notification timed out"),
+                        }
                     }
                     drop(input);
                     drop(output.take());
@@ -1058,7 +1067,7 @@ impl Host {
                 if let Some(mut output) = output {
                     wire::write(&mut output, &Response::Closed).await?;
                 }
-                result.and(revoked_notice).map(|_| ())
+                result.map(|_| ())
             }
             Request::Call { session } => {
                 let gate = self.access_gate.lock().await;

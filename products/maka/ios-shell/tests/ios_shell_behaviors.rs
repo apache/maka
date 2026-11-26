@@ -567,8 +567,7 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     let (confirm_tx, mut confirming) = mpsc::unbounded_channel();
     channel.handle("ios.confirmPairing", move |mut call| {
         let data = call.take_data();
-        assert_eq!(data["deviceLabel"], "Field iPhone");
-        confirm_tx.send(call.into_reply().unwrap()).unwrap();
+        confirm_tx.send((data, call.into_reply())).unwrap();
     });
     let (cancel_tx, mut cancelled) = mpsc::unbounded_channel();
     channel.handle("ios.cancelPairing", move |call| {
@@ -602,10 +601,11 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.clear("label:Device name").unwrap();
     app.type_text("label:Device name", "Field iPhone").unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    let confirm = confirming.try_recv().unwrap();
+    let (input, confirm) = confirming.try_recv().unwrap();
+    assert_eq!(input["deviceLabel"], "Field iPhone");
     assert!(app.press("label:Cancel").is_err());
     assert!(cancelled.try_recv().is_err());
-    confirm.resolve(json!({
+    confirm.unwrap().resolve(json!({
         "revision": 2,
         "devicePeerId": "fixture",
         "filter": { "kind": "all_computers" },
@@ -655,13 +655,12 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
             }
         })));
     });
-    channel.handle("ios.setFilter", |mut call| {
-        assert_eq!(
-            call.take_data(),
-            json!({"kind":"single_computer","root_id":"root-a"})
-        );
+    let (filter_tx, mut filter_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.setFilter", move |mut call| {
+        filter_tx.send(call.take_data()).unwrap();
         call.resolve(Value::Null);
     });
+    let (models_tx, mut models_rx) = mpsc::unbounded_channel();
     channel.handle("ios.ackMutationProgress", |_| {});
     let approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let approved_q = approved.clone();
@@ -693,7 +692,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
                 "kind":"ready","revision":"models-b","choices":[],"next":{"query":"","offset":16}
             }),
             ("root-b", "models") => {
-                assert_eq!(data["input"]["revision"], "models-b");
+                models_tx.send(data["input"].clone()).unwrap();
                 json!({"kind":"ready","revision":"models-b","next":null,"choices":[{
                     "selection":{"kind":"model","connectionId":"fixture","modelId":"second"},"sourceName":"Fixture",
                     "label":"Second page model","thinkingLevels":[],"defaultThinkingLevel":null
@@ -771,20 +770,9 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     let (catalog_tx, mut catalog_rx) = mpsc::unbounded_channel();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        let root = data["rootId"].as_str().unwrap();
-        assert_eq!(data["endpoint"], "agent");
-        let generation = if root == "root-a" { 1 } else { 2 };
-        match data["method"].as_str().unwrap() {
-            "catalog" => {
-                assert_eq!(data["input"], json!({"kind":null,"filter":"all","includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""}));
-                if root == "root-a" {
-                    catalog_tx.send(data["subscriptionId"].clone()).unwrap();
-                }
-            }
-            "watchBotOutbox" => assert_eq!(data["input"], json!({"limit":0})),
-            method => panic!("unexpected subscription {method}"),
-        }
-        call.resolve(json!({"subscriptionId":data["subscriptionId"],"rootId":root,"generation":generation}));
+        let generation = if data["rootId"] == "root-a" { 1 } else { 2 };
+        call.resolve(json!({"subscriptionId":data["subscriptionId"],"rootId":data["rootId"],"generation":generation}));
+        catalog_tx.send(data).unwrap();
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -803,7 +791,25 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.wait_for("text:Auth refactor").unwrap();
     app.wait_for("text:Deploy migration").unwrap();
 
-    let id = catalog_rx.recv().await.unwrap();
+    let subscriptions: Vec<_> = std::iter::from_fn(|| catalog_rx.try_recv().ok()).collect();
+    let mut id = None;
+    for data in subscriptions {
+        assert_eq!(data["endpoint"], "agent");
+        match data["method"].as_str().unwrap() {
+            "catalog" => {
+                assert_eq!(
+                    data["input"],
+                    json!({"kind":null,"filter":"all","includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""})
+                );
+                if data["rootId"] == "root-a" {
+                    id = Some(data["subscriptionId"].clone());
+                }
+            }
+            "watchBotOutbox" => assert_eq!(data["input"], json!({"limit":0})),
+            method => panic!("unexpected subscription {method}"),
+        }
+    }
+    let id = id.expect("MacBook catalog subscription");
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId":id,"rootId":"root-a","generation":1,
         "item":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[{
@@ -829,6 +835,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.press("label:Model").unwrap();
     app.choose_menu_item("Second page model").unwrap();
     app.wait_for("text:Second page model").unwrap();
+    assert_eq!(models_rx.try_recv().unwrap()["revision"], "models-b");
 
     app.wait_for_gone("text:Apple workspace", Duration::from_secs(2))
         .unwrap();
@@ -836,6 +843,10 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
 
     // Filter to MacBook Pro hides Linux Workstation's conversation.
     app.press("label:MacBook Pro").unwrap();
+    assert_eq!(
+        filter_rx.try_recv().unwrap(),
+        json!({"filter":{"kind":"single_computer","root_id":"root-a"}})
+    );
     app.wait_for_gone("text:Deploy migration", Duration::from_secs(2))
         .unwrap();
     app.wait_for("text:Catalog live update").unwrap();
@@ -1092,6 +1103,7 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
      ttl
  }
 ";
+    let (files_tx, mut files_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
@@ -1101,12 +1113,11 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
             "models" => json!({ "kind": "ready", "choices": [] }),
             "pendingInteractions" => json!({ "revision": 1, "entries": [] }),
             "listFiles" => {
-                assert_eq!(data["input"]["sessionId"], "chat-diff");
+                files_tx.send(data["input"].clone()).unwrap();
                 let path = &data["input"]["path"];
                 let entries = if path.is_null() {
                     json!([{"path":{"bytesBase64":"LmdpdGh1Yg=="},"kind":"directory"}])
                 } else {
-                    assert_eq!(path["bytesBase64"], "LmdpdGh1Yg==");
                     json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0U="},"kind":"file"}])
                 };
                 json!({"directoryIdentity":"directory","entries":entries,"next":null})
@@ -1155,6 +1166,12 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     app.press("label:.github").unwrap();
     app.press("label:NOTICE").unwrap();
     app.wait_for(r"text:/\.github\/NOTICE:1/").unwrap();
+    let root = files_rx.try_recv().unwrap();
+    let directory = files_rx.try_recv().unwrap();
+    assert_eq!(root["sessionId"], "chat-diff");
+    assert!(root["path"].is_null());
+    assert_eq!(directory["sessionId"], "chat-diff");
+    assert_eq!(directory["path"]["bytesBase64"], "LmdpdGh1Yg==");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1298,9 +1315,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     let query_target = target.clone();
     let web = json!({"revision":6,"settings":{"enabled":true,"source":"custom","backend":{"kind":"tavily"}},"credential":{"configured":false,"revision":null},"presets":[]});
     let query_web = web.clone();
+    let (queries_tx, mut queries) = mpsc::unbounded_channel();
+    let query_failures = queries_tx.clone();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
-        assert_eq!(data["rootId"], "root");
         let value = match data["method"].as_str().unwrap() {
             "list" => json!({"sessions":[]}),
             "botOutbox" => json!({"isBot":false,"preview":"","through":0,"readThrough":0,"messages":[]}),
@@ -1319,12 +1337,18 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
                 "host":"proxy.example","port":443,"bypassList":[],"autoBypassDomains":[],"authEnabled":true,"username":"phone"},
                 "credential":{"configured":true,"credentialId":"proxy-fixture-id","revision":2,"locator":{"key":"proxy"}}}),
             "snapshot" => query_web.clone(),
-            other => panic!("unexpected query {other}"),
+            other => {
+                query_failures.send(Err(format!("unexpected query {other}"))).unwrap();
+                call.reject("unexpected query");
+                return;
+            }
         };
+        queries_tx.send(Ok(data)).unwrap();
         call.resolve(json!({"value":value}));
     });
     let (tx, mut rx) = mpsc::unbounded_channel();
     let events = channel.clone();
+    let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         let result = match data["method"].as_str().unwrap() {
@@ -1332,12 +1356,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
             "saveKey" => json!({"kind":"updated","snapshot":web}),
             "updateNetwork" => json!({"kind":"applied","result":{"kind":"committed","revision":5}}),
             "discoverModels" => {
-                assert!(data["progressId"].is_null());
                 tx.send((data, call.into_reply())).unwrap();
                 return;
             }
             "loginCredential" => {
-                assert_eq!(data["generation"], 7);
                 let event = json!({"url":"https://example.com/device","userCode":"ABCD-1234"});
                 events.send("ios.mutationProgress", json!({
                     "rootId":"root", "generation":7, "progressId":data["progressId"], "value":event,
@@ -1346,7 +1368,11 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
                 tx.send((data, call.into_reply())).unwrap();
                 return;
             }
-            other => panic!("unexpected mutation {other}"),
+            other => {
+                unexpected_tx.send(other.to_owned()).unwrap();
+                call.reject("unexpected mutation");
+                return;
+            }
         };
         tx.send((data, None)).unwrap();
         call.resolve(json!({"value":result}));
@@ -1390,6 +1416,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
         .unwrap()
         .unwrap();
     assert_eq!(call["endpoint"], "setup");
+    assert!(call["progressId"].is_null());
     assert_eq!(call["input"], target);
     reply
         .unwrap()
@@ -1407,6 +1434,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
         .unwrap()
         .unwrap();
     assert_eq!(call["endpoint"], "authentication");
+    assert_eq!(call["generation"], 7);
     assert_eq!(call["input"]["method"], "device");
     reply.unwrap().resolve(json!({"value":{"kind":"saved"}}));
     app.wait_for_gone("text:ABCD-1234", Duration::from_secs(2))
@@ -1462,6 +1490,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     assert_eq!(call["input"]["expectedPolicyRevision"], 4);
     assert_eq!(call["input"]["networkProxy"]["host"], "new-proxy.example");
     assert!(!call["input"].to_string().contains("proxy-fixture-secret"));
+    assert!(unexpected.try_recv().is_err());
+    for query in std::iter::from_fn(|| queries.try_recv().ok()) {
+        assert_eq!(query.unwrap()["rootId"], "root");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1502,13 +1534,15 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     let (discovery_tx, mut discoveries) = mpsc::unbounded_channel();
     let source_q = source.clone();
     let package_q = package.clone();
+    let (queries_tx, mut queries) = mpsc::unbounded_channel();
+    let query_failures = queries_tx.clone();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
-        assert_eq!(data["rootId"], "root-m5");
         let workspace = &data["input"]["workspace"];
         let value = match (data["endpoint"].as_str().unwrap(),data["method"].as_str().unwrap()) {
             ("agent", "list") => json!({"sessions":[{"id":"project-session","title":"Workspace session","kind":"agent",
                 "workspace":{"path":"/work","name":"Fixture workspace"},"updatedAt":1700000000000u64,"activity":"idle"}]}),
+            ("agent", "pendingInteractions") => json!({"revision":0,"entries":[]}),
             ("agent", "botOutbox") => json!({"isBot":false,"through":0,"readThrough":0}),
             ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[
                 {"reference":{"id":"project"},"name":"Fixture workspace","path":"/work","archived":false,"available":true}
@@ -1522,16 +1556,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             ("management", "read") => json!({"source":{"reference":source_q,"input":{"instances":{"demo":{"bindings":{}}}}},"packages":[package_q]}),
             ("management", "readSettings") => json!({"fields":[],"next":null}),
             ("agent", "projectMcp") => {
-                assert_eq!(data["input"]["sessionId"], "project-session");
                 json!({"kind":"configuration","path":"/work/.mcp.json","revision":"trust-basis","trusted":false,
                     "servers":[{"name":"demo","launch":if bad_launch_q.load(std::sync::atomic::Ordering::SeqCst) {" "} else {"mcp-tool --stdio"},
                     "environment":["FIXTURE_TOKEN"],"headers":["Authorization"],"readOnlyTools":["look_up"],"preapproved":true}],
                     "disabled":["old"]})
             }
             ("agent", "mcpConfigurations") => {
-                assert_eq!(data["input"]["redacted"], true);
                 let location = if workspace.is_null() { "user:agents" } else {
-                    assert_eq!(workspace, &json!({"projectId":"project","path":"/work"}));
                     "project:agents"
                 };
                 json!({"locations":[{"location":location,"path":"/config/mcp.json","revision":"mcp-basis","servers":[
@@ -1546,15 +1577,20 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             }
             ("skills", "read") => json!({"kind":"page","entry":skill,"revision":"skill-basis","text":"Fixture skill instructions.",
                 "preferencesWritable":true,"preferenceRevision":3,"writable":true,"after":null}),
-            method => panic!("unexpected query {method:?}"),
+            method => {
+                query_failures.send(Err(format!("unexpected query {method:?}"))).unwrap();
+                call.reject("unexpected query");
+                return;
+            }
         };
+        queries_tx.send(Ok(data)).unwrap();
         call.resolve(json!({"value":value}));
     });
+    let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
     let (tx, mut writes) = mpsc::unbounded_channel();
     let (delayed_tx, mut delayed) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
-        assert_eq!(data["rootId"], "root-m5");
         let value = match data["method"].as_str().unwrap() {
             "createPreset" | "updatePreset" | "manageMcpServer" => json!({"kind":"saved"}),
             "deletePreset" => json!({"kind":"deleted"}),
@@ -1562,7 +1598,11 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "installUrl" => json!({"status":"committed","value":{"source":source,"package":{"id":"new.plugin","revision":"v2"}}}),
             "trustProjectMcp" => json!({"kind":"trusted"}),
             "setPreference" | "delete" => json!({"kind":"applied"}),
-            method => panic!("unexpected mutation {method}"),
+            method => {
+                unexpected_tx.send(method.to_owned()).unwrap();
+                call.reject("unexpected mutation");
+                return;
+            }
         };
         let hold = data["input"]["url"] == "https://example.com/delayed.maka-plugin";
         tx.send(data).unwrap();
@@ -1709,6 +1749,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "manageMcpServer");
+    assert_eq!(write["rootId"], "root-m5");
     assert_eq!(write["input"]["workspace"]["projectId"], "project");
     assert_eq!(write["input"]["location"], "project:agents");
     assert_eq!(write["generation"], 8);
@@ -1782,6 +1823,29 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             .await
             .is_err()
     );
+    assert!(unexpected.try_recv().is_err());
+    let mut saw_project_proposal = false;
+    let mut saw_redacted_inventory = false;
+    for query in std::iter::from_fn(|| queries.try_recv().ok()) {
+        let query = query.unwrap();
+        assert_eq!(query["rootId"], "root-m5");
+        match query["method"].as_str().unwrap() {
+            "projectMcp" => {
+                saw_project_proposal = true;
+                assert_eq!(query["input"]["sessionId"], "project-session");
+            }
+            "mcpConfigurations" => {
+                saw_redacted_inventory = true;
+                assert_eq!(query["input"]["redacted"], true);
+                let workspace = &query["input"]["workspace"];
+                if !workspace.is_null() {
+                    assert_eq!(workspace, &json!({"projectId":"project","path":"/work"}));
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_project_proposal && saw_redacted_inventory);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1870,6 +1934,7 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
         });
         let settled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let settled_q = settled.clone();
+        let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
         channel.handle("ios.hostQuery", move |mut call| {
             let data = call.take_data();
             let value = match data["method"].as_str().unwrap() {
@@ -1880,15 +1945,18 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
                     json!([{"requestId":"request","kind":request["kind"],"toolUseId":request["toolUseId"]}])
                 }}),
                 "interaction" => json!({"requestId":"request","request":request,"outcome":null}),
-                method => panic!("unexpected query {method}"),
+                method => {
+                    unexpected_tx.send(method.to_owned()).unwrap();
+                    call.reject("unexpected query");
+                    return;
+                }
             };
             call.resolve(json!({"value":value}));
         });
         let (tx, mut rx) = mpsc::unbounded_channel();
         channel.handle("ios.hostMutate", move |mut call| {
             let data = call.take_data();
-            assert_eq!(data["method"], "respond");
-            tx.send(data["input"]["answer"].clone()).unwrap();
+            tx.send(data.clone()).unwrap();
             settled.store(true, std::sync::atomic::Ordering::SeqCst);
             let answer = &data["input"]["answer"];
             let outcome = if answer["kind"] == "question" {
@@ -1917,7 +1985,10 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             app.wait_for("text:What notes?").unwrap();
             app.press("label:Stable").unwrap();
             app.press("label:Submit Answer").unwrap();
-            assert_eq!(rx.try_recv().unwrap(), expected);
+            let data = rx.try_recv().unwrap();
+            assert_eq!(data["method"], "respond");
+            assert_eq!(data["input"]["answer"], expected);
+            assert!(unexpected.try_recv().is_err());
             continue;
         }
         app.wait_for(&format!("text:/{}/", detail.replace('/', "\\/")))
@@ -1927,7 +1998,10 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             assert!(!app.shows("label:Allow"));
         }
         app.press(&format!("label:{button}")).unwrap();
-        assert_eq!(rx.try_recv().unwrap(), expected);
+        let data = rx.try_recv().unwrap();
+        assert_eq!(data["method"], "respond");
+        assert_eq!(data["input"]["answer"], expected);
+        assert!(unexpected.try_recv().is_err());
         app.wait_for(if button == "Deny" {
             "text:Denied"
         } else {
@@ -1943,17 +2017,18 @@ async fn manual_websocket_is_visible_until_disconnected() {
     let empty =
         |revision| json!({"revision":revision,"devicePeerId":"phone","hosts":[],"connections":{}});
     channel.handle("ios.bootstrap", move |call| call.resolve(empty(1)));
+    let (connect_tx, mut connect_rx) = mpsc::unbounded_channel();
     channel.handle("ios.connectWebSocket", move |mut call| {
-        assert_eq!(call.take_data(), json!({"endpoint":"wss://host.example/runtime-host","rootId":"manual",
-            "bearer":"fixture-bearer","clientInstance":"fixture-client"}));
+        connect_tx.send(call.take_data()).unwrap();
         let connection = json!({"rootId":"manual","hostName":"WebSocket","generation":2,"session":"anchor",
             "endpoints":[],"transport":"websocket"});
         call.resolve(json!({"revision":2,"devicePeerId":"phone","hosts":[
             {"rootId":"manual","hostName":"WebSocket","peerId":"","ephemeral":true,"endpoints":[]}
         ],"active":connection,"connections":{"manual":{"status":"connected","connection":connection}}}));
     });
+    let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel();
     channel.handle("ios.disconnectHost", move |mut call| {
-        assert_eq!(call.take_data(), json!({"rootId":"manual"}));
+        disconnect_tx.send(call.take_data()).unwrap();
         call.resolve(empty(3));
     });
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
@@ -1982,16 +2057,25 @@ async fn manual_websocket_is_visible_until_disconnected() {
     app.type_text("label:Client instance", "fixture-client")
         .unwrap();
     app.press("label:Connect via WebSocket").unwrap();
+    assert_eq!(
+        connect_rx.try_recv().unwrap(),
+        json!({"endpoint":"wss://host.example/runtime-host","rootId":"manual",
+        "bearer":"fixture-bearer","clientInstance":"fixture-client"})
+    );
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
     app.press("label:Computer: WebSocket").unwrap();
     app.wait_for("label:Disconnect").unwrap();
     app.press("label:Disconnect").unwrap();
+    assert_eq!(
+        disconnect_rx.try_recv().unwrap(),
+        json!({"rootId":"manual"})
+    );
     app.wait_for("label:Scan QR code on computer").unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
+async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connection() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         let host =
@@ -1999,8 +2083,10 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
         call.resolve(json!({"revision":1,"hosts":[host],"active":host,
             "connections":{"root":{"status":"connected","connection":host}}}));
     });
-    let advanced = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let query_advanced = advanced.clone();
+    let phase = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let query_phase = phase.clone();
+    let (earlier_tx, mut earlier_rx) = mpsc::unbounded_channel();
+    let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let session = json!({"id":"room-1","title":"Release Room","kind":"room","parentSessionId":null,
@@ -2019,28 +2105,42 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
             "pendingInteractions" => json!({"entries":[]}),
             "history" => {
                 if data["input"]["position"]["kind"] == "before_message" {
-                    assert_eq!(data["input"]["position"]["messageId"], "m2");
-                    assert_eq!(data["input"]["through"], 0);
-                    json!({"kind":"room","page":{"items":[message(1,"m1","Earlier room message")],"through":0,"before":"m1"}})
-                } else if query_advanced.load(std::sync::atomic::Ordering::SeqCst) {
-                    json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message"),message(3,"m3","Live room message")],"through":1,"before":"m2"}})
-                } else {
-                    json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}})
+                    let value = if data["input"]["position"]["messageId"] == "m2" {
+                        json!({"kind":"room","page":{"items":[message(1,"m1","Earlier room message")],"through":0,"before":"m1"}})
+                    } else {
+                        json!({"kind":"room","page":{"items":[message(0,"m0","Stale page from first connection")],"through":1,"before":null}})
+                    };
+                    earlier_tx.send((data, call, value)).unwrap();
+                    return;
+                }
+                match query_phase.load(std::sync::atomic::Ordering::SeqCst) {
+                    0 => json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}}),
+                    1 => json!({"kind":"room","page":{"items":[message(3,"m3","Live room message")],"through":1,"before":"m3"}}),
+                    _ => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
                 }
             }
-            method => panic!("unexpected query {method}"),
+            method => {
+                unexpected_tx.send(method.to_owned()).unwrap();
+                call.reject("unexpected query");
+                return;
+            }
         };
         call.resolve(json!({"value":value}));
     });
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    let subscribe_phase = phase.clone();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
         if data["method"] == "watch" {
             watch_tx.send(data["subscriptionId"].clone()).unwrap();
         }
+        let generation = if subscribe_phase.load(std::sync::atomic::Ordering::SeqCst) == 2 { 2 } else { 1 };
         call.resolve(
-            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation}),
         );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
     });
     let (send_tx, mut send_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
@@ -2062,9 +2162,11 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
     app.press("label:Conversation: Release Room").unwrap();
     app.wait_for("text:Initial room message").unwrap();
     app.press("label:Load earlier messages").unwrap();
-    app.wait_for("text:Earlier room message").unwrap();
+    let (input, earlier, value) = earlier_rx.try_recv().unwrap();
+    assert_eq!(input["input"]["position"]["messageId"], "m2");
+    assert_eq!(input["input"]["through"], 0);
     let watch = watch_rx.try_recv().unwrap();
-    advanced.store(true, std::sync::atomic::Ordering::SeqCst);
+    phase.store(1, std::sync::atomic::Ordering::SeqCst);
     app.send_host_event(
         "ios.subscriptionItem",
         json!({"rootId":"root","generation":1,"subscriptionId":watch,
@@ -2072,6 +2174,7 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
     )
     .unwrap();
     app.wait_for("text:Live room message").unwrap();
+    earlier.resolve(json!({"value":value}));
     app.wait_for("text:Earlier room message").unwrap();
     assert!(app.press("label:Select model").is_err());
     app.type_text("label:Message composer", "Hi Room").unwrap();
@@ -2079,6 +2182,24 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
     let input = send_rx.try_recv().unwrap();
     assert!(input["backend"].is_null());
     assert_eq!(input["message"], "Hi Room");
+    app.wait_for("text:Initial room message").unwrap();
+    app.press("label:Load earlier messages").unwrap();
+    let (data, stale, page) = earlier_rx.try_recv().unwrap();
+    assert_eq!(data["input"]["position"]["messageId"], "m1");
+    phase.store(2, std::sync::atomic::Ordering::SeqCst);
+    let host = json!({"rootId":"root","hostName":"Room Host","generation":2,"endpoints":["agent"]});
+    app.send_host_event(
+        "ios.hostState",
+        json!({"revision":2,"hosts":[host],"active":host,
+        "connections":{"root":{"status":"connected","connection":host}}}),
+    )
+    .unwrap();
+    app.wait_for("text:Reconnected room message").unwrap();
+    stale.resolve(json!({"value":page}));
+    assert!(app.settle());
+    assert!(!app.shows("Stale page from first connection"));
+    app.wait_for("label:Load earlier messages").unwrap();
+    assert!(unexpected.try_recv().is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2102,9 +2223,24 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
         }]})
     };
     let initial = history(2, 0, &original, Some(json!({"fixture":"older"})));
-    let older = history(1, 0, "Earlier user message", None);
+    let mut older = history(1, 0, "Earlier user message", None);
+    let prefix = "Imported user prefix ";
+    let suffix = "and continuation";
+    let mut first = history(1, 0, prefix, None)["chunks"][0].clone();
+    first["messageId"] = Value::Null;
+    first["order"]["itemIndex"] = json!(1);
+    first["position"] = json!({"kind":"imported","path":[],"snapshot":Uuid::nil(),"messageOrdinal":1,"partOrdinal":1});
+    first["totalBytes"] = json!(prefix.len() + suffix.len());
+    let mut last = first.clone();
+    last["text"] = json!(suffix);
+    last["offset"] = json!(prefix.len());
+    older["chunks"]
+        .as_array_mut()
+        .unwrap()
+        .extend([first, last]);
     let (tail_tx, mut tail_rx) = mpsc::unbounded_channel();
     let tail_requests = std::sync::atomic::AtomicUsize::new(0);
+    let (unexpected_tx, mut unexpected) = mpsc::unbounded_channel();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let session = json!({"id":"agent-1","title":"Agent History","kind":"agent","parentSessionId":null,
@@ -2121,7 +2257,11 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
                 tail_tx.send(call).unwrap();
                 return;
             }
-            method => panic!("unexpected query {method}"),
+            method => {
+                unexpected_tx.send(method.to_owned()).unwrap();
+                call.reject("unexpected query");
+                return;
+            }
         };
         call.resolve(json!({"value":value}));
     });
@@ -2148,6 +2288,8 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
     app.wait_for(&format!("text:/^{original}$/")).unwrap();
     app.press("label:Load earlier messages").unwrap();
     app.wait_for("text:Earlier user message").unwrap();
+    app.wait_for("text:/^Imported user prefix and continuation$/")
+        .unwrap();
     let watch = watch_rx.try_recv().unwrap();
     let delivery = |through| {
         json!({"rootId":"root","generation":1,"subscriptionId":watch,
@@ -2185,4 +2327,5 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
         tail_rx.try_recv().is_err(),
         "burst should schedule just one catch-up query"
     );
+    assert!(unexpected.try_recv().is_err());
 }

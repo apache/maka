@@ -46,6 +46,14 @@ import { refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
 import { refreshHostSessions } from './sessions';
 
+export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
+  for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
+    const order = a.order.path[i] - b.order.path[i];
+    if (order) return order;
+  }
+  return a.order.path.length - b.order.path.length || a.order.itemIndex - b.order.itemIndex;
+}
+
 export function conversationKey(rootId: string, sessionId: string): string {
   return rootId + '::' + sessionId;
 }
@@ -208,7 +216,9 @@ export function createConversationController(
   const isRoom = signal(initialRoom);
   const beforeCursor = signal<unknown>(null);
   const loading = signal(true);
-  const loadingEarlier = signal(false);
+  const earlierGeneration = signal<number | null>(null);
+  const loadingEarlier = () =>
+    earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
   const sending = signal(false);
   const error = signal<string | null>(null);
   const queue = signal<AgentQueue>({ revision: 0, entries: [] });
@@ -261,19 +271,12 @@ export function createConversationController(
     }
   };
 
-  const compareRows = (a: AgentHistoryChunk, b: AgentHistoryChunk) => {
-    for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
-      const order = a.order.path[i] - b.order.path[i];
-      if (order) return order;
-    }
-    return a.order.path.length - b.order.path.length || a.order.itemIndex - b.order.itemIndex;
-  };
   const joinHistory = (older: AgentHistoryChunk[], tail: AgentHistoryChunk[]) => {
     const first = tail[0];
     if (!first) return older;
     const prefix: AgentHistoryChunk[] = [];
     for (const row of older) {
-      const order = compareRows(row, first);
+      const order = compareHistoryRows(row, first);
       if (order > 0 || (order === 0 && row.offset >= first.offset)) break;
       if (order < 0) {
         prefix.push(row);
@@ -310,27 +313,28 @@ export function createConversationController(
         rootId,
       );
       if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+      const preserveHistory = pagedHistory || loadingEarlier();
       if (page?.kind === 'room') {
         isRoom.set(true);
         const tail = page.page.items;
-        if (tail.length || !pagedHistory)
+        if (tail.length || !preserveHistory)
           roomMessages.update((previous) =>
-            pagedHistory && tail.length
+            preserveHistory && tail.length
               ? [...previous.filter((item) => item.sequence < tail[0].sequence), ...tail]
               : tail,
           );
-        if (!pagedHistory) beforeCursor.set(page.page.before ?? null);
+        if (!preserveHistory) beforeCursor.set(page.page.before ?? null);
         if (typeof page.page?.through === 'number') {
           lastThrough = Math.max(lastThrough ?? 0, page.page.through);
         }
       } else if (page?.kind === 'ready') {
         isRoom.set(false);
         const tail = page.chunks;
-        if (tail.length || !pagedHistory)
+        if (tail.length || !preserveHistory)
           chunks.update((previous) =>
-            pagedHistory && tail.length ? joinHistory(previous, tail) : tail,
+            preserveHistory && tail.length ? joinHistory(previous, tail) : tail,
           );
-        if (!pagedHistory) beforeCursor.set(page.before ?? null);
+        if (!preserveHistory) beforeCursor.set(page.before ?? null);
         if (typeof page.through === 'number') {
           lastThrough = Math.max(lastThrough ?? 0, page.through);
         }
@@ -432,8 +436,9 @@ export function createConversationController(
 
   const loadEarlier = async () => {
     const cursor = beforeCursor();
-    if (cursor == null || loadingEarlier()) return;
-    loadingEarlier.set(true);
+    const generation = activeHostInfo(rootId)?.generation;
+    if (cursor == null || generation == null || loadingEarlier()) return;
+    earlierGeneration.set(generation);
     try {
       const page = await hostQuery<AgentHistoryPage>(
         'agent',
@@ -450,7 +455,7 @@ export function createConversationController(
         undefined,
         rootId,
       );
-      if (disposed) return;
+      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
       pagedHistory = true;
       if (page?.kind === 'room') {
         const older = page.page?.items ?? [];
@@ -464,9 +469,11 @@ export function createConversationController(
         beforeCursor.set(page.before ?? null);
       }
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
+      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+        showToast(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
-      if (!disposed) loadingEarlier.set(false);
+      if (!disposed && earlierGeneration() === generation) earlierGeneration.set(null);
     }
   };
 
