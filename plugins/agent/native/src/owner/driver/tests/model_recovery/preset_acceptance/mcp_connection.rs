@@ -571,7 +571,6 @@ async fn attach_session_mcp(
     }
 }
 
-#[cfg(unix)]
 fn read_pids(path: &Path) -> TestResult<Vec<i32>> {
     Ok(std::fs::read_to_string(path)?
         .lines()
