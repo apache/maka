@@ -3733,6 +3733,193 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     fixture.finish().await;
 }
 
+#[cfg(target_os = "macos")]
+async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    // Turn 0 is a tall markdown reply full of verbose file:// links so its
+    // provisional raw-markdown height far exceeds its parsed height, causing a
+    // large positive then negative ScrollBy pair when it enters overscan above
+    // the viewport while scrolling upward.
+    let mut tall_markdown = String::from("## Detailed review findings\n\n");
+    for i in 0..55 {
+        tall_markdown.push_str(&format!(
+            "- **Finding {i}**: inspect [scroll_anchor_module_{i}.rs](file:///Users/example/workspace/products/maka/crates/scroll-engine/src/internal/layout/scroll_anchor_module_{i}.rs#L120-L245) and [history_viewport_{i}.tsx](file:///Users/example/workspace/plugins/agent/conversations/ui/components/history_viewport_{i}.tsx#L410-L520) for anchor drift during async markdown hydration.\n",
+        ));
+    }
+    let filler_reply = |label: &str, paragraphs: usize| {
+        let mut out = format!("### {label}\n\n");
+        for p in 0..paragraphs {
+            out.push_str(&format!(
+                "{label} section {p}: verifying scroll anchoring, history pagination, and markdown rendering across multiple turns in the conversation timeline.\n\n"
+            ));
+        }
+        out
+    };
+    let turns = [
+        ("Review the full diff", tall_markdown),
+        ("Check the first follow-up", filler_reply("Follow-up 1", 6)),
+        ("Check the second follow-up", filler_reply("Follow-up 2", 6)),
+        ("Check the third follow-up", filler_reply("Follow-up 3", 10)),
+        ("Summarize final checks", filler_reply("Final summary", 6)),
+    ];
+
+    for (idx, (prompt, body)) in turns.iter().enumerate() {
+        mutate(
+            &client,
+            "send",
+            json!({"sessionId": fixture.session, "backend": {
+                "kind": "model", "connectionId": fixture.selection["connectionId"],
+                "modelId": fixture.selection["modelId"],
+            }, "message": prompt}),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        for r in 0..4 {
+            reply
+                .packet(json!({"type":"response.output_item.done","item":{
+                    "type":"reasoning","id":format!("r-{idx}-{r}"),
+                    "summary":[{"type":"summary_text","text":format!("Checked step {r} for turn {idx}")}]
+                }}))
+                .await;
+        }
+        reply.delta(body).await;
+        reply.finish().await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1732),
+            nsh_terminal::DevicePixels(1080),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop
+        .until("latest reply did not render", || {
+            (!desktop.controls("Copy user message").is_empty()
+                && desktop.controls("Return to latest").is_empty())
+            .then_some(())
+        })
+        .await;
+    let top_visible_prompt = |desktop: &Desktop| {
+        desktop
+            .controls("Copy user message")
+            .into_iter()
+            .filter(|b| b.origin.y >= px(48.) && b.origin.y + b.size.height <= px(960.))
+            .min_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap())
+    };
+    let initial_copy = desktop
+        .until("initial user message copy button not visible", || {
+            top_visible_prompt(&desktop)
+        })
+        .await;
+    let initial_prompt = desktop
+        .copy_at("could not copy initial prompt", initial_copy.center())
+        .await;
+    assert_eq!(initial_prompt, "Summarize final checks");
+
+    use nsh_terminal::{ScrollDelta, ScrollWheelEvent, TouchPhase};
+    let center = point(px(950.), px(500.));
+
+    // Scroll steadily upward all the way to Turn 0, crossing the point where
+    // Turn 0 enters overscan and re-measures from provisional raw markdown to
+    // parsed blocks, verifying the viewport reaches and stays on Turn 0.
+    let mut reached_first_turn = false;
+    for flick in 0..32 {
+        desktop
+            .platform
+            .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                position: center,
+                delta: ScrollDelta::Pixels(point(px(0.), px(10.))),
+                touch_phase: TouchPhase::Started,
+            })))
+            .unwrap();
+        desktop.pump();
+        tokio::time::sleep(Duration::from_millis(12)).await;
+        for _ in 0..8 {
+            desktop
+                .platform
+                .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                    position: center,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(22.))),
+                    touch_phase: TouchPhase::Moved,
+                })))
+                .unwrap();
+            desktop.pump();
+            tokio::time::sleep(Duration::from_millis(12)).await;
+        }
+        desktop
+            .platform
+            .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                position: center,
+                delta: ScrollDelta::Pixels(point(px(0.), px(0.))),
+                touch_phase: TouchPhase::Ended,
+            })))
+            .unwrap();
+        for _ in 0..4 {
+            desktop.pump();
+            tokio::time::sleep(Duration::from_millis(12)).await;
+        }
+        assert!(
+            !desktop.controls("Return to latest").is_empty(),
+            "upward flick #{flick} jumped back to the bottom"
+        );
+        if flick >= 10
+            && let Some(copy) = top_visible_prompt(&desktop)
+            && copy.origin.y < px(260.)
+            && desktop
+                .copy_at("could not copy top prompt", copy.center())
+                .await
+                == "Review the full diff"
+        {
+            reached_first_turn = true;
+            break;
+        }
+    }
+    assert!(
+        reached_first_turn,
+        "upward scrolling never reached Turn 0 (Review the full diff)"
+    );
+
+    // Genuine downward scrolling back to the bottom still resumes following.
+    desktop
+        .retry(
+            "scrolling back down to the tail should resume following",
+            || desktop.controls("Return to latest").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: center,
+                        delta: ScrollDelta::Lines(point(0., -18.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    let tail_copy = desktop
+        .until("tail user message copy button did not return", || {
+            top_visible_prompt(&desktop)
+        })
+        .await;
+    assert_eq!(
+        desktop
+            .copy_at("could not copy tail prompt", tail_copy.center())
+            .await,
+        "Summarize final checks"
+    );
+
+    desktop.close().await;
+    fixture.finish().await;
+}
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_external_agent_satisfies_new_session_connection_prompt",
@@ -3746,6 +3933,8 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
     #[cfg(target_os = "macos")]
     "desktop_resumes_live_activity_when_scrolling_back_to_latest",
+    #[cfg(target_os = "macos")]
+    "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_asks_a_side_question_beside_a_reply",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
@@ -3797,6 +3986,9 @@ pub(crate) fn run(name: &str) {
         "desktop_resumes_live_activity_when_scrolling_back_to_latest" => {
             runtime.block_on(desktop_resumes_live_activity_when_scrolling_back_to_latest())
         }
+        #[cfg(target_os = "macos")]
+        "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom" => runtime
+            .block_on(desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()),
         "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
             runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
         }

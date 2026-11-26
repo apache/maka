@@ -56,6 +56,9 @@ fn mime_types(uris: &[String]) -> Vec<String> {
 pub struct ScrollEvent {
     /// The content offset (TS: `contentOffset`).
     pub offset: Point<Points>,
+    /// Displacement since the previous event (for lists, excluding core
+    /// anchoring and instant jumps).
+    pub delta: Point<Points>,
     /// The content's size (TS: `contentSize`).
     pub content_size: Size<Points>,
     /// The scroll view's size (TS: `layoutMeasurement`).
@@ -69,6 +72,7 @@ impl Default for ScrollEvent {
     fn default() -> Self {
         Self {
             offset: Point::default(),
+            delta: Point::default(),
             content_size: Size::default(),
             size: Size::default(),
             zoom_scale: 1.0,
@@ -624,6 +628,7 @@ pub(crate) fn scroll(p: &EventPayload) -> Option<Cow<'_, ScrollEvent>> {
         },
         _ => ScrollEvent {
             offset: point_field(p, "offset"),
+            delta: point_field(p, "delta"),
             content_size: size_field(p, "contentSize"),
             size: size_field(p, "size"),
             zoom_scale: match field(p, "zoomScale") {

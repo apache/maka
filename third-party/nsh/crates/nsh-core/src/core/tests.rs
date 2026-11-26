@@ -4893,6 +4893,315 @@ fn animated_scroll_commands_retarget_while_rows_are_measured() {
     assert_eq!(target, (content.height - Points(400.0)).0);
 }
 
+#[test]
+fn plain_scroll_keeps_2d_zoom_offset_and_does_not_accumulate_pending() {
+    let mut s = scroll_around_view(0.0, 30.0);
+    s.apply(Op::Listen {
+        id: 2,
+        event: EventKind::Scroll,
+        enabled: true,
+    })
+    .unwrap();
+    s.set_zoom(2, 2.0);
+    s.set_scroll_offset(2, point(px(12.0), px(30.0)), 0);
+    for _ in 0..100 {
+        s.apply(Op::Command {
+            id: 2,
+            command: Command::ScrollTo {
+                x: px(120.0),
+                y: px(300.0),
+                animated: false,
+            },
+        })
+        .unwrap();
+        s.commit();
+    }
+    // Plain Scroll without parent-viewport lists must neither accumulate
+    // unbounded pending entries nor synthesize a hybrid (12, 300) offset.
+    let scroll = s.nodes[s.key(2).unwrap() as usize].scroll.as_ref().unwrap();
+    assert!(scroll.pending.is_empty());
+    s.set_scroll_offset(2, point(px(12.0), px(30.0)), 0);
+    let (_, offset, _, _, _) = s.scroll_listener(2).unwrap();
+    assert_eq!(offset, point(px(12.0), px(30.0)));
+}
+
+#[test]
+fn same_batch_scroll_by_and_scroll_to_ack_in_mount_order_with_zero_delta() {
+    let mut c = core();
+    estimated_list(&mut c);
+    c.apply(Op::Listen {
+        id: 2,
+        event: EventKind::Scroll,
+        enabled: true,
+    })
+    .unwrap();
+    c.commit();
+    let (mut next_id, mut cells) = (100, Vec::new());
+    render_binds(&mut c, &mut next_id, &mut cells, 50.0);
+    c.commit();
+    c.set_scroll_offset(2, point(px(0.0), px(1500.0)), 0);
+    c.commit();
+    render_binds(&mut c, &mut next_id, &mut cells, 50.0);
+    c.commit();
+
+    // Grow a row strictly above the viewport (+40pt) and request scrollTo(1400)
+    // in the same commit: mount emits ScrollBy(+40) before Command::ScrollTo(1400).
+    let above = cells
+        .iter()
+        .copied()
+        .find(|&id| c.measure(id).is_some_and(|m| m.frame.origin.y < px(1400.0)))
+        .expect("bound cell above viewport");
+    c.apply(style_op(above, &[("height", StyleValue::Number(90.0))]))
+        .unwrap();
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollTo {
+            x: px(0.0),
+            y: px(1400.0),
+            animated: false,
+        },
+    })
+    .unwrap();
+    let batch = c.commit().unwrap();
+    let ops: Vec<&str> = batch
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MountItem::ScrollBy { id: 2, .. } => Some("by"),
+            MountItem::Command {
+                id: 2,
+                command: Command::ScrollTo { .. },
+            } => Some("to"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ops, ["by", "to"]);
+
+    // Platform ACKs By(+40) first, then To(1400): neither produces bogus delta.
+    let d1 = c.set_scroll_offset(2, point(px(0.0), px(1540.0)), 1);
+    assert_eq!(d1.y, px(0.0));
+    assert_eq!(c.scroll_listener(2).unwrap().1.y, px(1400.0));
+    let d2 = c.set_scroll_offset(2, point(px(0.0), px(1400.0)), 2);
+    assert_eq!(d2.y, px(0.0));
+    assert_eq!(c.scroll_listener(2).unwrap().1.y, px(1400.0));
+
+    // An own-list ScrollTo beyond max offset clamps to max so the platform's
+    // clamped ACK reports zero delta instead of a spurious negative jump.
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollTo {
+            x: px(0.0),
+            y: px(5000.0),
+            animated: false,
+        },
+    })
+    .unwrap();
+    c.commit();
+    let (_, _, content, viewport, _) = c.scroll_listener(2).unwrap();
+    let max_offset = content.height - viewport.height;
+    let d3 = c.set_scroll_offset(2, point(px(0.0), max_offset), 3);
+    assert_eq!(d3.y, px(0.0));
+    assert_eq!(c.scroll_listener(2).unwrap().1.y, max_offset);
+}
+
+#[test]
+fn removing_last_parent_viewport_list_clears_outer_scroll_pending() {
+    let mut c = core();
+    page(&mut c, 800.0, &[20]);
+    c.apply(Op::Listen {
+        id: 2,
+        event: EventKind::Scroll,
+        enabled: true,
+    })
+    .unwrap();
+    c.commit();
+    c.set_scroll_offset(2, point(px(0.0), px(180.0)), 0);
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollTo {
+            x: px(0.0),
+            y: px(180.0),
+            animated: false,
+        },
+    })
+    .unwrap();
+    c.commit();
+    // Unmount the only parent-viewport child list before any ACK arrives.
+    c.apply(Op::Remove {
+        parent: 2,
+        child: 4,
+    })
+    .unwrap();
+    c.commit();
+    c.set_scroll_offset(2, point(px(0.0), px(240.0)), 1);
+    assert_eq!(c.scroll_listener(2).unwrap().1.y, px(240.0));
+    c.set_scroll_offset(2, point(px(0.0), px(320.0)), 1);
+    assert_eq!(c.scroll_listener(2).unwrap().1.y, px(320.0));
+}
+
+#[test]
+fn nested_parent_viewport_scroll_by_does_not_overtake_outer_scroll_to() {
+    let mut c = core();
+    // Outer own-list (id=2, 1 item holding inner parent-viewport list id=4) + footer (id=5).
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::List,
+            },
+            style_op(2, &[("height", StyleValue::Number(400.0))]),
+            Op::SetProp {
+                id: 2,
+                prop: Prop::EstimatedItemSize(px(1000.0)),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Count(1),
+            },
+            Op::Listen {
+                id: 2,
+                event: EventKind::Scroll,
+                enabled: true,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            Op::Create {
+                id: 5,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 5,
+                prop: Prop::Slot(CellSlot::Footer),
+            },
+            style_op(5, &[("height", StyleValue::Number(10.0))]),
+            Op::Insert {
+                parent: 2,
+                child: 5,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+    let mut binds = Vec::new();
+    c.take_list_binds(&mut binds);
+    c.take_paced_list_binds(usize::MAX, &mut binds);
+    assert_eq!(binds.len(), 1);
+    // Bind outer cell 3 containing inner parent-viewport list 4 (20 rows of 50pt).
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 3,
+                tag: Tag::Cell,
+            },
+            Op::SetProp {
+                id: 3,
+                prop: Prop::Slot(CellSlot::Item(0)),
+            },
+            Op::Insert {
+                parent: 2,
+                child: 3,
+                before: None,
+            },
+            Op::Create {
+                id: 4,
+                tag: Tag::List,
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::ListViewport(crate::ListViewport::Parent),
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::EstimatedItemSize(px(50.0)),
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::Count(20),
+            },
+            Op::Insert {
+                parent: 3,
+                child: 4,
+                before: None,
+            },
+            Op::SetProp {
+                id: 3,
+                prop: Prop::CellIndex(0),
+            },
+        ],
+    );
+    c.commit();
+    let (mut next_id, mut inner_cells) = (100, Vec::new());
+    render_binds(&mut c, &mut next_id, &mut inner_cells, 50.0);
+    c.commit();
+    c.set_scroll_offset(2, point(px(0.0), px(350.0)), 0);
+    c.commit();
+    render_binds(&mut c, &mut next_id, &mut inner_cells, 50.0);
+    c.commit();
+
+    // Locate inner cells for rows 5 (above viewport) and 9 (in viewport).
+    let cell_of = |c: &Core<FakeEngine>, target: u32| {
+        c.nodes[c.key(4).unwrap() as usize]
+            .list
+            .as_ref()
+            .unwrap()
+            .slots
+            .iter()
+            .find_map(|s| (s.index == Some(target)).then_some(c.nodes[s.cell as usize].id))
+            .expect("bound inner cell")
+    };
+    let row5 = cell_of(&c, 5);
+    let row9 = cell_of(&c, 9);
+
+    // Same commit: row 5 shrinks 50->20 (-30pt), row 9 grows 50->80 (+30pt),
+    // footer grows 10->30 (+20pt), and outer list gets instant ScrollTo(330).
+    apply(
+        &mut c,
+        vec![
+            style_op(row5, &[("height", StyleValue::Number(20.0))]),
+            style_op(row9, &[("height", StyleValue::Number(80.0))]),
+            style_op(5, &[("height", StyleValue::Number(30.0))]),
+            Op::Command {
+                id: 2,
+                command: Command::ScrollTo {
+                    x: px(0.0),
+                    y: px(330.0),
+                    animated: false,
+                },
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    // Collect counted scrolls for outer list 2 in exact mount order.
+    let ops: Vec<(bool, f32)> = batch
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MountItem::Command {
+                id: 2,
+                command: Command::ScrollTo { y, .. },
+            } => Some((true, y.0)),
+            MountItem::ScrollBy { id: 2, dy, .. } if dy.0 != 0.0 => Some((false, dy.0)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ops, [(true, 330.0), (false, -30.0)]);
+
+    // Execute and ACK both in exact mount order with zero user input:
+    // To(330) -> 330, then By(-30) -> 300; both ACKs report 300 with zero delta.
+    let mut pos = 350.0f32;
+    for (i, &(is_to, val)) in ops.iter().enumerate() {
+        pos = if is_to { val } else { pos + val };
+        let delta = c.set_scroll_offset(2, point(px(0.0), px(pos)), (i + 1) as u32);
+        assert_eq!(delta.y, px(0.0), "ack #{}: pos={pos}", i + 1);
+        assert_eq!(c.scroll_listener(2).unwrap().1.y, px(300.0));
+    }
+}
+
 /// The animated `ScrollTo`s for list 2 in `batch`.
 fn scroll_tos(batch: &MountBatch) -> Vec<f32> {
     batch

@@ -571,7 +571,7 @@ function ActivityLog(props: {
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
-            const movement = event.offset.y - lastOffset;
+            const movement = event.delta.y;
             lastOffset = event.offset.y;
             const end = Math.max(0, event.contentSize.height - event.size.height);
             const distance = end - lastOffset;

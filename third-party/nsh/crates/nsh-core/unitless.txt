@@ -100,7 +100,7 @@ canvas::hit::point_in_stroke(slot)                               # a generic num
 canvas::render::RenderRequest.scale                              # pixels per point, a ratio
 canvas::render::RenderOptions.scale                              # pixels per point, a ratio
 ops::Command::RenderCanvas.scale                                 # pixels per point, a ratio
-core::Core::scroll_listener ->                                   # time and a zoom scale factor (the sizes it gives are typed)
+core::Core::scroll_listener ->                                   # time and a zoom scale factor (the offset and sizes it gives are typed)
 core::Core::set_font_scale(scale)                                # a font scale factor
 core::Core::set_zoom(scale)                                      # a zoom scale factor
 css::Color::with_alpha(factor)                                   # an opacity factor

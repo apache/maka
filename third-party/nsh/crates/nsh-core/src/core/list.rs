@@ -192,6 +192,41 @@ pub(super) struct Blocks {
 pub(super) enum PendingScroll {
     By(f32),
     To(f32),
+    /// An animated `ScrollTo`: leaves the current position where the platform
+    /// is until the animation ticks, while keeping the list unsettled so
+    /// pre-command reports do not cancel the pin.
+    Animate,
+}
+
+impl PendingScroll {
+    pub(super) fn to(offset: f32, animated: bool) -> Self {
+        if animated {
+            Self::Animate
+        } else {
+            Self::To(offset)
+        }
+    }
+}
+
+/// Records an issued scroll, dropping earlier entries that it makes redundant:
+/// an instant `To` supersedes all earlier pending scrolls, and consecutive
+/// `Animate` markers collapse to the latest sequence number so repeated
+/// no-op `scrollTo` calls cannot grow `pending` unboundedly.
+pub(super) fn push_pending(
+    pending: &mut Vec<(u32, PendingScroll)>,
+    issued: u32,
+    scroll: PendingScroll,
+) {
+    match scroll {
+        PendingScroll::To(_) => pending.clear(),
+        PendingScroll::Animate => {
+            if matches!(pending.last(), Some((_, PendingScroll::Animate))) {
+                pending.pop();
+            }
+        }
+        PendingScroll::By(_) => {}
+    }
+    pending.push((issued, scroll));
 }
 
 /// Where the platform's reported `offset` ends up once the `pending`
@@ -202,9 +237,31 @@ pub(super) fn replay(offset: f32, pending: &[(u32, PendingScroll)]) -> f32 {
         match scroll {
             PendingScroll::By(d) => at += d,
             PendingScroll::To(t) => at = t,
+            PendingScroll::Animate => {}
         }
     }
     at
+}
+
+/// Like [`replay`], clamping to `limits` when replaying an instant `By` or
+/// `To` so stale reports combined with pending shifts cannot overshoot valid
+/// scroll bounds, while leaving rubber-band overscroll untouched when no
+/// shift is replayed.
+pub(super) fn replay_clamped(
+    offset: f32,
+    pending: &[(u32, PendingScroll)],
+    limits: Option<(f32, f32)>,
+) -> f32 {
+    let at = replay(offset, pending);
+    if let Some((min, max)) = limits
+        && pending
+            .iter()
+            .any(|(_, s)| !matches!(s, PendingScroll::Animate))
+    {
+        at.clamp(min, max)
+    } else {
+        at
+    }
 }
 
 /// The step [`ListState::urgent_span`] reads after the platform reported a
@@ -1003,19 +1060,41 @@ impl ListState {
     }
 
     /// Records a `ScrollTo` sent to the platform.
-    pub(super) fn issue_scroll_to(&mut self, offset: f32) {
+    pub(super) fn issue_scroll_to(&mut self, offset: f32, animated: bool) {
         self.issued += 1;
-        self.pending.push((self.issued, PendingScroll::To(offset)));
+        push_pending(
+            &mut self.pending,
+            self.issued,
+            PendingScroll::to(offset, animated),
+        );
     }
 
     /// The platform reports its offset after applying `applied` of the
     /// issued scrolls: scrolls it has not applied yet still count, so a
     /// report that predates them does not move the window backwards.
-    pub(super) fn reported(&mut self, offset: f32, applied: u32) -> bool {
+    /// Returns `(moved_or_displaced, delta)`, where `delta` is the
+    /// displacement relative to the committed position (excluding core-issued
+    /// `ScrollBy` anchors and instant `ScrollTo` jumps).
+    pub(super) fn reported_clamped(
+        &mut self,
+        offset: f32,
+        applied: u32,
+        limits: Option<(f32, f32)>,
+    ) -> (bool, f32) {
         self.pending.retain(|&(n, _)| n > applied);
-        let at = replay(offset, &self.pending);
+        let limits = limits.or_else(|| (self.viewport > 0.0).then(|| self.offset_limits()));
+        let at = replay_clamped(offset, &self.pending, limits);
+        // An uncommitted splice shifts self.offset ahead of commit; exclude it
+        // so delta stays in the committed coordinate frame.
+        let prior = self.offset - self.splice_anchor;
+        let delta = at - prior;
         self.splice_overwritten = self.splice_anchor;
-        self.moved_to(at, self.pending.is_empty())
+        (self.moved_to(at, self.pending.is_empty()), delta)
+    }
+
+    #[cfg(test)]
+    pub(super) fn reported(&mut self, offset: f32, applied: u32) -> bool {
+        self.reported_clamped(offset, applied, None).0
     }
 
     /// No scroll the core issued is waiting for the platform.
@@ -3370,12 +3449,18 @@ mod tests {
         // Reported before the platform applied the shift.
         l.reported(500.0, 0);
         assert_eq!(l.offset, 530.0);
-        l.issue_scroll_to(1000.0);
+        l.issue_scroll_to(1000.0, false);
         l.reported(531.0, 1);
         assert_eq!(l.offset, 1000.0);
         l.reported(1002.0, 2);
         assert_eq!(l.offset, 1002.0);
         assert!(l.pending.is_empty());
+        // Repeated instant ScrollTo commands supersede earlier pending entries
+        // so platforms that omit no-op scroll events cannot grow pending forever.
+        for _ in 0..10 {
+            l.issue_scroll_to(1002.0, false);
+        }
+        assert_eq!(l.pending.len(), 1);
     }
 
     #[test]
@@ -3896,8 +3981,14 @@ mod tests {
     #[test]
     fn an_animated_pin_ends_when_the_list_moves_away_from_it() {
         let mut l = list(100, 50.0, 400.0);
+        l.offset = 500.0;
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
+        // Pre-ack report stays at the reported position without teleporting to
+        // the animation target or cancelling the pin.
+        l.reported(520.0, 0);
+        assert_eq!(l.offset, 520.0);
+        assert!(l.pinned());
         l.reported(3000.0, 1);
         l.reported(3500.0, 1);
         // Rows above measured: the web moves only where the animation
@@ -3920,7 +4011,7 @@ mod tests {
         // An animated scroll to the end: retargeted when the end moves,
         // corrected once it landed.
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
         l.measured(99, 90.0);
         assert_eq!(
             l.follow_pin(0.0),
@@ -3929,7 +4020,7 @@ mod tests {
                 animated: true
             }
         );
-        l.issue_scroll_to(4640.0);
+        l.issue_scroll_to(4640.0, true);
         l.reported(3000.0, 2);
         assert!(l.pinned(), "in flight");
         l.reported(4640.0, 2);
@@ -3949,7 +4040,7 @@ mod tests {
         // destination too; the owner must not retarget that same change.
         let mut l = list(100, 50.0, 400.0);
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
         l.measured(99, 70.0);
         l.anchor_by(20.0);
         l.issue_scroll_by(20.0);

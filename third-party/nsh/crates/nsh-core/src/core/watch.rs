@@ -375,6 +375,7 @@ impl<M: TextEngine> Core<M> {
             let s = input.scroll?;
             return Some(ScrollEvent {
                 offset: s.offset,
+                delta: crate::geometry::Point::default(),
                 content_size: s.content,
                 size: s.viewport,
                 zoom_scale: 1.0,
@@ -386,6 +387,7 @@ impl<M: TextEngine> Core<M> {
         let (x, y) = scroll.offset;
         Some(ScrollEvent {
             offset: crate::geometry::point(crate::geometry::px(x), crate::geometry::px(y)),
+            delta: crate::geometry::Point::default(),
             content_size: content * scroll.zoom,
             size: frame,
             zoom_scale: scroll.zoom,

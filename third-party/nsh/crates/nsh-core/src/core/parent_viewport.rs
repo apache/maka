@@ -31,7 +31,7 @@
 
 use super::{
     Core, Key, Kind, NO_KEY, ScrollState, dirty,
-    list::{Outer, PendingScroll, StickyRange, ignored, replay},
+    list::{Outer, PendingScroll, StickyRange, ignored, push_pending, replay},
 };
 use crate::{
     ListViewport,
@@ -315,6 +315,9 @@ impl<M: TextEngine> Core<M> {
                 .and_then(|n| n.scroll.as_mut())
         {
             scroll.dependents.retain(|&k| k != key);
+            if scroll.dependents.is_empty() {
+                scroll.pending.clear();
+            }
             if had_sticky {
                 self.sticky_views.push(outer.view);
             }
@@ -652,18 +655,23 @@ impl<M: TextEngine> Core<M> {
                 && let Some(previous) = self.retract_list_scroll(view)
             {
                 by += previous;
+                let after = self.after_mounted_scroll(id);
                 if let Some((_, extent, grew)) = geometry {
                     if grew {
-                        before = self.mount.iter().position(
-                            |item| matches!(item, MountItem::Frame { id: target, .. } if *target == id),
-                        );
+                        before = self.mount[after..]
+                            .iter()
+                            .position(
+                                |item| matches!(item, MountItem::Frame { id: target, .. } if *target == id),
+                            )
+                            .map(|offset| after + offset);
                     }
                     if before.is_none() && length.is_some_and(|len| len < extent) {
-                        before = self.scroll_content_position(view);
+                        before = self.scroll_content_position(view).filter(|&at| at >= after);
                     }
                 }
             } else if by < 0.0 {
-                before = self.scroll_content_position(view);
+                let after = self.after_mounted_scroll(id);
+                before = self.scroll_content_position(view).filter(|&at| at >= after);
             }
             let along = |v: f32| {
                 if horizontal {
@@ -688,8 +696,11 @@ impl<M: TextEngine> Core<M> {
             if let Some((to, animated)) = to {
                 let node = &mut self.nodes[view as usize];
                 match node.list.as_mut() {
-                    Some(own) => own.issue_scroll_to(to),
-                    None => issue(node.scroll.as_mut().expect("scroll"), PendingScroll::To(to)),
+                    Some(own) => own.issue_scroll_to(to, animated),
+                    None => issue(
+                        node.scroll.as_mut().expect("scroll"),
+                        PendingScroll::to(to, animated),
+                    ),
                 }
                 let (x, y) = along(to);
                 self.mount.push(MountItem::Command {
@@ -791,7 +802,7 @@ fn issue(scroll: &mut ScrollState, pending: PendingScroll) {
         }
     }
     if !scroll.dependents.is_empty() {
-        scroll.pending.push((scroll.issued, pending));
+        push_pending(&mut scroll.pending, scroll.issued, pending);
     }
 }
 
