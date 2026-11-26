@@ -158,11 +158,10 @@ impl Registry {
         let existing = self.sessions.lock().unwrap().get(&id).cloned();
         let local = existing.unwrap_or_else(|| Session::new(id.clone()));
         let active = local.enter(&peer.stop)?;
-        let observation: Observation = client
+        let mut observation: Observation = client
             .query("agent", "observe", json!({"sessionId":id}))
             .await?;
-        let session = observation.session;
-        let workspace = Path::new(&session.workspace.path);
+        let workspace = Path::new(&observation.session.workspace.path);
         if workspace != cwd {
             let (workspace, requested) = tokio::try_join!(
                 tokio::fs::canonicalize(workspace),
@@ -172,22 +171,36 @@ impl Registry {
                 return Err("Resume cwd differs from Host session workspace".into());
             }
         }
-        if let Some(lease) = local.mcp.lock().await.take() {
-            lease.close().await?;
+        let mut mcp = local.mcp.lock().await;
+        let change_servers = mcp.is_some() || !servers.is_empty();
+        let check = if peer.is_v2() && !change_servers {
+            list::ensure_open
+        } else {
+            list::ensure_idle
+        };
+        check(&observation.session)?;
+        if change_servers {
+            if let Some(lease) = mcp.take() {
+                lease.close().await?;
+            }
+            *mcp = crate::mcp::attach(client, &id, servers).await?;
         }
-        *local.mcp.lock().await = crate::mcp::attach(client, &id, servers).await?;
-        let observation: Observation = client
-            .query("agent", "observe", json!({"sessionId":id}))
-            .await?;
+        drop(mcp);
+        if replay_history {
+            peer.reset(&id);
+            replay(client, peer, &id, observation.through, &active.cancel).await?;
+        }
+        if replay_history || change_servers {
+            // Replay has a fixed history fence, but the resume snapshot is current.
+            observation = client
+                .query("agent", "observe", json!({"sessionId":id}))
+                .await?;
+            check(&observation.session)?;
+        }
         let session = observation.session;
-        list::ensure_idle(&session)?;
         let options =
             configuration::options(client, &session, &local.preferences.lock().await.clone())
                 .await?;
-        if replay_history {
-            peer.reset(&id);
-            replay(client, peer, &id, &active.cancel).await?;
-        }
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
@@ -261,13 +274,10 @@ async fn replay(
     client: &Client,
     peer: &Peer,
     id: &str,
+    through: u64,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
-    let observation: Observation = client
-        .query("agent", "observe", json!({"sessionId":id}))
-        .await?;
-    list::ensure_idle(&observation.session)?;
-    let chunks = history::read(client, id, Some(observation.through), None).await?;
+    let chunks = history::read(client, id, Some(through), None).await?;
     let mut projection = Projection::default();
     for chunk in chunks {
         if cancel.is_cancelled() {

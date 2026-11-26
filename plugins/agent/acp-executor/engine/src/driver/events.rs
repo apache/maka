@@ -29,10 +29,17 @@ impl Driver<'_> {
         if !event.is_callback() {
             return self.observe(connection, event).await;
         }
-        let Some(session) = self.session().map(str::to_owned) else {
+        let Some(root) = self.session() else {
             event.reject()?;
             return Ok(());
         };
+        let session = match &event {
+            Event::V2Permission(input, _) if connection.children.contains(&input.session_id) => {
+                input.session_id.0.as_ref()
+            }
+            _ => root,
+        }
+        .to_owned();
         // The callback borrows admitted capabilities, not Driver. Keep consuming
         // ordered observations while the Host form awaits the user's answer.
         let context = executor::Context {

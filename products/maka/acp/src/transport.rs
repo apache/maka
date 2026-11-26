@@ -30,6 +30,7 @@ pub(crate) mod v1;
 pub(crate) mod v2;
 
 use futures_util::{StreamExt, sink};
+use maka_agent_api::contract::SessionActivity;
 use std::{
     collections::HashMap,
     io,
@@ -102,6 +103,10 @@ impl Peer {
             stop,
         }
     }
+    pub fn is_v2(&self) -> bool {
+        matches!(self.connection, Connection::V2(_))
+    }
+
     pub fn reset(&self, session: &str) {
         if let Connection::V1 { projections, .. } = &self.connection {
             projections.lock().unwrap().remove(session);
@@ -176,9 +181,15 @@ impl Peer {
             }
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.id.clone(),
-                acp::SessionUpdate::StateUpdate(
-                    acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
-                ),
+                acp::SessionUpdate::StateUpdate(match session.activity {
+                    SessionActivity::Working => {
+                        acp::StateUpdate::Running(acp::RunningStateUpdate::new())
+                    }
+                    SessionActivity::Waiting => {
+                        acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new())
+                    }
+                    SessionActivity::Idle => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
+                }),
             ))?;
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.id.clone(),

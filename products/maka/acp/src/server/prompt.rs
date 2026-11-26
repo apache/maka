@@ -67,6 +67,7 @@ pub(super) fn dispatch(
         let session_id = session.id.clone();
         let result = async {
             if let Some(key) = &request.idempotency_key {
+                leader.settle_predecessor().await?;
                 // A known attempt bypasses foreground admission and attachment I/O.
                 let recorded: Option<String> = app
                     .client

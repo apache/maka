@@ -1209,14 +1209,38 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
         const fs = require('node:fs');
         const assert = require('node:assert/strict');
         const lines = require('node:readline').createInterface({input:process.stdin});
-        lines.once('line', line => {
-            const {id, method} = JSON.parse(line);
-            assert.equal(method, 'initialize');
-            assert.throws(() => fs.readFileSync(process.env.ACP_PRIVATE_PROBE),
-                error => ['EPERM','EACCES','ENOENT'].includes(error.code));
-            const result = {protocolVersion:2,info:{name:'isolated-probe',version:'1'},
-                capabilities:{session:{}},authMethods:[]};
-            console.log(JSON.stringify({jsonrpc:'2.0',id,result}));
+        const send = msg => console.log(JSON.stringify({jsonrpc:'2.0', ...msg}));
+        const update = value => send({method:'session/update', params:{sessionId:'root',update:value}});
+        const ask = (id, sessionId) => send({id, method:'session/request_permission',
+            params:{sessionId, title:'Child consent', options:[{optionId:'no',name:'Deny',kind:'reject_once'}]}});
+        let prompt;
+        lines.on('line', line => {
+            const {id, method, params, result, error} = JSON.parse(line);
+            if (method === 'initialize') {
+                assert.throws(() => fs.readFileSync(process.env.ACP_PRIVATE_PROBE),
+                    e => ['EPERM','EACCES','ENOENT'].includes(e.code));
+                send({id,result:{protocolVersion:2,info:{name:'isolated-probe',version:'1'},
+                    capabilities:{session:{}},authMethods:[]}});
+            } else if (method === 'session/new') {
+                send({id,result:{sessionId:'root'}});
+            } else if (method === 'session/prompt') {
+                prompt = id;
+                update({sessionUpdate:'user_message',messageId:'input',content:params.prompt});
+                update({sessionUpdate:'state_update',state:'running'});
+                ask('unannounced', 'child');
+            } else if (id === 'unannounced') {
+                assert.equal(error?.code, -32602);
+                update({sessionUpdate:'subagent_update',sessionId:'child'});
+                ask('announced', 'child');
+            } else if (id === 'announced') {
+                assert.deepEqual(result?.outcome, {outcome:'selected',optionId:'no'});
+                send({id:prompt,result:{messageId:'input'}});
+                update({sessionUpdate:'agent_message',messageId:'result',
+                    content:[{type:'text',text:'Child permission denied.'}]});
+                update({sessionUpdate:'state_update',state:'idle',stopReason:'end_turn'});
+                lines.close();
+                process.stdin.destroy();
+            }
         });
     "#,
     ];
@@ -1278,6 +1302,34 @@ async fn composed_acp_setup_checks_a_provider_without_exposing_state_root()
             json!({"executor":"probe","action":{"kind":"check"}}),
         )
         .await?;
+        let created = mutate(&client, "agent", "create", json!({
+            "title":"ACP child permission", "automaticTitle":false, "labels":[],
+            "workspace":{"kind":"directory","path":sandbox.workspace},
+            "backend":{"kind":"executor","selection":{"executor":"probe","settings":{}}}
+        })).await?;
+        let session = created["session"]["id"].as_str().ok_or("missing ACP session")?;
+        let run = send_native(&client, session, "permission", "Child consent", false).await?;
+        let wait_form = async {
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            loop {
+                tick.tick().await;
+                let pending = query(&client, "agent", "pendingInteractions", json!({"sessionId":session})).await?;
+                if let Some(id) = pending["entries"][0]["requestId"].as_str() {
+                    break Ok::<_,String>(id.to_owned());
+                }
+            }
+        };
+        let request = tokio::select! {
+            id = wait_form => id?,
+            result = terminal_state(&client, session, &run, "completed") => return Err(format!("ACP ended before child form: {result:?}")),
+        };
+        let form = query(&client, "agent", "interaction", json!({"sessionId":session,"requestId":request})).await?;
+        let message = form["request"]["message"].as_str().ok_or_else(||format!("expected form: {form}"))?;
+        assert!(message.contains(r#""sessionId":"child""#), "{message}");
+        let answer = mutate(&client, "agent", "respond", json!({"sessionId":session,"requestId":request,
+            "answer":{"kind":"form","action":"accept","values":{"permission":"no"}}})).await?;
+        assert_eq!(answer["kind"], "recorded", "{answer}");
+        terminal_state(&client, session, &run, "completed").await?;
         client.close().await?;
         host.quit(&mut anchor).await?;
         Ok(checked)

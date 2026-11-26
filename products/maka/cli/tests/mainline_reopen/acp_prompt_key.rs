@@ -244,16 +244,24 @@ async fn acp_prompt_key_cancel_before_insertion_allows_a_fresh_retry() {
         let submit_b = |id, text| json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":prompt("B",text)});
         write_frame(&mut b, submit_b(3, "Withdraw this.")).await;
         wait_for_queued(&client, session, "Withdraw this.").await;
+        write_frame(&mut b, submit_b(9, "Withdraw this.")).await;
         // A positive wire barrier rather than a timed assertion that no reply arrived.
         let (list, _) = rpc(&mut b, 4, "session/list", json!({})).await;
         assert!(list["result"].is_object(), "{list}");
         write_frame(&mut b, json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}})).await;
-        let (cancelled, _) = response(&mut b).await;
-        assert_eq!(cancelled["id"], 3);
-        assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
-
         write_frame(&mut b, submit_b(5, "Fresh retry.")).await;
-        wait_for_queued(&client, session, "Fresh retry.").await;
+        let mut withdrawn = vec![];
+        for _ in 0..2 {
+            let (cancelled, _) = response(&mut b).await;
+            assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+            withdrawn.push(cancelled["id"].as_u64().unwrap());
+        }
+        withdrawn.sort();
+        assert_eq!(withdrawn, [3, 9]);
+        tokio::select! {
+            _ = wait_for_queued(&client, session, "Fresh retry.") => {}
+            (reply, _) = response(&mut b) => panic!("fresh submission answered before insertion: {reply}"),
+        }
         write_frame(&mut b, submit_b(6, "Ignore this changed payload.")).await;
         let (list, _) = rpc(&mut b, 7, "session/list", json!({})).await;
         assert!(list["result"].is_object(), "{list}");
@@ -282,4 +290,57 @@ async fn acp_prompt_key_cancel_before_insertion_allows_a_fresh_retry() {
         host.quit(&mut client).await.unwrap();
         assert_eq!(server.metrics().chat_completions_requests, 2);
     }).await.expect("bounded pending prompt cancellation and retry");
+}
+
+#[tokio::test]
+async fn acp_prompt_key_reconnect_during_independent_host_work() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let sandbox = Sandbox::new().await.unwrap();
+        let mut server = MockAiBuilder::new().interactive(2)
+            .control(ControlPlaneConfig { models: vec![ModelEntry::simple("gpt-4.1-mini")], ..Default::default() })
+            .start().await.unwrap();
+        let (_, _, connection) = host_load_stress::seed_connections(&sandbox.root, &server.base_url()).await;
+        let mut host = Host::spawn(&sandbox).unwrap();
+        let (mut client, address) = host.ready().await.unwrap();
+        configure(&client, &connection).await;
+        let stop = CancellationToken::new();
+        let (mut a, task) = connect(Client::connect(&address, Some(client.epoch())).await.unwrap(), &stop).await;
+        let (created, _) = rpc(&mut a, 2, "session/new", json!({"cwd":sandbox.workspace})).await;
+        let session = created["result"]["sessionId"].as_str().unwrap();
+        let prompt = json!({"sessionId":session,"idempotencyKey":"original","prompt":[{"type":"text","text":"Once."}]});
+        let (first, _) = rpc(&mut a, 3, "session/prompt", prompt.clone()).await;
+        let message = first["result"]["messageId"].as_str().unwrap();
+        let turn = server.next_turn().await.unwrap();
+        assert!(turn.delta("Done.").await);
+        turn.finish().await;
+        while frame(&mut a).await["params"]["update"]["state"] != "idle" {}
+        stop.cancel();
+        task.await.unwrap().unwrap();
+
+        let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":"Hold.","delivery":"queue","backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1-mini"}}), Attachments::new()).await;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        let blocked = server.next_turn().await.unwrap();
+        let stop = CancellationToken::new();
+        let (mut b, task) = connect(Client::connect(&address, Some(client.epoch())).await.unwrap(), &stop).await;
+        let (resumed, notes) = rpc(&mut b, 2, "session/resume", json!({"sessionId":session,"cwd":sandbox.workspace,"replayFrom":{"type":"start"}})).await;
+        assert!(resumed["result"].is_object(), "{resumed}");
+        let snapshot = notes.iter().filter_map(|n| {
+            let update = &n["params"]["update"];
+            match update["sessionUpdate"].as_str()? {
+                "replay_complete" => Some("complete"),
+                "state_update" => update["state"].as_str(),
+                _ => None,
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(snapshot, ["complete", "running"]);
+        let (retry, _) = rpc(&mut b, 3, "session/prompt", prompt).await;
+        assert_eq!(retry["result"]["messageId"], message, "{retry}");
+        assert!(blocked.delta("Done.").await);
+        blocked.finish().await;
+        work(&client, session, json!({"kind":"message","messageId":sent["messageId"]}), Some("completed")).await;
+        stop.cancel();
+        task.await.unwrap().unwrap();
+        host.quit(&mut client).await.unwrap();
+        assert_eq!(server.metrics().chat_completions_requests, 2);
+    }).await.expect("bounded busy resume");
 }

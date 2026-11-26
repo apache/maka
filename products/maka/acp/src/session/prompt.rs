@@ -33,7 +33,7 @@ type ResultSender = watch::Sender<Option<Outcome>>;
 #[derive(Default)]
 pub(super) struct Pending {
     epoch: Option<CancellationToken>,
-    keys: HashMap<IdempotencyKey, ResultSender>,
+    keys: HashMap<IdempotencyKey, (CancellationToken, ResultSender)>,
 }
 
 impl Pending {
@@ -47,9 +47,6 @@ impl Pending {
         if let Some(epoch) = self.epoch.take() {
             epoch.cancel();
         }
-        // New requests after cancellation must not join withdrawn submissions.
-        // Their previous leaders still own the senders for existing waiters.
-        self.keys.clear();
     }
 }
 
@@ -61,14 +58,15 @@ pub(crate) enum Registration {
 pub(crate) struct Retry(watch::Receiver<Option<Outcome>>);
 
 impl Retry {
-    pub async fn wait(mut self) -> Outcome {
+    async fn settled(&mut self) -> Result<watch::Ref<'_, Option<Outcome>>> {
         self.0
             .wait_for(Option::is_some)
             .await
-            .map_err(|_| Error::internal_error().data("ACP prompt admission task stopped"))?
-            .as_ref()
-            .unwrap()
-            .clone()
+            .map_err(|_| Error::internal_error().data("ACP prompt admission task stopped"))
+    }
+
+    pub async fn wait(mut self) -> Outcome {
+        self.settled().await?.as_ref().unwrap().clone()
     }
 }
 
@@ -76,6 +74,7 @@ pub(crate) struct Leader {
     session: Arc<Session>,
     pub cancel: CancellationToken,
     gate: BoxFuture<'static, OwnedMutexGuard<()>>,
+    predecessor: Option<Retry>,
     keyed: Option<(IdempotencyKey, ResultSender)>,
 }
 
@@ -89,13 +88,19 @@ impl Session {
         if self.closed.load(Ordering::SeqCst) || parent.is_cancelled() {
             return Err(Error::invalid_params().data("ACP session is closed"));
         }
-        if let Some(result) = key.and_then(|k| pending.keys.get(k)) {
-            return Ok(Registration::Retry(Retry(result.subscribe())));
-        }
+        let predecessor = match key.and_then(|k| pending.keys.get(k)) {
+            Some((cancel, result)) if !cancel.is_cancelled() => {
+                return Ok(Registration::Retry(Retry(result.subscribe())));
+            }
+            Some((_, result)) => Some(Retry(result.subscribe())),
+            None => None,
+        };
         let cancel = pending.child_token(parent);
         let keyed = key.map(|key| {
             let (result, _) = watch::channel(None);
-            pending.keys.insert(key.clone(), result.clone());
+            pending
+                .keys
+                .insert(key.clone(), (cancel.clone(), result.clone()));
             (key.clone(), result)
         });
 
@@ -109,12 +114,22 @@ impl Session {
             session: self.clone(),
             cancel,
             gate,
+            predecessor,
             keyed,
         }))
     }
 }
 
 impl Leader {
+    // A cancel notification marks the epoch, not the Host withdrawal commit.
+    // Only a new leader for that same key needs the old decision before lookup.
+    pub async fn settle_predecessor(&mut self) -> Result<()> {
+        if let Some(mut previous) = self.predecessor.take() {
+            drop(previous.settled().await?);
+        }
+        Ok(())
+    }
+
     pub async fn enter(&mut self) -> Result<Active> {
         let guard = tokio::select! {
             biased;
@@ -145,7 +160,7 @@ impl Drop for Leader {
             if pending
                 .keys
                 .get(key)
-                .is_some_and(|current| current.same_channel(sender))
+                .is_some_and(|(_, current)| current.same_channel(sender))
             {
                 pending.keys.remove(key);
             }
