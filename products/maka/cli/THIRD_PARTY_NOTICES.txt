@@ -1962,6 +1962,7 @@ compression-core@0.4.34 (MIT OR Apache-2.0); authors declared by package: Wim Lo
 concurrent-queue@2.5.0 (Apache-2.0 OR MIT); authors declared by package: Stjepan Glavina <stjepang@gmail.com>, Taiki Endo <te316e89@gmail.com>, John Nunley <dev@notgull.net>
 core-foundation-sys@0.8.7 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-foundation@0.10.1 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
+core-foundation@0.9.4 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-graphics-types@0.2.0 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-graphics@0.24.0 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core_detect@1.0.0 (MIT/Apache-2.0); authors declared by package: Thom Chiovoloni <chiovolonit@gmail.com>
@@ -2143,6 +2144,7 @@ string_cache_codegen@0.6.1 (MIT OR Apache-2.0); authors declared by package: The
 svgtypes@0.16.1 (Apache-2.0 OR MIT)
 syn@1.0.109 (MIT OR Apache-2.0); authors declared by package: David Tolnay <dtolnay@gmail.com>
 system-configuration-sys@0.6.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
+system-configuration@0.7.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
 system-configuration@0.8.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
 system-deps@9.0.1 (MIT OR Apache-2.0); authors declared by package: Guillaume Desmottes <guillaume.desmottes@collabora.com>, Josh Triplett <josh@joshtriplett.org>
 tar@0.4.46 (MIT OR Apache-2.0); authors declared by package: Alex Crichton <alex@alexcrichton.com>
@@ -2227,6 +2229,7 @@ https://crates.io/api/v1/crates/compression-core/0.4.34/download :: LICENSE-APAC
 https://crates.io/api/v1/crates/concurrent-queue/2.5.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/core-foundation-sys/0.8.7/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/core-foundation/0.10.1/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/core-foundation/0.9.4/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/core-graphics-types/0.2.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/core-graphics/0.24.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/core_detect/1.0.0/download :: LICENSE-APACHE
@@ -2408,6 +2411,7 @@ https://crates.io/api/v1/crates/string_cache_codegen/0.6.1/download :: LICENSE-A
 https://crates.io/api/v1/crates/svgtypes/0.16.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/syn/1.0.109/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/system-configuration-sys/0.6.0/download :: LICENSE-APACHE
+https://crates.io/api/v1/crates/system-configuration/0.7.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/system-configuration/0.8.0/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/system-deps/9.0.1/download :: LICENSE-APACHE
 https://crates.io/api/v1/crates/tar/0.4.46/download :: LICENSE-APACHE
@@ -12734,6 +12738,7 @@ SOFTWARE.
 
 core-foundation-sys@0.8.7 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-foundation@0.10.1 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
+core-foundation@0.9.4 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-graphics-types@0.2.0 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 core-graphics@0.24.0 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
 euclid@0.22.14 (MIT OR Apache-2.0); authors declared by package: The Servo Project Developers
@@ -12744,6 +12749,7 @@ string_cache_codegen@0.6.1 (MIT OR Apache-2.0); authors declared by package: The
 
 https://crates.io/api/v1/crates/core-foundation-sys/0.8.7/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/core-foundation/0.10.1/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/core-foundation/0.9.4/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/core-graphics-types/0.2.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/core-graphics/0.24.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/euclid/0.22.14/download :: LICENSE-MIT
@@ -47704,9 +47710,11 @@ SOFTWARE.
 ================================================================================
 
 system-configuration-sys@0.6.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
+system-configuration@0.7.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
 system-configuration@0.8.0 (MIT OR Apache-2.0); authors declared by package: Mullvad VPN
 
 https://crates.io/api/v1/crates/system-configuration-sys/0.6.0/download :: LICENSE-MIT
+https://crates.io/api/v1/crates/system-configuration/0.7.0/download :: LICENSE-MIT
 https://crates.io/api/v1/crates/system-configuration/0.8.0/download :: LICENSE-MIT
 
 Copyright (c) 2024 Mullvad VPN AB

@@ -200,6 +200,7 @@
     "cargo:core_maths@0.1.1 registry+https://github.com/rust-lang/crates.io-index": "08c7bebc309170b35ea04ac724691b3d52c0bf89139fd636ccaa65d8d25b628a",
     "cargo:core-foundation-sys@0.8.7 registry+https://github.com/rust-lang/crates.io-index": "d5f67e6c18e9b69966453e7940a3b8d9d42a04db025a08fc932b1b64682fb30c",
     "cargo:core-foundation@0.10.1 registry+https://github.com/rust-lang/crates.io-index": "dce8888408cc8ce093d1122e5930637b2016144c05ec22b3ac19083e9e394904",
+    "cargo:core-foundation@0.9.4 registry+https://github.com/rust-lang/crates.io-index": "12027c2490b43d9d010df69795ff393e37102443dbfb2f5bae9afb74607048cd",
     "cargo:core-graphics-types@0.2.0 registry+https://github.com/rust-lang/crates.io-index": "79d76b6f0898677a892fac550d82304e938d2ccad45e27e7a57516c895be78f2",
     "cargo:core-graphics@0.24.0 registry+https://github.com/rust-lang/crates.io-index": "b3f32ae657bd1c63c8017c6939188bdaf63a5baa579537b96e88e6efed3a9b1d",
     "cargo:coset@0.4.2 registry+https://github.com/rust-lang/crates.io-index": "d350c313c427f5c6d9e2991763119566dc6b689a000452faefd555f34aa23a20",
@@ -1280,6 +1281,7 @@
     "cargo:sys-locale@0.3.2 registry+https://github.com/rust-lang/crates.io-index": "444f9f2e0b1a24a88a7d790c6f6cd580bf7942a99fd459316f5a6f0cc685801d",
     "cargo:sysinfo@0.31.4 registry+https://github.com/rust-lang/crates.io-index": "e32d7e5a11f7bc5a467fda4ea0067294179fefa3aa0dbd93338130de67277cd8",
     "cargo:system-configuration-sys@0.6.0 registry+https://github.com/rust-lang/crates.io-index": "2577a8cb162c5233182c7b400ce47b09a7b3dae6e23389d141053367fa6be3b8",
+    "cargo:system-configuration@0.7.0 registry+https://github.com/rust-lang/crates.io-index": "cca653a0a7d6d8f8f07b3475d327fac1a3efca9b7bf86a98d4ec617041ab0c11",
     "cargo:system-configuration@0.8.0 registry+https://github.com/rust-lang/crates.io-index": "fd766cf2611ed422cf2daf1116e3c42d76575a4780b20b805c503d627a2e0be9",
     "cargo:system-deps@9.0.1 registry+https://github.com/rust-lang/crates.io-index": "666b7c39e03d1ae238cd8e08c9a3fcb662c7bd51407a23c9ff6b6c69298c68fc",
     "cargo:taffy@0.16.0 registry+https://github.com/rust-lang/crates.io-index": "f84689801739b259e3c35c82d0b8e1501774665bee559cee86f4e70b443e32bb",
@@ -1571,5 +1573,5 @@
     "npm:preact@11.0.0-beta.0 https://registry.npmjs.org/preact/-/preact-11.0.0-beta.0.tgz sha512-IcODoASASYwJ9kxz7+MJeiJhvLriwSb4y4mHIyxdgaRZp6kPUud7xytrk/6GZw8U3y6EFJaRb5wi9SrEK+8+lg==": "da4f7ecf86f57891c776c0bef60deac13ff94c989832f12b1b5df88826fdf5eb",
     "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff"
   },
-  "sha256": "b17112d75bbfb506228329fb39fed82fb690adbf4a76ca86bfc653dab4a83668"
+  "sha256": "8b0c2f426a94a488901f14592e8558d5fda63cc419e3ffaa98f2ed3e9ff71659"
 }
