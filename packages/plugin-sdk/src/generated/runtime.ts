@@ -4819,6 +4819,7 @@ export type AgentHistoryPage =
       before: Cursor | null;
       after: Cursor | null;
       tailThought?: HistoryWorkThought | null;
+      resolvedAnchor?: HistoryRowAddress | null;
     };
 export type AgentRoomActor =
   | {

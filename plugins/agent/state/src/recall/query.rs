@@ -228,6 +228,22 @@ struct Candidate {
     matched: Vec<String>,
     score: f64,
 }
+fn operation_receipt_settled(c: &Connection, sequence: u64) -> Result<bool, StoreError> {
+    use maka_agent_facts::cells::CellEvent;
+    let bytes: Vec<u8> = c
+        .prepare_cached(
+            "SELECT x.payload FROM agent_facts f JOIN contents x ON x.id=f.body_content_id WHERE f.sequence=?",
+        )?
+        .query_row([number(sequence)?], |r| r.get(0))?;
+    let recorded: RecordedFact = serde_json::from_slice(&bytes)?;
+    Ok(match &recorded.fact {
+        Fact::OperationObserved { reply, .. }
+        | Fact::Cell {
+            event: CellEvent::ChildObserved { reply, .. },
+        } => maka_agent_facts::operation::has_recorded_settlement(reply),
+        _ => true,
+    })
+}
 fn rank(a: &Candidate, b: &Candidate) -> Ordering {
     b.matched
         .len()
@@ -311,10 +327,21 @@ pub(super) fn search(
             row.get::<_, String>(2)?
         ));
     }
+    let (settlement_col, transcript_filter) = if query.transcript_only {
+        (
+            ",CASE WHEN h.kind='operation_observed' THEN 1 WHEN h.kind='cell' AND NOT h.tool_start AND (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)='child_observed' THEN 1 ELSE 0 END",
+            format!(
+                " AND h.kind<>'model_interrupted'{}",
+                crate::session_history::source_tree::TRANSCRIPT_CELL_SQL
+            ),
+        )
+    } else {
+        (",0", String::new())
+    };
     let mut cursor = 0i64;
     loop {
         let sql = format!(
-            "SELECT {COLUMNS},d.session,d.id,d.folded FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>? AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
+            "SELECT {COLUMNS},d.session,d.id,d.folded{settlement_col} FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>?{transcript_filter} AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
         );
         let mut statement = c.prepare_cached(&sql)?;
         let since = query.since.map(number).transpose()?;
@@ -367,8 +394,14 @@ pub(super) fn search(
             if gaps.contains_key(&session) {
                 continue;
             }
+            let needs_settlement_check: bool = row.get(18)?;
             let message = read_message(row)?;
             if message.fields.iter().all(|f| f.internal) {
+                continue;
+            }
+            if needs_settlement_check
+                && !operation_receipt_settled(c, message.position.source_sequence)?
+            {
                 continue;
             }
             let text: String = if row

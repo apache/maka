@@ -149,31 +149,39 @@ export function createBotTranscriptCore(
   const started = new Promise<void>((resolve) => {
     ready = resolve;
   });
+  let resolveIdentified: () => void = () => {};
+  const whenIdentified = new Promise<void>((resolve) => {
+    resolveIdentified = resolve;
+  });
   /** Ask who the Bot is, retrying a failed lookup; a failure never decides "ordinary". */
   const identify = async (): Promise<boolean> => {
-    for (let attempt = 0; alive; attempt++) {
-      const prior = fromKnown();
-      if (prior !== 'unknown') {
-        identity = prior;
-        current = true;
-        changed();
-        return identity === 'bot';
+    try {
+      for (let attempt = 0; alive; attempt++) {
+        const prior = fromKnown();
+        if (prior !== 'unknown') {
+          identity = prior;
+          current = true;
+          changed();
+          return identity === 'bot';
+        }
+        try {
+          const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
+          if (!alive) return false;
+          // A replaced Bot still reads as a Bot, so its replies stay what the user saw.
+          identity = head.isBot ? 'bot' : 'ordinary';
+          current = head.sessionId === sessionId;
+          changed();
+          return identity === 'bot';
+        } catch {
+          const delay = IDENTITY_RETRY_MS[attempt];
+          if (delay === undefined) return false;
+          await wait(delay);
+        }
       }
-      try {
-        const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
-        if (!alive) return false;
-        // A replaced Bot still reads as a Bot, so its replies stay what the user saw.
-        identity = head.isBot ? 'bot' : 'ordinary';
-        current = head.sessionId === sessionId;
-        changed();
-        return identity === 'bot';
-      } catch {
-        const delay = IDENTITY_RETRY_MS[attempt];
-        if (delay === undefined) return false;
-        await wait(delay);
-      }
+      return false;
+    } finally {
+      resolveIdentified();
     }
-    return false;
   };
   // The watch starts once the Session is known to be the Bot. If every lookup failed
   // it ends unstarted, and a later answer from the application starts it (`resume`).
@@ -240,6 +248,7 @@ export function createBotTranscriptCore(
 
   return {
     started,
+    whenIdentified,
     identity: (): BotIdentity => {
       if (identity !== 'unknown') return identity;
       resume();
@@ -255,6 +264,7 @@ export function createBotTranscriptCore(
     latest: () => latest,
     close() {
       alive = false;
+      resolveIdentified();
       const previous = stream;
       stream = null;
       if (previous) void previous.close().catch(() => {});
@@ -268,6 +278,18 @@ export function createBotTranscriptCore(
  * `unanswered` is a Turn that ended with neither a `SendUser` message nor a `sleep`,
  * so the user cannot tell it from a deliberate silence unless Chat says so.
  */
+/**
+ * Bot Chat shows only what the user said and what the Bot published via `SendUser`.
+ * Model replies and host-authored user turns (worker completions, scheduled runs) stay
+ * in Trajectory.
+ */
+export function botChatHidesRow(row: { role: string; origin?: { kind: string } | null }): boolean {
+  return (
+    row.role === 'assistant' ||
+    (row.role === 'user' && row.origin != null && row.origin.kind !== 'session')
+  );
+}
+
 export type BotTurnEnding = 'running' | 'replied' | 'quiet' | 'unanswered' | 'other';
 export function botTurnEnding(turn: {
   /** The Turn has finished and is not the one running now. */

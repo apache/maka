@@ -668,7 +668,7 @@ async fn tree_window(
         &position,
         Position::Tail | Position::Before { .. } | Position::RowEnd { .. }
     );
-    let anchor = match &position {
+    let mut anchor = match &position {
         Position::Row { position, field } | Position::RowEnd { position, field } => {
             Some(wire::Cursor {
                 position: position.clone(),
@@ -694,6 +694,7 @@ async fn tree_window(
                     before: None,
                     after: None,
                     tail_thought: None,
+                    resolved_anchor: None,
                 });
             }
         },
@@ -721,7 +722,8 @@ async fn tree_window(
         source::Shape::Rows
     };
     let mut tail_thought_candidate = None;
-    if let Some(anchor) = &anchor {
+    let mut resolved_anchor = None;
+    if let Some(anchor) = &mut anchor {
         let selected = source::unpaired(tree, &anchor.position, None, &mut cache, stop).await?;
         if view == wire::HistoryView::Turn {
             use maka_agent_state::session_history::source_tree::SourceItem;
@@ -738,10 +740,31 @@ async fn tree_window(
         {
             return Err("agent_cursor_invalid".into());
         }
-        if matches!(
-            &position,
-            Position::Row { .. } | Position::RowEnd { .. } | Position::Event { .. }
-        ) && !selected.row.visible
+        if matches!(&position, Position::Row { .. }) {
+            use maka_agent_facts::executor::Output;
+            use maka_agent_state::session_history::source_tree::SourceItem;
+            if let Some(first) = selected.row.continuation {
+                anchor.position = first.clone();
+                resolved_anchor = Some(first);
+            } else if selected.row.visible
+                && matches!(
+                    &selected.item,
+                    SourceItem::Canonical(item)
+                        if matches!(
+                            item.recorded.fact,
+                            Fact::ExternalTaskObserved {
+                                output: Output::OutputDelta { .. },
+                                ..
+                            }
+                        )
+                )
+            {
+                resolved_anchor = Some(selected.row.chunk.position.clone());
+            } else if !selected.row.visible {
+                reverse = true;
+            }
+        } else if matches!(&position, Position::RowEnd { .. } | Position::Event { .. })
+            && !selected.row.visible
         {
             reverse = true;
         }
@@ -1020,6 +1043,7 @@ async fn tree_window(
         before,
         after,
         tail_thought,
+        resolved_anchor,
     })
 }
 fn fragment_metadata(chunk: &mut wire::Chunk) {

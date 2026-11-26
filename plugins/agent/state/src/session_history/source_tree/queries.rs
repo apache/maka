@@ -31,6 +31,12 @@ impl Query for Latest {
         Ok(Some(source))
     }
 }
+/// SQL predicate restricting `h.kind = 'cell'` rows to transcript-visible Cell child events.
+pub(crate) const TRANSCRIPT_CELL_SQL: &str = " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
+            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
+            JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
+            IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))";
+
 pub(super) struct LivePositions(
     pub(super) HistoryNamespace,
     pub(super) HistoryCut,
@@ -59,10 +65,7 @@ impl Query for LivePositions {
         let visible = if self.4 { "" } else { " AND d.internal=0" };
         // Internal Cell bookkeeping is addressable by Recall but has no transcript row.
         let cell_steps = if matches!(self.7, PositionFilter::Transcript(_)) {
-            " AND (h.kind <> 'cell' OR (h.tool_use_id IS NOT NULL AND
-            (h.tool_start OR (SELECT json_extract(b.payload,'$.fact.event.kind') FROM agent_facts f
-            JOIN contents b ON b.id=f.body_content_id WHERE f.sequence=h.sequence)
-            IN ('child_rejected','child_result_recorded','local_child_returned','child_observed'))))"
+            TRANSCRIPT_CELL_SQL
         } else {
             ""
         };

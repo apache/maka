@@ -112,6 +112,7 @@ impl Recall {
         query: &search::Query,
         before: usize,
         after: usize,
+        transcript_only: bool,
     ) -> Result<indexed::Batch, ToolError> {
         self.check(call).await?;
         let index = self.index(call)?;
@@ -127,6 +128,7 @@ impl Recall {
             since: query.since,
             until: query.until,
             exclude,
+            transcript_only,
         };
         let stop = call.cancellation.child_token();
         let _guard = stop.clone().drop_guard();
@@ -228,7 +230,7 @@ impl Recall {
     ) -> Result<RecallPage, String> {
         query.validate()?;
         let found = self
-            .batch(call, &query, 0, 0)
+            .batch(call, &query, 0, 0, true)
             .await
             .map_err(|e| e.to_string())?;
         let mut titles = Vec::new();
@@ -311,7 +313,7 @@ impl Recall {
         before: usize,
         after: usize,
     ) -> Result<search::ResultSet, ToolError> {
-        let found = self.batch(call, query, before, after).await?;
+        let found = self.batch(call, query, before, after, false).await?;
         let mut passages = Vec::with_capacity(found.hits.len());
         for hit in found.hits {
             let address = Self::address(&hit.anchor);

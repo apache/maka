@@ -16349,6 +16349,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  resolvedAnchor: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryRowAddress',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -26272,6 +26282,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  resolvedAnchor: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryRowAddress',
                       },
                       {
                         type: 'null',

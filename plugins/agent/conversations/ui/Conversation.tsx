@@ -198,6 +198,7 @@ import {
   reportedWorker,
   activeWorkers,
   type ActiveWorker,
+  botChatHidesRow,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
@@ -1315,7 +1316,7 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | TrajectoryEntry
     | { kind: 'summary'; key: string; turnKey: string }
-    | { kind: 'sources'; key: string; sources: AnswerSource[] }
+    | { kind: 'sources'; key: string; sources: AnswerSource[]; citationRowIds?: string[] }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | {
         kind: 'row';
@@ -1325,6 +1326,7 @@ export function Conversation(props: ConversationProps) {
         repeats?: number;
         citations?: InlineCitation[];
         sources?: AnswerSource[];
+        citationRowIds?: string[];
       }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
@@ -1508,6 +1510,7 @@ export function Conversation(props: ConversationProps) {
       openTurn = undefined;
     };
     let sources: Map<string, AnswerSource> | undefined;
+    let citationRowIds: string[] | undefined;
     let anchors: Map<string, InlineCitation[]> | undefined;
     let citationTurn: string | undefined;
     let turnStart = 0;
@@ -1526,15 +1529,20 @@ export function Conversation(props: ConversationProps) {
           if (anchors && row.modelPart)
             item.citations = anchors.get(partKey(row, row.modelPart.ordinal));
         }
-        if (answer && platform.idiom !== 'terminal') answer.sources = list;
-        else
+        if (answer && platform.idiom !== 'terminal') {
+          answer.sources = list;
+          answer.citationRowIds = citationRowIds;
+        } else {
           result.push({
             kind: 'sources',
             key: 'sources/' + (citationTurn ?? result[turnStart]?.key ?? list[0]!.key),
             sources: list,
+            citationRowIds,
           });
+        }
       }
       sources = undefined;
+      citationRowIds = undefined;
       anchors = undefined;
       turnStart = result.length;
     };
@@ -1579,13 +1587,9 @@ export function Conversation(props: ConversationProps) {
         if (!showWork || !turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        // Only SendUser publishes for the Bot. The model's own text, including a
-        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
-        // failure is a failure row, which this does not hide.
-        if (botChat && row.role === 'assistant') continue;
-        // A message the Host wrote on the user's behalf (a worker finishing, a task
-        // result) is not something the user said. It stays in Trajectory.
-        if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
+        // Only SendUser publishes for the Bot. Model output and host-authored
+        // user messages stay internal in Trajectory; failures remain visible.
+        if (botChat && botChatHidesRow(row)) continue;
         if (
           entry.processTurnKey &&
           turn &&
@@ -1599,6 +1603,8 @@ export function Conversation(props: ConversationProps) {
         if (row.sourceCitation) {
           const source = answerSource(row, entry.rowId);
           if (source) {
+            citationRowIds ??= [];
+            citationRowIds.push(entry.rowId);
             sources ??= new Map();
             if (!sources.has(source.key)) sources.set(source.key, source);
             if (row.modelPart && row.citationAnchor && row.citation) {
@@ -2779,19 +2785,25 @@ export function Conversation(props: ConversationProps) {
     let failure: { reason: unknown } | null = null;
     try {
       // Recall may have opened its exact window before initial history arrived.
-      while (windowTask !== null) await windowTask;
+      while (windowTask !== null) await windowTask.catch(() => {});
       if (!alive) return;
+      const preserveNavigationError = historyDestination.failed;
       if (ready()) {
         if (latestKnown > (historyWindow()?.through ?? -1) || refreshFrom !== null) await follow();
-      } else if (
-        !historyDestination.explicit &&
-        (await resetHistory(historyDestination.position, observed.through))
-      ) {
-        list?.scrollToEnd({ animated: false });
+      } else {
+        if (historyDestination.failed) {
+          historyDestination = { position: { kind: 'tail' }, explicit: false, failed: false };
+        }
+        if (
+          !historyDestination.explicit &&
+          (await resetHistory(historyDestination.position, observed.through))
+        ) {
+          list?.scrollToEnd({ animated: false });
+        }
       }
       if (!alive) return;
       immediateTranscriptRetry = true;
-      if (!historyDestination.failed) error.set('');
+      if (!preserveNavigationError && !historyDestination.failed) error.set('');
       transcriptStatus.set('live');
       // Replay from the older of the observed fence and the first visible page.
       for (;;) {
@@ -2975,18 +2987,32 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const revealRow = (row: Row) => {
+    const id = stableRowId(row);
+    if (botView() !== 'ordinary' && botChatHidesRow(row)) {
+      const previous = reading();
+      innerReader.set(null);
+      reading.set('trajectory');
+      const key = trajectoryRecordKey(id);
+      if (!trajectoryByKey().has(key)) {
+        reading.set(previous);
+        throw new UiError('The original message is not available in this conversation.');
+      }
+      jumpTrajectoryEntry(key);
+      return;
+    }
     reading.set('chat');
     const rowTurn = historyTurnKey(row);
     if (rowTurn !== undefined) {
       const turn = projectedTurn(rowTurn);
       if (turn) unfoldTurn(turn);
     }
-    const id = stableRowId(row);
     const entry = display().find((item) =>
       item.kind === 'row'
-        ? item.rowId === id
-        : item.kind === 'process' &&
-          item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
+        ? item.rowId === id || item.citationRowIds?.includes(id) === true
+        : item.kind === 'sources'
+          ? item.citationRowIds?.includes(id) === true
+          : item.kind === 'process' &&
+            item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
     );
     if (!entry) throw new UiError('The original message is not available in this conversation.');
     if (entry.kind === 'process') {
@@ -3036,32 +3062,42 @@ export function Conversation(props: ConversationProps) {
     historyDestination = destination;
     navigation.set(target);
     try {
-      const opened = await resetHistory(
-        { kind: 'row', position: anchor.position, field: 'body' },
-        anchor.through,
-        (page) => {
-          if (
-            !page.chunks.some(
-              (chunk) =>
-                chunk.messageId === anchor.messageId &&
-                chunk.field === 'body' &&
-                chunk.offset === 0 &&
-                sameHistoryRow(chunk.position, anchor.position),
-            )
-          )
-            throw new UiError('The original message could not be verified.');
-        },
-        () => navigation() === target && current(),
-        'conversation',
-      );
+      let resolvedAnchor: HistoryRowAddress | undefined;
+      const [opened] = await Promise.all([
+        resetHistory(
+          { kind: 'row', position: anchor.position, field: 'body' },
+          anchor.through,
+          (page) => {
+            resolvedAnchor = page.resolvedAnchor ?? undefined;
+            const matches = resolvedAnchor
+              ? (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, resolvedAnchor!)
+              : (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.messageId === anchor.messageId &&
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, anchor.position);
+            if (!page.chunks.some(matches))
+              throw new UiError('The original message could not be verified.');
+          },
+          () => navigation() === target && current(),
+          'conversation',
+        ),
+        bot.whenIdentified,
+      ]);
       if (!opened || !alive || navigation() !== target || !current())
         throw new UiError('History navigation was cancelled.');
-      const row = rows().find(
-        (candidate) =>
-          candidate.messageId === anchor.messageId &&
-          candidate.field === 'body' &&
-          candidate.position &&
-          sameHistoryRow(candidate.position, anchor.position),
+      const row = rows().find((candidate) =>
+        resolvedAnchor
+          ? candidate.field === 'body' &&
+            candidate.position &&
+            sameHistoryRow(candidate.position, resolvedAnchor)
+          : candidate.messageId === anchor.messageId &&
+            candidate.field === 'body' &&
+            candidate.position &&
+            sameHistoryRow(candidate.position, anchor.position),
       );
       if (!row) throw new UiError('The original message is no longer available.');
       if (!current()) throw new UiError('History navigation was cancelled.');
