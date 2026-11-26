@@ -18,8 +18,8 @@
  */
 
 // Settings › General › Theme: a preset to start from, then each color and the
-// font, seen at once on the whole window and on a sample of a conversation.
-import { batch, colorScheme, signal, Text, View } from 'nsh';
+// font, seen on a sample of a conversation while a color is dragged, then on the whole window.
+import { batch, cleanup, colorScheme, computed, signal, Text, View } from 'nsh';
 import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover } from 'nsh/base';
 import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
@@ -35,6 +35,7 @@ import {
   pickedColors,
   presetLooks,
   readable,
+  sameLook,
   unchanged,
   type FontChoice,
   type Look,
@@ -56,6 +57,7 @@ import {
   defaultColors,
   floatingStyle,
   inputBorderRadius,
+  lookColors,
   secondaryTextStyle,
 } from './ui';
 
@@ -94,15 +96,6 @@ export const themeLabel = (theme: (typeof colorThemes)[number]) =>
 /** The appearance whose colors are edited: the one the window shows. */
 const mode = () => (colorScheme() === 'light' ? 'light' : 'dark');
 
-/** The color a key has in effect for the appearance edited, picked or derived. */
-function effective(look: Look, key: LookColor): string {
-  const colors = look.cssVars[mode()];
-  const tokens = lookTokens(colors);
-  return (
-    colors[key] ?? (key === 'card' ? tokens.sidebar : key === 'border' ? tokens.line : tokens.muted)
-  );
-}
-
 /** The shown look with `key` set to `value`, or derived again when `value` is undefined. */
 function withColor(key: LookColor, value: string | undefined): Look {
   const look = appearance.shown();
@@ -120,7 +113,32 @@ const withFont = (family: string | undefined): Look => {
   };
 };
 
+/** The look a color picker is dragging through: the preview shows it at once, and the whole
+ * window takes it when the drag ends, so a drag does not restyle every view at each step. */
+const dragged = signal<Look | null>(null);
+const pickedLook = () => dragged() ?? appearance.shown();
+/** Follows a drag through `look`; when it ends, `save` gives the whole window the look. */
+const pick = (look: Look, save: boolean) => {
+  if (!save) return dragged.set(look);
+  batch(() => {
+    // A drag that ends where it began leaves the window's look as it is.
+    if (!sameLook(look, appearance.shown())) appearance.changeLook(look, true);
+    dragged.set(null);
+  });
+};
+// Derived once for each step of a drag, for every row that shows a derived color.
+const pickedTokens = computed(() => lookTokens(pickedLook().cssVars[mode()]));
+
+/** The color a key has in effect for the appearance edited, picked or derived. */
+function effective(key: LookColor): string {
+  const picked = pickedLook().cssVars[mode()][key];
+  if (picked !== undefined) return picked;
+  const tokens = pickedTokens();
+  return key === 'card' ? tokens.sidebar : key === 'border' ? tokens.line : tokens.muted;
+}
+
 export function ThemeEditor() {
+  cleanup(() => dragged.set(null));
   return (
     <SettingsBody>
       <ThemeStatus />
@@ -253,6 +271,7 @@ function PresetCard(props: { id: LookId }) {
 
 /** A piece of a conversation in the colors in effect: what the settings page has none of. */
 function Specimen() {
+  const C = lookColors(() => dragged() ?? appearance.look());
   const line = (text: string, color: string, extra: object = {}) => (
     <Text style={{ ...secondaryTextStyle, color, ...extra }}>{text}</Text>
   );
@@ -329,12 +348,13 @@ function Specimen() {
 function ColorRow(props: { color: LookColor }) {
   const key = props.color;
   const derived = derivedColors.includes(key);
-  const value = () => effective(appearance.shown(), key);
-  const automatic = () => derived && !appearance.shown().cssVars[mode()][key];
+  // Each is made once a step, and what reads it runs again only when it changes.
+  const value = computed(() => effective(key));
+  const automatic = computed(() => derived && !pickedLook().cssVars[mode()][key]);
   const minimum = minimumContrast[key];
-  const ratio = () => contrast(value(), appearance.shown().cssVars[mode()].background);
+  const ratio = computed(() => contrast(value(), pickedLook().cssVars[mode()].background));
   // Derived colors are made readable; only a picked one can be too faint.
-  const low = () => minimum !== undefined && !automatic() && ratio() < minimum;
+  const low = computed(() => minimum !== undefined && !automatic() && ratio() < minimum);
   return (
     <>
       <SettingsRow
@@ -352,7 +372,7 @@ function ColorRow(props: { color: LookColor }) {
             <ColorWell
               name={colorLabel(key)}
               value={value()}
-              change={(color, save) => appearance.changeLook(withColor(key, color), save)}
+              change={(color, save) => pick(withColor(key, color), save)}
             />
           </View>
         }
@@ -400,12 +420,20 @@ function ColorWell(props: {
     <ColorPicker
       value={props.value}
       format="hex"
-      onChange={({ formatted }) => props.change(color(formatted), false)}
+      onChange={({ formatted }) => {
+        // Steps finer than a hex digit report the color already shown.
+        const next = color(formatted);
+        if (next !== props.value) props.change(next, false);
+      }}
       onChangeEnd={({ formatted }) => props.change(color(formatted), true)}
     >
       <Popover
         open={open()}
-        onOpenChange={({ open: next }) => open.set(next)}
+        onOpenChange={({ open: next }) => {
+          open.set(next);
+          // A color typed and not entered is let go with the picker.
+          if (!next) dragged.set(null);
+        }}
         placement="bottom"
         align="end"
         offset={4}

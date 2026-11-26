@@ -131,25 +131,16 @@ const LIGHT: typeof DARK = {
 };
 /** The default palette's colors in one appearance. */
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
-// The look's tokens, made once per look and appearance.
-let made: { look: Look; dark: boolean; tokens: LookTokens } | null = null;
-const lookColors = (): LookTokens | null => {
-  if (platform.idiom === 'terminal') return null;
-  const look = appearance.look();
-  if (!look) return null;
-  const dark = colorScheme() !== 'light';
-  if (made?.look !== look || made.dark !== dark)
-    made = { look, dark, tokens: lookTokens(look.cssVars[dark ? 'dark' : 'light']) };
-  return made.tokens;
-};
-/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`), or
- * with a look, whether its background is; terminals keep the dark colors. */
-export const isDark = () => {
+/** Whether `look` (null for the default palette) is dark: the window's appearance in effect
+ * (`setColorScheme`), or with a look, whether its background is; terminals keep the dark
+ * colors. */
+const darkLook = (look: Look | null) => {
   if (platform.idiom === 'terminal') return true;
-  const look = appearance.look();
   const dark = colorScheme() !== 'light';
   return look ? darkBackground(look.cssVars[dark ? 'dark' : 'light'].background) : dark;
 };
+/** Whether the interface is dark. */
+export const isDark = () => darkLook(appearance.look());
 type Tone = keyof typeof DARK;
 // The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
 // below the content `panel` in both appearances, and what rests on the panel
@@ -164,26 +155,45 @@ const REGIONS = {
   floating: ['background', 'raised'],
   floatingRaised: ['raised', 'pressed'],
 } satisfies Record<string, [Tone, Tone]>;
-/** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
-export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
-  ...Object.fromEntries(
-    Object.keys(DARK).map((key) => [
-      key,
-      {
-        enumerable: true,
-        get: () => {
-          return lookColors()?.[key as keyof LookTokens] ?? (isDark() ? DARK : LIGHT)[key as Tone];
+type Colors = Record<Tone | keyof typeof REGIONS, string>;
+/** The colors of `look` (null for the default palette), read anew each time one is. */
+export function lookColors(look: () => Look | null): Colors {
+  // The look's tokens, made once per look and appearance.
+  let made: { look: Look; dark: boolean; tokens: LookTokens } | null = null;
+  const tokens = (): LookTokens | null => {
+    if (platform.idiom === 'terminal') return null;
+    const value = look();
+    if (!value) return null;
+    const dark = colorScheme() !== 'light';
+    if (made?.look !== value || made.dark !== dark)
+      made = { look: value, dark, tokens: lookTokens(value.cssVars[dark ? 'dark' : 'light']) };
+    return made.tokens;
+  };
+  const colors: Colors = Object.defineProperties({} as Colors, {
+    ...Object.fromEntries(
+      Object.keys(DARK).map((key) => [
+        key,
+        {
+          enumerable: true,
+          get: () =>
+            tokens()?.[key as keyof LookTokens] ?? (darkLook(look()) ? DARK : LIGHT)[key as Tone],
         },
-      },
-    ]),
-  ),
-  ...Object.fromEntries(
-    Object.entries(REGIONS).map(([key, [light, dark]]) => [
-      key,
-      { enumerable: true, get: () => C[platform.idiom !== 'terminal' && isDark() ? dark : light] },
-    ]),
-  ),
-});
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(REGIONS).map(([key, [light, dark]]) => [
+        key,
+        {
+          enumerable: true,
+          get: () => colors[platform.idiom !== 'terminal' && darkLook(look()) ? dark : light],
+        },
+      ]),
+    ),
+  });
+  return colors;
+}
+/** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
+export const C = lookColors(() => appearance.look());
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.idiom === 'terminal' ? 16 : 24 };
