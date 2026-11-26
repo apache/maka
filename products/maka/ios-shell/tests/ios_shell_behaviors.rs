@@ -21,7 +21,7 @@
 
 use maka_agent_api::contract::{
     DeliveryPage, PendingInteractions, PreviewPage, Queue, QueueAction, QueueEntry, QueueKind,
-    QueueMutation, QueueMutationResult,
+    QueueMutation, QueueMutationResult, Send, SendResult,
 };
 use maka_agent_facts::interaction::{Decision, InteractionAnswer, InteractionOutcome};
 use maka_event_log::{
@@ -47,7 +47,7 @@ use nsh_core::{
     platform::{Environment, Os},
     prelude::px,
 };
-use nsh_engine::{Bundle, EngineConfig, HostChannel};
+use nsh_engine::{Bundle, EngineConfig, HostCall, HostChannel};
 use nsh_testing::Headless;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -1698,7 +1698,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_existing_draft() {
+async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         call.reply(Ok(json!({
@@ -1786,21 +1786,588 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     app.press("label:Quote line to chat").unwrap();
     app.wait_for("text:Quoted auth.rs:1234").unwrap();
 
-    // Returns cleanly to ChatScreen with both original draft and quoted path:line.
+    // Both references land in the same Composer queue, independently of the draft text.
     app.wait_for("text:/Please check this:/").unwrap();
-    app.wait_for(r"text:/src\/auth\.rs:1234/").unwrap();
+    app.wait_for("text:src/auth.rs:1234").unwrap();
+    app.wait_for("label:Remove quote: let ttl = 60;").unwrap();
     app.press("label:Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
     app.press("label:.github").unwrap();
     app.press("label:NOTICE").unwrap();
-    app.wait_for(r"text:/\.github\/NOTICE:1/").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("text:.github/NOTICE:1").unwrap();
     let root = files_rx.try_recv().unwrap();
     let directory = files_rx.try_recv().unwrap();
     assert_eq!(root["sessionId"], "chat-diff");
     assert!(root["path"].is_null());
     assert_eq!(directory["sessionId"], "chat-diff");
     assert_eq!(directory["path"]["bytesBase64"], "LmdpdGh1Yg==");
+}
+
+fn quote_chat_fixture(
+    chunks: Vec<Value>,
+    older_chunks: Vec<Value>,
+    hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
+) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let history_requests = AtomicUsize::new(0);
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let session = |id, title| json!({"id":id,"title":title,"kind":"agent","parentSessionId":null,
+            "workspace":{"path":"/work"},"revision":1,"updatedAt":1700000000000u64,"activity":"idle",
+            "backend":{"kind":"model","connectionId":"conn","modelId":"model"}});
+        let method = data["method"].as_str().unwrap();
+        let value = match method {
+            "list" => json!({"sessions":[session("chat","Quotes Chat"),session("other","Other Chat")],"needsYouCount":0}),
+            "observe" => {
+                let row = if data["input"]["sessionId"] == "chat" {
+                    session("chat", "Quotes Chat")
+                } else {
+                    session("other", "Other Chat")
+                };
+                json!({"session":row,"through":17,"run":null})
+            }
+            "history" => {
+                let (rows, before) = match (
+                    data["input"]["sessionId"].as_str(),
+                    data["input"]["position"]["kind"].as_str(),
+                ) {
+                    (Some("chat"), Some("before")) => {
+                        assert_eq!(data["input"]["position"]["cursor"], "older");
+                        (older_chunks.as_slice(), None)
+                    }
+                    (Some("chat"), Some("tail")) => (chunks.as_slice(),
+                        (!older_chunks.is_empty()).then_some("older")),
+                    (Some("other"), Some("tail")) => (&[][..], None),
+                    _ => panic!("unexpected history query: {data}"),
+                };
+                json!({"kind":"ready","chunks":rows,"through":17,"before":before,"after":null})
+            }
+            "models" => json!({"kind":"ready","choices":[]}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            method => panic!("unexpected query: {method}"),
+        };
+        if method == "history"
+            && let Some(refresh) = &hold_first_refresh
+            && history_requests.fetch_add(1, Ordering::Relaxed) == 1
+        {
+            refresh.send((call, value)).unwrap();
+            return;
+        }
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","generation":1,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (send_tx, send_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let mut data = call.take_data();
+        assert_eq!(data["method"], "send");
+        assert_eq!(data["rootId"], "root");
+        send_tx
+            .send((serde_json::from_value(data["input"].take()).unwrap(), call))
+            .unwrap();
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Quotes Chat").unwrap();
+    (app, send_rx)
+}
+
+// Headless does not present UIKit's text edit menu. Read the action the
+// selectable view mounted and report its ID through the same event as UIKit.
+fn watch_quote_menus(
+    app: &mut Headless,
+) -> impl FnMut(&mut Headless, &str, Option<&str>) -> bool + use<> {
+    use nsh_core::{EventKind, EventPayload, MountItem, PayloadValue, ROOT_ID, desktop::MenuItem};
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ViewProps { id, props } = item
+                && props.selectable_view
+            {
+                let action = props.selection_menu.iter().find_map(|item| match item {
+                    MenuItem::Action(action)
+                        if action.label == "Add to quotes" && action.enabled =>
+                    {
+                        Some(action.id)
+                    }
+                    _ => None,
+                });
+                tx.send((*id, action)).unwrap();
+            }
+        }
+    });
+    let mut actions = BTreeMap::new();
+    move |app, selector, text| {
+        while let Ok((node, action)) = rx.try_recv() {
+            actions.insert(node, action);
+        }
+        let mut node = app.screen().id(selector).unwrap();
+        let nodes = app.screen().layout_nodes();
+        let (owner, action) = loop {
+            if let Some(Some(action)) = actions.get(&node) {
+                break (node, *action);
+            }
+            let Some(parent) = nodes
+                .iter()
+                .find(|entry| entry.id == node)
+                .map(|entry| entry.parent)
+            else {
+                return false;
+            };
+            if parent == ROOT_ID {
+                return false;
+            }
+            node = parent;
+        };
+        let control = app.engine().control();
+        if let Some(text) = text {
+            control.dispatch_event(
+                owner,
+                EventKind::SelectionChange,
+                EventPayload::Map(vec![
+                    ("text", PayloadValue::Str(text.into())),
+                    ("start", PayloadValue::Number(0.0)),
+                ]),
+            );
+            assert!(app.settle());
+        }
+        control.dispatch_event(
+            ROOT_ID,
+            EventKind::Menu,
+            EventPayload::Map(vec![("id", PayloadValue::Number(f64::from(action)))]),
+        );
+        assert!(app.settle());
+        true
+    }
+}
+
+fn quote_history_row(sequence: u64, role: &str, text: &str) -> Value {
+    json!({"importedTurn":null,"field":"body","position":{"kind":"live","sequence":sequence,
+        "fact":Uuid::from_u128(u128::from(sequence)),"itemIndex":0},
+        "order":{"path":[sequence],"itemIndex":0},"offset":0,"totalBytes":text.len(),
+        "messageId":format!("m{sequence}"),"turnId":"t1","role":role,"text":text,"tool":null})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_history() {
+    let mut user = quote_history_row(1, "user", "Keep café intact.");
+    user["text"] = json!("Keep café");
+    let mut continuation = user.clone();
+    continuation["offset"] = json!("Keep café".len());
+    continuation["text"] = json!(" intact.");
+    let assistant = quote_history_row(2, "assistant", "Context\n\n**Swift** ready");
+    let mut history = quote_history_row(3, "user", "");
+    history["quotes"] =
+        json!([{"label":"Desktop source","text":"A quote-only history excerpt","truncated":true}]);
+    let (mut app, mut sends) =
+        quote_chat_fixture(vec![user, continuation, assistant, history], vec![], None);
+
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Desktop source").unwrap();
+    app.wait_for("text:A quote-only history excerpt…").unwrap();
+    app.wait_for("text:Keep café intact.").unwrap();
+    app.wait_for("text:Swift ready").unwrap();
+    // Drag from the end of the first paragraph to the end of the second.
+    // The result is a single paragraph of rendered text, not the Markdown source.
+    let center = |selector| {
+        app.screen()
+            .layout(selector)
+            .unwrap()
+            .unwrap()
+            .bounds
+            .center()
+    };
+    let by = center("text:Swift ready") - center("text:Context");
+    app.drag("text:Context", by, Default::default()).unwrap();
+    assert!(!app.shows("role:button[Quote] >> nth=1"));
+    assert!(choose_quote(&mut app, "text:Swift ready", None));
+    let user_body = "text:Keep café intact. >> nth=0";
+    let mut quote_user = |app: &mut Headless| {
+        assert!(choose_quote(app, user_body, Some("Keep café intact.")));
+    };
+    quote_user(&mut app);
+    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("label:Remove quote: Swift ready").unwrap();
+    app.wait_for("label:Remove quote: Keep café intact.")
+        .unwrap();
+
+    let chip = |selector| {
+        let id = app.screen().id(selector).unwrap();
+        let nodes = app.screen().layout_nodes();
+        let parent = nodes.iter().find(|node| node.id == id).unwrap().parent;
+        nodes.iter().find(|node| node.id == parent).unwrap().bounds
+    };
+    let first = chip("label:Remove quote: Swift ready");
+    let second = chip("label:Remove quote: Keep café intact.");
+    assert_eq!(first.size.height, px(44.));
+    assert_eq!(second.size.height, first.size.height);
+    assert_eq!(second.origin.y, first.origin.y);
+    assert!(second.origin.x.0 >= (first.origin.x + first.size.width).0);
+
+    quote_user(&mut app);
+    app.press("text:Already quoted").unwrap();
+    app.press("label:Remove quote: Keep café intact.").unwrap();
+    app.wait_for("text:1 quote").unwrap();
+    assert!(!app.shows("label:Remove quote: Keep café intact."));
+    quote_user(&mut app);
+
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Other Chat").unwrap();
+    assert!(!app.shows("label:Clear all quotes"));
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (send, call) = sends.try_recv().unwrap();
+    assert_eq!(send.session_id, "chat");
+    assert_eq!(send.message, "");
+    assert_eq!(
+        json!(send.quotes),
+        json!([
+            {"text":"Swift ready","label":"Maka","sourceMessageId":"m2","sourceTurnId":"t1"},
+            {"text":"Keep café intact.","label":"You","sourceMessageId":"m1","sourceTurnId":"t1"}
+        ])
+    );
+    call.resolve(json!({"value":SendResult::Rejected {
+        session_id:"chat".into(), reason:maka_agent_api::contract::SendRejection::ModelUnavailable,
+        skills:None,
+    }}));
+    app.wait_for("text:Could not send the message.").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (retry, call) = sends.try_recv().unwrap();
+    assert_eq!(retry.quotes, send.quotes);
+    call.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"queued".into(), revision:2, completion:None,
+    }}));
+    assert!(app.settle());
+    assert!(!app.shows("label:Clear all quotes"));
+    assert!(app.press("label:Send message").is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assistant_turn_with_tools_has_one_copy_and_quote_action_for_all_bodies() {
+    let mut tool = quote_history_row(2, "assistant", "");
+    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![
+            quote_history_row(1, "assistant", "**First** answer"),
+            tool,
+            quote_history_row(3, "assistant", "Second answer"),
+        ],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Second answer").unwrap();
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("**First** answer\n\nSecond answer")
+    );
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(
+        json!(send.quotes),
+        json!([{"text":"**First** answer\n\nSecond answer","label":"Maka","sourceTurnId":"t1"}])
+    );
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"combined".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history_loads() {
+    let mut tool = quote_history_row(2, "assistant", "");
+    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(3, "assistant", "Second answer")],
+        vec![quote_history_row(1, "assistant", "First answer"), tool],
+        None,
+    );
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Second answer").unwrap();
+    app.wait_for("label:Load earlier messages").unwrap();
+    assert!(!app.shows("role:button[Copy reply]"));
+    assert!(!app.shows("role:button[Quote]"));
+    assert!(choose_quote(&mut app, "text:Second answer", Some("Second")));
+    app.wait_for("label:Remove quote: Second").unwrap();
+
+    app.press("label:Load earlier messages").unwrap();
+    app.wait_for("text:First answer").unwrap();
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("First answer\n\nSecond answer")
+    );
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(
+        json!(send.quotes),
+        json!([
+            {"text":"Second","label":"Maka","sourceMessageId":"m3","sourceTurnId":"t1"},
+            {"text":"First answer\n\nSecond answer","label":"Maka","sourceTurnId":"t1"}
+        ])
+    );
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"boundary".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_limit_disables_the_seventeenth_quote() {
+    let (mut app, mut sends) = quote_chat_fixture(
+        (1..=17)
+            .map(|n| {
+                let mut row = quote_history_row(n, "assistant", &format!("Excerpt {n}"));
+                row["turnId"] = json!(format!("t{n}"));
+                row
+            })
+            .collect(),
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Excerpt 17").unwrap();
+    for n in 0..16 {
+        app.press(&format!("role:button[Quote] >> nth={n}"))
+            .unwrap();
+    }
+    app.wait_for("text:Quote limit reached (16)").unwrap();
+    assert!(app.press("role:button[Quote] >> nth=16").is_err());
+    app.press("label:Send message").unwrap();
+    let (send, call) = sends.try_recv().unwrap();
+    let excerpts = send
+        .quotes
+        .iter()
+        .map(|q| q.text.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        excerpts,
+        (1..=16).map(|n| format!("Excerpt {n}")).collect::<Vec<_>>()
+    );
+
+    // Edits during a pending send belong to the next draft.
+    app.press("label:Clear all quotes").unwrap();
+    app.press("role:button[Quote] >> nth=16").unwrap();
+    app.press("role:button[Quote] >> nth=0").unwrap();
+    call.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"queued".into(), revision:2, completion:None,
+    }}));
+    assert!(app.settle());
+    app.wait_for("label:Remove quote: Excerpt 17").unwrap();
+    app.wait_for("label:Remove quote: Excerpt 1").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_in_flight_survives_reopening_and_consumes_only_the_sent_quote() {
+    let mut second_turn = quote_history_row(2, "assistant", "Second excerpt");
+    second_turn["turnId"] = json!("t2");
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![
+            quote_history_row(1, "assistant", "First excerpt"),
+            second_turn,
+        ],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:First excerpt").unwrap();
+    app.press("role:button[Quote] >> nth=0").unwrap();
+    app.press("label:Send message").unwrap();
+    let (first, receipt) = sends.try_recv().unwrap();
+    assert!(first.message.is_empty());
+    assert_eq!(first.quotes.len(), 1);
+    assert_eq!(first.quotes[0].text, "First excerpt");
+
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    app.press("role:button[Quote] >> nth=1").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    assert!(!app.screen().enabled("label:Send message").unwrap());
+    assert!(app.press("label:Send message").is_err());
+    assert!(
+        sends.try_recv().is_err(),
+        "send duplicated after reopening chat"
+    );
+
+    let queued = |id: &str, revision| {
+        json!({"value":SendResult::Queued {
+            session_id:"chat".into(), message_id:id.into(), revision, completion:None,
+        }})
+    };
+    receipt.resolve(queued("first", 2));
+    app.wait_for("text:1 quote").unwrap();
+    app.wait_for("text:Next draft").unwrap();
+    assert!(!app.shows("label:Remove quote: First excerpt"));
+    app.press("label:Send message").unwrap();
+    let (second, receipt) = sends.try_recv().unwrap();
+    assert_eq!(second.message, "Next draft");
+    assert_eq!(second.quotes.len(), 1);
+    assert_eq!(second.quotes[0].text, "Second excerpt");
+    receipt.resolve(queued("second", 3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_can_send_the_next_draft_before_history_refresh_returns() {
+    let (refresh_tx, mut refreshes) = mpsc::unbounded_channel();
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "assistant", "First excerpt")],
+        vec![],
+        Some(refresh_tx),
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:First excerpt").unwrap();
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (first, receipt) = sends.try_recv().unwrap();
+    assert_eq!(first.quotes[0].text, "First excerpt");
+
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"first".into(), revision:2, completion:None,
+    }}));
+    app.wait_for_gone("label:Remove quote: First excerpt", Duration::from_secs(2))
+        .unwrap();
+    let (history, page) = tokio::time::timeout(Duration::from_secs(2), refreshes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (second, receipt) = sends.try_recv().unwrap();
+    assert_eq!(second.message, "Next draft");
+    assert!(second.quotes.is_empty());
+    assert!(app.press("label:Send message").is_err());
+    assert!(sends.try_recv().is_err());
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"second".into(), revision:3, completion:None,
+    }}));
+    history.resolve(json!({"value":page}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_selection_rejects_rust_whitespace_and_trims_valid_excerpts() {
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "Keep\u{0085}the excerpt")],
+        vec![],
+        None,
+    );
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let body = "text:Keep\u{0085}the excerpt";
+    app.wait_for(body).unwrap();
+    assert!(app.screen().in_selectable_view(body).unwrap());
+    assert!(!app.shows("role:button[Quote]"));
+    // UIKit reports the selected text, which can include NEL.
+    assert!(choose_quote(&mut app, body, Some("\u{0085}")));
+    assert!(!app.shows("label:Clear all quotes"));
+    assert!(app.press("label:Send message").is_err());
+    assert!(sends.try_recv().is_err());
+
+    assert!(choose_quote(&mut app, body, Some("\u{0085}the excerpt")));
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(send.quotes.len(), 1);
+    assert_eq!(send.quotes[0].text, "the excerpt");
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"excerpt".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_user_quote_button_exists_only_for_a_valid_selection() {
+    use nsh_core::{EventKind, EventPayload, PayloadValue};
+
+    let (mut app, _sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "Keep\u{0085}this excerpt")],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let body = "text:Keep\u{0085}this excerpt";
+    let action = "role:button[Add to quotes]";
+    app.wait_for(body).unwrap();
+    assert!(!app.shows("role:button[Quote]"));
+    assert!(!app.shows(action));
+
+    let body_id = app.screen().id(body).unwrap();
+    let owner = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.id == body_id)
+        .unwrap()
+        .parent;
+    let select = |app: &mut Headless, text: &str| {
+        app.engine().control().dispatch_event(
+            owner,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("text", PayloadValue::Str(text.into())),
+                ("start", PayloadValue::Number(4.0)),
+            ]),
+        );
+        assert!(app.settle());
+    };
+    select(&mut app, "\u{0085}");
+    assert!(!app.shows(action));
+
+    select(&mut app, "this excerpt");
+    app.wait_for(action).unwrap();
+    assert_eq!(
+        app.screen()
+            .layout(action)
+            .unwrap()
+            .unwrap()
+            .bounds
+            .size
+            .height,
+        px(44.)
+    );
+    select(&mut app, "");
+    assert!(!app.shows(action));
+    assert!(!app.shows("label:Clear all quotes"));
+
+    select(&mut app, "this excerpt");
+    app.press(action).unwrap();
+    app.wait_for("label:Remove quote: this excerpt").unwrap();
+    assert!(!app.shows(action));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2963,6 +3530,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
+    let mut choose_quote = watch_quote_menus(&mut app);
     app.wait_for("label:Conversation: Release Room").unwrap();
     app.press("label:Conversation: Release Room").unwrap();
     app.wait_for("text:Initial room message").unwrap();
@@ -2982,11 +3550,15 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     earlier.resolve(json!({"value":value}));
     app.wait_for("text:Earlier room message").unwrap();
     assert!(app.press("label:Select model").is_err());
+    assert!(!app.shows("label:Quote"));
+    assert!(!choose_quote(&mut app, "text:Live room message", None));
+    assert!(!app.shows("label:Clear all quotes"));
     app.type_text("label:Message composer", "Hi Room").unwrap();
     app.press("label:Send message").unwrap();
     let input = send_rx.try_recv().unwrap();
     assert!(input["backend"].is_null());
     assert_eq!(input["message"], "Hi Room");
+    assert!(input.get("quotes").is_none());
     app.wait_for("text:Initial room message").unwrap();
     app.press("label:Load earlier messages").unwrap();
     let (data, stale, page) = earlier_rx.try_recv().unwrap();

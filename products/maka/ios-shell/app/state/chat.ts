@@ -21,6 +21,7 @@ import { approvalOutcome, approvalRejectionError } from '../approval';
 import type {
   AgentInteractionResult,
   AgentSendResult,
+  QuoteRef,
 } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
@@ -90,34 +91,135 @@ export function conversationKey(rootId: string, sessionId: string): string {
   return rootId + '::' + sessionId;
 }
 
-const draftMap = signal<Record<string, { text: string }>>({});
-const scrollOffsetMap = new Map<string, number>();
-
-export function getDraft(rootId: string, sessionId: string): string {
-  return draftMap()[conversationKey(rootId, sessionId)]?.text ?? '';
+export interface HistoryRow {
+  key: string;
+  first: AgentHistoryChunk;
+  last: AgentHistoryChunk;
+  text: string;
 }
 
-export function setDraft(rootId: string, sessionId: string, value: string) {
-  const key = conversationKey(rootId, sessionId);
-  draftMap.update((prev) =>
-    (prev[key]?.text ?? '') === value ? prev : { ...prev, [key]: { text: value } },
+export function assembleHistoryRows(chunks: readonly AgentHistoryChunk[]): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (const chunk of chunks) {
+    const row = rows.at(-1);
+    if (row && chunk.offset > 0 && compareHistoryRows(row.first, chunk) === 0) {
+      row.text += chunk.text;
+      row.last = chunk;
+    } else {
+      rows.push({
+        key: chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex),
+        first: chunk,
+        last: chunk,
+        text: chunk.text,
+      });
+    }
+  }
+  return rows;
+}
+
+export function isCompleteHistoryRow(row: HistoryRow): boolean {
+  const { last } = row;
+  return (
+    row.first.offset === 0 && last.offset + Buffer.byteLength(last.text, 'utf8') === last.totalBytes
   );
 }
 
-export function appendQuoteToDraft(
+export const quoteLimit = 16;
+
+export interface DraftQuote {
+  id: number;
+  sourceKey: string;
+  reference: QuoteRef;
+}
+
+interface Draft {
+  // Text and quotes can be edited independently while a snapshot is being sent.
+  readonly input: { readonly text: string };
+  readonly quotes: readonly DraftQuote[];
+  readonly sending: boolean;
+}
+
+const emptyDraft: Draft = { input: { text: '' }, quotes: [], sending: false };
+const draftMap = signal<Record<string, Draft>>({});
+const scrollOffsetMap = new Map<string, number>();
+let nextQuoteId = 0;
+
+export function getDraft(rootId: string, sessionId: string): Draft {
+  return draftMap()[conversationKey(rootId, sessionId)] ?? emptyDraft;
+}
+
+function updateDraft(rootId: string, sessionId: string, update: (draft: Draft) => Draft) {
+  const key = conversationKey(rootId, sessionId);
+  draftMap.update((prev) => {
+    const current = prev[key] ?? emptyDraft;
+    const next = update(current);
+    if (next === current) return prev;
+    const drafts = { ...prev };
+    if (next.input.text || next.quotes.length || next.sending) drafts[key] = next;
+    else delete drafts[key];
+    return drafts;
+  });
+}
+
+export function setDraft(rootId: string, sessionId: string, text: string) {
+  updateDraft(rootId, sessionId, (draft) =>
+    text === draft.input.text ? draft : { ...draft, input: { text } },
+  );
+}
+
+// Rust str::trim uses Unicode White_Space, not JavaScript's trim set.
+export function trimHostWhitespace(text: string): string {
+  return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+}
+
+export function appendDraftQuote(
   rootId: string,
   sessionId: string,
-  filePath: string,
-  lineNumber: number,
-  snippet?: string,
-) {
-  const tick = String.fromCharCode(96);
-  const quoteHeader = '> ' + tick + filePath + ':' + String(lineNumber) + tick;
-  const quoteLine = snippet?.trim() ? quoteHeader + '\n> ' + snippet.trim() : quoteHeader;
-  const current = getDraft(rootId, sessionId);
-  const next =
-    current.trim().length > 0 ? current.trimEnd() + '\n\n' + quoteLine + '\n' : quoteLine + '\n';
-  setDraft(rootId, sessionId, next);
+  sourceKey: string,
+  reference: QuoteRef,
+): boolean {
+  const text = trimHostWhitespace(reference.text);
+  if (!text) return false;
+  const label = trimHostWhitespace(reference.label ?? '') || undefined;
+  const { quotes } = getDraft(rootId, sessionId);
+  if (quotes.length >= quoteLimit) {
+    showToast(tr('Quote limit reached ({count})', { count: quoteLimit }));
+    return false;
+  }
+  if (quotes.some((quote) => quote.sourceKey === sourceKey && quote.reference.text === text)) {
+    showToast(tr('Already quoted'));
+    return false;
+  }
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    quotes: [...quotes, { id: ++nextQuoteId, sourceKey, reference: { ...reference, text, label } }],
+  }));
+  return true;
+}
+
+export function removeDraftQuote(rootId: string, sessionId: string, id: number) {
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    quotes: draft.quotes.filter((quote) => quote.id !== id),
+  }));
+}
+
+export function clearDraftQuotes(rootId: string, sessionId: string) {
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, quotes: [] }));
+}
+
+export function appendFileQuote(
+  rootId: string,
+  sessionId: string,
+  path: string,
+  line: number,
+  snippet?: { side: 'old' | 'new'; text: string },
+): boolean {
+  const label = path + ':' + String(line);
+  return appendDraftQuote(rootId, sessionId, 'file:' + (snippet?.side ?? '') + ':' + label, {
+    label,
+    text: trimHostWhitespace(snippet?.text ?? '') || label,
+  });
 }
 
 export function getSavedScrollOffset(rootId: string, sessionId: string): number {
@@ -243,7 +345,6 @@ export function createConversationController(rootId: string, initialSession: Age
   const earlierGeneration = signal<number | null>(null);
   const loadingEarlier = () =>
     earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
-  const sending = signal(false);
   const modelSelection = signal<{ generation: number; done: Promise<boolean> } | null>(null);
   const selectingModel = () => {
     const pending = modelSelection();
@@ -519,13 +620,17 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
+  const draft = () => getDraft(rootId, sessionId);
+  const sending = () => draft().sending;
+  const hasDraftContent = () =>
+    Boolean(trimHostWhitespace(draft().input.text) || (!isRoom() && draft().quotes.length));
+
   // Always uses 'queue' delivery (never implicit steer-while-running).
   const sendMessage = async () => {
-    const key = conversationKey(rootId, sessionId);
-    const draft = draftMap()[key];
-    const text = draft?.text.trim();
-    if (!text || sending()) return false;
-    sending.set(true);
+    if (!hasDraftContent() || sending()) return false;
+    const snapshot = draft();
+    const text = trimHostWhitespace(snapshot.input.text);
+    updateDraft(rootId, sessionId, (current) => ({ ...current, sending: true }));
     error.set(null);
     try {
       const connection = activeHostInfo(rootId);
@@ -551,7 +656,8 @@ export function createConversationController(rootId: string, initialSession: Age
         }
         if (!backend) throw new Error(tr('Select model'));
       }
-      if (disposed) return false;
+      if (disposed || (isRoom() && !text)) return false;
+      const quotes = isRoom() ? undefined : snapshot.quotes;
       const res = await hostMutate<AgentSendResult>(
         'agent',
         'send',
@@ -559,7 +665,7 @@ export function createConversationController(rootId: string, initialSession: Age
           mentions: [],
           replyTo: null,
           onComplete: null,
-          quotes: [],
+          ...(quotes && { quotes: quotes.map((quote) => quote.reference) }),
           delivery: 'queue',
           expectedRunId: null,
           attachments: [],
@@ -574,12 +680,12 @@ export function createConversationController(rootId: string, initialSession: Age
           cause: res.kind === 'rejected' ? res.reason : res.kind,
         });
       }
-      if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
-      hapticSelection();
-      await Promise.all([loadObserve(), loadHistory()]);
-      const hostName = hostById(rootId)?.hostName ?? rootId;
-      void refreshHostSessions(rootId, hostName);
-      return true;
+      const sentQuoteIds = new Set(quotes?.map((quote) => quote.id));
+      updateDraft(rootId, sessionId, (current) => ({
+        ...current,
+        input: current.input === snapshot.input ? emptyDraft.input : current.input,
+        quotes: current.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
+      }));
     } catch (cause) {
       hapticNotification('error');
       const msg = cause instanceof Error ? cause.message : String(cause);
@@ -587,8 +693,18 @@ export function createConversationController(rootId: string, initialSession: Age
       showToast(msg);
       return false;
     } finally {
-      if (!disposed) sending.set(false);
+      updateDraft(rootId, sessionId, (current) => ({ ...current, sending: false }));
     }
+
+    hapticSelection();
+    if (!disposed) {
+      void Promise.all([loadObserve(), loadHistory()]).catch((cause) => {
+        if (!disposed) error.set(cause instanceof Error ? cause.message : String(cause));
+      });
+    }
+    const hostName = hostById(rootId)?.hostName ?? rootId;
+    void refreshHostSessions(rootId, hostName);
+    return true;
   };
 
   const stopRun = async () => {
@@ -796,6 +912,7 @@ export function createConversationController(rootId: string, initialSession: Age
     loading,
     loadingEarlier,
     sending,
+    hasDraftContent,
     error,
     queue,
     pendingInteractions,
