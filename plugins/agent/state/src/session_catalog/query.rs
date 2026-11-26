@@ -54,6 +54,9 @@ const BASE: &str = "WITH base AS (
  s.catalog_unpinned AS unpinned,
  source.run AS source_run,COALESCE(source.sequence,0)>COALESCE(k.read_through,0) AS source_unread,
  room.session IS NOT NULL AS is_room,
+ (?14=1 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'),0)=1
+  AND EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
+   AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))) AS tucked,
  -max(s.created_at,COALESCE((SELECT m.at FROM agent_catalog_runs admitted
   JOIN agent_catalog_messages m ON m.owner=admitted.owner AND m.session=admitted.session AND m.sequence=admitted.admission_sequence
   WHERE admitted.owner=?1 AND admitted.session=s.id AND admitted.admission_sequence>COALESCE(source.sequence,0)
@@ -72,7 +75,9 @@ const BASE: &str = "WITH base AS (
  WHERE s.id>=?2 AND s.id<?3 AND substr(s.id,1,length(?2))=?2
  AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
  {CANDIDATE_FILTERS}
-), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base)";
+), selected AS (SELECT *, (pending_since IS NOT NULL) AS needs_you FROM base
+ -- A side question listed under its conversation still shows while it waits for the user.
+ WHERE tucked=0 OR pending_since IS NOT NULL)";
 const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
  AND (?5 IS NULL OR json_extract(b.workspace_json,'$.path')=?5)
  AND (?6 IS NULL OR substr(s.id,1,length(?6))=?6)
@@ -81,10 +86,7 @@ const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
  AND (?9 IS NULL OR json_extract(s.configuration,'$.parentSessionId')=?9)
  AND (?10=0 OR (?10=1 AND s.archived=0) OR (?10=2 AND s.archived=1))
  AND (?13 IS NULL OR (room.session IS NOT NULL)=?13)
- AND (?14=0
-  OR (?14=1 AND (COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'),0)=0
-   OR NOT EXISTS(SELECT 1 FROM session_control p WHERE p.id=COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))
-    AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=p.id AND d.remove_session=1))))
+ AND (?14 IN(0,1)
   OR (?14=2 AND COALESCE(json_extract(k.lineage,'$.origin.side'),json_extract(k.lineage,'$.branch.side'))=1
    AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))";
 const FILTER: &str =
@@ -963,6 +965,72 @@ mod tests {
         }
     }
 
+    /// A live Run of the session with a request that waits for the user.
+    struct SeedPending {
+        owner: String,
+        session: &'static str,
+    }
+    impl Statement for SeedPending {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            let run = Uuid::now_v7().to_string();
+            c.execute(
+                "INSERT OR IGNORE INTO contents(id,content_sha256,payload) VALUES(9001,'seed-pending',CAST('{}' AS BLOB))",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES(?1,?2,?3,?4,9001)",
+                rusqlite::params![run, SCHEMA_VERSION, self.owner, self.session],
+            )?;
+            c.execute(
+                "INSERT INTO agent_catalog_runs(run,owner,session,admission_sequence,live) VALUES(?1,?2,?3,1,1)",
+                rusqlite::params![run, self.owner, self.session],
+            )?;
+            c.execute(
+                "INSERT INTO agent_interaction_requests(request,session,run,created_at,revision,record_json) VALUES('req-1',?1,?2,7,1,'{}')",
+                rusqlite::params![self.session, run],
+            )?;
+            c.execute(
+                "INSERT INTO agent_interaction_pending(session,created_at,request) VALUES(?1,7,'req-1')",
+                [self.session],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    /// The session's request is answered: nothing waits for the user any more.
+    struct ClearPending {
+        session: &'static str,
+    }
+    impl Statement for ClearPending {
+        type Output = ();
+        type Value = ();
+        fn execute(self, c: &Connection) -> Result<Prepared<()>, StoreError> {
+            c.execute(
+                "DELETE FROM agent_interaction_pending WHERE session=?1",
+                [self.session],
+            )?;
+            Ok(Prepared {
+                value: (),
+                changed: true,
+                notification: Notification::default(),
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
     #[tokio::test]
     async fn side_questions_are_listed_under_their_parent_until_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1023,6 +1091,77 @@ mod tests {
         assert_eq!(
             pages(SideQuestions::Any, 32).await,
             vec![vec!["sess-06", "sess-04", "sess-03", "sess-02", "sess-01"]]
+        );
+        // While side question sess-02 waits for the user it is listed and
+        // counted with the others, so the user can find what it asks.
+        data.write(SeedPending {
+            owner: catalog.owner_key().unwrap(),
+            session: "sess-02",
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            pages(SideQuestions::Hidden, 32).await,
+            vec![vec!["sess-06", "sess-04", "sess-03", "sess-02", "sess-01"]]
+        );
+        let waiting = catalog
+            .page(
+                CatalogScope::Profile,
+                None,
+                Position::Start,
+                Filter {
+                    base: CatalogFilter {
+                        roots_only: false,
+                        archived_only: false,
+                        include_archived: true,
+                    },
+                    needs_you_only: true,
+                    room: None,
+                    side: SideQuestions::Hidden,
+                },
+                32,
+            )
+            .await
+            .unwrap();
+        assert_eq!(waiting.pending_session_count, 1);
+        assert_eq!(
+            waiting
+                .sessions
+                .iter()
+                .map(|record| record.metadata.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sess-02"]
+        );
+        // Once answered it leaves the lists and the count again.
+        data.write(ClearPending { session: "sess-02" })
+            .await
+            .unwrap();
+        assert_eq!(
+            pages(SideQuestions::Hidden, 32).await,
+            vec![vec!["sess-06", "sess-04", "sess-03", "sess-01"]]
+        );
+        assert_eq!(
+            catalog
+                .page(
+                    CatalogScope::Profile,
+                    None,
+                    Position::Start,
+                    Filter {
+                        base: CatalogFilter {
+                            roots_only: false,
+                            archived_only: false,
+                            include_archived: true,
+                        },
+                        needs_you_only: true,
+                        room: None,
+                        side: SideQuestions::Hidden,
+                    },
+                    32,
+                )
+                .await
+                .unwrap()
+                .pending_session_count,
+            0
         );
         root.close().await.unwrap();
     }

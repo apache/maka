@@ -195,6 +195,7 @@ import {
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { createScopedCatalog } from '../../../../products/maka/workbench/app/scopedCatalog';
 import {
   BotNote,
   BotReply,
@@ -287,8 +288,6 @@ import type {
   AgentHistoryLandmark,
   AgentMarkReadResult,
   AgentSession,
-  AgentSessionPage,
-  AgentSessionPosition,
   AgentRunBackend,
   Cursor as HistoryCursor,
   HistoryPosition,
@@ -1064,25 +1063,6 @@ export function Conversation(props: ConversationProps) {
   // Side questions asked beside this conversation's replies. Its lists leave
   // them out, so they are read here for the replies that show them.
   const sideQuestions = signal<AgentSession[]>([]);
-  let sideLoad = 0;
-  const loadSideQuestions = async () => {
-    const version = ++sideLoad;
-    const sessions: AgentSession[] = [];
-    let position: AgentSessionPosition = { kind: 'start' };
-    for (;;) {
-      const page: AgentSessionPage = await host.query('agent', 'list', {
-        filter: 'all',
-        position,
-        scope: { kind: 'side_questions', sessionId },
-      });
-      if (!alive || version !== sideLoad) return;
-      sessions.push(...page.sessions);
-      if (!page.after) break;
-      position = { kind: 'after', revision: page.revision, cursor: page.after };
-    }
-    sideQuestions.set(sessions);
-    void loadSideQuotes(sessions);
-  };
   // What each side question quotes, read once from its first message: the
   // branch records where it was asked, not about which words. A passage
   // gathered as this view was open names its reply's turn; the history does
@@ -1164,7 +1144,10 @@ export function Conversation(props: ConversationProps) {
             passages.map((passage) => ({ text: passage.text, turnId: passage.turnId })),
           ),
         );
-        sideQuestions.set([forked.session, ...sideQuestions()]);
+        sideQuestions.set([
+          forked.session,
+          ...sideQuestions().filter((session) => session.id !== forked.session.id),
+        ]);
         return forked.session.id as string;
       },
       discard: async (id) => {
@@ -1223,12 +1206,13 @@ export function Conversation(props: ConversationProps) {
         }
       : undefined;
   if (sideActions) {
-    // A discarded side question leaves its reply when its card closes.
+    // What a side question is doing follows the catalog, also with its card
+    // closed: one that works, waits for the user or has an unread reply says so.
+    const listed = createScopedCatalog(host, () => ({ kind: 'side_questions', sessionId }));
     effect(() => {
-      props.sideQuestionId?.();
-      void loadSideQuestions().catch((reason) =>
-        console.warn('Side questions were not listed:', reason),
-      );
+      const sessions = [...listed()];
+      sideQuestions.set(sessions);
+      void loadSideQuotes(sessions);
     });
   }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
@@ -5329,8 +5313,17 @@ export function Conversation(props: ConversationProps) {
                       <SideNotes
                         questions={() => {
                           const position = row().position;
+                          // An underlined one is listed too while it works, waits for the
+                          // user or has an unread reply: the underline cannot show that.
                           return position
-                            ? sideActions.asked(position).filter((item) => !marked().has(item.id))
+                            ? sideActions
+                                .asked(position)
+                                .filter(
+                                  (item) =>
+                                    !marked().has(item.id) ||
+                                    item.activity !== 'idle' ||
+                                    item.hasUnread,
+                                )
                             : [];
                         }}
                         shown={sideActions.shown}

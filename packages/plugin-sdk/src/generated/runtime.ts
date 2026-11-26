@@ -8021,7 +8021,8 @@ export interface AgentFork {
   labels: string[];
   /**
    * Makes the fork a side question of the source conversation: lists leave
-   * it out unless they ask for that conversation's side questions.
+   * it out unless they ask for that conversation's side questions, or it
+   * waits for the user.
    */
   side?: boolean;
 }

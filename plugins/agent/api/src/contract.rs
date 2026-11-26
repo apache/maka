@@ -286,7 +286,8 @@ pub enum SessionListScope {
         session_id: String,
     },
     /// Side questions asked beside an owned session. Every other scope leaves
-    /// out side questions whose parent conversation still exists.
+    /// out side questions whose parent conversation still exists, except while
+    /// one waits for the user.
     SideQuestions {
         #[schemars(length(min = 1))]
         session_id: String,
