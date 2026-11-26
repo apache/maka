@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::output::FrameWriter;
+use super::{colors::Colors, output::FrameWriter};
 use crossterm::event::Event;
 use nsh_core::clipboard::ClipboardBackend;
 use nsh_engine::EngineConfig;
@@ -91,6 +91,7 @@ type Frames = mpsc::Receiver<Result<Frame, String>>;
 
 pub(super) fn spawn(
     config: EngineConfig,
+    colors: Colors,
     pending: Arc<AtomicBool>,
     driver: thread::Thread,
     tmux: bool,
@@ -100,7 +101,7 @@ pub(super) fn spawn(
     thread::Builder::new()
         .name("maka-nsh-ui".into())
         .spawn(move || {
-            let mut session = match Session::new(config, tmux) {
+            let mut session = match Session::new(config, colors, tmux) {
                 Ok(session) => session,
                 Err(error) => {
                     let _ = frames.send(Err(error));
@@ -146,7 +147,10 @@ struct Session {
 }
 
 impl Session {
-    fn new(config: EngineConfig, tmux: bool) -> Result<Self, String> {
+    fn new(mut config: EngineConfig, colors: Colors, tmux: bool) -> Result<Self, String> {
+        if let Some(scheme) = colors.scheme() {
+            config.environment.color_scheme = scheme;
+        }
         let cells = CellSize::default();
         let columns = (config.viewport.width / cells.width()).round() as u16;
         let rows = (config.viewport.height / cells.height()).round() as u16;
@@ -158,6 +162,8 @@ impl Session {
         });
         let mut capabilities = TerminalCapabilities::default();
         capabilities.background = config.environment.color_scheme;
+        capabilities.background_color = colors.background;
+        capabilities.foreground_color = colors.foreground;
         capabilities.colors = ColorDepth::TrueColor;
         let mut options = AppOptions::default();
         options.cells = cells;
@@ -491,7 +497,7 @@ mod tests {
         options.environment.idiom = Idiom::Desktop;
         options.environment.native_focus_scopes = true;
         options.ui_sets.push(registry);
-        let mut session = Session::new(options, false).unwrap();
+        let mut session = Session::new(options, Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         session
     }
@@ -611,7 +617,7 @@ mod tests {
         host.handle("observed", move |call| {
             received.lock().unwrap().push(call.data().clone())
         });
-        let mut session = Session::new(options, false).unwrap();
+        let mut session = Session::new(options, Colors::default(), false).unwrap();
         let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
         session.reloading = Some(receiver);
         session.initial_frame().unwrap();
@@ -728,8 +734,14 @@ mod tests {
                     ..Default::default()
                 };
                 let pending = Arc::new(AtomicBool::new(false));
-                let (commands, frames) =
-                    super::spawn(options, pending.clone(), thread::current(), false).unwrap();
+                let (commands, frames) = super::spawn(
+                    options,
+                    Colors::default(),
+                    pending.clone(),
+                    thread::current(),
+                    false,
+                )
+                .unwrap();
                 let mut output = super::super::output::Output::new(Capture {
                     bytes: Vec::new(),
                     flushed,
@@ -784,6 +796,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -832,7 +845,7 @@ mod tests {
             "#,
         );
         options.environment.window = options.viewport;
-        let mut session = Session::new(options, false).unwrap();
+        let mut session = Session::new(options, Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         assert!(session.surface.snapshot().contains("NARROW_WINDOW"));
         for (columns, rows, expected, absent) in [
@@ -888,7 +901,7 @@ mod tests {
         "#,
         );
         options.assets = Some(Arc::new(ImageAssets));
-        let mut session = Session::new(options, false).unwrap();
+        let mut session = Session::new(options, Colors::default(), false).unwrap();
         let mut bytes = session.initial_frame().unwrap().bytes.unwrap_or_default();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1138,7 +1151,7 @@ mod tests {
                 "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
                 "requestAnimationFrame(() => current.set(\"B\"));",
             );
-        let mut session = Session::new(config(&source), false).unwrap();
+        let mut session = Session::new(config(&source), Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         let events = click(&session.surface, "row:A");
         let row = session
@@ -1177,7 +1190,7 @@ mod tests {
                 "onPress: () => selected.set(row().id),",
                 "onPress: () => { selected.set(row().id); rows.set([{ id: \"B\" }]); },",
             );
-        let mut session = Session::new(config(&source), false).unwrap();
+        let mut session = Session::new(config(&source), Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         let mut events = click(&session.surface, "row:A");
         events.extend(events.clone());
@@ -1212,6 +1225,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -1253,6 +1267,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -1353,6 +1368,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -1519,7 +1535,7 @@ mod tests {
         "#;
         for text in [true, false] {
             let source = APP.replace("USE_TEXT", if text { "true" } else { "false" });
-            let mut session = Session::new(config(&source), false).unwrap();
+            let mut session = Session::new(config(&source), Colors::default(), false).unwrap();
             session.initial_frame().unwrap();
             assert_eq!(
                 session.surface.input_context().unwrap().text.as_deref(),
@@ -1574,7 +1590,7 @@ mod tests {
         for (drag, selected, expected, caret) in
             [(false, 2..2, "heXllo", 3..3), (true, 1..4, "hXo", 2..2)]
         {
-            let mut session = Session::new(config(APP), false).unwrap();
+            let mut session = Session::new(config(APP), Colors::default(), false).unwrap();
             session.initial_frame().unwrap();
             assert_eq!(
                 session.surface.input_context().unwrap().text.as_deref(),
@@ -1643,6 +1659,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -1704,6 +1721,7 @@ mod tests {
             });
             "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -1767,7 +1785,7 @@ mod tests {
         "#;
         for replace_owner in [false, true] {
             let source = APP.replace("REPLACE_OWNER", &replace_owner.to_string());
-            let mut session = Session::new(config(&source), false).unwrap();
+            let mut session = Session::new(config(&source), Colors::default(), false).unwrap();
             session.initial_frame().unwrap();
             assert!(session.surface.snapshot().contains("Row A:9"));
             let editor = session.surface.input_context().unwrap();
@@ -1795,7 +1813,7 @@ mod tests {
             "requestAnimationFrame(() => rows.set([{ id: \"B\" }]));",
             "",
         );
-        let mut session = Session::new(config(&source), false).unwrap();
+        let mut session = Session::new(config(&source), Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         let down = mouse(
             &session.surface,
@@ -1824,7 +1842,7 @@ mod tests {
 
     #[test]
     fn mount_deltas_are_applied_in_order_including_create_and_later_value() {
-        let mut session = Session::new(config("import { mount } from 'nsh'; import { element } from 'nsh:rt'; mount(() => element('view')); "), false).unwrap();
+        let mut session = Session::new(config("import { mount } from 'nsh'; import { element } from 'nsh:rt'; mount(() => element('view')); "), Colors::default(), false).unwrap();
         session.initial_frame().unwrap();
         let bounds = nsh_core::Bounds::new(
             nsh_core::geometry::point(nsh_core::geometry::px(0.0), nsh_core::geometry::px(0.0)),
@@ -1885,6 +1903,7 @@ mod tests {
             });
         "#,
                 ),
+                Colors::default(),
                 tmux,
             )
             .unwrap();
@@ -1952,6 +1971,7 @@ mod tests {
             });
         "#,
             ),
+            Colors::default(),
             false,
         )
         .unwrap();
@@ -2013,5 +2033,45 @@ mod tests {
                 .windows(sequence.len())
                 .any(|bytes| bytes == sequence.as_bytes())
         );
+    }
+
+    #[test]
+    fn reported_terminal_colors_give_surfaces_and_the_scheme() {
+        let draw = |colors: Colors| {
+            let mut options = config(
+                r##"
+            import { colorScheme, mount } from "nsh";
+            import { element, prop, insert, append } from "nsh:rt";
+            mount(() => {
+                const root = element("view");
+                const raised = element("view");
+                prop(raised, "style", { width: 160, height: 16, backgroundColor: "#27272a" });
+                const label = element("text");
+                insert(label, () => "scheme:" + colorScheme());
+                append(raised, label);
+                append(root, raised);
+                return root;
+            });
+            "##,
+            );
+            options.environment.color_scheme = nsh_core::platform::ColorScheme::Dark;
+            let mut session = Session::new(options, colors, false).unwrap();
+            session.initial_frame().unwrap();
+            session
+        };
+        let dark = draw(Colors {
+            foreground: Some([224; 3]),
+            background: Some([24; 3]),
+        });
+        assert!(dark.surface.snapshot().contains("scheme:dark"));
+        let ratatui::style::Color::Rgb(red, green, blue) = dark.surface.buffer()[(0, 0)].bg else {
+            panic!("a fill on a terminal with known colors is a step of them");
+        };
+        assert!(red == green && green == blue && (25..224).contains(&red));
+        let light = draw(Colors {
+            foreground: Some([30; 3]),
+            background: Some([250; 3]),
+        });
+        assert!(light.surface.snapshot().contains("scheme:light"));
     }
 }

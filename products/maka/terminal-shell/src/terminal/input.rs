@@ -28,6 +28,7 @@ pub(super) struct Inbox {
     events: VecDeque<Event>,
     pub resize: Option<(u16, u16)>,
     pub graphics: super::graphics::Probe,
+    pub colors: super::colors::Colors,
     pub cancel_pointer: bool,
     pub error: Option<String>,
     pub quit: bool,

@@ -143,11 +143,11 @@ const lookColors = (): LookTokens | null => {
   return made.tokens;
 };
 /** Whether the interface is dark: the window's appearance in effect (`setColorScheme`), or
- * with a look, whether its background is; terminals keep the dark colors. */
+ * with a look, whether its background is; a terminal's is its reported background's. */
 export const isDark = () => {
-  if (platform.idiom === 'terminal') return true;
-  const look = appearance.look();
   const dark = colorScheme() !== 'light';
+  if (platform.idiom === 'terminal') return dark;
+  const look = appearance.look();
   return look ? darkBackground(look.cssVars[dark ? 'dark' : 'light'].background) : dark;
 };
 type Tone = keyof typeof DARK;

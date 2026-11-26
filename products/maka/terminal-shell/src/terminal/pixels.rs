@@ -298,8 +298,10 @@ pub(super) fn run(
                             return Ok(());
                         }
                         let pending = Arc::new(AtomicBool::new(false));
+                        let colors = presentation.state.lock().unwrap().colors;
                         let (commands, frames) = super::ui::spawn(
                             config,
+                            colors,
                             pending.clone(),
                             thread::current(),
                             presentation.tmux,
