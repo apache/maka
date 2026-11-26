@@ -344,21 +344,26 @@ export const suites = {
   },
   'windows-desktop': {
     workspace: 'root',
-    packages: ['maka-desktop-shell', 'maka-workbench'],
+    packages: ['maka-desktop-shell', 'maka-workbench', 'maka-cli'],
     cargoArgs: [
       '--locked',
       '-p',
       'maka-desktop-shell',
       '-p',
       'maka-workbench',
+      '-p',
+      'maka-cli',
       '--lib',
       '--bin',
       'maka-desktop-shell',
+      '--bin',
+      'maka',
       '--test',
       'open_directly',
     ],
-    targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--test', 'open_directly'],
+    targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--bin', 'maka', '--test', 'open_directly'],
     filter:
+      '(binary_id(=maka-cli::bin/maka) & test(=windows::tests::desktop_releases_only_its_private_console)) | ' +
       'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
     extraInputs: productInputs,
   },

@@ -37,6 +37,27 @@ use windows_sys::Win32::System::{
 // the Host exits, terminating descendants without killing the Host during Drop.
 static OWNER: OnceLock<io::Result<OwnedHandle>> = OnceLock::new();
 
+pub(super) fn detach_private_desktop_console() -> io::Result<bool> {
+    use windows_sys::Win32::System::Console::{
+        FreeConsole, GetConsoleProcessList, GetConsoleWindow,
+    };
+
+    // SAFETY: the process list has one writable slot. A larger count means
+    // another process (such as the invoking shell) shares this console.
+    unsafe {
+        if GetConsoleWindow().is_null() {
+            return Ok(false);
+        }
+        let mut process = 0;
+        match GetConsoleProcessList(&mut process, 1) {
+            0 => Err(io::Error::last_os_error()),
+            1 if FreeConsole() == 0 => Err(io::Error::last_os_error()),
+            1 => Ok(true),
+            _ => Ok(false),
+        }
+    }
+}
+
 pub(super) fn own_process_tree() -> io::Result<()> {
     OWNER
         .get_or_init(create)
@@ -88,6 +109,43 @@ mod tests {
             TerminateProcess, WaitForSingleObject,
         },
     };
+
+    #[test]
+    fn desktop_releases_only_its_private_console() {
+        use windows_sys::Win32::System::{
+            Console::GetConsoleWindow, Threading::CREATE_NEW_CONSOLE,
+        };
+
+        const ROLE: &str = "MAKA_TEST_DESKTOP_CONSOLE";
+        let child = |role: &str, flags| {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "windows::tests::desktop_releases_only_its_private_console",
+                ])
+                .env(ROLE, role)
+                .creation_flags(flags)
+                .status()
+                .unwrap()
+                .success()
+        };
+        match std::env::var(ROLE).as_deref() {
+            Ok("private") => {
+                assert!(child("shared", 0));
+                assert!(detach_private_desktop_console().unwrap());
+                assert!(unsafe { GetConsoleWindow() }.is_null());
+            }
+            Ok("shared") => {
+                assert!(!detach_private_desktop_console().unwrap());
+                assert!(!unsafe { GetConsoleWindow() }.is_null());
+            }
+            Ok("windowless") => assert!(!detach_private_desktop_console().unwrap()),
+            _ => {
+                assert!(child("private", CREATE_NEW_CONSOLE));
+                assert!(child("windowless", CREATE_NO_WINDOW));
+            }
+        }
+    }
 
     #[test]
     fn process_exit_reaps_descendants_without_changing_success_status() {

@@ -259,6 +259,8 @@ fn launch() -> Result<(), String> {
     let launcher = launcher_path(&shell)?;
     let mut command = std::process::Command::new(&launcher);
     command.arg("desktop");
+    #[cfg(windows)]
+    command.args(std::env::args_os().skip(1));
     if let Some(root) = std::env::var_os(maka_updater::RESTART_ROOT_ENV) {
         if !root.is_empty() {
             command.arg("--root").arg(root);
