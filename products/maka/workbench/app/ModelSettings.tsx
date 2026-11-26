@@ -95,8 +95,6 @@ export function ModelSettings(props: {
           tool.declaration.contract === quickToolView.id &&
           sameValue(tool.instance.instance, item.instance.instance),
       );
-  // Every row's style reads these, so they are kept: the colors change them at
-  // each step of a palette slider, and comparing the contributions is not cheap.
   const pages = computed(() => {
     const shown = runtime.settings().filter((item) => !quickTool(item));
     return [
