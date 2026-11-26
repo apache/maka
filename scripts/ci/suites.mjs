@@ -375,7 +375,15 @@ export const suites = {
       '--test',
       'open_directly',
     ],
-    targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--bin', 'maka', '--test', 'open_directly'],
+    targetArgs: [
+      '--lib',
+      '--bin',
+      'maka-desktop-shell',
+      '--bin',
+      'maka',
+      '--test',
+      'open_directly',
+    ],
     filter:
       '(binary_id(=maka-cli::bin/maka) & test(=windows::tests::desktop_releases_only_its_private_console)) | ' +
       'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
