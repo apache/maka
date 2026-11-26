@@ -18,7 +18,7 @@
  */
 
 import { inputAction, List, platform, signal, Text, View, windowSize } from 'nsh';
-import { SettingsRow } from './SettingsPage';
+import { cardRaisedActiveStyle, cardRaisedHoverStyle, SettingsRow } from './SettingsPage';
 import { Button, Input, Popover } from 'nsh/base';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
@@ -31,7 +31,6 @@ import {
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
-  isDark,
   C,
   floatingStyle,
   menuRowHoverStyle,
@@ -84,16 +83,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 gap: 6,
                 alignItems: 'center',
               }}
-              hoverStyle={
-                platform.idiom !== 'terminal' && isDark()
-                  ? { opacity: 0.82 }
-                  : { backgroundColor: C.pressed }
-              }
-              activeStyle={
-                platform.idiom !== 'terminal' && isDark()
-                  ? { opacity: 0.72 }
-                  : { backgroundColor: C.pressed }
-              }
+              hoverStyle={cardRaisedHoverStyle()}
+              activeStyle={cardRaisedActiveStyle()}
               focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >

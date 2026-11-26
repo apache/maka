@@ -53,9 +53,9 @@ const rowStyle = {
 } as const;
 const labelStyle = { fontSize: 14, lineHeight: terminal ? 16 : 20 };
 const textGap = terminal ? 0 : 2;
-const cardRaisedHoverStyle = () =>
+export const cardRaisedHoverStyle = () =>
   !terminal && isDark() ? { opacity: 0.82 } : { backgroundColor: C.pressed };
-const cardRaisedActiveStyle = () =>
+export const cardRaisedActiveStyle = () =>
   !terminal && isDark() ? { opacity: 0.72 } : { backgroundColor: C.pressed };
 
 function SettingsFooter(props: { render: () => JSX.Element | undefined }) {
