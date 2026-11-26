@@ -108,10 +108,13 @@ impl Owner {
                     return Ok(McpDeclineResult::Changed);
                 }
                 owner.mcp_projects.decline(&proposal).await?;
-                let _ = owner
+                if let Err(error) = owner
                     .mcp_projects
                     .drop_stale_for_scope(Some(&session.configuration.workspace))
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %error, "MCP stale snapshot retirement failed after decline");
+                }
                 owner
                     .store
                     .owned_root()

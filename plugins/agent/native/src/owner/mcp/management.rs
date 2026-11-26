@@ -27,6 +27,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone)]
 pub(super) struct Location {
     pub(super) id: LocationId,
     pub(super) root: Arc<Dir>,
@@ -249,10 +250,13 @@ impl Owner {
                     }
                     ProjectMcpDecisionInput::Declined => {
                         owner.mcp_projects.decline(&proposal).await?;
-                        let _ = owner
+                        if let Err(error) = owner
                             .mcp_projects
                             .drop_stale_for_scope(Some(&input.workspace))
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %error, "MCP stale snapshot retirement failed after decision update");
+                        }
                     }
                 }
                 owner
@@ -354,10 +358,19 @@ impl Owner {
                 .await
                 .map_err(|error| error.to_string())??;
                 if matches!(outcome, McpConfigurationResult::Saved) {
-                    let _ = owner
+                    let scope_workspace = matches!(
+                        input.location,
+                        LocationId::ProjectMaka | LocationId::ProjectAgents
+                    )
+                    .then_some(workspace.as_ref())
+                    .flatten();
+                    if let Err(error) = owner
                         .mcp_projects
-                        .drop_stale_for_scope(workspace.as_ref())
-                        .await;
+                        .drop_stale_for_scope(scope_workspace)
+                        .await
+                    {
+                        tracing::warn!(error = %error, "MCP stale snapshot retirement failed after configuration save");
+                    }
                 }
                 Ok(outcome)
             })

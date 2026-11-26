@@ -1296,16 +1296,23 @@ async fn workspace_write_mcp_tool_approvals_cas_and_read_only_floor() -> TestRes
         finish_turn(client, &session, &t3, reply, "Updated.").await?;
 
         let global_path = base.join("home/.maka/mcp.json");
+        let global_starts = base.join("global-starts.log");
         let t3b = send(client, &session, "Code Mode CAS test.").await?;
         let (_, reply) = next_request(&mut provider, &rig, &session).await?;
         reply.send_plan(exec_js("text(await tools.McpUpdate({ name: 'globaldemo', scope: 'user', env: { CAS_TRY: '1' } }));"));
         let ap3b = await_service_approval(client, &session).await?;
+        let starts_before_cas = started(&global_starts);
         let mut gdoc = read_json_file(&global_path)?;
         gdoc["mcpServers"]["globaldemo"]["env"]["CONCURRENT"] = json!("from-settings");
         std::fs::write(&global_path, gdoc.to_string())?;
         allow_service_approval(client, &session, ap3b["requestId"].as_str().unwrap()).await?;
         let (req3b_done, reply) = next_request(&mut provider, &rig, &session).await?;
         assert!(last_message_text(&req3b_done, "tool").contains("changed on disk"));
+        assert_eq!(
+            started(&global_starts),
+            starts_before_cas,
+            "Code Mode pre-probe CAS must reject BEFORE spawning verify_server"
+        );
         let disk_cas = read_json_file(&global_path)?;
         assert!(disk_cas["mcpServers"]["globaldemo"]["env"]["CAS_TRY"].is_null());
         assert_eq!(disk_cas["mcpServers"]["globaldemo"]["env"]["CONCURRENT"], "from-settings");
@@ -1668,6 +1675,454 @@ async fn mcp_list_omits_exited_zero_tool_servers_across_layers() -> TestResult<(
 
         let _ = session_mcp_sub.cancel().await;
         session_mcp_sub.close().await?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+/// Stdio MCP server that logs its PID and writes a ready marker on `initialize`, then waits
+/// until a release gate file appears before replying so handshake races are deterministic.
+const GATED_HANDSHAKE_SERVER: &str = r#"
+import { createInterface } from 'node:readline';
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+const [pidLog, readyPath, releasePath] = process.argv.slice(2);
+appendFileSync(pidLog, `${process.pid}\n`);
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const message = JSON.parse(line);
+  const reply = (result) => send({ jsonrpc: '2.0', id: message.id, result });
+  if (message.method === 'initialize') {
+    writeFileSync(readyPath, `${process.pid}\n`);
+    const finish = () => {
+      if (existsSync(releasePath)) {
+        reply({
+          protocolVersion: message.params.protocolVersion,
+          capabilities: { tools: {} },
+          serverInfo: { name: 'gated', version: '1' },
+        });
+      } else {
+        setTimeout(finish, 10);
+      }
+    };
+    finish();
+  } else if (message.method === 'tools/list') {
+    reply({ tools: [{ name: 'echo', description: 'Gated echo', inputSchema: { type: 'object' } }] });
+  } else if (message.method === 'tools/call') {
+    reply({ content: [{ type: 'text', text: JSON.stringify(message.params.arguments) }], isError: false });
+  }
+});
+"#;
+
+async fn wait_file_exists(path: &Path, label: &str) -> TestResult<()> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !path.exists() {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    })
+    .await
+    .map_err(|_| format!("timed out waiting for {label} at {}", path.display()))?;
+    Ok(())
+}
+
+/// Verifies McpUpdate credential isolation on url/command change, unambiguous multi-location
+/// target rejection, pre-probe CAS (zero probe on stale approval), cancel-mid-probe (no disk
+/// write), user-level retirement despite corrupt project mcp.json, and ReadOnly McpList.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_update_credential_isolation_disambiguation_pre_probe_cas_and_read_only_list()
+-> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_path_buf();
+    let outcome = AssertUnwindSafe(Box::pin(async {
+        let crash_script = base.join("crash-server.mjs");
+        std::fs::write(&crash_script, CRASH_SERVER)?;
+        let gated_script = base.join("gated-server.mjs");
+        std::fs::write(&gated_script, GATED_HANDSHAKE_SERVER)?;
+        let steady_pids = base.join("steady-pids.log");
+        let user_path = base.join("home/.maka/mcp.json");
+        let proj_path = base.join("workspace/.maka/mcp.json");
+        write_mcp_json(
+            &user_path,
+            json!({
+                "steady": stdio_entry(&crash_script, &steady_pids, None, &base),
+                "dup": { "url": "https://user-dup.example/mcp", "disabled": true },
+            }),
+        )?;
+        write_mcp_json(
+            &proj_path,
+            json!({
+                "dup": { "url": "https://proj-dup.example/mcp", "disabled": true },
+            }),
+        )?;
+
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
+            config["assistant"] = json!({"home": base.join("home")});
+            config["toolDiscovery"] = json!(false);
+        })
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.server.base_url(), false).await?;
+        let session = create(client, &base, &model, None).await?["id"]
+            .as_str()
+            .ok_or("missing session id")?
+            .to_owned();
+        set_permissions(&rig, &session, "danger_full_access", false).await?;
+        let proj_rev =
+            call(client, "agent", "projectMcp", json!({"sessionId": session})).await?["revision"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        call(
+            client,
+            "agent",
+            "trustProjectMcp",
+            json!({"sessionId": session, "revision": proj_rev}),
+        )
+        .await?;
+
+        // 1. Credential isolation on URL & command changes, plus multi-location disambiguation.
+        let t1 = send(
+            client,
+            &session,
+            "Test credential clearing and disambiguation.",
+        )
+        .await?;
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response(
+            "McpInstall",
+            json!({
+                "name": "apiserver",
+                "url": "https://origin-a.example/mcp",
+                "headers": { "Authorization": "Bearer secret-header" },
+                "headerEnv": { "X-Api-Key": "HOST_SECRET" },
+                "disabled": true,
+                "skipVerify": true
+            }),
+        ));
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({
+                "name": "apiserver",
+                "url": "https://origin-b.example/mcp",
+                "skipVerify": true
+            }),
+        ));
+        let (req_url_upd, reply) = next_request(&mut provider, &rig, &session).await?;
+        let url_upd = parse_tool_json(&req_url_upd)?;
+        assert_eq!(
+            url_upd["clearedCredentials"],
+            json!(["Authorization", "X-Api-Key"]),
+            "{url_upd}"
+        );
+        let disk = read_json_file(&user_path)?;
+        assert!(disk["mcpServers"]["apiserver"]["headers"].is_null());
+        assert!(disk["mcpServers"]["apiserver"]["headerEnv"].is_null());
+
+        let runner_pids = base.join("runner-pids.log");
+        reply.send_plan(tool_response(
+            "McpInstall",
+            json!({
+                "name": "runner",
+                "command": "node",
+                "args": [&crash_script, &runner_pids],
+                "cwd": &base,
+                "env": { "API_KEY": "top-secret-env" },
+                "passEnv": ["HOME"],
+                "skipVerify": true
+            }),
+        ));
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({
+                "name": "runner",
+                "command": "/usr/bin/env",
+                "args": ["node", &crash_script, &runner_pids],
+                "skipVerify": true
+            }),
+        ));
+        let (req_cmd_upd, reply) = next_request(&mut provider, &rig, &session).await?;
+        let cmd_upd = parse_tool_json(&req_cmd_upd)?;
+        assert_eq!(
+            cmd_upd["clearedCredentials"],
+            json!(["API_KEY", "HOME"]),
+            "{cmd_upd}"
+        );
+        let disk = read_json_file(&user_path)?;
+        assert!(disk["mcpServers"]["runner"]["env"].is_null());
+        assert!(disk["mcpServers"]["runner"]["passEnv"].is_null());
+
+        // Ambiguous same-name update & uninstall without scope/location must be rejected.
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({ "name": "dup", "disabled": false, "skipVerify": true }),
+        ));
+        let (req_amb_upd, reply) = next_request(&mut provider, &rig, &session).await?;
+        assert!(
+            last_message_text(&req_amb_upd, "tool").contains("exists in multiple locations"),
+            "{}",
+            last_message_text(&req_amb_upd, "tool")
+        );
+        reply.send_plan(tool_response("McpUninstall", json!({ "name": "dup" })));
+        let (req_amb_del, reply) = next_request(&mut provider, &rig, &session).await?;
+        assert!(
+            last_message_text(&req_amb_del, "tool").contains("exists in multiple locations"),
+            "{}",
+            last_message_text(&req_amb_del, "tool")
+        );
+
+        // Corrupt project mcp.json must NOT block retiring an uninstalled user-level MCP server.
+        assert_eq!(read_pids(&steady_pids)?.len(), 1);
+        std::fs::write(&proj_path, "{corrupt-project-json")?;
+        reply.send_plan(tool_response(
+            "McpUninstall",
+            json!({ "name": "steady", "scope": "user" }),
+        ));
+        let (req_uninst, reply) = next_request(&mut provider, &rig, &session).await?;
+        assert_eq!(parse_tool_json(&req_uninst)?["status"], "uninstalled");
+        finish_turn(client, &session, &t1, reply, "Done turn 1.").await?;
+
+        #[cfg(unix)]
+        wait_pids_exited(&read_pids(&steady_pids)?, "uninstalled user steady server").await;
+
+        // 2. ReadOnly McpList succeeds even while project mcp.json is corrupt.
+        set_permissions(&rig, &session, "read_only", false).await?;
+        let t2 = send(
+            client,
+            &session,
+            "List MCP in read_only with corrupt project file.",
+        )
+        .await?;
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response("McpList", json!({})));
+        let (req_ro_list, reply) = next_request(&mut provider, &rig, &session).await?;
+        let ro_list = parse_tool_json(&req_ro_list)?;
+        assert_eq!(
+            ro_list["projectMcpStatus"], "disabled_in_read_only",
+            "{ro_list}"
+        );
+        assert!(
+            ro_list["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["scope"] == "user"),
+            "{ro_list}"
+        );
+        finish_turn(client, &session, &t2, reply, "Listed in read-only.").await?;
+
+        // 3. WorkspaceWrite: pre-probe CAS skips verify_server completely (zero probe),
+        // and approval method exposes target + inherited credential names (never values).
+        std::fs::remove_file(&proj_path)?;
+        let mut user_doc = read_json_file(&user_path)?;
+        user_doc["mcpServers"]["runner"] = json!({
+            "command": "node",
+            "args": [&crash_script, &runner_pids],
+            "cwd": &base,
+            "disabled": true,
+            "env": { "KEPT_KEY": "never-leak-this-value" }
+        });
+        std::fs::write(&user_path, serde_json::to_vec_pretty(&user_doc)?)?;
+        set_permissions(&rig, &session, "workspace_write", true).await?;
+
+        let probe_cas_log = base.join("probe-cas-must-stay-absent.log");
+        let t3 = send(client, &session, "Test pre-probe CAS and approval summary.").await?;
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({
+                "name": "runner",
+                "scope": "user",
+                "disabled": false,
+                "args": [&crash_script, &probe_cas_log],
+                "env": { "ADDED_KEY": "1" }
+            }),
+        ));
+        let ap_cas = await_service_approval(client, &session).await?;
+        let ap_detail = call(
+            client,
+            "agent",
+            "interaction",
+            json!({"sessionId": session, "requestId": ap_cas["requestId"]}),
+        )
+        .await?;
+        let ap_method = ap_detail["request"]["method"].as_str().unwrap_or("");
+        assert!(
+            ap_method.contains("user:maka")
+                && ap_method.contains("verify")
+                && ap_method.contains("KEPT_KEY")
+                && !ap_method.contains("never-leak-this-value"),
+            "approval method must show location, verify, and inherited key name only: {ap_detail}"
+        );
+        // Simulate concurrent edit before approving.
+        let mut concurrent = read_json_file(&user_path)?;
+        concurrent["mcpServers"]["runner"]["env"]["CONCURRENT"] = json!("settings");
+        std::fs::write(&user_path, serde_json::to_vec_pretty(&concurrent)?)?;
+        allow_service_approval(client, &session, ap_cas["requestId"].as_str().unwrap()).await?;
+        let (req_cas_done, reply) = next_request(&mut provider, &rig, &session).await?;
+        assert!(
+            last_message_text(&req_cas_done, "tool").contains("differs from the original approval"),
+            "{}",
+            last_message_text(&req_cas_done, "tool")
+        );
+        assert!(
+            !probe_cas_log.exists(),
+            "stale CAS approval must reject BEFORE running verify_server"
+        );
+        finish_turn(client, &session, &t3, reply, "Pre-probe CAS rejected.").await?;
+
+        // 4. Stopping a Run mid-probe cancels verify_server and does NOT write to disk.
+        let probe_cancel_pids = base.join("probe-cancel-pids.log");
+        let probe_ready = base.join("probe-cancel.ready");
+        let probe_release = base.join("probe-cancel.release");
+        set_permissions(&rig, &session, "danger_full_access", false).await?;
+        let t4 = send(client, &session, "Update runner with blocking probe.").await?;
+        let (_, reply) = next_request(&mut provider, &rig, &session).await?;
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({
+                "name": "runner",
+                "scope": "user",
+                "disabled": false,
+                "args": [&gated_script, &probe_cancel_pids, &probe_ready, &probe_release],
+                "env": { "SHOULD_NOT_SAVE": "1" }
+            }),
+        ));
+        wait_file_exists(&probe_ready, "probe ready marker").await?;
+        let obs = call(client, "agent", "observe", json!({"sessionId": session})).await?;
+        let run_id = obs["latestRunId"].as_str().ok_or("missing active run id")?;
+        let stopped = call(
+            client,
+            "agent",
+            "stop",
+            json!({"sessionId": session, "runId": run_id}),
+        )
+        .await?;
+        assert_eq!(stopped["requested"], true, "{stopped}");
+        let work = tokio::time::timeout(Duration::from_secs(20), terminal(client, &session, &t4))
+            .await??;
+        assert_eq!(work["execution"]["state"]["kind"], "cancelled", "{work}");
+        let disk_after_cancel = read_json_file(&user_path)?;
+        assert!(
+            disk_after_cancel["mcpServers"]["runner"]["env"]["SHOULD_NOT_SAVE"].is_null(),
+            "cancelled probe must never commit to disk: {disk_after_cancel}"
+        );
+        #[cfg(unix)]
+        wait_pids_exited(&read_pids(&probe_cancel_pids)?, "cancelled probe server").await;
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await?;
+    match outcome {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
+}
+
+/// Verifies that declining a project MCP configuration while a slow initial handshake is
+/// in flight aborts snapshot publication, closes the newly opened process, and does not
+/// leak the declined server into `snapshots.current` or later turns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_project_mcp_startup_aborts_when_declined_mid_handshake() -> TestResult<()> {
+    let mut rig = Rig::new()?;
+    let mut provider = Provider::start().await?;
+    let base = rig.directory.path().to_path_buf();
+    let outcome = AssertUnwindSafe(Box::pin(async {
+        let gated_script = base.join("gated-server.mjs");
+        std::fs::write(&gated_script, GATED_HANDSHAKE_SERVER)?;
+        std::fs::create_dir_all(base.join("home/.maka"))?;
+        let slow_pids = base.join("slow-proj-pids.log");
+        let ready_file = base.join("slow-proj.ready");
+        let release_file = base.join("slow-proj.release");
+        write_mcp_json(
+            &base.join("workspace/.maka/mcp.json"),
+            json!({
+                "slowproj": {
+                    "command": "node",
+                    "args": [&gated_script, &slow_pids, &ready_file, &release_file],
+                    "cwd": &base
+                }
+            }),
+        )?;
+
+        let boot = bootstrap_with(&base, provider.server.base_url(), |config| {
+            config["assistant"] = json!({"home": base.join("home")});
+            config["toolDiscovery"] = json!(false);
+        })
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().unwrap();
+        let model = model(client, &provider.server.base_url(), false).await?;
+        let session = create(client, &base, &model, None).await?["id"]
+            .as_str()
+            .ok_or("missing session id")?
+            .to_owned();
+        set_permissions(&rig, &session, "workspace_write", true).await?;
+        let ws_obj = call(client, "agent", "observe", json!({"sessionId": session})).await?
+            ["session"]["workspace"]
+            .clone();
+        let proj_rev =
+            call(client, "agent", "projectMcp", json!({"sessionId": session})).await?["revision"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        set_project_decision(client, &ws_obj, &proj_rev, "trusted").await?;
+
+        // Kick off Turn 1 concurrently: agent.send awaits Projects::start, which spawns slowproj
+        // and blocks inside initialize before anything is published into snapshots.current.
+        let send_fut = call(
+            client,
+            "agent",
+            "send",
+            json!({"sessionId": session, "message": "Start slow project MCP."}),
+        );
+        let decline_fut = async {
+            wait_file_exists(&ready_file, "slowproj handshake ready").await?;
+            set_project_decision(client, &ws_obj, &proj_rev, "declined").await?;
+            std::fs::write(&release_file, "go")?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        };
+        let (send_res, decline_res) = tokio::join!(send_fut, decline_fut);
+        decline_res?;
+        let send_err = send_res
+            .expect_err("declining mid-handshake must abort slow startup instead of admitting Run");
+        assert!(
+            send_err.to_string().contains("agent_mcp_trust_required"),
+            "unexpected abort error: {send_err}"
+        );
+        #[cfg(unix)]
+        wait_pids_exited(&read_pids(&slow_pids)?, "aborted slowproj server").await;
+
+        // Turn 2 proceeds cleanly with zero project MCP tools and never restarts slowproj.
+        let t2 = send(client, &session, "Proceed after decline.").await?;
+        let (req2, reply) = next_request(&mut provider, &rig, &session).await?;
+        let tool_names: Vec<&str> = req2["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(
+            !tool_names
+                .iter()
+                .any(|name| name.starts_with("mcp__slowproj__")),
+            "declined slowproj must not leak into subsequent turns: {tool_names:?}"
+        );
+        assert_eq!(started(&slow_pids), 1, "declined slowproj must not restart");
+        finish_turn(client, &session, &t2, reply, "Clean without slowproj.").await?;
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))
     .catch_unwind()

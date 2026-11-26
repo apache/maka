@@ -1546,7 +1546,14 @@ impl DriverModel {
                     "history-source-requires-bound-snapshot-projection",
                 ));
             }
+            let projects_user_message = matches!(
+                input,
+                RunInput::Continuation { .. }
+                    | RunInput::CheckpointHandoff { .. }
+                    | RunInput::Message { .. }
+            );
             let mcp_section = if !steering
+                && projects_user_message
                 && matches!(view.spec.backend, BackendSpec::Model { .. })
                 && let Some(previous) = last_mcp_tools
             {
