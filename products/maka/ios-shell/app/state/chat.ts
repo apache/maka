@@ -38,6 +38,7 @@ import {
   type AgentObservation,
   type AgentQueue,
   type AgentRoomMessage,
+  type AgentSession,
   type SubscriptionHandle,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
@@ -45,6 +46,9 @@ import { activeHostInfo, hostById, showToast } from './hostPool';
 import { refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
 import { refreshHostSessions } from './sessions';
+import { modelBackend, readDefaultModel } from './settings/models';
+import { settingsRpc } from './settings/rpc';
+import { tr } from '../locale';
 
 export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
@@ -60,7 +64,6 @@ export function conversationKey(rootId: string, sessionId: string): string {
 
 const draftMap = signal<Record<string, string>>({});
 const scrollOffsetMap = new Map<string, number>();
-const backendMap = signal<Record<string, AgentBackendPreference | null>>({});
 
 export function getDraft(rootId: string, sessionId: string): string {
   return draftMap()[conversationKey(rootId, sessionId)] ?? '';
@@ -93,22 +96,6 @@ export function getSavedScrollOffset(rootId: string, sessionId: string): number 
 
 export function saveScrollOffset(rootId: string, sessionId: string, y: number) {
   scrollOffsetMap.set(conversationKey(rootId, sessionId), Math.max(0, y));
-}
-
-export function getSelectedBackend(
-  rootId: string,
-  sessionId: string,
-): AgentBackendPreference | null {
-  return backendMap()[conversationKey(rootId, sessionId)] ?? null;
-}
-
-export function setSelectedBackend(
-  rootId: string,
-  sessionId: string,
-  backend: AgentBackendPreference | null,
-) {
-  const key = conversationKey(rootId, sessionId);
-  backendMap.update((prev) => ({ ...prev, [key]: backend }));
 }
 
 export interface ParsedDiffFile {
@@ -205,15 +192,18 @@ export async function fetchGitWorkspaceDiff(
 
 let watchSeq = 0;
 
-export function createConversationController(
-  rootId: string,
-  sessionId: string,
-  initialRoom: boolean,
-) {
+export function createConversationController(rootId: string, initialSession: AgentSession) {
+  const sessionId = initialSession.id;
   const observation = signal<AgentObservation | null>(null);
+  const selectedBackend = () => {
+    const observed = observation();
+    return observed
+      ? (observed.session.backend ?? observed.rememberedBackend ?? null)
+      : (initialSession.backend ?? null);
+  };
   const chunks = signal<AgentHistoryChunk[]>([]);
   const roomMessages = signal<AgentRoomMessage[]>([]);
-  const isRoom = signal(initialRoom);
+  const isRoom = signal(initialSession.kind === 'room');
   const beforeCursor = signal<unknown>(null);
   const loading = signal(true);
   const earlierGeneration = signal<number | null>(null);
@@ -384,6 +374,7 @@ export function createConversationController(
   };
 
   const loadObserve = async () => {
+    const generation = activeHostInfo(rootId)?.generation;
     try {
       const obs = await hostQuery<AgentObservation>(
         'agent',
@@ -392,17 +383,16 @@ export function createConversationController(
         undefined,
         rootId,
       );
-      if (disposed) return;
+      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+      const current = observation();
+      if (current && obs.session.revision < current.session.revision) return;
       observation.set(obs);
       if (obs.session?.kind === 'room') isRoom.set(true);
       if (typeof obs.through === 'number') {
         lastThrough = Math.max(lastThrough ?? 0, obs.through);
       }
-      if (obs.session?.backend && !getSelectedBackend(rootId, sessionId)) {
-        setSelectedBackend(rootId, sessionId, obs.session.backend);
-      }
     } catch (cause) {
-      if (!disposed) {
+      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
         error.set(cause instanceof Error ? cause.message : String(cause));
       }
     }
@@ -484,7 +474,22 @@ export function createConversationController(
     sending.set(true);
     error.set(null);
     try {
-      const backend = isRoom() ? null : getSelectedBackend(rootId, sessionId);
+      const connection = activeHostInfo(rootId);
+      if (!connection) throw new Error(tr('Computer is offline'));
+      const { generation } = connection;
+      let backend: AgentBackendPreference | null = null;
+      if (!isRoom()) {
+        if (!observation() && !selectedBackend()) await loadObserve();
+        if (disposed) return false;
+        if (!observation() && !selectedBackend()) throw new Error(error() ?? tr('Select model'));
+        backend = selectedBackend();
+        if (!backend && connection.endpoints.includes('settings')) {
+          const choice = await readDefaultModel(settingsRpc(rootId));
+          backend = selectedBackend() ?? (choice ? modelBackend(choice) : null);
+        }
+        if (!backend) throw new Error(tr('Select model'));
+      }
+      if (disposed) return false;
       const res = await hostMutate<{ kind: string; reason?: unknown }>(
         'agent',
         'send',
@@ -500,7 +505,7 @@ export function createConversationController(
           sessionId,
           message: text,
         },
-        { rootId },
+        { rootId, generation },
       );
       if (res?.kind === 'rejected') {
         throw new Error(String(res.reason ?? 'rejected'));
@@ -535,13 +540,19 @@ export function createConversationController(
   };
 
   const selectModel = async (backend: AgentBackendPreference) => {
-    if (isRoom()) return;
+    const generation = activeHostInfo(rootId)?.generation;
+    if (isRoom() || generation === undefined) return;
     try {
       const result = await hostMutate<
         import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
-      >('agent', 'selectBackend', { sessionId, backend }, { rootId });
+      >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
       if (result.kind !== 'committed') throw new Error(result.kind);
-      setSelectedBackend(rootId, sessionId, backend);
+      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+      const current = observation();
+      if (!current) await loadObserve();
+      else if (result.session.revision >= current.session.revision) {
+        observation.set({ ...current, session: result.session });
+      }
       hapticSelection();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause));
@@ -705,6 +716,7 @@ export function createConversationController(
 
   return {
     observation,
+    selectedBackend,
     chunks,
     roomMessages,
     isRoom,

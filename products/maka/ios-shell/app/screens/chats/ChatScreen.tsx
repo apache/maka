@@ -54,7 +54,6 @@ import {
   createConversationController,
   getDraft,
   getSavedScrollOffset,
-  getSelectedBackend,
   saveScrollOffset,
   setDraft,
 } from '../../state/chat';
@@ -352,7 +351,7 @@ export function ChatScreen(props: {
   const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
-  const ctrl = createConversationController(rootId, sessionId, props.item.session.kind === 'room');
+  const ctrl = createConversationController(rootId, props.item.session);
   const feedback = approvalFeedback<{
     record: AgentInteractionRecord;
     index: number;
@@ -401,7 +400,7 @@ export function ChatScreen(props: {
     (left.selection.settings?.model ?? null) === (right.selection.settings?.model ?? null);
 
   const currentModelLabel = () => {
-    const chosen = getSelectedBackend(rootId, sessionId);
+    const chosen = ctrl.selectedBackend();
     const list = ctrl.models();
     if (chosen?.kind === 'executor')
       return (
@@ -410,15 +409,18 @@ export function ChatScreen(props: {
       );
     if (chosen && chosen.kind === 'model') {
       const match = list.find(
-        (m) => m.selection.kind === 'model' && m.selection.modelId === chosen.modelId,
+        (m) =>
+          m.selection.kind === 'model' &&
+          m.selection.connectionId === chosen.connectionId &&
+          m.selection.modelId === chosen.modelId,
       );
       return match?.label ?? chosen.modelId;
     }
-    return list[0]?.label ?? tr('Model');
+    return tr('Default');
   };
 
   const modelMenuItems = (): MenuButtonItem[] => {
-    const chosen = getSelectedBackend(rootId, sessionId);
+    const chosen = ctrl.selectedBackend();
     return ctrl.models().map((m: AgentModelChoice, idx: number) => {
       const id =
         m.selection.kind === 'model'

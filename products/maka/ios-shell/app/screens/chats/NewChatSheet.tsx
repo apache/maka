@@ -44,6 +44,7 @@ import {
   type ScopedSession,
 } from '../../state/sessions';
 import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
+import { modelBackend, readDefaultModel } from '../../state/settings/models';
 import { settingsRpc } from '../../state/settings/rpc';
 import { SettingChoice } from '../settings/SettingsForm';
 import { spacing, type } from '../../theme/tokens';
@@ -70,12 +71,14 @@ export function NewChatSheet(props: {
   const workspaces = signal<WorkspaceOption[]>([]);
   const selectedWorkspaceId = signal('');
   const models = signal<AgentModelChoice[]>([]);
-  const defaultModel = signal('');
+  const defaultModel = signal<Awaited<ReturnType<typeof readDefaultModel>>>(null);
   const modelIndex = signal('');
   const presets = signal<ServiceMethods['agent']['presets']['output']>([]);
   const memberIds = signal<string[]>([]);
   const createdRoom = signal<ScopedSession | null>(null);
-  const ready = signal(false);
+  const readyGeneration = signal<number | null>(null);
+  const ready = () =>
+    readyGeneration() !== null && readyGeneration() === activeHostInfo(targetRootId())?.generation;
   const loadingWorkspaces = signal(false);
   const loadingPresets = signal(false);
   const creating = signal(false);
@@ -98,7 +101,7 @@ export function NewChatSheet(props: {
   effect(() => {
     const rootId = targetRootId();
     const generation = activeHostInfo(rootId)?.generation;
-    if (!props.open || !rootId) return;
+    if (!props.open || !rootId || generation === undefined) return;
     let cancelled = false;
     cleanup(() => {
       cancelled = true;
@@ -107,10 +110,10 @@ export function NewChatSheet(props: {
     workspaces.set([]);
     selectedWorkspaceId.set('');
     models.set([]);
-    defaultModel.set('');
+    defaultModel.set(null);
     modelIndex.set('');
     loadingWorkspaces.set(true);
-    ready.set(false);
+    readyGeneration.set(null);
     const current = () => !cancelled && generation === activeHostInfo(rootId)?.generation;
     const rpc = settingsRpc(rootId);
     const settings = activeHostInfo(rootId)?.endpoints.includes('settings');
@@ -118,12 +121,9 @@ export function NewChatSheet(props: {
       listHostProjects(rootId, current),
       listHostDirectoryRoots(rootId),
       listHostModels(rootId, current),
-      settings ? rpc.query('settings', 'connections', { kind: 'start' }) : undefined,
+      settings ? readDefaultModel(rpc) : null,
     ])
-      .then(async ([projects, roots, choices, catalog]) => {
-        if (!current()) return;
-        const target = catalog?.kind === 'ready' ? catalog.defaultTarget : null;
-        const model = target ? await rpc.query('settings', 'resolveModel', target) : null;
+      .then(([projects, roots, choices, model]) => {
         if (!current()) return;
         const opts: WorkspaceOption[] = projects.map((project) => ({
           id: 'proj:' + project.reference.id,
@@ -144,8 +144,8 @@ export function NewChatSheet(props: {
         workspaces.set(opts);
         selectedWorkspaceId.set(opts[0]?.id ?? '');
         models.set(choices);
-        ready.set(true);
-        if (model?.kind === 'ready') defaultModel.set(model.choice.label);
+        defaultModel.set(model);
+        readyGeneration.set(generation);
       })
       .catch((cause) => {
         if (!cancelled) error.set(cause instanceof Error ? cause.message : String(cause));
@@ -201,7 +201,7 @@ export function NewChatSheet(props: {
     createdRoom.set(null);
     title.set('');
     modeIndex.set(0);
-    ready.set(false);
+    readyGeneration.set(null);
     error.set(null);
     props.onClose();
   };
@@ -215,9 +215,17 @@ export function NewChatSheet(props: {
     props.onCreated(created);
   };
 
+  const selectedBackend = () => {
+    if (modelIndex() !== '') return models()[Number(modelIndex())]?.selection ?? null;
+    const choice = defaultModel();
+    return choice ? modelBackend(choice) : null;
+  };
+
   const handleCreate = async () => {
     const rootId = targetRootId();
+    const generation = activeHostInfo(rootId)?.generation;
     if (
+      generation === undefined ||
       !rootId ||
       !eligible(rootId) ||
       creating() ||
@@ -227,6 +235,8 @@ export function NewChatSheet(props: {
     )
       return;
     const isRoom = modeIndex() === 1;
+    const backend = isRoom ? null : selectedBackend();
+    if (!isRoom && !backend) return;
     const members = memberIds();
     const selectedPresets = presets();
     const picked = workspaces().find((w) => w.id === selectedWorkspaceId());
@@ -238,11 +248,12 @@ export function NewChatSheet(props: {
     try {
       const created = await createHostSession({
         rootId,
+        generation,
         kind: isRoom ? 'room' : 'agent',
         title: cleanTitle || (isRoom ? tr('New Room') : tr('New Chat')),
         automaticTitle: !isRoom && !cleanTitle,
         workspace,
-        backend: modelIndex() === '' ? null : models()[Number(modelIndex())]?.selection,
+        backend,
       });
       if (isRoom && members.length) {
         createdRoom.set(created);
@@ -253,6 +264,7 @@ export function NewChatSheet(props: {
             const preset = selectedPresets.find((row) => row.id === id.slice(7))!;
             const member = await createHostSession({
               rootId,
+              generation,
               kind: 'agent',
               title: preset.name,
               automaticTitle: false,
@@ -269,7 +281,7 @@ export function NewChatSheet(props: {
             sessionId: created.session.id,
             action: { kind: 'add_members', memberSessionIds: sessionIds },
           },
-          { rootId },
+          { rootId, generation },
         );
       }
       finish(created);
@@ -468,7 +480,7 @@ export function NewChatSheet(props: {
               value={modelIndex()}
               disabled={loadingWorkspaces() || creating()}
               options={[
-                { id: '', label: defaultModel() || tr('Default') },
+                { id: '', label: defaultModel()?.label ?? tr('Unavailable') },
                 ...models().map((model, index) => ({ id: String(index), label: model.label })),
               ]}
               change={modelIndex.set}
@@ -549,6 +561,7 @@ export function NewChatSheet(props: {
                   loadingWorkspaces() ||
                   loadingPresets() ||
                   !ready() ||
+                  (modeIndex() === 0 && !selectedBackend()) ||
                   !workspaces().some((workspace) => workspace.id === selectedWorkspaceId())))
             }
             onPress={() => {
