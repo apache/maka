@@ -158,17 +158,29 @@ const REGIONS = {
 type Colors = Record<Tone | keyof typeof REGIONS, string>;
 /** The colors of `look` (null for the default palette), read anew each time one is. */
 export function lookColors(look: () => Look | null): Colors {
-  // The look's tokens, made once per look and appearance.
-  let made: { look: Look; dark: boolean; tokens: LookTokens } | null = null;
-  const tokens = (): LookTokens | null => {
+  // The look's tokens and whether its background is dark, made once per look and appearance;
+  // null for the default palette and in terminals.
+  let made: { look: Look; dark: boolean; tokens: LookTokens; darkBackground: boolean } | null =
+    null;
+  const current = () => {
     if (platform.idiom === 'terminal') return null;
     const value = look();
     if (!value) return null;
     const dark = colorScheme() !== 'light';
-    if (made?.look !== value || made.dark !== dark)
-      made = { look: value, dark, tokens: lookTokens(value.cssVars[dark ? 'dark' : 'light']) };
-    return made.tokens;
+    if (made?.look !== value || made.dark !== dark) {
+      const picked = value.cssVars[dark ? 'dark' : 'light'];
+      made = {
+        look: value,
+        dark,
+        tokens: lookTokens(picked),
+        darkBackground: darkBackground(picked.background),
+      };
+    }
+    return made;
   };
+  // `darkLook` of the look, from what is made.
+  const lookIsDark = () =>
+    platform.idiom === 'terminal' || (current()?.darkBackground ?? colorScheme() !== 'light');
   const colors: Colors = Object.defineProperties({} as Colors, {
     ...Object.fromEntries(
       Object.keys(DARK).map((key) => [
@@ -176,7 +188,8 @@ export function lookColors(look: () => Look | null): Colors {
         {
           enumerable: true,
           get: () =>
-            tokens()?.[key as keyof LookTokens] ?? (darkLook(look()) ? DARK : LIGHT)[key as Tone],
+            current()?.tokens[key as keyof LookTokens] ??
+            (lookIsDark() ? DARK : LIGHT)[key as Tone],
         },
       ]),
     ),
@@ -185,7 +198,7 @@ export function lookColors(look: () => Look | null): Colors {
         key,
         {
           enumerable: true,
-          get: () => colors[platform.idiom !== 'terminal' && darkLook(look()) ? dark : light],
+          get: () => colors[platform.idiom !== 'terminal' && lookIsDark() ? dark : light],
         },
       ]),
     ),
