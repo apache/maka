@@ -2076,234 +2076,6 @@ mod bounded_risk {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn replay_keeps_a_later_tool_call_with_its_original_reasoning() -> TestResult<()> {
-        let wire = replay_with_an_early_tool_result(None).await?;
-        let messages = wire["messages"]
-            .as_array()
-            .ok_or("missing Chat Completions messages")?;
-        let index = messages
-            .iter()
-            .position(|message| message["tool_calls"].is_array())
-            .ok_or("missing tool calls")?;
-        let assistant = &messages[index];
-        assert_eq!(
-            assistant["tool_calls"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|call| call["id"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["early-call", "later-call"]
-        );
-        let reasoning = assistant
-            .get("reasoning_content")
-            .or_else(|| assistant.get("reasoning"));
-        assert_eq!(
-            reasoning.and_then(Value::as_str),
-            Some("same-attempt reasoning")
-        );
-        assert_eq!(messages[index + 1]["tool_call_id"], "early-call");
-        assert_eq!(messages[index + 2]["tool_call_id"], "later-call");
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn responses_replay_keeps_tool_calls_before_same_attempt_results() -> TestResult<()> {
-        let wire = replay_with_an_early_tool_result(Some(plaintext_responses_observation)).await?;
-        let items = wire["input"].as_array().ok_or("missing Responses input")?;
-        let index = items
-            .iter()
-            .position(|item| item["type"] == "reasoning")
-            .ok_or("missing plaintext reasoning")?;
-        assert_eq!(items[index]["content"][0]["text"], "same-attempt reasoning");
-        let tool_items: Vec<_> = items[index + 1..]
-            .iter()
-            .map(|item| (item["type"].as_str(), item["call_id"].as_str()))
-            .collect();
-        assert_eq!(
-            tool_items,
-            [
-                (Some("function_call"), Some("early-call")),
-                (Some("function_call"), Some("later-call")),
-                (Some("function_call_output"), Some("early-call")),
-                (Some("function_call_output"), Some("later-call")),
-            ]
-        );
-        Ok(())
-    }
-
-    fn plaintext_responses_observation(
-        _: &maka_agent_facts::execution::ModelBinding,
-        model: &mut maka_agent_ports::provider::Model,
-    ) -> maka_agent_facts::context::ModelRequestContext {
-        use maka_agent_facts::{
-            context::{ModelOperation, ModelRequestContext},
-            model::{PlaintextReasoningReplay, PlaintextResponses},
-        };
-        use maka_agent_ports::model::ProviderKind;
-
-        model.adapter = "responses".into();
-        model.protocol = ProviderKind::OpenResponses(PlaintextResponses {
-            reasoning_replay: PlaintextReasoningReplay::PlaintextContent,
-            compatibility: None,
-        });
-        model.info.capabilities.get_or_insert_default().reasoning = Some(true);
-        ModelRequestContext {
-            operation: ModelOperation::Inference,
-            provider_id: "deepseek".into(),
-            codex: None,
-            context_window: Some(128_000),
-            model_context_window: Some(128_000),
-            declared_window: Some(128_000),
-        }
-    }
-
-    async fn replay_with_an_early_tool_result(
-        observation: Option<crate::model::Observation>,
-    ) -> TestResult<Value> {
-        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
-        use maka_agent_facts::model::{ModelFinishReason, TextKind};
-
-        let mut rig = Rig::new()?;
-        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
-        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let server = model_recovery::serve(listener, Default::default(), Some(requests)).await?;
-        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
-            let session = rig.start_configured(observation, |_| {}).await?;
-            rig.assemble_model(
-                &session,
-                Budget {
-                    tokens: None,
-                    retries: 0,
-                    deadline: None,
-                },
-                false,
-            )
-            .await?;
-            let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
-            rig.append(
-                vec![Fact::ModelObserved {
-                    attempt,
-                    index: 0,
-                    part: ModelPart::Text {
-                        text_kind: TextKind::Thinking,
-                        text: "same-attempt reasoning".into(),
-                        provider_options: Some(
-                            json!({"maka":{"openAiChatReasoningField":"reasoning_content"}}).into(),
-                        ),
-                    },
-                    continuation: None,
-                }],
-                vec![],
-            )
-            .await?;
-
-            for id in ["early-call", "later-call"] {
-                let (tool, _) = rig
-                    .tool(attempt, "exec", id, json!({"code":"fixture"}))
-                    .await?;
-                if id == "later-call" {
-                    rig.append(
-                        vec![
-                            Fact::ModelClosed {
-                                attempt,
-                                outcome: maka_agent_facts::accounting::Outcome::Success,
-                                diagnostic: None,
-                                usage: Default::default(),
-                                protocol: json!({"finishReason": ModelFinishReason::ToolCalls}),
-                            },
-                            Fact::ModelCleanupObserved {
-                                attempt,
-                                cleanup: OperationCleanup::Confirmed,
-                            },
-                        ],
-                        vec![],
-                    )
-                    .await?;
-                }
-                let returned = ContentBlob::json(&ToolReturn {
-                    schema_version: SCHEMA_VERSION,
-                    artifacts: vec![],
-                    body: ReturnedToolResult {
-                        output: ToolOutput::Text(id.into()),
-                        projection: DurableToolProjection::Text { text: id.into() },
-                        is_error: false,
-                        loaded_tools: Default::default(),
-                        display_budget_chars: None,
-                    },
-                })?;
-                let accepted = ContentBlob::json(&AcceptedToolResult::Local {
-                    result: returned.reference().clone(),
-                })?;
-                rig.append(
-                    vec![
-                        Fact::LocalToolReturned {
-                            tool: tool.clone(),
-                            result: returned.reference().clone(),
-                            settlement: ToolSettlement::Returned,
-                            is_error: false,
-                            cell_observation: None,
-                        },
-                        Fact::ToolResultAccepted {
-                            tool,
-                            result: accepted.reference().clone(),
-                            outcome: AcceptedResult::Succeeded,
-                        },
-                    ],
-                    vec![returned, accepted],
-                )
-                .await?;
-            }
-
-            let driver = rig.driver.as_ref().unwrap();
-            let engine = Engine::new(driver.state.clone());
-            let mut changes = driver.state.subscribe()?;
-            loop {
-                changes.borrow_and_update();
-                match engine
-                    .drive(
-                        driver.access.claim().clone(),
-                        driver.clone(),
-                        CancellationToken::new(),
-                    )
-                    .await?
-                {
-                    DriverExit::Terminal {
-                        terminal: Terminal::Completed,
-                        ..
-                    } => break,
-                    DriverExit::Waiting { .. } => changes.changed().await?,
-                    other => {
-                        let history = driver
-                            .state
-                            .history(driver.access.execution().run_id, 0, 128)
-                            .await?;
-                        let diagnostic = history.iter().rev().find_map(|fact| match &fact.fact {
-                            Fact::RunTerminated { diagnostic, .. }
-                            | Fact::ModelClosed { diagnostic, .. } => diagnostic.as_deref(),
-                            Fact::ModelInterrupted { diagnostic, .. } => Some(diagnostic.as_str()),
-                            _ => None,
-                        });
-                        return Err(
-                            format!("unexpected run outcome: {other:?}; {diagnostic:?}").into()
-                        );
-                    }
-                }
-            }
-            Ok::<_, Box<dyn Error + Send + Sync>>(received.try_recv()?)
-        }))
-        .catch_unwind()
-        .await;
-        server.shutdown().await;
-        let cleanup = rig.finish().await;
-        assert!(cleanup.is_empty(), "{cleanup:?}");
-        match outcome {
-            Ok(result) => result?,
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parallel_tool_results_stay_together_when_a_cell_callback_returns_late()
     -> TestResult<()> {
         use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
@@ -6424,6 +6196,182 @@ mod model_recovery {
             matches!(cleanup, Ok(Ok(ref errors)) if errors.is_empty()),
             "grouping Root did not settle"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn responses_replay_keeps_reasoning_and_tool_calls_before_early_results() -> TestResult<()>
+    {
+        use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+        use maka_agent_facts::{
+            context::{ModelOperation, ModelRequestContext},
+            model::{ModelFinishReason, PlaintextReasoningReplay, PlaintextResponses, TextKind},
+            tool_output::{AcceptedToolResult, DurableToolProjection},
+        };
+        use maka_agent_ports::model::ProviderKind;
+
+        fn plaintext_responses(
+            _: &maka_agent_facts::execution::ModelBinding,
+            model: &mut maka_agent_ports::provider::Model,
+        ) -> ModelRequestContext {
+            model.adapter = "responses".into();
+            model.protocol = ProviderKind::OpenResponses(PlaintextResponses {
+                reasoning_replay: PlaintextReasoningReplay::PlaintextContent,
+                compatibility: None,
+            });
+            model.info.capabilities.get_or_insert_default().reasoning = Some(true);
+            ModelRequestContext {
+                operation: ModelOperation::Inference,
+                provider_id: "deepseek".into(),
+                codex: None,
+                context_window: Some(128_000),
+                model_context_window: Some(128_000),
+                declared_window: Some(128_000),
+            }
+        }
+
+        let mut rig = Rig::new()?;
+        let listener = tokio::net::TcpListener::from_std(rig.model_listener.try_clone()?)?;
+        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let server = serve(listener, Default::default(), Some(requests)).await?;
+        let outcome = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig
+                .start_configured(Some(plaintext_responses), |_| {})
+                .await?;
+            rig.assemble_model(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+            )
+            .await?;
+            let (_, attempt, _) = rig.record_model_request(Preparation::Initial).await?;
+            rig.append(
+                vec![Fact::ModelObserved {
+                    attempt,
+                    index: 0,
+                    part: ModelPart::Text {
+                        text_kind: TextKind::Thinking,
+                        text: "same-attempt reasoning".into(),
+                        provider_options: None,
+                    },
+                    continuation: None,
+                }],
+                vec![],
+            )
+            .await?;
+
+            for id in ["early-call", "later-call"] {
+                let (tool, _) = rig
+                    .tool(attempt, "exec", id, json!({"code": "fixture"}))
+                    .await?;
+                if id == "later-call" {
+                    rig.append(
+                        vec![
+                            Fact::ModelClosed {
+                                attempt,
+                                outcome: maka_agent_facts::accounting::Outcome::Success,
+                                diagnostic: None,
+                                usage: Default::default(),
+                                protocol: json!({"finishReason": ModelFinishReason::ToolCalls}),
+                            },
+                            Fact::ModelCleanupObserved {
+                                attempt,
+                                cleanup: OperationCleanup::Confirmed,
+                            },
+                        ],
+                        vec![],
+                    )
+                    .await?;
+                }
+                let returned = ContentBlob::json(&ToolReturn {
+                    schema_version: SCHEMA_VERSION,
+                    artifacts: vec![],
+                    body: ReturnedToolResult {
+                        output: ToolOutput::Text(id.into()),
+                        projection: DurableToolProjection::Text { text: id.into() },
+                        is_error: false,
+                        loaded_tools: Default::default(),
+                        display_budget_chars: None,
+                    },
+                })?;
+                let accepted = ContentBlob::json(&AcceptedToolResult::Local {
+                    result: returned.reference().clone(),
+                })?;
+                rig.append(
+                    vec![
+                        Fact::LocalToolReturned {
+                            tool: tool.clone(),
+                            result: returned.reference().clone(),
+                            settlement: ToolSettlement::Returned,
+                            is_error: false,
+                            cell_observation: None,
+                        },
+                        Fact::ToolResultAccepted {
+                            tool,
+                            result: accepted.reference().clone(),
+                            outcome: AcceptedResult::Succeeded,
+                        },
+                    ],
+                    vec![returned, accepted],
+                )
+                .await?;
+            }
+
+            let driver = rig.driver.as_ref().unwrap();
+            let engine = Engine::new(driver.state.clone());
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                match engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?
+                {
+                    DriverExit::Terminal {
+                        terminal: Terminal::Completed,
+                        ..
+                    } => break,
+                    DriverExit::Waiting { .. } => changes.changed().await?,
+                    other => return Err(format!("unexpected run outcome: {other:?}").into()),
+                }
+            }
+            let wire = received.try_recv()?;
+            let items = wire["input"].as_array().ok_or("missing Responses input")?;
+            let index = items
+                .iter()
+                .position(|item| item["type"] == "reasoning")
+                .ok_or("missing plaintext reasoning")?;
+            assert_eq!(items[index]["content"][0]["text"], "same-attempt reasoning");
+            let tool_items: Vec<_> = items[index + 1..]
+                .iter()
+                .map(|item| (item["type"].as_str(), item["call_id"].as_str()))
+                .collect();
+            assert_eq!(
+                tool_items,
+                [
+                    (Some("function_call"), Some("early-call")),
+                    (Some("function_call"), Some("later-call")),
+                    (Some("function_call_output"), Some("early-call")),
+                    (Some("function_call_output"), Some("later-call")),
+                ]
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        server.shutdown().await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match outcome {
+            Ok(result) => result?,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -41,6 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 struct AssistantBatch {
+    attempt: Option<ModelAttemptId>,
     parts: Vec<AssistantPart>,
     producer: Option<Producer>,
     tool_outputs: Vec<Message>,
@@ -53,16 +54,35 @@ struct Producer {
 }
 
 impl AssistantBatch {
+    fn is_attempt(&self, attempt: ModelAttemptId) -> bool {
+        self.attempt == Some(attempt)
+    }
+
+    async fn ensure_attempt(
+        &mut self,
+        attempt: ModelAttemptId,
+        view: &RunView,
+        prefix_attempt: Option<ModelAttemptId>,
+        messages: &mut preparation::PromptBuilder,
+    ) -> Result<(), RunError> {
+        if !self.is_attempt(attempt) {
+            self.flush(view, prefix_attempt, messages).await?;
+            self.attempt = Some(attempt);
+        }
+        Ok(())
+    }
+
     async fn flush(
         &mut self,
         view: &RunView,
         prefix_attempt: Option<ModelAttemptId>,
-        current: &mut Option<ModelAttemptId>,
         messages: &mut preparation::PromptBuilder,
     ) -> Result<(), RunError> {
-        // Even an omitted reasoning-only batch must relinquish its original producer.
-        let attempt = current.take();
+        // Always drain the whole batch so early returns can never leak stale state into the next attempt.
+        let attempt = self.attempt.take();
         let producer = self.producer.take();
+        let mut parts = std::mem::take(&mut self.parts);
+        let tool_outputs = std::mem::take(&mut self.tool_outputs);
         let keep_reasoning_only = attempt.is_some_and(|id| {
             prefix_attempt == Some(id)
                 || view
@@ -75,34 +95,31 @@ impl AssistantBatch {
                                 != Some(&json!(maka_agent_facts::model::ModelFinishReason::Length))
                     })
         });
-        let has_committed_output = !self.tool_outputs.is_empty()
-            || self
-                .parts
+        let has_committed_output = !tool_outputs.is_empty()
+            || parts
                 .iter()
                 .any(|part| !matches!(part, AssistantPart::Reasoning { .. }));
         if !keep_reasoning_only && !has_committed_output {
-            self.parts.clear();
             return Ok(());
         }
-        if self.parts.is_empty() {
-            return Ok(());
+        if !parts.is_empty() {
+            self.last_emitted_attempt = attempt;
+            match producer {
+                Some(producer) => {
+                    super::append_observed(
+                        messages,
+                        Message::Assistant {
+                            content: parts,
+                            provider_options: None,
+                        },
+                        ReplayOrigin::observed(&producer.model_id, producer.codex.as_ref()),
+                    )
+                    .await
+                }
+                None => flush_assistant(messages, &mut parts).await,
+            }?;
         }
-        self.last_emitted_attempt = attempt;
-        match producer {
-            Some(producer) => {
-                super::append_observed(
-                    messages,
-                    Message::Assistant {
-                        content: std::mem::take(&mut self.parts),
-                        provider_options: None,
-                    },
-                    ReplayOrigin::observed(&producer.model_id, producer.codex.as_ref()),
-                )
-                .await
-            }
-            None => flush_assistant(messages, &mut self.parts).await,
-        }?;
-        for output in self.tool_outputs.drain(..) {
+        for output in tool_outputs {
             messages.append(output).await?;
         }
         Ok(())
@@ -128,7 +145,6 @@ pub(super) struct TailReplay<'a, 'source> {
     messages: &'a mut preparation::PromptBuilder,
     recorded: RecordedInputs,
     assistant: AssistantBatch,
-    current: Option<ModelAttemptId>,
     allowed_attempts: BTreeSet<ModelAttemptId>,
     compaction_request: Option<ToolKey>,
 }
@@ -164,7 +180,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
             messages,
             recorded,
             assistant: AssistantBatch::default(),
-            current: None,
             allowed_attempts: BTreeSet::new(),
             compaction_request: None,
         }
@@ -197,7 +212,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     attempt_steps,
                 },
             assistant,
-            current,
             allowed_attempts,
             compaction_request,
         } = self;
@@ -211,9 +225,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
         let sealed = view.terminal.is_some();
         let work: BoxFuture<'b, Result<(), RunError>> = match &fact.fact {
             Fact::StepPrepared { step, .. } => Box::pin(async move {
-                assistant
-                    .flush(view, prefix_attempt, current, messages)
-                    .await?;
+                assistant.flush(view, prefix_attempt, messages).await?;
                 let request = reader.request(view.run, *step).await?;
                 step_purposes.insert(*step, request.accounting.purpose);
                 if request.accounting.purpose == ModelPurpose::Summary {
@@ -247,7 +259,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         )
                         .await?;
                     merge_skill(system, &source.message.content)?;
-                    *current = None;
                 }
                 let frozen = driver.frozen_input(reader, view.run, &request).await?;
                 for notice in frozen.notifications {
@@ -301,9 +312,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                     allowed_attempts.insert(*attempt);
                 }
                 Box::pin(async move {
-                    assistant
-                        .flush(view, prefix_attempt, current, messages)
-                        .await?;
+                    assistant.flush(view, prefix_attempt, messages).await?;
                     Ok(())
                 })
             }
@@ -349,18 +358,13 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         _ => part,
                     };
                     if !allowed_attempts.contains(attempt) {
-                        assistant
-                            .flush(view, prefix_attempt, current, messages)
-                            .await?;
+                        assistant.flush(view, prefix_attempt, messages).await?;
                         messages.append(Message::user(format!("Late original-model observation (data only, not a replayable assistant item; no completion inferred):\n{}",serde_json::to_string(&json!({"attempt":attempt,"part":part})).map_err(RunError::Json)?))).await?;
                         return Ok(());
                     }
-                    if *current != Some(*attempt) {
-                        assistant
-                            .flush(view, prefix_attempt, current, messages)
-                            .await?;
-                        *current = Some(*attempt);
-                    }
+                    assistant
+                        .ensure_attempt(*attempt, view, prefix_attempt, messages)
+                        .await?;
                     if let ModelPart::ToolCall { call } = part
                         && call.provider_executed
                         && unfinished_provider_calls.contains(&ToolKey {
@@ -454,15 +458,12 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 result,
                 outcome,
             } => Box::pin(async move {
-                let belongs_to_batch = *current == Some(tool.attempt);
-                if !belongs_to_batch {
-                    assistant
-                        .flush(view, prefix_attempt, current, messages)
-                        .await?;
-                }
                 let call = reader.tool_call(view.run, tool).await?;
                 if call.provider_executed {
                     return Ok(());
+                }
+                if !assistant.is_attempt(tool.attempt) {
+                    assistant.flush(view, prefix_attempt, messages).await?;
                 }
                 if call.name == crate::owner::compaction::TOOL
                     && *outcome == AcceptedResult::Succeeded
@@ -505,7 +506,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         .await?
                 };
                 let message = tool_message(&call, output);
-                if belongs_to_batch {
+                if assistant.is_attempt(tool.attempt) {
                     // More calls may still arrive from this attempt.
                     assistant.tool_outputs.push(message);
                 } else if allowed_attempts.contains(&tool.attempt) {
@@ -530,9 +531,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                 terminal: maka_agent_facts::durable::Terminal::Failed,
                 diagnostic,
             } => Box::pin(async move {
-                assistant
-                    .flush(view, prefix_attempt, current, messages)
-                    .await?;
+                assistant.flush(view, prefix_attempt, messages).await?;
                 if *failure_note == FailureNote::Include {
                     messages
                         .append(Message::user(failed_turn_note(
@@ -541,7 +540,6 @@ impl<'a, 'source> TailReplay<'a, 'source> {
                         )))
                         .await?;
                 }
-                *current = None;
                 Ok(())
             }),
             _ => return Ok(None),
@@ -551,12 +549,7 @@ impl<'a, 'source> TailReplay<'a, 'source> {
 
     pub(super) async fn finish(mut self) -> Result<ReplayedTail, RunError> {
         self.assistant
-            .flush(
-                self.view,
-                self.prefix_attempt,
-                &mut self.current,
-                self.messages,
-            )
+            .flush(self.view, self.prefix_attempt, self.messages)
             .await?;
         Ok(ReplayedTail {
             cells: self.recorded.cells.into_values().collect(),
