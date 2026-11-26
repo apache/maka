@@ -1820,14 +1820,17 @@ async fn check_wait_archive(rig: &mut Rig) -> TestResult<()> {
         fact: caller.id,
         item_index: 0,
     };
-    let start = serde_json::to_string(event)?.len() + 1;
-    suppress_history_quotes(rig, &session, &[(source_sequence, start, "logical")]).await?;
+    let quote = "logical";
+    let source = args["code"].as_str().ok_or("missing fixture source")?;
+    let offset = source.find(quote).ok_or("missing fixture quote")?;
+    let start = serde_json::to_string(event)?.len() + 1 + offset;
+    suppress_history_quotes(rig, &session, &[(source_sequence, start, quote)]).await?;
     let spans = history
         .read_restrictions(vec![caller_address.clone()])
         .await?;
     let call_body = format!("exec\n{}", serde_json::to_string(args)?);
-    let from = call_body.find("logical").ok_or("missing code literal")? as u64;
-    assert_eq!(spans[&caller_address], [(from, from + 7)]);
+    let from = call_body.find(quote).ok_or("missing code literal")? as u64;
+    assert_eq!(spans[&caller_address], [(from, from + quote.len() as u64)]);
     Ok(())
 }
 
