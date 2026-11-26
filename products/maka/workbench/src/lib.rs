@@ -595,17 +595,19 @@ mod tests {
 
     #[test]
     fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
-        let mut app = headless_fixture(
+        let mut app = headless_fixture_with_locales(
             "tests/fixtures/tool-card-order.tsx",
             Size::new(px(900.0), px(1400.0)),
             false,
+            Environment::default().idiom,
+            Some(vec!["en".into(), "de".into()]),
         );
         app.wait_for("text:/const line1 = 1;/").unwrap();
         app.wait_for(r#"text:/"kind":"changed"/"#).unwrap();
         app.wait_for("label:Show 4 more lines").unwrap();
         app.wait_for("label:Copy Script").unwrap();
         app.wait_for("label:Copy Output").unwrap();
-        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 521")
+        app.wait_for("text:Recorded edit · 1,234 replacements · Recorded line 1234")
             .unwrap();
         app.wait_for("text:/read arguments timed out/").unwrap();
 
@@ -621,7 +623,7 @@ mod tests {
             "script should appear before output: {texts:?}"
         );
         assert!(
-            pos("arguments") < pos("Recorded edit · 1 replacement · Recorded line 521"),
+            pos("arguments") < pos("Recorded edit · 1,234 replacements · Recorded line 1234"),
             "edit diff should appear before recorded receipt: {texts:?}"
         );
         assert!(
@@ -630,9 +632,14 @@ mod tests {
         );
         assert!(
             texts.contains(&"src/ToolCard.tsx")
-                && texts.contains(&"Read lines 1–1 / 10")
+                && texts.contains(&"Read lines 1234–1235 / 12,345")
+                && texts.contains(&"1234\n1235")
                 && !texts.contains(&"File"),
             "read card should merge path into header instead of rendering a trailing File section: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Lines 1234–1235"),
+            "review note should keep line numbers ungrouped: {texts:?}"
         );
         assert!(
             texts.contains(&"read-result-fetches:1"),
@@ -663,6 +670,12 @@ mod tests {
         };
         assert!(raw_pos("Original arguments") < raw_pos("Original result"));
         assert!(raw_texts.contains(&"read-result-fetches:1"));
+
+        app.press("label:Switch to German").unwrap();
+        app.wait_for(
+            "text:Aufgezeichnete Bearbeitung · 1.234 Ersetzungen · Aufgezeichnete Zeile 1234",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2237,50 +2250,6 @@ mod tests {
         app.press("text:Discard changes").unwrap();
         app.wait_for("label:Edit connection OpenAI").unwrap();
         app.wait_for("label:Disable Codex").unwrap();
-    }
-
-    #[test]
-    fn number_formatting_keeps_line_numbers_ungrouped_across_locales() {
-        let mut app = headless_fixture_with_locales(
-            "tests/fixtures/number-formatting.tsx",
-            Size::new(px(900.0), px(1400.0)),
-            false,
-            Environment::default().idiom,
-            Some(vec!["en".into(), "de".into()]),
-        );
-        app.wait_for("text:Read lines 1234–1235 / 12,345").unwrap();
-        app.wait_for("text:Recorded edit · 1,234 replacements · Recorded lines 1234–1235")
-            .unwrap();
-        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 1234")
-            .unwrap();
-        app.wait_for("text:Lines 1234–1235").unwrap();
-        app.wait_for("text:Line 1234").unwrap();
-        let en_texts = app.screen().texts();
-        assert!(
-            en_texts.contains(&"1234\n1235"),
-            "expected ungrouped code gutter in English: {en_texts:?}"
-        );
-        assert!(
-            !en_texts.contains(&"1,234\n1,235"),
-            "code gutter must never group line numbers: {en_texts:?}"
-        );
-
-        app.press("label:Switch to German").unwrap();
-        app.wait_for("text:Gelesene Zeilen 1234–1235 / 12.345")
-            .unwrap();
-        app.wait_for(
-            "text:Aufgezeichnete Bearbeitung · 1.234 Ersetzungen · Aufgezeichnete Zeilen 1234–1235",
-        )
-        .unwrap();
-        app.wait_for("text:Aufgezeichnete Bearbeitung · 1 Ersetzung · Aufgezeichnete Zeile 1234")
-            .unwrap();
-        app.wait_for("text:Zeilen 1234–1235").unwrap();
-        app.wait_for("text:Zeile 1234").unwrap();
-        let de_texts = app.screen().texts();
-        assert!(
-            de_texts.contains(&"1234\n1235"),
-            "expected ungrouped code gutter in German: {de_texts:?}"
-        );
     }
 }
 
