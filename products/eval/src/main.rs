@@ -22,6 +22,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod batch;
 mod guest;
 mod harbor;
 
@@ -38,6 +39,8 @@ struct Cli {
 enum Command {
     /// Run a Harbor task with native Maka Host inside Docker.
     Run(Box<HarborRunOptions>),
+    /// Run a concurrent matrix of Harbor tasks and subjects with resume/reporting.
+    Batch(Box<batch::BatchCliOptions>),
     /// Container-side entry executed inside Harbor Docker environments.
     #[command(hide = true)]
     GuestRun {
@@ -54,6 +57,7 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Run(opts) => run_command(*opts),
+        Command::Batch(opts) => batch::run_batch(*opts),
         Command::GuestRun {
             request_file,
             result_file,
@@ -78,7 +82,7 @@ fn main() {
 }
 
 fn run_command(opts: HarborRunOptions) -> Result<(), String> {
-    let outcome = run_trial(&opts)?;
+    let outcome = run_trial(&opts, None)?;
     let (summary, validation) = outcome.settle();
     let summary_path = opts.out_dir.join("run-summary.json");
     let encoded = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
