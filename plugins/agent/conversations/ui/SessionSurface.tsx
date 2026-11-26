@@ -2222,13 +2222,15 @@ export function createConversationUi(
     const sourceOverlay = overlay();
     switching.set(true);
     try {
-      if (parent !== selected() && !browsing.sessions().some((session) => session.id === parent))
+      if (parent !== selected() && !browsing.sessions().some((session) => session.id === parent)) {
         try {
           await host.query('agent', 'observe', { sessionId: parent });
         } catch (reason) {
           if (unavailableSession(reason)) return null;
           throw reason;
         }
+        if (!current()) return 'blocked';
+      }
       if (!(await open(id, parent)) || !alive || selected() !== parent) return 'blocked';
       if (overlay() === sourceOverlay) overlay.set(null);
       status.set('');

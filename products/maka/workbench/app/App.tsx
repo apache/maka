@@ -332,12 +332,22 @@ function App(
     const current = () => alive && !blocked() && opening === sideOpening;
     if (!current() || parent === null || id === parent) return false;
     const shown = sideCard();
-    if (shown?.parent === parent && shown.pane()?.id() === id && selected() === parent) return true;
+    const needsRoute =
+      parent !== selected() || workspaceMode() !== 'conversations' || settingsOpened();
+    if (shown?.parent === parent && shown.pane()?.id() === id && selected() === parent)
+      return !needsRoute || ((await openSession(parent)) && current());
     if (!(await closeSideCard()) || !(await releaseAssistant(id))) return false;
     const from = sideFor(id);
     if (from && !(await openSide(from, null))) return false;
-    if (parent !== selected() && !(await openSession(parent))) return false;
-    if (!current() || selected() !== parent || sideCard() !== null || openElsewhere(id))
+    if (needsRoute && !(await openSession(parent))) return false;
+    if (
+      !current() ||
+      selected() !== parent ||
+      workspaceMode() !== 'conversations' ||
+      settingsOpened() ||
+      sideCard() !== null ||
+      openElsewhere(id)
+    )
       return false;
     const pane = sidePane(id);
     sideCard.set({
