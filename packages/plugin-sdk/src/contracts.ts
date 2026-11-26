@@ -29938,6 +29938,10 @@ export const contracts: {
                   },
                 ],
               },
+              redacted: {
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
             $defs: {
@@ -30054,6 +30058,9 @@ export const contracts: {
                     type: 'string',
                   },
                   configuration: true,
+                  hasLiteralCredentials: {
+                    type: 'boolean',
+                  },
                   shadowedBy: {
                     anyOf: [
                       {
@@ -30066,7 +30073,7 @@ export const contracts: {
                   },
                 },
                 additionalProperties: false,
-                required: ['name', 'configuration'],
+                required: ['name', 'configuration', 'hasLiteralCredentials'],
               },
               AgentProjectMcpTrustStatus: {
                 type: 'object',

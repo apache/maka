@@ -185,7 +185,10 @@ pub enum Request {
         invite_secret: String,
         device_label: Option<String>,
     },
-    FinalizeAccess,
+    FinalizeAccess {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_root_id: Option<String>,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(

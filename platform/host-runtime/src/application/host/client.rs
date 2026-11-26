@@ -210,7 +210,9 @@ impl Client {
                 version: VERSION,
                 epoch,
                 client_instance: Some(client_instance.to_string()),
-                request: Request::FinalizeAccess,
+                request: Request::FinalizeAccess {
+                    expected_root_id: None,
+                },
             },
         )
         .await?;

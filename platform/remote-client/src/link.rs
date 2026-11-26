@@ -112,7 +112,7 @@ impl RemoteHostConnection {
         if client_instance.trim().is_empty() {
             return Err(RemoteClientError::EmptyField("client_instance"));
         }
-        crate::client::finalize_websocket_access(&link, &client_instance).await?;
+        crate::client::finalize_websocket_access(&link, &client_instance, root_id).await?;
         Self::connect(link, root_id, client_instance).await
     }
 }

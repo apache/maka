@@ -28,6 +28,8 @@ use serde_json::Value;
 #[schemars(rename = "AgentMcpConfigurations")]
 pub struct McpConfigurations {
     pub workspace: Option<Workspace>,
+    #[serde(default)]
+    pub redacted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -97,6 +99,7 @@ pub struct McpConfigurationLocation {
 pub struct McpConfigurationEntry {
     pub name: String,
     pub configuration: Value,
+    pub has_literal_credentials: bool,
     pub shadowed_by: Option<LocationId>,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
