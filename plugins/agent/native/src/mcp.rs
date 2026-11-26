@@ -19,7 +19,9 @@
 
 pub(crate) mod files;
 mod projects;
-pub(crate) use projects::{Catalog, ClientGeneration, Prepared, Projects};
+pub(crate) use projects::{
+    Catalog, ClientGeneration, LiveServer, McpLayerOrigin, Prepared, Projects,
+};
 
 use crate::owner::access::RunAccess;
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
@@ -252,6 +254,11 @@ impl Servers {
             .iter()
             .all(|server| server.connection.available())
     }
+    pub(crate) fn server_connections(&self) -> impl Iterator<Item = (&str, &Connection)> {
+        self.servers
+            .iter()
+            .map(|server| (server.name.as_str(), &server.connection))
+    }
     fn connections(&self) -> Vec<Connection> {
         self.servers
             .iter()
@@ -290,6 +297,9 @@ impl LiveBinding {
     }
     pub(super) fn name(&self) -> &str {
         &self.definition.name
+    }
+    pub(super) fn server(&self) -> &str {
+        &self.binding.server
     }
     pub(super) fn declaration(&self) -> ToolRegistration {
         self.registration(ToolHandler::Declaration(self.definition.name.clone()))

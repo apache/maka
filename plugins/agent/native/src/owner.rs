@@ -576,6 +576,7 @@ impl Owner {
         if settings.bot {
             additional.extend(bot.tools());
         }
+        additional.extend(mcp::tools::declarations());
         let mut mcp = match crate::mcp::Servers::open(&settings.mcp_servers, &configuration).await {
             Ok(mcp) => mcp,
             Err(error) => {
@@ -644,6 +645,19 @@ impl Owner {
                 revision: None,
                 client_mcp: None,
                 live_bindings: mcp.live_bindings.clone(),
+                live_servers: Arc::new(
+                    mcp.server_connections()
+                        .map(|(name, connection)| {
+                            (
+                                name.to_owned(),
+                                crate::mcp::LiveServer::new(
+                                    crate::mcp::McpLayerOrigin::Installation,
+                                    connection.clone(),
+                                ),
+                            )
+                        })
+                        .collect(),
+                ),
                 _parent: None,
                 _layer_owner: None,
                 tools: tools.clone(),

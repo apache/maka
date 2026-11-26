@@ -49,11 +49,21 @@ fn compose(
     let revision = maka_agent_facts::artifact::content_digest(
         &serde_json::to_vec(&(&generation, &base.revision)).expect("MCP lease identity"),
     );
+    let layer_servers = servers
+        .server_connections()
+        .map(|(name, connection)| {
+            (
+                name.to_owned(),
+                LiveServer::new(McpLayerOrigin::Client, connection.clone()),
+            )
+        })
+        .collect();
     let mut catalog = Catalog::with_layer(
         base,
         revision,
         &servers.names.keys().cloned().collect(),
         servers.live_bindings.clone(),
+        layer_servers,
         None,
     )?;
     Arc::get_mut(&mut catalog)
@@ -154,6 +164,7 @@ impl Projects {
                     catalog,
                     servers: None,
                     overrides: BTreeSet::new(),
+                    layer_servers: BTreeMap::new(),
                 });
                 if let Some(replaced) = snapshots
                     .revisions

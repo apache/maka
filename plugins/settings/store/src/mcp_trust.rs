@@ -136,4 +136,131 @@ impl ConfigurationStore {
         self.set_project_mcp_decision(owner, workspace, revision, ProjectMcpDecision::Declined)
             .await
     }
+
+    /// Atomically advance an existing `Trusted` decision from `expected_revision`
+    /// to `next_revision`. Returns `false` if trust was revoked, declined, absent,
+    /// or already pointing at a different revision.
+    pub async fn advance_project_mcp_trust(
+        &self,
+        owner: String,
+        workspace: String,
+        expected_revision: String,
+        next_revision: String,
+    ) -> Result<bool> {
+        validate_consent_identity(&owner, &workspace, &expected_revision)?;
+        validate_consent_identity(&owner, &workspace, &next_revision)?;
+        self.transaction(TransactionMode::Immediate, move |connection| {
+            let updated = connection.execute(
+                "UPDATE project_mcp_trust SET revision = ? WHERE owner = ? AND workspace = ? AND revision = ? AND decision = 'trusted'",
+                rusqlite::params![next_revision, owner, workspace, expected_revision],
+            )?;
+            Ok(updated > 0)
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn advance_project_mcp_trust_requires_matching_trusted_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespaces = maka_event_log::root::RootNamespaces {
+            ownership: dir.path().join("owners"),
+            control: dir.path().join("control"),
+        };
+        let root = std::sync::Arc::new(
+            maka_event_log::root::RootOwner::create(&dir.path().join("root"), &namespaces).unwrap(),
+        );
+        let store = ConfigurationStore::for_root(root).await.unwrap();
+        let owner = "owner".to_owned();
+        let workspace = format!("sha256:{}", "a".repeat(64));
+        let rev1 = format!("sha256:{}", "1".repeat(64));
+        let rev2 = format!("sha256:{}", "2".repeat(64));
+        let rev3 = format!("sha256:{}", "3".repeat(64));
+
+        // Undecided workspace cannot inherit trust.
+        assert!(
+            !store
+                .advance_project_mcp_trust(
+                    owner.clone(),
+                    workspace.clone(),
+                    rev1.clone(),
+                    rev2.clone(),
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .project_mcp_decision(owner.clone(), workspace.clone(), rev2.clone())
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Trusted at rev1 advances atomically to rev2.
+        store
+            .trust_project_mcp(owner.clone(), workspace.clone(), rev1.clone())
+            .await
+            .unwrap();
+        assert!(
+            store
+                .advance_project_mcp_trust(
+                    owner.clone(),
+                    workspace.clone(),
+                    rev1.clone(),
+                    rev2.clone(),
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .project_mcp_decision(owner.clone(), workspace.clone(), rev2.clone())
+                .await
+                .unwrap(),
+            Some(ProjectMcpDecision::Trusted)
+        );
+        assert_eq!(
+            store
+                .project_mcp_decision(owner.clone(), workspace.clone(), rev1.clone())
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Revoking trust to Declined blocks advancement even when the revision still matches.
+        store
+            .decline_project_mcp(owner.clone(), workspace.clone(), rev2.clone())
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .advance_project_mcp_trust(
+                    owner.clone(),
+                    workspace.clone(),
+                    rev2.clone(),
+                    rev3.clone(),
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .project_mcp_decision(owner.clone(), workspace.clone(), rev2.clone())
+                .await
+                .unwrap(),
+            Some(ProjectMcpDecision::Declined)
+        );
+        assert_eq!(
+            store
+                .project_mcp_decision(owner, workspace, rev3)
+                .await
+                .unwrap(),
+            None
+        );
+    }
 }

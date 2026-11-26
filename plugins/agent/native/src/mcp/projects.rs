@@ -33,6 +33,30 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum McpLayerOrigin {
+    Installation,
+    File {
+        location: maka_skills::LocationId,
+        config_digest: String,
+    },
+    Client,
+}
+
+#[derive(Clone)]
+pub(crate) struct LiveServer {
+    pub origin: McpLayerOrigin,
+    connection: super::Connection,
+}
+impl LiveServer {
+    pub(crate) fn new(origin: McpLayerOrigin, connection: super::Connection) -> Self {
+        Self { origin, connection }
+    }
+    fn available(&self) -> bool {
+        self.connection.available()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub(crate) struct ClientGeneration(uuid::Uuid);
@@ -51,6 +75,7 @@ pub(crate) struct Catalog {
     pub definitions: Arc<Vec<ToolDefinition>>,
     pub bindings: Arc<BTreeMap<String, Option<String>>>,
     pub(crate) live_bindings: Vec<super::LiveBinding>,
+    pub(crate) live_servers: Arc<BTreeMap<String, LiveServer>>,
 }
 impl Catalog {
     /// A fresh worker shares workspace tools. The outer client layer belongs to its original Session.
@@ -69,6 +94,7 @@ impl Catalog {
         revision: String,
         overrides: &BTreeSet<String>,
         live_bindings: Vec<super::LiveBinding>,
+        layer_servers: BTreeMap<String, LiveServer>,
         layer_owner: Option<Arc<Self>>,
     ) -> Result<Arc<Self>, String> {
         let mut inherited = BTreeMap::new();
@@ -106,6 +132,13 @@ impl Catalog {
                 Some(binding.binding.generation.clone()),
             )
         }));
+        let mut live_servers: BTreeMap<String, LiveServer> = parent
+            .live_servers
+            .iter()
+            .filter(|(name, _)| !overrides.contains(*name))
+            .map(|(name, live)| (name.clone(), live.clone()))
+            .collect();
+        live_servers.extend(layer_servers);
         Ok(Arc::new(Self {
             revision: Some(revision),
             client_mcp: None,
@@ -115,6 +148,7 @@ impl Catalog {
             definitions: Arc::new(definitions),
             bindings: Arc::new(bindings),
             live_bindings,
+            live_servers: Arc::new(live_servers),
         }))
     }
     pub(crate) fn unavailable_selected_binding<'a>(
@@ -164,6 +198,29 @@ impl Catalog {
             bindings.insert(binding.name(), binding);
         }
     }
+    pub(crate) fn mcp_server_tools_by_origin(
+        &self,
+    ) -> BTreeMap<String, (McpLayerOrigin, Vec<String>)> {
+        let mut servers: BTreeMap<String, (McpLayerOrigin, Vec<String>)> = self
+            .live_servers
+            .iter()
+            .filter(|(_, live)| live.available())
+            .map(|(name, live)| (name.clone(), (live.origin.clone(), Vec::new())))
+            .collect();
+        let mut bindings = BTreeMap::new();
+        self.collect_bindings(&mut bindings);
+        for binding in bindings.values() {
+            if self.tools.contains(binding.name())
+                && let Some((_, tools)) = servers.get_mut(binding.server())
+            {
+                tools.push(binding.name().to_owned());
+            }
+        }
+        for (_, tools) in servers.values_mut() {
+            tools.sort();
+        }
+        servers
+    }
 }
 struct Snapshot {
     scope: String,
@@ -172,6 +229,7 @@ struct Snapshot {
     servers: Option<Servers>,
     // Exact server keys of this published file layer, including explicit tombstones.
     overrides: BTreeSet<String>,
+    layer_servers: BTreeMap<String, LiveServer>,
 }
 impl Snapshot {
     /// This layer after `next` replaced it under the same revision. It keeps only the
@@ -186,6 +244,7 @@ impl Snapshot {
                 .as_ref()
                 .map(|servers| servers.except(next.servers.as_ref())),
             overrides: self.overrides.clone(),
+            layer_servers: self.layer_servers.clone(),
         }
     }
 }
@@ -338,7 +397,19 @@ impl Projects {
         .await
         .map_err(|error| error.to_string())?
     }
-    #[cfg(test)]
+    pub(crate) fn project_revision_blocking(
+        workspace: &Workspace,
+    ) -> Result<Option<String>, String> {
+        let (path, directory, observed) = maka_workspace_support::capture_selected(workspace)?;
+        let file = files::layered(&directory, Path::new(&path))?;
+        maka_fs_tools::directory::open(&path, &observed).map_err(|error| error.to_string())?;
+        let identity = Self::workspace_key(workspace);
+        Ok(file.path.as_ref().map(|_| {
+            maka_agent_facts::artifact::content_digest(
+                &serde_json::to_vec(&(&identity, &file)).expect("project MCP configuration"),
+            )
+        }))
+    }
     pub(crate) async fn trust_project_revision(
         &self,
         workspace: &Workspace,
@@ -349,6 +420,22 @@ impl Projects {
                 self.owner.clone(),
                 Self::workspace_key(workspace),
                 project_revision,
+            )
+            .await
+            .map_err(|_| "agent_mcp_trust_unconfirmed".into())
+    }
+    pub(crate) async fn advance_project_trust(
+        &self,
+        workspace: &Workspace,
+        expected_revision: String,
+        next_revision: String,
+    ) -> Result<bool, String> {
+        self.configuration
+            .advance_project_mcp_trust(
+                self.owner.clone(),
+                Self::workspace_key(workspace),
+                expected_revision,
+                next_revision,
             )
             .await
             .map_err(|_| "agent_mcp_trust_unconfirmed".into())
@@ -574,6 +661,7 @@ impl Projects {
                     revision,
                     &project.overrides,
                     project.catalog.live_bindings.clone(),
+                    project.layer_servers.clone(),
                     Some(project.catalog.clone()),
                 )?
             }
@@ -760,11 +848,29 @@ impl Projects {
             }
         };
         let overrides = file.servers.keys().cloned().collect();
+        let layer_servers: BTreeMap<String, LiveServer> = servers
+            .server_connections()
+            .filter_map(|(name, connection)| {
+                let &location = file.server_locations.get(name)?;
+                let config = file.servers.get(name)?.as_ref()?;
+                Some((
+                    name.to_owned(),
+                    LiveServer::new(
+                        McpLayerOrigin::File {
+                            location,
+                            config_digest: files::server_config_digest(config),
+                        },
+                        connection.clone(),
+                    ),
+                ))
+            })
+            .collect();
         let catalog = match Catalog::with_layer(
             parent,
             revision,
             &overrides,
             servers.live_bindings.clone(),
+            layer_servers.clone(),
             None,
         ) {
             Ok(catalog) => catalog,
@@ -783,6 +889,7 @@ impl Projects {
             catalog,
             servers: Some(servers),
             overrides,
+            layer_servers,
         })
     }
     fn startup_gate(&self, revision: &str) -> Arc<Mutex<()>> {

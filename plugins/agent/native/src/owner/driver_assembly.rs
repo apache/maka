@@ -263,7 +263,12 @@ impl Owner {
                 .with_always_visible(super::goal::tools::NAMES)
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
-        let live_tools = mcp.for_run(access, live).map_err(RunError::InvalidInput)?;
+        let live_tools = mcp
+            .for_run(access.clone(), live)
+            .map_err(RunError::InvalidInput)?;
+        let owner = access.owner().map_err(RunError::InvalidInput)?;
+        let live_tools = super::mcp::tools::bind_for_run(owner, access, &self.tools, live_tools)
+            .map_err(RunError::InvalidInput)?;
         // Keep the admitted tool declarations across Host activations.
         let direct_only: std::collections::BTreeSet<_> =
             live_tools.direct_only().names().into_iter().collect();

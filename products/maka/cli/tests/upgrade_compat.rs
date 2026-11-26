@@ -1792,7 +1792,28 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
                     .unwrap(),
                 Some(maka_config::ProjectMcpDecision::Trusted)
             );
-
+            assert!(
+                settings
+                    .advance_project_mcp_trust(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_REVISION.into(),
+                        COMPAT_MCP_NEXT_REVISION.into(),
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                settings
+                    .project_mcp_decision(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_NEXT_REVISION.into(),
+                    )
+                    .await
+                    .unwrap(),
+                Some(maka_config::ProjectMcpDecision::Trusted)
+            );
         }
         settings
             .decline_project_mcp(
