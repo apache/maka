@@ -370,6 +370,7 @@ impl Owner {
             let (lease, effects) = scope.accept(cancellation.clone());
             scope_cleanup = maka_plugin_core::operation::OperationCleanup::Unconfirmed;
             let mut original_driver = None;
+            let mut preflight_cells: Option<Arc<driver_cells::RunCells>> = None;
             let mut cleanup_confirmed = false;
             let mut preflight_stage = Some(AuthorityStage::WorkspaceScope);
             let mut publication_store = self.durable.clone();
@@ -429,6 +430,7 @@ impl Owner {
                         driver::NativeBackend::Model { model, cells: cells.clone() }
                     }
                     (None, Some(accepted)) => {
+                        preflight_cells = cells.clone();
                         if let Some(exit) = self.interrupt_lost_bridge(&state, &claim, &view, cells.as_deref()).await? {
                             return Ok(exit);
                         }
@@ -438,7 +440,36 @@ impl Owner {
                                 if accepted.selection.executor == "external"
                                     && accepted.selection.settings.runtime.as_deref() == Some("antigravity") => {
                                 preflight_stage = None;
+                                if let Some(cells) = cells.as_deref() {
+                                    use maka_agent_engine::ports::CellPorts;
+                                    let current = state.frontier(view.run).await?;
+                                    for cell in current.cells.values() {
+                                        if cell.owner.run() != Some(current.run) {
+                                            continue;
+                                        }
+                                        if cell.has_unsettled_effects() {
+                                            match cells.observe_original_cell(&current, cell).await {
+                                                Ok(_) | Err(RunError::Blocked(_)) => {}
+                                                Err(RunError::Tool(
+                                                    error @ (maka_agent_facts::tools::ToolError::OutcomeUnknown(_)
+                                                    | maka_agent_facts::tools::ToolError::OperationUnknown { .. }),
+                                                )) => {
+                                                    tracing::warn!(
+                                                        run = %current.run,
+                                                        cell = %cell.id,
+                                                        %error,
+                                                        "Original Cell child outcome is unavailable while retiring replaced executor"
+                                                    );
+                                                }
+                                                Err(error) => return Err(error),
+                                            }
+                                        }
+                                    }
+                                }
                                 if let Some(exit) = Engine::new(state.clone()).retire_replaced_native_executor(&claim, UnixMillis(now() as i64)).await? {
+                                    if matches!(&exit, DriverExit::Terminal { .. }) {
+                                        self.wake_notify.notify_one();
+                                    }
                                     return Ok(exit);
                                 }
                                 preflight_stage = Some(AuthorityStage::BackendScope);
@@ -479,6 +510,7 @@ impl Owner {
                     workers,
                 ));
                 original_driver = Some(driver.clone());
+                preflight_cells = None;
                 if let Some(effects) = original_external_effects { driver.attach_external_effects(effects)?; }
                 self.runs.state().await.controls.insert(
                     view.spec.session_id.clone(),
@@ -617,9 +649,34 @@ impl Owner {
                 }
                 (result, _) => result,
             };
-            // Constructors before NativeDriver only assemble ports; none dispatch Run-owned work.
+            // Constructors before NativeDriver only assemble ports; preflight Cell
+            // observation must still prove its own VM/reader cleanup before releasing the Scope.
             // A pending canonical batch still owns its original payload independently of that proof.
-            if original_driver.is_none() && !matches!(&result, Err(RunError::PublicationUncertain { .. })) { cleanup_confirmed = true; }
+            if original_driver.is_none() && !matches!(&result, Err(RunError::PublicationUncertain { .. })) {
+                cleanup_confirmed = match &preflight_cells {
+                    Some(cells) => {
+                        cells.coordinator.cancel();
+                        cells.join_original_workers().await;
+                        match cells.original_cleanup_confirmed().await {
+                            Ok(true) if !cells.has_original_workers() => {
+                                preflight_cells = None;
+                                true
+                            }
+                            Ok(_) => false,
+                            Err(error) => {
+                                tracing::error!(
+                                    run = %view.run,
+                                    session = %view.spec.session_id,
+                                    cleanup_error = %error,
+                                    "Preflight Cell cleanup remained unconfirmed"
+                                );
+                                false
+                            }
+                        }
+                    }
+                    None => true,
+                };
+            }
             let pending = match &result { Err(RunError::PublicationUncertain { publication, .. }) => Some(publication.clone()), _ => None };
             if !cleanup_confirmed || pending.is_some() {
                 let _historical_failure = effects.seal();
@@ -628,6 +685,7 @@ impl Owner {
                     lease,
                     driver_cleanup::OriginalScope::Driver {
                         driver: original_driver,
+                        cells: preflight_cells,
                         effects,
                         state: publication_store,
                         pending,
@@ -637,7 +695,7 @@ impl Owner {
                 return result.and(Err(RunError::CleanupUnconfirmed));
             }
             if let Err(error) = effects.settle().await {
-                self.retain_original_scope(view.spec.session_id.clone(), lease, driver_cleanup::OriginalScope::Driver { driver: original_driver, effects, state: publication_store, pending: None }).await;
+                self.retain_original_scope(view.spec.session_id.clone(), lease, driver_cleanup::OriginalScope::Driver { driver: original_driver, cells: preflight_cells, effects, state: publication_store, pending: None }).await;
                 return result.and(Err(RunError::Store(error)));
             }
             drop(original_driver);

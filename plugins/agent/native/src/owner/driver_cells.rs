@@ -82,6 +82,7 @@ pub(super) struct RunCells {
     effects: Arc<Mutex<BTreeMap<(CellId, Uuid), EffectCustody>>>,
     readers: Arc<Mutex<Vec<Arc<NativeRequest>>>>,
     workers: TaskTracker,
+    cleanup_signals_armed: Arc<std::sync::OnceLock<()>>,
     cleanup: Evidence,
 }
 struct OriginalPublication {
@@ -179,6 +180,7 @@ impl RunCells {
             effects: Arc::default(),
             readers: Arc::default(),
             workers,
+            cleanup_signals_armed: Arc::default(),
             cleanup,
         }))
     }
@@ -194,6 +196,23 @@ impl RunCells {
     }
     pub(super) fn has_original_workers(&self) -> bool {
         !self.workers.is_empty()
+    }
+    pub(super) fn close_original_workers(&self) {
+        self.workers.close();
+    }
+    pub(super) async fn join_original_workers(&self) {
+        self.workers.close();
+        self.workers.wait().await;
+    }
+    pub(super) fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
+        if self.cleanup_signals_armed.set(()).is_err() {
+            return Vec::new();
+        }
+        let workers = self.workers.clone();
+        workers.close();
+        vec![Box::pin(async move {
+            workers.wait().await;
+        })]
     }
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         // Shutdown joins the original coordinator tasks; its historical error is not positive or negative cleanup truth.
