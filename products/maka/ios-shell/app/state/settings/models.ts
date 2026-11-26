@@ -32,6 +32,19 @@ export const connectionBasis = ({ connectionId, revision }: ConnectionCredential
   revision,
 });
 
+export async function readDefaultModel(rpc: SettingsRpc) {
+  const page = await rpc.query('settings', 'connections', { kind: 'start' });
+  if (page.kind !== 'ready') throw new Error(page.kind);
+  if (!page.defaultTarget) return null;
+  const model = await rpc.query('settings', 'resolveModel', page.defaultTarget);
+  return model.kind === 'ready' ? model.choice : null;
+}
+
+export function modelBackend(choice: Runtime.SettingsModelChoice): Runtime.AgentBackendPreference {
+  const { connectionId, modelId, serviceTier } = choice.selection;
+  return { kind: 'model', connectionId, modelId, serviceTier };
+}
+
 export async function connectionCatalog(rpc: SettingsRpc) {
   const first = await rpc.query('settings', 'connections', { kind: 'start' });
   if (first.kind !== 'ready') throw new Error(first.kind);
