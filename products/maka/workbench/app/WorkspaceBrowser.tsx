@@ -64,6 +64,8 @@ import {
   groupWorkspace,
   groupConversations,
   groupConversationsByTime,
+  familyFoldKey,
+  familyIsFolded,
   foldableFamilies,
   projectSessionLimit,
   topLevelCount,
@@ -134,7 +136,7 @@ export type WorkspaceBrowserProps = {
   collapsedGroups?: Signal<ReadonlySet<string>>;
   expandedProjects?: Signal<ReadonlySet<string>>;
   /** The conversations whose created ones are folded behind one row, kept by the owner. */
-  foldedFamilies?: Signal<ReadonlySet<string>>;
+  familyFoldOverrides?: Signal<ReadonlySet<string>>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
@@ -408,24 +410,31 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return last;
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
-  const foldedFamilies = props.foldedFamilies ?? signal<ReadonlySet<string>>(new Set());
-  // Only the full project-grouped list folds created families.
-  const families = computed(() =>
-    browser.filter() === 'all' && !sortByTime()
-      ? new Map(groups().flatMap((group) => [...foldableFamilies(group)]))
-      : new Map<string, string[]>(),
-  );
+  const familyFoldOverrides = props.familyFoldOverrides ?? signal<ReadonlySet<string>>(new Set());
+  const canFoldFamilies = () => browser.filter() === 'all';
+  const families = computed(() => {
+    const result = new Map<string, { members: string[]; pinned: boolean }>();
+    if (canFoldFamilies())
+      for (const group of groups())
+        for (const [parent, members] of foldableFamilies(group))
+          result.set(parent, { members, pinned: group.pinned });
+    return result;
+  });
   const familyOf = computed(() => {
     const parents = new Map<string, string>();
-    for (const [parent, members] of families()) for (const id of members) parents.set(id, parent);
+    for (const [parent, { members }] of families())
+      for (const id of members) parents.set(id, parent);
     return parents;
   });
   const shownSessions = (group: WorkspaceGroup) =>
-    browser.filter() === 'all' ? unfoldedSessions(group, foldedFamilies()) : group.sessions;
+    canFoldFamilies() ? unfoldedSessions(group, familyFoldOverrides()) : group.sessions;
   const toggleFamily = (parent: string) => {
-    const next = new Set(foldedFamilies());
-    if (!next.delete(parent)) next.add(parent);
-    foldedFamilies.set(next);
+    const family = families().get(parent);
+    if (!family) return;
+    const key = familyFoldKey(parent, family.pinned);
+    const next = new Set(familyFoldOverrides());
+    if (!next.delete(key)) next.add(key);
+    familyFoldOverrides.set(next);
   };
   // Opening a folded conversation, from search or a notice, unfolds its
   // family once; folding it again afterwards is the user's call.
@@ -436,10 +445,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     if (!id || !parent || id === unfoldedFor) return;
     unfoldedFor = id;
     untracked(() => {
-      if (!foldedFamilies().has(parent)) return;
-      const next = new Set(foldedFamilies());
-      next.delete(parent);
-      foldedFamilies.set(next);
+      const { pinned } = families().get(parent)!;
+      if (familyIsFolded(parent, pinned, familyFoldOverrides())) toggleFamily(parent);
     });
   });
   const rowIds = computed(() =>
@@ -1352,9 +1359,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               }
               if (key().startsWith('family:')) {
                 const parent = key().slice('family:'.length);
+                const family = () => families().get(parent);
                 const members = () =>
-                  (families().get(parent) ?? []).flatMap((id) => sessionsById().get(id) ?? []);
-                const open = () => !foldedFamilies().has(parent);
+                  (family()?.members ?? []).flatMap((id) => sessionsById().get(id) ?? []);
+                const open = () =>
+                  !familyIsFolded(parent, family()?.pinned ?? false, familyFoldOverrides());
                 const activityKnown = () => !props.connectionLost() && !browser.error();
                 // While folded the row stands in for its members' activity.
                 const waiting = () =>

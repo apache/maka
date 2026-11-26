@@ -21,7 +21,7 @@ import type {
   AgentProject,
   AgentWorkspaceSelection,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { nestCreated } from './sessionNesting.ts';
+import { creationRoots, nestCreated } from './sessionNesting.ts';
 
 type Groupable = {
   id: string;
@@ -46,6 +46,10 @@ export type ConversationGroup<Project> = {
 
 const PROJECT_SESSION_LIMIT = 6;
 
+// An explicit pin still lifts a child out of an unpinned family.
+const groupingRoots = (sessions: readonly Groupable[]) =>
+  creationRoots(sessions, (session) => (session.pinned ? null : session.parentSessionId));
+
 /** Pinned conversations, registered projects in catalog order, then other workspaces. */
 export function groupConversations<Project extends Listable>(
   sessions: readonly Groupable[],
@@ -67,17 +71,14 @@ export function groupConversations<Project extends Listable>(
     groups.set(key, group);
     return group;
   };
+  const roots = groupingRoots(sessions);
   for (const session of sessions) {
-    const projectId = session.workspace.projectId;
-    const key = session.pinned
-      ? 'pinned'
-      : projectId
-        ? `project:${projectId}`
-        : `path:${session.workspace.path}`;
-    const project = (!session.pinned && projectId && byProject.get(projectId)) || null;
+    const { pinned, workspace } = roots.get(session.id) ?? session;
+    const projectId = workspace.projectId;
+    const key = pinned ? 'pinned' : projectId ? `project:${projectId}` : `path:${workspace.path}`;
+    const project = (!pinned && projectId && byProject.get(projectId)) || null;
     const group =
-      groups.get(key) ??
-      add(key, session.pinned, project, session.pinned || project ? null : session.workspace.path);
+      groups.get(key) ?? add(key, pinned, project, pinned || project ? null : workspace.path);
     group.members.push(session);
   }
   if (withEmpty)
@@ -128,8 +129,7 @@ export function withinLimit(
 const FOLDED_FAMILY_SIZE = 3;
 
 /**
- * The group's conversations that created at least three listed under them,
- * each with those conversations in list order.
+ * Pinned families can fold even one child. Elsewhere, only larger families fold.
  */
 export function foldableFamilies(group: ConversationGroup<unknown>): Map<string, string[]> {
   const families = new Map<string, string[]>();
@@ -142,40 +142,51 @@ export function foldableFamilies(group: ConversationGroup<unknown>): Map<string,
       else families.set(parent, [id]);
     }
   }
-  for (const [id, members] of families)
-    if (members.length < FOLDED_FAMILY_SIZE) families.delete(id);
+  if (!group.pinned)
+    for (const [id, members] of families)
+      if (members.length < FOLDED_FAMILY_SIZE) families.delete(id);
   return families;
 }
 
-/**
- * The group's conversations without those folded under their creator; a
- * family is folded while its creator is in `folded`.
- */
+export function familyFoldKey(parent: string, pinned: boolean): string {
+  return pinned ? `pinned:${parent}` : parent;
+}
+
+export function familyIsFolded(
+  parent: string,
+  pinned: boolean,
+  overrides: ReadonlySet<string>,
+): boolean {
+  return pinned !== overrides.has(familyFoldKey(parent, pinned));
+}
+
+/** The group's conversations without those folded under their creator. */
 export function unfoldedSessions(
   group: ConversationGroup<unknown>,
-  folded: ReadonlySet<string>,
+  overrides: ReadonlySet<string>,
   current: string | null = null,
 ): string[] {
   const hidden = new Set<string>();
   for (const [parent, members] of foldableFamilies(group))
-    if (folded.has(parent)) for (const id of members) if (id !== current) hidden.add(id);
+    if (familyIsFolded(parent, group.pinned, overrides))
+      for (const id of members) if (id !== current) hidden.add(id);
   return hidden.size ? group.sessions.filter((id) => !hidden.has(id)) : group.sessions;
 }
 
 /**
  * Step through the visible conversations, keeping a hidden current row as a
- * starting point. Without `foldedFamilies`, as in the terminal, nothing folds.
+ * starting point. Without `familyFoldOverrides`, as in the terminal, nothing folds.
  */
 export function browserOrder(
   groups: readonly ConversationGroup<unknown>[],
   collapsed: ReadonlySet<string>,
   current: string | null,
   expandedProjects?: ReadonlySet<string>,
-  foldedFamilies?: ReadonlySet<string>,
+  familyFoldOverrides?: ReadonlySet<string>,
 ): string[] {
   return groups.flatMap((group) => {
-    const sessions = foldedFamilies
-      ? unfoldedSessions(group, foldedFamilies, current)
+    const sessions = familyFoldOverrides
+      ? unfoldedSessions(group, familyFoldOverrides, current)
       : group.sessions;
     const limit = collapsed.has(group.key)
       ? 0
@@ -187,15 +198,16 @@ export function browserOrder(
   });
 }
 
-/** Pinned conversations, then unpinned conversations bucketed by recency while preserving Host page order. */
+/** Pinned families, then remaining conversations bucketed by recency in Host page order. */
 export function groupConversationsByTime<Project>(
   sessions: readonly Groupable[],
   now = Date.now(),
 ): ConversationGroup<Project>[] {
-  const pinned: string[] = [];
+  const roots = groupingRoots(sessions);
+  const pinned: Groupable[] = [];
   const unpinned: Groupable[] = [];
   for (const session of sessions) {
-    if (session.pinned) pinned.push(session.id);
+    if ((roots.get(session.id) ?? session).pinned) pinned.push(session);
     else unpinned.push(session);
   }
 
@@ -215,15 +227,17 @@ export function groupConversationsByTime<Project>(
 
   const empty = new Set<string>();
   const groups: ConversationGroup<Project>[] = [];
-  if (pinned.length)
+  if (pinned.length) {
+    const { order, nested } = nestCreated(pinned);
     groups.push({
       key: 'pinned',
       pinned: true,
       project: null,
       path: null,
-      sessions: pinned,
-      nested: empty,
+      sessions: order,
+      nested,
     });
+  }
   if (today.length)
     groups.push({
       key: 'time:today',

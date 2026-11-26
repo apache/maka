@@ -19,6 +19,40 @@
 
 type Nestable = { id: string; parentSessionId: string | null };
 
+/** The first loaded creator of each conversation; cycles have no root. */
+export function creationRoots<T extends Nestable>(
+  sessions: readonly T[],
+  parentOf = (session: T) => session.parentSessionId,
+): ReadonlyMap<string, T | null> {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const roots = new Map<string, T | null>();
+  for (const session of sessions) {
+    if (roots.has(session.id)) continue;
+    const path: string[] = [];
+    let at = session;
+    let root: T | null;
+    for (;;) {
+      const known = roots.get(at.id);
+      if (known !== undefined) {
+        root = known;
+        break;
+      }
+      // Revisiting a pending entry means this path has no root.
+      roots.set(at.id, null);
+      path.push(at.id);
+      const parentId = parentOf(at);
+      const parent = parentId === null ? undefined : byId.get(parentId);
+      if (!parent) {
+        root = at;
+        break;
+      }
+      at = parent;
+    }
+    for (const id of path) roots.set(id, root);
+  }
+  return roots;
+}
+
 /**
  * One workspace group's conversations with each one another conversation in
  * the group created moved under the first of its line there, one level in,
@@ -28,43 +62,16 @@ export function nestCreated(sessions: readonly Nestable[]): {
   order: string[];
   nested: ReadonlySet<string>;
 } {
-  const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
-  const roots = new Map<string, string | null>();
-  const rootOf = (id: string) => {
-    const path: string[] = [];
-    const seen = new Set<string>();
-    let at = id;
-    let root: string | null;
-    for (;;) {
-      if (roots.has(at)) {
-        root = roots.get(at)!;
-        break;
-      }
-      if (seen.has(at)) {
-        root = null;
-        break;
-      }
-      seen.add(at);
-      path.push(at);
-      const parent = parents.get(at);
-      if (!parent || !parents.has(parent)) {
-        root = at;
-        break;
-      }
-      at = parent;
-    }
-    for (const member of path) roots.set(member, root);
-    return root ?? id;
-  };
+  const roots = creationRoots(sessions);
   const children = new Map<string, string[]>();
   const nested = new Set<string>();
   for (const { id } of sessions) {
-    const root = rootOf(id);
-    if (root === id) continue;
+    const root = roots.get(id);
+    if (!root || root.id === id) continue;
     nested.add(id);
-    const siblings = children.get(root);
+    const siblings = children.get(root.id);
     if (siblings) siblings.push(id);
-    else children.set(root, [id]);
+    else children.set(root.id, [id]);
   }
   const order = sessions
     .filter(({ id }) => !nested.has(id))

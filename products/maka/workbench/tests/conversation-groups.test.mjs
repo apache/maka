@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   browserOrder,
+  familyFoldKey,
   foldableFamilies,
   groupConversations,
   groupConversationsByTime,
@@ -59,6 +60,87 @@ test('groups list pinned conversations, then projects in catalog order, then oth
   assert.equal(groups[0].project, null);
   assert.equal(groups[3].path, '/b');
   assert.deepEqual([...groups[3].nested], ['child']);
+});
+
+test('pinning the parent moves its whole family into Pinned in both sidebar views', () => {
+  const rows = [
+    session('parent', '/old', { pinned: true, project: 'old' }),
+    session('grandchild', '/old', { project: 'old', parent: 'child' }),
+    session('child', '/old', { project: 'old', parent: 'parent' }),
+  ];
+  for (const groups of [
+    groupConversations(rows, [project('old')], false),
+    groupConversationsByTime(rows),
+  ]) {
+    assert.deepEqual(
+      groups.map(({ key, sessions }) => [key, sessions]),
+      [['pinned', ['parent', 'grandchild', 'child']]],
+    );
+    assert.deepEqual([...groups[0].nested], ['grandchild', 'child']);
+    assert.deepEqual(unfoldedSessions(groups[0], new Set()), ['parent']);
+    assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set()), ['parent']);
+  }
+});
+
+test('one pinned child is enough to fold, and expanding the family reveals it', () => {
+  const groups = groupConversations(
+    [session('parent', '/a', { pinned: true }), session('child', '/a', { parent: 'parent' })],
+    [],
+    false,
+  );
+  const overrides = new Set();
+  const [group] = groups;
+  assert.deepEqual(unfoldedSessions(group, overrides), ['parent']);
+  assert.deepEqual(browserOrder(groups, new Set(), 'child', undefined, overrides), [
+    'parent',
+    'child',
+  ]);
+  overrides.add(familyFoldKey('parent', true));
+  assert.deepEqual(unfoldedSessions(group, overrides), ['parent', 'child']);
+});
+
+test('moving the parent to another workspace leaves no descendants in the old project', () => {
+  for (const [options, key] of [
+    [{ project: 'new' }, 'project:new'],
+    [{}, 'path:/new'],
+  ]) {
+    const groups = groupConversations(
+      [
+        session('child', '/old', { project: 'old', parent: 'parent' }),
+        session('other', '/old', { project: 'old' }),
+        session('parent', '/new', options),
+      ],
+      [project('old'), project('new')],
+      false,
+    );
+    assert.deepEqual(
+      groups.map(({ key, sessions }) => [key, sessions]),
+      [
+        ['project:old', ['other']],
+        [key, ['parent', 'child']],
+      ],
+    );
+    assert.deepEqual([...groups[1].nested], ['child']);
+  }
+});
+
+test('a child pinned on its own can still appear in Pinned', () => {
+  const groups = groupConversations(
+    [
+      session('child', '/a', { pinned: true, parent: 'parent' }),
+      session('parent', '/a'),
+      session('grandchild', '/a', { parent: 'child' }),
+    ],
+    [],
+    false,
+  );
+  assert.deepEqual(
+    groups.map(({ key, sessions }) => [key, sessions]),
+    [
+      ['pinned', ['child', 'grandchild']],
+      ['path:/a', ['parent']],
+    ],
+  );
 });
 
 test('project order is independent of conversation recency and stepping follows the preview', () => {

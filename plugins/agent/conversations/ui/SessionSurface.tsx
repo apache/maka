@@ -2174,7 +2174,7 @@ export function createConversationUi(
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const expandedProjects = signal<ReadonlySet<string>>(new Set());
-  const foldedFamilies = signal<ReadonlySet<string>>(new Set());
+  const familyFoldOverrides = signal<ReadonlySet<string>>(new Set());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
@@ -2196,9 +2196,9 @@ export function createConversationUi(
       collapsedGroups(),
       selected(),
       platform.idiom === 'terminal' ? undefined : expandedProjects(),
-      platform.idiom === 'terminal' || browsing.filter() !== 'all' || byTime
+      platform.idiom === 'terminal' || browsing.filter() !== 'all'
         ? undefined
-        : foldedFamilies(),
+        : familyFoldOverrides(),
     );
     // A side question opens beside its conversation, so stepping onto one would step back.
     const sides = new Set(visible.filter((session) => session.branch?.side).map(({ id }) => id));
@@ -2302,7 +2302,7 @@ export function createConversationUi(
     openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
     collapsedGroups,
     expandedProjects,
-    foldedFamilies,
+    familyFoldOverrides,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
