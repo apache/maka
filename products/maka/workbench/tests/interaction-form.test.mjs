@@ -91,6 +91,29 @@ test('terminal forms preserve authored limits, omission, and malformed-value rej
     );
     assert.deepEqual(result.problems[0], { key, values: { count } });
   }
+  const range = {
+    kind: 'number',
+    name: 'timeout',
+    label: 'Timeout',
+    required: true,
+    minimum: 0.5,
+    maximum: 10000,
+  };
+  const outOfRange = formSubmission([range], [{ included: true, value: '0', hidden: false }]);
+  assert.equal(outOfRange.answer, null);
+  assert.deepEqual(outOfRange.problems[0], {
+    key: 'Use a number from {minimum} to {maximum}.',
+    values: { minimum: '0.5', maximum: '10000' },
+  });
+  for (const bound of [
+    outOfRange.problems[0].values.minimum,
+    outOfRange.problems[0].values.maximum,
+  ]) {
+    const accepted = formSubmission([range], [{ included: true, value: bound, hidden: false }]);
+    assert.deepEqual(accepted.problems, [null]);
+    assert.equal(accepted.answer.values.timeout, Number(bound));
+  }
+
   const missing = formSubmission([bounded], [{ included: false, value: '甲😀', hidden: false }]);
   assert.equal(missing.answer, null);
   assert.deepEqual(missing.problems[0], {
