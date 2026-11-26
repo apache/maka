@@ -37,24 +37,39 @@ use windows_sys::Win32::System::{
 // the Host exits, terminating descendants without killing the Host during Drop.
 static OWNER: OnceLock<io::Result<OwnedHandle>> = OnceLock::new();
 
-pub(super) fn detach_private_desktop_console() -> io::Result<bool> {
+pub(super) fn detach_private_desktop_console() -> io::Result<()> {
     use windows_sys::Win32::System::Console::{
-        FreeConsole, GetConsoleProcessList, GetConsoleWindow,
+        FreeConsole, GetConsoleMode, GetConsoleProcessList, GetConsoleWindow, GetStdHandle,
+        STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
     };
 
     // SAFETY: the process list has one writable slot. A larger count means
     // another process (such as the invoking shell) shares this console.
     unsafe {
         if GetConsoleWindow().is_null() {
-            return Ok(false);
+            return Ok(());
         }
         let mut process = 0;
         match GetConsoleProcessList(&mut process, 1) {
-            0 => Err(io::Error::last_os_error()),
-            1 if FreeConsole() == 0 => Err(io::Error::last_os_error()),
-            1 => Ok(true),
-            _ => Ok(false),
+            0 => return Err(io::Error::last_os_error()),
+            1 => (),
+            _ => return Ok(()),
         }
+        // FreeConsole invalidates console handles but leaves their stdio slots
+        // populated. Preserve redirected handles for children that inherit stdio.
+        let slots = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].map(|slot| {
+            let mut mode = 0;
+            (GetConsoleMode(GetStdHandle(slot), &mut mode) != 0).then_some(slot)
+        });
+        if FreeConsole() == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        for slot in slots.into_iter().flatten() {
+            if SetStdHandle(slot, ptr::null_mut()) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -131,15 +146,43 @@ mod tests {
         };
         match std::env::var(ROLE).as_deref() {
             Ok("private") => {
+                use std::os::windows::io::IntoRawHandle;
+                use windows_sys::Win32::System::Console::{
+                    GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+                };
+
                 assert!(child("shared", 0));
-                assert!(detach_private_desktop_console().unwrap());
+                let (reader, mut writer) = io::pipe().unwrap();
+                writer.write_all(b"R").unwrap();
+                assert_ne!(
+                    unsafe { SetStdHandle(STD_INPUT_HANDLE, reader.as_raw_handle()) },
+                    0
+                );
+                let console = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("CONOUT$")
+                    .unwrap();
+                assert_ne!(
+                    unsafe { SetStdHandle(STD_OUTPUT_HANDLE, console.into_raw_handle()) },
+                    0
+                );
+                detach_private_desktop_console().unwrap();
                 assert!(unsafe { GetConsoleWindow() }.is_null());
+                assert!(child("windowless", CREATE_NO_WINDOW));
+                assert!(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }.is_null());
+                let mut received = [0];
+                io::stdin().read_exact(&mut received).unwrap();
+                assert_eq!(&received, b"R");
             }
             Ok("shared") => {
-                assert!(!detach_private_desktop_console().unwrap());
+                detach_private_desktop_console().unwrap();
                 assert!(!unsafe { GetConsoleWindow() }.is_null());
             }
-            Ok("windowless") => assert!(!detach_private_desktop_console().unwrap()),
+            Ok("windowless") => {
+                detach_private_desktop_console().unwrap();
+                assert!(unsafe { GetConsoleWindow() }.is_null());
+            }
             _ => {
                 assert!(child("private", CREATE_NEW_CONSOLE));
                 assert!(child("windowless", CREATE_NO_WINDOW));

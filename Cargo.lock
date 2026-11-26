@@ -9267,6 +9267,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
