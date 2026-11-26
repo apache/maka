@@ -373,7 +373,7 @@ export const suites = {
     ],
     targetArgs: ['--lib', '--bin', 'maka-desktop-shell', '--test', 'open_directly'],
     filter:
-      'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
+      'package(=maka-desktop-shell) | (package(=maka-workbench) & (test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip) | test(=bindings::quick_tools::start_menu::tests::start_menu_search_results_resolve_to_named_applications)))',
     extraInputs: productInputs,
   },
   'windows-skills': {

@@ -161,6 +161,7 @@
   "Manage plugins for this connection. Your conversation and draft stay open.": "管理此連線的插件。對話與草稿會保持開啟。",
   "Message no longer queued · your edit is kept": "訊息已離開隊列 · 編輯內容已保留",
   "Microphone": "咪高風",
+  "Minimize application": "將應用程式最小化",
   "Model fetch failed. The connection remains saved. Retry fetching models or add a model manually.": "模型取得失敗，連線已儲存。請重試取得或手動新增模型。",
   "Model for queued and future messages": "隊列訊息和後續新訊息使用的模型",
   "Model list changed": "模型列表已變更",

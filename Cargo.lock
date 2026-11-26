@@ -10562,6 +10562,7 @@ dependencies = [
  "url",
  "usvg 0.50.0",
  "uuid",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "zstd 0.14.5",
 ]

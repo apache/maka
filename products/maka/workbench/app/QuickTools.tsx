@@ -65,7 +65,7 @@ export const dictationTool = (tool: UiContributionRef) =>
 export const conversationTool = (tool: UiContributionRef) =>
   tool.instance.package.id === 'maka.conversations' && tool.id === 'quickConversations';
 export function quickPluginName(tool: UiContributionRef): string {
-  if (conversationTool(tool)) return 'maka';
+  if (conversationTool(tool)) return 'Maka';
   const { presentation, package: owner } = tool.instance;
   return (presentation && localizedPresentation(presentation).displayName) || owner.id;
 }

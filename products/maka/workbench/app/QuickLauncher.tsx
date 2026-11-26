@@ -91,6 +91,7 @@ import {
   type QuickTools,
 } from './QuickTools';
 import {
+  homeRows,
   isFrequent,
   parseUsage,
   ranked,
@@ -502,21 +503,19 @@ function Launcher(props: {
             : undefined,
     }));
   };
+  const homeGroups = () => {
+    const rows = homeRows(recommendations(), entries());
+    return [
+      { key: 'recommended', title: tr('Recommended'), rows: rows.recommendations },
+      { key: 'tools', title: tr('Tools'), rows: rows.tools },
+    ];
+  };
   const sections = computed(() => {
     const groups: {
       key: string;
       title: string | null;
       rows: readonly Row[];
-    }[] = home()
-      ? [
-          {
-            key: 'recommended',
-            title: tr('Recommended'),
-            rows: recommendations(),
-          },
-          { key: 'tools', title: tr('Tools'), rows: entries() },
-        ]
-      : [{ key: 'results', title: null, rows: results() }];
+    }[] = home() ? homeGroups() : [{ key: 'results', title: null, rows: results() }];
     let start = 0;
     return groups.flatMap((group): Section[] => {
       if (group.rows.length === 0) return [];

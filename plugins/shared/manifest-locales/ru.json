@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "Веб-инструменты",
   "pkg.maka.application.host-logs.description": "Просмотр и отслеживание перехваченных логов подключённого хоста.",
   "pkg.maka.application.host-logs.displayName": "Логи хоста",
-  "pkg.maka.applications.description": "Поиск, открытие и управление установленными приложениями через быстрый запуск в macOS.",
+  "pkg.maka.applications.description": "Поиск, открытие и управление установленными приложениями через быстрый запуск в Windows и macOS.",
   "pkg.maka.applications.displayName": "Приложения",
   "pkg.maka.calculator.description": "Вычисления и конвертация единиц в быстром запуске с копированием результата.",
   "pkg.maka.calculator.displayName": "Калькулятор",

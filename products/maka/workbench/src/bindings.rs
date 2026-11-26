@@ -432,6 +432,23 @@ impl ApplicationHost {
         execute(owner, quick_tools::application_icon(path)).await
     }
 
+    pub async fn start_menu_applications(
+        this: Instance<Self>,
+    ) -> Result<Vec<quick_tools::StartMenuApplication>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::start_menu_applications()).await
+    }
+
+    pub async fn open_start_menu_application(
+        this: Instance<Self>,
+        id: String,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::open_start_menu_application(id)).await
+    }
+
     pub async fn application_instance(
         this: Instance<Self>,
         path: String,
@@ -439,6 +456,26 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         execute(owner, quick_tools::application_instance(path)).await
+    }
+
+    pub async fn start_menu_actions(
+        this: Instance<Self>,
+        id: String,
+    ) -> Result<quick_tools::StartMenuActions, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::start_menu_actions(id)).await
+    }
+
+    pub async fn start_menu_action(
+        this: Instance<Self>,
+        id: String,
+        action: String,
+        instance: Option<String>,
+    ) -> Result<(), String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, quick_tools::start_menu_action(id, action, instance)).await
     }
 
     pub async fn application_action(
