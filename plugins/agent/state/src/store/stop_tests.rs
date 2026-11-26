@@ -322,7 +322,7 @@ where
     store.data.write(Raw(f)).await.unwrap();
 }
 
-fn external_spec() -> (RunSpec, Vec<ContentBlob>) {
+pub(crate) fn external_spec() -> (RunSpec, Vec<ContentBlob>) {
     let (mut spec, contents) = spec();
     spec.backend = BackendSpec::Executor {
         selection: maka_agent_facts::executor::Selection {

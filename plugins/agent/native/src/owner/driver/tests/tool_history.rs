@@ -1732,7 +1732,7 @@ async fn record_background_notice(
     Ok((
         background,
         background_result,
-        serde_json::to_string(&returned)?.len() + 1,
+        "local_child_returned\n".len(),
     ))
 }
 
@@ -1865,11 +1865,11 @@ async fn check_wait_archive(rig: &mut Rig) -> TestResult<()> {
         fact: caller.id,
         item_index: 0,
     };
+    let _ = event;
     let quote = "logical";
     let source = args["code"].as_str().ok_or("missing fixture source")?;
     let offset = source.find(quote).ok_or("missing fixture quote")?;
-    let start = serde_json::to_string(event)?.len() + 1 + offset;
-    suppress_history_quotes(rig, &session, &[(source_sequence, start, quote)]).await?;
+    suppress_history_quotes(rig, &session, &[(source_sequence, offset, quote)]).await?;
     let spans = history
         .read_restrictions(vec![caller_address.clone()])
         .await?;
@@ -2054,7 +2054,7 @@ async fn followup_pairs_tool_call_with_failure_observed_after_run_termination() 
                 let receipt_at = history.fact_sequence(&cut, run, fact.id).await?.ok_or("missing receipt")?;
                 let receipt_start = serde_json::to_string(reply)?.find(diagnostic).ok_or("missing diagnostic")?;
                 let child_at = history.fact_sequence(&cut, run, child_id).await?.ok_or("missing child")?;
-                let child_start = serde_json::to_string(&child)?.len() + "\nvalue\n".len();
+                let child_start = "write_file\nvalue\n".len();
                 let background_at = history.fact_sequence(&cut, run, background_result).await?.ok_or("missing background result")?;
                 suppress_history_quotes(&rig, &session, &[
                     (receipt_at, receipt_start, diagnostic),
@@ -3892,13 +3892,16 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
             "model search exposed the transferred child receipt"
         );
         let found = tree.find_page(query(false), stop).await?;
+        // v60 compact snapshot parity: ref-backed ChildObserved strips duplicate payload
+        // bytes (matching live Recall), leaving OperationObserved's Field::Receipt plus
+        // ChildResultRecorded's Field::Result.
         assert_eq!(
             found
                 .matches
                 .iter()
                 .filter(|entry| entry.field == Field::Receipt)
                 .count(),
-            2
+            1
         );
         assert!(
             found

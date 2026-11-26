@@ -189,6 +189,46 @@ impl ToolResultSource {
 }
 
 impl ReturnedToolSource {
+    /// Extract the compact v59 `Field::Receipt` string for a `StoredCellReturn`
+    /// without materializing large inline results.
+    pub async fn compact_cell_receipt(
+        &self,
+        default_receipt: &str,
+        budget: Arc<dyn SourceBudget>,
+    ) -> io::Result<String> {
+        let [operation] = json::fields(&self.body, &["operation"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        let Some(operation) = operation else {
+            return Ok(default_receipt.to_owned());
+        };
+        let [reference] = json::fields(&operation.source, &["reference"], budget.clone())
+            .await?
+            .try_into()
+            .expect("one field per requested name");
+        let reference = present(reference)?;
+        let mut cursor = reference.source.bytes().open(budget.clone());
+        let mut buffer = budget.allocate(8 * 1024).await?;
+        let mut bytes = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buffer).await?;
+            bytes.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buffer = read.buffer;
+            if bytes.len() > 64 * 1024 {
+                return Err(invalid("operation receipt reference exceeds bound"));
+            }
+            if read.eof {
+                break;
+            }
+        }
+        let recovery_ref: maka_plugin_core::operation::RecoveryRef = serde_json::from_slice(&bytes)
+            .map_err(|_| invalid("invalid operation receipt reference"))?;
+        Ok(crate::recall::index::compact_operation_receipt(
+            &recovery_ref,
+        ))
+    }
+
     pub async fn fields(&self, budget: Arc<dyn SourceBudget>) -> io::Result<ToolResultFields> {
         ToolResultFields::read(&self.body, self.reader.as_ref(), budget).await
     }

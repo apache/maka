@@ -116,7 +116,8 @@ impl Query for LivePositions {
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter()
+        let mut out: Vec<SnapshotPosition> = rows
+            .into_iter()
             .map(
                 |(run, sequence, admission_sequence, fact, item_index, internal)| {
                     Ok(SnapshotPosition::Canonical {
@@ -129,7 +130,66 @@ impl Query for LivePositions {
                     })
                 },
             )
-            .collect()
+            .collect::<Result<_, StoreError>>()?;
+        let unsealed = crate::recall::index::unsealed_external_segment_headers(
+            c,
+            &owner,
+            &self.0.session,
+            self.1.through_sequence,
+            self.5,
+        )?;
+        if !unsealed.is_empty() {
+            for delta in unsealed {
+                if !self.4 && delta.is_thinking {
+                    continue;
+                }
+                let in_bound = if self.3 {
+                    (delta.sequence, 0) <= bound
+                } else {
+                    (delta.sequence, 0) >= bound
+                };
+                if !in_bound {
+                    continue;
+                }
+                let matches_run = match self.7.run() {
+                    None => true,
+                    Some(RunRows::Only { run, .. }) => delta.run == run,
+                    Some(RunRows::Folded { run, .. }) => delta.run != run,
+                };
+                if !matches_run {
+                    continue;
+                }
+                out.push(SnapshotPosition::Canonical {
+                    run: delta.run,
+                    sequence: delta.sequence,
+                    admission_sequence: delta.admission_sequence,
+                    fact: delta.fact,
+                    item_index: 0,
+                    internal: delta.is_thinking,
+                });
+            }
+            out.sort_by(|a, b| {
+                let key = |p: &SnapshotPosition| match p {
+                    SnapshotPosition::Canonical {
+                        sequence,
+                        item_index,
+                        ..
+                    } => (*sequence, *item_index),
+                    SnapshotPosition::Imported {
+                        message_ordinal,
+                        part_ordinal,
+                        ..
+                    } => (*message_ordinal, *part_ordinal),
+                };
+                if self.3 {
+                    key(b).cmp(&key(a))
+                } else {
+                    key(a).cmp(&key(b))
+                }
+            });
+            out.truncate(self.6 as usize);
+        }
+        Ok(out)
     }
 }
 

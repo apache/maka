@@ -50,7 +50,49 @@ pub(crate) enum Rule<'a> {
     Failure(&'a str),
     Compaction(&'a ContentRef),
 }
+
+/// Extract the user-visible display title from a tool display payload, if non-empty.
+pub(crate) fn display_title(display: &maka_agent_facts::durable::ToolDisplay) -> Option<&str> {
+    display
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Pure internal Cell state-machine bookkeeping events (and title-less display records)
+/// carry no searchable user or tool content and are omitted from new Recall indexing.
+pub(crate) fn is_omitted_cell_bookkeeping(fact: &Fact) -> bool {
+    match fact {
+        Fact::Cell {
+            event:
+                CellEvent::VmBound { .. }
+                | CellEvent::LoadedToolsPublished { .. }
+                | CellEvent::ChildAdmitted { .. }
+                | CellEvent::ChildApprovalConsumed { .. }
+                | CellEvent::ChildBound { .. }
+                | CellEvent::ResultAccepted { .. }
+                | CellEvent::FinalNotificationQueued { .. }
+                | CellEvent::NotificationConsumed { .. },
+        } => true,
+        Fact::Cell {
+            event: CellEvent::ChildDisplayRecorded { display, .. },
+        } => display_title(display).is_none(),
+        _ => false,
+    }
+}
+
+/// Indexing rule for new Recall rows (v58+): omits pure internal Cell bookkeeping.
 pub(crate) fn rule(fact: &Fact) -> Option<Rule<'_>> {
+    if is_omitted_cell_bookkeeping(fact) {
+        return None;
+    }
+    rule_for_existing_position(fact)
+}
+
+/// Projection rule for any already-persisted position (legacy pre-v58 snapshot positions,
+/// pre-v58 Memory-evidenced historical rows, or new v58 coalesced positions).
+pub(crate) fn rule_for_existing_position(fact: &Fact) -> Option<Rule<'_>> {
     Some(match fact {
         Fact::RunAdmitted { .. } => Rule::Admission,
         Fact::StepPrepared { .. } | Fact::ExternalTaskPrepared { .. } => Rule::QueueSources,
@@ -84,8 +126,8 @@ pub(crate) fn rule(fact: &Fact) -> Option<Rule<'_>> {
         )?),
         Fact::Cell { event } => Rule::Cell(event),
         Fact::OperationObserved { reply, .. } => Rule::Receipt(reply),
-        Fact::ModelInterrupted { diagnostic, .. }
-        | Fact::RunTerminated {
+        Fact::ModelInterrupted { diagnostic, .. } => Rule::Failure(diagnostic),
+        Fact::RunTerminated {
             diagnostic: Some(diagnostic),
             ..
         } => Rule::Failure(diagnostic),

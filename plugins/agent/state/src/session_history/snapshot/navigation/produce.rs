@@ -63,6 +63,15 @@ pub(super) struct Producer {
     imported_eof: bool,
     imported_source: bool,
     model_start: Option<u64>,
+    last_delta_position: HashMap<
+        (
+            RunId,
+            maka_agent_facts::durable::ExternalTaskId,
+            String,
+            bool,
+        ),
+        u64,
+    >,
 }
 impl Producer {
     pub async fn new(snapshot: Snapshot, stop: CancellationToken) -> Result<Self, StoreError> {
@@ -86,6 +95,7 @@ impl Producer {
                 _ => None,
             },
             imported_source: matches!(header.origin, Origin::Imported { .. }),
+            last_delta_position: HashMap::new(),
         })
     }
     fn flush_imported(&mut self) -> Result<(), StoreError> {
@@ -167,8 +177,16 @@ impl Producer {
                     return Err(StoreError::EventConflict);
                 }
                 self.catalog.observe_canonical(spec, &item)?;
-                let rule = document::rule(&item.recorded.fact)
-                    .ok_or_else(|| invalid("source position has no Recall document rule"))?;
+                let compact = self
+                    .snapshot
+                    .position_is_compact(*sequence, *item_index)
+                    .await?;
+                let rule = if compact {
+                    document::rule(&item.recorded.fact)
+                } else {
+                    document::rule_for_existing_position(&item.recorded.fact)
+                }
+                .ok_or_else(|| invalid("source position has no Recall document rule"))?;
                 let reader = ToolResultReader::snapshot(&self.snapshot, *run, &self.stop);
                 let mut metadata = Metadata {
                     turn: Some(spec.turn_id.clone()),
@@ -261,6 +279,9 @@ impl Producer {
                 }
                 match &rule {
                     Rule::Admission => metadata.role = AuthorRole::Canonical(Role::User),
+                    Rule::Cell(CellEvent::ChildPrepared { .. }) if compact => {
+                        metadata.role = AuthorRole::Canonical(Role::ToolCall)
+                    }
                     Rule::Returned { .. }
                     | Rule::ExternalReturned(_)
                     | Rule::ExternalObserved { .. }
@@ -468,42 +489,77 @@ impl Producer {
                                 cell,
                                 source,
                                 eq(&evidence, "completed", &self.budget).await?,
+                                compact,
                                 &self.budget,
                             )
                             .await?;
                         }
                     }
                     Rule::Cell(event) => {
-                        let receipt = if let CellEvent::ChildObserved {
-                            cell,
-                            operation,
-                            reply,
-                        } = event
-                            && maka_agent_facts::operation::result_reference(reply).is_some()
-                        {
-                            reader
-                                .cell_child_receipt(*cell, *operation, reply, self.budget.clone())
-                                .await
-                                .map_err(io_error)?
-                        } else {
-                            required(&raw, &["fact", "event"], &self.budget)
-                                .await?
-                                .source
-                        };
-                        raw_field(&mut doc, Field::Receipt, receipt, &self.budget).await?;
+                        let emit_legacy_receipt = !compact
+                            || matches!(
+                                event,
+                                CellEvent::ChildObserved { reply, .. }
+                                    if maka_agent_facts::operation::result_reference(reply).is_none()
+                            )
+                            || matches!(event, CellEvent::ChildRejected { .. });
+                        if emit_legacy_receipt {
+                            let receipt = if let CellEvent::ChildObserved {
+                                cell,
+                                operation,
+                                reply,
+                            } = event
+                                && maka_agent_facts::operation::result_reference(reply).is_some()
+                            {
+                                reader
+                                    .cell_child_receipt(
+                                        *cell,
+                                        *operation,
+                                        reply,
+                                        self.budget.clone(),
+                                    )
+                                    .await
+                                    .map_err(io_error)?
+                            } else {
+                                required(&raw, &["fact", "event"], &self.budget)
+                                    .await?
+                                    .source
+                            };
+                            raw_field(&mut doc, Field::Receipt, receipt, &self.budget).await?;
+                        } else if let CellEvent::ChildObserved { reply, .. } = event {
+                            let compact_receipt =
+                                crate::recall::index::compact_operation_receipt(&reply.reference);
+                            literal(&mut doc, Field::Receipt, &compact_receipt).await?;
+                        }
                         match event {
                             CellEvent::LocalChildReturned { result, .. }
                             | CellEvent::ChildResultRecorded { result, .. } => {
-                                returned(
-                                    &mut doc,
-                                    reader
-                                        .result(&item.recorded.fact, result, self.budget.clone())
-                                        .await
-                                        .map_err(io_error)?,
-                                    &self.budget,
-                                    true,
-                                )
-                                .await?
+                                let source = reader
+                                    .result(&item.recorded.fact, result, self.budget.clone())
+                                    .await
+                                    .map_err(io_error)?;
+                                if compact {
+                                    let default_receipt =
+                                        if matches!(event, CellEvent::LocalChildReturned { .. }) {
+                                            "local_child_returned"
+                                        } else {
+                                            "child_result_recorded"
+                                        };
+                                    // Match live compact v59 field ordering (Field::Receipt key=0,
+                                    // Field::Result key=1) without raw UUID/SHA receipt shells.
+                                    let resolved_receipt = match &source {
+                                        ToolResultSource::Returned(ret) => ret
+                                            .compact_cell_receipt(
+                                                default_receipt,
+                                                self.budget.clone(),
+                                            )
+                                            .await
+                                            .map_err(io_error)?,
+                                        _ => default_receipt.to_owned(),
+                                    };
+                                    literal(&mut doc, Field::Receipt, &resolved_receipt).await?;
+                                }
+                                returned(&mut doc, source, &self.budget, true).await?
                             }
                             CellEvent::Started { source, .. } => {
                                 let mut field = doc.field(Field::Body, false).await?;
@@ -515,8 +571,28 @@ impl Producer {
                                 .await?;
                                 field.finish().await?;
                             }
-                            CellEvent::ChildPrepared { input, .. }
-                            | CellEvent::ChildApprovalRecorded { input, .. } => {
+                            CellEvent::ChildPrepared { name, input, .. } => {
+                                if compact {
+                                    literal(&mut doc, Field::ToolName, name).await?;
+                                }
+                                flatten_field(
+                                    &mut doc,
+                                    Field::Arguments,
+                                    reader.source(input).await.map_err(io_error)?,
+                                    &self.budget,
+                                )
+                                .await?
+                            }
+                            CellEvent::ChildDisplayRecorded { display, .. } if compact => {
+                                if let Some(title) = document::display_title(display) {
+                                    literal(&mut doc, Field::Body, title).await?;
+                                }
+                            }
+                            CellEvent::ChildApprovalRecorded { input, .. } => {
+                                if compact {
+                                    literal(&mut doc, Field::Receipt, "child_approval_recorded")
+                                        .await?;
+                                }
                                 flatten_field(
                                     &mut doc,
                                     Field::Arguments,
@@ -531,6 +607,7 @@ impl Producer {
                                     *cell,
                                     reader.source(result).await.map_err(io_error)?,
                                     true,
+                                    compact,
                                     &self.budget,
                                 )
                                 .await?
@@ -541,6 +618,7 @@ impl Producer {
                                     *cell,
                                     reader.source(report).await.map_err(io_error)?,
                                     false,
+                                    compact,
                                     &self.budget,
                                 )
                                 .await?
@@ -567,8 +645,42 @@ impl Producer {
                         }
                     }
                     Rule::External(output) => match output {
-                        Output::OutputDelta { text, .. } | Output::ThinkingDelta { text, .. } => {
+                        Output::OutputDelta {
+                            message_id,
+                            text: delta_text,
+                        }
+                        | Output::ThinkingDelta {
+                            message_id,
+                            text: delta_text,
+                        } => {
                             let thinking = matches!(output, Output::ThinkingDelta { .. });
+                            let Fact::ExternalTaskObserved { task, .. } = &item.recorded.fact
+                            else {
+                                return Err(invalid("external delta position has wrong fact kind"));
+                            };
+                            let text = if !compact {
+                                delta_text.clone()
+                            } else {
+                                let prev = self
+                                    .last_delta_position
+                                    .insert((*run, *task, message_id.clone(), thinking), *sequence);
+                                match prev {
+                                    // First delta position for this stream is S0 (single delta): O(1).
+                                    None => delta_text.clone(),
+                                    Some(min_sequence) => {
+                                        self.snapshot
+                                            .coalesced_external_delta(
+                                                *run,
+                                                *task,
+                                                message_id.clone(),
+                                                thinking,
+                                                *sequence,
+                                                min_sequence,
+                                            )
+                                            .await?
+                                    }
+                                }
+                            };
                             let mut field = doc
                                 .field(
                                     if thinking {
@@ -615,6 +727,7 @@ impl Producer {
                             };
                         raw_field(&mut doc, Field::Receipt, source, &self.budget).await?
                     }
+
                     Rule::Failure(text) => literal(&mut doc, Field::FailureMessage, text).await?,
                     Rule::Compaction(baseline) => {
                         let compact = reader.source(baseline).await.map_err(io_error)?;
@@ -1116,6 +1229,7 @@ async fn final_cell(
     cell: CellId,
     source: JsonSource,
     completed: bool,
+    omit_empty_fields: bool,
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<(), StoreError> {
     if completed {
@@ -1124,14 +1238,11 @@ async fn final_cell(
             return Err(StoreError::EventConflict);
         }
         let content = required(&source, &["content"], budget).await?.source;
-        cell_text(doc, content, budget).await?;
-        flatten_field(
-            doc,
-            Field::Result,
-            required(&source, &["result"], budget).await?.source,
-            budget,
-        )
-        .await?;
+        cell_text(doc, content, omit_empty_fields, budget).await?;
+        let result = required(&source, &["result"], budget).await?;
+        if !omit_empty_fields || !matches!(result.kind, JsonKind::Null) {
+            flatten_field_opt(doc, Field::Result, result.source, omit_empty_fields, budget).await?;
+        }
     } else {
         let id: CellId = small(required(&source, &["cell"], budget).await?, budget).await?;
         if id != cell {
@@ -1153,6 +1264,7 @@ async fn final_cell(
             cell_text(
                 doc,
                 required(&prior.source, &["content"], budget).await?.source,
+                omit_empty_fields,
                 budget,
             )
             .await?;
@@ -1160,15 +1272,64 @@ async fn final_cell(
     }
     Ok(())
 }
+async fn flatten_field_opt(
+    doc: &mut Document,
+    kind: Field,
+    source: JsonSource,
+    omit_empty: bool,
+    budget: &Arc<dyn SourceBudget>,
+) -> Result<(), StoreError> {
+    if !omit_empty {
+        return flatten_field(doc, kind, source, budget).await;
+    }
+    let mut probe = json::StructureCursor::open(source.clone(), budget.clone())
+        .await
+        .map_err(io_error)?;
+    let mut non_empty = false;
+    while let Some(event) = probe.next().await.map_err(io_error)? {
+        if let JsonStructureEvent::Value(value) = event {
+            if let Some(range) = value.key_range
+                && range.end.saturating_sub(range.start) > 2
+            {
+                non_empty = true;
+                break;
+            }
+            if let Some(end) = value.end {
+                match value.kind {
+                    JsonKind::Null => {}
+                    JsonKind::String => {
+                        if end.saturating_sub(value.start) > 2 {
+                            non_empty = true;
+                            break;
+                        }
+                    }
+                    _ => {
+                        non_empty = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if non_empty {
+        flatten_field(doc, kind, source, budget).await?;
+    }
+    Ok(())
+}
 async fn cell_text(
     doc: &mut Document,
     source: JsonSource,
+    omit_empty: bool,
     budget: &Arc<dyn SourceBudget>,
 ) -> Result<(), StoreError> {
     let mut cursor = json::ArrayCursor::open(source, budget.clone())
         .await
         .map_err(io_error)?;
-    let mut field = doc.field(Field::Result, false).await?;
+    let mut field = if omit_empty {
+        None
+    } else {
+        Some(doc.field(Field::Result, false).await?)
+    };
     let mut first = true;
     while let Some(part) = cursor.next().await.map_err(io_error)? {
         if eq(
@@ -1178,20 +1339,44 @@ async fn cell_text(
         )
         .await?
         {
+            let text = required(&part.source, &["text"], budget).await?;
+            let bytes = pull::text::bytes(text.text().map_err(io_error)?, budget.clone());
             if !first {
-                field.push(b"\n").await?;
+                if field.is_none() {
+                    field = Some(doc.field(Field::Result, false).await?);
+                }
+                field.as_mut().unwrap().push(b"\n").await?;
             }
             first = false;
-            let text = required(&part.source, &["text"], budget).await?;
-            append(
-                &mut field,
-                pull::text::bytes(text.text().map_err(io_error)?, budget.clone()),
-                budget,
-            )
-            .await?;
+            if let Some(f) = field.as_mut() {
+                append(f, bytes, budget).await?;
+            } else {
+                let mut reader = bytes.open(budget.clone());
+                let mut buffer = budget.allocate(CHUNK_BYTES).await.map_err(io_error)?;
+                loop {
+                    let read = reader.read_chunk(buffer).await.map_err(io_error)?;
+                    if read.bytes_read > 0 {
+                        if field.is_none() {
+                            field = Some(doc.field(Field::Result, false).await?);
+                        }
+                        field
+                            .as_mut()
+                            .unwrap()
+                            .push(&read.buffer.as_ref()[..read.bytes_read])
+                            .await?;
+                    }
+                    buffer = read.buffer;
+                    if read.eof {
+                        break;
+                    }
+                }
+            }
         }
     }
-    field.finish().await
+    if let Some(f) = field {
+        f.finish().await?;
+    }
+    Ok(())
 }
 struct FactBody(Snapshot, u64, FactId);
 impl Query for FactBody {

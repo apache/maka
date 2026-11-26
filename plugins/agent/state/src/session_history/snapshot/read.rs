@@ -350,6 +350,121 @@ impl Query for RunRevisionThrough {
         }
     }
 }
+pub(super) struct CoalescedExternalDelta(
+    pub Snapshot,
+    pub RunId,
+    pub maka_agent_facts::durable::ExternalTaskId,
+    pub String,
+    pub bool,
+    pub u64,
+    pub u64,
+);
+impl Query for CoalescedExternalDelta {
+    type Output = String;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        use maka_agent_facts::executor::Output;
+        authorize(c, &self.0)?;
+        let snap_id = self.0.id.to_string();
+        // Stream backward from self.5 without collecting the rest of the run.
+        // Under v59 2-tier sealing, S0 (first delta) and S_last (sealed continuation)
+        // both own snapshot positions while intermediate deltas S1..S_{last-1} do not.
+        // Walking backward from S_last stops at S0 (has_position = true) or any segment
+        // boundary (MessageEnd / ExternalTaskClosed / non-delta event on the same task),
+        // while preserving concurrent open message_ids on the same task.
+        let mut stmt = c.prepare_cached(
+            "SELECT e.sequence, e.entry_json,
+                    EXISTS(SELECT 1 FROM agent_history_snapshot_positions p
+                           WHERE p.snapshot = e.snapshot AND p.kind = 'canonical' AND p.major = e.sequence AND p.minor = 0)
+             FROM agent_history_snapshot_entries e INDEXED BY agent_history_snapshot_run
+             WHERE e.snapshot=?1 AND e.kind='fact' AND e.run=?2 AND e.sequence>?4 AND e.sequence<=?3
+               AND (e.fact_kind IS NULL OR e.fact_kind IN ('external_task_observed', 'external_task_closed'))
+             ORDER BY e.sequence DESC",
+        )?;
+        let mut rows = stmt.query(params![
+            snap_id,
+            self.1.to_string(),
+            bind_u64(self.5)?,
+            bind_u64(self.6)?
+        ])?;
+        let mut chunks: Vec<String> = Vec::new();
+        while let Some(row) = rows.next()? {
+            let seq = read_u64(row, 0)?;
+            let raw: String = row.get(1)?;
+            let has_position: bool = row.get(2)?;
+            let Entry::Fact { run, body, .. } = serde_json::from_str(&raw)? else {
+                continue;
+            };
+            let recorded: RecordedFact = decode_registered(c, self.0.id, &body, Some(run))?;
+            match recorded.fact {
+                Fact::ExternalTaskClosed { task, .. } if task == self.2 => {
+                    if seq < self.5 {
+                        break;
+                    }
+                }
+                Fact::ExternalTaskObserved { task, output, .. } if task == self.2 => match output {
+                    Output::ThinkingDelta { message_id, text }
+                        if self.4 && message_id == self.3 =>
+                    {
+                        if seq < self.5 && has_position {
+                            break;
+                        }
+                        chunks.push(text);
+                    }
+                    Output::OutputDelta { message_id, text } if !self.4 && message_id == self.3 => {
+                        if seq < self.5 && has_position {
+                            break;
+                        }
+                        chunks.push(text);
+                    }
+                    Output::MessageEnd { message_id } if message_id == self.3 => {
+                        if seq < self.5 {
+                            break;
+                        }
+                    }
+                    Output::OutputDelta { .. }
+                    | Output::ThinkingDelta { .. }
+                    | Output::MessageEnd { .. } => {
+                        // Other concurrent message_ids or thinking/output streams on the same task.
+                    }
+                    _ => {
+                        // Tool calls or other non-delta events split delta segments.
+                        if seq < self.5 {
+                            break;
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        chunks.reverse();
+        let total_len: usize = chunks.iter().map(String::len).sum();
+        let mut out = String::with_capacity(total_len);
+        for chunk in chunks {
+            out.push_str(&chunk);
+        }
+        Ok(out)
+    }
+}
+
+pub(super) struct PositionIsCompact(pub Snapshot, pub u64, pub u64);
+impl Query for PositionIsCompact {
+    type Output = bool;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        authorize(c, &self.0)?;
+        let compact: Option<bool> = c
+            .prepare_cached(
+                "SELECT compact FROM agent_history_snapshot_positions
+                 WHERE snapshot=?1 AND kind='canonical' AND major=?2 AND minor=?3",
+            )?
+            .query_row(
+                params![self.0.id.to_string(), bind_u64(self.1)?, bind_u64(self.2)?],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(compact.unwrap_or(false))
+    }
+}
+
 pub(super) struct History(pub Snapshot, pub RunId, pub u64, pub u32);
 impl Query for History {
     type Output = Vec<RecordedFact>;
@@ -984,7 +1099,7 @@ impl Query for ExecutorView {
         let (view, _) = read_view(c, &self.0, self.1, None, |sequence, record| {
             transcript.observe(sequence, record, &mut pieces);
         })?;
-        transcript.mask_pieces(c, &view.spec.owner, pieces)?;
+        transcript.mask_pieces(c, &view.spec.owner, Some(self.0.id), pieces)?;
         Ok((view, transcript))
     }
 }

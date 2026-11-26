@@ -255,13 +255,43 @@ pub(in crate::recall) fn prepared(
     body.end(Field::Arguments, start);
     body.finish(message)
 }
-pub(in crate::recall) fn returned(bytes: &[u8], message: &mut Message) -> Result<(), StoreError> {
+pub(in crate::recall) fn returned(
+    bytes: &[u8],
+    message: &mut Message,
+) -> Result<
+    Option<(
+        maka_agent_facts::cells::CellId,
+        maka_agent_facts::durable::ContentRef,
+    )>,
+    StoreError,
+> {
     let raw: &RawValue = serde_json::from_slice(bytes)?;
-    let [kind, projection, diagnostic] = fields(raw, ["kind", "projection", "diagnostic"])?;
+    let [kind, projection, diagnostic, output] =
+        fields(raw, ["kind", "projection", "diagnostic", "output"])?;
     let kind = required(kind)?;
     let mut body = Body::default();
+    let mut completed_cell = None;
     if equals(kind, "output")? {
         body.projection(required(projection)?)?;
+        if let Some(output) = output {
+            let [format, value] = fields(output, ["format", "value"])?;
+            if let (Some(format), Some(value)) = (format, value)
+                && equals(format, "cell")?
+            {
+                let [cell, state] = fields(value, ["cell", "state"])?;
+                if let (Some(cell), Some(state)) = (cell, state) {
+                    let [state_kind, result] = fields(state, ["kind", "result"])?;
+                    if let (Some(state_kind), Some(result)) = (state_kind, result)
+                        && equals(state_kind, "completed")?
+                    {
+                        completed_cell = Some((
+                            serde_json::from_str(cell.get())?,
+                            serde_json::from_str(result.get())?,
+                        ));
+                    }
+                }
+            }
+        }
     } else if equals(kind, "failure")? {
         let start = body.begin();
         body.string(required(diagnostic)?)?;
@@ -269,5 +299,6 @@ pub(in crate::recall) fn returned(bytes: &[u8], message: &mut Message) -> Result
     } else {
         return Err(invalid("unsupported original External return"));
     }
-    body.finish(message)
+    body.finish(message)?;
+    Ok(completed_cell)
 }

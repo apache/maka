@@ -24,7 +24,7 @@ use maka_agent_facts::{
 };
 use serde::Deserialize;
 
-const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
+const CAPTURE_POSITIONS_SQL: &str = "SELECT d.sequence,d.ordinal,d.internal,d.run,h.admission_sequence,f.id,NOT EXISTS(SELECT 1 FROM agent_recall_legacy_evidenced e WHERE e.fact_id=f.id) FROM agent_recall_messages d JOIN agent_session_history h ON h.sequence=d.sequence AND h.owner=d.owner AND h.session=d.session AND h.run=d.run JOIN agent_facts f ON f.sequence=h.sequence AND f.run=h.run WHERE d.owner=? AND d.session=? AND d.sequence<=? ORDER BY d.sequence,d.ordinal";
 
 pub(super) fn capture(
     c: &Connection,
@@ -36,22 +36,59 @@ pub(super) fn capture(
         return Err(invalid("snapshot position cut belongs to another session"));
     }
     crate::recall::checked_source_cut(c, &scope.owner, cut)?;
+    let owner_json = serde_json::to_string(&scope.owner)?;
+    let unsealed = crate::recall::index::unsealed_external_segment_headers(
+        c,
+        &owner_json,
+        &scope.session,
+        cut.through_sequence,
+        0,
+    )?;
+    let mut unsealed_iter = unsealed.into_iter().peekable();
     let mut statement = c.prepare_cached(CAPTURE_POSITIONS_SQL)?;
     let mut rows = statement.query(params![
-        serde_json::to_string(&scope.owner)?,
+        owner_json,
         scope.session,
         bind_u64(cut.through_sequence)?
     ])?;
     while let Some(row) = rows.next()? {
+        let seq = read_u64(row, 0)?;
+        while let Some(delta) = unsealed_iter.next_if(|d| d.sequence < seq) {
+            builder.add(Entry::Position {
+                row: SnapshotPosition::Canonical {
+                    run: delta.run,
+                    sequence: delta.sequence,
+                    admission_sequence: delta.admission_sequence,
+                    fact: delta.fact,
+                    item_index: 0,
+                    internal: delta.is_thinking,
+                },
+                compact: true,
+            })?;
+        }
         builder.add(Entry::Position {
             row: SnapshotPosition::Canonical {
                 run: super::super::sql::identity(row.get(3)?)?,
-                sequence: read_u64(row, 0)?,
+                sequence: seq,
                 admission_sequence: read_u64(row, 4)?,
                 fact: super::super::sql::identity(row.get(5)?)?,
                 item_index: read_u64(row, 1)?,
                 internal: row.get(2)?,
             },
+            compact: row.get(6)?,
+        })?;
+    }
+    for delta in unsealed_iter {
+        builder.add(Entry::Position {
+            row: SnapshotPosition::Canonical {
+                run: delta.run,
+                sequence: delta.sequence,
+                admission_sequence: delta.admission_sequence,
+                fact: delta.fact,
+                item_index: 0,
+                internal: delta.is_thinking,
+            },
+            compact: true,
         })?;
     }
     Ok(())
@@ -61,6 +98,7 @@ pub(super) fn index(
     c: &Connection,
     snapshot: SnapshotId,
     row: &SnapshotPosition,
+    compact: bool,
 ) -> Result<(), StoreError> {
     let (kind, major, minor, run, admission, fact, internal) = match row {
         SnapshotPosition::Canonical {
@@ -98,7 +136,7 @@ pub(super) fn index(
             *internal,
         ),
     };
-    c.execute("INSERT INTO agent_history_snapshot_positions(snapshot,kind,major,minor,run,admission_sequence,fact,internal) VALUES(?,?,?,?,?,?,?,?)",params![snapshot.to_string(),kind,bind_u64(major)?,bind_u64(minor)?,run,admission,fact,internal])?;
+    c.execute("INSERT INTO agent_history_snapshot_positions(snapshot,kind,major,minor,run,admission_sequence,fact,internal,compact) VALUES(?,?,?,?,?,?,?,?,?)",params![snapshot.to_string(),kind,bind_u64(major)?,bind_u64(minor)?,run,admission,fact,internal,compact])?;
     Ok(())
 }
 
@@ -172,6 +210,7 @@ pub(super) fn imported(
                     .map_err(|_| invalid("imported part ordinal exceeds source range"))?,
                 internal,
             },
+            compact: false,
         })?;
     }
     Ok(())

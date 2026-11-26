@@ -39,7 +39,8 @@ mod find;
 pub(crate) use find::{
     FindWork, find_index, landmark_ranks, landmarks_count_index, landmarks_selected_index,
 };
-mod index;
+pub(crate) mod index;
+pub(crate) mod migrate_v58;
 mod query;
 pub(crate) use query::checked_source_cut;
 pub(crate) mod terms;
