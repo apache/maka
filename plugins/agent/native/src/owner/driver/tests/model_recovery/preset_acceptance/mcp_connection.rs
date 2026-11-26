@@ -1841,26 +1841,50 @@ async fn mcp_update_credential_isolation_disambiguation_pre_probe_cas_and_read_o
                 "skipVerify": true
             }),
         ));
+        // Args-only change on a launcher-based (node) stdio server must clear inherited
+        // env/passEnv while still allowing credentials explicitly supplied in the update.
         let (_, reply) = next_request(&mut provider, &rig, &session).await?;
         reply.send_plan(tool_response(
             "McpUpdate",
             json!({
                 "name": "runner",
-                "command": "/usr/bin/env",
-                "args": ["node", &crash_script, &runner_pids],
+                "args": [&gated_script, &runner_pids],
+                "env": { "FRESH_KEY": "explicit-new" },
                 "skipVerify": true
             }),
         ));
-        let (req_cmd_upd, reply) = next_request(&mut provider, &rig, &session).await?;
-        let cmd_upd = parse_tool_json(&req_cmd_upd)?;
+        let (req_args_upd, reply) = next_request(&mut provider, &rig, &session).await?;
+        let args_upd = parse_tool_json(&req_args_upd)?;
         assert_eq!(
-            cmd_upd["clearedCredentials"],
+            args_upd["clearedCredentials"],
             json!(["API_KEY", "HOME"]),
-            "{cmd_upd}"
+            "{args_upd}"
+        );
+        let disk = read_json_file(&user_path)?;
+        assert_eq!(
+            disk["mcpServers"]["runner"]["env"],
+            json!({ "FRESH_KEY": "explicit-new" })
+        );
+        assert!(disk["mcpServers"]["runner"]["passEnv"].is_null());
+
+        // Cwd-only change also clears inherited env.
+        reply.send_plan(tool_response(
+            "McpUpdate",
+            json!({
+                "name": "runner",
+                "cwd": base.join("workspace"),
+                "skipVerify": true
+            }),
+        ));
+        let (req_cwd_upd, reply) = next_request(&mut provider, &rig, &session).await?;
+        let cwd_upd = parse_tool_json(&req_cwd_upd)?;
+        assert_eq!(
+            cwd_upd["clearedCredentials"],
+            json!(["FRESH_KEY"]),
+            "{cwd_upd}"
         );
         let disk = read_json_file(&user_path)?;
         assert!(disk["mcpServers"]["runner"]["env"].is_null());
-        assert!(disk["mcpServers"]["runner"]["passEnv"].is_null());
 
         // Ambiguous same-name update & uninstall without scope/location must be rejected.
         reply.send_plan(tool_response(
@@ -1925,9 +1949,10 @@ async fn mcp_update_credential_isolation_disambiguation_pre_probe_cas_and_read_o
         // and approval method exposes target + inherited credential names (never values).
         std::fs::remove_file(&proj_path)?;
         let mut user_doc = read_json_file(&user_path)?;
+        let probe_cas_log = base.join("probe-cas-must-stay-absent.log");
         user_doc["mcpServers"]["runner"] = json!({
             "command": "node",
-            "args": [&crash_script, &runner_pids],
+            "args": [&crash_script, &probe_cas_log],
             "cwd": &base,
             "disabled": true,
             "env": { "KEPT_KEY": "never-leak-this-value" }
@@ -1935,7 +1960,6 @@ async fn mcp_update_credential_isolation_disambiguation_pre_probe_cas_and_read_o
         std::fs::write(&user_path, serde_json::to_vec_pretty(&user_doc)?)?;
         set_permissions(&rig, &session, "workspace_write", true).await?;
 
-        let probe_cas_log = base.join("probe-cas-must-stay-absent.log");
         let t3 = send(client, &session, "Test pre-probe CAS and approval summary.").await?;
         let (_, reply) = next_request(&mut provider, &rig, &session).await?;
         reply.send_plan(tool_response(
@@ -1944,7 +1968,6 @@ async fn mcp_update_credential_isolation_disambiguation_pre_probe_cas_and_read_o
                 "name": "runner",
                 "scope": "user",
                 "disabled": false,
-                "args": [&crash_script, &probe_cas_log],
                 "env": { "ADDED_KEY": "1" }
             }),
         ));

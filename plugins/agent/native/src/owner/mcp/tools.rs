@@ -218,7 +218,7 @@ pub(in crate::owner) fn declarations() -> Vec<ToolRegistration> {
         ),
         (
             UPDATE,
-            "Update an existing MCP server configuration (patch fields, toggle disabled, or add/remove env/headers while preserving unmentioned secrets; changing url clears inherited headers/headerEnv and changing command clears inherited env/passEnv). Verifies enabled servers before saving unless skipVerify is true. Requires user approval outside Full Access; changes take effect on the next turn.",
+            "Update an existing MCP server configuration (patch fields, toggle disabled, or add/remove env/headers while preserving unmentioned secrets; changing url clears inherited headers/headerEnv and changing stdio command, args, or cwd clears inherited env/passEnv). Verifies enabled servers before saving unless skipVerify is true. Requires user approval outside Full Access; changes take effect on the next turn.",
             schema_for::<UpdateInput>(),
             ToolSemantics::ExclusiveStep,
         ),
@@ -537,12 +537,13 @@ fn collect_credential_keys(entry: &Value) -> Vec<String> {
     keys.into_iter().collect()
 }
 
-fn inherited_credential_keys(existing: &Value, patched: &Value) -> Vec<String> {
+fn inherited_credential_keys(existing: &Value, patched: &Value, cleared: &[String]) -> Vec<String> {
     let before: std::collections::BTreeSet<String> =
         collect_credential_keys(existing).into_iter().collect();
+    let cleared: std::collections::BTreeSet<&str> = cleared.iter().map(String::as_str).collect();
     collect_credential_keys(patched)
         .into_iter()
-        .filter(|key| before.contains(key))
+        .filter(|key| before.contains(key) && !cleared.contains(key.as_str()))
         .collect()
 }
 
@@ -593,6 +594,22 @@ fn apply_update_patch(
         .command
         .as_deref()
         .is_some_and(|next| map.get("command").and_then(Value::as_str) != Some(next));
+    let existing_args = map
+        .get("args")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let args_changed = input
+        .args
+        .as_ref()
+        .is_some_and(|next| json!(next) != Value::Array(existing_args));
+    let existing_cwd = map.get("cwd").and_then(Value::as_str).unwrap_or("");
+    let cwd_changed = input
+        .cwd
+        .as_deref()
+        .is_some_and(|next| next != existing_cwd);
+    let stdio_launch_changed = command_changed || args_changed || cwd_changed;
     let mut cleared = std::collections::BTreeSet::new();
     let record_removed =
         |map: &mut Map<String, Value>,
@@ -625,13 +642,13 @@ fn apply_update_patch(
         record_removed(&mut map, "headers", &mut cleared);
         record_removed(&mut map, "headerEnv", &mut cleared);
     }
-    // Changing the endpoint URL or executable command must not silently forward
-    // previously stored secrets to a different target.
+    // Changing the HTTP endpoint URL or effective stdio launch (command, args, or cwd)
+    // must not silently forward previously stored secrets to a different target.
     if url_changed {
         record_removed(&mut map, "headers", &mut cleared);
         record_removed(&mut map, "headerEnv", &mut cleared);
     }
-    if command_changed {
+    if stdio_launch_changed {
         record_removed(&mut map, "env", &mut cleared);
         record_removed(&mut map, "passEnv", &mut cleared);
     }
@@ -1467,7 +1484,7 @@ async fn prepare_update(
             .find(|location| location.id == target_id)
             .ok_or("MCP configuration location unavailable")?;
         let (patched, cleared) = apply_update_patch(&existing, &precheck_input)?;
-        let inherited = inherited_credential_keys(&existing, &patched);
+        let inherited = inherited_credential_keys(&existing, &patched, &cleared);
         let normalized =
             files::normalize_server(&precheck_input.name, patched.clone(), &location.path)?;
         Ok::<_, String>((
