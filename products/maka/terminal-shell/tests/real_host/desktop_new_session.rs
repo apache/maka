@@ -1581,9 +1581,20 @@ async fn desktop_asks_a_side_question_beside_a_reply() {
 
     // The card opens at once; nothing is created until the question is sent.
     let original = desktop.platform.text_input_target();
-    desktop.press("Ask beside").await;
-    desktop.target_after(original).await;
+    // Reply actions have accessible bounds even before hover reveals them.
+    let ask = desktop.control("Ask beside").await;
+    desktop.hover_at(point(ask.center().x, ask.top() - px(12.)));
+    let ask = desktop
+        .until("Ask beside did not appear on the reply", || {
+            let [ask] = desktop.controls("Ask beside")[..] else {
+                return None;
+            };
+            desktop.draws_in(ask).then_some(ask)
+        })
+        .await;
+    desktop.press_at(ask.center());
     desktop.control("Close side question").await;
+    desktop.target_after(original).await;
     desktop.artifact("side-1-ask");
     assert_eq!(desktop.sessions().await.len(), listed);
     desktop.type_text("Why invalidate before the update?").await;
