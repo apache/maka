@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 name = "gix-discover"
-version = "0.57.1"
+version = "0.58.0"
 authors = ["Sebastian Thiel <sebastian.thiel@icloud.com>"]
 build = false
 include = [
@@ -34,6 +34,24 @@ resolver = "2"
 [package.metadata.docs.rs]
 features = ["sha1"]
 
+[[package.metadata.qa.tests]]
+args = [
+    "--features",
+    "sha1",
+]
+
+[package.metadata.qa.tests.env]
+GIX_TEST_FIXTURE_HASH = "sha1"
+
+[[package.metadata.qa.tests]]
+args = [
+    "--features",
+    "sha256",
+]
+
+[package.metadata.qa.tests.env]
+GIX_TEST_FIXTURE_HASH = "sha256"
+
 [features]
 sha1 = ["gix-ref/sha1"]
 sha256 = ["gix-ref/sha256"]
@@ -52,19 +70,20 @@ features = [
 default-features = false
 
 [dependencies.gix-error]
-version = "^0.5.2"
+version = "^0.5.3"
 
 [dependencies.gix-fs]
-version = "^0.24.1"
+version = "~1.0.0"
+features = ["unstable"]
 
 [dependencies.gix-path]
-version = "^0.14.1"
+version = "^0.14.2"
 
 [dependencies.gix-ref]
-version = "^0.69.1"
+version = "^0.70.0"
 
 [dependencies.gix-sec]
-version = "^0.16.0"
+version = "^0.17.0"
 
 [dev-dependencies.insta]
 version = "1.46.3"
@@ -73,7 +92,7 @@ version = "1.46.3"
 version = "1.1.1"
 
 [dev-dependencies.serial_test]
-version = "3.4.0"
+version = "4.0.1"
 default-features = false
 
 [target."cfg(any(unix, windows))".dev-dependencies.tempfile]
@@ -163,3 +182,4 @@ level = "warn"
 priority = -1
 
 [lints.rust]
+unnameable_types = "warn"

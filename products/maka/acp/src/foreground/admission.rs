@@ -19,32 +19,90 @@
 
 use super::*;
 use crate::{configuration, content};
-impl Foreground {
-    pub async fn prepare(
-        client: Client,
-        peer: Peer,
-        session: Arc<Session>,
-        active: Active,
-        capabilities: Capabilities,
-        prompt: Prompt,
-    ) -> Result<(String, Self), Error> {
+pub(crate) struct Admission {
+    pub client: Client,
+    pub peer: Peer,
+    pub session: Arc<Session>,
+    pub active: Active,
+    pub capabilities: Capabilities,
+}
+impl Admission {
+    async fn input(
+        &self,
+        content: Vec<content::Input>,
+        idle_only: bool,
+    ) -> Result<(serde_json::Value, u64), Error> {
+        let Self {
+            client,
+            session,
+            active,
+            ..
+        } = self;
         let preferences = session.preferences.lock().await.clone();
-        let model = configuration::resolve(&client, &preferences).await?;
+        let model = configuration::resolve(client, &preferences).await?;
         let observation: Observation = client
             .query("agent", "observe", json!({"sessionId":session.id}))
             .await?;
-        if observation.session.archived
-            || !matches!(observation.session.activity, SessionActivity::Idle)
+        if idle_only
+            && (observation.session.archived
+                || !matches!(observation.session.activity, SessionActivity::Idle))
         {
             return Err("Host session already has active work or is archived".into());
         }
-        let content =
-            content::prepare(&client, &session.id, prompt.content, &active.cancel).await?;
+        let content = content::prepare(client, &session.id, content, &active.cancel).await?;
         if active.cancel.is_cancelled() {
             return Err("Prompt cancelled before admission".into());
         }
-        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"delivery":"steer","message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
-        let (started, message_id) = match result {
+        let input = json!({
+            "sessionId":session.id, "message":content.text, "attachments":content.attachments,
+            "backend":{"kind":"model","connectionId":model.connection_id,
+                "modelId":model.model_id,"thinkingLevel":preferences.thinking}
+        });
+        Ok((input, observation.through))
+    }
+    pub async fn v2(
+        self,
+        content: Vec<content::Input>,
+        key: Option<agent_client_protocol::v2::schema::IdempotencyKey>,
+    ) -> Result<(String, Option<Foreground>), Error> {
+        let (mut input, after) = self.input(content, false).await.map_err(|error| {
+            if self.active.cancel.is_cancelled() {
+                agent_client_protocol::Error::request_cancelled().into()
+            } else {
+                error
+            }
+        })?;
+        input["idempotencyKey"] = json!(key);
+        let receipt = self
+            .client
+            .mutate("agent", "submitMessage", input, Attachments::new())
+            .await?;
+        let (message_id, duplicate) = match receipt {
+            MessageSubmissionResult::Queued { message_id } => (message_id, false),
+            MessageSubmissionResult::Duplicate { message_id } => (message_id, true),
+        };
+        let run = Foreground::wait_inserted(
+            &self.client,
+            &self.session.id,
+            &message_id,
+            Some(after),
+            &self.active.cancel,
+        )
+        .await?;
+        if duplicate {
+            return Ok((message_id, None));
+        }
+        let foreground = self.foreground(after, Some(run), message_id.clone());
+        Ok((message_id, Some(foreground)))
+    }
+    pub async fn v1(self, content: Vec<content::Input>) -> Result<Foreground, Error> {
+        let (mut input, after) = self.input(content, true).await?;
+        input["delivery"] = "steer".into();
+        let (started, message_id) = match self
+            .client
+            .mutate("agent", "send", input, Attachments::new())
+            .await?
+        {
             SendResult::Started {
                 run_id, message_id, ..
             } => (Some(run_id), message_id),
@@ -56,56 +114,99 @@ impl Foreground {
                 return Err("ACP prompts require an Agent session".into());
             }
         };
-        let mut foreground = Self {
+        Ok(self.foreground(after, started, message_id))
+    }
+    fn foreground(self, after: u64, started: Option<RunId>, message_id: String) -> Foreground {
+        let Self {
             client,
             peer,
             session,
             active,
-            message_id: message_id.clone(),
+            capabilities,
+        } = self;
+        Foreground {
+            client,
+            peer,
+            session,
+            active,
+            message_id,
             work: WorkObservation::Pending,
             projection: Projection::default(),
             capabilities,
-            after: observation.through,
-            history_through: observation.through,
+            after,
+            history_through: after,
             parts: HashMap::new(),
             message_starts: HashMap::new(),
-            user: Vec::new(),
-        };
-        let result = async {
-            foreground.refresh().await?;
-            let Some(run) = started else {
-                return Ok(message_id);
-            };
-            foreground.user = history::read(
-                &foreground.client,
-                &foreground.session.id,
-                None,
-                Some(foreground.after),
-            )
-            .await?
-            .into_iter()
-            .filter(|chunk| {
-                chunk.role == maka_agent_ports::session::history::Role::User
-                    && chunk.message_id.as_deref() == Some(message_id.as_str())
-                    && chunk.run_id == Some(run)
-            })
-            .collect();
-            foreground
-                .user
-                .first()
-                .and_then(|chunk| chunk.message_id.clone())
-                .ok_or_else(|| "Accepted Run has no durable user message".into())
+            started,
         }
-        .await;
-        match result {
-            Ok(message) => Ok((message, foreground)),
-            Err(error) => {
-                if let Err(cleanup) = foreground.stop().await {
-                    foreground.peer.stop.cancel();
-                    return Err(format!("{error}; original work cleanup: {cleanup}").into());
+    }
+}
+
+impl Foreground {
+    pub async fn wait_inserted(
+        client: &Client,
+        session: &str,
+        message: &str,
+        after: Option<u64>,
+        cancel: &CancellationToken,
+    ) -> Result<RunId, Error> {
+        let target = json!({"sessionId":session,"target":{"kind":"message","messageId":message}});
+        let resolved = || async {
+            match client.query("agent", "work", target.clone()).await? {
+                Work::Delivered { execution, .. } => Ok::<_, Error>(Some(execution.run_id)),
+                Work::Cancelled => Err(agent_client_protocol::Error::request_cancelled().into()),
+                Work::Pending => Ok(None),
+                Work::Missing | Work::Changed => Err("Submitted Agent input disappeared".into()),
+            }
+        };
+        if let Some(run) = resolved().await? {
+            return Ok(run);
+        }
+        let after = match after {
+            Some(cursor) => cursor,
+            None => {
+                client
+                    .query::<Observation>("agent", "observe", json!({"sessionId":session}))
+                    .await?
+                    .through
+            }
+        };
+        let mut watch = client
+            .subscribe("agent", "watch", json!({"sessionId":session,"after":after}))
+            .await?;
+        // watch emits an initial queue cut, then only changed revisions. A row
+        // disappearing is not proof of delivery: retract and consume race here.
+        let result = async {
+            let delivered = async {
+                loop {
+                    if let DeliveryPage::Queue { queue } = watch.next().await?
+                        && !queue
+                            .entries
+                            .iter()
+                            .any(|entry| entry.message_id == message)
+                        && let Some(run) = resolved().await?
+                    {
+                        return Ok(run);
+                    }
                 }
-                Err(error)
+            };
+            tokio::pin!(delivered);
+            tokio::select! {
+                result = &mut delivered => result,
+                _ = cancel.cancelled() => {
+                    let _: WithdrawalResult = client.mutate("agent","withdrawSubmission",
+                        json!({"sessionId":session,"messageId":message}),Attachments::new()).await?;
+                    // Drain the same pull; the durable queue cut resolves both possible winners.
+                    delivered.await
+                }
             }
         }
+        .await;
+        // Insertion/retraction is already settled; a stream cleanup error
+        // cannot change the prompt result.
+        if let Err(error) = watch.close().await {
+            eprintln!("ACP admission watch cleanup: {error}");
+        }
+        result
     }
 }

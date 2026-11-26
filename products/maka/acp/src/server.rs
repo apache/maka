@@ -76,25 +76,45 @@ impl App {
         P: Protocol,
         F: Future<Output = Result<T, Error>> + Send + 'static,
     {
+        self.dispatch_reply(responder, |responder| async move {
+            reply(responder, work.await)
+        })
+    }
+    fn dispatch_reply<T, P, F>(
+        &self,
+        responder: Responder<T, P>,
+        work: impl FnOnce(Responder<T, P>) -> F,
+    ) -> agent_client_protocol::Result<()>
+    where
+        T: JsonRpcResponse + Send + 'static,
+        P: Protocol,
+        F: Future<Output = agent_client_protocol::Result<()>> + Send + 'static,
+    {
         if self.stop.is_cancelled() || self.initialized.get().is_none() {
             return responder.respond_with_error(
                 agent_client_protocol::Error::invalid_request()
                     .data("ACP connection is not initialized or has closed"),
             );
         }
+        let work = work(responder);
         self.tasks.spawn(async move {
-            let result = match work.await {
-                Ok(value) => responder.respond(value),
-                Err(error) => responder.respond_with_error(
-                    agent_client_protocol::Error::invalid_params().data(error.to_string()),
-                ),
-            };
-            if let Err(error) = result {
+            if let Err(error) = work.await {
                 eprintln!("ACP reply: {error}");
             }
         });
         Ok(())
     }
+}
+
+fn reply<T: JsonRpcResponse, P: Protocol>(
+    responder: Responder<T, P>,
+    result: Result<T, Error>,
+) -> agent_client_protocol::Result<()> {
+    responder.respond_with_result(
+        result.map_err(|error| {
+            agent_client_protocol::Error::invalid_params().data(error.to_string())
+        }),
+    )
 }
 
 /// Serve ACP v1 and v2 over caller-owned streams, using only the ordinary Host client.

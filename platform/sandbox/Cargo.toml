@@ -30,17 +30,17 @@ hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
-globset = "0.4.20"
+globset = "0.4.22"
 schemars = { workspace = true, features = ["uuid1"] }
 serde.workspace = true
 thiserror.workspace = true
-url = "2.5.8"
+url = "2.5.9"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-regex-syntax = "0.8.11"
+regex-syntax = "0.8.12"
 unicode-normalization = "0.1.26"
 
 [target.'cfg(windows)'.dependencies]

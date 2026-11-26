@@ -301,7 +301,7 @@ async fn start_mainline_mock(
         .unwrap()
 }
 
-async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value> {
+async fn inspect_session(sandbox: &Sandbox, session: &str) -> Value {
     let output = host::command(sandbox)
         .unwrap()
         .kill_on_drop(true)
@@ -317,7 +317,11 @@ async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value>
     );
     let inspection: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(inspection["truncated"], false);
-    inspection["facts"]
+    inspection
+}
+
+async fn identities(sandbox: &Sandbox, session: &str, run: &Value) -> Vec<Value> {
+    inspect_session(sandbox, session).await["facts"]
         .as_array()
         .unwrap()
         .iter()
@@ -606,3 +610,6 @@ mod host_hell_stress;
 
 #[path = "mainline_reopen/host_forever_soak.rs"]
 mod host_forever_soak;
+
+#[path = "mainline_reopen/acp_prompt_key.rs"]
+mod acp_prompt_key;

@@ -32,7 +32,7 @@ tokio-util.workspace = true
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
-yaml-rust2 = { version = "0.13.0", default-features = false }
+yaml-rust2 = { version = "0.13.2", default-features = false }
 
 [build-dependencies]
 hex.workspace = true

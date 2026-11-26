@@ -23,7 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-bytes = "1.12.1"
+bytes = "1.12.2"
 maka-provider-protocol.workspace = true
 hex.workspace = true
 maka-i18n.workspace = true
@@ -32,9 +32,9 @@ maka-sandbox.workspace = true
 base64 = "0.23.1"
 regress = "0.12.0"
 ropey = "1.6.1"
-ryu-js = "1.0.3"
+ryu-js = "1.0.4"
 sha2.workspace = true
-url = "2.5.8"
+url = "2.5.9"
 serde.workspace = true
 schemars.workspace = true
 serde_json.workspace = true

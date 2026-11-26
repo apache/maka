@@ -31,8 +31,8 @@ clipboard-rs = { version = "0.3.5", features = ["wayland"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 open = "5.4.5"
 percent-encoding = "2.3.2"
-url = "2.5.8"
-usvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
+url = "2.5.9"
+usvg = { version = "0.50", default-features = false, features = ["text", "system-fonts"] }
 maka-agent-api.workspace = true
 maka-agent-facts.workspace = true
 maka-app-client.workspace = true

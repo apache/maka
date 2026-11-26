@@ -49,8 +49,7 @@ impl Worktrees {
         let repo = gix::open::Options::isolated()
             .strict_config(true)
             .open(&binding.common_dir)
-            .map_err(io::Error::other)?
-            .to_thread_local();
+            .map_err(io::Error::other)?;
         let base = gix::hash::ObjectId::from_hex(binding.base_commit.as_bytes())
             .map_err(io::Error::other)?;
         for name in [binding.base_ref(), binding.branch()] {

@@ -34,9 +34,17 @@ pub(crate) struct Summary {
     pub title: String,
 }
 
+pub(super) fn ensure_open(session: &Session) -> Result<(), Error> {
+    if session.archived {
+        return Err("Host session is archived".into());
+    }
+    Ok(())
+}
+
 pub(super) fn ensure_idle(session: &Session) -> Result<(), Error> {
-    if session.archived || !matches!(session.activity, SessionActivity::Idle) {
-        return Err("Host session is archived or has active work".into());
+    ensure_open(session)?;
+    if !matches!(session.activity, SessionActivity::Idle) {
+        return Err("Host session has active work".into());
     }
     Ok(())
 }

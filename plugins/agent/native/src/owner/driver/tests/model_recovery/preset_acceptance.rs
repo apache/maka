@@ -20,6 +20,7 @@
 use super::*;
 mod ax_session_tools;
 mod code_mode_budget;
+mod keyed_submission;
 mod mcp_connection;
 mod rooms;
 mod stop_queue;

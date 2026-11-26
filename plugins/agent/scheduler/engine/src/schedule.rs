@@ -237,8 +237,8 @@ fn calendar(
     zone: &TimeZone,
     backward: bool,
 ) -> Result<Option<i64>, Error> {
-    let anchor = timestamp(anchor)?.to_zoned(zone.clone());
-    let current = timestamp(after)?.to_zoned(zone.clone());
+    let anchor = timestamp(anchor)?.to_zoned_datetime(zone.clone());
+    let current = timestamp(after)?.to_zoned_datetime(zone.clone());
     let date = current.date();
     let direction = if backward { -1 } else { 1 };
     let mut offset = 0;
@@ -273,7 +273,7 @@ fn calendar(
         // Calendar recurrence fires once per local date. Compatible selects the
         // earlier fold and moves a nonexistent clock time forward across a gap.
         let at = zone
-            .to_ambiguous_zoned(candidate.to_datetime(anchor.time()))
+            .to_ambiguous_zoned_datetime(candidate.to_datetime(anchor.time()))
             .compatible()?
             .timestamp()
             .as_millisecond();

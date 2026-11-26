@@ -43,8 +43,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
-url = "2.5.8"
-zip = { version = "9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+url = "2.5.9"
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

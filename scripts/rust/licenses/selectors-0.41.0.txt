@@ -1,5 +1,5 @@
-selectors 0.38.0
-Source: https://raw.githubusercontent.com/servo/stylo/572ecba2d1600e7c3d490586692a209faf703baa/selectors/lib.rs
+selectors 0.41.0
+Source: https://raw.githubusercontent.com/servo/stylo/34d25f741765a0bdb894f8271852e633299352d8/selectors/lib.rs
 
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this

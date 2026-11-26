@@ -132,8 +132,7 @@ impl Repository {
             .strict_config(true)
             .filter_config_section(|_| false)
             .open(&root)
-            .map_err(io::Error::other)?
-            .to_thread_local();
+            .map_err(io::Error::other)?;
         if repo
             .workdir()
             .map(dunce::canonicalize)

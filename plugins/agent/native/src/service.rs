@@ -72,7 +72,28 @@ impl Handler for Agent {
         // Match synchronously and box each RPC behind an out-of-line helper so
         // neither dispatch nor polling accumulates unrelated method frames.
         match method.as_str() {
+            "lookupSubmission" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(
+                    owner
+                        .lookup_submission(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
             // session mutations
+            "withdrawSubmission" => handler_rpc(&mut args, |owner, input, context| async move {
+                let operation = context.operation().ok_or("agent_mutation_required")?;
+                owner
+                    .withdraw_submission(decode(input)?, operation, context.scope())
+                    .await?
+                    .complete(&context)
+            }),
+            "submitMessage" => handler_rpc(&mut args, |owner, input, context| async move {
+                let operation = context.operation().ok_or("agent_mutation_required")?;
+                owner
+                    .submit_message(decode(input)?, operation, context.scope())
+                    .await?
+                    .complete(&context)
+            }),
             "send" => box_rpc(&mut args, |owner, input, context| async move {
                 let input: Send = decode(input).map_err(HandlerError::from)?;
                 let operation = context

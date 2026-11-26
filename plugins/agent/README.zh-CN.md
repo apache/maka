@@ -42,6 +42,16 @@
 - **`SessionSend`** — 向 Room 发言（原子提交 `@mentions` 与 `replyTo`）或向 Agent 会话发消息/插话引导（Steer）。Agent 派发给子会话的消息默认开启 `onComplete: "notify_caller"`，完工后自动携带 `<worker_result>` 结论摘要唤醒调用方。
 - **`SessionRespond` / `SessionStop` / `SessionManage`** — 回复子会话提问与权限请求、终止运行、编辑待发队列、续跑已结束的原生模型轮次，以及改名/归档/恢复/删除会话。
 
+### 断线后重试提交消息
+
+用 `agent.submitMessage` 把消息排入队列，不会改变当前轮次的执行。`queued` 表示 Host 已受理，不代表消息已送达或 Agent 已回复。省略 `idempotencyKey` 或传 `null` 时，每次调用都独立提交。
+
+断线后，在同一会话重试时使用原键。如果原消息还在排队或已经送达，Host 返回 `duplicate` 和原消息 ID，不会重复入队。如果原消息在送达前被取消，用原键重试会重新入队，拿到新的消息 ID。`agent.lookupSubmission` 必须传键，只返回排队中或已送达的消息 ID；没有则返回 `null`。
+
+要撤回排队的消息，用 `sessionId` 和 `messageId` 调用 `agent.withdrawSubmission`。返回 `cancelled` 表示消息在送达前已取消，返回 `delivered` 表示已经送达、无法撤回。会话内找不到该消息 ID 会报错，不算取消成功。
+
+这些方法是公开的 Agent service 接口，不是 ACP 专属权限。幂等键在目标会话内共享，不是密钥，也不能证明调用方身份。Host 独立检查方法 grant 和目标会话的控制、执行权限。自定义 Host 如果显式列举允许的方法，需要按需授权。
+
 ## 记忆记录（Memory）
 
 用户可控的记忆接口（[`api/src/contract/memory.rs`](api/src/contract/memory.rs) 中的 `memories`、`memory`、`memoryHistory`、`changeMemory`、`memorySource` 与 `memoryEvidence`）在个人或项目作用域内管理持久化记忆。更新采用版本 CAS；抑制（Suppress）记录会将其从常规读取与历史展示中隐藏，同时保留底层审计记录。模型侧读取需同时具备有效执行权限并开启偏好设置中的 `memory.enabled` 与 `memory.agentReadEnabled`（关闭模型读取不影响用户管理）。客户端可通过 `changeMemory.add_evidence` 为断言绑定经校验的会话原文片段；会话创建参数 `create.incognito` 则声明由派生会话继承的不可变记忆隐私边界。

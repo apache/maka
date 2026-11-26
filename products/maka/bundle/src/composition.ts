@@ -643,7 +643,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
         consumer: [keys.agent],
         provider: [keys[executorPath(executor.name)]!],
         export: 'executor',
-        methods: ['execute'],
+        methods: ['execute', 'observe'],
         recovery: true,
       },
       ...[

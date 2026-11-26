@@ -6,10 +6,17 @@ use crate::{State, Version, entry, extension, write::util::CountBytes};
 /// A way to specify which of the optional extensions to write.
 #[derive(Default, Debug, Copy, Clone)]
 pub enum Extensions {
-    /// Writes all available optional extensions to avoid losing any information.
+    /// Write all supported optional extensions, invalidating the tree-cache and untracked cache
+    /// so Git recomputes them to match the current entries.
     #[default]
     All,
+    /// Write all supported optional extensions as-is, assuming the tree-cache and untracked cache
+    /// already match the current entries and worktree.
+    AllUnconditionally,
     /// Only write the given optional extensions, with each extension being marked by a boolean flag.
+    ///
+    /// Like [`AllUnconditionally`](Self::AllUnconditionally), selected caches are written as-is
+    /// and must already match the current entries and worktree.
     ///
     /// # Note: mandatory extensions
     ///
@@ -18,6 +25,8 @@ pub enum Extensions {
     Given {
         /// Write the tree-cache extension, if present.
         tree_cache: bool,
+        /// Write the untracked-cache extension, if present.
+        untracked_cache: bool,
         /// Write the end-of-index-entry extension.
         end_of_index_entry: bool,
     },
@@ -30,12 +39,14 @@ impl Extensions {
     pub fn should_write(&self, signature: extension::Signature) -> Option<extension::Signature> {
         match self {
             Extensions::None => None,
-            Extensions::All => Some(signature),
+            Extensions::All | Extensions::AllUnconditionally => Some(signature),
             Extensions::Given {
                 tree_cache,
+                untracked_cache,
                 end_of_index_entry,
             } => match signature {
                 extension::tree::SIGNATURE => tree_cache,
+                extension::untracked_cache::SIGNATURE => untracked_cache,
                 extension::end_of_index_entry::SIGNATURE => end_of_index_entry,
                 _ => &false,
             }
@@ -46,7 +57,8 @@ impl Extensions {
 
 /// The options for use when [writing an index][State::write_to()].
 ///
-/// Note that default options write either index V2 or V3 depending on the content of the entries.
+/// Default options write either index V2 or V3 depending on the content of the entries and
+/// all supported optional extensions, invalidating cache extensions.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Options {
     /// Configures which extensions to write.
@@ -62,9 +74,9 @@ pub struct Options {
 impl State {
     /// Serialize this instance to `out` with [`options`][Options].
     ///
-    /// Note that the `tree` (tree-cache) extension is written as-is and is **not** recomputed or
-    /// invalidated to match the entries; see [`File::write()`](crate::File::write()) for the
-    /// implications and the recommended workaround.
+    /// Cache extensions are invalidated when using [`Extensions::All`], and written as-is otherwise.
+    /// This does not mutate the in-memory caches. See [`File::write()`](crate::File::write())
+    /// for how to retain valid caches after changing entries.
     pub fn write_to(
         &self,
         out: impl std::io::Write,
@@ -90,10 +102,9 @@ impl State {
             .try_into()
             .expect("definitely not too many entries");
 
-        let offset_to_entries = header(&mut write, version, num_entries - removed_entries)
-            .map_err(gix_hash::io::from_std_io)?;
-        let offset_to_extensions =
-            entries(&mut write, self, offset_to_entries).map_err(gix_hash::io::from_std_io)?;
+        let offset_to_entries =
+            header(&mut write, version, num_entries - removed_entries).map_err(gix_hash::io::from_std_io)?;
+        let offset_to_extensions = entries(&mut write, self, offset_to_entries).map_err(gix_hash::io::from_std_io)?;
         let (extension_toc, out) = self
             .write_extensions(write, offset_to_extensions, extensions)
             .map_err(gix_hash::io::from_std_io)?;
@@ -104,12 +115,7 @@ impl State {
                 .is_some()
             && !extension_toc.is_empty()
         {
-            extension::end_of_index_entry::write_to(
-                out,
-                self.object_hash,
-                offset_to_extensions,
-                extension_toc,
-            )?;
+            extension::end_of_index_entry::write_to(out, self.object_hash, offset_to_extensions, extension_toc)?;
         }
 
         Ok(version)
@@ -124,21 +130,28 @@ impl State {
     where
         T: std::io::Write,
     {
-        type WriteExtFn<'a> =
-            &'a dyn Fn(&mut dyn std::io::Write) -> Option<std::io::Result<extension::Signature>>;
+        let invalidate = matches!(extensions, Extensions::All);
+        type WriteExtFn<'a> = &'a dyn Fn(&mut dyn std::io::Write) -> Option<std::io::Result<extension::Signature>>;
         let extensions: &[WriteExtFn<'_>] = &[
             &|write| {
                 extensions
                     .should_write(extension::tree::SIGNATURE)
                     .and_then(|signature| {
                         self.tree()
-                            .map(|tree| tree.write_to(write).map(|_| signature))
+                            .map(|tree| tree.write_to_inner(write, invalidate).map(|_| signature))
                     })
             },
             &|write| {
-                self.is_sparse().then(|| {
-                    extension::sparse::write_to(write).map(|_| extension::sparse::SIGNATURE)
-                })
+                extensions
+                    .should_write(extension::untracked_cache::SIGNATURE)
+                    .and_then(|signature| {
+                        self.untracked()
+                            .map(|cache| cache.write_to(write, self.object_hash, invalidate).map(|_| signature))
+                    })
+            },
+            &|write| {
+                self.is_sparse()
+                    .then(|| extension::sparse::write_to(write).map(|_| extension::sparse::SIGNATURE))
             },
         ];
 
@@ -147,8 +160,7 @@ impl State {
         for write_ext in extensions {
             if let Some(signature) = write_ext(&mut write).transpose()? {
                 let offset_past_ext = write.count;
-                let ext_size =
-                    offset_past_ext - offset_to_previous_ext - (extension::MIN_SIZE as u32);
+                let ext_size = offset_past_ext - offset_to_previous_ext - (extension::MIN_SIZE as u32);
                 offset_to_previous_ext = offset_past_ext;
                 out.push((signature, ext_size));
             }
@@ -161,11 +173,7 @@ impl State {
     fn detect_required_version(&self) -> Version {
         self.entries
             .iter()
-            .find_map(|e| {
-                e.flags
-                    .contains(entry::Flags::EXTENDED)
-                    .then_some(Version::V3)
-            })
+            .find_map(|e| e.flags.contains(entry::Flags::EXTENDED).then_some(Version::V3))
             .unwrap_or(Version::V2)
     }
 }
@@ -234,9 +242,7 @@ mod util {
             self.count = self
                 .count
                 .checked_add(u32::try_from(written).expect("we don't write 4GB buffers"))
-                .ok_or_else(|| {
-                    std::io::Error::other("Cannot write indices larger than 4 gigabytes")
-                })?;
+                .ok_or_else(|| std::io::Error::other("Cannot write indices larger than 4 gigabytes"))?;
             Ok(written)
         }
 

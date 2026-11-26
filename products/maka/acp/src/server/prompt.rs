@@ -18,7 +18,7 @@
  */
 
 use super::App;
-use crate::foreground::{Foreground, Prompt};
+use crate::foreground::{Admission, Foreground};
 use agent_client_protocol::{v1, v2};
 use std::sync::Arc;
 
@@ -35,67 +35,104 @@ pub(super) fn dispatch(
             );
         }
     };
+    let session = match app.sessions.get(&request.session_id.0) {
+        Ok(session) => session,
+        Err(e) => {
+            return responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params().data(e.to_string()),
+            );
+        }
+    };
+    let registration = match session.prompt(request.idempotency_key.as_ref(), &app.stop) {
+        Ok(registration) => registration,
+        Err(e) => return responder.respond_with_error(e),
+    };
     let peer = initialized.peer.clone();
     let capabilities = initialized.capabilities;
-    let content = match request
-        .prompt
-        .into_iter()
-        .map(crate::transport::v2::content)
-        .collect::<Result<_, _>>()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return responder.respond_with_error(
-                agent_client_protocol::Error::invalid_params().data(e.to_string()),
-            );
-        }
-    };
-    let reserved = app
-        .sessions
-        .get(&request.session_id.to_string())
-        .and_then(|session| session.enter(&app.stop).map(|active| (session, active)));
-    let (session, active) = match reserved {
-        Ok(pair) => pair,
-        Err(e) => {
-            return responder.respond_with_error(
-                agent_client_protocol::Error::invalid_params().data(e.to_string()),
-            );
-        }
-    };
-    let session_id = session.id.clone();
-    let cancellation = active.cancel.clone();
     let tasks = app.tasks.clone();
     tasks.spawn(async move {
-        match Foreground::prepare(
-            app.client.clone(),
-            peer.clone(),
-            session,
-            active,
-            capabilities,
-            Prompt { content },
-        )
-        .await
-        {
-            Ok((id, mut foreground)) => {
-                if responder
-                    .respond(v2::schema::PromptResponse::new(id))
-                    .is_err()
+        use crate::session::prompt::Registration;
+        use agent_client_protocol::Error;
+        let mut leader = match registration {
+            Registration::Retry(retry) => {
+                if let Err(error) = responder
+                    .respond_with_result(retry.wait().await.map(v2::schema::PromptResponse::new))
                 {
-                    cancellation.cancel();
+                    eprintln!("ACP retry response: {error}");
                 }
-                let result = foreground.run().await;
-                if let Err(error) = peer.complete(&session_id, result).await {
-                    eprintln!("ACP completion: {error}");
+                return;
+            }
+            Registration::First(leader) => leader,
+        };
+        let session_id = session.id.clone();
+        let result = async {
+            if let Some(key) = &request.idempotency_key {
+                leader.settle_predecessor().await?;
+                // A known attempt bypasses foreground admission and attachment I/O.
+                let recorded: Option<String> = app
+                    .client
+                    .query(
+                        "agent",
+                        "lookupSubmission",
+                        serde_json::json!({
+                            "sessionId":session.id, "idempotencyKey":key
+                        }),
+                    )
+                    .await
+                    .map_err(|e| Error::internal_error().data(e.to_string()))?;
+                if let Some(id) = recorded {
+                    Foreground::wait_inserted(&app.client, &session.id, &id, None, &leader.cancel)
+                        .await
+                        .map_err(prompt_error)?;
+                    return Ok((id, None));
                 }
             }
-            Err(error) => {
-                let _ = responder.respond_with_error(
-                    agent_client_protocol::Error::internal_error().data(error.to_string()),
-                );
+            let content = request
+                .prompt
+                .into_iter()
+                .map(crate::transport::v2::content)
+                .collect::<Result<_, _>>()
+                .map_err(|e| Error::invalid_params().data(e.to_string()))?;
+            let active = leader.enter().await?;
+            Admission {
+                client: app.client.clone(),
+                peer: peer.clone(),
+                session,
+                active,
+                capabilities,
+            }
+            .v2(content, request.idempotency_key)
+            .await
+            .map_err(prompt_error)
+        }
+        .await;
+        let (outcome, foreground) = match result {
+            Ok((id, foreground)) => (Ok(id), foreground),
+            Err(e) => (Err(e), None),
+        };
+        let cancel = leader.cancel.clone();
+        let outcome = leader.publish(outcome);
+        if let Err(error) =
+            responder.respond_with_result(outcome.map(v2::schema::PromptResponse::new))
+        {
+            eprintln!("ACP prompt response: {error}");
+            cancel.cancel();
+        }
+        if let Some(mut foreground) = foreground {
+            let result = foreground.run().await;
+            if let Err(error) = peer.complete(&session_id, result).await {
+                eprintln!("ACP completion: {error}");
             }
         }
     });
     Ok(())
+}
+
+fn prompt_error(error: crate::Error) -> agent_client_protocol::Error {
+    match error.downcast::<agent_client_protocol::Error>() {
+        Ok(protocol) => *protocol,
+        Err(error) => agent_client_protocol::Error::internal_error().data(error.to_string()),
+    }
 }
 
 pub(super) fn v1(
@@ -141,17 +178,17 @@ pub(super) fn v1(
     let session_id = session.id.clone();
     let tasks = app.tasks.clone();
     tasks.spawn(async move {
-        let prepared = Foreground::prepare(
-            app.client.clone(),
-            peer.clone(),
+        let prepared = Admission {
+            client: app.client.clone(),
+            peer: peer.clone(),
             session,
             active,
             capabilities,
-            Prompt { content },
-        )
+        }
+        .v1(content)
         .await;
         let result = match prepared {
-            Ok((_, mut foreground)) => {
+            Ok(mut foreground) => {
                 let result = foreground.run().await;
                 peer.reset(&session_id);
                 let response = match result {

@@ -25,7 +25,7 @@ use std::{
 };
 
 mod browser;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
 pub(super) use cua_driver_core::browser::host_handoff::NativeHostReceipt as HostProcess;
 
@@ -34,14 +34,16 @@ pub(super) fn find(
     origin: &str,
     browser: BrowserFamily,
 ) -> Result<Vec<HostProcess>, ToolError> {
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        ProcessRefreshKind::new()
-            .with_cmd(UpdateKind::Always)
-            .with_exe(UpdateKind::Always)
-            .with_user(UpdateKind::Always),
-    );
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_cmd(UpdateKind::Always)
+                .with_exe(UpdateKind::Always)
+                .with_user(UpdateKind::Always),
+        ),
+    )
+    .map_err(|error| failed(format!("initializing process inspection: {error}")))?;
     let own_pid = Pid::from_u32(std::process::id());
     let user = system
         .process(own_pid)
@@ -82,11 +84,14 @@ pub(super) fn find(
 }
 
 pub(super) fn native_browser() -> Result<Option<BrowserFamily>, ToolError> {
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        ProcessRefreshKind::new().with_exe(UpdateKind::Always),
-    );
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_exe(UpdateKind::Always),
+        ),
+    )
+    .map_err(|error| failed(format!("initializing process inspection: {error}")))?;
     let parent = system
         .process(Pid::from_u32(std::process::id()))
         .and_then(|process| process.parent());

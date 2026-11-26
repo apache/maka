@@ -40,6 +40,7 @@ pub struct Connection {
     pub(crate) events: mpsc::Receiver<Event>,
     pub(crate) run: sdk::BoxFuture<'static, sdk::Result<()>>,
     pub(crate) peer: Option<Peer>,
+    pub(crate) children: std::collections::HashSet<sdk::v2::schema::SessionId>,
 }
 
 impl Connection {
@@ -66,6 +67,7 @@ impl Connection {
             events,
             run,
             peer: None,
+            children: Default::default(),
         }
     }
     pub fn id(&self) -> Id {
