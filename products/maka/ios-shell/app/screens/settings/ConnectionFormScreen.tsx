@@ -25,6 +25,7 @@ import type {
   SettingsLoginPrompt,
   SettingsProvider,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
+import { showToast } from '../../state/hostPool';
 import { tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
@@ -397,7 +398,14 @@ export function ConnectionFormScreen(
             <GroupRow
               title={tr('Open sign-in page')}
               tone="primary"
-              onPress={() => void openUrl(login()!.url)}
+              onPress={() => {
+                void openUrl(login()!.url).then(
+                  ({ opened }) => {
+                    if (!opened) showToast(tr('Open sign-in page') + ' · ' + tr('Unavailable'));
+                  },
+                  () => showToast(tr('Open sign-in page') + ' · ' + tr('Unavailable')),
+                );
+              }}
             />
           </If>
         </InsetGroup>

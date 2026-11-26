@@ -798,6 +798,13 @@ impl Bridge {
     }
 
     async fn confirm(&self, confirm: Confirm) -> Result<Value, String> {
+        if confirm
+            .device_label
+            .as_deref()
+            .is_some_and(|name| name.trim().len() > 128)
+        {
+            return Err("Device name exceeds 128 UTF-8 bytes".into());
+        }
         let (pending, root, id, cancel) = {
             let mut state = self.state.lock().await;
             if !state
@@ -825,6 +832,9 @@ impl Bridge {
         self.state.lock().await.redeeming.remove(&id);
         self.finish_admission(&root, id, &cancel, &result).await;
         self.finish_pairing(pairing_id).await;
+        if let Ok(snapshot) = &result {
+            self.emit("ios.hostState", snapshot.clone());
+        }
         result
     }
 
@@ -1189,10 +1199,12 @@ impl Bridge {
                         if state.current(&root, id).is_some() {
                             state.remove_connection(&root);
                             let error = disconnected.err().map(|err| err.to_string());
-                            state.admissions.entry(root.clone()).or_insert_with(|| match &error {
-                                Some(reason) => Admission::Error(reason.clone()),
-                                None => Admission::Offline,
-                            });
+                            if state.profiles.contains_key(&root) {
+                                state.admissions.entry(root.clone()).or_insert_with(|| match &error {
+                                    Some(reason) => Admission::Error(reason.clone()),
+                                    None => Admission::Offline,
+                                });
+                            }
                             let mut snapshot = self.snapshot(&state);
                             if let Some(error) = error
                                 && state.profiles.contains_key(&root)

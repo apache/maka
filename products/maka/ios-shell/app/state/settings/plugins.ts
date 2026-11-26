@@ -55,17 +55,18 @@ export async function readPlugin(rpc: SettingsRpc, instance: string[]) {
     throw new Error('Plugin inventory changed');
   const fields: Pick<SettingField, 'key' | 'label' | 'description' | 'present'>[] = [];
   let after: string | null | undefined = null;
-  do {
-    const page: InstanceSettingsPage = await rpc.query('deploymentManager', 'readSettings', {
-      source: inventory.source,
-      instance,
-      path: [],
-      after,
-    });
-    for (const { key, label, description, present } of page.fields)
-      fields.push({ key, label, description, present });
-    after = page.next;
-  } while (after != null);
+  if (!row.structural)
+    do {
+      const page: InstanceSettingsPage = await rpc.query('deploymentManager', 'readSettings', {
+        source: inventory.source,
+        instance,
+        path: [],
+        after,
+      });
+      for (const { key, label, description, present } of page.fields)
+        fields.push({ key, label, description, present });
+      after = page.next;
+    } while (after != null);
   const bindings = Object.keys(deployment.source.input.instances[row.path[0]]?.bindings ?? {});
   return { row, source: inventory.source, fields, bindings: row.path.length === 1 ? bindings : [] };
 }

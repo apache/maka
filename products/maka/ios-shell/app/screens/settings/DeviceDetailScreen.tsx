@@ -314,15 +314,17 @@ export function DeviceDetailScreen(props: {
                   }
                 >
                   <View style={{ flexDirection: 'row', gap: 8, padding: 12 }}>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <ActionButton
-                        title={tr('Reconnect')}
-                        variant="secondary"
-                        compact
-                        disabled={busy()}
-                        onPress={() => void handleConnect()}
-                      />
-                    </View>
+                    <If when={!host()?.ephemeral}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <ActionButton
+                          title={tr('Reconnect')}
+                          variant="secondary"
+                          compact
+                          disabled={busy()}
+                          onPress={() => void handleConnect()}
+                        />
+                      </View>
+                    </If>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <ActionButton
                         title={tr('Disconnect')}

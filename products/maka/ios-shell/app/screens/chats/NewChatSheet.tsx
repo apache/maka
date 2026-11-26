@@ -230,9 +230,8 @@ export function NewChatSheet(props: {
     const members = memberIds();
     const selectedPresets = presets();
     const picked = workspaces().find((w) => w.id === selectedWorkspaceId());
-    const workspace: AgentWorkspaceSelection = picked
-      ? picked.selection
-      : { kind: 'directory', path: '.' };
+    if (!picked) return;
+    const workspace = picked.selection;
     const cleanTitle = title().trim();
     creating.set(true);
     error.set(null);
@@ -286,7 +285,7 @@ export function NewChatSheet(props: {
     <Sheet
       open={props.open}
       accessibilityLabel={tr('New Chat')}
-      detents={['medium', 'large']}
+      detents={['large']}
       detent={detent()}
       onDetentChange={(e) => detent.set(e.detent)}
       grabber
@@ -546,7 +545,11 @@ export function NewChatSheet(props: {
             disabled={
               creating() ||
               (!createdRoom() &&
-                (!eligible(targetRootId()) || loadingWorkspaces() || loadingPresets() || !ready()))
+                (!eligible(targetRootId()) ||
+                  loadingWorkspaces() ||
+                  loadingPresets() ||
+                  !ready() ||
+                  !workspaces().some((workspace) => workspace.id === selectedWorkspaceId())))
             }
             onPress={() => {
               if (creating()) return;

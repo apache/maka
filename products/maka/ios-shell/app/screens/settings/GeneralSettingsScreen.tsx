@@ -18,6 +18,7 @@
  */
 
 import { signal } from 'nsh';
+import { SUPPORTED_LOCALES } from '../../../../../../packages/plugin-sdk/src/index.js';
 import { tr } from '../../locale';
 import { InsetGroup, GroupRow } from '../../ui';
 import { readGeneral, saveInstructions, savePreference } from '../../state/settings/general';
@@ -106,9 +107,7 @@ export function GeneralSettingsScreen(props: SettingsPageProps) {
           value={preferences().language ?? 'auto'}
           options={[
             { id: 'auto', label: tr('System') },
-            { id: 'en', label: 'English' },
-            { id: 'zh-CN', label: '简体中文' },
-            { id: 'zh-TW', label: '繁體中文' },
+            ...SUPPORTED_LOCALES.map(({ tag, autonym }) => ({ id: tag, label: autonym })),
           ]}
           disabled={work.busy()}
           change={(preference) => void change({ kind: 'language', preference })}

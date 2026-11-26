@@ -21,6 +21,7 @@ import type {
   NetworkProxy,
   SettingsNetworkSnapshot,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
+import { tr } from '../../locale';
 import { credentialBasis, type SettingsRpc } from './rpc';
 
 export async function saveNetwork(
@@ -30,6 +31,17 @@ export async function saveNetwork(
   password: string,
 ) {
   const credential = !proxy.authEnabled ? 'delete' : password ? 'replace' : 'keep';
+  if (
+    credential === 'keep' &&
+    (['protocol', 'host', 'port', 'username'] as const).some(
+      (key) => proxy[key] !== basis.proxy[key],
+    )
+  )
+    throw new Error(
+      tr(
+        'The proxy address or username changed. Enter the password again or turn off proxy authentication.',
+      ),
+    );
   const result = await rpc.mutate(
     'settings',
     'updateNetwork',

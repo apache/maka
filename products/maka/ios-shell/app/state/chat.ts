@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { approvalOutcome } from '../approval';
 import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
@@ -196,11 +197,15 @@ export async function fetchGitWorkspaceDiff(
 
 let watchSeq = 0;
 
-export function createConversationController(rootId: string, sessionId: string) {
+export function createConversationController(
+  rootId: string,
+  sessionId: string,
+  initialRoom: boolean,
+) {
   const observation = signal<AgentObservation | null>(null);
   const chunks = signal<AgentHistoryChunk[]>([]);
   const roomMessages = signal<AgentRoomMessage[]>([]);
-  const isRoom = signal(false);
+  const isRoom = signal(initialRoom);
   const beforeCursor = signal<unknown>(null);
   const loading = signal(true);
   const loadingEarlier = signal(false);
@@ -215,7 +220,7 @@ export function createConversationController(rootId: string, sessionId: string) 
   const livePreview = signal<LivePreviewSnapshot>(accumulator.snapshot());
 
   let disposed = false;
-  let lastThrough = 0;
+  let lastThrough: number | null = null;
   let watchHandle: SubscriptionHandle | null = null;
   let watchSubId: string | null = null;
   let activeGeneration = -1;
@@ -256,7 +261,21 @@ export function createConversationController(rootId: string, sessionId: string) 
     }
   };
 
+  const compare = (a: AgentHistoryChunk, b: AgentHistoryChunk) => {
+    for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
+      const order = a.order.path[i] - b.order.path[i];
+      if (order) return order;
+    }
+    return (
+      a.order.path.length - b.order.path.length ||
+      a.order.itemIndex - b.order.itemIndex ||
+      a.offset - b.offset
+    );
+  };
+  let tailRequest = 0;
+  let pagedHistory = false;
   const loadHistory = async () => {
+    const request = ++tailRequest;
     try {
       const page = await hostQuery<AgentHistoryPage>(
         'agent',
@@ -271,20 +290,32 @@ export function createConversationController(rootId: string, sessionId: string) 
         undefined,
         rootId,
       );
-      if (disposed) return;
+      if (disposed || request !== tailRequest) return;
       if (page?.kind === 'room') {
         isRoom.set(true);
-        roomMessages.set(page.page?.items ?? []);
-        beforeCursor.set(page.page?.before ?? null);
+        const tail = page.page.items;
+        if (tail.length || !pagedHistory)
+          roomMessages.update((previous) =>
+            pagedHistory && tail.length
+              ? [...previous.filter((item) => item.sequence < tail[0].sequence), ...tail]
+              : tail,
+          );
+        if (!pagedHistory) beforeCursor.set(page.page.before ?? null);
         if (typeof page.page?.through === 'number') {
-          lastThrough = Math.max(lastThrough, page.page.through);
+          lastThrough = Math.max(lastThrough ?? 0, page.page.through);
         }
       } else if (page?.kind === 'ready') {
         isRoom.set(false);
-        chunks.set(page.chunks ?? []);
-        beforeCursor.set(page.before ?? null);
+        const tail = page.chunks;
+        if (tail.length || !pagedHistory)
+          chunks.update((previous) =>
+            pagedHistory && tail.length
+              ? [...previous.filter((item) => compare(item, tail[0]) < 0), ...tail]
+              : tail,
+          );
+        if (!pagedHistory) beforeCursor.set(page.before ?? null);
         if (typeof page.through === 'number') {
-          lastThrough = Math.max(lastThrough, page.through);
+          lastThrough = Math.max(lastThrough ?? 0, page.through);
         }
       }
       const handoff = accumulator.completeHandoffIfPending();
@@ -326,7 +357,7 @@ export function createConversationController(rootId: string, sessionId: string) 
       observation.set(obs);
       if (obs.session?.kind === 'room') isRoom.set(true);
       if (typeof obs.through === 'number') {
-        lastThrough = Math.max(lastThrough, obs.through);
+        lastThrough = Math.max(lastThrough ?? 0, obs.through);
       }
       if (obs.session?.backend && !getSelectedBackend(rootId, sessionId)) {
         setSelectedBackend(rootId, sessionId, obs.session.backend);
@@ -342,7 +373,7 @@ export function createConversationController(rootId: string, sessionId: string) 
     stopWatch();
     const subId = 'watch:' + rootId + ':' + sessionId + ':' + String(++watchSeq);
     watchSubId = subId;
-    void subscribe(subId, 'agent', 'watch', { sessionId, after: lastThrough }, rootId)
+    void subscribe(subId, 'agent', 'watch', { sessionId, after: lastThrough ?? 0 }, rootId)
       .then((handle) => {
         if (disposed || watchSubId !== subId) {
           void unsubscribe(handle).catch(() => {});
@@ -366,7 +397,7 @@ export function createConversationController(rootId: string, sessionId: string) 
 
   const loadEarlier = async () => {
     const cursor = beforeCursor();
-    if (!cursor || loadingEarlier()) return;
+    if (cursor == null || loadingEarlier()) return;
     loadingEarlier.set(true);
     try {
       const page = await hostQuery<AgentHistoryPage>(
@@ -374,8 +405,10 @@ export function createConversationController(rootId: string, sessionId: string) 
         'history',
         {
           sessionId,
-          through: lastThrough || null,
-          position: { kind: 'before', cursor },
+          through: lastThrough,
+          position: isRoom()
+            ? { kind: 'before_message', messageId: cursor }
+            : { kind: 'before', cursor },
           includeThinking: true,
           view: 'conversation',
         },
@@ -383,6 +416,7 @@ export function createConversationController(rootId: string, sessionId: string) 
         rootId,
       );
       if (disposed) return;
+      pagedHistory = true;
       if (page?.kind === 'room') {
         const older = page.page?.items ?? [];
         const existing = roomMessages();
@@ -408,7 +442,7 @@ export function createConversationController(rootId: string, sessionId: string) 
     sending.set(true);
     error.set(null);
     try {
-      const backend = getSelectedBackend(rootId, sessionId);
+      const backend = isRoom() ? null : getSelectedBackend(rootId, sessionId);
       const res = await hostMutate<{ kind: string; reason?: unknown }>(
         'agent',
         'send',
@@ -459,44 +493,45 @@ export function createConversationController(rootId: string, sessionId: string) 
   };
 
   const selectModel = async (backend: AgentBackendPreference) => {
-    setSelectedBackend(rootId, sessionId, backend);
-    hapticSelection();
+    if (isRoom()) return;
     try {
-      await hostMutate('agent', 'selectBackend', { sessionId, backend }, { rootId });
-    } catch {
-      // Local selection still applies on next send.
-    }
-  };
-
-  const cancelQueuedMessage = async (messageId: string) => {
-    const q = queue();
-    const remaining = q.entries.filter((e) => e.messageId !== messageId).map((e) => e.messageId);
-    try {
-      await hostMutate(
-        'agent',
-        'editQueue',
-        {
-          sessionId,
-          expectedRevision: q.revision,
-          edit: { kind: 'reorder', messageIds: remaining },
-        },
-        { rootId },
-      );
-      queue.update((prev) => ({
-        revision: prev.revision + 1,
-        entries: prev.entries.filter((e) => e.messageId !== messageId),
-      }));
+      const result = await hostMutate<
+        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
+      >('agent', 'selectBackend', { sessionId, backend }, { rootId });
+      if (result.kind !== 'committed') throw new Error(result.kind);
+      setSelectedBackend(rootId, sessionId, backend);
       hapticSelection();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
-  const respondInteraction = async (
-    requestId: string,
-    answer: Record<string, unknown>,
-    kind: 'success' | 'warning' = 'success',
-  ) => {
+  const cancelQueuedMessage = async (messageId: string) => {
+    const q = queue();
+    try {
+      const result = await hostMutate<
+        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentQueueMutationResult
+      >(
+        'agent',
+        'editQueue',
+        {
+          sessionId,
+          expectedRevision: q.revision,
+          edit: { kind: 'retract', messageId },
+        },
+        { rootId },
+      );
+      queue.set(await hostQuery<AgentQueue>('agent', 'queue', { sessionId }, undefined, rootId));
+      if (result.kind !== 'committed')
+        throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+      hapticSelection();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const respondInteraction = async (requestId: string, answer: Record<string, unknown>) => {
+    if (busyInteractionIds()[requestId]) return null;
     busyInteractionIds.update((prev) => ({ ...prev, [requestId]: true }));
     try {
       const result = await hostMutate<AgentInteractionResult>(
@@ -509,7 +544,7 @@ export function createConversationController(rootId: string, sessionId: string) 
         void loadInteractions();
         throw new Error(result.reason);
       }
-      hapticNotification(kind);
+      hapticNotification(approvalOutcome(result.record.outcome) === false ? 'warning' : 'success');
       const hostName = hostById(rootId)?.hostName ?? rootId;
       await Promise.all([
         loadInteractions(),
@@ -517,11 +552,11 @@ export function createConversationController(rootId: string, sessionId: string) 
         refreshHostInbox(rootId, hostName),
         refreshHostSessions(rootId, hostName),
       ]);
-      return true;
+      return result.record;
     } catch (cause) {
       hapticNotification('error');
       showToast(cause instanceof Error ? cause.message : String(cause));
-      return false;
+      return null;
     } finally {
       if (!disposed) {
         busyInteractionIds.update((prev) => {
@@ -554,12 +589,12 @@ export function createConversationController(rootId: string, sessionId: string) 
       return;
     }
     if (page.kind === 'room') {
-      if (typeof page.through === 'number') lastThrough = Math.max(lastThrough, page.through);
+      if (typeof page.through === 'number') lastThrough = Math.max(lastThrough ?? 0, page.through);
       void loadHistory();
       return;
     }
     if (page.kind === 'events') {
-      if (typeof page.through === 'number') lastThrough = Math.max(lastThrough, page.through);
+      if (typeof page.through === 'number') lastThrough = Math.max(lastThrough ?? 0, page.through);
       let needsHistory = false;
       let needsObserve = false;
       for (const ev of page.events ?? []) {
@@ -570,13 +605,21 @@ export function createConversationController(rootId: string, sessionId: string) 
           fact.kind === 'part_committed' ||
           fact.kind === 'transcript_changed' ||
           fact.kind === 'tool_settled' ||
-          fact.kind === 'executor_tool_result'
+          fact.kind === 'executor_tool_result' ||
+          [
+            'step_ended',
+            'executor_text_changed',
+            'executor_tool_start',
+            'tool_dispatched',
+          ].includes(fact.kind)
         ) {
           needsHistory = true;
+        } else if (['opened', 'executor_started'].includes(fact.kind)) {
+          needsObserve = true;
         } else if (fact.kind === 'ended') {
           needsHistory = true;
           needsObserve = true;
-          livePreview.set(accumulator.reset());
+          livePreview.set(accumulator.beginHandoff());
         }
       }
       if (needsHistory) void loadHistory();
@@ -602,9 +645,10 @@ export function createConversationController(rootId: string, sessionId: string) 
       return;
     }
     const gen = conn.generation ?? 0;
-    if (gen === activeGeneration && watchSubId) return;
+    if (gen === activeGeneration) return;
+    activeGeneration = gen;
     void refreshAll().then(() => {
-      if (!disposed && activeHostInfo(rootId)) {
+      if (!disposed && activeHostInfo(rootId)?.generation === gen) {
         startWatch(gen);
       }
     });

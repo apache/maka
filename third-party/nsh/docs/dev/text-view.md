@@ -165,7 +165,7 @@ color (the `codeBlockCode` part's).
 
 | Token | Light / dark | Scopes |
 |---|---|---|
-| comment (italic) | `#6e7781` / `#b2b0a9` | `comment` |
+| comment (italic) | `#6e7781` / `#7d7a72` | `comment` |
 | keyword | `#8250df` / `#c4a7ff` | `keyword`, `storage`, operators that are words (`as`, `typeof`; symbols stay plain), declaring `storage.type` (`fn`, `let`, `class`), headings (`markup.heading`, `entity.name.section`) |
 | string | `#116329` / `#9fd68a` | `string`, regular expressions, escapes, `markup.inserted` |
 | number | `#953800` / `#f5b27a` | `constant` (numbers, literals such as `true` / `null`, other constants), `support.constant`, `variable.other.constant` |

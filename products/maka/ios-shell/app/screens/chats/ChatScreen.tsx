@@ -32,7 +32,13 @@ import {
 } from 'nsh';
 import { Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
 import { InputAccessoryView, isAvailable } from 'nsh/mobile';
-import { approvalControls, approvalDetail } from '../../approval';
+import {
+  approvalControls,
+  approvalDetail,
+  approvalOutcome,
+  interactionBadge,
+  interactionTitle,
+} from '../../approval';
 import type {
   AgentHistoryChunk,
   AgentInteractionRecord,
@@ -41,7 +47,8 @@ import type {
 } from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
-import { tr } from '../../locale';
+import { QuestionForm } from '../../ui/QuestionForm';
+import { currentLocale, tr } from '../../locale';
 import {
   createConversationController,
   getDraft,
@@ -86,11 +93,12 @@ interface DisplayTurn {
 }
 
 function readableToolTitle(tool: NonNullable<AgentHistoryChunk['tool']>): string {
-  if (typeof tool.title === 'string' && tool.title.trim()) return tool.title.trim();
-  if (tool.title && typeof tool.title === 'object' && typeof tool.title.text === 'string') {
-    if (tool.title.text.trim()) return tool.title.text.trim();
-  }
-  return tool.name || tr('Tool call');
+  return (
+    tool.call?.title?.translations?.[currentLocale()] ??
+    tool.call?.title?.fallback ??
+    tool.call?.name ??
+    tr('Tool call')
+  );
 }
 
 function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] {
@@ -102,7 +110,11 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
     const sameAssistant = role === 'assistant' && prev && prev.role === 'assistant';
 
     if (role === 'user') {
-      const txt = (ch.text || '').trim();
+      if (ch.offset > 0 && prev?.role === 'user' && prev.key === ch.messageId) {
+        prev.body += ch.text;
+        continue;
+      }
+      const txt = ch.text;
       if (!txt) continue;
       turns.push({
         key: ch.messageId || 'u:' + String(i),
@@ -131,16 +143,17 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
       const existing = target.tools.find((t) => t.id === id);
       if (existing) {
         existing.label = label;
-        existing.isError = existing.isError || Boolean(ch.tool.isError);
+        existing.isError = existing.isError || Boolean(ch.tool.result?.isError);
       } else {
-        target.tools.push({ id, label, isError: Boolean(ch.tool.isError) });
+        target.tools.push({ id, label, isError: Boolean(ch.tool.result?.isError) });
       }
     } else if (ch.field === 'thinking') {
-      const t = (ch.text || '').trim();
-      if (t) target.thinking = target.thinking ? target.thinking + '\n\n' + t : t;
+      const t = ch.text;
+      if (t)
+        target.thinking = target.thinking ? target.thinking + (ch.offset ? '' : '\n\n') + t : t;
     } else {
-      const b = (ch.text || '').trim();
-      if (b) target.body = target.body ? target.body + '\n\n' + b : b;
+      const b = ch.text;
+      if (b) target.body = target.body ? target.body + (ch.offset ? '' : '\n\n') + b : b;
     }
   }
   return turns;
@@ -269,143 +282,23 @@ function InlineInteractionCard(props: {
   accepted?: boolean;
   onRespond: (answer: Record<string, unknown>, kind: 'success' | 'warning') => void;
 }) {
-  const customAnswer = signal('');
-  const selectedOption = signal<string | null>(null);
   const req = () => props.record.request;
-
-  if (req().kind === 'question') {
-    const qReq = req() as Extract<AgentInteractionRecord['request'], { kind: 'question' }>;
-    const firstQ = qReq.questions[0];
+  const request = req();
+  if (request.kind === 'question') {
     return (
-      <View
-        style={{
-          marginVertical: 8,
-          borderRadius: spacing.groupRadius,
-          borderCurve: 'continuous',
-          backgroundColor: token('inline-card'),
-          padding: 14,
-          gap: 10,
-        }}
-      >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <StatusDot kind="waiting" size={7} />
-          <Text style={{ ...type.caption, fontWeight: '600', color: token('warning') }}>
-            {tr('Question')}
-          </Text>
-        </View>
-        <Text style={{ ...type.headline, color: token('foreground') }}>
-          {firstQ?.question ?? tr('Question waiting for answer')}
-        </Text>
-        <View style={{ gap: 8 }}>
-          <Each of={firstQ?.options ?? []} key={(o) => o.label}>
-            {(opt) => {
-              const active = () => selectedOption() === opt().label;
-              return (
-                <View
-                  role="button"
-                  accessibilityLabel={opt().label}
-                  onPress={() => {
-                    hapticSelection();
-                    selectedOption.set(opt().label);
-                    customAnswer.set('');
-                  }}
-                  style={{
-                    minHeight: 42,
-                    paddingHorizontal: 12,
-                    paddingVertical: 9,
-                    borderRadius: 10,
-                    borderCurve: 'continuous',
-                    backgroundColor: active() ? token('primary-tint') : token('surface'),
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                  }}
-                >
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text
-                      style={{
-                        ...type.subheadlineMedium,
-                        color: active() ? token('primary') : token('foreground'),
-                      }}
-                    >
-                      {opt().label}
-                    </Text>
-                    <If when={opt().description}>
-                      <Text style={{ ...type.caption, color: token('muted-foreground') }}>
-                        {opt().description}
-                      </Text>
-                    </If>
-                  </View>
-                  <If when={active()}>
-                    <Icon name="check" color={token('primary')} size={16} strokeWidth={2.4} />
-                  </If>
-                </View>
-              );
-            }}
-          </Each>
-        </View>
-        <Input
-          accessibilityLabel={tr('Write your own answer')}
-          value={customAnswer()}
-          placeholder={tr('Or type a custom answer…')}
-          onChange={({ value }) => {
-            customAnswer.set(value);
-            if (value.trim()) selectedOption.set(null);
-          }}
-          style={{
-            minHeight: 40,
-            paddingHorizontal: 12,
-            borderRadius: 10,
-            backgroundColor: token('surface'),
-            ...type.subheadline,
-            color: token('foreground'),
-            placeholderColor: token('muted-foreground'),
-          }}
-        />
-        <ActionButton
-          title={tr('Submit Answer')}
-          compact
-          disabled={props.busy || (!selectedOption() && !customAnswer().trim())}
-          onPress={() => {
-            const answerText = customAnswer().trim() || selectedOption() || '';
-            props.onRespond(
-              {
-                kind: 'question',
-                answers: [{ question: firstQ?.question ?? '', answer: answerText }],
-              },
-              'success',
-            );
-          }}
-        />
-      </View>
+      <QuestionForm
+        questions={request.questions}
+        busy={props.busy}
+        submit={(answer) => props.onRespond(answer, 'success')}
+      />
     );
   }
+  if (request.kind === 'form' || request.kind === 'system_permission') {
+    return <Text>{tr('Review on Desktop')}</Text>;
+  }
 
-  const badge = () => {
-    switch (req().kind) {
-      case 'permissions':
-        return tr('Permission');
-      case 'service_approval':
-        return tr('Service');
-      case 'computer_app':
-        return tr('Desktop App');
-      case 'session_approval':
-        return tr('Approval');
-      default:
-        return tr('Action Needed');
-    }
-  };
-
-  const title = () => {
-    const r = req();
-    if (r.kind === 'permissions') return r.request.reason || tr('Additional permissions requested');
-    if (r.kind === 'service_approval')
-      return tr('Allow service call {name}?', { name: r.toolName || r.service });
-    if (r.kind === 'computer_app') return tr('Allow control of {name}?', { name: r.display.name });
-    if (r.kind === 'session_approval') return tr('Approve delegated action?');
-    return tr('Allow client capability?');
-  };
+  const badge = () => interactionBadge(req().kind);
+  const title = () => interactionTitle(req(), props.sessionTitle);
 
   const detail = () => approvalDetail(req());
   const controls = () => approvalControls(req());
@@ -453,7 +346,7 @@ export function ChatScreen(props: {
   const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
-  const ctrl = createConversationController(rootId, sessionId);
+  const ctrl = createConversationController(rootId, sessionId, props.item.session.kind === 'room');
   const feedback = approvalFeedback<{
     record: AgentInteractionRecord;
     index: number;
@@ -478,7 +371,7 @@ export function ChatScreen(props: {
   const sessionTitle = () => ctrl.observation()?.session?.title || props.item.session.title;
   const workspaceName = () => {
     const ws = ctrl.observation()?.session?.workspace ?? props.item.session.workspace;
-    return ws?.name || ws?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
+    return ws?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
   };
   const subtitleLine = () =>
     savedHosts().length > 1 ? props.item.hostName + ' · ' + workspaceName() : workspaceName();
@@ -494,6 +387,14 @@ export function ChatScreen(props: {
   const currentModelLabel = () => {
     const chosen = getSelectedBackend(rootId, sessionId);
     const list = ctrl.models();
+    if (chosen?.kind === 'executor')
+      return (
+        list.find(
+          ({ selection }) =>
+            selection.kind === 'executor' &&
+            selection.selection.executor === chosen.selection.executor,
+        )?.label ?? chosen.selection.executor
+      );
     if (chosen && chosen.kind === 'model') {
       const match = list.find(
         (m) => m.selection.kind === 'model' && m.selection.modelId === chosen.modelId,
@@ -514,8 +415,12 @@ export function ChatScreen(props: {
         chosen !== null &&
         chosen.kind === m.selection.kind &&
         (chosen.kind === 'model' && m.selection.kind === 'model'
-          ? chosen.modelId === m.selection.modelId
-          : false);
+          ? chosen.connectionId === m.selection.connectionId &&
+            chosen.modelId === m.selection.modelId &&
+            chosen.thinkingLevel === m.selection.thinkingLevel
+          : chosen.kind === 'executor' &&
+            m.selection.kind === 'executor' &&
+            chosen.selection.executor === m.selection.selection.executor);
       return {
         id,
         label: m.label,
@@ -553,6 +458,7 @@ export function ChatScreen(props: {
     void _rooms;
     void _preview;
     void _pending;
+    if (ctrl.loading()) return;
     if (!restoredScroll) {
       const saved = getSavedScrollOffset(rootId, sessionId);
       if (saved > 0) {
@@ -908,16 +814,12 @@ export function ChatScreen(props: {
                     : undefined
                 }
                 busy={Boolean(ctrl.busyInteractionIds()[rec().requestId])}
-                onRespond={async (answer, kind) => {
+                onRespond={async (answer) => {
                   const record = rec();
                   const position = index();
-                  if (
-                    (await ctrl.respondInteraction(record.requestId, answer, kind)) &&
-                    record.request.kind !== 'question' &&
-                    record.request.kind !== 'form'
-                  ) {
-                    feedback.show({ record, index: position, accepted: kind === 'success' });
-                  }
+                  const result = await ctrl.respondInteraction(record.requestId, answer);
+                  const accepted = approvalOutcome(result?.outcome);
+                  if (accepted !== null) feedback.show({ record, index: position, accepted });
                 }}
               />
             )}
@@ -1164,7 +1066,10 @@ export function ChatScreen(props: {
               gap: 8,
             }}
           >
-            <If when={ctrl.models().length > 0} else={<View style={{ flex: 1 }} />}>
+            <If
+              when={!ctrl.isRoom() && ctrl.models().length > 0}
+              else={<View style={{ flex: 1 }} />}
+            >
               <MenuButton
                 accessibilityLabel={tr('Select model')}
                 title={tr('Model')}

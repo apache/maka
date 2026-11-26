@@ -224,6 +224,13 @@ test('uses the exact app identifier allowed by the provisioning profile', () => 
     'get-task-allow': true,
   });
   assert.throws(() => appEntitlements(profile, 'org.example.other'), /does not allow/);
+  profile.Entitlements['beta-reports-active'] = true;
+  assert.equal(appEntitlements(profile, 'org.apache.maka.ios')['beta-reports-active'], true);
+  profile.Entitlements['beta-reports-active'] = false;
+  assert.equal(
+    Object.hasOwn(appEntitlements(profile, 'org.apache.maka.ios'), 'beta-reports-active'),
+    false,
+  );
 });
 
 test('ditto stages a standard Payload archive and a portable SHA-256 file', {

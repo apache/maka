@@ -30,6 +30,9 @@ pub fn ios_bundle() -> Bundle {
     let mut caps = Capabilities::default();
     caps.clipboard = true;
     caps.status_bar = true;
+    let mut open_url = nsh_core::access::OpenUrlGrant::default();
+    open_url.schemes.push("https".into());
+    caps.open_url = Some(open_url);
     caps.host = bridge::ALLOWED_HOST_CALLS
         .iter()
         .map(|name| (*name).to_owned())

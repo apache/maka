@@ -19,51 +19,41 @@
 
 import { cleanup, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, NavPage } from 'nsh/base';
-import { approvalControls, approvalDetail } from '../../approval';
-import { hostQuery, onSubscriptionItem, type AgentInteractionRecord } from '../../bridge';
+import {
+  approvalControls,
+  approvalDetail,
+  approvalOutcome,
+  interactionBadge,
+  interactionTitle,
+} from '../../approval';
+import {
+  hostQuery,
+  onSubscriptionItem,
+  subscribe,
+  unsubscribe,
+  type SubscriptionHandle,
+  type AgentInteractionRecord,
+} from '../../bridge';
 import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
+import { QuestionForm } from '../../ui/QuestionForm';
 import { tr } from '../../locale';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, GroupRow, Icon, InsetGroup, ScreenHeader, StatusDot } from '../../ui';
 
-function badgeLabel(kind: InboxItem['summary']['kind']): string {
-  switch (kind) {
-    case 'permissions':
-      return tr('Permission');
-    case 'service_approval':
-      return tr('Service');
-    case 'session_approval':
-      return tr('Approval');
-    case 'question':
-      return tr('Question');
-    case 'computer_app':
-      return tr('Desktop App');
-    case 'form':
-      return tr('Form');
-    default:
-      return tr('Action Needed');
-  }
+function outcomeSummary(
+  outcome: import('../../../../../../packages/plugin-sdk/src/generated/runtime').InteractionOutcome,
+): string {
+  const approved = approvalOutcome(outcome);
+  return approved === null
+    ? tr('Already resolved on another device')
+    : approved
+      ? tr('Approved on another device')
+      : tr('Denied on another device');
 }
 
-function outcomeSummary(outcome: unknown): string {
-  if (!outcome || typeof outcome !== 'object') return tr('Resolved on another device');
-  const obj = outcome as Record<string, unknown>;
-  const decision = typeof obj.decision === 'string' ? obj.decision : '';
-  if (
-    decision === 'allow' ||
-    decision === 'approve' ||
-    decision === 'once' ||
-    decision === 'session'
-  ) {
-    return tr('Approved on another device');
-  }
-  if (decision === 'deny' || decision === 'reject') {
-    return tr('Denied on another device');
-  }
-  return tr('Already resolved on another device');
-}
+let reviewSequence = 0;
 
 export function ReviewDetailScreen(props: {
   item: InboxItem;
@@ -77,11 +67,13 @@ export function ReviewDetailScreen(props: {
 }) {
   const insets = safeAreaInsets();
   const liveRecord = signal<AgentInteractionRecord | null>(props.item.record);
-  const selectedOption = signal<string | null>(null);
-  const customAnswer = signal('');
   let disposed = false;
+  let read = 0;
+  let watch: SubscriptionHandle | undefined;
+  const watchId = 'review:' + String(++reviewSequence);
 
   const refreshAuthoritativeRecord = async () => {
+    const request = ++read;
     try {
       const latest = await hostQuery<AgentInteractionRecord | null>(
         'agent',
@@ -90,7 +82,7 @@ export function ReviewDetailScreen(props: {
         undefined,
         props.item.rootId,
       );
-      if (!disposed && latest) {
+      if (!disposed && request === read && latest) {
         liveRecord.set(latest);
       }
     } catch {
@@ -102,11 +94,25 @@ export function ReviewDetailScreen(props: {
 
   const offSub = onSubscriptionItem((payload) => {
     if (disposed) return;
-    if (payload.rootId && payload.rootId !== props.item.rootId) return;
+    if (payload.rootId !== props.item.rootId || payload.subscriptionId !== watchId) return;
     void refreshAuthoritativeRecord();
   });
 
+  void subscribe(
+    watchId,
+    'agent',
+    'watch',
+    { sessionId: props.item.sessionId, after: 0 },
+    props.item.rootId,
+  )
+    .then((handle) => {
+      if (disposed) return unsubscribe(handle);
+      watch = handle;
+    })
+    .catch((cause) => console.warn('Could not watch review', cause));
   cleanup(() => {
+    if (watch)
+      void unsubscribe(watch).catch((cause) => console.warn('Could not stop review watch', cause));
     disposed = true;
     offSub();
   });
@@ -120,61 +126,41 @@ export function ReviewDetailScreen(props: {
   };
   const busy = () => isInboxItemBusy(props.item.key);
 
-  const title = () => {
-    const r = req();
-    if (!r) return props.item.sessionTitle;
-    switch (r.kind) {
-      case 'permissions':
-        return r.request.reason || tr('Additional permissions requested');
-      case 'service_approval':
-        return tr('Allow service call {name}?', { name: r.toolName || r.service });
-      case 'question':
-        return r.questions[0]?.question || tr('Question waiting for answer');
-      case 'computer_app':
-        return tr('Allow control of {name}?', { name: r.display.name });
-      case 'session_approval':
-        return tr('Approve delegated action?');
-      case 'client_capability':
-        return tr('Allow client capability?');
-      default:
-        return props.item.sessionTitle;
-    }
-  };
+  const title = () => interactionTitle(req(), props.item.sessionTitle);
 
   const scopeDetail = () => (req() ? approvalDetail(req()!) : {});
   const controls = () => approvalControls(req());
 
   const submitAnswer = async (payload: Record<string, unknown>, kind: 'success' | 'warning') => {
     if (isResolvedRemotely() || busy()) return;
-    const ok = await respondInboxItem(props.item, payload, kind);
-    if (ok) {
+    const result = await respondInboxItem(props.item, payload);
+    if (result) {
       const request = req();
       if (request?.kind === 'question' || request?.kind === 'form') {
         props.onBack();
       } else {
-        settled.set({
-          title: kind === 'success' ? tr('Allowed') : tr('Denied'),
-          accepted: kind === 'success',
-        });
+        const accepted = approvalOutcome(result.outcome);
+        if (accepted !== null)
+          settled.set({ title: accepted ? tr('Allowed') : tr('Denied'), accepted });
       }
       await refreshAuthoritativeRecord();
     }
   };
 
-  const questionItem = () => {
+  const questions = () => {
     const r = req();
-    return r?.kind === 'question' ? r.questions[0] : null;
+    return r?.kind === 'question' ? r.questions : null;
   };
 
   return (
     <NavPage
       style={{ flex: 1 }}
-      title={badgeLabel(props.item.summary.kind)}
+      title={interactionBadge(props.item.summary.kind)}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
       header={
         <ScreenHeader
-          title={badgeLabel(props.item.summary.kind)}
+          title={interactionBadge(props.item.summary.kind)}
           backLabel={tr('Pending')}
           onBack={props.onBack}
         />
@@ -192,10 +178,19 @@ export function ReviewDetailScreen(props: {
           <If when={isResolvedRemotely()}>
             <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 16 }}>
               <ApprovalOutcome
-                title={settled()?.title ?? outcomeSummary(record()?.outcome)}
+                title={
+                  settled()?.title ??
+                  outcomeSummary(
+                    record()
+                      ?.outcome as import('../../../../../../packages/plugin-sdk/src/generated/runtime').InteractionOutcome,
+                  )
+                }
                 accepted={
                   settled()?.accepted ??
-                  outcomeSummary(record()?.outcome) === tr('Approved on another device')
+                  outcomeSummary(
+                    record()
+                      ?.outcome as import('../../../../../../packages/plugin-sdk/src/generated/runtime').InteractionOutcome,
+                  ) === tr('Approved on another device')
                 }
               />
             </View>
@@ -235,7 +230,7 @@ export function ReviewDetailScreen(props: {
                       color: token('warning'),
                     }}
                   >
-                    {badgeLabel(props.item.summary.kind)}
+                    {interactionBadge(props.item.summary.kind)}
                   </Text>
                 </View>
               </If>
@@ -273,74 +268,17 @@ export function ReviewDetailScreen(props: {
             </View>
           </InsetGroup>
 
-          {/* Interactive Question Choices */}
-          <If when={questionItem() && !isResolvedRemotely()}>
-            <InsetGroup header={tr('Choose an answer')}>
-              <Each of={questionItem()!.options} key={(o) => o.label}>
-                {(opt, index) => (
-                  <GroupRow
-                    title={opt().label}
-                    subtitle={opt().description}
-                    trailing={
-                      selectedOption() === opt().label ? (
-                        <Icon name="check" color={token('primary')} size={18} strokeWidth={2.4} />
-                      ) : undefined
-                    }
-                    divider={index() < questionItem()!.options.length - 1}
-                    onPress={() => {
-                      hapticSelection();
-                      selectedOption.set(opt().label);
-                      customAnswer.set('');
-                    }}
-                  />
-                )}
-              </Each>
-            </InsetGroup>
-
-            <InsetGroup header={tr('Or write your own')}>
-              <View style={{ paddingHorizontal: 16, paddingVertical: 10 }}>
-                <Input
-                  accessibilityLabel={tr('Write your own answer')}
-                  value={customAnswer()}
-                  placeholder={tr('Or type a custom answer…')}
-                  onChange={({ value }) => {
-                    customAnswer.set(value);
-                    if (value.trim()) selectedOption.set(null);
-                  }}
-                  style={{
-                    minHeight: 40,
-                    ...type.body,
-                    color: token('foreground'),
-                    placeholderColor: token('muted-foreground'),
-                    backgroundColor: 'transparent',
-                  }}
-                />
-              </View>
-            </InsetGroup>
-
-            <View style={{ paddingHorizontal: spacing.pageX, gap: 10 }}>
-              <ActionButton
-                title={tr('Submit Answer')}
-                disabled={busy() || (!selectedOption() && !customAnswer().trim())}
-                onPress={() => {
-                  const answerText = customAnswer().trim() || selectedOption() || '';
-                  void submitAnswer(
-                    {
-                      kind: 'question',
-                      answers: [{ question: questionItem()!.question, answer: answerText }],
-                    },
-                    'success',
-                  );
-                }}
-              />
-            </View>
+          <If when={questions() && !isResolvedRemotely()}>
+            <QuestionForm
+              questions={questions()!}
+              busy={busy()}
+              submit={(answer) => void submitAnswer(answer, 'success')}
+            />
           </If>
 
           {/* Approval Actions (hidden/disabled once resolved remotely) */}
           <If
-            when={
-              !isResolvedRemotely() && !questionItem() && (controls().primary || controls().deny)
-            }
+            when={!isResolvedRemotely() && !questions() && (controls().primary || controls().deny)}
           >
             <View style={{ paddingHorizontal: spacing.pageX }}>
               <ApprovalActions

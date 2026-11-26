@@ -588,6 +588,13 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.press("label:Verification code").unwrap();
     assert_eq!(app.screen().clipboard(), Some("123456"));
     app.clear("label:Device name").unwrap();
+    app.type_text("label:Device name", &"\u{754c}".repeat(43))
+        .unwrap();
+    app.press("label:Confirm & Connect").unwrap();
+    app.wait_for("text:Device name must be 128 UTF-8 bytes or fewer.")
+        .unwrap();
+    assert!(confirming.try_recv().is_err());
+    app.clear("label:Device name").unwrap();
     app.type_text("label:Device name", "Field iPhone").unwrap();
     app.press("label:Confirm & Connect").unwrap();
     let confirm = confirming.try_recv().unwrap();
@@ -752,7 +759,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         if data["method"] == "updateGlobalInstructions" {
             save_tx.send(call.into_reply().unwrap()).unwrap();
         } else {
-            call.resolve(json!({"value":{"kind":"recorded"}}));
+            call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":{"kind":"service_approval_decision","decision":"allow","committedAt":1}}}}));
         }
         mutate_tx.send(data).unwrap();
     });
@@ -833,11 +840,14 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.wait_for("text:Allow service call DeployRunner?")
         .unwrap();
 
-    // Approve directly from Pending Inbox and verify the mutation targets root-b.
-    app.press("label:Allow").unwrap();
+    // The phone offers only Deny, and the Desktop winner is authoritative.
+    app.wait_for("text:/Review on Desktop/").unwrap();
+    assert!(!app.shows("label:Allow"));
+    app.press("label:Deny").unwrap();
     let mutation = mutate_rx.recv().await.unwrap();
     assert_eq!(mutation["rootId"], "root-b");
     assert_eq!(mutation["input"]["requestId"], "req-b");
+    assert_eq!(mutation["input"]["answer"]["decision"], "deny");
     app.wait_for("text:Allowed").unwrap();
     app.wait_for("text:All caught up").unwrap();
 
@@ -919,12 +929,13 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 "run": { "backend": "model", "runId": "run-1", "turnId": "t1", "state": "running" },
                 "parts": [], "toolSeeds": []
             }),
+            "queue" => json!({"revision":3,"entries":[{"messageId":"q1","kind":"followup","preview":"Authoritative queue entry"}]}),
             "history" => json!({
                 "kind": "ready", "through": 5, "before": null, "after": null,
                 "chunks": [
                     { "field": "body", "position": { "kind": "live", "sequence": 1, "fact": "00000000-0000-4000-8000-000000000001", "itemIndex": 0 }, "order": { "path": [1], "itemIndex": 0 }, "offset": 0, "messageId": "m1", "turnId": "t0", "timestamp": 1, "role": "user", "text": "Fix the OAuth token refresh." },
                     { "field": "thinking", "position": { "kind": "live", "sequence": 2, "fact": "00000000-0000-4000-8000-000000000002", "itemIndex": 0 }, "order": { "path": [2], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 2, "role": "assistant", "text": "Inspecting token expiry window first." },
-                    { "field": "body", "position": { "kind": "live", "sequence": 3, "fact": "00000000-0000-4000-8000-000000000003", "itemIndex": 0 }, "order": { "path": [3], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 3, "role": "assistant", "text": "", "tool": { "toolUseId": "tu1", "name": "Shell", "title": "cargo test oauth", "isError": false } },
+                    { "field": "body", "position": { "kind": "live", "sequence": 3, "fact": "00000000-0000-4000-8000-000000000003", "itemIndex": 0 }, "order": { "path": [3], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 3, "role": "assistant", "text": "", "tool": { "toolUseId": "tu1", "call":{"name":"Shell","title":{"fallback":"Test OAuth","translations":{"en":"Verify OAuth"}}},"result":{"isError":true} } },
                     { "field": "body", "position": { "kind": "live", "sequence": 4, "fact": "00000000-0000-4000-8000-000000000004", "itemIndex": 0 }, "order": { "path": [4], "itemIndex": 0 }, "offset": 0, "messageId": "m2", "turnId": "t0", "timestamp": 4, "role": "assistant", "text": "Updated refresh window to 60 seconds." }
                 ]
             }),
@@ -958,8 +969,13 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     let (send_tx, mut send_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
+        let value = if data["method"] == "editQueue" {
+            json!({"kind":"revision_conflict","expected":2,"actual":3})
+        } else {
+            json!({"kind":"recorded"})
+        };
         let _ = send_tx.send(data);
-        call.reply(Ok(json!({ "value": { "kind": "recorded" } })));
+        call.reply(Ok(json!({"value":value})));
     });
 
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
@@ -983,7 +999,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.press("label:Thought process · 1 tool").unwrap();
     app.wait_for("text:Inspecting token expiry window first.")
         .unwrap();
-    app.wait_for("text:cargo test oauth").unwrap();
+    app.wait_for("text:/Test OAuth|Verify OAuth/").unwrap();
     app.wait_for("text:Run integration test suite").unwrap();
 
     // Stream live Markdown preview + queued turn over watch subscription.
@@ -1013,6 +1029,17 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
         }
     })).unwrap();
     app.wait_for("text:1 message queued").unwrap();
+    app.press("text:1 message queued").unwrap();
+    app.press("label:Remove queued message").unwrap();
+    let retract = send_rx.recv().await.unwrap();
+    assert_eq!(retract["method"], "editQueue");
+    assert_eq!(retract["input"]["expectedRevision"], 2);
+    assert_eq!(
+        retract["input"]["edit"],
+        json!({"kind":"retract","messageId":"q1"})
+    );
+    app.wait_for("text:Authoritative queue entry").unwrap();
+    app.press("label:Done").unwrap();
 
     // Sending while running MUST use delivery = "queue" (never "steer").
     app.type_text("label:Message composer", "Follow up after tests")
@@ -1067,6 +1094,17 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
             "history" => json!({ "kind": "ready", "through": 1, "before": null, "after": null, "chunks": [] }),
             "models" => json!({ "kind": "ready", "choices": [] }),
             "pendingInteractions" => json!({ "revision": 1, "entries": [] }),
+            "listFiles" => {
+                assert_eq!(data["input"]["sessionId"], "chat-diff");
+                let path = &data["input"]["path"];
+                let entries = if path.is_null() {
+                    json!([{"path":{"bytesBase64":"LmdpdGh1Yg=="},"kind":"directory"}])
+                } else {
+                    assert_eq!(path["bytesBase64"], "LmdpdGh1Yg==");
+                    json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0U="},"kind":"file"}])
+                };
+                json!({"directoryIdentity":"directory","entries":entries,"next":null})
+            }
             "gitWorkspaceDiff" => json!({ "patch": sample_patch, "truncated": false, "skippedFiles": 0 }),
             _ => json!({}),
         };
@@ -1105,6 +1143,12 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     // Returns cleanly to ChatScreen with both original draft and quoted path:line.
     app.wait_for("text:/Please check this:/").unwrap();
     app.wait_for(r"text:/src\/auth\.rs:12/").unwrap();
+    app.press("label:Files & Changes").unwrap();
+    app.press("label:Files").unwrap();
+    app.wait_for("label:.github").unwrap();
+    app.press("label:.github").unwrap();
+    app.press("label:NOTICE").unwrap();
+    app.wait_for(r"text:/\.github\/NOTICE:1/").unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1143,7 +1187,7 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "req-1", "kind": "service_approval", "toolUseId": "tu-1" }] }),
             "interaction" => json!({
                 "requestId": "req-1",
-                "outcome": if is_resolved { json!({ "decision": "allow" }) } else { Value::Null },
+                "outcome": if is_resolved { json!({ "kind":"service_approval_decision","decision":"allow","committedAt":1 }) } else { Value::Null },
                 "request": {
                     "kind": "service_approval", "toolUseId": "tu-1", "toolName": "ReleaseTool",
                     "service": "release", "method": "publish", "binding": "prod", "through": 1
@@ -1180,11 +1224,17 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.wait_for("text:Allow service call ReleaseTool?")
         .unwrap();
     app.press("text:Allow service call ReleaseTool?").unwrap();
-    app.wait_for("label:Allow").unwrap();
+    app.wait_for("label:Deny").unwrap();
+    assert!(!app.shows("label:Allow"));
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
-    let sub_id = sub_rx.recv().await.unwrap();
+    let sub_id = loop {
+        let id = sub_rx.recv().await.unwrap();
+        if id.starts_with("review:") {
+            break id;
+        }
+    };
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
@@ -1249,7 +1299,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
             "credentialStatus" => json!({"kind":"status","status":{"locator":data["input"]["locator"],"configured":false,"credentialId":null,"revision":null}}),
             "network" => json!({"revision":4,"rootId":"root","rootPath":"/work","proxy":{"enabled":true,"protocol":"https",
                 "host":"proxy.example","port":443,"bypassList":[],"autoBypassDomains":[],"authEnabled":true,"username":"phone"},
-                "credential":{"configured":false,"credentialId":null,"revision":null}}),
+                "credential":{"configured":true,"credentialId":"proxy-fixture-id","revision":2,"locator":{"key":"proxy"}}}),
             "snapshot" => query_web.clone(),
             other => panic!("unexpected query {other}"),
         };
@@ -1332,7 +1382,8 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Sign in with device code").unwrap();
     app.wait_for("text:ABCD-1234").unwrap();
     app.wait_for("label:Copy code").unwrap();
-    app.wait_for("label:Open sign-in page").unwrap();
+    app.press("label:Open sign-in page").unwrap();
+    assert_eq!(app.screen().opened_urls(), &["https://example.com/device"]);
     let (call, reply) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
         .await
         .unwrap()
@@ -1371,8 +1422,14 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Settings").unwrap();
 
     app.press("label:Network Proxy").unwrap();
-    app.wait_for("label:Password").unwrap();
-    app.type_text("label:Password", "proxy-fixture-secret")
+    app.wait_for("label:Replace password").unwrap();
+    app.clear("label:Host").unwrap();
+    app.type_text("label:Host", "new-proxy.example").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:/Enter the password again or turn off proxy authentication/")
+        .unwrap();
+    assert!(rx.try_recv().is_err());
+    app.type_text("label:Replace password", "proxy-fixture-secret")
         .unwrap();
     app.press("label:Save").unwrap();
     let (call, _) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -1385,7 +1442,7 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     assert_eq!(call["secret"], "proxy-fixture-secret");
     assert_eq!(call["input"]["credential"], "replace");
     assert_eq!(call["input"]["expectedPolicyRevision"], 4);
-    assert_eq!(call["input"]["networkProxy"]["host"], "proxy.example");
+    assert_eq!(call["input"]["networkProxy"]["host"], "new-proxy.example");
     assert!(!call["input"].to_string().contains("proxy-fixture-secret"));
 }
 
@@ -1454,6 +1511,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
                     "disabled":["old"]})
             }
             ("agent", "mcpConfigurations") => {
+                assert_eq!(data["input"]["redacted"], true);
                 let location = if workspace.is_null() { "user:agents" } else {
                     assert_eq!(workspace, &json!({"projectId":"project","path":"/work"}));
                     "project:agents"
@@ -1593,6 +1651,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
 
     app.press("label:Add MCP server").unwrap();
     app.wait_for("label:Command").unwrap();
+    app.type_text("label:Name", "mcp-fixture").unwrap();
+    app.type_text("label:Command", "fixture-command").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:A server with this name already exists at this location.")
+        .unwrap();
+    assert!(writes.try_recv().is_err());
+    app.clear("label:Name").unwrap();
     app.type_text("label:Name", "new-server").unwrap();
     app.press("label:Protocol").unwrap();
     app.choose_menu_item("HTTP").unwrap();
@@ -1715,6 +1780,15 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
     };
     let cases = [
         (
+            json!({"kind":"question","toolUseId":"tool","questions":[
+                {"question":"Which release?","options":[{"label":"Stable"},{"label":"Beta"}]},
+                {"question":"What notes?","options":[{"label":"Short"},{"label":"Full"}]}
+            ]}),
+            "Which release?",
+            "Submit Answer",
+            json!({"kind":"question","answers":["Stable",null]}),
+        ),
+        (
             capability(json!({"kind":"browser_origin","origin":"https://example.test"})),
             "https://example.test",
             "Allow",
@@ -1748,9 +1822,9 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
         (
             json!({"kind":"session_approval","toolUseId":"tool","sessionId":"child","requestId":"delegate",
                 "answer":{"kind":"computer_app","decision":"always"}}),
-            "Always",
-            "Always",
-            json!({"kind":"session_approval","decision":"allow"}),
+            "Review on Desktop",
+            "Deny",
+            json!({"kind":"session_approval","decision":"deny"}),
         ),
     ];
 
@@ -1790,7 +1864,10 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             assert_eq!(data["method"], "respond");
             tx.send(data["input"]["answer"].clone()).unwrap();
             settled.store(true, std::sync::atomic::Ordering::SeqCst);
-            call.resolve(json!({"value":{"kind":"recorded"}}));
+            let answer = &data["input"]["answer"];
+            let outcome = json!({"kind":format!("{}_decision", answer["kind"].as_str().unwrap()),
+                "decision":answer["decision"],"committedAt":1});
+            call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":outcome}}}));
         });
         let mut config = engine_config(channel, tokio::runtime::Handle::current());
         config.viewport = Size::new(px(390.), px(844.));
@@ -1802,6 +1879,14 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
         let mut app = Headless::start(config).unwrap();
         app.wait_for("label:Pending").unwrap();
         app.press("label:Pending").unwrap();
+        if button == "Submit Answer" {
+            app.press("text:Which release?").unwrap();
+            app.wait_for("text:What notes?").unwrap();
+            app.press("label:Stable").unwrap();
+            app.press("label:Submit Answer").unwrap();
+            assert_eq!(rx.try_recv().unwrap(), expected);
+            continue;
+        }
         app.wait_for(&format!("text:/{}/", detail.replace('/', "\\/")))
             .unwrap();
         if button == "Deny" || button == "Always" || button == "This session" {
@@ -1870,4 +1955,95 @@ async fn manual_websocket_is_visible_until_disconnected() {
     app.wait_for("label:Disconnect").unwrap();
     app.press("label:Disconnect").unwrap();
     app.wait_for("label:Scan QR code on computer").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host =
+            json!({"rootId":"root","hostName":"Room Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let advanced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let query_advanced = advanced.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let session = json!({"id":"room-1","title":"Release Room","kind":"room","parentSessionId":null,
+            "workspace":{"path":"/work"},"updatedAt":1700000000000u64,"activity":"idle",
+            "backend":{"kind":"model","connectionId":"conn","modelId":"stale-model"}});
+        let message = |sequence, id, text| {
+            json!({"sequence":sequence,"id":id,"content":{"text":text,"attachments":[]},"at":1,
+                "author":{"kind":"human"},"mentions":[],"deliveries":[],"reactions":[]})
+        };
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[session],"needsYouCount":0}),
+            "observe" => json!({"session":session,"through":0,"run":null}),
+            "botOutbox" => json!({"isBot":false}),
+            "models" => json!({"kind":"ready","choices":[{"label":"Stale model",
+                "selection":{"kind":"model","connectionId":"conn","modelId":"stale-model"}}]}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "history" => {
+                if data["input"]["position"]["kind"] == "before_message" {
+                    assert_eq!(data["input"]["position"]["messageId"], "m2");
+                    assert_eq!(data["input"]["through"], 0);
+                    json!({"kind":"room","page":{"items":[message(1,"m1","Earlier room message")],"through":0,"before":"m1"}})
+                } else if query_advanced.load(std::sync::atomic::Ordering::SeqCst) {
+                    json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message"),message(3,"m3","Live room message")],"through":1,"before":"m2"}})
+                } else {
+                    json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}})
+                }
+            }
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        if data["method"] == "watch" {
+            watch_tx.send(data["subscriptionId"].clone()).unwrap();
+        }
+        call.resolve(
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
+        );
+    });
+    let (send_tx, mut send_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        if data["method"] == "send" {
+            send_tx.send(data["input"].clone()).unwrap();
+        }
+        call.resolve(json!({"value":{"kind":"accepted"}}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Release Room").unwrap();
+    app.press("label:Conversation: Release Room").unwrap();
+    app.wait_for("text:Initial room message").unwrap();
+    app.press("label:Load earlier messages").unwrap();
+    app.wait_for("text:Earlier room message").unwrap();
+    let watch = watch_rx.try_recv().unwrap();
+    advanced.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({"rootId":"root","generation":1,"subscriptionId":watch,
+        "item":{"kind":"room","through":1,"revision":1}}),
+    )
+    .unwrap();
+    app.wait_for("text:Live room message").unwrap();
+    app.wait_for("text:Earlier room message").unwrap();
+    assert!(app.press("label:Select model").is_err());
+    app.type_text("label:Message composer", "Hi Room").unwrap();
+    app.press("label:Send message").unwrap();
+    let input = send_rx.try_recv().unwrap();
+    assert!(input["backend"].is_null());
+    assert_eq!(input["message"], "Hi Room");
 }

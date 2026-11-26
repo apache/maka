@@ -391,7 +391,12 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                       title={tr('Scan again')}
                       variant="primary"
                       compact
-                      onPress={restart}
+                      onPress={() => {
+                        if (status() === 'ready') {
+                          scanError.set(null);
+                          paused.set(false);
+                        } else restart();
+                      }}
                     />
                   </View>
                 </If>
