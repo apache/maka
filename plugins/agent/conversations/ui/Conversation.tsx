@@ -198,6 +198,7 @@ import {
   reportedWorker,
   activeWorkers,
   type ActiveWorker,
+  botChatHidesRow,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
@@ -1586,13 +1587,9 @@ export function Conversation(props: ConversationProps) {
         if (!showWork || !turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
-        // Only SendUser publishes for the Bot. The model's own text, including a
-        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
-        // failure is a failure row, which this does not hide.
-        if (botChat && row.role === 'assistant') continue;
-        // A message the Host wrote on the user's behalf (a worker finishing, a task
-        // result) is not something the user said. It stays in Trajectory.
-        if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
+        // Only SendUser publishes for the Bot. Model output and host-authored
+        // user messages stay internal in Trajectory; failures remain visible.
+        if (botChat && botChatHidesRow(row)) continue;
         if (
           entry.processTurnKey &&
           turn &&
@@ -2991,16 +2988,15 @@ export function Conversation(props: ConversationProps) {
   };
   const revealRow = (row: Row) => {
     const id = stableRowId(row);
-    if (
-      botView() === 'bot' &&
-      (row.role === 'assistant' ||
-        (row.role === 'user' && row.origin && row.origin.kind !== 'session'))
-    ) {
-      const key = trajectoryRecordKey(id);
-      if (!trajectoryByKey().has(key))
-        throw new UiError('The original message is not available in this conversation.');
+    if (botView() !== 'ordinary' && botChatHidesRow(row)) {
+      const previous = reading();
       innerReader.set(null);
       reading.set('trajectory');
+      const key = trajectoryRecordKey(id);
+      if (!trajectoryByKey().has(key)) {
+        reading.set(previous);
+        throw new UiError('The original message is not available in this conversation.');
+      }
       jumpTrajectoryEntry(key);
       return;
     }
@@ -3067,27 +3063,30 @@ export function Conversation(props: ConversationProps) {
     navigation.set(target);
     try {
       let resolvedAnchor: HistoryRowAddress | undefined;
-      const opened = await resetHistory(
-        { kind: 'row', position: anchor.position, field: 'body' },
-        anchor.through,
-        (page) => {
-          resolvedAnchor = page.resolvedAnchor ?? undefined;
-          const matches = resolvedAnchor
-            ? (chunk: ConversationHistoryPage['chunks'][number]) =>
-                chunk.field === 'body' &&
-                chunk.offset === 0 &&
-                sameHistoryRow(chunk.position, resolvedAnchor!)
-            : (chunk: ConversationHistoryPage['chunks'][number]) =>
-                chunk.messageId === anchor.messageId &&
-                chunk.field === 'body' &&
-                chunk.offset === 0 &&
-                sameHistoryRow(chunk.position, anchor.position);
-          if (!page.chunks.some(matches))
-            throw new UiError('The original message could not be verified.');
-        },
-        () => navigation() === target && current(),
-        'conversation',
-      );
+      const [opened] = await Promise.all([
+        resetHistory(
+          { kind: 'row', position: anchor.position, field: 'body' },
+          anchor.through,
+          (page) => {
+            resolvedAnchor = page.resolvedAnchor ?? undefined;
+            const matches = resolvedAnchor
+              ? (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, resolvedAnchor!)
+              : (chunk: ConversationHistoryPage['chunks'][number]) =>
+                  chunk.messageId === anchor.messageId &&
+                  chunk.field === 'body' &&
+                  chunk.offset === 0 &&
+                  sameHistoryRow(chunk.position, anchor.position);
+            if (!page.chunks.some(matches))
+              throw new UiError('The original message could not be verified.');
+          },
+          () => navigation() === target && current(),
+          'conversation',
+        ),
+        bot.whenIdentified,
+      ]);
       if (!opened || !alive || navigation() !== target || !current())
         throw new UiError('History navigation was cancelled.');
       const row = rows().find((candidate) =>
