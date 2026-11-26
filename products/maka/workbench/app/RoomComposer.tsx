@@ -325,12 +325,7 @@ export function RoomComposer(props: {
   };
 
   const send = async () => {
-    if (!ready() || busy() || pending() || (!text().trim() && !attachments.ids().length)) return;
-    const blocked = attachments.blocked();
-    if (blocked) {
-      error.set(blocked.message);
-      return;
-    }
+    if (!canSend()) return;
     busy.set(true);
     error.set('');
     try {
@@ -588,15 +583,22 @@ export function RoomComposer(props: {
     return counts;
   };
 
+  const attachmentBlock = () => attachments.blocked();
+  const attachmentWarning = () => {
+    const block = attachmentBlock();
+    return block?.kind === 'draft' ? block.message : '';
+  };
   const canSend = () =>
     ready() &&
     !busy() &&
     pending() === null &&
+    attachmentBlock() === null &&
     (Boolean(text().trim()) || attachments.ids().length > 0);
 
   const streamError = () => props.streamError?.() ?? '';
   const waiting = () => props.waitingMembers?.() ?? [];
   const hasFailure = () => Boolean(streamError() || error() || pending());
+  const hasAttachmentWarning = () => Boolean(attachmentWarning());
   const hasWaiting = () => waiting().length > 0;
   const failureMessage = () =>
     error() || (pending() ? tr('Could not send to the room.') : streamError());
@@ -879,14 +881,14 @@ export function RoomComposer(props: {
       </If>
 
       <View style={{ flexShrink: 0 }}>
-        <If when={hasFailure() || hasWaiting()}>
+        <If when={hasFailure() || hasAttachmentWarning() || hasWaiting()}>
           <ComposerShelf inset={20}>
             <If when={hasFailure()}>
               <ComposerShelfRow
                 tone="danger"
                 message={failureMessage()}
                 detail={pending() ? pendingPreview() : undefined}
-                divided={hasWaiting()}
+                divided={hasAttachmentWarning() || hasWaiting()}
                 action={{
                   label: tr('Retry'),
                   primary: true,
@@ -901,6 +903,13 @@ export function RoomComposer(props: {
                     : undefined
                 }
                 dismissLabel={tr('Dismiss message status')}
+              />
+            </If>
+            <If when={hasAttachmentWarning()}>
+              <ComposerShelfRow
+                tone="warning"
+                message={attachmentWarning()}
+                divided={hasWaiting()}
               />
             </If>
             <If when={hasWaiting()}>

@@ -2319,7 +2319,7 @@ mod tests {
         assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
         assert!(
             !app.screen()
-                .matches("text:Could not check external agents")
+                .matches("text:/Could not check external agents/")
                 .unwrap()
         );
 
@@ -2330,6 +2330,27 @@ mod tests {
         assert_eq!(
             app.screen()
                 .count("text:External runtime probe failed")
+                .unwrap(),
+            0
+        );
+
+        // Deployment conflict during save clears basis; header owns message, section offers Retry to reload.
+        app.press_key("f11").unwrap();
+        app.press("label:Disable Codex").unwrap();
+        app.wait_for("text:/These settings changed elsewhere/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
                 .unwrap(),
             0
         );

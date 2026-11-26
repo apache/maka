@@ -51,7 +51,12 @@ function Fixture() {
   const catalogRevision = 1;
   const modelIds = ['gpt-4.1', 'gpt-4.1-mini'];
   const basis = () => ({ connectionId: 'openai', revision });
-  const sourceRef = { stateDomain: 'profile', deployment: 'root', revision: 1 };
+  let sourceRevision = 1;
+  const sourceRef = () => ({
+    stateDomain: 'profile',
+    deployment: 'root',
+    revision: sourceRevision,
+  });
   const externalRuntimes = [
     { id: 'codex' as const, name: 'Codex', enabled: true, usageLimits: false },
     { id: 'claude' as const, name: 'Claude Code', enabled: false, usageLimits: false },
@@ -75,7 +80,7 @@ function Fixture() {
     async query(endpoint: string, method: string, input: any) {
       if (method === 'assistantPreferences') return { revision: 1, language: 'auto' };
       if (endpoint === 'management' && method === 'read')
-        return { source: { reference: sourceRef } };
+        return { source: { reference: sourceRef() } };
       if (endpoint === 'agent' && method === 'externalAgents') {
         if (holdExternal) {
           await new Promise<void>((resolve) => {
@@ -280,6 +285,9 @@ function Fixture() {
         },
         f10: () => {
           failProviders = !failProviders;
+        },
+        f11: () => {
+          sourceRevision += 1;
         },
       },
       { when: 'always' },

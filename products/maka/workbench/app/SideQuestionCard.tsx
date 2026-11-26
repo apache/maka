@@ -476,19 +476,13 @@ export function SideComposer(props: {
   attach(node: InputRef): void;
 }) {
   const running = () => (props.session()?.run() ?? null) !== null;
-  const confirming = () => {
-    const session = props.session();
-    return !!session?.loading() || !!session?.recovering() || !!session?.continuing();
-  };
   const failure = () => {
     const session = props.session();
     if (!session) return '';
     return session.error() || session.sends().find((send) => send.state === 'failed')?.detail || '';
   };
   const blockWarning = () => {
-    const session = props.session();
-    if (!session || confirming()) return '';
-    const block = session.sendBlock();
+    const block = props.session()?.sendBlock() ?? null;
     return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
   };
   const notice = () => failure() || blockWarning();

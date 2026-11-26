@@ -87,8 +87,40 @@ fn assert_main_composer_deduplicates_blocks(idiom: Idiom) {
     );
     assert!(!app.screen().enabled("label:Send message").unwrap());
 
-    // 2. Attachments block: owned by DraftAttachments tray, not repeated in Composer warning.
+    // 2. Real attachment intake -> uploading -> failed flow through createAttachmentDraft:
+    //    Before any tray row exists, Composer owns the preparing hint.
     app.press_key("f2").unwrap();
+    app.wait_for("text:Preparing attachments… You can keep typing.")
+        .unwrap();
+    assert_eq!(
+        app.screen()
+            .count("text:Preparing attachments… You can keep typing.")
+            .unwrap(),
+        1
+    );
+    assert!(!app.screen().enabled("label:Send message").unwrap());
+
+    //    Once the intake emits an uploading row while still open, DraftAttachments owns
+    //    progress and Composer must drop the preparing hint immediately.
+    app.press_key("f6").unwrap();
+    app.wait_for("text:Confirming upload…").unwrap();
+    assert_eq!(app.screen().count("text:Confirming upload…").unwrap(), 1);
+    assert_eq!(
+        app.screen()
+            .count("text:Preparing attachments… You can keep typing.")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        app.screen()
+            .count("text:Uploading attachments… Your typing is kept.")
+            .unwrap(),
+        0
+    );
+    assert!(!app.screen().enabled("label:Send message").unwrap());
+
+    //    Failed upload row stays owned by DraftAttachments, not repeated in Composer.
+    app.press_key("f7").unwrap();
     app.wait_for("text:Disk read failed").unwrap();
     assert_eq!(app.screen().count("text:Disk read failed").unwrap(), 1);
     assert_eq!(
@@ -150,26 +182,17 @@ fn compact_composer_renders_owned_blocks_immediately_without_duplicating_workspa
     );
     assert!(app.screen().matches("text:submissions:0").unwrap());
 
-    // Draft block shows immediately without submitting, once, and blocks submission.
-    app.press_key("f3").unwrap();
-    app.wait_for(
-        "text:This conversation is archived. Restore it in Sessions to send; your draft is kept.",
-    )
-    .unwrap();
-    assert_eq!(
-        app.screen()
-            .count(
-                "text:This conversation is archived. Restore it in Sessions to send; your draft is kept."
-            )
-            .unwrap(),
-        1
-    );
+    // Recovering draft block is shown immediately (CompactComposer has no toolbar spinner).
+    app.press_key("f8").unwrap();
+    app.wait_for("text:Checking send status…").unwrap();
+    assert_eq!(app.screen().count("text:Checking send status…").unwrap(), 1);
     app.submit("label:Ask Maka").unwrap();
     assert!(app.settle());
     assert!(app.screen().matches("text:submissions:0").unwrap());
 
     // Attachments block shows once in CompactComposer because it has no DraftAttachments tray.
     app.press_key("f2").unwrap();
+    app.press_key("f7").unwrap();
     app.wait_for("text:Remove the failed attachment or choose it again.")
         .unwrap();
     assert_eq!(

@@ -22,11 +22,12 @@ import type {
   AgentBackendPreference,
   ComposerSendBlock,
   ComposerSession,
-  ComposerUploadRow,
 } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { CompactComposer } from '../../../../../plugins/agent/conversations/ui/CompactComposer';
+import { createAttachmentDraft } from '../../app/attachmentDraft';
 import { InlineCallout } from '../../app/Feedback';
+import type { ScopedHost } from '../../app/host';
 import { currentLocale } from '../../app/locale';
 import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
@@ -36,12 +37,41 @@ function Fixture() {
 
   const surface = signal<'main' | 'compact'>('main');
   const draft = signal('hello world');
-  const sendBlock = signal<ComposerSendBlock | null>({
+  const recovering = signal(false);
+  const overrideBlock = signal<ComposerSendBlock | null>({
     kind: 'workspace',
     message: 'The workspace for this task is unavailable.',
   });
-  const rows = signal<ComposerUploadRow[]>([]);
   const submissions = signal(0);
+
+  let pushIntake: ((value: unknown) => void) | null = null;
+  let endIntake: (() => void) | null = null;
+
+  const client = {
+    findUpload: async () => null,
+    watchUploads: () => {
+      let sentInitial = false;
+      return {
+        next: () => {
+          if (!sentInitial) {
+            sentInitial = true;
+            return Promise.resolve([]);
+          }
+          return new Promise(() => {});
+        },
+        close: () => {},
+      };
+    },
+  } as unknown as ScopedHost;
+
+  const attachments = createAttachmentDraft({
+    sessionId: 'session-1',
+    client,
+    changed: () => {},
+    focus: () => {},
+  });
+
+  const sendBlock = (): ComposerSendBlock | null => overrideBlock() ?? attachments.blocked();
 
   const unexpected = (): never => {
     throw new Error('Unexpected action in composer-notices fixture');
@@ -69,7 +99,7 @@ function Fixture() {
     dismissError: () => {},
     notice: () => '',
     metrics: () => '',
-    recovering: () => false,
+    recovering,
     sends: () => [],
     retrySend: unexpected,
     editSend: unexpected,
@@ -138,63 +168,122 @@ function Fixture() {
     },
     attachments: {
       sessionId: 'session-1',
-      files: () => [],
-      rows,
-      ids: () => [],
-      picker: () => false,
-      restoring: () => false,
-      error: () => '',
-      notice: () => '',
-      recovering: () => null,
+      files: attachments.files,
+      rows: attachments.rows,
+      ids: attachments.ids,
+      picker: attachments.picker,
+      restoring: attachments.restoring,
+      error: attachments.error,
+      notice: attachments.notice,
+      recovering: attachments.recovering,
       imageUri: () => '',
       renderPicker: () => <View />,
       intake: () => {},
-      open: () => {},
-      remove: () => {},
-      reportError: () => {},
-      notify: () => {},
-      clearNotice: () => {},
+      open: attachments.open,
+      remove: attachments.remove,
+      reportError: attachments.reportError,
+      notify: attachments.notify,
+      clearNotice: attachments.clearNotice,
     },
+  };
+
+  const clearAttachments = () => {
+    endIntake?.();
+    pushIntake = null;
+    endIntake = null;
+    for (const row of attachments.rows()) {
+      attachments.remove({ owner: 'session-1', id: row.id });
+    }
   };
 
   cleanup(
     keymap.bind(
       {
         f1: () => {
-          rows.set([]);
-          sendBlock.set({
+          clearAttachments();
+          recovering.set(false);
+          overrideBlock.set({
             kind: 'workspace',
             message: 'The workspace for this task is unavailable.',
           });
         },
         f2: () => {
-          rows.set([
-            {
-              id: 'u1',
-              name: 'broken.png',
-              kind: 'failed',
-              error: 'Disk read failed',
+          clearAttachments();
+          recovering.set(false);
+          overrideBlock.set(null);
+          const queue: Array<unknown | null> = [];
+          let wake: ((value: unknown | null) => void) | null = null;
+          let closed = false;
+          pushIntake = (value) => {
+            if (closed) return;
+            if (wake) {
+              const resolve = wake;
+              wake = null;
+              resolve(value);
+            } else {
+              queue.push(value);
+            }
+          };
+          endIntake = () => {
+            if (closed) return;
+            closed = true;
+            if (wake) {
+              const resolve = wake;
+              wake = null;
+              resolve(null);
+            } else {
+              queue.push(null);
+            }
+          };
+          attachments.observeIntake({
+            next: () => {
+              if (queue.length > 0) return Promise.resolve(queue.shift()!);
+              if (closed) return Promise.resolve(null);
+              return new Promise((resolve) => {
+                wake = resolve;
+              });
             },
-          ]);
-          sendBlock.set({
-            kind: 'attachments',
-            message: 'Remove the failed attachment or choose it again.',
+            close: () => {
+              closed = true;
+            },
           });
         },
+        f6: () => {
+          pushIntake?.({ operationId: 'u1', name: 'report.png', kind: 'uploading' });
+        },
+        f7: () => {
+          pushIntake?.({
+            operationId: 'u1',
+            name: 'report.png',
+            kind: 'failed',
+            error: 'Disk read failed',
+          });
+          endIntake?.();
+        },
         f3: () => {
-          rows.set([]);
-          sendBlock.set({
+          clearAttachments();
+          recovering.set(false);
+          overrideBlock.set({
             kind: 'draft',
             message:
               'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
+          });
+        },
+        f8: () => {
+          clearAttachments();
+          recovering.set(true);
+          overrideBlock.set({
+            kind: 'draft',
+            message: 'Checking send status…',
           });
         },
         f4: () => {
           surface.set('compact');
         },
         f5: () => {
-          rows.set([]);
-          sendBlock.set(null);
+          clearAttachments();
+          recovering.set(false);
+          overrideBlock.set(null);
         },
       },
       { when: 'always' },

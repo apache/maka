@@ -401,10 +401,7 @@ export function createAttachmentDraft(options: {
       }
     },
     blocked(): ComposerSendBlock | null {
-      if (restoring()) return { kind: 'draft', message: tr('Restoring attachment drafts…') };
       if (error()) return { kind: 'attachments', message: error() };
-      if (intakes().size)
-        return { kind: 'draft', message: tr('Preparing attachments… You can keep typing.') };
       if (rows().some((row) => row.kind === 'unknown'))
         return { kind: 'attachments', message: tr('Checking upload status…') };
       if (rows().some((row) => row.kind === 'reading' || row.kind === 'uploading'))
@@ -414,6 +411,9 @@ export function createAttachmentDraft(options: {
           kind: 'attachments',
           message: tr('Remove the failed attachment or choose it again.'),
         };
+      if (restoring()) return { kind: 'draft', message: tr('Restoring attachment drafts…') };
+      if (intakes().size)
+        return { kind: 'draft', message: tr('Preparing attachments… You can keep typing.') };
       return null;
     },
   };
