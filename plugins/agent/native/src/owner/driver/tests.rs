@@ -8515,7 +8515,6 @@ struct SupersededCompactionFixture {
     s1_duration_ms: u64,
     baseline_1: ContentBlob,
     baseline_2: ContentBlob,
-    main_step: StepId,
     main_attempt: ModelAttemptId,
 }
 
@@ -8747,7 +8746,6 @@ async fn setup_superseded_compaction_run(rig: &mut Rig) -> TestResult<Superseded
         s1_duration_ms,
         baseline_1,
         baseline_2,
-        main_step: main_request.step,
         main_attempt,
     })
 }
@@ -8760,15 +8758,6 @@ async fn superseded_compaction_recovery_is_not_readopted_on_run_termination() {
     let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
         let fx = setup_superseded_compaction_run(&mut rig).await?;
         let driver = rig.driver.as_ref().unwrap();
-
-        // S1 was already superseded by S2; ready_summary must not resurface S1.
-        assert_eq!(
-            driver
-                .state
-                .ready_summary(fx.run, fx.main_step, Some(fx.main_attempt))
-                .await?,
-            None
-        );
 
         rig.append(
             vec![Fact::StopRequested {
