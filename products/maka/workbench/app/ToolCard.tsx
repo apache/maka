@@ -722,12 +722,7 @@ export function ToolCard(props: {
         trailing={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
             <If when={platform.idiom !== 'terminal' && images().length > 0}>
-              <ToolImageStrip
-                sessionId={props.sessionId}
-                through={imageThrough}
-                images={images}
-                preview={props.previewImage}
-              />
+              <ToolImageStrip sessionId={props.sessionId} through={imageThrough} images={images} />
             </If>
             <If when={props.expanded() && props.inspect !== undefined}>
               <IconButton

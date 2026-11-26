@@ -186,7 +186,7 @@ export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<
                   const current = viewer();
                   return (
                     <ImageViewer
-                      image={current.image}
+                      images={[current.image]}
                       close={inputAction(current.close, {
                         sessionId: current.tab.sessionId,
                         instance: current.tab.instance,

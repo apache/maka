@@ -17,10 +17,15 @@
  * under the License.
  */
 
-import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
-import { platform, Text, View } from 'nsh';
+import type {
+  AgentToolImageRead,
+  HistoryRowAddress,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import { platform, signal, Text, View } from 'nsh';
 import type { HistoryTool, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { ImageThumbnail } from './ImageThumbnail';
+import { ImageViewer } from './ImageViewer';
+import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
 import type { ImagePreview } from './ImageThumbnail';
 export type { ImagePreview } from './ImageThumbnail';
@@ -35,27 +40,33 @@ export function ToolImage(props: {
   position: HistoryRowAddress;
   /** One of the result's `images`; absent when the content is the image. */
   image?: number;
-  mini?: boolean;
   label?: string;
   preview(image: ImagePreview): void;
 }) {
   const host = useHost();
-  const source = Object.freeze({
-    sessionId: props.sessionId,
-    through: props.through(),
-    position: Object.freeze({ ...props.position }),
-    ...(props.image == null ? {} : { image: props.image }),
-    offset: 0,
-  });
+  const source = toolImageRead(props.sessionId, props.through(), props);
   return (
     <ImageThumbnail
       source={{ kind: 'tool-image', read: source }}
       uri={host.assetUri(immutableAsset('tool-image', source))}
-      mini={props.mini}
       label={props.label}
       preview={props.preview}
     />
   );
+}
+
+function toolImageRead(
+  sessionId: string,
+  through: number,
+  ref: { position: HistoryRowAddress; image?: number },
+): AgentToolImageRead {
+  return Object.freeze({
+    sessionId,
+    through,
+    position: Object.freeze({ ...ref.position }),
+    ...(ref.image == null ? {} : { image: ref.image }),
+    offset: 0,
+  });
 }
 
 export type ToolImageRef = { key: string; position: HistoryRowAddress; image?: number };
@@ -102,18 +113,41 @@ export function turnImages(
 
 const stripLimit = 4;
 
-/** The latest images as one-line thumbnails; earlier ones are counted. */
+/**
+ * The latest images as one-line thumbnails; earlier ones are counted. A thumbnail opens
+ * every image of the strip over the window, leaving the side panels as they are.
+ */
 export function ToolImageStrip(props: {
   sessionId: string;
   through: () => number;
   images: () => ToolImageRef[];
   total?: () => number | undefined;
-  preview(image: ImagePreview): void;
 }) {
   // Terminal cells are too coarse for thumbnails; expanded tools still show each image.
   if (platform.idiom === 'terminal') return <View />;
+  const host = useHost();
+  // Each image keeps the selector it was first read with, so the viewer reuses that load.
+  const sources = new Map<string, { read: AgentToolImageRead; uri: string }>();
+  const source = (ref: ToolImageRef) => {
+    let known = sources.get(ref.key);
+    if (!known) {
+      const read = toolImageRead(props.sessionId, props.through(), ref);
+      known = { read, uri: host.assetUri(immutableAsset('tool-image', read)) };
+      sources.set(ref.key, known);
+    }
+    return known;
+  };
+  const viewing = signal<{ index: number; opened: ImagePreview } | null>(null);
   const shown = () => props.images().slice(-stripLimit);
   const hidden = () => (props.total?.() ?? props.images().length) - shown().length;
+  const gallery = () => {
+    const { index, opened } = viewing()!;
+    return props.images().map((ref, at) => ({
+      uri: source(ref).uri,
+      title: tr('Original image'),
+      ...(at === index ? { width: opened.width, height: opened.height } : {}),
+    }));
+  };
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
       <If when={hidden() > 0}>
@@ -121,16 +155,28 @@ export function ToolImageStrip(props: {
       </If>
       <Each of={shown()} key={(value: ToolImageRef) => value.key}>
         {(value) => (
-          <ToolImage
+          <ImageThumbnail
             mini
-            sessionId={props.sessionId}
-            through={props.through}
-            position={value().position}
-            image={value().image}
-            preview={props.preview}
+            source={{ kind: 'tool-image', read: source(value()).read }}
+            uri={source(value()).uri}
+            preview={(opened) => {
+              const index = props.images().findIndex((ref) => ref.key === value().key);
+              if (index >= 0) viewing.set({ index, opened });
+            }}
           />
         )}
       </Each>
+      <If when={viewing()}>
+        <ImageViewer
+          images={gallery()}
+          index={viewing()!.index}
+          close={() => {
+            const opened = viewing()?.opened;
+            viewing.set(null);
+            opened?.restoreFocus?.();
+          }}
+        />
+      </If>
     </View>
   );
 }

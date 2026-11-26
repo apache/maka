@@ -202,7 +202,6 @@ export function TurnSummary(props: {
     through: () => number;
     refs: () => ToolImageRef[];
     total?: () => number | undefined;
-    preview(image: ImagePreview): void;
   };
 }) {
   const running = computed(() => {
@@ -326,7 +325,6 @@ export function TurnSummary(props: {
                 through={props.images!.through}
                 images={props.images!.refs}
                 total={props.images!.total}
-                preview={props.images!.preview}
               />
             </If>
           </View>

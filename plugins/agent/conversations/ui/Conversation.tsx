@@ -5131,7 +5131,6 @@ export function Conversation(props: ConversationProps) {
                     (work().length
                       ? work().reduce((total, work) => total + work.imageCount, 0)
                       : undefined),
-                  preview: props.previewImage,
                 }}
                 toggle={(open) => {
                   if (open) {

@@ -185,7 +185,7 @@ export function MarkdownImageView(props: {
       </If>
       <If when={viewing() && source() && dimensions()}>
         <ImageViewer
-          image={{ uri: source()!.uri, ...dimensions()!, title: name() }}
+          images={[{ uri: source()!.uri, ...dimensions()!, title: name() }]}
           close={() => {
             viewing.set(false);
             if (owns()) button?.focus();
