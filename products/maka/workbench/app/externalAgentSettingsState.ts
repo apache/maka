@@ -217,8 +217,10 @@ export function createExternalAgentSettings(
         },
       );
       if (result.status !== 'committed') {
-        if (result.status === 'conflict')
+        if (result.status === 'conflict') {
+          invalidate();
           throw new UiError('These settings changed elsewhere. Reload before saving again.');
+        }
         if (result.diagnostic) throw new UiError('Error: {detail}', { detail: result.diagnostic });
         throw new UiError('The Host rejected this service change. Reload and review it.');
       }
@@ -264,6 +266,11 @@ export function createExternalAgentSettings(
     }
     void load(true);
   };
+  const reloadConflict = (request: ExternalAgentAction) => {
+    if (!current(request) || busy()) return;
+    operations.error.set('');
+    void load(true);
+  };
   const deactivate = () => {
     read += 1;
     loading.set(false);
@@ -290,6 +297,7 @@ export function createExternalAgentSettings(
     acknowledge,
     cancel,
     reload,
+    reloadConflict,
     refresh() {
       if (!confirmation() && !busy()) void load(false);
     },

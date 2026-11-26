@@ -163,7 +163,7 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
         />
       </If>
       <If when={!owner.loading() && !owner.basis() && !unavailable()}>
-        <SettingsProblem retry={inputAction(owner.reload, owner.action())} />
+        <SettingsProblem retry={inputAction(owner.reloadConflict, owner.action())} />
       </If>
     </>
   );

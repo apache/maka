@@ -345,7 +345,7 @@ test('surfaces failure with retry on current inspect conflict and ignores stale 
   assert.equal(conflictOwner.loading(), false);
   assert.equal(conflictOwner.runtimes().length, 0);
   assert.ok(conflictOwner.failure(), 'current inspect conflict must expose failure for Retry');
-  assert.equal(reports.length, 1);
+  assert.equal(reports.length, 0, 'read failures stay scoped to the external agents section');
 
   // Case B: stale inspect from before deactivate settles with conflict after newer activate succeeded.
   let revision = 3;

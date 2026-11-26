@@ -2334,7 +2334,7 @@ mod tests {
             0
         );
 
-        // Deployment conflict during save clears basis; header owns message, section offers Retry to reload.
+        // Host configureBatch conflict clears basis; header owns message, section offers Retry to reload.
         app.press_key("f11").unwrap();
         app.press("label:Disable Codex").unwrap();
         app.wait_for("text:/These settings changed elsewhere/")
@@ -2346,6 +2346,7 @@ mod tests {
             1
         );
         assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        app.press_key("f11").unwrap();
         app.press("text:Retry").unwrap();
         app.wait_for("label:Disable Codex").unwrap();
         assert_eq!(
@@ -2354,6 +2355,27 @@ mod tests {
                 .unwrap(),
             0
         );
+
+        // Retrying externalAgents read failure must not wipe an active connections error in the header.
+        app.press_key("f12").unwrap();
+        app.press_key("f9").unwrap();
+        app.press_key("f8").unwrap();
+        app.wait_for("text:/Connection catalog unavailable/")
+            .unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 2);
+        app.press_key("f9").unwrap();
+        app.press("text:Retry >> nth=0").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Connection catalog unavailable/")
+                .unwrap(),
+            1
+        );
+        app.press_key("f12").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
 
         // Fail providers read: ProviderPicker owns the error, not the Settings header.
         app.press_key("f10").unwrap();

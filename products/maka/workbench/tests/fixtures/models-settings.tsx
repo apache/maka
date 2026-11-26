@@ -71,12 +71,31 @@ function Fixture() {
   ];
   let holdExternal = true;
   let failExternal = false;
+  let failConnections = false;
   let failProviders = false;
+  let conflictBatch = false;
   let releaseExternal: (() => void) | null = null;
 
   const application = {
     pendingSettings: async () => [],
     refresh: async () => {},
+    settingsMutation: async (endpoint: string, method: string) => {
+      if (endpoint === 'management' && method === 'configureBatch' && conflictBatch) {
+        return {
+          operationId: 'op-conflict',
+          reply: {
+            receipt: {
+              kind: 'recorded',
+              outcome: {
+                kind: 'returned',
+                result: { kind: 'success', value: { status: 'conflict' } },
+              },
+            },
+          },
+        };
+      }
+      throw new Error(`Unexpected mutation ${endpoint}.${method}`);
+    },
     async query(endpoint: string, method: string, input: any) {
       if (method === 'assistantPreferences') return { revision: 1, language: 'auto' };
       if (endpoint === 'management' && method === 'read')
@@ -100,7 +119,8 @@ function Fixture() {
             : { kind: 'ready' as const, runtimes: externalStatuses },
         };
       }
-      if (method === 'connections')
+      if (method === 'connections') {
+        if (failConnections) throw new Error('Connection catalog unavailable');
         return {
           kind: 'page',
           revision: catalogRevision,
@@ -118,6 +138,7 @@ function Fixture() {
             },
           ],
         };
+      }
       if (method === 'models') {
         const choice = (modelId: string) => ({
           selection: { connectionId: 'openai', modelId },
@@ -287,7 +308,10 @@ function Fixture() {
           failProviders = !failProviders;
         },
         f11: () => {
-          sourceRevision += 1;
+          conflictBatch = !conflictBatch;
+        },
+        f12: () => {
+          failConnections = !failConnections;
         },
       },
       { when: 'always' },
