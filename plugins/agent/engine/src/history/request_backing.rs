@@ -163,7 +163,7 @@ impl RequestBackingBuilder {
         Ok(start..self.length)
     }
 
-    /// Reserve a new zero-filled table in this backing; file regions stay sparse.
+    /// Reserve a new zero-filled table in this backing.
     pub(crate) fn reserve_zeroed(&mut self, bytes: u64) -> io::Result<Range<u64>> {
         let start = self.length;
         let end = start
@@ -179,7 +179,11 @@ impl RequestBackingBuilder {
                 }
                 bytes.resize(usize::try_from(end).map_err(io::Error::other)?, 0);
             }
-            Building::File { file, .. } => file.set_len(end)?,
+            // Growing the file with `set_len` makes APFS write its dirty last page to disk.
+            Building::File { file, .. } => {
+                file.seek(SeekFrom::Start(start))?;
+                io::copy(&mut io::repeat(0).take(bytes), file)?;
+            }
         }
         self.length = end;
         Ok(start..end)
