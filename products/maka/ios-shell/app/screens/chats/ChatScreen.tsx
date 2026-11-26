@@ -389,68 +389,45 @@ export function ChatScreen(props: {
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
-  const sameExecutor = (
-    left: AgentModelChoice['selection'],
-    right: AgentModelChoice['selection'],
-  ) =>
-    left.kind === 'executor' &&
-    right.kind === 'executor' &&
-    left.selection.executor === right.selection.executor &&
-    (left.selection.settings?.runtime ?? null) === (right.selection.settings?.runtime ?? null) &&
-    (left.selection.settings?.model ?? null) === (right.selection.settings?.model ?? null);
+  const backendKey = (backend: AgentModelChoice['selection']) =>
+    JSON.stringify(
+      backend.kind === 'model'
+        ? [
+            'model',
+            backend.connectionId,
+            backend.modelId,
+            backend.serviceTier ?? null,
+            backend.thinkingLevel ?? null,
+          ]
+        : [
+            'executor',
+            backend.selection.executor,
+            backend.selection.settings?.runtime ?? null,
+            backend.selection.settings?.model ?? null,
+          ],
+    );
 
   const currentModelLabel = () => {
     const chosen = ctrl.selectedBackend();
-    const list = ctrl.models();
-    if (chosen?.kind === 'executor')
-      return (
-        list.find(({ selection }) => sameExecutor(selection, chosen))?.label ??
-        chosen.selection.executor
-      );
-    if (chosen && chosen.kind === 'model') {
-      const match = list.find(
-        (m) =>
-          m.selection.kind === 'model' &&
-          m.selection.connectionId === chosen.connectionId &&
-          m.selection.modelId === chosen.modelId,
-      );
-      return match?.label ?? chosen.modelId;
-    }
-    return tr('Default');
+    if (!chosen) return tr('Default');
+    const key = backendKey(chosen);
+    return (
+      ctrl.models().find((model) => backendKey(model.selection) === key)?.label ??
+      (chosen.kind === 'model' ? chosen.modelId : chosen.selection.executor)
+    );
   };
 
   const modelMenuItems = (): MenuButtonItem[] => {
     const chosen = ctrl.selectedBackend();
-    return ctrl.models().map((m: AgentModelChoice, idx: number) => {
-      const id =
-        m.selection.kind === 'model'
-          ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
-      const checked =
-        chosen !== null &&
-        chosen.kind === m.selection.kind &&
-        (chosen.kind === 'model' && m.selection.kind === 'model'
-          ? chosen.connectionId === m.selection.connectionId &&
-            chosen.modelId === m.selection.modelId &&
-            chosen.thinkingLevel === m.selection.thinkingLevel
-          : sameExecutor(chosen, m.selection));
-      return {
-        id,
-        label: m.label,
-        checked,
-        singleSelection: true,
-      };
+    const selectedKey = chosen ? backendKey(chosen) : null;
+    return ctrl.models().map((model) => {
+      const id = backendKey(model.selection);
+      return { id, label: model.label, checked: id === selectedKey, singleSelection: true };
     });
   };
 
   const handleSelectModel = (id: string) => {
-    const match = ctrl.models().find((m, idx) => {
-      const key =
-        m.selection.kind === 'model'
-          ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
-      return key === id;
-    });
+    const match = ctrl.models().find((model) => backendKey(model.selection) === id);
     if (match) void ctrl.selectModel(match.selection);
   };
 

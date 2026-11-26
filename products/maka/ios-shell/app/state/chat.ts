@@ -18,7 +18,10 @@
  */
 
 import { approvalOutcome } from '../approval';
-import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  AgentInteractionResult,
+  AgentSendResult,
+} from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
@@ -62,16 +65,18 @@ export function conversationKey(rootId: string, sessionId: string): string {
   return rootId + '::' + sessionId;
 }
 
-const draftMap = signal<Record<string, string>>({});
+const draftMap = signal<Record<string, { text: string }>>({});
 const scrollOffsetMap = new Map<string, number>();
 
 export function getDraft(rootId: string, sessionId: string): string {
-  return draftMap()[conversationKey(rootId, sessionId)] ?? '';
+  return draftMap()[conversationKey(rootId, sessionId)]?.text ?? '';
 }
 
 export function setDraft(rootId: string, sessionId: string, value: string) {
   const key = conversationKey(rootId, sessionId);
-  draftMap.update((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
+  draftMap.update((prev) =>
+    (prev[key]?.text ?? '') === value ? prev : { ...prev, [key]: { text: value } },
+  );
 }
 
 export function appendQuoteToDraft(
@@ -194,12 +199,16 @@ let watchSeq = 0;
 
 export function createConversationController(rootId: string, initialSession: AgentSession) {
   const sessionId = initialSession.id;
-  const observation = signal<AgentObservation | null>(null);
+  const observed = signal<{ generation: number; value: AgentObservation } | null>(null);
+  const observation = () => {
+    const snapshot = observed();
+    return snapshot && snapshot.generation === activeHostInfo(rootId)?.generation
+      ? snapshot.value
+      : null;
+  };
   const selectedBackend = () => {
-    const observed = observation();
-    return observed
-      ? (observed.session.backend ?? observed.rememberedBackend ?? null)
-      : (initialSession.backend ?? null);
+    const current = observation();
+    return current?.session.backend ?? current?.rememberedBackend ?? null;
   };
   const chunks = signal<AgentHistoryChunk[]>([]);
   const roomMessages = signal<AgentRoomMessage[]>([]);
@@ -373,29 +382,38 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  const loadObserve = async () => {
+  let observeFlight: { generation: number; promise: Promise<void> } | undefined;
+  const loadObserve = () => {
     const generation = activeHostInfo(rootId)?.generation;
-    try {
-      const obs = await hostQuery<AgentObservation>(
-        'agent',
-        'observe',
-        { sessionId },
-        undefined,
-        rootId,
-      );
-      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
-      const current = observation();
-      if (current && obs.session.revision < current.session.revision) return;
-      observation.set(obs);
-      if (obs.session?.kind === 'room') isRoom.set(true);
-      if (typeof obs.through === 'number') {
-        lastThrough = Math.max(lastThrough ?? 0, obs.through);
+    if (generation === undefined) return;
+    if (observeFlight?.generation === generation) return observeFlight.promise;
+    const promise = (async () => {
+      try {
+        const obs = await hostQuery<AgentObservation>(
+          'agent',
+          'observe',
+          { sessionId },
+          undefined,
+          rootId,
+        );
+        if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+        const current = observation();
+        if (current && obs.session.revision < current.session.revision) return;
+        observed.set({ generation, value: obs });
+        if (obs.session?.kind === 'room') isRoom.set(true);
+        if (typeof obs.through === 'number') {
+          lastThrough = Math.max(lastThrough ?? 0, obs.through);
+        }
+      } catch (cause) {
+        if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+          error.set(cause instanceof Error ? cause.message : String(cause));
+        }
+      } finally {
+        if (observeFlight?.generation === generation) observeFlight = undefined;
       }
-    } catch (cause) {
-      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
-        error.set(cause instanceof Error ? cause.message : String(cause));
-      }
-    }
+    })();
+    observeFlight = { generation, promise };
+    return promise;
   };
 
   const startWatch = (gen: number) => {
@@ -469,7 +487,9 @@ export function createConversationController(rootId: string, initialSession: Age
 
   // Always uses 'queue' delivery (never implicit steer-while-running).
   const sendMessage = async () => {
-    const text = getDraft(rootId, sessionId).trim();
+    const key = conversationKey(rootId, sessionId);
+    const draft = draftMap()[key];
+    const text = draft?.text.trim();
     if (!text || sending()) return false;
     sending.set(true);
     error.set(null);
@@ -479,9 +499,11 @@ export function createConversationController(rootId: string, initialSession: Age
       const { generation } = connection;
       let backend: AgentBackendPreference | null = null;
       if (!isRoom()) {
-        if (!observation() && !selectedBackend()) await loadObserve();
+        if (!observation()) await loadObserve();
         if (disposed) return false;
-        if (!observation() && !selectedBackend()) throw new Error(error() ?? tr('Select model'));
+        if (activeHostInfo(rootId)?.generation !== generation)
+          throw new Error(tr('Computer is offline'));
+        if (!observation()) throw new Error(error() ?? tr('Select model'));
         backend = selectedBackend();
         if (!backend && connection.endpoints.includes('settings')) {
           const choice = await readDefaultModel(settingsRpc(rootId));
@@ -490,7 +512,7 @@ export function createConversationController(rootId: string, initialSession: Age
         if (!backend) throw new Error(tr('Select model'));
       }
       if (disposed) return false;
-      const res = await hostMutate<{ kind: string; reason?: unknown }>(
+      const res = await hostMutate<AgentSendResult>(
         'agent',
         'send',
         {
@@ -507,10 +529,10 @@ export function createConversationController(rootId: string, initialSession: Age
         },
         { rootId, generation },
       );
-      if (res?.kind === 'rejected') {
-        throw new Error(String(res.reason ?? 'rejected'));
+      if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
+        throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
       }
-      setDraft(rootId, sessionId, '');
+      if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
       hapticSelection();
       await Promise.all([loadObserve(), loadHistory()]);
       const hostName = hostById(rootId)?.hostName ?? rootId;
@@ -551,7 +573,7 @@ export function createConversationController(rootId: string, initialSession: Age
       const current = observation();
       if (!current) await loadObserve();
       else if (result.session.revision >= current.session.revision) {
-        observation.set({ ...current, session: result.session });
+        observed.set({ generation, value: { ...current, session: result.session } });
       }
       hapticSelection();
     } catch (cause) {

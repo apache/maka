@@ -991,6 +991,13 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 expected: 2,
                 actual: 3
             })
+        } else if data["method"] == "send" {
+            json!(maka_agent_api::contract::SendResult::Queued {
+                session_id: "chat-1".into(),
+                message_id: "queued".into(),
+                revision: 4,
+                completion: None,
+            })
         } else {
             json!({"kind":"recorded"})
         };
@@ -2149,7 +2156,11 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         if data["method"] == "send" {
             send_tx.send(data["input"].clone()).unwrap();
         }
-        call.resolve(json!({"value":{"kind":"accepted"}}));
+        call.resolve(
+            json!({"value":maka_agent_api::contract::SendResult::Posted {
+                session_id: "room-1".into(), message_id: "posted".into(), deliveries: vec![],
+            }}),
+        );
     });
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
     config.viewport = Size::new(px(390.), px(844.));
@@ -2534,4 +2545,172 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
         serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
     assert_eq!(send.session_id, "room-new");
     assert!(send.backend.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft() {
+    use maka_agent_api::contract::{SelectBackend, Send, SendResult};
+    use nsh_core::{EventKind, EventPayload, MountItem};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let channel = HostChannel::new();
+    let host_state = |generation, revision| {
+        let host = json!({"rootId":"root","hostName":"Relay Host","generation":generation,"endpoints":["agent"]});
+        json!({"revision":revision,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}})
+    };
+    channel.handle("ios.bootstrap", move |call| call.resolve(host_state(1, 1)));
+    let model = |connection| json!({"kind":"model","connectionId":connection,"modelId":"shared","serviceTier":"fast"});
+    let row = |revision, backend: Value| {
+        json!({"id":"chat","kind":"agent","title":"Chat","parentSessionId":null,
+            "workspace":{"path":"/work"},"revision":revision,"backend":backend,
+            "updatedAt":1700000000000u64,"activity":"idle"})
+    };
+    let session = Arc::new(std::sync::Mutex::new(row(1, model("first"))));
+    let observed = session.clone();
+    let hold_observe = Arc::new(AtomicBool::new(false));
+    let held = hold_observe.clone();
+    let (observe_tx, mut observations) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let row = observed.lock().unwrap().clone();
+        let value = match data["method"].as_str() {
+            Some("list") => json!({"sessions":[row],"needsYouCount":0}),
+            Some("observe") => {
+                let value = json!({"session":row,"through":1,"run":null});
+                if held.swap(false, Ordering::SeqCst) {
+                    observe_tx.send((call, value)).unwrap();
+                    return;
+                }
+                value
+            }
+            Some("history") => {
+                json!({"kind":"ready","chunks":[],"through":1,"before":null,"after":null})
+            }
+            Some("pendingInteractions") => json!({"entries":[]}),
+            Some("botOutbox") => json!({"isBot":false}),
+            Some("models") => json!({"kind":"ready","choices":[
+                {"label":"First connector","selection":model("first")},
+                {"label":"Second connector","selection":model("second")}
+            ]}),
+            _ => {
+                call.reject("unexpected query");
+                return;
+            }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let generation = Arc::new(AtomicU64::new(1));
+    let subscription_generation = generation.clone();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let generation = subscription_generation.load(Ordering::SeqCst);
+        call.resolve(json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (mutation_tx, mut mutations) = mpsc::unbounded_channel();
+    let picked = session.clone();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        match data["method"].as_str() {
+            Some("send") => mutation_tx.send((data, Some(call))).unwrap(),
+            Some("selectBackend") => {
+                let mut current = picked.lock().unwrap();
+                let revision = current["revision"].as_u64().unwrap() + 1;
+                *current = row(revision, data["input"]["backend"].clone());
+                mutation_tx.send((data, None)).unwrap();
+                call.resolve(json!({"value":{"kind":"committed","session":*current}}));
+            }
+            _ => call.reject("unexpected mutation"),
+        }
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::Ios,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    // Headless hosts the iOS view tree, not UIKit's native menu. Read the
+    // displayed items and return the chosen ID through the native select event.
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item {
+                for (name, value) in props {
+                    if name.as_ref() == "items"
+                        && let Some(items) = value.as_ref().and_then(Value::as_array)
+                        && items.iter().any(|item| item["label"] == "Second connector")
+                    {
+                        menu_tx.send((*id, items.clone())).unwrap();
+                    }
+                }
+            }
+        }
+    });
+    app.wait_for("label:Conversation: Chat").unwrap();
+    app.press("label:Conversation: Chat").unwrap();
+    app.type_text("label:Message composer", "First draft")
+        .unwrap();
+
+    *session.lock().unwrap() = row(2, model("second"));
+    hold_observe.store(true, Ordering::SeqCst);
+    generation.store(2, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", host_state(2, 2))
+        .unwrap();
+    let (observe, snapshot) = observations.try_recv().unwrap();
+    app.press("label:Send message").unwrap();
+    assert!(
+        mutations.try_recv().is_err(),
+        "sent before the current observation"
+    );
+    observe.resolve(json!({"value":snapshot}));
+    app.settle();
+    let (call, receipt) = mutations.try_recv().unwrap();
+    let send: Send = serde_json::from_value(call["input"].clone()).unwrap();
+    assert_eq!(call["generation"], 2);
+    assert_eq!(send.message, "First draft");
+    assert_eq!(
+        serde_json::to_value(send.backend).unwrap()["connectionId"],
+        "second"
+    );
+
+    app.clear("label:Message composer").unwrap();
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    receipt.unwrap().resolve(json!({"value":SendResult::Queued {
+        session_id: "chat".into(), message_id: "first".into(), revision: 1, completion: None,
+    }}));
+    assert!(app.settle());
+    app.wait_for("text:Next draft").unwrap();
+
+    let choose =
+        |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
+            let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+            let item = items.iter().find(|item| item["label"] == label).unwrap();
+            app.engine().control().dispatch_event(
+                id,
+                EventKind::NativeEvent,
+                EventPayload::Native {
+                    name: "select".into(),
+                    data: item["id"].clone(),
+                },
+            );
+            assert!(app.settle());
+        };
+    choose(&mut app, &mut menus, "First connector");
+    let (first, _) = mutations.try_recv().unwrap();
+    assert_eq!(first["input"]["backend"]["connectionId"], "first");
+    choose(&mut app, &mut menus, "Second connector");
+    let (second, _) = mutations.try_recv().unwrap();
+    assert_eq!(second["method"], "selectBackend");
+    let select: SelectBackend = serde_json::from_value(second["input"].clone()).unwrap();
+    let backend = serde_json::to_value(select.backend).unwrap();
+    assert_eq!(backend["connectionId"], "second");
+    assert_eq!(backend["serviceTier"], "fast");
+    app.wait_for("text:Second connector").unwrap();
 }
