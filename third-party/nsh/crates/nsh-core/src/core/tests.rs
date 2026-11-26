@@ -5039,8 +5039,7 @@ fn removing_last_parent_viewport_list_clears_outer_scroll_pending() {
     assert_eq!(c.scroll_listener(2).unwrap().1.y, px(320.0));
 }
 
-#[test]
-fn nested_parent_viewport_scroll_by_does_not_overtake_outer_scroll_to() {
+fn nested_list_at_offset_350() -> (Core<FakeEngine>, NodeId, NodeId) {
     let mut c = core();
     // Outer own-list (id=2, 1 item holding inner parent-viewport list id=4) + footer (id=5).
     apply(
@@ -5157,6 +5156,36 @@ fn nested_parent_viewport_scroll_by_does_not_overtake_outer_scroll_to() {
     let row5 = cell_of(&c, 5);
     let row9 = cell_of(&c, 9);
 
+    (c, row5, row9)
+}
+
+#[test]
+fn animated_scroll_to_end_lands_at_the_resized_end_of_a_nested_list() {
+    let (mut c, row5, row9) = nested_list_at_offset_350();
+    c.apply(Op::Command {
+        id: 2,
+        command: Command::ScrollToEnd { animated: true },
+    })
+    .unwrap();
+    let target = scrolled(&c.commit().unwrap(), 350.0);
+    assert_eq!(target, 610.0);
+    c.set_scroll_offset(2, point(px(0.0), px(360.0)), 1);
+    c.commit();
+    // Content above and inside the viewport shrinks in the same layout.
+    apply(
+        &mut c,
+        vec![
+            style_op(row5, &[("height", StyleValue::Number(20.0))]),
+            style_op(row9, &[("height", StyleValue::Number(35.0))]),
+        ],
+    );
+    // ScrollBy moves the destination of a running animation too.
+    assert_eq!(scrolled(&c.commit().unwrap(), target), target - 45.0);
+}
+
+#[test]
+fn nested_parent_viewport_scroll_by_does_not_overtake_outer_scroll_to() {
+    let (mut c, row5, row9) = nested_list_at_offset_350();
     // Same commit: row 5 shrinks 50->20 (-30pt), row 9 grows 50->80 (+30pt),
     // footer grows 10->30 (+20pt), and outer list gets instant ScrollTo(330).
     apply(
