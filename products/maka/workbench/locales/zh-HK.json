@@ -370,5 +370,9 @@
   "{count} queued messages": "{count} 則隊列訊息",
   "{title} is waiting for your reply. Open it.": "「{title}」在等你的回覆，按這裏處理。",
   "{title} is working. See its progress.": "「{title}」正在處理，按這裏檢視進度。",
-  "{width} × {height} · Captured image": "{width} × {height} · 截取的影像"
+  "{width} × {height} · Captured image": "{width} × {height} · 截取的影像",
+  "Other font…": "其他字體…",
+  "Font": "字體",
+  "Can you check this function?": "幫我睇下這個函數？",
+  "Font name": "字體名稱"
 }

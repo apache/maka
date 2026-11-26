@@ -83,7 +83,7 @@ function Bootstrap() {
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
             >
-              <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
+              <Text style={{ color: C.accentText }}>{tr('Retry')}</Text>
             </Button>
           </If>
         </View>

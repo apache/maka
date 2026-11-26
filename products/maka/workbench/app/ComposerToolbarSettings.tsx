@@ -257,7 +257,7 @@ export function ComposerToolbarSettings() {
                           {
                             fontSize: 11,
                             lineHeight: 14,
-                            color: drag()?.overSpacer ? C.accent : C.muted,
+                            color: drag()?.overSpacer ? C.accentText : C.muted,
                             flexShrink: 1,
                             minWidth: 0,
                           },

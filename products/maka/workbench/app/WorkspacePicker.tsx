@@ -509,7 +509,9 @@ export function WorkspacePicker(props: {
                   focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
-                  <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Manage locations')}</Text>
+                  <Text style={{ color: C.accentText, fontSize: 13 }}>
+                    {tr('Manage locations')}
+                  </Text>
                 </Button>
                 <If when={ownTitleBar && host.localFolderPicker !== false}>
                   <View style={{ flex: 1 }} />
@@ -522,8 +524,8 @@ export function WorkspacePicker(props: {
                     focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <Icon name="folder" color={C.accent} />
-                    <Text style={{ color: C.accent, fontSize: 13 }}>
+                    <Icon name="folder" color={C.accentText} />
+                    <Text style={{ color: C.accentText, fontSize: 13 }}>
                       {picking() ? tr('Opening folder…') : tr('Choose folder…')}
                     </Text>
                   </Button>
@@ -682,7 +684,7 @@ export function WorkspacePicker(props: {
                 >
                   <Text
                     style={{
-                      color: currentDirectory(read) && !error() ? C.background : C.muted,
+                      color: currentDirectory(read) && !error() ? C.onAccent : C.muted,
                       fontSize: 13,
                       lineHeight: 16,
                       fontWeight: '600',

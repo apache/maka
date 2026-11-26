@@ -1456,13 +1456,13 @@ export function ChangesStudio(props: {
                               : 'gitCommit'
                         }
                         size={14}
-                        color={sourceTab() === tab() ? C.accent : C.muted}
+                        color={sourceTab() === tab() ? C.accentText : C.muted}
                       />
                       <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                         {sourceTabLabel(tab())}
                       </Text>
                       <If when={sourceTab() === tab()}>
-                        <Icon name="check" size={14} color={C.accent} />
+                        <Icon name="check" size={14} color={C.accentText} />
                       </If>
                     </Button>
                   )}
@@ -1595,7 +1595,7 @@ export function ChangesStudio(props: {
                               <Icon
                                 name="gitBranch"
                                 size={14}
-                                color={selectedBaseBranch() === b().name ? C.accent : C.muted}
+                                color={selectedBaseBranch() === b().name ? C.accentText : C.muted}
                               />
                               <Text
                                 style={[
@@ -1606,7 +1606,7 @@ export function ChangesStudio(props: {
                                 {b().name}
                               </Text>
                               <If when={selectedBaseBranch() === b().name}>
-                                <Icon name="check" size={14} color={C.accent} />
+                                <Icon name="check" size={14} color={C.accentText} />
                               </If>
                             </Button>
                           )}
@@ -1775,8 +1775,10 @@ export function ChangesStudio(props: {
                 hoverStyle={{ opacity: 0.9 }}
                 focusStyle={quietFocusStyle()}
               >
-                <Icon name="note" size={13} color={C.accent} />
-                <Text style={{ fontSize: 12, lineHeight: 16, color: C.accent, fontWeight: '500' }}>
+                <Icon name="note" size={13} color={C.accentText} />
+                <Text
+                  style={{ fontSize: 12, lineHeight: 16, color: C.accentText, fontWeight: '500' }}
+                >
                   {formatCount(sessionNotes().length)}
                 </Text>
               </Button>
@@ -1797,7 +1799,7 @@ export function ChangesStudio(props: {
                   hoverStyle={menuRowHoverStyle()}
                   focusStyle={quietFocusStyle()}
                 >
-                  <Icon name="send" size={14} color={C.accent} />
+                  <Icon name="send" size={14} color={C.accentText} />
                   <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Send review')}</Text>
                 </Button>
                 <Button
@@ -1916,12 +1918,12 @@ export function ChangesStudio(props: {
                 hoverStyle={menuRowHoverStyle()}
                 focusStyle={quietFocusStyle()}
               >
-                <Icon name="wrap" size={14} color={studio().softWrap ? C.accent : C.muted} />
+                <Icon name="wrap" size={14} color={studio().softWrap ? C.accentText : C.muted} />
                 <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                   {tr('Wrap lines')}
                 </Text>
                 <If when={studio().softWrap}>
-                  <Icon name="check" size={14} color={C.accent} />
+                  <Icon name="check" size={14} color={C.accentText} />
                 </If>
               </Button>
               <Button
@@ -1934,12 +1936,12 @@ export function ChangesStudio(props: {
                 hoverStyle={menuRowHoverStyle()}
                 focusStyle={quietFocusStyle()}
               >
-                <Icon name="file" size={14} color={singleFileMode() ? C.accent : C.muted} />
+                <Icon name="file" size={14} color={singleFileMode() ? C.accentText : C.muted} />
                 <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
                   {tr('Previous file').replace(/\s.*$/, '') ? '1 / N' : '1 / N'}
                 </Text>
                 <If when={singleFileMode()}>
-                  <Icon name="check" size={14} color={C.accent} />
+                  <Icon name="check" size={14} color={C.accentText} />
                 </If>
               </Button>
             </View>

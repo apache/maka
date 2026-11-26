@@ -111,7 +111,7 @@ export function PendingMessage(props: {
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+            <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
           </Button>
         </If>
         <If when={props.message.state === 'unknown'}>
@@ -123,7 +123,7 @@ export function PendingMessage(props: {
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={controlFocusStyle()}
           >
-            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Check status')}</Text>
+            <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Check status')}</Text>
           </Button>
         </If>
         <If when={!props.message.busy}>

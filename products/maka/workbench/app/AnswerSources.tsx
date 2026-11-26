@@ -75,7 +75,7 @@ function SourceLink(props: { source(): AnswerSource; chip?: boolean; openLink: O
         style={
           props.chip
             ? { fontSize: 11, lineHeight: 16, color: C.secondary }
-            : { ...secondaryTextStyle, color: C.accent }
+            : { ...secondaryTextStyle, color: C.accentText }
         }
       >
         {label()}

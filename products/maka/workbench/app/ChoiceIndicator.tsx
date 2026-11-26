@@ -40,7 +40,7 @@ export function ChoiceIndicator(props: {
             width: width(),
             height: 16,
             lineHeight: 16,
-            color: color(),
+            color: props.disabled ? C.muted : props.checked || props.mixed ? C.accentText : C.muted,
             textAlign: 'center',
             flexShrink: 0,
           },
@@ -82,7 +82,7 @@ export function ChoiceIndicator(props: {
           // A light switch's knob stays white when off, as the system's does; a dark
           // one keeps a light knob on its dark track.
           cx.fillStyle =
-            props.checked && !props.disabled ? C.background : isDark() ? C.secondary : C.background;
+            props.checked && !props.disabled ? C.onAccent : isDark() ? C.secondary : C.background;
           cx.fill();
         } else if (props.kind === 'radio') {
           cx.arc(8, 8, 6, 0, Math.PI * 2);
@@ -98,7 +98,7 @@ export function ChoiceIndicator(props: {
           else cx.stroke();
           if (props.checked || props.mixed) {
             cx.beginPath();
-            cx.strokeStyle = C.background;
+            cx.strokeStyle = C.onAccent;
             cx.moveTo(4.5, 8);
             if (props.mixed) cx.lineTo(11.5, 8);
             else {

@@ -18,10 +18,11 @@
  */
 
 // The desktop window's appearance (Settings › General): its colors, its
-// palette and its text size, kept in the app's storage. Terminals keep their own.
-import { host as shell, platform, setColorScheme, signal, Storage } from 'nsh';
+// look and its text size, kept in the app's storage. Terminals keep their own.
+import { host as shell, platform, setColorScheme, setTheme, signal, Storage } from 'nsh';
 import { ownTitleBar } from './chrome';
-import { parseHex, presetRecipes, type PaletteId, type PaletteRecipe } from './colorPalette';
+import { parseHex, presetRecipes, type PaletteRecipe } from './colorPalette';
+import { lookFromRecipe, presetLooks, readLook, unchanged, type Look, type LookId } from './look';
 
 export type ColorTheme = 'system' | 'light' | 'dark';
 export const colorThemes: ColorTheme[] = ['system', 'light', 'dark'];
@@ -40,27 +41,16 @@ export type TrayIcon = 'line' | 'bold' | 'tile' | 'none';
 export const trayIcons: TrayIcon[] =
   platform.os === 'macos' ? ['line', 'bold', 'tile', 'none'] : ['line', 'bold', 'tile'];
 
-export const paletteIds: PaletteId[] = [
-  'default',
-  'mist',
-  'sage',
-  'sand',
-  'burgundy',
-  'graphite',
-  'custom',
-];
-
 const THEME = 'appearance-theme';
 const TEXT_SIZE = 'appearance-text-size';
+const LOOK = 'appearance-look';
+// The palette and custom recipe Settings kept before looks: read once into a look.
 const PALETTE = 'appearance-palette';
 const CUSTOM_PALETTE = 'appearance-custom-palette';
 const TRAY_ICON = 'appearance-tray-icon';
-type StorageKey =
-  | typeof THEME
-  | typeof TEXT_SIZE
-  | typeof PALETTE
-  | typeof CUSTOM_PALETTE
-  | typeof TRAY_ICON;
+type StorageKey = typeof THEME | typeof TEXT_SIZE | typeof LOOK | typeof TRAY_ICON;
+// Steps a look's edits can be undone.
+const UNDO_LIMIT = 50;
 type Initialization =
   | { kind: 'uninitialized'; pending: Set<StorageKey> }
   | { kind: 'loading'; pending: Set<StorageKey> }
@@ -82,16 +72,20 @@ const validRecipe = (value: unknown): value is PaletteRecipe => {
 function createAppearanceOwner() {
   const theme = signal<ColorTheme>('system');
   const textSize = signal(1);
-  const palette = signal<PaletteId>('default');
-  const custom = signal<PaletteRecipe>(presetRecipes.mist);
+  // Null: the default look unchanged, which the window's own colors draw.
+  const look = signal<Look | null>(null);
+  // The looks before each saved change, latest last.
+  const history = signal<(Look | null)[]>([]);
   const trayIcon = signal<TrayIcon>('bold');
   // Only macOS can hide the icon, and must not show it before the saved choice is read.
   const trayIconKnown = signal(platform.os !== 'macos' || !ownTitleBar);
   let initialization: Initialization = {
     kind: 'uninitialized',
-    pending: new Set([THEME, TEXT_SIZE, PALETTE, CUSTOM_PALETTE, TRAY_ICON]),
+    pending: new Set([THEME, TEXT_SIZE, LOOK, TRAY_ICON]),
   };
   let persistence: Persistence = { kind: 'idle' };
+  // The look last saved, which an undo step goes back to.
+  let committed: Look | null = null;
   const selected = (key: StorageKey) => {
     if (initialization.kind !== 'ready') initialization.pending.delete(key);
   };
@@ -126,6 +120,32 @@ function createAppearanceOwner() {
     void applyTextSize(scale);
     persist(TEXT_SIZE, String(scale));
   };
+  const applyFont = (value: Look | null) => {
+    const font = value?.cssVars.theme['font-sans'];
+    try {
+      setTheme(font ? { cssVars: { theme: { 'font-sans': font } } } : null);
+    } catch {
+      setTheme(null);
+    }
+  };
+  const showLook = (value: Look | null) => {
+    const shown = value && value.base === 'default' && unchanged(value) ? null : value;
+    const font = look()?.cssVars.theme['font-sans'];
+    look.set(shown);
+    if (shown?.cssVars.theme['font-sans'] !== font) applyFont(shown);
+  };
+  const saveLook = () => persist(LOOK, JSON.stringify(look()));
+  /** Shows `next`; `save` once the change ends (a picker let go), which can be undone. */
+  const changeLook = (next: Look, save: boolean) => {
+    selected(LOOK);
+    if (!save) return showLook(next);
+    const before = committed;
+    showLook(next);
+    committed = look();
+    if (JSON.stringify(before) === JSON.stringify(committed)) return;
+    history.set([...history(), before].slice(-UNDO_LIMIT));
+    saveLook();
+  };
   const restore = (key: StorageKey, apply: (value: string | null) => void) => {
     if (initialization.kind === 'ready' || !initialization.pending.has(key))
       return Promise.resolve();
@@ -141,8 +161,8 @@ function createAppearanceOwner() {
     textSize: () => textSize(),
     /** The size of the conversation's text at this ratio, in points. */
     fontSize: () => Math.round(textSize() * defaultTextSize),
-    palette: () => palette(),
-    custom: () => custom(),
+    /** The look in effect, or null for the default one unchanged. */
+    look: () => look(),
     trayIcon: () => trayIcon(),
     /** The tray icon is the saved choice, or the default where none is saved. */
     trayIconKnown: () => trayIconKnown(),
@@ -153,23 +173,24 @@ function createAppearanceOwner() {
       persist(THEME, value);
     },
     chooseTextSize,
-    /** The recipe in effect, or null for the default palette. */
-    recipe(): PaletteRecipe | null {
-      const id = palette();
-      return id === 'default' ? null : id === 'custom' ? custom() : presetRecipes[id];
+    /** The look shown, the default's when none is set. */
+    shown: (): Look => look() ?? presetLooks.default,
+    /** Starts over from a preset. */
+    choosePreset: (id: LookId) => changeLook(presetLooks[id], true),
+    changeLook,
+    canUndo: () => history().length > 0,
+    undo() {
+      const steps = history();
+      if (!steps.length) return;
+      selected(LOOK);
+      history.set(steps.slice(0, -1));
+      showLook(steps.at(-1)!);
+      committed = look();
+      saveLook();
     },
-    choosePalette(value: PaletteId) {
-      selected(PALETTE);
-      palette.set(value);
-      persist(PALETTE, value);
-    },
-    /** Changes the custom palette; `save` once the change ends (a slider let go). */
-    changeCustom(change: Partial<PaletteRecipe>, save: boolean) {
-      const next = { ...custom(), ...change };
-      if (!validRecipe(next)) return;
-      selected(CUSTOM_PALETTE);
-      custom.set(next);
-      if (save) persist(CUSTOM_PALETTE, JSON.stringify(next));
+    /** Back to the default look: the View menu's, which a look cannot hide. */
+    resetLook() {
+      if (look() !== null) changeLook(presetLooks.default, true);
     },
     chooseTrayIcon(value: TrayIcon) {
       selected(TRAY_ICON);
@@ -198,12 +219,32 @@ function createAppearanceOwner() {
             setColorScheme(value);
           }
         }),
-        restore(CUSTOM_PALETTE, (value) => {
-          const recipe: unknown = value === null ? null : JSON.parse(value);
-          if (validRecipe(recipe)) custom.set(recipe);
-        }),
-        restore(PALETTE, (value) => {
-          if (paletteIds.includes(value as PaletteId)) palette.set(value as PaletteId);
+        restore(LOOK, (value) => {
+          if (value !== null) {
+            showLook(readLook(JSON.parse(value)));
+            committed = look();
+            return;
+          }
+          // Before looks: the palette chosen, and the custom one's recipe.
+          void Promise.all([Storage.getItem(PALETTE), Storage.getItem(CUSTOM_PALETTE)])
+            .then(([id, saved]) => {
+              if (look() !== null || history().length) return;
+              const custom: unknown = saved === null ? null : JSON.parse(saved);
+              const recipe =
+                id === 'custom'
+                  ? validRecipe(custom)
+                    ? custom
+                    : null
+                  : (presetRecipes[id as keyof typeof presetRecipes] ?? null);
+              if (recipe) {
+                showLook(lookFromRecipe(recipe));
+                committed = look();
+                saveLook();
+              }
+              void Storage.removeItem(PALETTE).catch(() => undefined);
+              void Storage.removeItem(CUSTOM_PALETTE).catch(() => undefined);
+            })
+            .catch(() => undefined);
         }),
         restore(TRAY_ICON, (value) => {
           if (trayIcons.includes(value as TrayIcon)) trayIcon.set(value as TrayIcon);

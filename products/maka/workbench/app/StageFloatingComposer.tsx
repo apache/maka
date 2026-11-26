@@ -155,7 +155,7 @@ export function StageFloatingComposer(props: {
           <Icon
             name={running() ? 'statusRecorded' : 'conversation'}
             size={14}
-            color={running() ? C.accent : C.muted}
+            color={running() ? C.accentText : C.muted}
           />
           <Text
             style={[
@@ -303,7 +303,7 @@ export function StageFloatingComposer(props: {
             <Icon
               name={running() ? 'stop' : 'send'}
               size={14}
-              color={running() || canSend() ? C.chrome : C.muted}
+              color={running() ? C.chrome : canSend() ? C.onAccent : C.muted}
             />
           </Button>
         </View>

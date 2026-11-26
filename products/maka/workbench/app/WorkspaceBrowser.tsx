@@ -782,7 +782,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   <Text
                     style={{
                       ...captionTextStyle,
-                      color: worker().activity === 'waiting' ? C.accent : C.muted,
+                      color: worker().activity === 'waiting' ? C.accentText : C.muted,
                     }}
                   >
                     {worker().activity === 'idle' ? '' : sessionStatusCaption[worker().activity]}
@@ -979,7 +979,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     thumbClass="size-[10px] rounded-full"
                     thumbStyle={{
                       backgroundColor: sidebarPreferences.isPinned(item().id)
-                        ? C.background
+                        ? C.onAccent
                         : C.secondary,
                     }}
                     hoverStyle={{ backgroundColor: C.floatingRaised }}
@@ -1221,7 +1221,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             : undefined
                         }
                       >
-                        <Text style={{ color: C.accent }}> + </Text>
+                        <Text style={{ color: C.accentText }}> + </Text>
                       </Button>
                     </If>
                   </View>
@@ -1327,7 +1327,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       <Icon name={open() ? 'down' : 'right'} color={C.muted} />
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.accent, flex: 1, minWidth: 0 },
+                          { ...captionTextStyle, color: C.accentText, flex: 1, minWidth: 0 },
                           { numberOfLines: 1 },
                         ]}
                       >
@@ -1627,7 +1627,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   platform.idiom === 'terminal'
                                     ? {
                                         color:
-                                          current() || session()?.hasUnread ? C.accent : C.text,
+                                          current() || session()?.hasUnread ? C.accentText : C.text,
                                         flex: 1,
                                       }
                                     : {
@@ -1654,7 +1654,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                 <Icon name="bot" color={C.muted} />
                               </If>
                               <If when={platform.idiom === 'terminal' && session()?.hasUnread}>
-                                <Icon name="unread" color={C.accent} />
+                                <Icon name="unread" color={C.accentText} />
                               </If>
                             </View>
                             <If when={platform.idiom === 'terminal'}>

@@ -444,7 +444,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           <Icon
             name={stopPrimary() ? 'stop' : continuationSource() !== null ? 'play' : 'send'}
             size={composerToolbarIconSize}
-            color={primaryDisabled() ? C.muted : C.background}
+            color={primaryDisabled() ? C.muted : C.onAccent}
           />
         }
       >
@@ -602,7 +602,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             >
               <Text
                 style={{
-                  color: C.background,
+                  color: C.onAccent,
                   fontSize: 13,
                   fontWeight: '600',
                 }}

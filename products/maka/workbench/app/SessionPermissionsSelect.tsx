@@ -289,7 +289,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                     </View>
                     <View style={{ width: 16 }}>
                       <If when={checked()}>
-                        <Icon name="check" color={C.accent} />
+                        <Icon name="check" color={C.accentText} />
                       </If>
                     </View>
                   </Button>

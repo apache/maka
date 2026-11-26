@@ -40,7 +40,7 @@ import {
   windowDrag,
 } from './chrome';
 import { appearance } from './appearance';
-import { paletteTokens, type PaletteRecipe, type PaletteTokens } from './colorPalette';
+import { darkBackground, lookTokens, type Look, type LookTokens } from './look';
 
 /** A text wraps only within a width it is held to; the narrowest window is 640. */
 const TOOLTIP_MAX_WIDTH = 280;
@@ -88,6 +88,10 @@ const DARK = {
   muted: '#969ba4',
   accent: '#8ab8f8',
   accentHover: '#b6d3ff',
+  /** The accent as text on the window's surfaces (links, a selected item's label). */
+  accentText: '#8ab8f8',
+  /** Text and icons on an accent fill. */
+  onAccent: '#161719',
   warning: '#e7b86b',
   danger: '#f48a8a',
   line: '#37393e',
@@ -108,6 +112,8 @@ const LIGHT: typeof DARK = {
   muted: '#6c7079',
   accent: '#2f6bd8',
   accentHover: '#1f56b8',
+  accentText: '#2f6bd8',
+  onAccent: '#ffffff',
   warning: '#9a5b00',
   danger: '#c43c3c',
   line: '#dcdde0',
@@ -119,18 +125,24 @@ const LIGHT: typeof DARK = {
 };
 /** The default palette's colors in one appearance. */
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
-/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
- * terminals keep the dark colors. */
-export const isDark = () => platform.idiom === 'terminal' || colorScheme() !== 'light';
-// The desktop palette's tokens, made once per recipe and appearance.
-let made: { recipe: PaletteRecipe; dark: boolean; tokens: PaletteTokens } | null = null;
-const paletteColor = (key: string, dark: boolean): string | undefined => {
-  if (platform.idiom === 'terminal') return undefined;
-  const recipe = appearance.recipe();
-  if (!recipe) return undefined;
-  if (made?.recipe !== recipe || made.dark !== dark)
-    made = { recipe, dark, tokens: paletteTokens(recipe, dark) };
-  return made.tokens[key as keyof PaletteTokens];
+// The look's tokens, made once per look and appearance.
+let made: { look: Look; dark: boolean; tokens: LookTokens } | null = null;
+const lookColors = (): LookTokens | null => {
+  if (platform.idiom === 'terminal') return null;
+  const look = appearance.look();
+  if (!look) return null;
+  const dark = colorScheme() !== 'light';
+  if (made?.look !== look || made.dark !== dark)
+    made = { look, dark, tokens: lookTokens(look.cssVars[dark ? 'dark' : 'light']) };
+  return made.tokens;
+};
+/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`), or
+ * with a look, whether its background is; terminals keep the dark colors. */
+export const isDark = () => {
+  if (platform.idiom === 'terminal') return true;
+  const look = appearance.look();
+  const dark = colorScheme() !== 'light';
+  return look ? darkBackground(look.cssVars[dark ? 'dark' : 'light'].background) : dark;
 };
 type Tone = keyof typeof DARK;
 // The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
@@ -154,8 +166,7 @@ export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGION
       {
         enumerable: true,
         get: () => {
-          const dark = isDark();
-          return paletteColor(key, dark) ?? (dark ? DARK : LIGHT)[key as Tone];
+          return lookColors()?.[key as keyof LookTokens] ?? (isDark() ? DARK : LIGHT)[key as Tone];
         },
       },
     ]),
@@ -329,7 +340,7 @@ export function IconButton(props: {
       focusStyle={quietFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
-      <Icon name={props.icon} color={props.selected ? C.accent : C.muted} />
+      <Icon name={props.icon} color={props.selected ? C.accentText : C.muted} />
     </Button>
   );
 }

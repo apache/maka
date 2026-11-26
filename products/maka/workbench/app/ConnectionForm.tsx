@@ -208,7 +208,7 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                   }}
                   thumbClass="size-[10px] rounded-full"
                   thumbStyle={{
-                    backgroundColor: owner.enabledModels().has(id()) ? C.background : C.secondary,
+                    backgroundColor: owner.enabledModels().has(id()) ? C.onAccent : C.secondary,
                   }}
                   disabledStyle={{ opacity: 0.5 }}
                 />

@@ -19,7 +19,7 @@
 
 import { dictationPreferences as dictation } from './dictationPreferences';
 import { Image, inputAction, platform, signal, Text, View } from 'nsh';
-import { Button, Menu, MenuItem, Slider } from 'nsh/base';
+import { Button, Menu, MenuItem } from 'nsh/base';
 import type {
   LanguagePreference,
   ProfileAvatar as Avatar,
@@ -40,14 +40,14 @@ import { uiScale } from './uiScale';
 import {
   appearance,
   colorThemes,
-  paletteIds,
   maxTextSize,
   minTextSize,
   trayIcons,
   type TrayIcon,
 } from './appearance';
 import { trayIconArtwork } from './trayIcon';
-import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
+import { unchanged } from './look';
+import { lookLabel, ThemeEditor } from './ThemeEditor';
 import { LoadingIndicator } from './Loading';
 import { ProfileAvatar } from './ProfileAvatar';
 import { Icon } from './Icon';
@@ -71,9 +71,7 @@ import {
   captionTextStyle,
   controlFocusStyle,
   controlHoverStyle,
-  defaultColors,
   floatingStyle,
-  isDark,
   menuRowHoverStyle,
   menuRowStyle,
 } from './ui';
@@ -101,6 +99,7 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner; addConnect
             return <GlobalInstructionsEditor owner={owner} request={request} />;
           if (request.kind === 'dictation')
             return <DictationSettings addConnection={props.addConnection} />;
+          if (request.kind === 'theme') return <ThemeEditor />;
           if (request.kind === 'predictions')
             return <PredictionSettings owner={owner} request={request} />;
           return <PreferenceEditor owner={owner} request={request} />;
@@ -137,7 +136,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       </SettingsSection>
       <SettingsSection title={tr('Appearance & language')}>
         <If when={appearance.supported}>
-          <AppearanceRows />
+          <AppearanceRows openTheme={inputAction(owner.openTheme, request)} />
         </If>
         {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
         <If when={uiScale.supported || platform.idiom === 'terminal'}>
@@ -541,26 +540,6 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
 
 const themeLabel = (theme: (typeof colorThemes)[number]) =>
   ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
-const paletteLabel = (id: PaletteId) =>
-  ({
-    default: tr('Default'),
-    mist: tr('Mist'),
-    sage: tr('Sage'),
-    sand: tr('Sand'),
-    burgundy: tr('Burgundy'),
-    graphite: tr('Graphite'),
-    custom: tr('Custom'),
-  })[id];
-
-/** A palette's background, raised surface and accent, in the appearance in effect. */
-const paletteSwatch = (id: PaletteId) => {
-  const dark = isDark();
-  const recipe =
-    id === 'default' ? null : id === 'custom' ? appearance.custom() : presetRecipes[id];
-  const colors = recipe ? paletteTokens(recipe, dark) : defaultColors(dark);
-  return [colors.background, colors.raised, colors.accent];
-};
-
 function UpdatesSection() {
   appUpdater.init();
   const channelLabel = () => {
@@ -680,25 +659,7 @@ function UpdatesSection() {
   );
 }
 
-function Swatch(props: { id: PaletteId }) {
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: C.line,
-        overflow: 'hidden',
-      }}
-    >
-      <Each of={paletteSwatch(props.id)} key={(_, index) => String(index)}>
-        {(color) => <View style={{ width: 8, height: 14, backgroundColor: color() }} />}
-      </Each>
-    </View>
-  );
-}
-
-function AppearanceRows() {
+function AppearanceRows(props: { openTheme(): void }) {
   return (
     <>
       <SettingsSelect
@@ -707,17 +668,17 @@ function AppearanceRows() {
         choices={colorThemes.map((theme) => ({ value: theme, title: themeLabel(theme) }))}
         change={(value) => appearance.chooseTheme(value as (typeof colorThemes)[number])}
       />
-      <SettingsSelect
-        label={tr('Palette')}
-        value={appearance.palette()}
-        preview={<Swatch id={appearance.palette()} />}
-        choicePreview={(value) => <Swatch id={value as PaletteId} />}
-        choices={paletteIds.map((id) => ({ value: id, title: paletteLabel(id) }))}
-        change={(value) => appearance.choosePalette(value as PaletteId)}
+      <SettingsRow
+        label={tr('Theme')}
+        description={
+          appearance.look() && !unchanged(appearance.shown())
+            ? tr('Based on {preset} · Modified', { preset: lookLabel(appearance.shown().base) })
+            : lookLabel(appearance.shown().base)
+        }
+        accessibilityLabel={tr('Edit theme')}
+        opens
+        onPress={props.openTheme}
       />
-      <If when={appearance.palette() === 'custom'}>
-        <CustomPalette />
-      </If>
       <SettingsRow
         label={tr('Text size')}
         trailing={
@@ -789,120 +750,4 @@ function trayIconLabel(icon: TrayIcon) {
   if (icon === 'bold') return tr('Bold line');
   if (icon === 'none') return tr('Hidden');
   return tr('Solid tile');
-}
-
-const sliderLook = () => ({
-  indicatorStyle: { height: 4, borderRadius: 2, backgroundColor: C.line },
-  rangeStyle: { borderRadius: 2, backgroundColor: C.accent },
-  thumbStyle: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: C.background,
-    borderWidth: 2,
-    borderColor: C.accent,
-  },
-});
-
-/** The custom palette: an accent, and the hue and amount of it in the grays. */
-function CustomPalette() {
-  const typed = signal(appearance.custom().accent);
-  const chooseAccent = (accent: string) => {
-    typed.set(accent);
-    appearance.changeCustom({ accent }, true);
-  };
-  return (
-    <>
-      <SettingsRow
-        label={tr('Accent')}
-        trailing={
-          <View
-            style={{
-              flexDirection: 'row',
-              flexWrap: 'wrap',
-              justifyContent: 'flex-end',
-              gap: 4,
-              flexShrink: 1,
-            }}
-          >
-            <Each of={accentSwatches} key={(color) => color}>
-              {(color) => (
-                <Button
-                  accessibilityLabel={`${tr('Accent')}: ${color()}`}
-                  selected={appearance.custom().accent === color()}
-                  onPress={inputAction(chooseAccent, color())}
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: 12,
-                    borderWidth: 2,
-                    borderColor: appearance.custom().accent === color() ? C.text : 'transparent',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                  focusStyle={{ borderColor: C.accent }}
-                >
-                  <View
-                    style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: color() }}
-                  />
-                </Button>
-              )}
-            </Each>
-          </View>
-        }
-      />
-      <SettingsInput
-        label={tr('Accent color (#rrggbb)')}
-        value={typed()}
-        placeholder="#4a6890"
-        change={(value) => {
-          typed.set(value);
-          const accent = value.trim().startsWith('#') ? value.trim() : `#${value.trim()}`;
-          appearance.changeCustom({ accent: accent.toLowerCase() }, true);
-        }}
-      />
-      <SettingsRow
-        label={tr('Background hue')}
-        trailing={
-          <View style={{ width: '50%' }}>
-            <Slider
-              value={appearance.custom().hue}
-              min={0}
-              max={359}
-              step={1}
-              accessibilityLabel={tr('Background hue')}
-              onChange={({ value }) => appearance.changeCustom({ hue: value as number }, false)}
-              onChangeEnd={({ value }) => appearance.changeCustom({ hue: value as number }, true)}
-              indicatorStyle={sliderLook().indicatorStyle}
-              rangeStyle={sliderLook().rangeStyle}
-              thumbStyle={sliderLook().thumbStyle}
-            />
-          </View>
-        }
-      />
-      <SettingsRow
-        label={tr('Background tint')}
-        trailing={
-          <View style={{ width: '50%' }}>
-            <Slider
-              value={Math.round(appearance.custom().tint * 100)}
-              min={0}
-              max={100}
-              step={5}
-              accessibilityLabel={tr('Background tint')}
-              onChange={({ value }) =>
-                appearance.changeCustom({ tint: (value as number) / 100 }, false)
-              }
-              onChangeEnd={({ value }) =>
-                appearance.changeCustom({ tint: (value as number) / 100 }, true)
-              }
-              indicatorStyle={sliderLook().indicatorStyle}
-              rangeStyle={sliderLook().rangeStyle}
-              thumbStyle={sliderLook().thumbStyle}
-            />
-          </View>
-        }
-      />
-    </>
-  );
 }

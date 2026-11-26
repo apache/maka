@@ -156,7 +156,7 @@ export function MarkdownImageView(props: {
         </Text>
       </If>
       <If when={error() && !props.linked}>
-        <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry image')}</Text>
+        <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry image')}</Text>
       </If>
     </View>
   );

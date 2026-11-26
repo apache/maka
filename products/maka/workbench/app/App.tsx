@@ -808,7 +808,7 @@ function App(
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.line }}
           >
-            <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+            <Text style={{ ...bodyTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
           </Button>
         </View>
       </If>

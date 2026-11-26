@@ -481,7 +481,7 @@ export function SettingsSelect(props: {
             </View>
             <View style={{ width: 16 }}>
               <If when={item.value === props.value}>
-                <Icon name="check" color={C.accent} />
+                <Icon name="check" color={C.accentText} />
               </If>
             </View>
           </View>
@@ -804,7 +804,7 @@ export function SettingsButton(props: {
       <If when={props.icon}>
         <Icon
           name={props.icon!}
-          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
+          color={primaryFill() ? C.onAccent : terminalDisabled() ? C.muted : C.secondary}
           size={14}
         />
       </If>
@@ -815,7 +815,7 @@ export function SettingsButton(props: {
             lineHeight: terminal ? 16 : 20,
             fontWeight: primary() ? '500' : undefined,
             color: primaryFill()
-              ? C.background
+              ? C.onAccent
               : terminalDisabled()
                 ? C.muted
                 : props.tone === 'danger'

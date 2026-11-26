@@ -158,7 +158,7 @@ export function RecentWorkspaces(props: {
           </View>
           <View style={{ width: 16 }}>
             <If when={item.value === props.path()}>
-              <Icon name="check" color={C.accent} />
+              <Icon name="check" color={C.accentText} />
             </If>
           </View>
         </View>

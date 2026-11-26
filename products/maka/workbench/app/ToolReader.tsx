@@ -511,7 +511,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
   return (
     <View style={{ gap: 6 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="check" color={C.accent} />
+        <Icon name="check" color={C.accentText} />
         <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
           {summary().filter(Boolean).join(' · ')}
         </Text>

@@ -219,7 +219,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         accessibilityLabel={tr('Add workspace location')}
         onPress={inputAction(add, null)}
       >
-        <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Add location')}</Text>
+        <Text style={{ color: C.accentText, fontSize: 13 }}>{tr('Add location')}</Text>
       </Button>
       <If when={operations.error() || operations.pending().length > 0}>
         <Text
@@ -261,7 +261,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
           accessibilityLabel={tr('Save workspace locations')}
           onPress={inputAction(save, null)}
         >
-          <Text style={{ color: C.accent, fontSize: 13 }}>
+          <Text style={{ color: C.accentText, fontSize: 13 }}>
             {operations.busy() ? tr('Saving…') : tr('Save locations')}
           </Text>
         </Button>

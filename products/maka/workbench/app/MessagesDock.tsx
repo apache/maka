@@ -538,7 +538,7 @@ export function createMessagesDock(
                       hoverStyle={{ backgroundColor: C.cardRaised }}
                       focusStyle={{ backgroundColor: C.line }}
                     >
-                      <Text style={{ color: C.accent }}>{tr('Save')}</Text>
+                      <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
                     </Button>
                     <If when={entry(edit().messageId) && edit().revision !== revision()}>
                       <Button
