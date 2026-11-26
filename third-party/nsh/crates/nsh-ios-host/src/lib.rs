@@ -97,6 +97,7 @@ pub fn main() {
                 nsh_engine::CacheOptions::at(nsh_engine::CacheLocation::Dir(dir.join("cache")))
             }),
             support_dir,
+            ..AppOptions::default()
         },
     );
 }

@@ -206,6 +206,27 @@ mod write;
 pub use model::RecentModel;
 pub use workspaces::RecentWorkspace;
 
+async fn enable_stable_query_plans(conn: &mut sqlx::SqliteConnection) -> sqlx::Result<()> {
+    use libsqlite3_sys::{Error, SQLITE_DBCONFIG_ENABLE_QPSG, SQLITE_OK, sqlite3_db_config};
+    use std::ffi::c_int;
+
+    let mut handle = conn.lock_handle().await?;
+    // SAFETY: the guard excludes SQLx's worker. ENABLE_QPSG takes an int
+    // flag and an optional int output pointer.
+    let rc = unsafe {
+        sqlite3_db_config(
+            handle.as_raw_handle().as_ptr(),
+            SQLITE_DBCONFIG_ENABLE_QPSG,
+            c_int::from(true),
+            std::ptr::null_mut::<c_int>(),
+        )
+    };
+    if rc != SQLITE_OK {
+        return Err(sqlx::Error::Configuration(Box::new(Error::new(rc))));
+    }
+    Ok(())
+}
+
 impl Journal {
     async fn write(&self, command: write::Command) -> Result<write::Output> {
         let (reply, received) = tokio::sync::oneshot::channel();
@@ -378,9 +399,10 @@ impl Journal {
             .filename(path)
             .create_if_missing(true)
             .command_buffer_size(write::COMMAND_BUFFER_SIZE)
-            .query_planner_stability(true)
             .synchronous(SqliteSynchronous::Full);
-        let pool_options = SqlitePoolOptions::new().max_connections(1);
+        let pool_options = SqlitePoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| Box::pin(enable_stable_query_plans(conn)));
         // WAL admission shares the pool's existing startup budget. In-flight
         // SQLite calls and acknowledged cleanup may finish after that budget.
         let deadline = tokio::time::Instant::now() + pool_options.get_acquire_timeout();
@@ -848,4 +870,24 @@ pub(crate) fn uploaded_attachment(operation: &Operation) -> Result<Option<DraftA
         return Err("attachment upload receipt differs from the original file".into());
     }
     Ok(Some(attachment))
+}
+
+#[tokio::test]
+async fn journal_keeps_query_plans_stable_across_bound_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(&dir.path().join("client.sqlite"))
+        .await
+        .unwrap();
+    // The pool can replace its startup connection during a long-running session.
+    journal.pool.acquire().await.unwrap().close().await.unwrap();
+    let plan = async |pattern: &'static str| {
+        sqlx::query("EXPLAIN QUERY PLAN SELECT id FROM operations WHERE id GLOB ?")
+            .bind(pattern)
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap()
+            .get::<String, _>("detail")
+    };
+    // Without QPSG, only the prefix pattern gets an index range scan.
+    assert_eq!(plan("prefix*").await, plan("*suffix").await);
 }

@@ -1579,18 +1579,21 @@ async fn automation_delivery(
     })
     .await?;
     let original = work(client, session, message, None, None).await?;
-    let create =
-        |title: &'static str, delivery: &'static str, schedule: Value, expires_at: Option<u64>| {
-            let target = target.clone();
-            let connection = connection.clone();
-            async move {
-                let created = mutate(
+    let create = |title: &'static str,
+                  delivery: &'static str,
+                  schedule: Value,
+                  max_fires: Option<u32>,
+                  expires_at: Option<u64>| {
+        let target = target.clone();
+        let connection = connection.clone();
+        async move {
+            let created = mutate(
                 client,
                 "agent",
                 "schedule",
                 json!({"kind":"create","input":{
                     "timezone":"UTC","misfire":"skip","task":{
-                        "title":title,"intentBody":title,"schedule":schedule,"expiresAt":expires_at,
+                        "title":title,"intentBody":title,"schedule":schedule,"maxFires":max_fires,"expiresAt":expires_at,
                         "effect":{"kind":"session","delivery":delivery,"target":target,
                             "model":{"connectionId":connection,"modelId":"gpt-4.1"}}
                     }
@@ -1598,26 +1601,30 @@ async fn automation_delivery(
                 Attachments::new(),
             )
             .await?;
-                assert_eq!(created["kind"], "committed", "{created}");
-                created["taskId"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "automation missing ID".to_string())
-            }
-        };
+            assert_eq!(created["kind"], "committed", "{created}");
+            created["taskId"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "automation missing ID".to_string())
+        }
+    };
+    // The scheduler computes the next tick at admission; the RPC need not win a
+    // race against a client-supplied subsecond one-shot deadline.
+    let timer = json!({"kind":"interval","everySeconds":1,"startAt":now_ms()});
     let followup = create(
         "AUTOMATION-FOLLOWUP",
         "followup",
-        json!({"kind":"once","runAt":now_ms()+800}),
+        timer.clone(),
+        Some(1),
         None,
     )
     .await?;
-    let expiry_start = now_ms();
     let expiring = create(
         "AUTOMATION-EXPIRING",
         "followup",
-        json!({"kind":"once","runAt":expiry_start+400}),
-        Some(expiry_start + 2_500),
+        timer,
+        Some(1),
+        Some(now_ms() + 10_000),
     )
     .await?;
     let blocked = create(
@@ -1626,6 +1633,7 @@ async fn automation_delivery(
         json!({"kind":"script","everySeconds":1,"startAt":now_ms()+100,
             "source":format!("import {{ ready }} from \"{base}/condition.ts\"; console.log(ready);")
         }),
+        None,
         None,
     )
     .await?;
@@ -1636,6 +1644,7 @@ async fn automation_delivery(
             "startAt":now_ms()+100,
             "source":"import { ready } from './readiness.ts'; console.log(await ready());"
         }),
+        None,
         None,
     )
     .await?;

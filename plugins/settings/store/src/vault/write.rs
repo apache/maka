@@ -28,15 +28,13 @@ use uuid::Uuid;
 /// The caller's transaction rolls back both deletion and insertion on failure.
 pub(crate) fn replace_secret(
     tx: &Connection,
-    locator: &CredentialLocator,
+    locator: &impl serde::Serialize,
     secret: &str,
     now: u64,
 ) -> Result<()> {
-    tx.execute(
-        "DELETE FROM credentials WHERE locator = ?",
-        rusqlite::params![serde_json::to_string(locator)?],
-    )?;
-    write_secret(tx, locator, secret, now)
+    let locator = serde_json::to_string(locator)?;
+    tx.execute("DELETE FROM credentials WHERE locator = ?", [&locator])?;
+    write(tx, &locator, &Uuid::new_v4().to_string(), 1, secret, now)
 }
 
 pub(crate) fn write_secret(
@@ -56,6 +54,17 @@ pub(crate) fn write_secret(
     };
     let revision = catalog::next_revision(previous_revision)?;
     let locator = serde_json::to_string(locator)?;
+    write(tx, &locator, &credential_id, revision, secret, now)
+}
+
+fn write(
+    tx: &Connection,
+    locator: &str,
+    credential_id: &str,
+    revision: u64,
+    secret: &str,
+    now: u64,
+) -> Result<()> {
     tx.execute("INSERT INTO credentials VALUES(?, ?, ?, ?, ?)
         ON CONFLICT(locator) DO UPDATE SET revision = excluded.revision, secret = excluded.secret, updated_at = excluded.updated_at", rusqlite::params![locator, credential_id, revision as i64, secret, now as i64])?;
     Ok(())

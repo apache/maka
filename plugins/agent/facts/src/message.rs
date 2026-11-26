@@ -22,6 +22,13 @@ use crate::input::{DeliveredMessage, MessageInput};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WithdrawalResult {
+    Delivered,
+    Cancelled,
+}
+
 /// Trusted producer attribution, preserved independently of editable content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(

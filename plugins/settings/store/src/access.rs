@@ -23,7 +23,7 @@ mod lifecycle;
 mod peer;
 mod record;
 use crate::{ConfigurationStore, Result, TransactionMode};
-pub use peer::{HostPeerAccess, NewHostPeerPairingInvite, PeerId};
+pub use peer::{HostPeerAccess, NewHostPeerPairingInvite, PairingInviteState, PeerId};
 use record::load;
 pub use record::{AccessChange, AccessCreateMode, AccessCredential, CredentialState};
 

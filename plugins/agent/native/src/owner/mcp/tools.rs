@@ -218,7 +218,7 @@ pub(in crate::owner) fn declarations() -> Vec<ToolRegistration> {
         ),
         (
             UPDATE,
-            "Update an existing MCP server configuration (patch fields, toggle disabled, or add/remove env/headers while preserving unmentioned secrets). Verifies enabled servers before saving unless skipVerify is true. Requires user approval outside Full Access; changes take effect on the next turn.",
+            "Update an existing MCP server configuration (patch fields, toggle disabled, or add/remove env/headers while preserving unmentioned secrets; changing url clears inherited headers/headerEnv and changing stdio command, args, or cwd clears inherited env/passEnv). Verifies enabled servers before saving unless skipVerify is true. Requires user approval outside Full Access; changes take effect on the next turn.",
             schema_for::<UpdateInput>(),
             ToolSemantics::ExclusiveStep,
         ),
@@ -521,7 +521,60 @@ fn build_install_entry(input: &InstallInput) -> Result<Value, String> {
     Ok(Value::Object(map))
 }
 
-fn apply_update_patch(existing: &Value, input: &UpdateInput) -> Result<Value, String> {
+fn collect_credential_keys(entry: &Value) -> Vec<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    let Some(obj) = entry.as_object() else {
+        return Vec::new();
+    };
+    for field in ["env", "headers", "headerEnv"] {
+        if let Some(map) = obj.get(field).and_then(Value::as_object) {
+            keys.extend(map.keys().cloned());
+        }
+    }
+    if let Some(list) = obj.get("passEnv").and_then(Value::as_array) {
+        keys.extend(list.iter().filter_map(Value::as_str).map(ToOwned::to_owned));
+    }
+    keys.into_iter().collect()
+}
+
+fn inherited_credential_keys(existing: &Value, patched: &Value, cleared: &[String]) -> Vec<String> {
+    let before: std::collections::BTreeSet<String> =
+        collect_credential_keys(existing).into_iter().collect();
+    let cleared: std::collections::BTreeSet<&str> = cleared.iter().map(String::as_str).collect();
+    collect_credential_keys(patched)
+        .into_iter()
+        .filter(|key| before.contains(key) && !cleared.contains(key.as_str()))
+        .collect()
+}
+
+fn approval_method(
+    action: &str,
+    target_id: LocationId,
+    entry: Option<&Value>,
+    will_verify: Option<bool>,
+    inherited_credentials: &[String],
+) -> String {
+    let mut details = vec![target_id.reference().to_owned()];
+    if let Some(verify) = will_verify {
+        details.push(if verify { "verify" } else { "no-verify" }.to_owned());
+    }
+    if let Some(obj) = entry.and_then(Value::as_object) {
+        if let Some(url) = obj.get("url").and_then(Value::as_str) {
+            details.push(format!("target: {}", masked_url_origin(url)));
+        } else if let Some(command) = obj.get("command").and_then(Value::as_str) {
+            details.push(format!("target: {command}"));
+        }
+    }
+    if !inherited_credentials.is_empty() {
+        details.push(format!("inherits: {}", inherited_credentials.join(", ")));
+    }
+    format!("{action}[{}]", details.join(", "))
+}
+
+fn apply_update_patch(
+    existing: &Value,
+    input: &UpdateInput,
+) -> Result<(Value, Vec<String>), String> {
     let mut map = existing
         .as_object()
         .cloned()
@@ -533,14 +586,71 @@ fn apply_update_patch(existing: &Value, input: &UpdateInput) -> Result<Value, St
             .is_some_and(|kind| matches!(kind, "http" | "streamable-http" | "streamable_http"));
     let switching_to_stdio = input.command.is_some() && input.url.is_none()
         || input.transport.as_deref() == Some("stdio");
+    let url_changed = input
+        .url
+        .as_deref()
+        .is_some_and(|next| map.get("url").and_then(Value::as_str) != Some(next));
+    let command_changed = input
+        .command
+        .as_deref()
+        .is_some_and(|next| map.get("command").and_then(Value::as_str) != Some(next));
+    let existing_args = map
+        .get("args")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let args_changed = input
+        .args
+        .as_ref()
+        .is_some_and(|next| json!(next) != Value::Array(existing_args));
+    let existing_cwd = map.get("cwd").and_then(Value::as_str).unwrap_or("");
+    let cwd_changed = input
+        .cwd
+        .as_deref()
+        .is_some_and(|next| next != existing_cwd);
+    let stdio_launch_changed = command_changed || args_changed || cwd_changed;
+    let mut cleared = std::collections::BTreeSet::new();
+    let record_removed =
+        |map: &mut Map<String, Value>,
+         key: &str,
+         cleared: &mut std::collections::BTreeSet<String>| {
+            if let Some(removed) = map.remove(key) {
+                match removed {
+                    Value::Object(entries) => {
+                        cleared.extend(entries.into_iter().map(|(key, _)| key))
+                    }
+                    Value::Array(items) => {
+                        cleared.extend(
+                            items
+                                .into_iter()
+                                .filter_map(|v| v.as_str().map(str::to_owned)),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        };
     if switching_to_http {
-        for key in ["command", "args", "cwd", "env", "passEnv"] {
+        for key in ["command", "args", "cwd"] {
             map.remove(key);
         }
+        record_removed(&mut map, "env", &mut cleared);
+        record_removed(&mut map, "passEnv", &mut cleared);
     } else if switching_to_stdio {
-        for key in ["url", "headers", "headerEnv"] {
-            map.remove(key);
-        }
+        map.remove("url");
+        record_removed(&mut map, "headers", &mut cleared);
+        record_removed(&mut map, "headerEnv", &mut cleared);
+    }
+    // Changing the HTTP endpoint URL or effective stdio launch (command, args, or cwd)
+    // must not silently forward previously stored secrets to a different target.
+    if url_changed {
+        record_removed(&mut map, "headers", &mut cleared);
+        record_removed(&mut map, "headerEnv", &mut cleared);
+    }
+    if stdio_launch_changed {
+        record_removed(&mut map, "env", &mut cleared);
+        record_removed(&mut map, "passEnv", &mut cleared);
     }
     if let Some(transport) = &input.transport {
         map.insert("type".into(), Value::String(transport.clone()));
@@ -635,7 +745,7 @@ fn apply_update_patch(existing: &Value, input: &UpdateInput) -> Result<Value, St
     if let Some(timeout) = input.call_timeout_ms {
         map.insert("callTimeoutMs".into(), json!(timeout));
     }
-    Ok(Value::Object(map))
+    Ok((Value::Object(map), cleared.into_iter().collect()))
 }
 
 fn masked_url_origin(raw: &str) -> String {
@@ -755,6 +865,7 @@ fn find_existing_location(
     scope: Option<McpScope>,
     exact: Option<LocationId>,
 ) -> Result<Option<(LocationId, String, String, Value)>, String> {
+    let mut matches = Vec::new();
     for location in locations {
         if let Some(exact) = exact
             && location.id != exact
@@ -773,15 +884,25 @@ fn find_existing_location(
             .and_then(Value::as_object)
             .and_then(|entries| entries.get(name))
         {
-            return Ok(Some((
+            matches.push((
                 location.id,
                 location.file_path(),
                 doc.revision,
                 entry.clone(),
-            )));
+            ));
         }
     }
-    Ok(None)
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.into_iter().next()),
+        _ => {
+            let ids: Vec<_> = matches.iter().map(|(id, _, _, _)| id.reference()).collect();
+            Err(format!(
+                "MCP server '{name}' exists in multiple locations ({}). Specify location (or scope if unique within that scope) to disambiguate.",
+                ids.join(", ")
+            ))
+        }
+    }
 }
 
 async fn execute_list(
@@ -802,7 +923,9 @@ async fn execute_list(
     let live_servers = access
         .current_model_tools(&live.workspace)
         .map(|(catalog, _)| catalog.mcp_server_tools_by_origin())
-        .unwrap_or_default();
+        .map_err(|error| {
+            ToolError::Failed(format!("Unable to inspect live MCP connections: {error}"))
+        })?;
     let file_connected_tools: BTreeMap<String, (LocationId, String, Vec<String>)> = live_servers
         .iter()
         .filter_map(|(name, (origin, tools))| match origin {
@@ -842,7 +965,9 @@ async fn execute_list(
     let user_layer_active = effective_access != WorkspaceAccess::ReadOnly;
     let project_layer_active = user_layer_active && project_status == "trusted";
     let locations = owner
-        .mcp_locations(Some(live.workspace.clone()))
+        .mcp_locations(
+            (effective_access != WorkspaceAccess::ReadOnly).then_some(live.workspace.clone()),
+        )
         .await
         .map_err(ToolError::Failed)?;
     let (servers, matched_file_servers) = tokio::task::spawn_blocking(move || {
@@ -1040,9 +1165,31 @@ async fn resolve_location(
         .ok_or_else(|| ToolError::Failed("MCP configuration location unavailable".into()))
 }
 
-/// Acquires `mcp-management.lock`, verifies `expected_doc_revision` CAS, runs `mutate` on
-/// `mcpServers`, writes atomically, advances project trust if still `Trusted`, and retires
-/// superseded runtime snapshots.
+/// Pre-probe CAS check without holding the file lock across network/process verification.
+async fn verify_expected_revision(
+    location: Location,
+    tool_name: &'static str,
+    expected_doc_revision: String,
+) -> Result<(), ToolError> {
+    tokio::task::spawn_blocking(move || {
+        let document = location.read()?;
+        if document.revision != expected_doc_revision {
+            return Err(format!(
+                "MCP configuration at {} changed on disk since {tool_name} was prepared; retry {tool_name}.",
+                location.file_path()
+            ));
+        }
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|error| ToolError::Failed(error.to_string()))?
+    .map_err(ToolError::Failed)
+}
+
+/// Acquires `mcp-management.lock`, verifies `expected_doc_revision` CAS and cancellation, runs
+/// `mutate` on `mcpServers`, writes atomically, advances project trust if still `Trusted`, and
+/// retires superseded runtime snapshots.
+#[allow(clippy::too_many_arguments)]
 async fn commit_mcp_change<T, F>(
     owner: &Owner,
     workspace: &Workspace,
@@ -1050,6 +1197,7 @@ async fn commit_mcp_change<T, F>(
     tool_name: &'static str,
     expected_doc_revision: String,
     allow_brand_new: bool,
+    cancellation: CancellationToken,
     mutate: F,
 ) -> Result<(String, T), ToolError>
 where
@@ -1063,11 +1211,17 @@ where
     let target_id = location.id;
     let write_workspace = workspace.clone();
     let (path, output, post_trust) = tokio::task::spawn_blocking(move || {
+        if cancellation.is_cancelled() {
+            return Err(format!("{tool_name} cancelled"));
+        }
         root.validate_current().map_err(|error| error.to_string())?;
         let _lease = maka_event_log::root::FileLease::acquire(
             &root.canonical_path().join("mcp-management.lock"),
         )
         .map_err(|error| error.to_string())?;
+        if cancellation.is_cancelled() {
+            return Err(format!("{tool_name} cancelled"));
+        }
         let document = location.read()?;
         if document.revision != expected_doc_revision {
             return Err(format!(
@@ -1105,10 +1259,14 @@ where
     .map_err(ToolError::Failed)?;
 
     apply_post_write_trust(owner, workspace, post_trust).await?;
-    let _ = owner
+    let retire_workspace = is_project_location(target_id).then_some(workspace);
+    if let Err(error) = owner
         .mcp_projects
-        .drop_stale_for_scope(Some(workspace))
-        .await;
+        .drop_stale_for_scope(retire_workspace)
+        .await
+    {
+        tracing::warn!(error = %error, tool = tool_name, "MCP stale snapshot retirement failed after write");
+    }
     Ok((path, output))
 }
 
@@ -1172,12 +1330,19 @@ async fn prepare_install(
         "mcp:install:{}:{expected_doc_revision}",
         target_id.reference()
     );
+    let method = approval_method(
+        "install",
+        target_id,
+        Some(&entry),
+        Some(normalized.is_some() && !input.skip_verify),
+        &[],
+    );
     let approval = request_write_approval(
         &access,
         &policy,
         &context,
         INSTALL,
-        "install",
+        &method,
         &binding,
         &confirmation_input,
         &cancellation,
@@ -1226,6 +1391,7 @@ async fn execute_install(
     }
     verify_execution_policy(&access, approved).await?;
     let location = resolve_location(&owner, &workspace, target_id).await?;
+    verify_expected_revision(location.clone(), INSTALL, expected_doc_revision.clone()).await?;
     let (verified, tools) = match (normalized, input.skip_verify) {
         (Some(config), false) => (
             true,
@@ -1233,6 +1399,10 @@ async fn execute_install(
         ),
         _ => (false, Vec::new()),
     };
+    if cancellation.is_cancelled() {
+        return Err(ToolError::Failed("McpInstall cancelled".into()));
+    }
+    verify_execution_policy(&access, approved).await?;
     let server_name = input.name.clone();
     let overwrite = input.overwrite;
     let (path, ()) = commit_mcp_change(
@@ -1242,6 +1412,7 @@ async fn execute_install(
         INSTALL,
         expected_doc_revision,
         true,
+        cancellation,
         move |location, entries| {
             if !overwrite && entries.contains_key(&server_name) {
                 return Err(format!(
@@ -1288,45 +1459,66 @@ async fn prepare_update(
         .await
         .map_err(|message| ToolRejection::PreparationFailed { message })?;
     let precheck_input = input.clone();
-    let (target_id, expected_doc_revision, patched_entry, normalized) =
-        tokio::task::spawn_blocking(move || {
-            let Some((target_id, _, doc_revision, existing)) = find_existing_location(
-                &locations,
-                &precheck_input.name,
-                precheck_input.scope,
-                precheck_input.location,
-            )?
-            else {
-                return Err(format!(
-                    "MCP server '{}' was not found. Use McpList to inspect configured servers or McpInstall to add it.",
-                    precheck_input.name
-                ));
-            };
-            let location = locations
-                .into_iter()
-                .find(|location| location.id == target_id)
-                .ok_or("MCP configuration location unavailable")?;
-            let patched = apply_update_patch(&existing, &precheck_input)?;
-            let normalized =
-                files::normalize_server(&precheck_input.name, patched.clone(), &location.path)?;
-            Ok::<_, String>((target_id, doc_revision, patched, normalized))
-        })
-        .await
-        .map_err(|error| ToolRejection::PreparationFailed {
-            message: error.to_string(),
-        })?
-        .map_err(|message| ToolRejection::InvalidInput { message })?;
+    let (
+        target_id,
+        expected_doc_revision,
+        patched_entry,
+        normalized,
+        inherited_credentials,
+        cleared_credentials,
+    ) = tokio::task::spawn_blocking(move || {
+        let Some((target_id, _, doc_revision, existing)) = find_existing_location(
+            &locations,
+            &precheck_input.name,
+            precheck_input.scope,
+            precheck_input.location,
+        )?
+        else {
+            return Err(format!(
+                "MCP server '{}' was not found. Use McpList to inspect configured servers or McpInstall to add it.",
+                precheck_input.name
+            ));
+        };
+        let location = locations
+            .into_iter()
+            .find(|location| location.id == target_id)
+            .ok_or("MCP configuration location unavailable")?;
+        let (patched, cleared) = apply_update_patch(&existing, &precheck_input)?;
+        let inherited = inherited_credential_keys(&existing, &patched, &cleared);
+        let normalized =
+            files::normalize_server(&precheck_input.name, patched.clone(), &location.path)?;
+        Ok::<_, String>((
+            target_id,
+            doc_revision,
+            patched,
+            normalized,
+            inherited,
+            cleared,
+        ))
+    })
+    .await
+    .map_err(|error| ToolRejection::PreparationFailed {
+        message: error.to_string(),
+    })?
+    .map_err(|message| ToolRejection::InvalidInput { message })?;
 
     let binding = format!(
         "mcp:update:{}:{expected_doc_revision}",
         target_id.reference()
+    );
+    let method = approval_method(
+        "update",
+        target_id,
+        Some(&patched_entry),
+        Some(normalized.is_some() && !input.skip_verify),
+        &inherited_credentials,
     );
     let approval = request_write_approval(
         &access,
         &policy,
         &context,
         UPDATE,
-        "update",
+        &method,
         &binding,
         &confirmation_input,
         &cancellation,
@@ -1345,6 +1537,7 @@ async fn prepare_update(
                 expected_doc_revision,
                 patched_entry,
                 normalized,
+                cleared_credentials,
                 approved,
                 cancel,
             )
@@ -1367,6 +1560,7 @@ async fn execute_update(
     expected_doc_revision: String,
     patched_entry: Value,
     normalized: Option<ServerConfiguration>,
+    cleared_credentials: Vec<String>,
     approved: bool,
     cancellation: CancellationToken,
 ) -> Result<ToolSuccess, ToolError> {
@@ -1375,6 +1569,7 @@ async fn execute_update(
     }
     verify_execution_policy(&access, approved).await?;
     let location = resolve_location(&owner, &workspace, target_id).await?;
+    verify_expected_revision(location.clone(), UPDATE, expected_doc_revision.clone()).await?;
     let (verified, tools) = match (normalized, input.skip_verify) {
         (Some(config), false) => (
             true,
@@ -1382,6 +1577,10 @@ async fn execute_update(
         ),
         _ => (false, Vec::new()),
     };
+    if cancellation.is_cancelled() {
+        return Err(ToolError::Failed("McpUpdate cancelled".into()));
+    }
+    verify_execution_policy(&access, approved).await?;
     let server_name = input.name.clone();
     let (path, disabled) = commit_mcp_change(
         &owner,
@@ -1390,6 +1589,7 @@ async fn execute_update(
         UPDATE,
         expected_doc_revision,
         false,
+        cancellation,
         move |location, entries| {
             if !entries.contains_key(&server_name) {
                 return Err(format!(
@@ -1408,7 +1608,7 @@ async fn execute_update(
     )
     .await?;
 
-    Ok(ToolSuccess::from(json!({
+    let mut payload = json!({
         "status": "updated",
         "name": input.name,
         "scope": scope_of(target_id),
@@ -1418,7 +1618,11 @@ async fn execute_update(
         "verified": verified,
         "tools": tools,
         "effectiveFrom": "next_turn",
-    })))
+    });
+    if !cleared_credentials.is_empty() {
+        payload["clearedCredentials"] = json!(cleared_credentials);
+    }
+    Ok(ToolSuccess::from(payload))
 }
 
 async fn prepare_uninstall(
@@ -1465,12 +1669,13 @@ async fn prepare_uninstall(
         "mcp:uninstall:{}:{expected_doc_revision}",
         target_id.reference()
     );
+    let method = approval_method("uninstall", target_id, None, None, &[]);
     let approval = request_write_approval(
         &access,
         &policy,
         &context,
         UNINSTALL,
-        "uninstall",
+        &method,
         &binding,
         &confirmation_input,
         &cancellation,
@@ -1523,6 +1728,7 @@ async fn execute_uninstall(
         UNINSTALL,
         expected_doc_revision,
         false,
+        cancellation,
         move |location, entries| {
             if entries.remove(&server_name).is_none() {
                 return Err(format!(

@@ -24,9 +24,9 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 tar = { version = "0.4.46", default-features = false }
-ignore = "0.4.33"
+ignore = "0.4.35"
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 hex.workspace = true

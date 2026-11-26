@@ -27,7 +27,10 @@ use maka_config::access::{
 use maka_remote_pairing::{PairingTicketPayload, RelayEndpoint, SignedPairingTicket};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::Ordering},
+};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -68,6 +71,7 @@ fn timestamp() -> Result<String> {
 }
 impl Session {
     fn revoke(&self) {
+        self.revoked.store(true, Ordering::Release);
         self.peer.revoke();
         self.transport.request_close();
     }
@@ -198,8 +202,9 @@ impl Host {
                 host.revoke_sessions(|principal| {
                     matches!(principal, Principal::AuthenticatedPeer(id) if id == &peer_id)
                 });
-                let _ = host.revoked_peers.send(peer_id);
+                let _ = host.revoked_peers.send(peer_id.clone());
             }
+            host.clear_peer_sas(&peer_id);
             Ok(changed)
         })
         .await
@@ -267,7 +272,11 @@ impl Host {
         &self,
         authority: &Authority,
         client: Option<String>,
+        expected_root_id: &str,
     ) -> Result<()> {
+        if expected_root_id != self.root_id() {
+            return Err("Host root does not match expected root".into());
+        }
         let Authority::Remote { hash } = authority else {
             return Err("pairing requires the remote credential".into());
         };
@@ -296,6 +305,7 @@ pub struct PeerPairingInvite {
     pub root_id: String,
     pub invite_id: String,
     pub expires_at_ms: u64,
+    pub relays: Vec<RelayEndpoint>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -390,6 +400,7 @@ impl Host {
             root_id: payload.root_id.clone(),
             invite_id: payload.invite_id.clone(),
             expires_at_ms,
+            relays: payload.relays.clone(),
         })
     }
 
@@ -429,6 +440,7 @@ impl Host {
         {
             return Err("pairing invite is invalid, expired, or already redeemed".into());
         }
+        self.clear_peer_sas(peer_id);
         Ok(PeerPairingReceipt {
             root_id: self.root_id().into(),
             peer_id: peer_id.as_str().into(),

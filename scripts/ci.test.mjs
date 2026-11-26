@@ -31,7 +31,7 @@ import { executor, runSuites } from './ci/run.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkResults, createPlan, documentation } from './ci/plan.mjs';
-import { suites, workers } from './ci/suites.mjs';
+import { iosValidation, suites, workers } from './ci/suites.mjs';
 
 test('manual worker validation runs its suites without claiming full CI coverage', () => {
   const plan = createPlan({ root, revision: 'head', worker: 'native-windows' });
@@ -249,7 +249,7 @@ test('external_jobs run on both native workers and the Linux workspace suite', (
 test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
   const plan = createPlan({
     root,
-    changes: ['scripts/rust/build-v8.test.mjs'],
+    changes: ['scripts/rust/build-v8.test.mjs', iosValidation.scriptTest],
     metadata: {},
     revision: 'test',
     baseline: 'base',
@@ -1112,6 +1112,9 @@ test('every root suite package reference matches a real workspace crate', () => 
       if (!actual.has(pkg)) missing.push(`${id}:${pkg}`);
     }
   }
+  for (const pkg of iosValidation.packages) {
+    if (!actual.has(pkg)) missing.push(`ios:${pkg}`);
+  }
   assert.deepEqual(missing, []);
 });
 
@@ -1138,4 +1141,32 @@ test('scheduled CI events plan full validation across all maintained workers', a
     planned.workers.map((worker) => worker.id),
     workers.map((worker) => worker.id),
   );
+});
+
+test('an iOS app-only change runs the TypeScript contracts suite', () => {
+  const pkg = {
+    id: 'ios',
+    name: 'maka-ios-shell',
+    manifest_path: join(root, 'products/maka/ios-shell/Cargo.toml'),
+  };
+  for (const input of [
+    'products/maka/ios-shell/app/Entry.tsx',
+    'products/maka/ios-shell/locales/en.json',
+  ]) {
+    const plan = createPlan({
+      root,
+      changes: [input],
+      metadata: {
+        root: {
+          packages: [pkg],
+          workspace_members: [pkg.id],
+          resolve: { nodes: [{ id: pkg.id, deps: [] }] },
+        },
+      },
+      revision: 'test',
+      baseline: 'base',
+    });
+    assert.equal(plan.full, false);
+    assert.ok(plan.suites.contracts, input);
+  }
 });

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use notify::{Config, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, EventHandler, EventKind, PathOp, RecommendedWatcher, Watcher};
 use std::sync::{Arc, mpsc};
 use tokio::sync::mpsc as wake;
 
@@ -116,14 +116,13 @@ pub(super) fn open(directory: &Directory) -> io::Result<Watch> {
             }
         };
     let result = (|| {
-        let mut paths = watcher.paths_mut();
-        for anchor in &directory.anchors {
-            paths
-                .add(&anchor.path, RecursiveMode::NonRecursive)
-                .map_err(|_| error("files_watch_unavailable"))?;
-        }
-        paths
-            .commit()
+        let paths = directory
+            .anchors
+            .iter()
+            .map(|anchor| PathOp::watch_non_recursive(anchor.path.clone()))
+            .collect();
+        watcher
+            .update_paths(paths)
             .map_err(|_| error("files_watch_unavailable"))?;
         directory.validate_inner()
     })();

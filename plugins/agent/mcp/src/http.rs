@@ -30,7 +30,7 @@ use rmcp::{
     },
 };
 use rmcp_sse::{Error as SseError, Sse};
-use sse_stream::SseStream;
+use sse_stream::SseByteStream;
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ pub(crate) struct Client(pub reqwest::Client);
 type Error = StreamableHttpError<reqwest::Error>;
 type Headers = HashMap<HeaderName, HeaderValue>;
 fn sse(response: reqwest::Response) -> BoxStream<'static, Result<Sse, SseError>> {
-    SseStream::from_bytes_stream(response.bytes_stream())
+    SseByteStream::new(response.bytes_stream())
         .map(|event| {
             event
                 .map(|event| Sse {

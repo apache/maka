@@ -125,7 +125,7 @@ impl Cron {
             return Ok(None);
         }
         let first = Timestamp::from_millisecond(lower)?
-            .to_zoned(zone.clone())
+            .to_zoned_datetime(zone.clone())
             .date();
         // Iterate the finite representable Gregorian calendar, jumping over
         // unselected months. Sparse dates (including century leap years) do not
@@ -155,10 +155,10 @@ impl Cron {
             return Ok(None);
         }
         let first = Timestamp::from_millisecond(not_before)?
-            .to_zoned(zone.clone())
+            .to_zoned_datetime(zone.clone())
             .date();
         let last = Timestamp::from_millisecond(at)?
-            .to_zoned(zone.clone())
+            .to_zoned_datetime(zone.clone())
             .date();
         for year in (first.year()..=last.year()).rev() {
             for month in (1..=12).rev().filter(|month| self.month.contains(*month)) {
@@ -194,7 +194,7 @@ impl Cron {
         for hour in self.hour.values() {
             for minute in self.minute.values() {
                 let local = date.at(hour, minute, 0, 0);
-                let ambiguous = zone.to_ambiguous_zoned(local);
+                let ambiguous = zone.to_ambiguous_zoned_datetime(local);
                 // Gaps have no matching wall time; folds have two real occurrences.
                 for resolved in [ambiguous.clone().earlier()?, ambiguous.later()?] {
                     let at = resolved.timestamp().as_millisecond();

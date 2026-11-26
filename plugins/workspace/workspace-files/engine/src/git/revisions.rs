@@ -703,8 +703,7 @@ pub(super) fn same_common_git_dir(first: &std::path::Path, second: &std::path::P
             .strict_config(true)
             .filter_config_section(|_| false)
             .open(&canonical)
-            .ok()?
-            .to_thread_local();
+            .ok()?;
         let workdir = repo.workdir().and_then(|w| dunce::canonicalize(w).ok())?;
         if workdir != canonical {
             return None;

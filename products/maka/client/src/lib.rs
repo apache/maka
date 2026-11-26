@@ -406,6 +406,20 @@ impl Client {
             .clone())
     }
 
+    pub async fn local_owner_control(
+        &self,
+        request: maka_host_runtime::application::host::protocol::Request,
+    ) -> Result<maka_host_runtime::application::host::protocol::Response> {
+        let call = {
+            let host = self.0.host.lock().await;
+            if self.0.opening_stop.is_cancelled() {
+                return Err("client scope is closing".into());
+            }
+            host.local_owner_control(request)
+        };
+        call.await
+    }
+
     async fn service_owner(&self, endpoint: &str) -> Result<ServiceOwner> {
         Ok(ServiceOwner::from_description(
             &self.describe(endpoint).await?,

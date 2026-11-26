@@ -34,6 +34,7 @@ use nsh_core::{
     JsonValue,
     host_channel::{HostError, HostInbox, HostRequest, ModuleFake, check_name},
 };
+use tokio::sync::watch;
 
 use crate::Message;
 
@@ -108,8 +109,8 @@ struct Inner {
     configured: bool,
     handlers: HashMap<String, Handler>,
     url_handler: Option<UrlHandler>,
-    /// The engine running the view's app: its attachment's id and queue.
-    engine: Option<(u64, Sender<Message>)>,
+    /// The engine running the view's app.
+    engine: Option<AttachedEngine>,
     next_engine: u64,
     /// Events sent while no app ran, for the next one.
     pending: HostInbox,
@@ -119,6 +120,22 @@ struct Inner {
     /// The handlers of the stand-ins' calls, apart from the embedding
     /// app's: they configure nothing and `host.call` never reaches them.
     fake_handlers: HashMap<String, Handler>,
+}
+
+struct AttachedEngine {
+    id: u64,
+    tx: Sender<Message>,
+    // Dropping this sender wakes waiters, even when a replacement attached first.
+    detached: watch::Sender<()>,
+}
+
+impl Inner {
+    fn engine_for(&self, call: &HostCall) -> Option<&AttachedEngine> {
+        let caller = call.reply.as_ref()?.tx.as_ref()?;
+        self.engine
+            .as_ref()
+            .filter(|engine| engine.tx.same_channel(caller))
+    }
 }
 
 impl std::fmt::Debug for HostChannel {
@@ -197,8 +214,9 @@ impl HostChannel {
         check_name(&name)?;
         let mut inner = self.lock();
         inner.configured = true;
-        if let Some((_, tx)) = &inner.engine
-            && tx
+        if let Some(engine) = &inner.engine
+            && engine
+                .tx
                 .send(Message::HostEvent(name.clone(), data.clone()))
                 .is_ok()
         {
@@ -210,6 +228,37 @@ impl HostChannel {
             );
         }
         Ok(())
+    }
+
+    /// Sends an event only to the app that made `call`, returning false if
+    /// it is no longer attached. Unlike [Self::send], this never targets a
+    /// replacement app or buffers a new event while detached.
+    pub fn send_to_caller(
+        &self,
+        call: &HostCall,
+        name: &str,
+        data: JsonValue,
+    ) -> Result<bool, String> {
+        check_name(name)?;
+        let inner = self.lock();
+        let Some(engine) = inner.engine_for(call) else {
+            return Ok(false);
+        };
+        let result = engine.tx.send(Message::CallerHostEvent(name.into(), data));
+        drop(inner);
+        Ok(result.is_ok())
+    }
+
+    /// Waits until the app that made `call` detaches from the channel.
+    /// Resolves at once if the caller is already gone or the request is a post.
+    pub async fn caller_detached(&self, call: &HostCall) {
+        let detached = self
+            .lock()
+            .engine_for(call)
+            .map(|engine| engine.detached.subscribe());
+        if let Some(mut detached) = detached {
+            let _ = detached.changed().await;
+        }
     }
 
     /// Handles the app's calls (`host.call(name, data)`) and posts
@@ -413,7 +462,11 @@ impl HostChannel {
         for (name, data) in inner.pending.take_all() {
             let _ = tx.send(Message::HostEvent(name, data));
         }
-        inner.engine = Some((id, tx));
+        inner.engine = Some(AttachedEngine {
+            id,
+            tx,
+            detached: watch::channel(()).0,
+        });
         HostAttachment {
             channel: self.clone(),
             id,
@@ -448,7 +501,11 @@ impl Drop for HostAttachment {
     fn drop(&mut self) {
         let discarded = {
             let mut inner = self.channel.lock();
-            if !inner.engine.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            if !inner
+                .engine
+                .as_ref()
+                .is_some_and(|engine| engine.id == self.id)
+            {
                 return;
             }
             inner.engine = None;
@@ -918,6 +975,39 @@ mod tests {
         assert_eq!(kept.len(), limit);
         assert_eq!(kept[0], json!(2));
         assert_eq!(kept[limit - 1], json!(limit + 1));
+    }
+
+    #[test]
+    fn a_caller_event_does_not_cross_engine_attachments() {
+        let channel = HostChannel::new();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let old = channel.attach(tx.clone(), rx);
+        let mut reply = HostReply::default();
+        reply.tx = Some(tx);
+        let caller = HostCall {
+            reply: Some(reply),
+            ..Default::default()
+        };
+        assert!(
+            channel
+                .send_to_caller(&caller, "progress", json!(1))
+                .unwrap()
+        );
+        channel.send("general", json!(2)).unwrap();
+        drop(old);
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let _new = channel.attach(tx, rx.clone());
+        assert!(
+            !channel
+                .send_to_caller(&caller, "progress", json!(3))
+                .unwrap()
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            Message::HostEvent(name, data) if name == "general" && data == json!(2)
+        ));
+        assert!(rx.is_empty());
     }
 
     #[test]

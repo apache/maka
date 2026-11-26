@@ -107,10 +107,10 @@ maka-acp.workspace = true
 maka-config.workspace = true
 maka-updater.workspace = true
 maka-plugin-core.workspace = true
-aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+aws-lc-rs = { version = "1.19.0", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.23.1"
 clap.workspace = true
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 reqwest.workspace = true
 semver = "1.0.28"
 tar = { version = "0.4.46", default-features = false }
@@ -155,9 +155,9 @@ maka-capabilities.workspace = true
 maka-app-client.workspace = true
 maka-mock-ai.workspace = true
 maka-workbench.workspace = true
-log = "0.4.34"
+log = "0.4.35"
 tokio-util = { workspace = true, features = ["compat"] }
-hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper = { version = "1.13.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 futures-util.workspace = true
@@ -165,7 +165,7 @@ libc.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 iroh = { version = "=1.5.0", default-features = false, features = ["tls-aws-lc-rs"] }

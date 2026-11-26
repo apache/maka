@@ -382,3 +382,338 @@ async fn host_discovery_waits_for_the_connected_home_relay() {
     .await
     .expect("Host did not become discoverable after relay registration");
 }
+
+#[tokio::test]
+async fn saved_remote_transport_applies_live_and_starts_after_restart() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    use maka_host_runtime::application::host::{
+        PeerPairingOptions,
+        remote_access::{
+            ConnectionStatus, PairingInviteState, RelayAuthUpdate, RemoteAccessUpdate,
+            RemoteRelayUpdate,
+        },
+    };
+    use maka_remote_pairing::RelayEndpoint;
+    use std::path::PathBuf;
+
+    timeout(Duration::from_secs(90), async {
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        let relay = Server::spawn(config).await.unwrap();
+        let url = format!("http://{}/", relay.http_addr().unwrap());
+        let launch = || {
+            let mut cmd =
+                host::command_for(&crate::maka_executable(), &sandbox.home, &sandbox.workspace);
+            cmd.args(["host", "serve", "--root"]).arg(&sandbox.root);
+            cmd
+        };
+        let target = |ready: Value| {
+            (
+                PathBuf::from(ready["socketPath"].as_str().unwrap()),
+                ready["hostEpoch"].as_str().unwrap().parse().unwrap(),
+            )
+        };
+        let update = |enabled| RemoteAccessUpdate {
+            enabled,
+            relay_only: true,
+            relays: vec![RemoteRelayUpdate {
+                endpoint: RelayEndpoint {
+                    url: url.clone(),
+                    quic_port: None,
+                    cert_sha256: None,
+                },
+                ca_der_path: None,
+                auth: RelayAuthUpdate::Keep,
+            }],
+        };
+        let (server, ready) = spawn_ready(launch(), Stdio::inherit()).await;
+        let (socket, epoch) = target(ready);
+        let status = Client::remote_access_status(&socket, epoch, None)
+            .await
+            .unwrap();
+        assert!(matches!(status.status, ConnectionStatus::Disabled));
+        assert!(!status.config.enabled);
+
+        Client::update_remote_access(&socket, epoch, update(true))
+            .await
+            .unwrap();
+        loop {
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
+            assert!(status.error.is_none(), "{:?}", status.error);
+            if matches!(status.status, ConnectionStatus::Connected) {
+                assert_eq!(status.connected_relays, [url.as_str()]);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let invite = Client::prepare_peer_pairing(
+            &socket,
+            epoch,
+            PeerPairingOptions {
+                host_name: "Desktop test".into(),
+                label: None,
+                ttl_secs: None,
+            },
+        )
+        .await
+        .unwrap();
+        let pairing_status =
+            || Client::remote_access_status(&socket, epoch, Some(&invite.invite_id));
+        assert_eq!(
+            pairing_status().await.unwrap().invite_state,
+            Some(PairingInviteState::Pending)
+        );
+        let ticket = SignedPairingTicket::parse_and_verify_uri(&invite.uri, 0).unwrap();
+        let device = DeviceIdentity::generate().unwrap();
+        let route = Relay::new(&invite.relays[0], None, None).unwrap();
+        let endpoint = PeerEndpoint::bind(&device, &[route], true).await.unwrap();
+        let connected = endpoint.connect_ticket(&ticket).await.unwrap();
+        loop {
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
+            if let Some(notice) = status.sas {
+                assert_eq!(notice.peer_id, device.public_key().to_string());
+                assert_eq!(notice.sas, connected.export_sas().unwrap());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        connected
+            .redeem_pairing(&ticket, Some("Phone".into()))
+            .await
+            .unwrap();
+        let status = pairing_status().await.unwrap();
+        assert_eq!(status.invite_state, Some(PairingInviteState::Consumed));
+        assert!(status.sas.is_none(), "redeemed peer still has a SAS notice");
+        let peers = Client::list_peer_access(&socket, epoch).await.unwrap();
+        assert_eq!(peers[0].label, "Phone");
+        assert!(peers[0].last_active_at.is_some());
+
+        Client::update_remote_access(&socket, epoch, update(false))
+            .await
+            .unwrap();
+        let status = Client::remote_access_status(&socket, epoch, None)
+            .await
+            .unwrap();
+        assert!(matches!(status.status, ConnectionStatus::Disabled));
+        assert!(status.connected_relays.is_empty() && status.sas.is_none());
+        connected.closed().await;
+        endpoint.close().await;
+        Client::update_remote_access(&socket, epoch, update(true))
+            .await
+            .unwrap();
+        stop(server).await;
+
+        let (restarted, ready) = spawn_ready(launch(), Stdio::inherit()).await;
+        let (socket, epoch) = target(ready);
+        loop {
+            let status = Client::remote_access_status(&socket, epoch, None)
+                .await
+                .unwrap();
+            assert!(status.config.enabled);
+            assert!(status.error.is_none(), "{:?}", status.error);
+            if matches!(status.status, ConnectionStatus::Connected) {
+                assert_eq!(
+                    Client::list_peer_access(&socket, epoch)
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        stop(restarted).await;
+        relay.shutdown().await.unwrap();
+    })
+    .await
+    .expect("saved remote transport did not complete");
+}
+
+#[tokio::test]
+async fn saved_remote_transport_does_not_expose_upstream_header_text() {
+    use http_body_util::Empty;
+    use hyper::{
+        Request, Response,
+        body::{Bytes, Incoming},
+        server::conn::http1,
+        service::service_fn,
+    };
+    use hyper_util::rt::TokioIo;
+    use maka_host_runtime::application::host::remote_access::{
+        RelayAuthUpdate, RemoteAccessUpdate, RemoteRelayUpdate,
+    };
+    use maka_remote_pairing::RelayEndpoint;
+    use std::{convert::Infallible, path::Path};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+    use tokio_util::sync::CancellationToken;
+
+    const REFLECTED: &str = "server-reflected-secret-from-response";
+    timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let stop_relay = CancellationToken::new();
+        let relay = tokio::spawn({
+            let stop = stop_relay.clone();
+            async move {
+                let mut connections = tokio::task::JoinSet::new();
+                loop {
+                    let stream = tokio::select! {
+                        () = stop.cancelled() => break,
+                        next = listener.accept() => next.unwrap().0,
+                    };
+                    let service = service_fn(|request: Request<Incoming>| async move {
+                        let response = if request.uri().path() == "/relay" {
+                            let key = &request.headers()["sec-websocket-key"];
+                            Response::builder()
+                                .status(101)
+                                .header("upgrade", "websocket")
+                                .header("connection", "upgrade")
+                                .header("sec-websocket-accept", derive_accept_key(key.as_bytes()))
+                                .header("sec-websocket-protocol", REFLECTED)
+                        } else {
+                            assert_eq!(request.uri().path(), "/ping");
+                            Response::builder().status(200)
+                        };
+                        Ok::<_, Infallible>(response.body(Empty::<Bytes>::new()).unwrap())
+                    });
+                    connections.spawn(async move {
+                        http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .await
+                            .unwrap();
+                    });
+                }
+                connections.shutdown().await;
+            }
+        });
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let mut serve =
+            host::command_for(&crate::maka_executable(), &sandbox.home, &sandbox.workspace);
+        serve.args(["host", "serve", "--root"]).arg(&sandbox.root);
+        let (mut server, ready) = spawn_ready(serve, Stdio::piped()).await;
+        let mut stderr = BufReader::new(server.stderr.take().unwrap());
+        let diagnostics = loop {
+            let mut line = String::new();
+            assert_ne!(
+                stderr.read_line(&mut line).await.unwrap(),
+                0,
+                "Host diagnostics path missing"
+            );
+            if let Some(path) = line.trim_end().strip_prefix("Host diagnostics: ") {
+                break std::path::PathBuf::from(path);
+            }
+        };
+        let socket = Path::new(ready["socketPath"].as_str().unwrap());
+        let epoch = ready["hostEpoch"].as_str().unwrap().parse().unwrap();
+        Client::update_remote_access(
+            socket,
+            epoch,
+            RemoteAccessUpdate {
+                enabled: true,
+                relay_only: true,
+                relays: vec![RemoteRelayUpdate {
+                    endpoint: RelayEndpoint {
+                        url,
+                        quic_port: None,
+                        cert_sha256: None,
+                    },
+                    ca_der_path: None,
+                    auth: RelayAuthUpdate::Keep,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+        let error = loop {
+            if let Some(error) = Client::remote_access_status(socket, epoch, None)
+                .await
+                .unwrap()
+                .error
+            {
+                break error;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(
+            error,
+            "relay connection failed; check connectivity and TLS trust"
+        );
+        assert!(!error.contains(REFLECTED));
+        stop(server).await;
+        let logs = tokio::fs::read(diagnostics).await.unwrap();
+        assert!(!String::from_utf8_lossy(&logs).contains(REFLECTED));
+        stop_relay.cancel();
+        relay.await.unwrap();
+    })
+    .await
+    .expect("sanitized registration failure did not reach Host status");
+}
+
+#[tokio::test]
+async fn peer_stream_reaches_ingress_while_activity_writer_is_locked() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    use maka_remote_pairing::RelayEndpoint;
+    use maka_remote_transport::host::HostPeerTransport;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_util::sync::CancellationToken;
+
+    timeout(Duration::from_secs(20), async {
+        let sandbox = host::Sandbox::new().await.unwrap();
+        let host = super::peer_access::open_host(&sandbox).await;
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        let server = Server::spawn(config).await.unwrap();
+        let route = RelayEndpoint {
+            url: format!("http://{}", server.http_addr().unwrap()),
+            quic_port: None,
+            cert_sha256: None,
+        };
+        let relay = Relay::new(&route, None, None).unwrap();
+        let transport = HostPeerTransport::bind(&host, &[relay], true)
+            .await
+            .unwrap();
+        transport.wait_for_relay().await.unwrap();
+        let device = DeviceIdentity::generate().unwrap();
+        let endpoint =
+            PeerEndpoint::bind(&device, &[Relay::new(&route, None, None).unwrap()], true)
+                .await
+                .unwrap();
+        let lock =
+            rusqlite::Connection::open(sandbox.root.join("configuration-rust.sqlite")).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let (send, mut ingress) = HostPeerTransport::ingress();
+        let cancel = CancellationToken::new();
+        let serving = tokio::spawn(transport.serve(send, cancel.clone(), |_, _| {}));
+        let peer = endpoint
+            .connect(&host.device_identity().public_key())
+            .await
+            .unwrap();
+        let mut stream = peer.open_bi().await.unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        let incoming = async {
+            let stream = ingress.recv().await.unwrap();
+            let mut bytes = [0; 5];
+            stream.stream.take(5).read_exact(&mut bytes).await.unwrap();
+            bytes
+        };
+        let received = timeout(Duration::from_secs(1), incoming).await;
+        lock.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            received.expect("peer ingress waited for the SQLite writer"),
+            *b"hello"
+        );
+        cancel.cancel();
+        serving.await.unwrap().unwrap();
+        endpoint.close().await;
+        server.shutdown().await.unwrap();
+    })
+    .await
+    .expect("locked-writer admission test timed out");
+}

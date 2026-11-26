@@ -49,8 +49,7 @@ pub(super) fn materialize(binding: &Binding, cancel: &AtomicBool) -> io::Result<
     let repo = gix::open::Options::isolated()
         .strict_config(true)
         .open(&binding.common_dir)
-        .map_err(io::Error::other)?
-        .to_thread_local();
+        .map_err(io::Error::other)?;
     supported(&repo)?;
     let base =
         gix::hash::ObjectId::from_hex(binding.base_commit.as_bytes()).map_err(io::Error::other)?;
@@ -153,7 +152,9 @@ pub(super) fn materialize(binding: &Binding, cancel: &AtomicBool) -> io::Result<
         format!("gitdir: {}\n", path_text(&admin)?).as_bytes(),
     )?;
     index.set_path(admin.join("index"));
-    index.write(Default::default()).map_err(io::Error::other)?;
+    index
+        .write(Default::default(), Default::default())
+        .map_err(io::Error::other)?;
     ownership::sync(&admin)?;
     ownership::sync(&staging)?;
     ownership::write_new(&ready, b"ready\n")?;

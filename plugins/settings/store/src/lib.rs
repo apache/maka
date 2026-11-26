@@ -40,6 +40,7 @@ mod policy;
 pub mod pricing;
 pub mod projection;
 pub mod public_catalog;
+pub mod remote_access;
 mod vault;
 
 use maka_event_log::{StoreError, connection::OwnedConnection, root::RootOwner};

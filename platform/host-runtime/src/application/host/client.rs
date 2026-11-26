@@ -201,6 +201,7 @@ impl Client {
     pub async fn finalize_access(
         open: OpenChannel,
         client_instance: Arc<str>,
+        expected_root_id: &str,
         epoch: Option<Uuid>,
     ) -> Result<()> {
         let mut pairing = open().await.map_err(|error| error.to_string())?;
@@ -210,7 +211,9 @@ impl Client {
                 version: VERSION,
                 epoch,
                 client_instance: Some(client_instance.to_string()),
-                request: Request::FinalizeAccess,
+                request: Request::FinalizeAccessForRoot {
+                    expected_root_id: expected_root_id.to_owned(),
+                },
             },
         )
         .await?;
@@ -626,6 +629,51 @@ impl Client {
             _ => Err("Host configuration response mismatch".into()),
         }
     }
+    pub fn local_owner_control(
+        &self,
+        request: Request,
+    ) -> impl Future<Output = Result<Response>> + use<> {
+        let local = self.phase == Phase::Ready && self.peer.is_none() && !self.target.is_remote();
+        let target = self.target.clone();
+        let epoch = self.connected.epoch;
+        async move {
+            if !local {
+                return Err("Host control requires a ready local owner session".into());
+            }
+            target.owner_control(epoch, request).await
+        }
+    }
+
+    pub async fn remote_access_status(
+        address: &Path,
+        epoch: Uuid,
+        invite_id: Option<&str>,
+    ) -> Result<super::remote_access::RemoteAccessStatus> {
+        match control(
+            address,
+            Some(epoch),
+            Request::RemoteAccessStatus {
+                invite_id: invite_id.map(str::to_owned),
+            },
+        )
+        .await?
+        {
+            Response::RemoteAccessStatus(result) => result,
+            _ => Err("Host remote access status response mismatch".into()),
+        }
+    }
+
+    pub async fn update_remote_access(
+        address: &Path,
+        epoch: Uuid,
+        update: super::remote_access::RemoteAccessUpdate,
+    ) -> Result<super::remote_access::RemoteAccessConfig> {
+        match control(address, Some(epoch), Request::UpdateRemoteAccess(update)).await? {
+            Response::RemoteAccessUpdated(result) => result,
+            _ => Err("Host remote access update response mismatch".into()),
+        }
+    }
+
     pub async fn prepare_peer_pairing(
         address: &Path,
         epoch: Uuid,

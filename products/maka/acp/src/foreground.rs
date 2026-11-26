@@ -25,10 +25,7 @@ use crate::{
     session::{Active, Session},
     transport::Peer,
 };
-use crate::{
-    interaction::Capabilities,
-    presentation::{Completion, State},
-};
+use crate::{interaction::Capabilities, presentation::Completion};
 use maka_agent_api::contract::*;
 use maka_agent_facts::{
     durable::{ModelAttemptId, RunId, StepId},
@@ -44,9 +41,7 @@ use std::{
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 mod admission;
-pub(crate) struct Prompt {
-    pub content: Vec<crate::content::Input>,
-}
+pub(crate) use admission::Admission;
 pub(crate) struct Foreground {
     client: Client,
     peer: Peer,
@@ -60,7 +55,7 @@ pub(crate) struct Foreground {
     history_through: u64,
     parts: HashMap<(StepId, ModelAttemptId, String), (String, ContentKind)>,
     message_starts: HashMap<String, u64>,
-    user: Vec<HistoryChunk>,
+    started: Option<RunId>,
 }
 
 #[expect(
@@ -124,6 +119,7 @@ impl Foreground {
         Ok(())
     }
     async fn observe(&mut self) -> Result<Completion, Error> {
+        self.session.replace_following(None).await?;
         let mut subscription = self
             .client
             .subscribe(
@@ -140,12 +136,27 @@ impl Foreground {
         &mut self,
         subscription: &mut Subscription,
     ) -> Result<Completion, Error> {
-        for chunk in std::mem::take(&mut self.user) {
-            let updates = self.projection.chunk(&chunk)?;
-            self.publish(updates).await?;
+        if let Some(run) = self.started {
+            let mut found = false;
+            for chunk in
+                history::read(&self.client, &self.session.id, None, Some(self.after)).await?
+            {
+                if chunk.role == maka_agent_ports::session::history::Role::User
+                    && chunk.message_id.as_deref() == Some(&self.message_id)
+                    && chunk.run_id == Some(run)
+                {
+                    found = true;
+                    let updates = self.projection.chunk(&chunk)?;
+                    self.publish(updates).await?;
+                }
+            }
+            if !found {
+                return Err("Accepted Run has no durable user message".into());
+            }
         }
         self.refresh().await?;
-        self.state(State::Running).await?;
+        self.peer
+            .state(&self.session.id, SessionActivity::Working)?;
         let mut callbacks = JoinSet::<Result<String, Error>>::new();
         let mut seen = HashSet::new();
         // Cancel only the client prompt wait; never abort an in-flight Host call.
@@ -232,7 +243,8 @@ impl Foreground {
                     }
                 });
                 live.insert(request_id, cancel);
-                self.state(State::RequiresAction).await?;
+                self.peer
+                    .state(&self.session.id, SessionActivity::Waiting)?;
             }
             // Pull writes once; retain this future across callbacks and heartbeats.
             let next = subscription.next::<DeliveryPage>();
@@ -253,7 +265,7 @@ impl Foreground {
                         let request_id = callback.ok_or("ACP callback task missing")???;
                         live.remove(&request_id);
                         if callbacks.is_empty() {
-                            self.state(State::Running).await?;
+                            self.peer.state(&self.session.id, SessionActivity::Working)?;
                         }
                     },
                     _ = heartbeat.tick() => {
@@ -509,9 +521,6 @@ impl Foreground {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }).await.map_err(|_| "Agent cancellation has not physically settled")?
-    }
-    async fn state(&self, state: State) -> Result<(), Error> {
-        self.peer.state(&self.session.id, state).await
     }
     async fn publish(&self, updates: Vec<crate::presentation::Update>) -> Result<(), Error> {
         for update in updates {

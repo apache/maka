@@ -754,10 +754,6 @@ export function Conversation(props: ConversationProps) {
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
   const readerAtEnd = signal<string | null>(null);
-  // At the end of a paused group there is nothing below to reach, only
-  // following to resume, and nothing to follow once the run has ended.
-  const pausedAtEnd = () =>
-    !historyFollowPaused() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
   const turnPages = new Map<
@@ -4884,6 +4880,11 @@ export function Conversation(props: ConversationProps) {
   // Whether the history list has content scrolled out above or below it.
   const historyAbove = signal(false);
   const historyBelow = signal(false);
+  const awayFromLatest = () => historyBelow() || historyFollowPaused();
+  // At the end of a paused group there is nothing below to reach, only
+  // following to resume, and nothing to follow once the run has ended.
+  const pausedAtEnd = () =>
+    !awayFromLatest() && innerReader() !== null && innerReader() === readerAtEnd();
   const hasRailRoom = () => historyWidth() >= 400;
   const railShown = () =>
     ready() &&
@@ -5948,7 +5949,7 @@ export function Conversation(props: ConversationProps) {
             >
               <ReturnToLatest
                 visible={
-                  historyFollowPaused() ||
+                  awayFromLatest() ||
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}

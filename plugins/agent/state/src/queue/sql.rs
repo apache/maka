@@ -78,7 +78,7 @@ fn to_sql_integer(value: u64) -> Result<i64, StoreError> {
 pub(super) fn from_sql_integer(value: i64) -> Result<u64, StoreError> {
     u64::try_from(value).map_err(|_| invalid("queue SQL integer is negative"))
 }
-fn revision(c: &Connection, session: &str) -> Result<u64, StoreError> {
+pub(super) fn revision(c: &Connection, session: &str) -> Result<u64, StoreError> {
     from_sql_integer(
         c.query_row(
             "SELECT revision FROM agent_queue_heads WHERE session=?",

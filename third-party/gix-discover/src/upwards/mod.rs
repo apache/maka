@@ -20,8 +20,7 @@ pub(crate) mod function {
     use crate::upwards::util::device_id;
     use crate::{
         DOT_GIT_DIR,
-        is::git_with_metadata as is_git_with_metadata,
-        is_git,
+        is::{git_with_cwd as is_git_with_cwd, git_with_metadata as is_git_with_metadata},
         upwards::util::{find_ceiling_height, shorten_path_with_cwd},
     };
 
@@ -85,6 +84,7 @@ pub(crate) mod function {
             self.physical_parent_steps.is_some()
         }
 
+        #[cfg(unix)]
         pub fn metadata(&mut self) -> Result<&std::fs::Metadata> {
             if self.current_metadata.is_none() {
                 let path = if self.current.as_os_str().is_empty() {
@@ -169,20 +169,20 @@ pub(crate) mod function {
             if started_as_dot_git {
                 let kind = match self.current_metadata.as_ref() {
                     Some(metadata) => is_git_with_metadata(&self.current, metadata, cwd),
-                    None => is_git(&self.current),
+                    None => is_git_with_cwd(&self.current, cwd),
                 };
                 return kind.ok().map(|kind| (kind, false));
             }
 
             let dot_git = self.current.join(DOT_GIT_DIR);
-            if let Ok(kind) = is_git(&dot_git) {
+            if let Ok(kind) = is_git_with_cwd(&dot_git, cwd) {
                 self.set_current(dot_git);
                 return Some((kind, true));
             }
             if !dot_git_only {
                 let kind = match self.current_metadata.as_ref() {
                     Some(metadata) => is_git_with_metadata(&self.current, metadata, cwd),
-                    None => is_git(&self.current),
+                    None => is_git_with_cwd(&self.current, cwd),
                 };
                 if let Ok(kind) = kind {
                     return Some((kind, false));
@@ -434,7 +434,6 @@ pub(crate) mod function {
         #[test]
         fn ownership_checks_skip_identical_candidate_and_git_directory() -> gix_testtools::TestResult {
             let root = gix_testtools::scripted_fixture_read_only("make_ownership_repos.sh")?;
-            let root = std::env::current_dir()?.join(root);
             for (name, bare) in [("worktree", false), ("bare", true)] {
                 let repository = root.join(name);
                 let git_dir = if bare {

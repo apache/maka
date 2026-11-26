@@ -355,7 +355,7 @@ impl Owner {
 
     pub async fn send(
         self: &Arc<Self>,
-        mut input: Send,
+        input: Send,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<NativeMutation<SendResult>, String> {
@@ -374,19 +374,8 @@ impl Owner {
             return Err("agent_room_message_required".into());
         }
         let key = self.send_key(operation, &input.session_id);
-        let mut message: MessageInput = input.message.clone().into();
-        message.quotes = (!input.quotes.is_empty()).then(|| std::mem::take(&mut input.quotes));
-        message.attachments = self
-            .attachment_refs(&input.session_id, input.attachments.clone(), parent)
-            .await?;
-        let origin = parent
-            .identity
-            .agent()
-            .map(|execution| MessageOrigin::Session {
-                execution: execution.clone(),
-            });
         match self
-            .prepare_agent_send(input, message, origin, &key, operation, parent)
+            .prepare_user_send(input, &key, operation, parent)
             .await?
         {
             PreparedSend::Returned(value) => Ok(NativeMutation::Returned(value)),
@@ -395,6 +384,32 @@ impl Owner {
                 change: self.message_writer(parent)?.prepare(*statement),
             }),
         }
+    }
+
+    pub(super) async fn prepare_user_send(
+        self: &Arc<Self>,
+        mut input: Send,
+        key: &str,
+        operation: &maka_plugin_core::operation::RecoveryRef,
+        parent: &maka_capabilities::call::Scope,
+    ) -> Result<PreparedSend, String> {
+        let mut message: MessageInput = std::mem::take(&mut input.message).into();
+        message.quotes = (!input.quotes.is_empty()).then(|| std::mem::take(&mut input.quotes));
+        message.attachments = self
+            .attachment_refs(
+                &input.session_id,
+                std::mem::take(&mut input.attachments),
+                parent,
+            )
+            .await?;
+        let origin = parent
+            .identity
+            .agent()
+            .map(|execution| MessageOrigin::Session {
+                execution: execution.clone(),
+            });
+        self.prepare_agent_send(input, message, origin, key, operation, parent)
+            .await
     }
 
     pub(super) fn send_key(
@@ -603,16 +618,16 @@ impl Owner {
         let (request, contents) = self
             .freeze_request(&id, source, &basis, required_tools, key, operation, parent)
             .await?;
-        let queue = self
+        let revision = self
             .durable
             .queue()
-            .read(id.clone())
+            .revision(id.clone())
             .await
             .map_err(|e| e.to_string())?;
         let command = QueueCommand {
             id: self.control_id(operation, &format!("{key}:send")),
             at: UnixMillis(now().try_into().map_err(|_| "invalid clock")?),
-            expected_revision: queue.revision,
+            expected_revision: revision,
             edit: QueueEdit::Enqueue {
                 request: Box::new(request),
                 placement: QueuePlacement::Followup,
@@ -646,8 +661,7 @@ impl Owner {
                 completion,
                 session_id: id,
                 message_id,
-                revision: queue
-                    .revision
+                revision: revision
                     .checked_add(1)
                     .ok_or("agent_queue_revision_exhausted")?,
             },

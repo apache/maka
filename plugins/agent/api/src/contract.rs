@@ -78,6 +78,7 @@ mod computer_apps;
 pub use computer_apps::*;
 mod permissions;
 pub use maka_agent_facts::configuration::ModelSelection;
+pub use maka_agent_facts::message::WithdrawalResult;
 pub use permissions::*;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -731,6 +732,43 @@ pub enum SendDelivery {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LookupSubmission {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    pub idempotency_key: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmitMessage {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    pub idempotency_key: Option<String>,
+    pub message: String,
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    pub backend: Option<BackendPreference>,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum MessageSubmissionResult {
+    Queued { message_id: String },
+    Duplicate { message_id: String },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WithdrawSubmission {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(length(min = 1))]
+    pub message_id: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
     /// Agent Session IDs explicitly addressed by this Room message.
@@ -899,7 +937,7 @@ pub struct Session {
     pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
-#[derive(Clone, Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
 pub enum SessionActivity {
@@ -2633,6 +2671,9 @@ pub fn contract() -> Contract {
                     "selectBackend".into(),
                     method::<SelectBackend, MetadataResult>(MethodMode::Mutation),
                 ),
+                ("lookupSubmission".into(), method::<LookupSubmission, Option<String>>(MethodMode::Query)),
+                ("submitMessage".into(), method::<SubmitMessage, MessageSubmissionResult>(MethodMode::Mutation)),
+                ("withdrawSubmission".into(), method::<WithdrawSubmission, WithdrawalResult>(MethodMode::Mutation)),
                 // Authorizes the entire bounded run against the immutable selected
                 // account/model. A started reply is not a terminal business verdict.
                 (

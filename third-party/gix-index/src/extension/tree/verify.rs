@@ -8,25 +8,22 @@ use gix_object::FindExt;
 use crate::extension::Tree;
 
 impl Tree {
-    /// Validate the correctness of this instance. If `use_objects` is true, then `objects` will be used to access all objects.
+    /// Validate the structure of this instance. If `use_objects` is true, also check objects for valid cache nodes.
+    /// Invalid nodes have no usable tree ID, but their descendants are still verified.
     pub fn verify(&self, use_objects: bool, objects: impl gix_object::Find) -> Result {
         fn verify_recursive(
-            parent_id: gix_hash::ObjectId,
-            children: &[Tree],
+            parent: &Tree,
             mut object_buf: Option<&mut Vec<u8>>,
             objects: &impl gix_object::Find,
         ) -> Result<Option<u32>> {
-            if children.is_empty() {
-                return Ok(None);
-            }
+            let parent_id = parent.id;
+            let children = &parent.children;
             let mut entries = 0u32;
             let mut prev = None::<&Tree>;
             for child in children {
                 entries = entries
                     .checked_add(child.num_entries.unwrap_or(0))
-                    .ok_or_raise(|| {
-                        corruption("The combined TREE entry count exceeds the supported maximum")
-                    })?;
+                    .ok_or_raise(|| corruption("The combined TREE entry count exceeds the supported maximum"))?;
                 if let Some(prev) = prev
                     && prev.name.cmp(&child.name) != Ordering::Less
                 {
@@ -38,15 +35,16 @@ impl Tree {
                 }
                 prev = Some(child);
             }
-            if let Some(buf) = object_buf.as_mut() {
+            if let Some(buf) = object_buf.as_mut()
+                && parent.num_entries.is_some()
+            {
                 let tree_entries = objects
                     .find_tree_iter(&parent_id, buf)
                     .or_raise(|| corruption("Tree node could not be found"))?;
                 let mut num_entries = 0;
                 for entry in tree_entries {
-                    let entry = entry.or_raise(|| {
-                        corruption(format!("Could not decode an entry in tree {parent_id}"))
-                    })?;
+                    let entry =
+                        entry.or_raise(|| corruption(format!("Could not decode an entry in tree {parent_id}")))?;
                     if !entry.mode.is_tree() {
                         continue;
                     }
@@ -71,12 +69,7 @@ impl Tree {
             }
             for child in children {
                 // This is actually needed here as it's a mut ref, which isn't copy. We do a re-borrow here.
-                let actual_num_entries = verify_recursive(
-                    child.id,
-                    &child.children,
-                    object_buf.as_deref_mut(),
-                    objects,
-                )?;
+                let actual_num_entries = verify_recursive(child, object_buf.as_deref_mut(), objects)?;
                 if let Some((actual, num_entries)) = actual_num_entries.zip(child.num_entries)
                     && actual > num_entries
                 {
@@ -98,12 +91,7 @@ impl Tree {
         }
 
         let mut buf = Vec::new();
-        let declared_entries = verify_recursive(
-            self.id,
-            &self.children,
-            use_objects.then_some(&mut buf),
-            &objects,
-        )?;
+        let declared_entries = verify_recursive(self, use_objects.then_some(&mut buf), &objects)?;
         if let Some((actual, num_entries)) = declared_entries.zip(self.num_entries)
             && actual > num_entries
         {
@@ -147,11 +135,7 @@ mod tests {
     struct MalformedTree;
 
     impl gix_object::Find for MalformedTree {
-        fn try_find<'a>(
-            &self,
-            _id: &gix_hash::oid,
-            _buffer: &'a mut Vec<u8>,
-        ) -> Result<Option<gix_object::Data<'a>>> {
+        fn try_find<'a>(&self, _id: &gix_hash::oid, _buffer: &'a mut Vec<u8>) -> Result<Option<gix_object::Data<'a>>> {
             Ok(Some(gix_object::Data::new(
                 b"40000 child\0",
                 gix_object::Kind::Tree,
@@ -175,9 +159,7 @@ mod tests {
             }],
         };
 
-        let err = tree
-            .verify(true, MalformedTree)
-            .expect_err("malformed entry must fail");
+        let err = tree.verify(true, MalformedTree).expect_err("malformed entry must fail");
         insta::assert_debug_snapshot!(gix_testtools::redact_debug_snapshot(&(err), &[]), "malformed object tree entries are not ignored", @"
         Could not decode an entry in tree Oid(1)
 

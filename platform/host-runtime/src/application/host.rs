@@ -27,6 +27,7 @@ pub mod startup;
 pub mod websocket;
 pub use access::{Pairing, PeerPairingInvite, PeerPairingOptions, PeerPairingReceipt};
 pub mod protocol;
+pub mod remote_access;
 pub use client::{CallChannelOpener, Channel, Client, LocalCall, OpenChannel};
 pub use discovery::Registration;
 pub use protocol::{Configuration, LifecycleMode, Publication, Status, VERSION};
@@ -45,7 +46,10 @@ use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
@@ -89,6 +93,7 @@ pub struct Host {
     access_grant: Mutex<String>,
     access_gate: tokio::sync::Mutex<()>,
     native_relays: Mutex<Vec<RelayEndpoint>>,
+    remote_access: remote_access::Runtime,
     revoked_peers: broadcast::Sender<PeerId>,
     epoch: Uuid,
     source: DeploymentRef,
@@ -101,6 +106,7 @@ pub struct Host {
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
+    revoked: AtomicBool,
     principal: Principal,
     peer: Arc<Peers>,
     transport: Arc<Server>,
@@ -239,6 +245,7 @@ impl Host {
             access_grant: Mutex::new(access_grant),
             access_gate: tokio::sync::Mutex::new(()),
             native_relays: Mutex::new(Vec::new()),
+            remote_access: remote_access::Runtime::default(),
             // Keep room for a burst of peer revocations without disconnecting
             // healthy peers. Subscribers still fail closed if they fall behind.
             revoked_peers: broadcast::channel(64).0,
@@ -650,6 +657,22 @@ impl Host {
                 )
                 .await
             }
+            Request::RemoteAccessStatus { invite_id } => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::RemoteAccessStatus(self.remote_access_status(invite_id).await),
+                )
+                .await
+            }
+            Request::UpdateRemoteAccess(update) => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::RemoteAccessUpdated(self.request_remote_access_update(update).await),
+                )
+                .await
+            }
             Request::PreparePeerPairing(options) => {
                 authority.local()?;
                 let result = self.prepare_peer_pairing(options).await;
@@ -675,12 +698,16 @@ impl Host {
                     .await;
                 wire::write(&mut output, &Response::PeerPairingReceipt(result)).await
             }
-            Request::FinalizeAccess => {
+            Request::FinalizeAccessForRoot { expected_root_id } => {
                 wire::write(
                     &mut output,
                     &Response::Finalized(
-                        self.finalize_access(&authority, opening.client_instance)
-                            .await,
+                        self.finalize_access(
+                            &authority,
+                            opening.client_instance,
+                            &expected_root_id,
+                        )
+                        .await,
                     ),
                 )
                 .await
@@ -865,6 +892,7 @@ impl Host {
                 };
                 let id = Uuid::new_v4();
                 let session = Arc::new(Session {
+                    revoked: AtomicBool::new(false),
                     principal,
                     peer: Peers::new(peer),
                     transport: Server::new(
@@ -1022,10 +1050,27 @@ impl Host {
                 // drains all original calls before releasing the session.
                 session.peer.replace(vec![])?;
                 session.transport.request_close();
-                // Native streams close on revocation without waiting for a
-                // terminal-ack reader. Only an explicit Close requests an ack.
+                // Give a reading peer the reason before closing the anchor,
+                // but an unreading peer must not hold up session cleanup.
                 let mut output = Some(output);
                 if matches!(authority, Authority::AuthenticatedPeer { .. }) && result != Ok(true) {
+                    if session.revoked.load(Ordering::Acquire) {
+                        match tokio::time::timeout(
+                            Duration::from_millis(100),
+                            wire::write(
+                                output.as_mut().expect("live anchor"),
+                                &Response::PeerAccessRevoked,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                tracing::debug!(%error, "could not notify revoked peer")
+                            }
+                            Err(_) => tracing::debug!("revoked peer notification timed out"),
+                        }
+                    }
                     drop(input);
                     drop(output.take());
                 }

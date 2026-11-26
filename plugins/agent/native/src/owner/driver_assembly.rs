@@ -641,7 +641,9 @@ impl Owner {
                 return result.and(Err(RunError::Store(error)));
             }
             drop(original_driver);
-            let _ = self.mcp_projects.prune().await;
+            if let Err(error) = self.mcp_projects.prune().await {
+                tracing::warn!(error = %error, "MCP snapshot prune failed after Run cleanup");
+            }
             lease.finish();
             scope_cleanup = maka_plugin_core::operation::OperationCleanup::Confirmed;
             result

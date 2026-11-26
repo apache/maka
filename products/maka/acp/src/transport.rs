@@ -30,6 +30,7 @@ pub(crate) mod v1;
 pub(crate) mod v2;
 
 use futures_util::{StreamExt, sink};
+use maka_agent_api::contract::SessionActivity;
 use std::{
     collections::HashMap,
     io,
@@ -102,6 +103,10 @@ impl Peer {
             stop,
         }
     }
+    pub fn is_v2(&self) -> bool {
+        matches!(self.connection, Connection::V2(_))
+    }
+
     pub fn reset(&self, session: &str) {
         if let Connection::V1 { projections, .. } = &self.connection {
             projections.lock().unwrap().remove(session);
@@ -142,37 +147,36 @@ impl Peer {
         }
         Ok(())
     }
-    pub async fn state(
-        &self,
-        session: &str,
-        state: crate::presentation::State,
-    ) -> Result<(), Error> {
+    pub fn state(&self, session: &str, activity: SessionActivity) -> Result<(), Error> {
         if let Connection::V2(client) = &self.connection {
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.to_owned(),
-                acp::SessionUpdate::StateUpdate(match state {
-                    crate::presentation::State::Running => {
+                acp::SessionUpdate::StateUpdate(match activity {
+                    SessionActivity::Working => {
                         acp::StateUpdate::Running(acp::RunningStateUpdate::new())
                     }
-                    crate::presentation::State::RequiresAction => {
+                    SessionActivity::Waiting => {
                         acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new())
                     }
+                    SessionActivity::Idle => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
                 }),
             ))?;
         }
         Ok(())
     }
-    pub async fn synchronize(
+    pub fn synchronize(
         &self,
         session: &maka_agent_api::contract::Session,
+        replayed: bool,
     ) -> Result<(), Error> {
         if let Connection::V2(client) = &self.connection {
-            client.send_notification(acp::UpdateSessionNotification::new(
-                session.id.clone(),
-                acp::SessionUpdate::StateUpdate(
-                    acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
-                ),
-            ))?;
+            if replayed {
+                client.send_notification(acp::UpdateSessionNotification::new(
+                    session.id.clone(),
+                    acp::SessionUpdate::ReplayComplete(acp::ReplayComplete::new()),
+                ))?;
+            }
+            self.state(&session.id, session.activity)?;
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.id.clone(),
                 acp::SessionUpdate::SessionInfoUpdate(

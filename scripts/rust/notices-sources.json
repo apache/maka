@@ -1,7 +1,7 @@
 {
-  "yamux@0.13.10": [
-    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-APACHE",
-    "https://raw.githubusercontent.com/libp2p/rust-yamux/70db05dc63e8368bd0559a5ec0dba6e5fc2bdd41/LICENSE-MIT"
+  "yamux@0.14.1": [
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/cc3d0e89f615ef4f329f7a246c95a8ff1e8cc12d/LICENSE-APACHE",
+    "https://raw.githubusercontent.com/libp2p/rust-yamux/cc3d0e89f615ef4f329f7a246c95a8ff1e8cc12d/LICENSE-MIT"
   ],
   "@pierre/trees@1.0.0": [
     {
@@ -112,10 +112,10 @@
       "source": "https://github.com/dsherret/sys_traits/blob/0b168a2935d4c398d38ea5d25af8f793858299b5/Cargo.toml"
     }
   ],
-  "selectors@0.38.0": [
+  "selectors@0.41.0": [
     {
-      "file": "scripts/rust/licenses/selectors-0.38.0.txt",
-      "source": "https://raw.githubusercontent.com/servo/stylo/572ecba2d1600e7c3d490586692a209faf703baa/selectors/lib.rs"
+      "file": "scripts/rust/licenses/selectors-0.41.0.txt",
+      "source": "https://raw.githubusercontent.com/servo/stylo/34d25f741765a0bdb894f8271852e633299352d8/selectors/lib.rs"
     }
   ],
   "v8@150.4.0": [
@@ -200,18 +200,6 @@
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
       "source": "https://github.com/janispritzkau/rust-base-encode/blob/41bdeb57488beec4ed63180e848ce1e99fba227d/Cargo.toml"
-    }
-  ],
-  "escape-simd@0.1.0": [
-    {
-      "file": "scripts/rust/licenses/declared-mit.txt",
-      "source": "https://github.com/napi-rs/escape-simd/blob/4f54347555d2f520ac38b406cf69ff66d9570a57/Cargo.toml"
-    }
-  ],
-  "json-escape-simd@3.1.2": [
-    {
-      "file": "scripts/rust/licenses/declared-mit.txt",
-      "source": "https://github.com/napi-rs/escape-simd/blob/4f54347555d2f520ac38b406cf69ff66d9570a57/Cargo.toml"
     }
   ],
   "typedmap@0.6.0": [

@@ -32,6 +32,8 @@ import { LoadingIndicator } from '../../../products/maka/workbench/app/Loading';
 import { SettingsProblem } from '../../../products/maka/workbench/app/SettingsPage';
 import { ConnectionSettings } from '../../../products/maka/workbench/app/ConnectionSettings';
 import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSettings';
+import { RemoteAccessSettings } from '../../../products/maka/workbench/app/RemoteAccessSettings';
+import { createRemoteAccessSettings } from '../../../products/maka/workbench/app/remoteAccessSettingsState';
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
 import { WebSearchSettings } from '../../../products/maka/workbench/app/WebSearchSettings';
 import { createWebSearchSettings } from '../../../products/maka/workbench/app/webSearchSettingsState';
@@ -148,6 +150,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     (locale) => runtime.setLocale(locale),
   );
   const webSearch = createWebSearchSettings(host, operations, active('web-search'));
+  const remoteAccess = createRemoteAccessSettings();
   const network = createNetworkSettings(host, operations, active('network'), restored?.network);
   const plugins = createPluginSettings(
     host,
@@ -574,6 +577,24 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.navigationBusy,
             },
             () => <NetworkSettings owner={network} />,
+          ),
+      },
+      'remote-access': {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'remote-access',
+            remoteAccess,
+            props,
+            {
+              title: () => tr('Remote Access'),
+              nested: () => !!remoteAccess.confirming() || remoteAccess.discarding.asking(),
+              navigation: remoteAccess.navigation,
+              back: remoteAccess.back,
+              leave: remoteAccess.leave,
+              busy: remoteAccess.busy,
+            },
+            () => <RemoteAccessSettings owner={remoteAccess} />,
           ),
       },
       marketplace: {

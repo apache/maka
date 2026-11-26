@@ -45,7 +45,7 @@ impl std::future::Future for YieldNow {
 const QUEUE: usize = 1024;
 
 /// The TLS of `wss://`: the process' crypto provider when the host set one,
-/// otherwise ring for these sockets alone. rustls only picks a provider by
+/// otherwise AWS-LC for these sockets alone. rustls only picks a provider by
 /// itself when exactly one provider feature is on, which a runner without
 /// the `websocket` feature (the app never imports `websocket`) lacks.
 fn tls() -> tokio_tungstenite::Connector {
@@ -54,14 +54,14 @@ fn tls() -> tokio_tungstenite::Connector {
     let config = CONFIG.get_or_init(|| {
         let provider = rustls::crypto::CryptoProvider::get_default()
             .cloned()
-            .unwrap_or_else(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()));
+            .unwrap_or_else(|| std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
         std::sync::Arc::new(
             rustls::ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
-                .expect("ring supports the default protocol versions")
+                .expect("AWS-LC supports the default protocol versions")
                 .with_root_certificates(roots)
                 .with_no_client_auth(),
         )

@@ -54,7 +54,7 @@ use tokio_util::sync::CancellationToken;
 
 const ALPN: &[u8] = b"maka/host/v1";
 
-async fn open_host(sandbox: &fixture::Sandbox) -> Arc<Host> {
+pub(super) async fn open_host(sandbox: &fixture::Sandbox) -> Arc<Host> {
     let path = sandbox.root.clone();
     let root = tokio::task::spawn_blocking(move || {
         RootOwner::create(&path, &RootNamespaces::for_current_account().unwrap()).unwrap()

@@ -21,7 +21,7 @@
 
 pub(super) fn initialize_for(cli: &crate::args::Cli) -> Result<(), maka_host_runtime::HostError> {
     if cli.logs_to_stderr() {
-        return initialize();
+        return initialize(cli.is_relay());
     }
     #[cfg(not(target_os = "macos"))]
     if cli.is_terminal_shell() {
@@ -30,12 +30,27 @@ pub(super) fn initialize_for(cli: &crate::args::Cli) -> Result<(), maka_host_run
     Ok(())
 }
 
-pub(super) fn initialize() -> Result<(), maka_host_runtime::HostError> {
+fn initialize(standalone_relay: bool) -> Result<(), maka_host_runtime::HostError> {
+    use tracing_subscriber::{
+        filter::{LevelFilter, Targets},
+        layer::SubscriberExt,
+        util::SubscriberInitExt,
+    };
+    // Upstream relay diagnostics can contain arbitrary response and health text.
+    let mut targets = Targets::new().with_default(LevelFilter::WARN);
+    if !standalone_relay {
+        targets = targets
+            .with_target("iroh::socket::transports::relay", LevelFilter::OFF)
+            .with_target("iroh_relay", LevelFilter::OFF);
+    }
     tracing_subscriber::fmt()
-        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
+        .with_max_level(LevelFilter::WARN)
         .with_ansi(false)
         .with_writer(std::io::stderr)
-        .try_init()
+        .finish()
+        .with(targets)
+        .try_init()?;
+    Ok(())
 }
 
 /// Task-owned passive extension RPC metadata only. The extension bootstrap precedes
@@ -234,7 +249,7 @@ mod tests {
 
     #[test]
     fn sqlx_warnings_reach_stderr_without_debug_queries() {
-        for (mode, expected) in [("slow", true), ("ordinary", false)] {
+        for (mode, expected) in [("slow", true), ("ordinary", false), ("relay", false)] {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "logging::tests::sqlx_worker", "--nocapture"])
                 .env("MAKA_LOGGING_SQLX_PROBE", mode)
@@ -245,6 +260,16 @@ mod tests {
             assert!(stdout.contains("query completed"));
             assert!(!stdout.contains("WARN") && !stdout.contains("host-log-sqlx-probe"));
             let stderr = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(
+                stderr.contains("RELAY_HEALTH_SECRET"),
+                mode == "relay",
+                "{stderr}"
+            );
+            assert_eq!(
+                stderr.contains("RELAY_RAW_FRAME_SECRET"),
+                mode == "relay",
+                "{stderr}"
+            );
             assert_eq!(
                 stderr.contains("host-log-sqlx-probe"),
                 expected,
@@ -268,7 +293,9 @@ mod tests {
         let Ok(mode) = std::env::var("MAKA_LOGGING_SQLX_PROBE") else {
             return;
         };
-        super::initialize().unwrap();
+        super::initialize(mode == "relay").unwrap();
+        log::warn!(target: "iroh::socket::transports::relay::actor", "RELAY_HEALTH_SECRET");
+        log::warn!(target: "iroh_relay::protos::streams", "RELAY_RAW_FRAME_SECRET");
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

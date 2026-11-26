@@ -47,7 +47,7 @@ nsh-package = { workspace = true, optional = true }
 serde_json.workspace = true
 nsh-js = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 ureq = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }

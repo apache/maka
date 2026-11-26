@@ -31,7 +31,11 @@ pub(super) fn timestamp(ms: u64) -> Option<String> {
 pub(super) fn local_timestamp(ms: u64, timezone: &str) -> Option<String> {
     let time = Timestamp::from_millisecond(i64::try_from(ms).ok()?).ok()?;
     let zone = TimeZone::get(timezone).ok()?;
-    Some(time.to_zoned(zone).strftime("%FT%T%:z").to_string())
+    Some(
+        time.to_zoned_datetime(zone)
+            .strftime("%FT%T%:z")
+            .to_string(),
+    )
 }
 
 pub(super) fn environment(language: Language, workspace: &str, timezone: &str) -> String {

@@ -65,11 +65,6 @@ pub(crate) struct ToolCard {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum State {
-    Running,
-    RequiresAction,
-}
-#[derive(Clone, Copy)]
 pub(crate) enum Completion {
     Completed,
     Cancelled,

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod remote_access;
+
 use clap::Args;
 use maka_host_runtime::{
     HostError,
@@ -81,7 +83,7 @@ impl Serve {
                 );
             }
             let ca = match self.relay_ca_der {
-                Some(path) => Some(tokio::fs::read(path).await?),
+                Some(path) => Some(remote_access::read_ca(path).await?),
                 None => None,
             };
             let token = crate::relay::bearer(self.relay_auth_token, self.relay_auth_token_env)?;
@@ -199,11 +201,14 @@ async fn serve_product(
             ready["websocketUrl"] = format!("ws://{address}/runtime-host").into();
         }
         let remote = if let Some(remote) = remote {
+            host.remote_access_reset(true, true);
             let pairing_output = pairing_notices(remote.pairing_output)?;
-            let transport = HostPeerTransport::bind(host, &remote.relays, remote.relay_only).await?;
+            let transport = HostPeerTransport::bind(host, &remote.relays, remote.relay_only).await.map_err(|_| "could not start relay transport; check relay configuration and local networking")?;
             let registered = tokio::select! {
                 () = cancellation.cancelled() => None,
-                result = transport.wait_for_relay() => Some(result),
+                result = tokio::time::timeout(std::time::Duration::from_secs(30), transport.wait_for_relay()) => {
+                    Some(result.unwrap_or_else(|_| Err("timed out waiting for a relay connection".into())))
+                },
             };
             let relays = match registered {
                 Some(Ok(relays)) => relays,
@@ -233,6 +238,9 @@ async fn serve_product(
                 // Advisory, local-only output must not backpressure peer admission.
                 let _ = pairing_output.try_send(format!("{event}\n"));
             });
+            let peers = async {
+                peers.await.map_err(|_| -> HostError { "relay transport stopped unexpectedly".into() })
+            };
             tokio::pin!(serve, peers);
             tokio::select! {
                 result = &mut serve => {
@@ -279,9 +287,26 @@ pub(super) async fn listen(
     host: Arc<Host>,
     cancellation: CancellationToken,
 ) -> Result<(), HostError> {
-    host.serve(endpoint.listener, websocket, cancellation)
-        .await
-        .map_err(Into::into)
+    let (sender, ingress) = HostPeerTransport::ingress();
+    let updates = host.remote_access_updates()?;
+    let serving = host.serve_with_peers(
+        endpoint.listener,
+        websocket,
+        Some(ingress),
+        cancellation.clone(),
+    );
+    let managing = remote_access::supervise(&host, sender, updates, cancellation.clone());
+    tokio::pin!(serving, managing);
+    tokio::select! {
+        result = &mut serving => {
+            cancellation.cancel();
+            result.map_err(HostError::from).and(managing.await)
+        }
+        result = &mut managing => {
+            cancellation.cancel();
+            result.and(serving.await.map_err(Into::into))
+        }
+    }
 }
 
 pub(super) fn home_directory() -> Result<Option<std::path::PathBuf>, maka_host_runtime::HostError> {

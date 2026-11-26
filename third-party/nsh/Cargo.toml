@@ -266,7 +266,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 # The TLS crypto provider for the WebSocket client: on Android nothing else selects one (ureq is off there), so
 # rustls 0.23 fails every wss:// handshake with "Could not automatically determine the process-level CryptoProvider".
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 # System trust store for the WebSocket client (and ureq's `platform-verifier`): corporate and newly
 # issued roots work without NSH shipping them. Android's host initializes it over JNI.
 rustls-platform-verifier = "0.7"

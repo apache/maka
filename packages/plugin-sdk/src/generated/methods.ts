@@ -3800,6 +3800,14 @@ export interface ServiceMethods {
         data: string;
       };
     };
+    lookupSubmission: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        idempotencyKey: string;
+      };
+      output: string | null;
+    };
     manageMcpServer: {
       mode: 'mutation';
       input: Runtime.AgentMcpConfigurationChange;
@@ -4627,6 +4635,25 @@ export interface ServiceMethods {
       };
       output: Runtime.AgentStopped;
     };
+    submitMessage: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        idempotencyKey?: string | null;
+        message: string;
+        attachments?: string[];
+        backend?: Runtime.AgentBackendPreference | null;
+      };
+      output:
+        | {
+            kind: 'queued';
+            messageId: string;
+          }
+        | {
+            kind: 'duplicate';
+            messageId: string;
+          };
+    };
     systemPermissionStatus: {
       mode: 'query';
       input: Runtime.AgentInteractionRead;
@@ -4803,6 +4830,20 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.AgentScheduleRead;
       output: Runtime.AgentSchedules;
+    };
+    withdrawSubmission: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        messageId: string;
+      };
+      output:
+        | {
+            kind: 'delivered';
+          }
+        | {
+            kind: 'cancelled';
+          };
     };
     work: {
       mode: 'query';

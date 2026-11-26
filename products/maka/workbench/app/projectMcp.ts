@@ -36,18 +36,29 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
   const notice = createTransientText();
   let alive = true;
   let serial = 0;
+  let latestCheck: Promise<boolean> | null = null;
   cleanup(() => {
     alive = false;
   });
-  const check = async () => {
+  const check = (): Promise<boolean> => {
     const token = ++serial;
-    const view = await host.query('agent', 'projectMcp', { sessionId });
-    if (!alive || token !== serial) return false;
-    error.set('');
-    const required = view.kind === 'configuration' && !view.trusted && !view.declined;
-    if (required) notice.set('');
-    proposal.set(required ? view : null);
-    return !required;
+    const run = (async () => {
+      const view = await host.query('agent', 'projectMcp', { sessionId });
+      if (!alive) return false;
+      if (token !== serial) {
+        // Superseded by a newer check: follow the latest authoritative result instead of
+        // falsely reporting approval_required. If superseded by dismiss/trust/decline
+        // (no newer check), allow when no consent banner remains active.
+        return latestCheck ? latestCheck : proposal() === null;
+      }
+      error.set('');
+      const required = view.kind === 'configuration' && !view.trusted && !view.declined;
+      if (required) notice.set('');
+      proposal.set(required ? view : null);
+      return !required;
+    })();
+    latestCheck = run;
+    return run;
   };
   const trust = async (revision: string) => {
     if (!alive || pending() || proposal()?.revision !== revision) return;
@@ -61,6 +72,8 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
         if (alive)
           error.set(message('The MCP configuration changed. Review it again before trusting it.'));
       } else {
+        ++serial;
+        latestCheck = null;
         proposal.set(null);
         notice.set(message('Project MCP configuration trusted. Send your draft when ready.'));
       }
@@ -85,6 +98,8 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
         if (alive)
           error.set(message('The MCP configuration changed. Review it again before trusting it.'));
       } else {
+        ++serial;
+        latestCheck = null;
         proposal.set(null);
         notice.set(message('Project MCP configuration skipped for this workspace.'));
       }
@@ -104,6 +119,8 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
     decline,
     dismiss() {
       if (!pending()) {
+        ++serial;
+        latestCheck = null;
         proposal.set(null);
         error.set('');
       }

@@ -217,6 +217,10 @@
       "plugins/agent/state/migrations/0055_external_effect_ended_unknown.sql": {
         "version": 55,
         "sha384": "cbbfb24d0a608a0b4ad1175bc65b44e9cc1f3d7033104d43476abc9dc717be00323c7f45ef63848d96c3223c6de6de81"
+      },
+      "plugins/agent/state/migrations/0056_message_submissions.sql": {
+        "version": 56,
+        "sha384": "9f59f9989f0a121ae89b078ccbdd24f79e44ad2c87b819df38a4b8e7060bcfbf7cfb98fee878cac6b8e8efdb6b67ed59"
       }
     },
     "checkpoint-repository": {
@@ -253,6 +257,10 @@
       "plugins/settings/store/migrations/0005_project_mcp_decision.sql": {
         "version": 5,
         "sha384": "79b64df066f1fa8dcc35ebcac6ecdd4558a12c81d1442bf4f3a904e3882ea4dca685e7bf5929b6e6c38c110a6140e043"
+      },
+      "plugins/settings/store/migrations/0006_host_remote_transport.sql": {
+        "version": 6,
+        "sha384": "6fdcab10a6ca4165160470ce05f92ade2703fdb6df2cf13fd254bd1caf7ae24db1b7cbee215ed0f6b7a7b8b20933bf49"
       }
     },
     "deployment": {

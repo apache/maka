@@ -91,12 +91,12 @@ deno_process = "=0.75.0"
 deno_telemetry = "=0.82.0"
 deno_web = "=0.291.0"
 deno_webidl = "=0.260.0"
-oxc_allocator = "=0.153.0"
-oxc_codegen = "=0.153.0"
-oxc_parser = "=0.153.0"
-oxc_semantic = "=0.153.0"
-oxc_span = "=0.153.0"
-oxc_transformer = "=0.153.0"
+oxc_allocator = "=0.160.0"
+oxc_codegen = "=0.160.0"
+oxc_parser = "=0.160.0"
+oxc_semantic = "=0.160.0"
+oxc_span = "=0.160.0"
+oxc_transformer = "=0.160.0"
 
 # Deno still uses sha2 0.10. Preserve its hardware backend until it migrates;
 # that version's assembly crate does not support Windows.

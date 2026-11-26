@@ -89,6 +89,27 @@ All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/
 - Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
 - Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 
+### Remote Access motion
+
+- Press, hover, focus and category selection reuse the shared Settings controls and rail.
+- The footer, revoke confirmation and loading state use the shared Settings body and loading indicator.
+- Relay rows and QR appear in place without moving focus; the QR stays still while visible so the camera can lock on.
+- Connection status, SAS and expiry update without animation; SAS appears above the QR, which remains scannable until the invitation is consumed or expires. No gestures or additional motion in reduced motion mode.
+
 ## Visual verification
 
 Inspect UI changes in the native desktop renderer across both light and dark themes at narrow and wide viewport widths. Shared-edge invariants belong in automated layout-bound assertions (such as `shell_shares_its_lines` in the desktop integration suite) rather than eyeball checks alone. On macOS, the offscreen test backend rasterizes Helvetica rather than SF Pro, so check optical text-to-icon centering in a real desktop window.
+
+## iPhone motion inventory
+
+| Change | Motion |
+| --- | --- |
+| Settings hierarchy, menus, confirmations and new-chat sheet | Native navigation, menu and sheet transitions; system owns back gestures and dismissal |
+| Computer, room and inbox selection | Native segmented selection or shared pill color transition (150 ms); replace target-bound data without animating stale rows |
+| Drafts, progress and load failures | Keep form position, show progress/errors inline; no animation on streamed status updates |
+| Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
+| Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
+
+Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
+
+Computer settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.

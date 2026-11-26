@@ -81,6 +81,5 @@ pub(crate) fn discover(path: &Path) -> io::Result<gix::Repository> {
     gix::open::Options::isolated()
         .strict_config(true)
         .open(directory)
-        .map(|repository| repository.to_thread_local())
         .map_err(|error| invalid(&format!("workspace Git discovery failed: {error}")))
 }

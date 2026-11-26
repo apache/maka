@@ -16,7 +16,7 @@
 # under the License.
 
 [workspace]
-exclude = ["third-party/nsh", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/sqlx-sqlite", "third-party/image-webp", "third-party/termina", "third-party/deno-node-sqlite"]
+exclude = ["third-party/nsh", "third-party/async-io", "third-party/gix-index", "third-party/gix-discover", "third-party/image-webp", "third-party/termina", "third-party/deno-node-sqlite"]
 default-members = ["products/maka/cli", "platform/python-runtime"]
 members = [
     "platform/session-state",
@@ -43,6 +43,7 @@ members = [
     "products/maka/cli",
     "plugins/settings/store",
     "products/maka/desktop-shell",
+    "products/maka/ios-shell",
     "products/maka/host-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
@@ -68,6 +69,7 @@ members = [
     "platform/process",
     "plugins/agent/providers",
     "platform/host-runtime",
+    "platform/remote-client",
     "platform/remote-pairing",
     "platform/remote-transport",
     "platform/host-js",
@@ -98,8 +100,8 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-zstd = { version = "0.14.3", default-features = false }
-asyncband = "*"
+zstd = { version = "0.14.5", default-features = false }
+asyncband = "0.8.0"
 mxc-sdk = "1.1.0"
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
@@ -142,22 +144,23 @@ maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0" }
-agent-client-protocol = { version = "5.0.0", default-features = false, features = ["unstable_protocol_v2"] }
+agent-client-protocol = { version = "5.6.1", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
-jiff = "0.2.38"
-clap = { version = "4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+jiff = "1.0.3"
+clap = { version = "4.6.10", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 deno_core = "=0.413.0"
 # Deno Core fixes the shared error ABI to this exact release.
 deno_error = "=0.7.1"
 fastrand = "2.5.0"
 futures-util = { version = "0.3.34", features = ["sink"] }
-gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256"] }
+gix = { version = "=0.91.0", default-features = false, features = ["sha1", "sha256"] }
 imagesize = { version = "=0.15.0", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-jsonschema = { version = "0.60.1", default-features = false }
+jsonschema = { version = "0.63.1", default-features = false }
 libc = "0.2.191"
+libsqlite3-sys = "0.40.0"
 maka-acp = { path = "products/maka/acp" }
 maka-agent-engine = { path = "plugins/agent/engine" }
 maka-agent-native = { path = "plugins/agent/native" }
@@ -180,6 +183,7 @@ maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
+maka-remote-client = { path = "platform/remote-client" }
 maka-remote-pairing = { path = "platform/remote-pairing" }
 maka-remote-transport = { path = "platform/remote-transport" }
 maka-host-js = { path = "platform/host-js" }
@@ -203,25 +207,25 @@ maka-wsl-bridge = { path = "products/maka/wsl-bridge" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 regex = "1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "deflate", "socks"] }
-rusqlite = { version = "0.41.0", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 schemars = "1.2.3"
 semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["raw_value", "float_roundtrip"] }
-sha2 = "0.11.1"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+sha2 = "0.11.2"
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "io-util"] }
 tokio-tungstenite = "0.30.0"
 tokio-util = { version = "0.7.20", features = ["rt"] }
-toml = "1.1.8"
+toml = "1.2.3"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 tracing = "0.1.44"
 unicode-segmentation = "1.13.3"
 sys-locale = "0.3.2"
 termina = { path = "third-party/termina" }
-uuid = { version = "1.29.0", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.29.3", features = ["v4", "v7", "serde"] }
 
 [profile.dev]
 # Keep useful backtraces without embedding hundreds of MiB of dependency types.
@@ -332,7 +336,6 @@ reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 gix-discover = { path = "third-party/gix-discover" }
 image-webp = { path = "third-party/image-webp" }
-sqlx-sqlite = { path = "third-party/sqlx-sqlite" }
 async-io = { path = "third-party/async-io" }
 # Deno published this crate before its upstream rustls security update.
 deno_tls = { path = "third-party/deno-tls" }
