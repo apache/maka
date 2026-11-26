@@ -195,6 +195,20 @@ impl RunCells {
     pub(super) fn has_original_workers(&self) -> bool {
         !self.workers.is_empty()
     }
+    pub(super) fn close_original_workers(&self) {
+        self.workers.close();
+    }
+    pub(super) async fn join_original_workers(&self) {
+        self.workers.close();
+        self.workers.wait().await;
+    }
+    pub(super) fn original_cleanup_signals(&self) -> Vec<BoxFuture<'static, ()>> {
+        let workers = self.workers.clone();
+        workers.close();
+        vec![Box::pin(async move {
+            workers.wait().await;
+        })]
+    }
     pub(super) async fn original_cleanup_confirmed(&self) -> Result<bool, RunError> {
         // Shutdown joins the original coordinator tasks; its historical error is not positive or negative cleanup truth.
         let _shutdown = self.coordinator.shutdown().await;
