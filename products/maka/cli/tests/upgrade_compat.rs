@@ -1355,6 +1355,11 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         }
     };
     fs::write(
+        capsule_dir.join("hosts.json"),
+        legacy_saved_hosts().to_string(),
+    )
+    .unwrap();
+    fs::write(
         capsule_dir.join("capsule-manifest.json"),
         serde_json::to_string_pretty(&manifest).unwrap(),
     )
@@ -1362,37 +1367,48 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     manifest
 }
 
-fn verify_saved_host_upgrade(dir: &Path) {
-    use maka_remote_client::SavedHosts;
-
-    // Host profiles live on the mobile client, not in the historical Host root.
-    let path = dir.join("hosts.json");
-    let old = json!([{
+fn legacy_saved_hosts() -> Value {
+    json!([{
         "rootId": "compat-root",
         "hostName": "Compat Mac",
         "hostPeerId": "compat-peer",
         "relays": [{"url":"https://relay.example.com","quicPort":null,"certSha256":null}],
         "directEndpoints": ["hostLogs"],
-    }]);
+    }])
+}
+
+fn verify_saved_host_upgrade(capsule_dir: &Path, work_dir: &Path) {
+    use maka_remote_client::SavedHosts;
+
+    // Mobile application support is separate from the Host root. Historical
+    // capsules without this fixture still exercise the oldest client shape.
+    let path = work_dir.join("hosts.json");
+    let old = match fs::read(capsule_dir.join("hosts.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => legacy_saved_hosts(),
+        Err(error) => panic!("read historical saved Hosts: {error}"),
+    };
     fs::write(&path, old.to_string()).unwrap();
     let mut saved = SavedHosts::load(&path).unwrap();
     let mut host = saved.get("compat-root").unwrap().clone();
+    assert_eq!(host.host_name(), "Compat Mac");
+    assert_eq!(host.platform(), None);
     assert!(!host.reconnect_paused());
+    host.set_host_name("Studio Mac").unwrap();
     host.set_reconnect_paused(true);
     saved.save(host).unwrap();
-    drop(saved);
 
     let upgraded: Value = serde_json::from_reader(fs::File::open(&path).unwrap()).unwrap();
     let mut expected = old;
+    expected[0]["hostName"] = json!("Studio Mac");
     expected[0]["reconnectPaused"] = json!(true);
     assert_eq!(upgraded, expected);
-    assert!(
-        SavedHosts::load(path)
-            .unwrap()
-            .get("compat-root")
-            .unwrap()
-            .reconnect_paused()
-    );
+
+    let reopened = SavedHosts::load(path).unwrap();
+    let host = reopened.get("compat-root").unwrap();
+    assert_eq!(host.host_name(), "Studio Mac");
+    assert_eq!(host.platform(), None);
+    assert!(host.reconnect_paused());
 }
 
 async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
@@ -1410,7 +1426,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     // tarball extract a fresh copy at manifest.base_dir before calling verify,
     // matching a real user upgrading Maka at the same HOME and State Root path).
     let work_tmp = tempfile::tempdir().unwrap();
-    verify_saved_host_upgrade(work_tmp.path());
+    verify_saved_host_upgrade(capsule_dir, work_tmp.path());
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();

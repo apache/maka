@@ -18,7 +18,9 @@
  */
 
 use crate::RemoteClientError;
-use maka_remote_pairing::{PairingTicketPayload, RelayEndpoint};
+use maka_remote_pairing::{
+    HostPlatform, PairingNameError, PairingTicketPayload, RelayEndpoint, validate_pairing_name,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -33,6 +35,8 @@ use std::{
 pub struct HostProfile {
     root_id: String,
     host_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    platform: Option<HostPlatform>,
     host_peer_id: String,
     relays: Vec<RelayEndpoint>,
     direct_endpoints: Vec<String>,
@@ -45,6 +49,7 @@ impl HostProfile {
         Self {
             root_id: payload.root_id.clone(),
             host_name: payload.host_name.clone(),
+            platform: None,
             host_peer_id: payload.host_peer_id.clone(),
             relays: payload.relays.clone(),
             direct_endpoints: payload.direct_endpoints.clone(),
@@ -64,6 +69,22 @@ impl HostProfile {
 
     pub fn set_reconnect_paused(&mut self, paused: bool) {
         self.reconnect_paused = paused;
+    }
+
+    pub fn platform(&self) -> Option<HostPlatform> {
+        self.platform
+    }
+    pub(crate) fn set_platform(&mut self, platform: Option<HostPlatform>) {
+        self.platform = platform;
+    }
+
+    pub fn set_host_name(&mut self, name: &str) -> Result<(), PairingNameError> {
+        self.select_host_name(Some(name))
+    }
+
+    pub(crate) fn select_host_name(&mut self, name: Option<&str>) -> Result<(), PairingNameError> {
+        self.host_name = validate_pairing_name(name.unwrap_or(&self.host_name))?.to_owned();
+        Ok(())
     }
 
     pub fn host_peer_id(&self) -> &str {
@@ -151,5 +172,35 @@ impl SavedHosts {
         file.as_file().sync_all()?;
         file.persist(&self.path).map_err(|error| error.error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_name_validates_trimmed_utf8_without_controls() {
+        let mut profile = HostProfile {
+            root_id: "root".into(),
+            host_name: "Original".into(),
+            platform: None,
+            reconnect_paused: false,
+            host_peer_id: "peer".into(),
+            relays: vec![],
+            direct_endpoints: vec![],
+        };
+        let name = format!("{}ab", "界".repeat(42));
+        profile.set_host_name(&format!("  {name}  ")).unwrap();
+        assert_eq!(profile.host_name(), name);
+        for (invalid, reason) in [
+            ("界".repeat(43), PairingNameError::TooLong),
+            ("Lab\nMac".into(), PairingNameError::ControlCharacter),
+            ("Lab\u{0085}Mac".into(), PairingNameError::ControlCharacter),
+            ("\u{0085}".into(), PairingNameError::Empty),
+        ] {
+            assert_eq!(profile.set_host_name(&invalid), Err(reason));
+            assert_eq!(profile.host_name(), name);
+        }
     }
 }

@@ -37,6 +37,7 @@ use maka_host_runtime::application::{
 };
 use maka_ios_shell::{bridge::HostBridge, engine_config};
 use maka_packages::Package;
+use maka_remote_pairing::HostPlatform;
 use maka_remote_transport::{
     Relay,
     host::HostPeerTransport,
@@ -268,8 +269,32 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     assert!(first.host.list_peer_access().await.unwrap().is_empty());
     assert!(!support.path().join("hosts.json").exists());
 
+    let platform = json!(HostPlatform::current());
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} ·/")).unwrap();
+    }
+    app.wait_for("text:First test Host").unwrap();
+    app.clear("label:Computer name").unwrap();
+    for input in ["", "   "] {
+        if !input.is_empty() {
+            app.type_text("label:Computer name", input).unwrap();
+        }
+        app.press("label:Confirm & Connect").unwrap();
+        app.wait_for("text:A name cannot be empty.").unwrap();
+        assert!(first.host.list_peer_access().await.unwrap().is_empty());
+        assert!(!support.path().join("hosts.json").exists());
+    }
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", &"界".repeat(43))
+        .unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:First test Host · Online").unwrap();
+    app.wait_for("text:Computer name is too long.").unwrap();
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", "Travel Mac").unwrap();
+    app.wait_for("text:Travel Mac").unwrap();
+    assert!(!app.shows("text:First test Host"));
+    app.press("label:Confirm & Connect").unwrap();
+    app.wait_for("text:Travel Mac · Online").unwrap();
     assert_eq!(first.host.list_peer_access().await.unwrap().len(), 1);
     assert!(matches!(
         first.handshakes.try_recv(),
@@ -289,8 +314,22 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     app.wait_for("text:Second test Host").unwrap();
 
     app.press("label:Settings").unwrap();
-    app.wait_for("label:Computer: First test Host").unwrap();
-    app.press("label:Computer: First test Host").unwrap();
+    app.wait_for("label:Computer: Travel Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} · Connected/"))
+            .unwrap();
+    }
+    app.press("label:Computer: Travel Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:{platform}")).unwrap();
+    }
+    assert!(!app.shows("label:Save"));
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", "Office Mac").unwrap();
+    app.wait_for("label:Save").unwrap();
+    app.submit("label:Computer name").unwrap();
+    app.wait_for_gone("label:Save", Duration::from_secs(5))
+        .unwrap();
     app.press("label:Connection details").unwrap();
     app.wait_for("text:/Direct connection discovery · Port/")
         .unwrap();
@@ -304,6 +343,15 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     drop(bridge);
     let persisted = std::fs::read_to_string(support.path().join("hosts.json")).unwrap();
     assert!(!persisted.contains(RELAY_TOKEN));
+    let profiles: Value = serde_json::from_str(&persisted).unwrap();
+    let renamed = profiles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|profile| profile["rootId"] == first.host.root_id())
+        .unwrap();
+    assert_eq!(renamed["hostName"], "Office Mac");
+    assert_eq!(renamed["platform"], platform);
 
     // The paused profile and unpaused profile have the same relay route.
     // Only the unpaused one should try it without the in-memory Bearer.
@@ -332,8 +380,12 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
         .unwrap();
 
     app.press("label:Settings").unwrap();
-    app.wait_for("label:Computer: First test Host").unwrap();
-    app.press("label:Computer: First test Host").unwrap();
+    app.wait_for("label:Computer: Office Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} · Offline/"))
+            .unwrap();
+    }
+    app.press("label:Computer: Office Mac").unwrap();
     resume_after_network_change(&mut app);
     app.wait_for("label:Reconnect").unwrap();
     assert!(
@@ -350,7 +402,7 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
             .reconnect_paused()
     );
 
-    app.press("label:Relay Bearer for First test Host").unwrap();
+    app.press("label:Relay Bearer for Office Mac").unwrap();
     app.type_text("label:Saved Host relay Bearer token", RELAY_TOKEN)
         .unwrap();
     app.press("label:Connect with Bearer token").unwrap();
@@ -409,6 +461,38 @@ fn resume_after_network_change(app: &mut Headless) {
     app.fast_forward(Duration::from_secs(16)).unwrap();
 }
 
+#[tokio::test]
+async fn opening_a_legacy_name_does_not_offer_or_submit_a_rename() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(json!({
+            "revision": 1, "devicePeerId": "fixture",
+            "hosts": [{"rootId":"legacy","hostName":" Studio ","peerId":"peer","endpoints":[]}],
+            "active": null, "connections": {"legacy":{"status":"offline","autoReconnect":false}}
+        }));
+    });
+    let (renamed, mut rename_requests) = mpsc::unbounded_channel();
+    channel.handle("ios.renameHost", move |mut call| {
+        renamed.send(call.take_data()).unwrap();
+        call.reject("unexpected rename");
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:/Computer: +Studio/").unwrap();
+    app.wait_for("label:Computer name").unwrap();
+    assert!(!app.shows("label:Save"));
+    app.submit("label:Computer name").unwrap();
+    assert!(rename_requests.try_recv().is_err());
+}
+
 struct RpcDriver {
     channel: HostChannel,
     replies: mpsc::UnboundedReceiver<Value>,
@@ -435,7 +519,7 @@ impl RpcDriver {
 async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and_revocation() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let (relay, config, relay_url) = https_relay().await;
-        let mut a = Live::start(&config, "Host A").await;
+        let mut a = Live::start(&config, &"界".repeat(43)).await;
         let mut b = Live::start(&config, "Host B").await;
         let support = tempfile::tempdir().unwrap();
         let channel = HostChannel::new();
@@ -470,8 +554,31 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
                 "uri":host.uri,"relayUrl":relay_url,"relayToken":RELAY_TOKEN
             })).await;
             let (peer, sas) = host.sas().await;
-            let paired = driver.call("ios.confirmPairing", json!({"pairingId":ticket["pairingId"],"sas":sas})).await;
-            assert_eq!(paired["connections"][host.host.root_id()]["status"], "connected");
+            let mut confirm = json!({"pairingId":ticket["pairingId"],"sas":sas});
+            if peers.is_empty() {
+                let invalid = driver.call("ios.confirmPairing", confirm.clone()).await;
+                assert_eq!(invalid, json!({"kind":"invalidName","field":"hostName","reason":"tooLong"}));
+
+                for (field, name, reason) in [
+                    ("hostName", "界".repeat(43), "tooLong"),
+                    ("hostName", "Lab\nMac".into(), "controlCharacter"),
+                    ("deviceLabel", "界".repeat(43), "tooLong"),
+                    ("deviceLabel", "Field\nPhone".into(), "controlCharacter"),
+                    ("deviceLabel", "\u{0085}".into(), "empty"),
+                ] {
+                    let mut input = confirm.clone();
+                    input[field] = json!(name);
+                    let invalid = driver.call("ios.confirmPairing", input).await;
+                    assert_eq!(invalid, json!({"kind":"invalidName","field":field,"reason":reason}));
+                }
+                assert!(host.host.list_peer_access().await.unwrap().is_empty());
+                assert!(!support.path().join("hosts.json").exists());
+                confirm["hostName"] = json!("Host A");
+            }
+            // Correcting the name must still work with the same pairing ID and one-time invite.
+            let paired = driver.call("ios.confirmPairing", confirm).await;
+            assert_eq!(paired["kind"], "saved");
+            assert_eq!(paired["snapshot"]["connections"][host.host.root_id()]["status"], "connected");
             peers.push(peer);
         }
 
@@ -482,6 +589,26 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         assert_eq!(state["connections"][&a_id]["status"], "connected");
         assert_eq!(state["active"]["rootId"], b_id);
         driver.call("ios.networkChange", json!({})).await;
+        for (name, reason) in [("界".repeat(43), "tooLong"), ("Build\nMac".into(), "controlCharacter")] {
+            let invalid = driver.call("ios.renameHost", json!({"rootId":b_id,"hostName":name})).await;
+            assert_eq!(invalid, json!({"kind":"invalidName","field":"hostName","reason":reason}));
+        }
+        let unchanged = driver.call("ios.bootstrap", json!({})).await;
+        assert_eq!(unchanged["hosts"], state["hosts"]);
+
+        let renamed = driver.call("ios.renameHost", json!({"rootId":b_id,"hostName":"  Build Mac  "})).await;
+        assert_eq!(renamed["kind"], "saved");
+        let renamed = &renamed["snapshot"];
+        assert_eq!(renamed["active"]["hostName"], "Build Mac");
+        assert_eq!(renamed["connections"][&b_id]["connection"]["hostName"], "Build Mac");
+        assert_eq!(renamed["connections"][&b_id]["connection"]["session"], b_session);
+        loop {
+            let broadcast = states.recv().await.unwrap();
+            if broadcast["revision"] == renamed["revision"] {
+                assert_eq!(&broadcast, renamed);
+                break;
+            }
+        }
 
         let save = |root: &str| json!({
             "rootId":root, "generation":state["connections"][root]["connection"]["generation"],
@@ -655,7 +782,11 @@ async fn detached_engine_subscriptions_do_not_reach_the_replacement_engine() {
             )
             .await;
         let root = remote.host.root_id();
-        assert_eq!(state["connections"][root]["status"], "connected");
+        assert_eq!(state["kind"], "saved");
+        assert_eq!(
+            state["snapshot"]["connections"][root]["status"],
+            "connected"
+        );
         let handle = driver.call("ios.subscribe", json!({
             "rootId":root,"endpoint":"hostLogs","method":"watch","subscriptionId":"engine-a",
             "input":{"position":{"kind":"tail"}}
@@ -782,36 +913,43 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.type_text("label:Device name", &"\u{754c}".repeat(43))
         .unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:Device name must be 128 UTF-8 bytes or fewer.")
-        .unwrap();
-    assert!(confirming.try_recv().is_err());
+    let (invalid, confirm) = confirming.try_recv().unwrap();
+    assert_eq!(invalid["deviceLabel"], "界".repeat(43));
+    confirm.unwrap().resolve(json!({
+        "kind": "invalidName", "field": "deviceLabel", "reason": "tooLong"
+    }));
+    app.wait_for("text:Device name is too long.").unwrap();
     app.clear("label:Device name").unwrap();
     app.type_text("label:Device name", "Field iPhone").unwrap();
     app.press("label:Confirm & Connect").unwrap();
     let (input, confirm) = confirming.try_recv().unwrap();
+    assert_eq!(input["pairingId"], invalid["pairingId"]);
     assert_eq!(input["deviceLabel"], "Field iPhone");
     assert!(app.press("label:Cancel").is_err());
     assert!(cancelled.try_recv().is_err());
     confirm.unwrap().resolve(json!({
-        "revision": 2,
-        "devicePeerId": "fixture",
-        "filter": { "kind": "all_computers" },
-        "hosts": [{
-            "rootId": "late-root",
-            "hostName": "Newly paired Host",
-            "peerId": "late-peer",
-            "connected": true,
-            "endpoints": []
-        }],
-        "active": {
-            "rootId": "late-root",
-            "hostName": "Newly paired Host",
-            "epoch": "e1",
-            "session": "late",
-            "generation": 1,
-            "endpoints": [],
-            "pathSummary": null,
-            "transport": "quic"
+        "kind": "saved",
+        "snapshot": {
+            "revision": 2,
+            "devicePeerId": "fixture",
+            "filter": { "kind": "all_computers" },
+            "hosts": [{
+                "rootId": "late-root",
+                "hostName": "Newly paired Host",
+                "peerId": "late-peer",
+                "connected": true,
+                "endpoints": []
+            }],
+            "active": {
+                "rootId": "late-root",
+                "hostName": "Newly paired Host",
+                "epoch": "e1",
+                "session": "late",
+                "generation": 1,
+                "endpoints": [],
+                "pathSummary": null,
+                "transport": "quic"
+            }
         }
     }));
     app.wait_for_gone("text:123456", Duration::from_secs(1))
@@ -2046,24 +2184,27 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
+fn workspace_host_state(revision: u64, name: &str) -> Value {
+    let connection = json!({
+        "rootId": "root-a", "hostName": name, "epoch": "ea", "session": "sa",
+        "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
+    });
+    json!({
+        "revision": revision, "devicePeerId": "ios-device", "filter": {"kind": "all_computers"},
+        "hosts": [
+            {"rootId": "root-a", "hostName": name, "peerId": "peer-a", "endpoints": ["agent"]},
+            {"rootId": "root-b", "hostName": "Offline Host", "peerId": "peer-b", "endpoints": []}
+        ],
+        "active": connection,
+        "connections": {"root-a": {"status": "connected", "connection": connection}}
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
-        call.reply(Ok(json!({
-            "revision": 1,
-            "devicePeerId": "ios-device",
-            "filter": { "kind": "all_computers" },
-            "hosts": [
-                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
-            ],
-            "active": {
-                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
-            },
-            "connections": {
-                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
-            }
-        })));
+        call.resolve(workspace_host_state(1, "MacBook Pro"))
     });
     let session = json!({
         "id": "chat-diff", "title": "Login fix", "kind": "agent", "parentSessionId": null,
@@ -2081,6 +2222,8 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
  }
 ";
     let (files_tx, mut files_rx) = mpsc::unbounded_channel();
+    let (diff_tx, mut diff_rx) = mpsc::unbounded_channel();
+    let first_diff = std::sync::atomic::AtomicBool::new(true);
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
@@ -2098,6 +2241,10 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
                     json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0U="},"kind":"file"}])
                 };
                 json!({"directoryIdentity":"directory","entries":entries,"next":null})
+            }
+            "gitWorkspaceDiff" if first_diff.swap(false, std::sync::atomic::Ordering::Relaxed) => {
+                diff_tx.send(call.into_reply().unwrap()).unwrap();
+                return;
             }
             "gitWorkspaceDiff" => json!({ "patch": sample_patch, "truncated": false, "skippedFiles": 0 }),
             _ => json!({}),
@@ -2124,11 +2271,24 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     app.wait_for("label:Conversation: Login fix").unwrap();
     app.press("label:Conversation: Login fix").unwrap();
     app.wait_for("label:Message composer").unwrap();
+    app.wait_for("text:MacBook Pro · maka-agent").unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(2, "Travel Mac"))
+        .unwrap();
+    app.wait_for("text:Travel Mac · maka-agent").unwrap();
 
     // Type an unsent draft before navigating to ProjectFiles -> DiffScreen.
     app.type_text("label:Message composer", "Please check this:")
         .unwrap();
     app.press("label:Files & Changes").unwrap();
+    app.wait_for("text:Reading git workspace diff from Travel Mac.")
+        .unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(3, "Office Mac"))
+        .unwrap();
+    app.wait_for("text:Reading git workspace diff from Office Mac.")
+        .unwrap();
+    diff_rx.try_recv().unwrap().resolve(json!({
+        "value": {"patch": sample_patch, "truncated": false, "skippedFiles": 0}
+    }));
     app.wait_for("label:Diff: src/auth.rs").unwrap();
     app.press("label:Diff: src/auth.rs").unwrap();
     app.wait_for("label:Quote line to chat").unwrap();
@@ -3992,20 +4152,7 @@ async fn chat_user_quote_button_exists_only_for_a_valid_selection() {
 async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_duplicate_submit() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
-        call.reply(Ok(json!({
-            "revision": 1,
-            "devicePeerId": "ios-device",
-            "filter": { "kind": "all_computers" },
-            "hosts": [
-                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
-            ],
-            "active": {
-                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
-            },
-            "connections": {
-                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
-            }
-        })));
+        call.resolve(workspace_host_state(1, "MacBook Pro"))
     });
     let resolved_remotely = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let resolved_q = resolved_remotely.clone();
@@ -4063,6 +4210,10 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.press("text:Allow service call ReleaseTool?").unwrap();
     app.wait_for("label:Deny").unwrap();
     assert!(!app.shows("label:Allow"));
+    app.wait_for("text:MacBook Pro").unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(2, "Office Mac"))
+        .unwrap();
+    app.wait_for("text:Office Mac").unwrap();
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);

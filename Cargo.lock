@@ -10101,6 +10101,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
+ "gethostname",
  "getrandom 0.4.3",
  "hex",
  "hmac 0.13.0",

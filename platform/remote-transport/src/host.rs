@@ -19,7 +19,7 @@
 
 use crate::{
     HOST_ALPN, PeerEndpoint, Relay, Result,
-    peer::{PEER_ACCESS_REVOKED_CODE, export_sas},
+    peer::{PAIRING_INFO_ALPN, PEER_ACCESS_REVOKED_CODE, export_sas},
 };
 use iroh::{Watcher, endpoint::Connection};
 use maka_host_runtime::application::host::{AuthenticatedPeerStream, Host, PeerId};
@@ -55,7 +55,7 @@ impl HostPeerTransport {
             host.device_identity(),
             relays,
             relay_only,
-            vec![HOST_ALPN.to_vec()],
+            vec![PAIRING_INFO_ALPN.to_vec(), HOST_ALPN.to_vec()],
         )
         .await?;
         Ok(Self {

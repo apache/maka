@@ -39,6 +39,7 @@ import {
   savedHosts,
   removeSavedHost,
   retrySavedHostNow,
+  renameSavedHost,
   showToast,
 } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
@@ -48,7 +49,6 @@ import {
   BannerNotice,
   GroupDivider,
   GroupRow,
-  Icon,
   InsetGroup,
   ScreenHeader,
   StatusDot,
@@ -65,9 +65,16 @@ export function DeviceDetailScreen(props: {
   const relayUrl = signal('');
   const showDiagnostics = signal(false);
   const busy = signal(false);
+  const editedName = signal<string | null>(null);
+  const savingName = signal(false);
 
   const host = () => hostById(props.rootId);
   const relays = () => host()?.relays ?? [];
+  const computerName = () => editedName() ?? host()?.hostName ?? '';
+  const hasNameEdit = () => {
+    const draft = editedName();
+    return draft !== null && draft.trim() !== host()?.hostName.trim();
+  };
   const conn = () => activeHostInfo(props.rootId);
   const connState = () => hostConnectionState(props.rootId);
   const reconnecting = () => hostReconnectNotice(props.rootId);
@@ -123,6 +130,16 @@ export function DeviceDetailScreen(props: {
     }
   };
 
+  const handleRename = async () => {
+    if (savingName() || !hasNameEdit()) return;
+    savingName.set(true);
+    try {
+      if (await renameSavedHost(props.rootId, computerName())) editedName.set(null);
+    } finally {
+      savingName.set(false);
+    }
+  };
+
   const handleRemove = async () => {
     const name = host()?.hostName ?? props.rootId;
     const { action } = await AlertDialog.show({
@@ -169,41 +186,6 @@ export function DeviceDetailScreen(props: {
           }}
         >
           <If when={host()}>
-            <If when={!props.settings}>
-              {/* Identity Header */}
-              <View
-                style={{
-                  alignItems: 'center',
-                  paddingHorizontal: 24,
-                  marginBottom: 24,
-                  gap: 8,
-                }}
-              >
-                <View
-                  style={{
-                    width: 58,
-                    height: 58,
-                    borderRadius: 16,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('primary-tint'),
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginBottom: 2,
-                  }}
-                >
-                  <Icon name="laptop" color={token('primary')} size={28} />
-                </View>
-                <Text style={{ ...type.title2, color: token('foreground'), textAlign: 'center' }}>
-                  {host()!.hostName}
-                </Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <StatusDot kind={hostStatusKind(props.rootId)} size={8} />
-                  <Text style={{ ...type.subheadline, color: token('muted-foreground') }}>
-                    {subtitle()}
-                  </Text>
-                </View>
-              </View>
-            </If>
             <If when={reconnecting()}>
               <BannerNotice
                 tone="info"
@@ -223,16 +205,46 @@ export function DeviceDetailScreen(props: {
               <BannerNotice tone="info" title={hostCheckMessage(props.rootId)!} />
             </If>
 
+            <If when={!host()?.ephemeral}>
+              <InsetGroup header={tr('Computer name')} footer={host()?.platform ?? undefined}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16 }}>
+                  <Input
+                    accessibilityLabel={tr('Computer name')}
+                    value={computerName()}
+                    disabled={savingName()}
+                    returnKeyType="done"
+                    onChange={({ value }) => editedName.set(value)}
+                    onSubmit={() => void handleRename()}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      minHeight: 46,
+                      ...type.body,
+                      color: token('foreground'),
+                      backgroundColor: 'transparent',
+                    }}
+                  />
+                  <If when={hasNameEdit()}>
+                    <ActionButton
+                      title={tr('Save')}
+                      compact
+                      variant="quiet"
+                      disabled={savingName()}
+                      onPress={() => void handleRename()}
+                    />
+                  </If>
+                </View>
+              </InsetGroup>
+            </If>
+
             {/* Connection Controls */}
             <InsetGroup header={tr('Connection')}>
-              <If when={props.settings}>
-                <GroupRow
-                  title={subtitle()}
-                  subtitle={connectionDetail() || undefined}
-                  leading={<StatusDot kind={hostStatusKind(props.rootId)} />}
-                  divider
-                />
-              </If>
+              <GroupRow
+                title={subtitle()}
+                subtitle={props.settings ? connectionDetail() || undefined : undefined}
+                leading={<StatusDot kind={hostStatusKind(props.rootId)} />}
+                divider
+              />
               <If
                 when={isHostConnected(props.rootId)}
                 else={

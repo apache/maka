@@ -29,9 +29,12 @@ export type HostViewFilter =
   | { kind: 'all_computers' }
   | { kind: 'single_computer'; root_id: string };
 
+export type HostPlatform = 'macOS' | 'Windows' | 'Linux';
+
 export interface SavedHostItem {
   rootId: string;
   hostName: string;
+  platform?: HostPlatform | null;
   peerId: string;
   endpoints: string[];
   ephemeral?: boolean;
@@ -84,12 +87,21 @@ export interface HostStateSnapshot {
   disconnectedRootId?: string;
 }
 
+export interface InvalidName {
+  kind: 'invalidName';
+  field: 'hostName' | 'deviceLabel';
+  reason: 'empty' | 'tooLong' | 'controlCharacter';
+}
+
+type NameEditOutcome = { kind: 'saved'; snapshot: HostStateSnapshot } | InvalidName;
+
 export interface BootstrapSnapshot extends HostStateSnapshot {}
 
 export interface ParsedTicketInfo {
   pairingId: number;
   rootId: string;
   hostName: string;
+  platform?: HostPlatform | null;
   peerId: string;
   sasCode: string;
   devicePeerId: string;
@@ -171,12 +183,14 @@ export function confirmPairing(
   pairingId: number,
   sas: string,
   deviceLabel: string,
-): Promise<HostStateSnapshot> {
+  hostName?: string,
+): Promise<NameEditOutcome> {
   return host.call('ios.confirmPairing', {
     pairingId,
     sas,
     deviceLabel,
-  }) as Promise<HostStateSnapshot>;
+    hostName,
+  }) as Promise<NameEditOutcome>;
 }
 
 export function cancelPairing(rootId?: string): Promise<unknown> {
@@ -221,6 +235,10 @@ export function removeHost(rootId: string): Promise<HostStateSnapshot> {
 
 export function networkChange(): Promise<unknown> {
   return host.call('ios.networkChange', {});
+}
+
+export function renameHost(rootId: string, hostName: string): Promise<NameEditOutcome> {
+  return host.call('ios.renameHost', { rootId, hostName }) as Promise<NameEditOutcome>;
 }
 
 export function setFilter(filter: HostViewFilter): Promise<HostStateSnapshot> {
