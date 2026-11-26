@@ -19,6 +19,7 @@
 
 import {
   cleanup,
+  computed,
   effect,
   inputAction,
   platform,
@@ -94,14 +95,14 @@ export function ModelSettings(props: {
           tool.declaration.contract === quickToolView.id &&
           sameValue(tool.instance.instance, item.instance.instance),
       );
-  const pages = () => {
+  const pages = computed(() => {
     const shown = runtime.settings().filter((item) => !quickTool(item));
     return [
       ...shown.filter((item) => item.id !== quickToolsSettings),
       ...shown.filter((item) => item.id === quickToolsSettings),
     ];
-  };
-  const contributed = () => pages().find((item) => matches(item, props.route()));
+  });
+  const contributed = computed(() => pages().find((item) => matches(item, props.route())));
   const page = () => {
     const registered = navigation();
     return registered && registered.key === contributed()?.key ? registered.value : null;
