@@ -60,6 +60,7 @@ pub(crate) async fn reserved_sandbox_floor(
 
 pub(crate) struct RunAccess {
     pub(super) owner: Weak<Owner>,
+    pub(super) progress: std::sync::OnceLock<std::sync::Weak<super::worker_progress::Run>>,
     execution: ExecutionIdentity,
     spec: Arc<RunSpec>,
     claim: DriverClaim,
@@ -95,6 +96,7 @@ impl Owner {
             .session_for_work(custody.as_ref(), &spec.session_id)
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(RunAccess {
+            progress: Default::default(),
             owner: Arc::downgrade(self),
             execution: ExecutionIdentity {
                 session_id: spec.session_id.clone(),
@@ -201,6 +203,9 @@ impl RunAccess {
             }
         }
         Ok(original.is_empty())
+    }
+    pub(super) fn worker_progress(&self) -> Option<Arc<super::worker_progress::Run>> {
+        self.progress.get()?.upgrade()
     }
     pub(crate) fn claim(&self) -> &maka_agent_state::DriverClaim {
         &self.claim
@@ -867,7 +872,12 @@ impl RunAccess {
                 )
                 .await
             {
-                Ok(record) => return Ok(record),
+                Ok(record) => {
+                    if let Some(p) = self.worker_progress() {
+                        p.interaction(&record);
+                    }
+                    return Ok(record);
+                }
                 Err(maka_event_log::StoreError::RevisionConflict { .. }) => continue,
                 Err(error) => return Err(error.to_string()),
             }
@@ -1119,14 +1129,20 @@ impl Interactions for RunAccess {
         request_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<InteractionRecord>, String>> {
         Box::pin(async move {
-            Ok(self
+            let record = self
                 .owner()?
                 .durable
                 .interactions()
                 .read(&self.execution.session_id, request_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .filter(|record| record.execution == self.execution))
+                .filter(|record| record.execution == self.execution);
+            if let Some(record) = &record
+                && let Some(p) = self.worker_progress()
+            {
+                p.interaction(record);
+            }
+            Ok(record)
         })
     }
     fn establish<'a>(
@@ -1160,12 +1176,17 @@ impl Interactions for RunAccess {
                 InteractionOutcome::Closure { .. } => {}
                 _ => return Err("agent_producer_cannot_answer".into()),
             }
-            self.owner()?
+            let closed = self
+                .owner()?
                 .durable
                 .interactions()
                 .commit_outcome(&record.execution.session_id, request_id, outcome)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            if let Some(p) = self.worker_progress() {
+                p.interaction(&closed);
+            }
+            Ok(closed)
         })
     }
 }

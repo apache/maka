@@ -28,12 +28,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod catalog;
+mod worker_progress;
 use catalog::{
     CATALOG_REFRESH_MIN_INTERVAL, catalog_page, catalog_revision, wait_for_catalog_refresh,
 };
 pub(crate) use catalog::{summary, summary_for};
 
-mod delivery;
+pub(crate) mod delivery;
 mod diagnostics;
 pub(crate) mod history;
 mod preview;
@@ -746,6 +747,9 @@ impl Handler for Agent {
             }),
             "checklist" => json_rpc(&mut args, |owner, input, _context| async move {
                 encode(owner.checklist(&decode(input)?).await?)
+            }),
+            "watchWorkerProgress" => json_rpc(&mut args, |owner, input, context| async move {
+                worker_progress::watch(owner, decode(input)?, context).await
             }),
             "watchChecklist" => json_rpc(&mut args, |owner, input, context| async move {
                 let input: ChecklistRead = decode(input)?;

@@ -60213,6 +60213,91 @@ export const contracts: {
           },
           resources: {},
         },
+        watchWorkerProgress: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentWorkerProgressRead',
+            type: 'object',
+            properties: {
+              parentSessionId: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['parentSessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentWorkerProgressFrame',
+            type: 'object',
+            properties: {
+              snapshot: {
+                type: 'boolean',
+              },
+              upsert: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentWorkerProgress',
+                },
+              },
+              remove: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+            },
+            required: ['snapshot', 'upsert', 'remove'],
+            $defs: {
+              AgentWorkerProgress: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    $ref: '#/$defs/RunId',
+                  },
+                  seq: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  kind: {
+                    $ref: '#/$defs/AgentWorkerProgressKind',
+                  },
+                  detail: {
+                    type: 'string',
+                  },
+                },
+                required: ['sessionId', 'runId', 'seq', 'kind', 'detail'],
+              },
+              RunId: {
+                type: 'string',
+                format: 'uuid',
+              },
+              AgentWorkerProgressKind: {
+                type: 'string',
+                enum: [
+                  'working',
+                  'thinking',
+                  'generating',
+                  'summary',
+                  'command',
+                  'edit',
+                  'read',
+                  'tool',
+                  'approval',
+                  'question',
+                  'form',
+                  'permission',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         withdrawSubmission: {
           mode: 'mutation',
           input: {

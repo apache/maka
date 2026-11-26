@@ -937,6 +937,52 @@ pub struct Session {
     pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentWorkerProgressRead")]
+pub struct WorkerProgressRead {
+    pub parent_session_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentWorkerProgressKind")]
+pub enum WorkerProgressKind {
+    #[default]
+    Working,
+    Thinking,
+    Generating,
+    Summary,
+    Command,
+    Edit,
+    Read,
+    Tool,
+    Approval,
+    Question,
+    Form,
+    Permission,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentWorkerProgress")]
+pub struct WorkerProgress {
+    pub session_id: String,
+    pub run_id: maka_agent_facts::durable::RunId,
+    pub seq: u64,
+    pub kind: WorkerProgressKind,
+    pub detail: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentWorkerProgressFrame")]
+pub struct WorkerProgressFrame {
+    pub snapshot: bool,
+    pub upsert: Vec<WorkerProgress>,
+    pub remove: Vec<String>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
@@ -2384,6 +2430,10 @@ pub fn contract() -> Contract {
                 (
                     "generateRecap".into(),
                     method::<RecapGenerate, RecapReceipt>(MethodMode::Mutation),
+                ),
+                (
+                    "watchWorkerProgress".into(),
+                    method::<WorkerProgressRead, WorkerProgressFrame>(MethodMode::Subscription),
                 ),
                 (
                     "watchChecklist".into(),

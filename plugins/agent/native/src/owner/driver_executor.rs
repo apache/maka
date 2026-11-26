@@ -82,6 +82,7 @@ struct PublicationSource {
     original_task_descriptor: ContentRef,
 }
 struct Publications {
+    progress: Option<std::sync::Weak<super::worker_progress::Run>>,
     send: mpsc::Sender<Result<FactId, RunError>>,
     witness: ExternalWitness,
     publication_source: Option<PendingExternalPublication>,
@@ -221,6 +222,13 @@ impl Publications {
         } else {
             publication.cursor
         };
+        let progress = match (&self.progress, &observation) {
+            (Some(run), ExternalObservation::Output { output, .. }) => {
+                super::worker_progress::ExecutorProgress::from_output(output)
+                    .map(|event| (run, event))
+            }
+            _ => None,
+        };
         let fact = self
             .witness
             .record(
@@ -231,6 +239,11 @@ impl Publications {
             .await
             .map_err(|error| Error::Persistence(error.to_string()))?;
         publication.cursor = next;
+        if let Some((run, event)) = progress
+            && let Some(run) = run.upgrade()
+        {
+            run.observe(event);
+        }
         if let Some(message) = message {
             observe_message(&mut publication.messages, message, fact);
         }
@@ -834,6 +847,7 @@ impl DriverExecutor {
             }
         };
         let publications = Arc::new(Publications {
+            progress: self.access.progress.get().cloned(),
             owner_stop,
             publication_source,
             state: self.state.clone(),

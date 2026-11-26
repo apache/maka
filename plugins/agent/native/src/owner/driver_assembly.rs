@@ -379,6 +379,11 @@ impl Owner {
             // inline through the cleanup and queue futures during history replay.
             let result = Box::pin(async {
                 let access = self.run_access(Arc::new(view.spec.clone()), claim.clone(), &lease).map_err(RunError::InvalidInput)?;
+                let _progress = current.configuration.parent_session_id.as_deref().map(|parent| {
+                    let run = worker_progress::Run::new(self.progress.group(parent), access.execution().clone());
+                    let _ = access.progress.set(Arc::downgrade(&run));
+                    run
+                });
                 let writer = self.store.data_writer_for_work(access.custody().as_ref(), &view.spec.session_id)?;
                 let state = self.durable.with_data_writer(writer)?;
                 publication_store = state.clone();

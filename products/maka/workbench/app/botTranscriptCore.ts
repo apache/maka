@@ -18,7 +18,11 @@
  */
 
 /** What the Bot sent with `SendUser`, and what is known about each Turn's replies. */
-import type { ServiceMethods, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import type {
+  ServiceMethods,
+  QuoteRef,
+  AgentWorkerProgress,
+} from '../../../../packages/plugin-sdk/src/index.js';
 
 type Query = (
   endpoint: 'agent',
@@ -352,7 +356,12 @@ export async function assembleChildren<S extends Session, P extends Page<S>>(
   return [...rows.values()];
 }
 
-export type ActiveWorker = { id: string; title: string; activity: 'working' | 'waiting' };
+export type ActiveWorker = {
+  id: string;
+  title: string;
+  activity: 'working' | 'waiting';
+  progress?: AgentWorkerProgress;
+};
 /**
  * The conversations the Bot created that are running, or waiting for the user, now. Such a
  * conversation has not ended its run, so the Bot is not woken and says nothing about it.
@@ -365,13 +374,22 @@ export function activeWorkers<
     activity: string;
     archived: boolean;
   },
->(sessions: readonly T[], bot: string | null | undefined): ActiveWorker[] {
+>(
+  sessions: readonly T[],
+  bot: string | null | undefined,
+  progress?: ReadonlyMap<string, AgentWorkerProgress>,
+): ActiveWorker[] {
   if (!bot) return [];
   const found: ActiveWorker[] = [];
   for (const session of sessions) {
     if (session.parentSessionId !== bot || session.archived) continue;
     if (session.activity === 'working' || session.activity === 'waiting')
-      found.push({ id: session.id, title: session.title, activity: session.activity });
+      found.push({
+        id: session.id,
+        title: session.title,
+        activity: session.activity,
+        ...(progress?.has(session.id) ? { progress: progress.get(session.id) } : {}),
+      });
   }
   // What waits for the user comes first.
   return found.sort((a, b) => Number(b.activity === 'waiting') - Number(a.activity === 'waiting'));

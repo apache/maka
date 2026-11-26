@@ -163,6 +163,42 @@ async fn bot_delegation_preserves_preset_models_and_ordinary_inheritance() -> Te
             let sent = agent_call(&owner, bot_id, "send", input).await?;
             assert_eq!(sent["kind"], "queued", "{sent}");
             let reply = observed.recv().await.ok_or("delegated request missing")?;
+            if round == 0 {
+                let mut progress = client.call("agent","watchWorkerProgress".into(),json!({"parentSessionId":bot_id}),Attachments::new()).await?;
+                progress.start().await?;
+                assert!(matches!(progress.receive().await?,Reply::Subscribed));
+                let Reply::Item {value:frame} = progress.pull().await? else {return Err("missing active worker snapshot".into());};
+                assert_eq!(frame["snapshot"],true);
+                assert_eq!(frame["upsert"].as_array().unwrap().len(),1);
+                assert_eq!(frame["upsert"][0]["sessionId"],*session);
+                let id = session.as_str().unwrap();
+                let access = owner.runs.state().await.controls[id].access.upgrade().unwrap();
+                let list = json!({"filter":"all","position":{"kind":"start"},"scope":{"kind":"children","sessionId":bot_id}});
+                let before = call(client, "agent", "list", list.clone()).await?;
+                {
+                    let run = access.worker_progress().unwrap();
+                    run.start("cmd","Shell",&json!({"command":"cargo test"}));
+                }
+                let Reply::Item {value:update} = progress.pull().await? else {return Err("missing worker command".into())};
+                assert_eq!(update["upsert"][0]["detail"],"cargo test");
+                let after = call(client, "agent", "list", list).await?;
+                assert_eq!(before["revision"],after["revision"]);
+                access.worker_progress().unwrap().finish("cmd");
+                let target = ServiceTarget::Export {name:"agent".into()};
+                let services = owner.services.select_method(&target,"watchWorkerProgress")?;
+                let request = services.request_with_work(
+                    maka_capabilities::call::Identity::Agent {execution:access.execution().clone(),operation_id:None},
+                    CancellationToken::new(), access.custody().clone()
+                )?;
+                let mut denied = request.subscribe_target(&target,"watchWorkerProgress".into(),json!({"parentSessionId":bot_id}),Attachments::new())?.await?;
+                assert!(denied.recv().await.is_none());
+                let completion = denied.completion().await;
+                assert!(completion.result.is_err());
+                completion.cleanup?;
+                request.finish().await?;
+                progress.cancel().await?;
+                progress.close().await?;
+            }
             let request = reply.body();
             assert_eq!(request["model"], expected, "{request}");
             if round != 4 {

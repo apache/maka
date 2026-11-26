@@ -2861,6 +2861,7 @@ impl DriverModel {
             work.cancellation.cancel();
             return Ok(None);
         }
+        let progress = access.progress.get().cloned();
         let history = self
             .state
             .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
@@ -2930,6 +2931,7 @@ impl DriverModel {
                     return Err(unsupported("admitted-recovery-contract-changed"));
                 }
                 let observation = ObservationProtocol {
+                    progress,
                     run,
                     attempt,
                     contract_ref,
@@ -3797,6 +3799,7 @@ fn publish_preview(
 }
 
 struct ObservationProtocol {
+    progress: Option<std::sync::Weak<super::worker_progress::Run>>,
     run: RunId,
     attempt: ModelAttemptId,
     contract_ref: ContentRef,
@@ -3809,6 +3812,27 @@ struct ObservationProtocol {
     scope: maka_agent_facts::model::assembly::AttemptBinding,
 }
 impl ObservationProtocol {
+    fn progress_part(&self, part: &maka_agent_facts::model::ModelPart) {
+        if self.scope.purpose == ModelPurpose::Main
+            && let maka_agent_facts::model::ModelPart::Text {
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                text,
+                provider_options,
+            } = part
+            && provider_options
+                .as_deref()
+                .and_then(maka_agent_facts::model::responses_message_phase)
+                == Some("commentary")
+            && let Some(p) = self.progress.as_ref().and_then(std::sync::Weak::upgrade)
+        {
+            let prefix: String = text.chunks().flat_map(str::chars).take(96).collect();
+            if let Some(end) = prefix.find(['。', '！', '？', '.', '!', '?']) {
+                let sentence = &prefix[..end + prefix[end..].chars().next().unwrap().len_utf8()];
+                p.commentary(super::worker_progress::short(sentence));
+            }
+        }
+    }
+
     fn continuation(
         &self,
         index: u64,
@@ -3839,6 +3863,7 @@ impl ObservationProtocol {
         send: &mpsc::Sender<Result<ModelObservation, RunError>>,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
+        self.progress_part(&part);
         let continuation = self.continuation(index, &part)?;
         let replayable = continuation.is_some();
         let fact = self
@@ -3990,6 +4015,30 @@ async fn receive(
             ModelEvent::ProviderToolResult { id, .. } => clock.tool_finished(id),
             _ => {}
         }
+        if !private_summary
+            && let Some(progress) = observation
+                .progress
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+        {
+            use crate::contract::WorkerProgressKind as Kind;
+            match &emission.event {
+                ModelEvent::PartStarted { text_kind, .. } => progress.phase(
+                    if *text_kind == maka_agent_facts::model::TextKind::Thinking {
+                        Kind::Thinking
+                    } else {
+                        Kind::Generating
+                    },
+                ),
+                ModelEvent::ToolCall(call) if call.provider_executed => progress.start(
+                    &call.id,
+                    &call.name,
+                    call.input.as_json().unwrap_or(&serde_json::Value::Null),
+                ),
+                ModelEvent::ProviderToolResult { id, .. } => progress.finish(id),
+                _ => {}
+            }
+        }
         let finished = matches!(&emission.event, ModelEvent::Finished { .. });
         let model_time_ms = finished.then(|| clock.millis()).flatten();
         let first_token = !saw_token
@@ -4038,6 +4087,7 @@ async fn receive(
                     .filter(|record| record.ordinal >= first_buffered)
                 {
                     let part = record.part.as_ref().clone();
+                    observation.progress_part(&part);
                     let continuation = observation.continuation(record.ordinal, &part)?;
                     buffered.push((record.ordinal, part, continuation));
                     emitted = record.ordinal + 1;

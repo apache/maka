@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { cleanup, effect, signal } from 'nsh';
+import type { AgentWorkerProgress } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 import { createScopedCatalog } from './scopedCatalog';
 
@@ -34,5 +36,56 @@ export function createBotWorkers(
     const id = bot();
     return id && enabled() ? { kind: 'children', sessionId: id } : null;
   });
-  return { sessions };
+  const progress = signal<ReadonlyMap<string, AgentWorkerProgress>>(new Map());
+  effect(() => {
+    const parentSessionId = bot();
+    progress.set(new Map());
+    if (!enabled() || !parentSessionId) return;
+    let stopped = false;
+    let stream: { close(): Promise<void> } | undefined;
+    cleanup(() => {
+      stopped = true;
+      void stream?.close().catch(() => {});
+    });
+    void (async () => {
+      while (!stopped) {
+        try {
+          const opened = await host.subscribe('agent', 'watchWorkerProgress', { parentSessionId });
+          stream = opened;
+          try {
+            while (!stopped) {
+              const frame = await opened.next();
+              if (stopped || !frame) break;
+              const rows = frame.snapshot
+                ? new Map<string, AgentWorkerProgress>()
+                : new Map(progress());
+              let changed = frame.snapshot;
+              for (const id of frame.remove) {
+                if (rows.delete(id)) changed = true;
+              }
+              for (const row of frame.upsert) {
+                const prev = rows.get(row.sessionId);
+                // A parent stream sequences replacements as well as updates within a run.
+                if (!prev || prev.seq < row.seq) {
+                  rows.set(row.sessionId, row);
+                  changed = true;
+                }
+              }
+              if (changed) progress.set(rows);
+            }
+          } finally {
+            stream = undefined;
+            await opened.close();
+          }
+        } catch {
+          /* The scoped catalog remains available while reconnecting. */
+        }
+        if (!stopped) {
+          progress.set(new Map());
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+    })();
+  });
+  return { sessions, progress };
 }

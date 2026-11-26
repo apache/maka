@@ -197,7 +197,6 @@ import {
   botTurnEnding,
   reportedWorker,
   activeWorkers,
-  type ActiveWorker,
   botChatHidesRow,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
@@ -1331,7 +1330,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
-    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
+    | { kind: 'botWaiting'; key: string };
   const chatSections = new WeakMap<
     ProcessProjection,
     {
@@ -1634,13 +1633,8 @@ export function Conversation(props: ConversationProps) {
       // A worker that is running, or waiting for the user's approval or answer, has not
       // ended its run, so the Bot has nothing to say about it yet; Chat is where the user
       // would look for it.
-      const active = activeWorkers(botWorkers.sessions(), sessionId);
-      if (active.length > 0)
-        result.push({
-          kind: 'botWaiting',
-          key: 'bot/waiting',
-          workers: active,
-        });
+      if (activeWorkers(botWorkers.sessions(), sessionId).length > 0)
+        result.push({ kind: 'botWaiting', key: 'bot/waiting' });
     }
     return result;
   }
@@ -5326,16 +5320,13 @@ export function Conversation(props: ConversationProps) {
                 }}
               />
             );
-          if (initial.kind === 'botWaiting')
-            return (
-              <BotWaiting
-                workers={() => {
-                  const latest = entry();
-                  return latest.kind === 'botWaiting' ? latest.workers : initial.workers;
-                }}
-                open={canOpenWorker() ? openWorker : undefined}
-              />
+          if (initial.kind === 'botWaiting') {
+            // Progress changes only invalidate the status rows, even in a long Bot transcript.
+            const workers = computed(() =>
+              activeWorkers(botWorkers.sessions(), sessionId, botWorkers.progress()),
             );
+            return <BotWaiting workers={workers} open={canOpenWorker() ? openWorker : undefined} />;
+          }
           if (initial.kind === 'botNote')
             return <BotNote text={() => tr('The Bot did not reply this time')} />;
           if (initial.kind === 'bot') {
