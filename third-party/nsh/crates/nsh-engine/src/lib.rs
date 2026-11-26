@@ -3375,6 +3375,8 @@ impl<M: TextEngine + 'static> Driver<M> {
 struct ScrollEvent {
     x: f32,
     y: f32,
+    dx: f32,
+    dy: f32,
     content: Size<Points>,
     viewport: Size<Points>,
     /// The zoom scale.
@@ -3953,11 +3955,16 @@ impl<M: TextEngine> State<M> {
             }
             e.pending = false;
             e.last = Some(now);
+            let (dx, dy) = (std::mem::take(&mut e.dx), std::mem::take(&mut e.dy));
             let n = |v: f32| PayloadValue::Number(v as f64);
             let payload = EventPayload::Map(vec![
                 (
                     "offset",
                     PayloadValue::Point(geometry::point(Points(e.x), Points(e.y))),
+                ),
+                (
+                    "delta",
+                    PayloadValue::Point(geometry::point(Points(dx), Points(dy))),
                 ),
                 ("contentSize", PayloadValue::Size(e.content)),
                 ("size", PayloadValue::Size(e.viewport)),
@@ -4723,12 +4730,16 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         Message::Scroll(id, offset, applied) => {
-            state.core.set_scroll_offset(id, offset, applied);
-            let (x, y) = (offset.x.0, offset.y.0);
-            if let Some((throttle_ms, content, viewport, zoom)) = state.core.scroll_listener(id) {
+            let delta = state.core.set_scroll_offset(id, offset, applied);
+            if let Some((throttle_ms, offset, content, viewport, zoom)) =
+                state.core.scroll_listener(id)
+            {
+                let (x, y) = (offset.x.0, offset.y.0);
                 let event = state.scroll_events.entry(id).or_insert(ScrollEvent {
                     x,
                     y,
+                    dx: 0.0,
+                    dy: 0.0,
                     content,
                     viewport,
                     zoom,
@@ -4738,6 +4749,8 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 });
                 (event.x, event.y, event.content, event.viewport, event.zoom) =
                     (x, y, content, viewport, zoom);
+                event.dx += delta.x.0;
+                event.dy += delta.y.0;
                 event.throttle = Duration::from_secs_f32(throttle_ms / 1000.0);
                 event.pending = true;
             }

@@ -5836,7 +5836,7 @@ export function Conversation(props: ConversationProps) {
                 const offset = event.offset.y;
                 const end = Math.max(0, event.contentSize.height - event.size.height);
                 const distance = end - offset;
-                const movement = offset - historyOffset;
+                const movement = event.delta.y;
                 // Programmatic jumps and native prepend corrections must not
                 // change whether the reader is following the live tail.
                 const scrolled = historyScrollInput !== 'idle';

@@ -364,6 +364,23 @@ impl ComponentState {
     }
 }
 
+fn scroll_axis_limits(scroll: &ScrollState, frame: Size<Points>) -> Option<(f32, f32)> {
+    let content = scroll.content?;
+    let zoomed = content * scroll.zoom;
+    let inset = scroll.behavior.content_inset;
+    let (leading, trailing, content_len, vp_len) = if scroll.horizontal {
+        (inset.left.0, inset.right.0, zoomed.width.0, frame.width.0)
+    } else {
+        (inset.top.0, inset.bottom.0, zoomed.height.0, frame.height.0)
+    };
+    if vp_len <= 0.0 {
+        return None;
+    }
+    let min = -leading;
+    let max = (content_len + trailing - vp_len).max(min);
+    Some((min, max))
+}
+
 #[derive(Debug)]
 struct ScrollState {
     horizontal: bool,
@@ -2331,29 +2348,69 @@ impl<M: TextEngine> Core<M> {
 
     /// The platform scrolled a scroll view or list to `(x, y)`, having
     /// applied `applied` of the scrolls the core issued to it
-    /// (`MountItem::ScrollBy` and `Command::ScrollTo` of lists).
-    pub fn set_scroll_offset(&mut self, id: NodeId, offset: Point<Points>, applied: u32) {
+    /// (`MountItem::ScrollBy` and `Command::ScrollTo` of lists). Returns the
+    /// displacement since the previous report (for lists, excluding
+    /// core-issued anchoring corrections and instant jumps).
+    pub fn set_scroll_offset(
+        &mut self,
+        id: NodeId,
+        offset: Point<Points>,
+        applied: u32,
+    ) -> Point<Points> {
         let (x, y) = (offset.x.0, offset.y.0);
-        let Ok(key) = self.key(id) else { return };
+        let Ok(key) = self.key(id) else {
+            return Point::default();
+        };
         let node = &mut self.nodes[key as usize];
+        let frame = node.frame.size;
         let horizontal = node.scroll.as_ref().is_some_and(|s| s.horizontal);
+        let limits = node
+            .scroll
+            .as_ref()
+            .and_then(|s| scroll_axis_limits(s, frame));
         let mut dependents = false;
         let mut moved = false;
+        let mut delta = (0.0f32, 0.0f32);
         if let Some(scroll) = node.scroll.as_mut() {
-            moved = scroll.offset != (x, y);
+            let old = scroll.offset;
+            moved = old != (x, y);
+            delta = (x - old.0, y - old.1);
             scroll.offset = (x, y);
             if scroll.target.is_some_and(|(n, _)| n <= applied) {
                 scroll.target = None;
             }
-            if !scroll.dependents.is_empty() {
+            if !scroll.pending.is_empty() {
+                let prev_main = list::replay_clamped(
+                    if horizontal { old.0 } else { old.1 },
+                    &scroll.pending,
+                    limits,
+                );
                 scroll.pending.retain(|&(n, _)| n > applied);
+                let new_main =
+                    list::replay_clamped(if horizontal { x } else { y }, &scroll.pending, limits);
+                if horizontal {
+                    delta.0 = new_main - prev_main;
+                } else {
+                    delta.1 = new_main - prev_main;
+                }
+            }
+            if !scroll.dependents.is_empty() {
                 dependents = true;
             }
         }
-        let reported_moved = node
-            .list
-            .as_mut()
-            .is_some_and(|list| list.reported(if horizontal { x } else { y }, applied));
+        let mut reported_moved = false;
+        if let Some(list) = node.list.as_mut() {
+            let (list_moved, main_delta) =
+                list.reported_clamped(if horizontal { x } else { y }, applied, limits);
+            reported_moved = list_moved;
+            if !list.parent {
+                if horizontal {
+                    delta.0 = main_delta;
+                } else {
+                    delta.1 = main_delta;
+                }
+            }
+        }
         self.cull_moved(key);
         if dependents {
             self.dependents_dirty(key);
@@ -2388,6 +2445,7 @@ impl<M: TextEngine> Core<M> {
         if moved && !self.overlays.is_empty() {
             self.overlay_scrolled(key);
         }
+        crate::geometry::point(Points(delta.0), Points(delta.1))
     }
 
     /// The user moved scroll view `id` with scroll key move `key_move`, which
@@ -2591,9 +2649,13 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// What `onScroll` reports for scroll view `id`, if it listens to it:
-    /// the minimum milliseconds between events, the content size (zoomed),
-    /// the viewport size and the zoom scale.
-    pub fn scroll_listener(&self, id: NodeId) -> Option<(f32, Size<Points>, Size<Points>, f32)> {
+    /// the minimum milliseconds between events, the offset in the committed
+    /// content's coordinates (with pending core scrolls replayed), the
+    /// content size (zoomed), the viewport size and the zoom scale.
+    pub fn scroll_listener(
+        &self,
+        id: NodeId,
+    ) -> Option<(f32, Point<Points>, Size<Points>, Size<Points>, f32)> {
         let node = &self.nodes[self.key(id).ok()? as usize];
         if !node.events.contains(EventKind::Scroll) {
             return None;
@@ -2602,7 +2664,36 @@ impl<M: TextEngine> Core<M> {
         let frame = node.frame.size;
         let content = scroll.content.unwrap_or(frame);
         let z = scroll.zoom;
-        Some((scroll.event_throttle_ms, content * z, frame, z))
+        let zoomed = content * z;
+        let (x, y) = if let Some(list) = node.list.as_ref().filter(|l| !l.parent) {
+            if scroll.horizontal {
+                (list.offset, scroll.offset.1)
+            } else {
+                (scroll.offset.0, list.offset)
+            }
+        } else if !scroll.pending.is_empty() {
+            let limits = scroll_axis_limits(scroll, frame);
+            if scroll.horizontal {
+                (
+                    list::replay_clamped(scroll.offset.0, &scroll.pending, limits),
+                    scroll.offset.1,
+                )
+            } else {
+                (
+                    scroll.offset.0,
+                    list::replay_clamped(scroll.offset.1, &scroll.pending, limits),
+                )
+            }
+        } else {
+            scroll.offset
+        };
+        Some((
+            scroll.event_throttle_ms,
+            crate::geometry::point(Points(x), Points(y)),
+            zoomed,
+            frame,
+            z,
+        ))
     }
 
     /// Moves list render requests produced by the last commit into `out`:
@@ -4192,18 +4283,22 @@ impl<M: TextEngine> Core<M> {
                 Command::ScrollToIndex { .. } => continue,
                 _ => {}
             }
-            // Platforms count the scrolls they applied; lists count theirs.
-            if let Command::ScrollTo { x, y, .. } = command
-                && self.nodes[key as usize].kind == Kind::Scroll
-            {
+            // Platforms count the scrolls they applied, in mount order.
+            if let Command::ScrollTo { x, y, animated } = command {
                 let horizontal = self.nodes[key as usize]
                     .scroll
                     .as_ref()
                     .is_some_and(|s| s.horizontal);
                 let to = if horizontal { x.0 } else { y.0 };
-                self.scroll_issued(key, PendingScroll::To(to));
-                if let Some(scroll) = self.nodes[key as usize].scroll.as_mut() {
-                    scroll.target = Some((scroll.issued, (x.0, y.0)));
+                if self.nodes[key as usize].kind == Kind::Scroll {
+                    self.scroll_issued(key, PendingScroll::to(to, animated));
+                    if let Some(scroll) = self.nodes[key as usize].scroll.as_mut() {
+                        scroll.target = Some((scroll.issued, (x.0, y.0)));
+                    }
+                } else if let Some(list) = self.nodes[key as usize].list.as_mut()
+                    && !list.parent
+                {
+                    list.issue_scroll_to(to, animated);
                 }
             }
             self.mount.push(MountItem::Command { id, command });
@@ -11202,6 +11297,25 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// The earliest index in `self.mount` where a newly issued `ScrollBy` for
+    /// `id` may be placed without overtaking an earlier counted scroll
+    /// (`ScrollBy` or `Command::ScrollTo`) already emitted for `id` in this batch.
+    pub(super) fn after_mounted_scroll(&self, id: NodeId) -> usize {
+        self.mount
+            .iter()
+            .rposition(|item| match item {
+                MountItem::Command {
+                    id: target,
+                    command: Command::ScrollTo { .. },
+                } => *target == id,
+                MountItem::ScrollBy { id: target, dx, dy } => {
+                    *target == id && (dx.0 != 0.0 || dy.0 != 0.0)
+                }
+                _ => false,
+            })
+            .map_or(0, |at| at + 1)
+    }
+
     /// Merge relative corrections across list layout rounds. An explicit
     /// position command starts a new sequence of corrections.
     fn retract_list_scroll(&mut self, key: Key) -> Option<f32> {
@@ -11648,7 +11762,7 @@ impl<M: TextEngine> Core<M> {
                 (Some(pin), _) => list.target_offset(pin),
                 (None, &Command::ScrollTo { x, y, .. }) => {
                     let offset = if horizontal { x.0 } else { y.0 };
-                    if outer.is_some() {
+                    if outer.is_some() || list.viewport > 0.0 {
                         list.clamped(offset)
                     } else {
                         offset
@@ -11674,7 +11788,6 @@ impl<M: TextEngine> Core<M> {
                 outer_to = Some((o.start + offset, animated));
                 continue;
             }
-            list.issue_scroll_to(offset);
             let (x, y) = if horizontal {
                 (Points(offset), Points::ZERO)
             } else {
@@ -11698,11 +11811,6 @@ impl<M: TextEngine> Core<M> {
         if let (Some((offset, animated)), Some(o)) = (retarget, &outer) {
             outer_to = Some((o.start + offset, animated));
         } else if let Some((offset, animated)) = retarget {
-            self.nodes[key as usize]
-                .list
-                .as_mut()
-                .expect("list")
-                .issue_scroll_to(offset);
             let (x, y) = if horizontal {
                 (Points(offset), Points::ZERO)
             } else {
@@ -12089,11 +12197,13 @@ impl<M: TextEngine> Core<M> {
         // scroll before the viewport grows or the content shrinks, and
         // after the content grows (a shrinking viewport's frame comes
         // first anyway).
+        let after = self.after_mounted_scroll(id);
         let frame_at = grew
             .then(|| {
-                self.mount
+                self.mount[after..]
                     .iter()
                     .position(|m| matches!(m, MountItem::Frame { id: f, .. } if *f == id))
+                    .map(|offset| after + offset)
             })
             .flatten();
         match (scroll_by, frame_at) {
@@ -12122,7 +12232,7 @@ impl<M: TextEngine> Core<M> {
             }
             (Some(item), None) if content_len < old_len => {
                 self.set_scroll_content(key, content);
-                if let Some(at) = self.scroll_content_position(key) {
+                if let Some(at) = self.scroll_content_position(key).filter(|&at| at >= after) {
                     self.mount.insert(at, item);
                 } else {
                     self.mount.push(item);

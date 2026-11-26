@@ -669,6 +669,8 @@ export interface ContextMenuEvent {
 export interface ScrollEvent {
   /** The content offset. */
   offset: Point;
+  /** Displacement since the previous event (for lists, excluding core anchoring and instant jumps). */
+  delta: Point;
   /** The content's size (zoomed). */
   contentSize: Size;
   /** The scroll view's size. */
