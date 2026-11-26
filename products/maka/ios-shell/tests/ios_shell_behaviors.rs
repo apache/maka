@@ -2612,6 +2612,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     });
     let (mutation_tx, mut mutations) = mpsc::unbounded_channel();
     let picked = session.clone();
+    let hold_selection = Arc::new(AtomicBool::new(false));
+    let hold_commit = hold_selection.clone();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         match data["method"].as_str() {
@@ -2620,8 +2622,12 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
                 let mut current = picked.lock().unwrap();
                 let revision = current["revision"].as_u64().unwrap() + 1;
                 *current = row(revision, data["input"]["backend"].clone());
-                mutation_tx.send((data, None)).unwrap();
-                call.resolve(json!({"value":{"kind":"committed","session":*current}}));
+                if hold_commit.swap(false, Ordering::SeqCst) {
+                    mutation_tx.send((data, Some(call))).unwrap();
+                } else {
+                    mutation_tx.send((data, None)).unwrap();
+                    call.resolve(json!({"value":{"kind":"committed","session":*current}}));
+                }
             }
             _ => call.reject("unexpected mutation"),
         }
@@ -2657,18 +2663,49 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.type_text("label:Message composer", "First draft")
         .unwrap();
 
-    *session.lock().unwrap() = row(2, model("second"));
+    let choose =
+        |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
+            let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+            let item = items.iter().find(|item| item["label"] == label).unwrap();
+            app.engine().control().dispatch_event(
+                id,
+                EventKind::NativeEvent,
+                EventPayload::Native {
+                    name: "select".into(),
+                    data: item["id"].clone(),
+                },
+            );
+            app.settle();
+        };
+    *session.lock().unwrap() = row(2, model("first"));
     hold_observe.store(true, Ordering::SeqCst);
     generation.store(2, Ordering::SeqCst);
     app.send_host_event("ios.hostState", host_state(2, 2))
         .unwrap();
     let (observe, snapshot) = observations.try_recv().unwrap();
+    hold_selection.store(true, Ordering::SeqCst);
+    choose(&mut app, &mut menus, "Second connector");
+    assert!(
+        mutations.try_recv().is_err(),
+        "selected before the current observation"
+    );
     app.press("label:Send message").unwrap();
     assert!(
         mutations.try_recv().is_err(),
         "sent before the current observation"
     );
     observe.resolve(json!({"value":snapshot}));
+    app.settle();
+    let (selection, commit) = mutations.try_recv().unwrap();
+    assert_eq!(selection["method"], "selectBackend");
+    assert_eq!(selection["generation"], 2);
+    assert!(
+        mutations.try_recv().is_err(),
+        "sent before the model selection committed"
+    );
+    commit
+        .unwrap()
+        .resolve(json!({"value":{"kind":"committed","session":*session.lock().unwrap()}}));
     app.settle();
     let (call, receipt) = mutations.try_recv().unwrap();
     let send: Send = serde_json::from_value(call["input"].clone()).unwrap();
@@ -2688,20 +2725,6 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     assert!(app.settle());
     app.wait_for("text:Next draft").unwrap();
 
-    let choose =
-        |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
-            let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
-            let item = items.iter().find(|item| item["label"] == label).unwrap();
-            app.engine().control().dispatch_event(
-                id,
-                EventKind::NativeEvent,
-                EventPayload::Native {
-                    name: "select".into(),
-                    data: item["id"].clone(),
-                },
-            );
-            assert!(app.settle());
-        };
     choose(&mut app, &mut menus, "First connector");
     let (first, _) = mutations.try_recv().unwrap();
     assert_eq!(first["input"]["backend"]["connectionId"], "first");
