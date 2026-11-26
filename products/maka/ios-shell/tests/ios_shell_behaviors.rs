@@ -931,6 +931,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     });
     let session = json!({
         "id": "chat-1", "title": "Auth refactor", "kind": "agent", "parentSessionId": null,
+        "backend": {"kind":"model","connectionId":"fixture","modelId":"claude-sonnet"},
         "labels": [], "workspace": { "name": "maka-agent", "path": "/src/maka-agent" },
         "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "working"
     });
@@ -989,6 +990,13 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
             json!(QueueMutationResult::RevisionConflict {
                 expected: 2,
                 actual: 3
+            })
+        } else if data["method"] == "send" {
+            json!(maka_agent_api::contract::SendResult::Queued {
+                session_id: "chat-1".into(),
+                message_id: "queued".into(),
+                revision: 4,
+                completion: None,
             })
         } else {
             json!({"kind":"recorded"})
@@ -2148,7 +2156,11 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         if data["method"] == "send" {
             send_tx.send(data["input"].clone()).unwrap();
         }
-        call.resolve(json!({"value":{"kind":"accepted"}}));
+        call.resolve(
+            json!({"value":maka_agent_api::contract::SendResult::Posted {
+                session_id: "room-1".into(), message_id: "posted".into(), deliveries: vec![],
+            }}),
+        );
     });
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
     config.viewport = Size::new(px(390.), px(844.));
@@ -2328,4 +2340,451 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
         "burst should schedule just one catch-up query"
     );
     assert!(unexpected.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
+    use maka_agent_api::contract::{BackendPreference, Create, Send, SendResult, SessionKind};
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Relay Host","generation":7,
+            "endpoints":["agent","settings"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let session = |id: &str, title: &str, kind: SessionKind, backend| {
+        json!({"id":id,"title":title,"kind":kind,"parentSessionId":null,"backend":backend,
+            "workspace":{"path":"/work"},"revision":1,"updatedAt":1700000000000u64,"activity":"idle"})
+    };
+    let new_session = Arc::new(std::sync::Mutex::new(Value::Null));
+    let query_session = new_session.clone();
+    let unavailable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let query_unavailable = unavailable.clone();
+    let (resolve_tx, mut resolves) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let input = &data["input"];
+        let legacy = session("legacy", "Legacy chat", SessionKind::Agent, Value::Null);
+        let remembered = session("remembered", "Remembered chat", SessionKind::Agent, Value::Null);
+        let value = match (data["endpoint"].as_str().unwrap(), data["method"].as_str().unwrap()) {
+            ("agent", "list") => json!({"sessions":[legacy,remembered],"needsYouCount":0}),
+            ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[]}),
+            ("agent", "directories") => json!({"kind":"roots","roots":[{"name":"Work","path":"/work"}]}),
+            ("agent", "botOutbox") => json!({"isBot":false}),
+            ("agent", "presets") => json!([]),
+            ("agent", "models") => json!({"kind":"ready","choices":[
+                {"label":"Not the default","selection":{"kind":"model","connectionId":"other","modelId":"other-model"}}
+            ],"next":null}),
+            ("agent", "pendingInteractions") => json!({"entries":[]}),
+            ("agent", "observe") => {
+                let (row, saved) = match input["sessionId"].as_str() {
+                    Some("legacy") => (legacy, Value::Null),
+                    Some("remembered") => (remembered, json!({"kind":"model","connectionId":"earlier","modelId":"remembered-model"})),
+                    _ => (query_session.lock().unwrap().clone(), Value::Null),
+                };
+                json!({"session":row,"rememberedBackend":saved,"through":0,"run":null})
+            }
+            ("agent", "history") if input["sessionId"] == "room-new" =>
+                json!({"kind":"room","page":{"items":[],"through":0,"before":null,"after":null}}),
+            ("agent", "history") => json!({"kind":"ready","chunks":[],"through":0,"before":null,"after":null}),
+            ("settings", "connections") => json!({"kind":"ready","revision":1,"connections":[],"next":null,
+                "defaultTarget":{"connectionId":"kimi","modelId":"kimi-k2.5"}}),
+            ("settings", "resolveModel") => {
+                resolve_tx.send(input.clone()).unwrap();
+                if query_unavailable.load(std::sync::atomic::Ordering::SeqCst) {
+                    json!({"kind":"unavailable","target":input})
+                } else {
+                    json!({"kind":"ready","defaults":null,"choice":{"label":"Kimi default","connectionName":"Kimi",
+                        "selection":{"connectionId":"kimi","modelId":"kimi-k2.5"},"thinkingLevels":[],"defaultThinkingLevel":null}})
+                }
+            }
+            _ => {
+                call.reject("unexpected query");
+                return;
+            }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","generation":7,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (mutate_tx, mut mutations) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        let value = match data["method"].as_str() {
+            Some("create") => match serde_json::from_value::<Create>(data["input"].clone()) {
+                Ok(create) => {
+                    let id = if create.kind == SessionKind::Room {
+                        "room-new"
+                    } else {
+                        "agent-new"
+                    };
+                    let row = session(id, &create.title, create.kind, json!(create.backend));
+                    *new_session.lock().unwrap() = row.clone();
+                    json!({"kind":"created","session":row})
+                }
+                Err(error) => {
+                    mutate_tx.send(data).unwrap();
+                    call.reject(error.to_string());
+                    return;
+                }
+            },
+            Some("send") => match serde_json::from_value::<Send>(data["input"].clone()) {
+                Ok(send) if send.session_id == "room-new" => json!(SendResult::Posted {
+                    session_id: send.session_id,
+                    message_id: "posted".into(),
+                    deliveries: vec![],
+                }),
+                Ok(send) if send.backend.is_some() => json!(SendResult::Queued {
+                    session_id: send.session_id,
+                    message_id: "queued".into(),
+                    revision: 1,
+                    completion: None,
+                }),
+                Ok(send) => json!(SendResult::Rejected {
+                    session_id: send.session_id,
+                    reason: maka_agent_api::contract::SendRejection::ModelUnavailable,
+                    skills: None,
+                }),
+                Err(error) => {
+                    mutate_tx.send(data).unwrap();
+                    call.reject(error.to_string());
+                    return;
+                }
+            },
+            _ => {
+                call.reject("unexpected mutation");
+                return;
+            }
+        };
+        mutate_tx.send(data).unwrap();
+        call.resolve(json!({"value":value}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    let default_target = json!({"connectionId":"kimi","modelId":"kimi-k2.5"});
+    let assert_backend = |backend, connection, model| {
+        assert!(
+            matches!(backend, Some(BackendPreference::Model {connection_id, model_id, ..})
+            if connection_id == connection && model_id == model)
+        );
+    };
+    let send_text = |app: &mut Headless, message: &str| {
+        app.type_text("label:Message composer", message).unwrap();
+        app.press("label:Send message").unwrap();
+    };
+    app.wait_for("label:New Chat").unwrap();
+    app.press("label:New Chat").unwrap();
+    app.wait_for("text:Kimi default").unwrap();
+    assert_eq!(resolves.try_recv().unwrap(), default_target);
+    app.press("label:Start Chat").unwrap();
+    let data = mutations.try_recv().unwrap();
+    assert_eq!(data["generation"], 7);
+    let create: Create = serde_json::from_value(data["input"].clone()).unwrap();
+    assert_eq!(create.kind, SessionKind::Agent);
+    assert_backend(create.backend, "kimi", "kimi-k2.5");
+    send_text(&mut app, "Hello from a new chat");
+    let send: Send =
+        serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
+    assert_eq!(send.session_id, "agent-new");
+    assert_backend(send.backend, "kimi", "kimi-k2.5");
+    assert!(resolves.try_recv().is_err());
+
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Legacy chat").unwrap();
+    send_text(&mut app, "Resume from before the fix");
+    let send: Send =
+        serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
+    assert_eq!(send.session_id, "legacy");
+    assert_backend(send.backend, "kimi", "kimi-k2.5");
+    assert_eq!(resolves.try_recv().unwrap(), default_target);
+
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Remembered chat").unwrap();
+    send_text(&mut app, "Use the earlier admitted model");
+    let send: Send =
+        serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
+    assert_eq!(send.session_id, "remembered");
+    assert_backend(send.backend, "earlier", "remembered-model");
+    assert!(resolves.try_recv().is_err());
+
+    app.press("label:Chats").unwrap();
+    unavailable.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.press("label:Conversation: Legacy chat").unwrap();
+    send_text(&mut app, "Keep this draft");
+    app.wait_for("text:Select model").unwrap();
+    app.wait_for("text:Keep this draft").unwrap();
+    assert!(mutations.try_recv().is_err());
+
+    app.press("label:Chats").unwrap();
+    app.press("label:New Chat").unwrap();
+    app.wait_for("text:Unavailable").unwrap();
+    let _ = app.press("label:Start Chat");
+    assert!(mutations.try_recv().is_err());
+    app.press("label:Room").unwrap();
+    app.press("label:Create Room").unwrap();
+    let create: Create =
+        serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
+    assert_eq!(create.kind, SessionKind::Room);
+    assert!(create.backend.is_none());
+    send_text(&mut app, "Hello Room");
+    let send: Send =
+        serde_json::from_value(mutations.try_recv().unwrap()["input"].clone()).unwrap();
+    assert_eq!(send.session_id, "room-new");
+    assert!(send.backend.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft() {
+    use maka_agent_api::contract::{SelectBackend, Send, SendResult};
+    use nsh_core::{EventKind, EventPayload, MountItem};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let channel = HostChannel::new();
+    let host_state = |generation, revision| {
+        let host = json!({"rootId":"root","hostName":"Relay Host","generation":generation,"endpoints":["agent"]});
+        json!({"revision":revision,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}})
+    };
+    channel.handle("ios.bootstrap", move |call| call.resolve(host_state(1, 1)));
+    let model = |connection| json!({"kind":"model","connectionId":connection,"modelId":"shared","serviceTier":"fast"});
+    let row = |revision, backend: Value| {
+        json!({"id":"chat","kind":"agent","title":"Chat","parentSessionId":null,
+            "workspace":{"path":"/work"},"revision":revision,"backend":backend,
+            "updatedAt":1700000000000u64,"activity":"idle"})
+    };
+    let session = Arc::new(std::sync::Mutex::new(row(1, model("first"))));
+    let observed = session.clone();
+    let hold_observe = Arc::new(AtomicBool::new(false));
+    let held = hold_observe.clone();
+    let (observe_tx, mut observations) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let row = observed.lock().unwrap().clone();
+        let value = match data["method"].as_str() {
+            Some("list") => json!({"sessions":[row],"needsYouCount":0}),
+            Some("observe") => {
+                let value = json!({"session":row,"through":1,"run":null});
+                if held.swap(false, Ordering::SeqCst) {
+                    observe_tx.send((call, value)).unwrap();
+                    return;
+                }
+                value
+            }
+            Some("history") => {
+                json!({"kind":"ready","chunks":[],"through":1,"before":null,"after":null})
+            }
+            Some("pendingInteractions") => json!({"entries":[]}),
+            Some("botOutbox") => json!({"isBot":false}),
+            Some("models") => json!({"kind":"ready","choices":[
+                {"label":"First connector","selection":model("first")},
+                {"label":"Second connector","selection":model("second")}
+            ]}),
+            _ => {
+                call.reject("unexpected query");
+                return;
+            }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let generation = Arc::new(AtomicU64::new(1));
+    let subscription_generation = generation.clone();
+    let (watch_tx, mut watches) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        if data["method"] == "watch" {
+            watch_tx
+                .send(data["subscriptionId"].as_str().unwrap().to_owned())
+                .unwrap();
+        }
+        let generation = subscription_generation.load(Ordering::SeqCst);
+        call.resolve(json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}));
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (mutation_tx, mut mutations) = mpsc::unbounded_channel();
+    let picked = session.clone();
+    let hold_selection = Arc::new(AtomicBool::new(false));
+    let hold_commit = hold_selection.clone();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        match data["method"].as_str() {
+            Some("send") => mutation_tx.send((data, Some(call))).unwrap(),
+            Some("selectBackend") => {
+                let mut current = picked.lock().unwrap();
+                let revision = current["revision"].as_u64().unwrap() + 1;
+                *current = row(revision, data["input"]["backend"].clone());
+                if hold_commit.swap(false, Ordering::SeqCst) {
+                    mutation_tx.send((data, Some(call))).unwrap();
+                } else {
+                    mutation_tx.send((data, None)).unwrap();
+                    call.resolve(json!({"value":{"kind":"committed","session":*current}}));
+                }
+            }
+            _ => call.reject("unexpected mutation"),
+        }
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::Ios,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    // Headless hosts the iOS view tree, not UIKit's native menu. Read the
+    // displayed items and return the chosen ID through the native select event.
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item {
+                for (name, value) in props {
+                    if name.as_ref() == "items"
+                        && let Some(items) = value.as_ref().and_then(Value::as_array)
+                        && items.iter().any(|item| item["label"] == "Second connector")
+                    {
+                        menu_tx.send((*id, items.clone())).unwrap();
+                    }
+                }
+            }
+        }
+    });
+    app.wait_for("label:Conversation: Chat").unwrap();
+    app.press("label:Conversation: Chat").unwrap();
+    app.type_text("label:Message composer", "First draft")
+        .unwrap();
+
+    let choose =
+        |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
+            let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+            let item = items.iter().find(|item| item["label"] == label).unwrap();
+            app.engine().control().dispatch_event(
+                id,
+                EventKind::NativeEvent,
+                EventPayload::Native {
+                    name: "select".into(),
+                    data: item["id"].clone(),
+                },
+            );
+            app.settle();
+        };
+    *session.lock().unwrap() = row(2, model("first"));
+    hold_observe.store(true, Ordering::SeqCst);
+    generation.store(2, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", host_state(2, 2))
+        .unwrap();
+    let (observe, snapshot) = observations.try_recv().unwrap();
+    hold_selection.store(true, Ordering::SeqCst);
+    choose(&mut app, &mut menus, "Second connector");
+    assert!(
+        mutations.try_recv().is_err(),
+        "selected before the current observation"
+    );
+    app.press("label:Send message").unwrap();
+    assert!(
+        mutations.try_recv().is_err(),
+        "sent before the current observation"
+    );
+    observe.resolve(json!({"value":snapshot}));
+    app.settle();
+    let (selection, commit) = mutations.try_recv().unwrap();
+    assert_eq!(selection["method"], "selectBackend");
+    assert_eq!(selection["generation"], 2);
+    assert!(
+        mutations.try_recv().is_err(),
+        "sent before the model selection committed"
+    );
+    commit
+        .unwrap()
+        .resolve(json!({"value":{"kind":"committed","session":*session.lock().unwrap()}}));
+    app.settle();
+    let (call, receipt) = mutations.try_recv().unwrap();
+    let send: Send = serde_json::from_value(call["input"].clone()).unwrap();
+    assert_eq!(call["generation"], 2);
+    assert_eq!(send.message, "First draft");
+    assert_eq!(
+        serde_json::to_value(send.backend).unwrap()["connectionId"],
+        "second"
+    );
+
+    app.clear("label:Message composer").unwrap();
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    receipt.unwrap().resolve(json!({"value":SendResult::Queued {
+        session_id: "chat".into(), message_id: "first".into(), revision: 1, completion: None,
+    }}));
+    assert!(app.settle());
+    app.wait_for("text:Next draft").unwrap();
+
+    choose(&mut app, &mut menus, "First connector");
+    let (first, _) = mutations.try_recv().unwrap();
+    assert_eq!(first["input"]["backend"]["connectionId"], "first");
+    choose(&mut app, &mut menus, "Second connector");
+    let (second, _) = mutations.try_recv().unwrap();
+    assert_eq!(second["method"], "selectBackend");
+    let select: SelectBackend = serde_json::from_value(second["input"].clone()).unwrap();
+    let backend = serde_json::to_value(select.backend).unwrap();
+    assert_eq!(backend["connectionId"], "second");
+    assert_eq!(backend["serviceTier"], "fast");
+    app.wait_for("text:Second connector").unwrap();
+
+    // An ended watch event arriving while a stale running observe is in flight
+    // must schedule a catch-up observe rather than sticking in the running state.
+    let watch_id = std::iter::from_fn(|| watches.try_recv().ok())
+        .last()
+        .unwrap();
+    hold_observe.store(true, Ordering::SeqCst);
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "rootId": "root",
+            "subscriptionId": watch_id,
+            "item": { "kind": "events", "through": 2, "events": [{ "runId": "r1", "fact": { "kind": "opened" } }] }
+        }),
+    )
+    .unwrap();
+    let (stale_observe, _) = observations.try_recv().unwrap();
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "rootId": "root",
+            "subscriptionId": watch_id,
+            "item": { "kind": "events", "through": 3, "events": [{ "runId": "r1", "fact": { "kind": "ended" } }] }
+        }),
+    )
+    .unwrap();
+    hold_observe.store(true, Ordering::SeqCst);
+    let running_row = session.lock().unwrap().clone();
+    stale_observe.resolve(json!({
+        "value": {
+            "session": running_row,
+            "through": 2,
+            "run": { "backend": "model", "runId": "r1", "turnId": "t1", "state": "running" }
+        }
+    }));
+    app.wait_for("label:Stop Run").unwrap();
+    let (catch_up_observe, idle_snapshot) = observations
+        .try_recv()
+        .expect("ended event during an in-flight observe must schedule a catch-up observe");
+    catch_up_observe.resolve(json!({ "value": idle_snapshot }));
+    assert!(app.settle());
+    assert!(
+        !app.shows("label:Stop Run"),
+        "catch-up observe after ended must clear the running state"
+    );
 }

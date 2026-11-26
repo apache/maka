@@ -395,6 +395,7 @@ export function listHostFiles(
 
 export async function createHostSession(params: {
   rootId: string;
+  generation: number;
   title: string;
   kind: 'agent' | 'room';
   workspace: AgentWorkspaceSelection;
@@ -416,7 +417,7 @@ export async function createHostSession(params: {
       labels: [],
       workspace: params.workspace,
     },
-    { rootId: params.rootId },
+    { rootId: params.rootId, generation: params.generation },
   );
   if (res.kind === 'rejected') throw new Error(res.reason);
   const session = res.session;

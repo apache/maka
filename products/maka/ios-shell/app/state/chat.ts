@@ -18,7 +18,10 @@
  */
 
 import { approvalOutcome } from '../approval';
-import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  AgentInteractionResult,
+  AgentSendResult,
+} from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
@@ -38,6 +41,7 @@ import {
   type AgentObservation,
   type AgentQueue,
   type AgentRoomMessage,
+  type AgentSession,
   type SubscriptionHandle,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
@@ -45,6 +49,9 @@ import { activeHostInfo, hostById, showToast } from './hostPool';
 import { refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
 import { refreshHostSessions } from './sessions';
+import { modelBackend, readDefaultModel } from './settings/models';
+import { settingsRpc } from './settings/rpc';
+import { tr } from '../locale';
 
 export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
@@ -58,17 +65,18 @@ export function conversationKey(rootId: string, sessionId: string): string {
   return rootId + '::' + sessionId;
 }
 
-const draftMap = signal<Record<string, string>>({});
+const draftMap = signal<Record<string, { text: string }>>({});
 const scrollOffsetMap = new Map<string, number>();
-const backendMap = signal<Record<string, AgentBackendPreference | null>>({});
 
 export function getDraft(rootId: string, sessionId: string): string {
-  return draftMap()[conversationKey(rootId, sessionId)] ?? '';
+  return draftMap()[conversationKey(rootId, sessionId)]?.text ?? '';
 }
 
 export function setDraft(rootId: string, sessionId: string, value: string) {
   const key = conversationKey(rootId, sessionId);
-  draftMap.update((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
+  draftMap.update((prev) =>
+    (prev[key]?.text ?? '') === value ? prev : { ...prev, [key]: { text: value } },
+  );
 }
 
 export function appendQuoteToDraft(
@@ -93,22 +101,6 @@ export function getSavedScrollOffset(rootId: string, sessionId: string): number 
 
 export function saveScrollOffset(rootId: string, sessionId: string, y: number) {
   scrollOffsetMap.set(conversationKey(rootId, sessionId), Math.max(0, y));
-}
-
-export function getSelectedBackend(
-  rootId: string,
-  sessionId: string,
-): AgentBackendPreference | null {
-  return backendMap()[conversationKey(rootId, sessionId)] ?? null;
-}
-
-export function setSelectedBackend(
-  rootId: string,
-  sessionId: string,
-  backend: AgentBackendPreference | null,
-) {
-  const key = conversationKey(rootId, sessionId);
-  backendMap.update((prev) => ({ ...prev, [key]: backend }));
 }
 
 export interface ParsedDiffFile {
@@ -205,21 +197,33 @@ export async function fetchGitWorkspaceDiff(
 
 let watchSeq = 0;
 
-export function createConversationController(
-  rootId: string,
-  sessionId: string,
-  initialRoom: boolean,
-) {
-  const observation = signal<AgentObservation | null>(null);
+export function createConversationController(rootId: string, initialSession: AgentSession) {
+  const sessionId = initialSession.id;
+  const observed = signal<{ generation: number; value: AgentObservation } | null>(null);
+  const observation = () => {
+    const snapshot = observed();
+    return snapshot && snapshot.generation === activeHostInfo(rootId)?.generation
+      ? snapshot.value
+      : null;
+  };
+  const selectedBackend = () => {
+    const current = observation();
+    return current?.session.backend ?? current?.rememberedBackend ?? null;
+  };
   const chunks = signal<AgentHistoryChunk[]>([]);
   const roomMessages = signal<AgentRoomMessage[]>([]);
-  const isRoom = signal(initialRoom);
+  const isRoom = signal(initialSession.kind === 'room');
   const beforeCursor = signal<unknown>(null);
   const loading = signal(true);
   const earlierGeneration = signal<number | null>(null);
   const loadingEarlier = () =>
     earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
   const sending = signal(false);
+  const modelSelection = signal<{ generation: number; done: Promise<boolean> } | null>(null);
+  const selectingModel = () => {
+    const pending = modelSelection();
+    return pending?.generation === activeHostInfo(rootId)?.generation ? pending : null;
+  };
   const error = signal<string | null>(null);
   const queue = signal<AgentQueue>({ revision: 0, entries: [] });
   const pendingInteractions = signal<AgentInteractionRecord[]>([]);
@@ -383,29 +387,45 @@ export function createConversationController(
     }
   };
 
-  const loadObserve = async () => {
-    try {
-      const obs = await hostQuery<AgentObservation>(
-        'agent',
-        'observe',
-        { sessionId },
-        undefined,
-        rootId,
-      );
-      if (disposed) return;
-      observation.set(obs);
-      if (obs.session?.kind === 'room') isRoom.set(true);
-      if (typeof obs.through === 'number') {
-        lastThrough = Math.max(lastThrough ?? 0, obs.through);
-      }
-      if (obs.session?.backend && !getSelectedBackend(rootId, sessionId)) {
-        setSelectedBackend(rootId, sessionId, obs.session.backend);
-      }
-    } catch (cause) {
-      if (!disposed) {
-        error.set(cause instanceof Error ? cause.message : String(cause));
-      }
+  let observeFlight: { generation: number; dirty: boolean; promise: Promise<void> } | undefined;
+  const loadObserve = (fresh = true) => {
+    const generation = activeHostInfo(rootId)?.generation;
+    if (generation === undefined || disposed) return Promise.resolve();
+    if (observeFlight?.generation === generation) {
+      if (fresh) observeFlight.dirty = true;
+      return observeFlight.promise;
     }
+    const flight = { generation, dirty: true, promise: Promise.resolve() };
+    flight.promise = (async () => {
+      try {
+        while (flight.dirty && !disposed && activeHostInfo(rootId)?.generation === generation) {
+          flight.dirty = false;
+          const obs = await hostQuery<AgentObservation>(
+            'agent',
+            'observe',
+            { sessionId },
+            undefined,
+            rootId,
+          );
+          if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+          const current = observation();
+          if (current && obs.session.revision < current.session.revision) continue;
+          observed.set({ generation, value: obs });
+          if (obs.session?.kind === 'room') isRoom.set(true);
+          if (typeof obs.through === 'number') {
+            lastThrough = Math.max(lastThrough ?? 0, obs.through);
+          }
+        }
+      } catch (cause) {
+        if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+          error.set(cause instanceof Error ? cause.message : String(cause));
+        }
+      } finally {
+        if (observeFlight === flight) observeFlight = undefined;
+      }
+    })();
+    observeFlight = flight;
+    return flight.promise;
   };
 
   const startWatch = (gen: number) => {
@@ -479,13 +499,38 @@ export function createConversationController(
 
   // Always uses 'queue' delivery (never implicit steer-while-running).
   const sendMessage = async () => {
-    const text = getDraft(rootId, sessionId).trim();
+    const key = conversationKey(rootId, sessionId);
+    const draft = draftMap()[key];
+    const text = draft?.text.trim();
     if (!text || sending()) return false;
     sending.set(true);
     error.set(null);
     try {
-      const backend = isRoom() ? null : getSelectedBackend(rootId, sessionId);
-      const res = await hostMutate<{ kind: string; reason?: unknown }>(
+      const connection = activeHostInfo(rootId);
+      if (!connection) throw new Error(tr('Computer is offline'));
+      const { generation } = connection;
+      let backend: AgentBackendPreference | null = null;
+      if (!isRoom()) {
+        const pending = selectingModel();
+        if (pending && !(await pending.done)) return false;
+        if (!observation() && activeHostInfo(rootId)?.generation === generation)
+          await loadObserve(false);
+        if (disposed) return false;
+        if (activeHostInfo(rootId)?.generation !== generation)
+          throw new Error(tr('Computer is offline'));
+        if (!observation()) throw new Error(error() ?? tr('Select model'));
+        backend = selectedBackend();
+        if (!backend && connection.endpoints.includes('settings')) {
+          const choice = await readDefaultModel(settingsRpc(rootId));
+          if (disposed) return false;
+          if (activeHostInfo(rootId)?.generation !== generation)
+            throw new Error(tr('Computer is offline'));
+          backend = selectedBackend() ?? (choice ? modelBackend(choice) : null);
+        }
+        if (!backend) throw new Error(tr('Select model'));
+      }
+      if (disposed) return false;
+      const res = await hostMutate<AgentSendResult>(
         'agent',
         'send',
         {
@@ -500,12 +545,12 @@ export function createConversationController(
           sessionId,
           message: text,
         },
-        { rootId },
+        { rootId, generation },
       );
-      if (res?.kind === 'rejected') {
-        throw new Error(String(res.reason ?? 'rejected'));
+      if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
+        throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
       }
-      setDraft(rootId, sessionId, '');
+      if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
       hapticSelection();
       await Promise.all([loadObserve(), loadHistory()]);
       const hostName = hostById(rootId)?.hostName ?? rootId;
@@ -534,18 +579,36 @@ export function createConversationController(
     }
   };
 
-  const selectModel = async (backend: AgentBackendPreference) => {
-    if (isRoom()) return;
-    try {
-      const result = await hostMutate<
-        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
-      >('agent', 'selectBackend', { sessionId, backend }, { rootId });
-      if (result.kind !== 'committed') throw new Error(result.kind);
-      setSelectedBackend(rootId, sessionId, backend);
-      hapticSelection();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
-    }
+  const selectModel = (backend: AgentBackendPreference) => {
+    const generation = activeHostInfo(rootId)?.generation;
+    if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
+    const done = (async () => {
+      try {
+        if (!observation()) await loadObserve(false);
+        if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
+        if (!observation()) throw new Error(error() ?? tr('Select model'));
+        const result = await hostMutate<
+          import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
+        >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
+        if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
+        if (result.kind !== 'committed') throw new Error(result.kind);
+        const current = observation()!;
+        if (result.session.revision >= current.session.revision) {
+          observed.set({ generation, value: { ...current, session: result.session } });
+        }
+        hapticSelection();
+        return true;
+      } catch (cause) {
+        if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+          showToast(cause instanceof Error ? cause.message : String(cause));
+        }
+        return false;
+      } finally {
+        if (modelSelection()?.generation === generation) modelSelection.set(null);
+      }
+    })();
+    modelSelection.set({ generation, done });
+    return done;
   };
 
   const cancelQueuedMessage = async (messageId: string) => {
@@ -705,6 +768,8 @@ export function createConversationController(
 
   return {
     observation,
+    selectedBackend,
+    selectingModel,
     chunks,
     roomMessages,
     isRoom,

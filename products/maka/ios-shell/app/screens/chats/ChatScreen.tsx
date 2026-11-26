@@ -54,7 +54,6 @@ import {
   createConversationController,
   getDraft,
   getSavedScrollOffset,
-  getSelectedBackend,
   saveScrollOffset,
   setDraft,
 } from '../../state/chat';
@@ -352,7 +351,7 @@ export function ChatScreen(props: {
   const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
-  const ctrl = createConversationController(rootId, sessionId, props.item.session.kind === 'room');
+  const ctrl = createConversationController(rootId, props.item.session);
   const feedback = approvalFeedback<{
     record: AgentInteractionRecord;
     index: number;
@@ -390,65 +389,45 @@ export function ChatScreen(props: {
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
-  const sameExecutor = (
-    left: AgentModelChoice['selection'],
-    right: AgentModelChoice['selection'],
-  ) =>
-    left.kind === 'executor' &&
-    right.kind === 'executor' &&
-    left.selection.executor === right.selection.executor &&
-    (left.selection.settings?.runtime ?? null) === (right.selection.settings?.runtime ?? null) &&
-    (left.selection.settings?.model ?? null) === (right.selection.settings?.model ?? null);
+  const backendKey = (backend: AgentModelChoice['selection']) =>
+    JSON.stringify(
+      backend.kind === 'model'
+        ? [
+            'model',
+            backend.connectionId,
+            backend.modelId,
+            backend.serviceTier ?? null,
+            backend.thinkingLevel ?? null,
+          ]
+        : [
+            'executor',
+            backend.selection.executor,
+            backend.selection.settings?.runtime ?? null,
+            backend.selection.settings?.model ?? null,
+          ],
+    );
 
   const currentModelLabel = () => {
-    const chosen = getSelectedBackend(rootId, sessionId);
-    const list = ctrl.models();
-    if (chosen?.kind === 'executor')
-      return (
-        list.find(({ selection }) => sameExecutor(selection, chosen))?.label ??
-        chosen.selection.executor
-      );
-    if (chosen && chosen.kind === 'model') {
-      const match = list.find(
-        (m) => m.selection.kind === 'model' && m.selection.modelId === chosen.modelId,
-      );
-      return match?.label ?? chosen.modelId;
-    }
-    return list[0]?.label ?? tr('Model');
+    const chosen = ctrl.selectedBackend();
+    if (!chosen) return tr('Default');
+    const key = backendKey(chosen);
+    return (
+      ctrl.models().find((model) => backendKey(model.selection) === key)?.label ??
+      (chosen.kind === 'model' ? chosen.modelId : chosen.selection.executor)
+    );
   };
 
   const modelMenuItems = (): MenuButtonItem[] => {
-    const chosen = getSelectedBackend(rootId, sessionId);
-    return ctrl.models().map((m: AgentModelChoice, idx: number) => {
-      const id =
-        m.selection.kind === 'model'
-          ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
-      const checked =
-        chosen !== null &&
-        chosen.kind === m.selection.kind &&
-        (chosen.kind === 'model' && m.selection.kind === 'model'
-          ? chosen.connectionId === m.selection.connectionId &&
-            chosen.modelId === m.selection.modelId &&
-            chosen.thinkingLevel === m.selection.thinkingLevel
-          : sameExecutor(chosen, m.selection));
-      return {
-        id,
-        label: m.label,
-        checked,
-        singleSelection: true,
-      };
+    const chosen = ctrl.selectedBackend();
+    const selectedKey = chosen ? backendKey(chosen) : null;
+    return ctrl.models().map((model) => {
+      const id = backendKey(model.selection);
+      return { id, label: model.label, checked: id === selectedKey, singleSelection: true };
     });
   };
 
   const handleSelectModel = (id: string) => {
-    const match = ctrl.models().find((m, idx) => {
-      const key =
-        m.selection.kind === 'model'
-          ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
-      return key === id;
-    });
+    const match = ctrl.models().find((model) => backendKey(model.selection) === id);
     if (match) void ctrl.selectModel(match.selection);
   };
 
@@ -1083,6 +1062,7 @@ export function ChatScreen(props: {
             >
               <MenuButton
                 accessibilityLabel={tr('Select model')}
+                disabled={!!ctrl.selectingModel() || ctrl.sending()}
                 title={tr('Model')}
                 items={modelMenuItems()}
                 onSelect={({ id }) => handleSelectModel(id)}
