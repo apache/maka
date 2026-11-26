@@ -19,7 +19,7 @@
 
 // Settings › General › Theme: a preset to start from, then each color and the
 // font, seen at once on the whole window and on a sample of a conversation.
-import { colorScheme, signal, Text, View } from 'nsh';
+import { batch, colorScheme, signal, Text, View } from 'nsh';
 import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover } from 'nsh/base';
 import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
@@ -510,15 +510,21 @@ function FontRows() {
           placeholder="Avenir Next"
           change={(value) => {
             const name = value.trim();
-            appearance.changeLook(withFont(name || undefined), false);
-            // Cleared, the look falls back to the system font; the field stays open to type in.
-            if (!name) naming.set(appearance.shown());
+            // Update look and naming together so clearing does not unmount and blur the input.
+            batch(() => {
+              appearance.changeLook(withFont(name || undefined), false);
+              naming.set(name ? null : appearance.shown());
+            });
             draft = { name, on: appearance.shown() };
           }}
           commit={() => {
-            if (draft?.on === appearance.shown())
-              appearance.changeLook(withFont(draft.name || undefined), true);
+            const pending = draft;
             draft = null;
+            if (pending?.on !== appearance.shown()) return;
+            batch(() => {
+              if (!pending.name) naming.set(null);
+              appearance.changeLook(withFont(pending.name || undefined), true);
+            });
           }}
         />
       </If>
