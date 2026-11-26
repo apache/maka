@@ -20,6 +20,7 @@
 mod session;
 use super::*;
 mod management;
+pub(super) mod tools;
 impl Owner {
     pub(crate) async fn project_mcp(
         self: &Arc<Self>,

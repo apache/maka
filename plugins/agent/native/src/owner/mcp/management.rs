@@ -27,12 +27,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-struct Location {
-    id: LocationId,
-    root: Arc<Dir>,
-    path: PathBuf,
+pub(super) struct Location {
+    pub(super) id: LocationId,
+    pub(super) root: Arc<Dir>,
+    pub(super) path: PathBuf,
 }
 impl Location {
+    pub(super) fn file_path(&self) -> String {
+        self.path.join("mcp.json").to_string_lossy().into_owned()
+    }
+    pub(super) fn ensure_dir(&self) -> Result<bool, String> {
+        let name = self.id.configuration_directory();
+        match self.root.create_dir(name) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+    pub(super) fn remove_dir_if_empty(&self) {
+        let _ = self.root.remove_dir(self.id.configuration_directory());
+    }
     fn directory(&self, create: bool) -> Result<Option<Dir>, String> {
         let name = self.id.configuration_directory();
         if create {
@@ -94,7 +108,10 @@ impl Location {
     }
 }
 impl Owner {
-    async fn mcp_locations(&self, workspace: Option<Workspace>) -> Result<Vec<Location>, String> {
+    pub(super) async fn mcp_locations(
+        &self,
+        workspace: Option<Workspace>,
+    ) -> Result<Vec<Location>, String> {
         let project = match workspace {
             Some(workspace) => {
                 let (path, directory, _) = workspace::open_workspace_observation(
