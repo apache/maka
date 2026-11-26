@@ -263,6 +263,13 @@ async fn only_one_pairing_invite_redeemer_wins() {
     let (_temp, _namespaces, store) = setup().await;
     let now = pairing_now_ms();
     pairing_invite(&store, now + 60_000, now).await;
+    let state = |at| store.host_peer_pairing_invite_state("invite".into(), "published".into(), at);
+    use maka_config::access::PairingInviteState;
+    assert_eq!(state(now).await.unwrap(), PairingInviteState::Pending);
+    assert_eq!(
+        state(now + 60_000).await.unwrap(),
+        PairingInviteState::Expired
+    );
     let redeem = |peer: &str, grant: &str| {
         store.redeem_host_peer_pairing_invite(
             [1; 32],
@@ -275,6 +282,7 @@ async fn only_one_pairing_invite_redeemer_wins() {
     let (first, second) = tokio::join!(redeem("first", "published"), redeem("second", "published"));
     let first = first.unwrap();
     assert_ne!(first, second.unwrap());
+    assert_eq!(state(now).await.unwrap(), PairingInviteState::Consumed);
     let devices = store.list_host_peer_access().await.unwrap();
     let [device] = devices.as_slice() else {
         panic!("expected exactly one granted device");
@@ -368,6 +376,25 @@ async fn remote_relay_token_is_write_only_scoped_and_cleared_on_remove() {
             .is_err()
     );
 
+    for auth in [RelayAuthUpdate::Keep, RelayAuthUpdate::Clear] {
+        let retained = matches!(auth, RelayAuthUpdate::Keep);
+        let config = store
+            .update_remote_access(update("https://RELAY.example.test:443/", auth), 3)
+            .await
+            .unwrap();
+        assert_eq!(config.relays[0].has_auth_token, retained);
+    }
+    store
+        .update_remote_access(
+            update(
+                "https://relay.example.test",
+                RelayAuthUpdate::Replace(TOKEN.into()),
+            ),
+            4,
+        )
+        .await
+        .unwrap();
+
     let db =
         rusqlite::Connection::open(temp.path().join("root/configuration-rust.sqlite")).unwrap();
     let json: String = db
@@ -379,7 +406,7 @@ async fn remote_relay_token_is_write_only_scoped_and_cleared_on_remove() {
     let config = store
         .update_remote_access(
             update("https://other.example.test", RelayAuthUpdate::Keep),
-            3,
+            5,
         )
         .await
         .unwrap();

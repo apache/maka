@@ -25,7 +25,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     num::NonZeroUsize,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use tokio::{
     io::join,
@@ -158,17 +158,18 @@ impl HostPeerTransport {
                             }
                         };
                         let peer_id = PeerId::new(canonical)?;
+                        let sas = export_sas(&conn, &self.peer.local_key, &client_key)?;
+                        let observation = self.host.peer_handshake_observation(peer_id.clone(), sas.clone());
                         if revoked_while_handshaking(&mut during_handshake, &peer_id) {
                             conn.close(0u32.into(), b"peer access revoked during handshake");
                             continue;
                         }
-                        let sas = export_sas(&conn, &self.peer.local_key, &client_key)?;
                         let ingress = ingress.clone();
                         let peer = peer_id.clone();
                         let transport = conn.clone();
                         let host = self.host.clone();
                         // Advisory only; neither SQLite nor a full queue may stall ingress.
-                        let _ = observe.try_send((peer_id.clone(), sas.clone(), SystemTime::now()));
+                        let _ = observe.try_send(observation);
                         let task = streams.spawn(async move {
                             serve_connection(transport, &peer, ingress, &host, deadline).await;
                             peer

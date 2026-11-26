@@ -263,15 +263,17 @@ function RemoteAccessForm({ owner }: Props) {
                 />
                 <SettingsSelect
                   label={tr('Relay Bearer token')}
-                  value={relay().auth}
+                  value={owner.relayAuth(relay())}
                   disabled={disabled()}
                   choices={[
                     {
                       value: 'keep',
-                      title: relay().hasAuthToken ? tr('Keep saved token') : tr('No token'),
+                      title: owner.hasSavedToken(relay()) ? tr('Keep saved token') : tr('No token'),
                     },
                     { value: 'replace', title: tr('Replace') },
-                    ...(relay().hasAuthToken ? [{ value: 'clear', title: tr('Clear') }] : []),
+                    ...(owner.hasSavedToken(relay())
+                      ? [{ value: 'clear', title: tr('Clear') }]
+                      : []),
                   ]}
                   change={(auth) =>
                     owner.editRelay(relay().id, {
@@ -380,7 +382,7 @@ function Pairing({ owner }: Props) {
         />
       </If>
       <SettingsRow
-        label={owner.invite() && !active() ? tr('Pairing link expired') : tr('Pairing link')}
+        label={owner.pairing().kind === 'expired' ? tr('Pairing link expired') : tr('Pairing link')}
         detail={
           <If when={active()}>
             <Text style={{ ...captionTextStyle, color: C.muted, fontVariant: ['tabular-nums'] }}>
@@ -393,7 +395,7 @@ function Pairing({ owner }: Props) {
         }
         trailing={
           <SettingsButton
-            label={owner.invite() ? tr('Regenerate') : tr('Pair device')}
+            label={owner.pairing().kind !== 'idle' ? tr('Regenerate') : tr('Pair device')}
             tone="primary"
             disabled={!owner.canPair() || owner.busy()}
             onPress={owner.pair}
@@ -409,7 +411,7 @@ function Pairing({ owner }: Props) {
           trailing={
             <SettingsButton
               label={owner.copied() === 'invite' ? tr('Copied') : tr('Copy pairing link')}
-              onPress={() => owner.copy('invite', owner.invite()!.uri)}
+              onPress={() => owner.copy('invite', owner.activeInvite()!.uri)}
             />
           }
         />

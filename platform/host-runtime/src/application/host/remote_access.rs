@@ -19,6 +19,7 @@
 
 //! Trusted local control of the product-owned peer transport.
 use super::{Host, PeerId, Result, access::now};
+pub use maka_config::access::PairingInviteState;
 pub use maka_config::remote_access::{
     RelayAuthUpdate, RemoteAccessConfig, RemoteAccessUpdate, RemoteRelayUpdate, RemoteTransport,
 };
@@ -27,14 +28,15 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-pub fn valid_relay_url(url: String) -> bool {
+pub fn normalize_relay_url(url: String) -> Option<String> {
     maka_remote_pairing::RelayEndpoint {
         url,
         quic_port: None,
         cert_sha256: None,
     }
     .validate()
-    .is_ok()
+    .ok()
+    .map(|endpoint| endpoint.url.to_string())
 }
 
 pub struct ApplyRemoteAccess {
@@ -50,10 +52,45 @@ pub(super) struct Runtime {
 
 #[derive(Default)]
 struct RuntimeState {
-    online: bool,
+    phase: TransportPhase,
     cli_override: bool,
-    error: Option<String>,
+    sas_generation: u64,
     sas: Option<SasNotice>,
+}
+
+#[derive(Default)]
+enum TransportPhase {
+    #[default]
+    Disabled,
+    Starting,
+    Failed(String),
+}
+
+pub struct HandshakeObservation {
+    peer: PeerId,
+    sas: String,
+    at: std::time::SystemTime,
+    generation: u64,
+}
+
+impl RuntimeState {
+    fn clear_peer_sas(&mut self, peer: &PeerId) {
+        // Fence already queued observations without keeping per-peer tombstones.
+        self.sas_generation += 1;
+        if self
+            .sas
+            .as_ref()
+            .is_some_and(|notice| notice.peer_id == peer.as_str())
+        {
+            self.sas = None;
+        }
+    }
+
+    fn publish_sas(&mut self, generation: u64, notice: SasNotice) {
+        if self.sas_generation == generation {
+            self.sas = Some(notice);
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,7 +118,7 @@ pub struct RemoteAccessStatus {
     pub peer_id: String,
     pub connected_relays: Vec<String>,
     pub sas: Option<SasNotice>,
-    pub invite_pending: Option<bool>,
+    pub invite_state: Option<PairingInviteState>,
     pub error: Option<String>,
     pub cli_override: bool,
 }
@@ -114,22 +151,44 @@ impl Host {
     }
 
     pub fn remote_access_reset(&self, online: bool, cli_override: bool) {
-        *self.remote_access.state.lock().unwrap() = RuntimeState {
-            online,
-            cli_override,
-            ..Default::default()
+        let mut state = self.remote_access.state.lock().unwrap();
+        state.phase = if online {
+            TransportPhase::Starting
+        } else {
+            TransportPhase::Disabled
         };
+        state.cli_override = cli_override;
+        state.sas_generation += 1;
+        state.sas = None;
     }
 
     pub fn remote_access_error(&self, error: String) {
         let mut state = self.remote_access.state.lock().unwrap();
-        state.error = Some(error);
+        state.phase = TransportPhase::Failed(error);
+        state.sas_generation += 1;
         state.sas = None;
+    }
+
+    pub(super) fn clear_peer_sas(&self, peer: &PeerId) {
+        self.remote_access
+            .state
+            .lock()
+            .unwrap()
+            .clear_peer_sas(peer);
+    }
+
+    pub fn peer_handshake_observation(&self, peer: PeerId, sas: String) -> HandshakeObservation {
+        HandshakeObservation {
+            peer,
+            sas,
+            at: std::time::SystemTime::now(),
+            generation: self.remote_access.state.lock().unwrap().sas_generation,
+        }
     }
 
     pub async fn observe_peer_handshakes(
         &self,
-        mut observations: mpsc::Receiver<(PeerId, String, std::time::SystemTime)>,
+        mut observations: mpsc::Receiver<HandshakeObservation>,
         stop: CancellationToken,
     ) -> Result<()> {
         // Keep advisory writes off the connection used for authentication and control.
@@ -141,7 +200,7 @@ impl Host {
             .await
             .map_err(|error| error.to_string())?;
         loop {
-            let (peer, sas, at) = tokio::select! {
+            let observation = tokio::select! {
                 biased;
                 () = stop.cancelled() => break,
                 next = observations.recv() => match next {
@@ -152,7 +211,7 @@ impl Host {
             tokio::select! {
                 biased;
                 () = stop.cancelled() => break,
-                result = self.observe_peer_handshake(&store, peer, sas, at) => {
+                result = self.observe_peer_handshake(&store, observation) => {
                     if let Err(error) = result {
                         tracing::warn!(%error, "could not record peer handshake");
                     }
@@ -165,9 +224,12 @@ impl Host {
     async fn observe_peer_handshake(
         &self,
         store: &maka_config::ConfigurationStore,
-        peer: PeerId,
-        sas: String,
-        at: std::time::SystemTime,
+        HandshakeObservation {
+            peer,
+            sas,
+            at,
+            generation,
+        }: HandshakeObservation,
     ) -> Result<()> {
         let at = time::OffsetDateTime::from(at);
         let timestamp = at
@@ -182,7 +244,11 @@ impl Host {
             .await
             .map_err(|error| error.to_string())?
         {
-            self.remote_access.state.lock().unwrap().sas = Some(SasNotice { peer_id, sas, at });
+            self.remote_access
+                .state
+                .lock()
+                .unwrap()
+                .publish_sas(generation, SasNotice { peer_id, sas, at });
         }
         Ok(())
     }
@@ -221,12 +287,12 @@ impl Host {
             .map(|relay| relay.url)
             .collect();
         let now = now()?;
-        let invite_pending = match invite_id {
+        let invite_state = match invite_id {
             Some(invite_id) => {
                 let grant = self.access_grant.lock().unwrap().clone();
                 Some(
                     self.access
-                        .host_peer_pairing_invite_pending(invite_id, grant, now)
+                        .host_peer_pairing_invite_state(invite_id, grant, now)
                         .await
                         .map_err(|error| error.to_string())?,
                 )
@@ -234,28 +300,54 @@ impl Host {
             None => None,
         };
         let state = self.remote_access.state.lock().unwrap();
-        let status = if !connected_relays.is_empty() {
-            ConnectionStatus::Connected
-        } else if state.error.is_some() {
-            ConnectionStatus::Error
-        } else if state.online {
-            ConnectionStatus::Starting
-        } else {
-            ConnectionStatus::Disabled
+        let (status, error) = match &state.phase {
+            TransportPhase::Disabled => (ConnectionStatus::Disabled, None),
+            TransportPhase::Starting if !connected_relays.is_empty() => {
+                (ConnectionStatus::Connected, None)
+            }
+            TransportPhase::Starting => (ConnectionStatus::Starting, None),
+            TransportPhase::Failed(error) => (ConnectionStatus::Error, Some(error.clone())),
         };
         Ok(RemoteAccessStatus {
             config,
             status,
             peer_id: self.device_identity().public_key().to_string(),
             connected_relays,
-            invite_pending,
+            invite_state,
             sas: state
                 .sas
                 .as_ref()
                 .filter(|notice| now.saturating_sub(notice.at) < 120_000)
                 .cloned(),
-            error: state.error.clone(),
+            error,
             cli_override: state.cli_override,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearing_a_peer_fences_queued_sas_without_clearing_another_peer() {
+        let mut state = RuntimeState::default();
+        let notice = |peer_id: &str| SasNotice {
+            peer_id: peer_id.into(),
+            sas: "123456".into(),
+            at: 1,
+        };
+        let old_generation = state.sas_generation;
+        state.publish_sas(old_generation, notice("other"));
+        let peer = PeerId::new("phone".into()).unwrap();
+        state.clear_peer_sas(&peer);
+        state.publish_sas(old_generation, notice("phone"));
+        assert_eq!(state.sas.as_ref().unwrap().peer_id, "other");
+
+        let generation = state.sas_generation;
+        state.publish_sas(generation, notice("phone"));
+        state.clear_peer_sas(&peer);
+        state.publish_sas(generation, notice("phone"));
+        assert!(state.sas.is_none());
     }
 }

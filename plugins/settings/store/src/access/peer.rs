@@ -108,6 +108,15 @@ pub struct HostPeerAccess {
     pub last_active_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PairingInviteState {
+    Pending,
+    Expired,
+    // No row remains for this grant. Pruning can also remove an expired row.
+    Consumed,
+}
+
 fn sqlite_ms(ms: u64) -> Result<i64> {
     i64::try_from(ms).map_err(|_| invalid("pairing timestamp overflows SQLite INTEGER"))
 }
@@ -144,20 +153,26 @@ impl ConfigurationStore {
         .await
     }
 
-    pub async fn host_peer_pairing_invite_pending(
+    pub async fn host_peer_pairing_invite_state(
         &self,
         invite_id: String,
         host_grant: String,
         now_ms: u64,
-    ) -> Result<bool> {
+    ) -> Result<PairingInviteState> {
         let now_ms = sqlite_ms(now_ms)?;
         self.transaction(TransactionMode::Deferred, move |tx| {
-            Ok(tx
+            let expires_at: Option<i64> = tx
                 .prepare_cached(
-                    "SELECT EXISTS (SELECT 1 FROM host_peer_pairing_invites
-                    WHERE invite_id = ? AND host_grant = ? AND expires_at_ms > ?)",
+                    "SELECT expires_at_ms FROM host_peer_pairing_invites
+                 WHERE invite_id = ? AND host_grant = ?",
                 )?
-                .query_row(params![invite_id, host_grant, now_ms], |row| row.get(0))?)
+                .query_row(params![invite_id, host_grant], |row| row.get(0))
+                .optional()?;
+            Ok(match expires_at {
+                Some(expires_at) if expires_at > now_ms => PairingInviteState::Pending,
+                Some(_) => PairingInviteState::Expired,
+                None => PairingInviteState::Consumed,
+            })
         })
         .await
     }

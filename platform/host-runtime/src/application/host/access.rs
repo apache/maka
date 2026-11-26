@@ -202,8 +202,9 @@ impl Host {
                 host.revoke_sessions(|principal| {
                     matches!(principal, Principal::AuthenticatedPeer(id) if id == &peer_id)
                 });
-                let _ = host.revoked_peers.send(peer_id);
+                let _ = host.revoked_peers.send(peer_id.clone());
             }
+            host.clear_peer_sas(&peer_id);
             Ok(changed)
         })
         .await
@@ -439,6 +440,7 @@ impl Host {
         {
             return Err("pairing invite is invalid, expired, or already redeemed".into());
         }
+        self.clear_peer_sas(peer_id);
         Ok(PeerPairingReceipt {
             root_id: self.root_id().into(),
             peer_id: peer_id.as_str().into(),

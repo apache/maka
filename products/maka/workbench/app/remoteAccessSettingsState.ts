@@ -35,19 +35,20 @@ type Status = {
   peerId: string;
   connectedRelays: string[];
   sas: { peerId: string; sas: string; at: number } | null;
-  invitePending: boolean | null;
+  inviteState: 'pending' | 'expired' | 'consumed' | null;
   error: string | null;
   cliOverride: boolean;
 };
 type Device = { peerId: string; label: string; createdAt: string; lastActiveAt: string | null };
 type Invite = { uri: string; inviteId: string; expiresAtMs: number };
+type ActiveInvite = Invite & { qr: ReturnType<typeof pairingQr>; requestedAt: number };
+type Pairing = { kind: 'idle' } | { kind: 'active'; invite: ActiveInvite } | { kind: 'expired' };
 type RelayDraft = {
   id: number;
   url: string;
   quicPort: string;
   certSha256: string;
   caDerPath: string;
-  hasAuthToken: boolean;
   auth: 'keep' | 'clear' | 'replace';
   token: string;
 };
@@ -57,9 +58,17 @@ export function createRemoteAccessSettings() {
   const status = signal<Status | null>(null);
   const devices = signal<Device[]>([]);
   const draft = signal<Draft | null>(null);
-  const invite = signal<
-    (Invite & { qr: ReturnType<typeof pairingQr>; requestedAt: number }) | null
-  >(null);
+  const pairing = signal<Pairing>({ kind: 'idle' });
+  const activeInvite = () => {
+    const value = pairing();
+    return value.kind === 'active' ? value.invite : null;
+  };
+  const updateClock = () => {
+    const now = Date.now();
+    const invite = activeInvite();
+    if (invite && now >= invite.expiresAtMs) pairing.set({ kind: 'expired' });
+    clock.set(now);
+  };
   const confirming = signal<Device | null>(null);
   const busy = signal(false);
   const dirty = signal(false);
@@ -82,7 +91,6 @@ export function createRemoteAccessSettings() {
     quicPort: '',
     certSha256: '',
     caDerPath: '',
-    hasAuthToken: false,
     auth: 'keep',
     token: '',
   });
@@ -95,7 +103,6 @@ export function createRemoteAccessSettings() {
       quicPort: String(relay.endpoint.quicPort ?? ''),
       certSha256: relay.endpoint.certSha256 ?? '',
       caDerPath: relay.caDerPath ?? '',
-      hasAuthToken: relay.hasAuthToken,
     })),
   });
   const reset = (config: Config) => {
@@ -115,7 +122,8 @@ export function createRemoteAccessSettings() {
   const load = async (run: number) => {
     if (!active) return;
     const id = ++observation;
-    const inviteId = invite()?.inviteId;
+    updateClock();
+    const inviteId = activeInvite()?.inviteId;
     const current = () => run === generation && id === observation;
     try {
       const [next, peers] = await Promise.all([
@@ -126,8 +134,10 @@ export function createRemoteAccessSettings() {
       const live = next as Status;
       const previous = status()?.config;
       if (!dirty() && JSON.stringify(previous) !== JSON.stringify(live.config)) reset(live.config);
-      if (live.invitePending === false && invite()?.inviteId === inviteId) {
-        invite.set(null);
+      updateClock();
+      if (inviteId && activeInvite()?.inviteId === inviteId) {
+        if (live.inviteState === 'expired') pairing.set({ kind: 'expired' });
+        if (live.inviteState === 'consumed') pairing.set({ kind: 'idle' });
       }
       devices.set(peers as Device[]);
       status.set(live);
@@ -160,7 +170,16 @@ export function createRemoteAccessSettings() {
     (!/^\d+$/.test(relay.quicPort.trim()) ||
       Number(relay.quicPort) < 1 ||
       Number(relay.quicPort) > 65535);
-  const urlError = (relay: RelayDraft) => !host.validRemoteRelayUrl(relay.url.trim());
+  const normalizeUrl = (url: string) => host.normalizeRemoteRelayUrl(url.trim());
+  const urlError = (relay: RelayDraft) => !normalizeUrl(relay.url);
+  const hasSavedToken = (relay: RelayDraft) => {
+    const url = normalizeUrl(relay.url);
+    return !!status()?.config.relays.some(
+      (saved) => saved.endpoint.url === url && saved.hasAuthToken,
+    );
+  };
+  const relayAuth = (relay: RelayDraft) =>
+    relay.auth === 'clear' && !hasSavedToken(relay) ? 'keep' : relay.auth;
   const canPair = () =>
     !loadError() && status()?.status === 'connected' && !!status()?.connectedRelays.length;
   const apply = async ({ enabled, relayOnly, relays }: Draft) => {
@@ -178,21 +197,17 @@ export function createRemoteAccessSettings() {
             certSha256: relay.certSha256.trim() || null,
           },
           caDerPath: relay.caDerPath.trim() || null,
-          auth: { kind: relay.auth },
+          auth: { kind: relayAuth(relay) },
         })),
       },
       relays.map((relay) => (relay.auth === 'replace' ? relay.token : null)),
     )) as Config;
   };
-  const activeInvite = () => {
-    const pairing = invite();
-    return pairing && clock() < pairing.expiresAtMs ? pairing : null;
-  };
   return {
     status,
     devices,
     draft,
-    invite,
+    pairing,
     activeInvite,
     confirming,
     busy,
@@ -203,8 +218,11 @@ export function createRemoteAccessSettings() {
     discarding,
     portError,
     urlError,
+    hasSavedToken,
+    relayAuth,
     canPair,
-    secondsLeft: () => Math.max(0, Math.ceil(((invite()?.expiresAtMs ?? 0) - clock()) / 1000)),
+    secondsLeft: () =>
+      Math.max(0, Math.ceil(((activeInvite()?.expiresAtMs ?? 0) - clock()) / 1000)),
     sas: () => {
       const notice = status()?.sas;
       const pairing = activeInvite();
@@ -216,7 +234,7 @@ export function createRemoteAccessSettings() {
       if (active || platform.idiom === 'terminal') return;
       active = true;
       clock.set(Date.now());
-      clockTimer = setInterval(() => clock.set(Date.now()), 1000);
+      clockTimer = setInterval(updateClock, 1000);
       void tick(++generation);
     },
     deactivate() {
@@ -230,7 +248,7 @@ export function createRemoteAccessSettings() {
       draft.set(null);
       devices.set([]);
       confirming.set(null);
-      invite.set(null);
+      pairing.set({ kind: 'idle' });
       copied.set('');
       dirty.set(false);
       loadError.set('');
@@ -271,7 +289,14 @@ export function createRemoteAccessSettings() {
       const value = draft()!;
       setDraft({
         ...value,
-        relays: value.relays.map((relay) => (relay.id === id ? { ...relay, ...edit } : relay)),
+        relays: value.relays.map((relay) => {
+          if (relay.id !== id) return relay;
+          const next = { ...relay, ...edit };
+          if (edit.url !== undefined && normalizeUrl(edit.url) !== normalizeUrl(relay.url)) {
+            return { ...next, auth: 'keep', token: '' };
+          }
+          return next;
+        }),
       });
     },
     addRelay() {
@@ -289,7 +314,7 @@ export function createRemoteAccessSettings() {
           next.enabled ? next : { ...fromConfig(status()!.config), enabled: false },
         );
         if (!current()) return;
-        invite.set(null);
+        pairing.set({ kind: 'idle' });
         reset(config);
         await load(generation);
       }),
@@ -297,7 +322,7 @@ export function createRemoteAccessSettings() {
       void perform(async (current) => {
         await apply(fromConfig(status()!.config));
         if (!current()) return;
-        invite.set(null);
+        pairing.set({ kind: 'idle' });
         await load(generation);
       }),
     pair: () =>
@@ -308,7 +333,10 @@ export function createRemoteAccessSettings() {
         if (!current()) return;
         copied.set('');
         clock.set(Date.now());
-        invite.set({ ...fresh, requestedAt, qr: pairingQr(fresh.uri) });
+        pairing.set({
+          kind: 'active',
+          invite: { ...fresh, requestedAt, qr: pairingQr(fresh.uri) },
+        });
       }),
     revoke: () =>
       void perform(async (current) => {

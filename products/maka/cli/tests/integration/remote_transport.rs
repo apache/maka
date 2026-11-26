@@ -388,7 +388,10 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
     use maka_host_runtime::application::host::{
         PeerPairingOptions,
-        remote_access::{ConnectionStatus, RelayAuthUpdate, RemoteAccessUpdate, RemoteRelayUpdate},
+        remote_access::{
+            ConnectionStatus, PairingInviteState, RelayAuthUpdate, RemoteAccessUpdate,
+            RemoteRelayUpdate,
+        },
     };
     use maka_remote_pairing::RelayEndpoint;
     use std::path::PathBuf;
@@ -457,13 +460,12 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
         )
         .await
         .unwrap();
-        let invite_pending = || async {
-            Client::remote_access_status(&socket, epoch, Some(&invite.invite_id))
-                .await
-                .unwrap()
-                .invite_pending
-        };
-        assert_eq!(invite_pending().await, Some(true));
+        let pairing_status =
+            || Client::remote_access_status(&socket, epoch, Some(&invite.invite_id));
+        assert_eq!(
+            pairing_status().await.unwrap().invite_state,
+            Some(PairingInviteState::Pending)
+        );
         let ticket = SignedPairingTicket::parse_and_verify_uri(&invite.uri, 0).unwrap();
         let device = DeviceIdentity::generate().unwrap();
         let route = Relay::new(&invite.relays[0], None, None).unwrap();
@@ -484,7 +486,9 @@ async fn saved_remote_transport_applies_live_and_starts_after_restart() {
             .redeem_pairing(&ticket, Some("Phone".into()))
             .await
             .unwrap();
-        assert_eq!(invite_pending().await, Some(false));
+        let status = pairing_status().await.unwrap();
+        assert_eq!(status.invite_state, Some(PairingInviteState::Consumed));
+        assert!(status.sas.is_none(), "redeemed peer still has a SAS notice");
         let peers = Client::list_peer_access(&socket, epoch).await.unwrap();
         assert_eq!(peers[0].label, "Phone");
         assert!(peers[0].last_active_at.is_some());

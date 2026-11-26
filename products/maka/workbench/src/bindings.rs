@@ -375,8 +375,8 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
-    pub fn valid_remote_relay_url(&self, url: String) -> bool {
-        maka_host_runtime::application::host::remote_access::valid_relay_url(url)
+    pub fn normalize_remote_relay_url(&self, url: String) -> Option<String> {
+        maka_host_runtime::application::host::remote_access::normalize_relay_url(url)
     }
 
     pub async fn remote_access_status(

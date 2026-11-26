@@ -61,7 +61,7 @@ async function setup(t, ttl = 300_000) {
         {
           endpoint: { url: 'https://relay.example.org/', quicPort: null, certSha256: null },
           caDerPath: null,
-          hasAuthToken: false,
+          hasAuthToken: true,
         },
       ],
     },
@@ -72,15 +72,36 @@ async function setup(t, ttl = 300_000) {
   let devices = [];
   let hung = false;
   let pending = true;
+  const polled = [];
+  const writes = [];
   const copies = [];
   globalThis.remoteFixture = {
-    remoteAccessStatus: (inviteId) =>
-      hung
-        ? new Promise(() => {})
-        : Promise.resolve({
-            ...next,
-            invitePending: inviteId === 'invite' ? pending : null,
-          }),
+    remoteAccessStatus: async (inviteId) => {
+      polled.push(inviteId);
+      if (hung) return new Promise(() => {});
+      return {
+        ...next,
+        inviteState:
+          inviteId !== 'invite'
+            ? null
+            : !pending
+              ? 'consumed'
+              : Date.now() >= started + ttl
+                ? 'expired'
+                : 'pending',
+      };
+    },
+    normalizeRemoteRelayUrl: (url) => {
+      try {
+        return new URL(url).href;
+      } catch {
+        return null;
+      }
+    },
+    updateRemoteAccess: async (value, tokens) => {
+      writes.push({ value, tokens });
+      return next.config;
+    },
     listPairedDevices: async () => devices,
     prepareDevicePairing: async () => ({
       inviteId: 'invite',
@@ -101,6 +122,8 @@ async function setup(t, ttl = 300_000) {
   return {
     owner,
     copies,
+    polled,
+    writes,
     config: (change) => {
       next = { ...next, config: { ...next.config, ...change } };
     },
@@ -166,7 +189,7 @@ test('clears a redeemed QR without any SAS notice', async (t) => {
   redeem();
   await owner.refresh();
   assert.equal(owner.activeInvite(), null);
-  assert.equal(owner.invite(), null);
+  assert.equal(owner.pairing().kind, 'idle');
 });
 
 test('shows a handshake alongside the QR and does not infer redemption from peer changes', async (t) => {
@@ -193,4 +216,39 @@ test('copy provides transient feedback without making the settings busy', async 
   assert.equal(owner.copied(), 'peer');
   t.mock.timers.tick(2000);
   assert.equal(owner.copied(), '');
+});
+
+test('live polling keeps the expired state and stops querying its invite ID', async (t) => {
+  const { owner, polled } = await setup(t, 2000);
+  owner.pair();
+  await flush();
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(polled.at(-1), 'invite');
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(1000);
+    await flush();
+    assert.equal(owner.pairing().kind, 'expired');
+    assert.equal(owner.activeInvite(), null);
+    assert.equal(polled.at(-1), null);
+  }
+});
+
+test('relay token actions follow normalized URL identity, not the edited row', async (t) => {
+  const { owner, writes } = await setup(t);
+  const relay = () => owner.draft().relays[0];
+  const id = relay().id;
+  owner.editRelay(id, { auth: 'clear' });
+  owner.editRelay(id, { url: ' https://RELAY.example.org:443 ' });
+  assert.equal(owner.hasSavedToken(relay()), true);
+  assert.equal(owner.relayAuth(relay()), 'clear');
+  owner.editRelay(id, { url: 'https://relay.example.org:8443' });
+  assert.equal(owner.hasSavedToken(relay()), false);
+  assert.equal(owner.relayAuth(relay()), 'keep');
+  owner.editRelay(id, { auth: 'replace', token: 'for-that-url-only' });
+  owner.editRelay(id, { url: 'https://other.example.org' });
+  owner.save();
+  await flush();
+  assert.equal(writes[0].value.relays[0].auth.kind, 'keep');
+  assert.deepEqual(writes[0].tokens, [null]);
 });
