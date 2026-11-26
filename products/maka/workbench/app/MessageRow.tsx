@@ -38,6 +38,7 @@ import {
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
+import type { BindTextViewToc } from './turnToc';
 import { SourceText } from './SourceText';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
 import { replyDetails, replyMetrics } from './replyDetails';
@@ -172,6 +173,7 @@ export function MessageRow({
   compactChat,
   beside,
   citations,
+  bindToc,
   hasSources,
   openSources,
   highlighted,
@@ -204,6 +206,7 @@ export function MessageRow({
   beside?: boolean;
   localQuickReply?: boolean;
   citations?(): readonly InlineCitation[] | undefined;
+  bindToc?: BindTextViewToc;
   hasSources?(): boolean;
   openSources?(): void;
   highlighted?: () => boolean;
@@ -625,6 +628,7 @@ export function MessageRow({
                           >
                             <MarkdownBody
                               citations={citations}
+                              bindToc={bindToc}
                               sessionId={sessionId}
                               row={row}
                               sourceId={sourceId()}

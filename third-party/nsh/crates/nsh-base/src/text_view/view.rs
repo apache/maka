@@ -1,7 +1,7 @@
 //! The `TextView` component: a [`Document`] shown with the primitives.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::{Rc, Weak},
     sync::Arc,
@@ -11,10 +11,10 @@ use nsh_core::{
     ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     element::{
-        Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Reactive,
-        Renderer, Ret, ScrollIntent, Style, StyleRefinement, TsTypes,
+        Arg, CallCx, ElementRef, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError,
+        Reactive, Renderer, Ret, ScrollIntent, Style, StyleRefinement, TsTypes, ViewableItems,
     },
-    geometry::Length,
+    geometry::{Length, Percentage},
     keymap::Modifiers,
     prelude::*,
 };
@@ -273,6 +273,58 @@ pub enum TextViewEvent {
     /// Which `marks` ids matched at least one passage in the current document.
     #[args(event)]
     MarksMatch(TextViewMarksMatchEvent),
+    /// The top-level headings of the parsed document changed: emitted once
+    /// parsing completes and only when the outline changes.
+    #[args(event)]
+    HeadingsChange(TextViewHeadingsEvent),
+    /// The range of document blocks intersecting the viewport changed
+    /// (virtualized `TextView`s with `sourceId` or `contentStyle`).
+    #[args(event)]
+    VisibleBlocksChange(TextViewVisibleBlocksEvent),
+}
+
+/// A top-level heading of a [`TextView`]'s document (`onHeadingsChange`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewHeading {
+    /// Block index in the document, accepted by `scrollToBlock`.
+    pub block_index: u32,
+    /// Heading level, 1 to 6.
+    pub level: u32,
+    /// Rendered plain text of the heading.
+    pub text: SharedString,
+}
+
+/// Top-level headings of a [`TextView`]'s document (`onHeadingsChange`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewHeadingsEvent {
+    /// Top-level headings in document order.
+    pub headings: Vec<TextViewHeading>,
+}
+
+/// Visible block range of a virtualized [`TextView`] (`onVisibleBlocksChange`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewVisibleBlocksEvent {
+    /// First visible document block index, or `None` when outside the viewport.
+    pub first_block: Option<u32>,
+    /// Last visible document block index, or `None` when outside the viewport.
+    pub last_block: Option<u32>,
+}
+
+/// Placement options for [`TextViewApi::scroll_to_block`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
+pub struct TextViewScrollToBlockOptions {
+    /// Position in the viewport: `0` at the start (default), `0.5` centered, `1` at the end.
+    #[prop(default)]
+    pub view_position: Option<f32>,
+    /// Offset in points (positive places the block further from the start).
+    #[prop(default)]
+    pub view_offset: Option<f32>,
+    /// Whether to animate the scroll (default `false`).
+    #[prop(default)]
+    pub animated: Option<bool>,
 }
 
 /// The methods of a [`TextView`]'s ref.
@@ -280,6 +332,7 @@ pub struct TextViewApi {
     document: Signal<Projection>,
     props: TextViewProps,
     reported: Rc<RefCell<Reported>>,
+    list_ref: ElementRef,
 }
 
 #[methods]
@@ -306,6 +359,71 @@ impl TextViewApi {
         self.document
             .with_untracked(|doc| selected(&doc.document, &source, &reported, format))
     }
+
+    /// Scrolls a virtualized `TextView` (`sourceId` or `contentStyle`) so
+    /// document block `block_index` is positioned in its viewport. Returns
+    /// `true` when the scroll command was issued.
+    pub fn scroll_to_block(
+        &self,
+        block_index: u32,
+        options: Option<TextViewScrollToBlockOptions>,
+    ) -> bool {
+        if self.list_ref.node().is_none() {
+            return false;
+        }
+        let target = block_index as usize;
+        let terminal = untracked(is_terminal);
+        let custom_image = self.props.render_image.with_untracked(Option::is_some);
+        let slot = self.document.with_untracked(|proj| {
+            if proj.kind != ProjectionKind::Parsed || target >= proj.document.blocks.len() {
+                return None;
+            }
+            if !terminal {
+                return Some(target as u32);
+            }
+            if blank_in_terminal(&proj.document.blocks[target], custom_image) {
+                return None;
+            }
+            let preceding = proj.document.blocks[..target]
+                .iter()
+                .filter(|b| !blank_in_terminal(b, custom_image))
+                .count();
+            Some(preceding as u32)
+        });
+        let Some(slot) = slot else {
+            return false;
+        };
+        let opts = options.unwrap_or_default();
+        self.list_ref.scroll_to_index(
+            slot,
+            Percentage(opts.view_position.unwrap_or(0.0)),
+            px(opts.view_offset.unwrap_or(0.0)),
+            opts.animated.unwrap_or(false),
+        );
+        true
+    }
+}
+
+fn extract_headings(doc: &Document) -> Vec<TextViewHeading> {
+    doc.blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let Block::Heading { level, .. } = block else {
+                return None;
+            };
+            let plain = block.plain_text();
+            let text = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                return None;
+            }
+            Some(TextViewHeading {
+                block_index: index as u32,
+                level: u32::from(*level),
+                text: text.into(),
+            })
+        })
+        .collect()
 }
 
 /// The selection of a [`TextView`] changed (`onSelectionChange`).
@@ -512,10 +630,33 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
     let plugins = Rc::new(plugins);
     let math_loaded = signal(false);
     let reported = Rc::new(RefCell::new(Reported::default()));
+    let list_ref = element_ref();
+    let last_headings: Rc<RefCell<Option<Vec<TextViewHeading>>>> = Rc::new(RefCell::new(None));
+    effect({
+        let last_headings = last_headings.clone();
+        move || {
+            let next = source_document.with(|proj| {
+                (proj.kind == ProjectionKind::Parsed).then(|| extract_headings(&proj.document))
+            });
+            let Some(next) = next else {
+                return;
+            };
+            let mut prev = last_headings.borrow_mut();
+            if prev.as_ref() == Some(&next) {
+                return;
+            }
+            *prev = Some(next.clone());
+            drop(prev);
+            cx.emit(TextViewEvent::HeadingsChange(TextViewHeadingsEvent {
+                headings: next,
+            }));
+        }
+    });
     cx.methods(TextViewApi {
         document: source_document,
         props,
         reported: reported.clone(),
+        list_ref,
     });
     dynamic(move || {
         parsed.track_source();
@@ -613,7 +754,30 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                     view().child(render_row(item, plugins.clone(), choices.clone()))
                 })
             })
+            .element_ref(&list_ref)
             .viewport(ListViewport::Parent)
+            .on_viewable_items_change({
+                let last_visible = Cell::new(None::<TextViewVisibleBlocksEvent>);
+                move |v: &ViewableItems| {
+                    let event = visible.with_untracked(|indices| {
+                        let (first_block, last_block) = match v.viewable {
+                            Some((first, last)) if first < indices.len() => {
+                                let hi = last.min(indices.len() - 1);
+                                (Some(indices[first] as u32), Some(indices[hi] as u32))
+                            }
+                            _ => (None, None),
+                        };
+                        TextViewVisibleBlocksEvent {
+                            first_block,
+                            last_block,
+                        }
+                    });
+                    if last_visible.get() != Some(event) {
+                        last_visible.set(Some(event));
+                        cx.emit(TextViewEvent::VisibleBlocksChange(event));
+                    }
+                }
+            })
             .source_rows(move || {
                 // The live domain may be longer than this worker publication.
                 // Neither the repaired parser input nor an admitted old prefix
@@ -3168,6 +3332,20 @@ impl TextView {
     /// by line breaks, cells by tabs.
     pub fn plain_text(document: Document) -> String {
         document.plain_text()
+    }
+
+    /// Top-level headings of Markdown `markdown`, using the same parser,
+    /// `options`, `extensions`, and block indices as [`TextView`].
+    pub fn headings(
+        markdown: String,
+        options: Option<MarkdownOptions>,
+        extensions: Option<Vec<MarkdownExtension>>,
+    ) -> Vec<TextViewHeading> {
+        let doc = Parser::new()
+            .options(options.unwrap_or_default())
+            .extensions(extensions.unwrap_or_default())
+            .markdown(&markdown);
+        extract_headings(&doc)
     }
 }
 

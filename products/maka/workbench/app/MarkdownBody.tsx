@@ -31,11 +31,13 @@ import { SourceText } from './SourceText';
 import { tr } from './locale';
 import { notePassage, type SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
+import type { BindTextViewToc } from './turnToc';
 import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
   citations?(): readonly InlineCitation[] | undefined;
+  bindToc?: BindTextViewToc;
   sourceId: string;
   sessionId: string;
   compact?: boolean;
@@ -182,6 +184,12 @@ export function MarkdownBody(props: {
                 if (segmentMatches.delete(segKey)) reportMatches();
               });
               const atSegment = () => segmentMarkers().get(seg().key);
+              const initialSeg = seg();
+              const toc =
+                initialSeg.kind === 'markdown'
+                  ? props.bindToc?.(initialSeg.key, initialSeg.start)
+                  : undefined;
+              if (toc) cleanup(() => toc.dispose());
               const extensions = () => {
                 const base = props.interactiveBlocks === false ? [] : markdownExtensions;
                 const inline = atSegment();
@@ -194,6 +202,11 @@ export function MarkdownBody(props: {
                   when={seg().kind === 'spec'}
                   else={
                     <TextView
+                      ref={toc ? (node) => toc.onRef(node) : undefined}
+                      onHeadingsChange={toc ? (event) => toc.onHeadingsChange(event) : undefined}
+                      onVisibleBlocksChange={
+                        toc ? (event) => toc.onVisibleBlocksChange(event) : undefined
+                      }
                       markdown={(() => {
                         const s = seg();
                         return s.kind === 'markdown' ? s.text : '';

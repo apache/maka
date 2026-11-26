@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, computed, platform, signal, Text, View } from 'nsh';
+import { cleanup, Clipboard, computed, platform, signal, Text, View } from 'nsh';
 import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
@@ -29,11 +29,13 @@ import type { replyMetrics } from './replyDetails';
 import { Icon } from './Icon';
 import { ShimmerText, ThinkingMark } from './Loading';
 import { splitSpecMarkdown } from './spec/session.ts';
+import type { BindTextViewToc } from './turnToc';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 
 /** Messages the Bot sent with `SendUser`, shown as its reply in the Chat view. */
 export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
+  bindToc?: BindTextViewToc;
   sessionId?: string;
   metrics?(at: number): ReturnType<typeof replyMetrics>;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
@@ -72,6 +74,15 @@ export function BotReply(props: {
                     const selected = signal('');
                     const menuText = signal('');
                     let menuOpen = false;
+                    const initialSeg = seg();
+                    const toc =
+                      initialSeg.kind === 'markdown'
+                        ? props.bindToc?.(
+                            `${message().sequence}:${initialSeg.key}`,
+                            message().sequence * 1e9 + initialSeg.start,
+                          )
+                        : undefined;
+                    if (toc) cleanup(() => toc.dispose());
                     return (
                       <If
                         when={seg().kind === 'spec'}
@@ -83,6 +94,13 @@ export function BotReply(props: {
                             }}
                             trigger={
                               <TextView
+                                ref={toc ? (node) => toc.onRef(node) : undefined}
+                                onHeadingsChange={
+                                  toc ? (event) => toc.onHeadingsChange(event) : undefined
+                                }
+                                onVisibleBlocksChange={
+                                  toc ? (event) => toc.onVisibleBlocksChange(event) : undefined
+                                }
                                 markdown={(() => {
                                   const s = seg();
                                   return s.kind === 'markdown' ? s.text : '';

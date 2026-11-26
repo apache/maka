@@ -503,6 +503,12 @@ export function projectProcessGroups(input: {
       } else {
         flush(true);
         entries.push({ kind: 'message', key: position.rowId, rowId: position.rowId });
+        if (row.role === 'assistant' && row.field === 'body' && !row.sourceCitation) {
+          const presentation = turn(rowTurn);
+          if (!presentation.answerOutputIds.includes(position.rowId)) {
+            presentation.answerOutputIds.push(position.rowId);
+          }
+        }
       }
       continue;
     }

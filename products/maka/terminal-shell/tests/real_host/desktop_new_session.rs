@@ -3099,6 +3099,640 @@ async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
     fixture.finish().await;
 }
 
+async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1560),
+            nsh_terminal::DevicePixels(600),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop.new_draft().await;
+
+    let long_block = |tag: &str, count: usize| {
+        (1..=count)
+            .map(|i| {
+                format!(
+                    "{tag} paragraph {i}: detailed explanation spanning multiple lines so the reply overflows the visible reading window cleanly."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+
+    // Turn 1: stream across headings in multiple chunks, including a fenced code block
+    // inside a list item and a long sparse middle section + wide single-line JSON block.
+    desktop.type_text("Turn one long markdown").await;
+    desktop.submit().await;
+    let mut reply1 = desktop.request(&mut fixture).await;
+    reply1
+        .delta(&format!(
+            "# Turn One Overview\n\n<details><summary>Overview Marker</summary>Overview details.</details>\n\n{}\n\n1. ```python\n   # code comment ignored\n   print(1)\n   ```\n\n",
+            long_block("overview", 8),
+        ))
+        .await;
+    let wide_json = format!(r#"{{"entries":[{}]}}"#, r#""payload","#.repeat(600));
+    reply1
+        .delta(&format!(
+            "## Architecture\n\n{}\n\n```json\n{wide_json}\n```\n\n",
+            long_block("arch", 28),
+        ))
+        .await;
+    reply1
+        .delta(&format!(
+            "### Deep Dive\n\n<details><summary>Deep Dive Marker</summary>Deep dive details.</details>\n\n{}\n\n<details><summary>Turn One End</summary>End of turn one.</details>",
+            long_block("deep", 10),
+        ))
+        .await;
+    desktop
+        .wait("turn 1 reply did not finish", reply1.finish())
+        .await;
+    desktop
+        .until("turn 1 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+
+    // Wait for all three streamed headings before reading settled TOC bounds.
+    let deep_toc = desktop.control("Jump to section: Deep Dive").await;
+    let arch_toc = desktop.control("Jump to section: Architecture").await;
+    let overview_toc = desktop.control("Jump to section: Turn One Overview").await;
+    assert!(
+        desktop
+            .controls("Jump to section: code comment ignored")
+            .is_empty(),
+        "list-nested fenced code comment must not appear in TOC"
+    );
+    // TOC sits in the left margin beside the reading column.
+    assert!(
+        overview_toc.origin.x < px(520.)
+            && arch_toc.origin.x < px(520.)
+            && deep_toc.origin.x < px(520.),
+        "docked TOC should render in the left margin: overview={overview_toc:?}"
+    );
+    desktop.artifact("toc-turn1-wide");
+
+    // Clicking the first heading scrolls the top section into the viewport.
+    desktop.press("Jump to section: Turn One Overview").await;
+    let overview_marker = desktop.control("▸ Overview Marker").await;
+    assert!(
+        overview_marker.origin.y < px(320.),
+        "Overview Marker should land near the top of the viewport: {overview_marker:?}"
+    );
+    desktop.artifact("toc-turn1-overview");
+
+    // Clicking a distant virtualized heading across 28 paragraphs + wide JSON lands on Deep Dive.
+    desktop.press("Jump to section: Deep Dive").await;
+    let deep_marker = desktop.control("▸ Deep Dive Marker").await;
+    assert!(
+        deep_marker.origin.y < px(320.),
+        "Deep Dive Marker should land near the top of the viewport: {deep_marker:?}"
+    );
+    desktop.artifact("toc-turn1-deep-dive");
+
+    // Turn 2: short Markdown reply with a heading that fits inside the viewport -> TOC hides.
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Turn One End").await;
+    desktop.type_text("Turn two short markdown").await;
+    desktop.submit().await;
+    let mut reply2 = desktop.request(&mut fixture).await;
+    // Fits completely within the 406pt reading viewport while taking >50% of it so Turn 2
+    // becomes the viewed turn instead of Turn 1's tail above it.
+    reply2
+        .delta(
+            "# Short Note\n\n- First concise point.\n- Second concise point.\n- Third concise point.\n\nThis short answer fills most of the screen without overflowing.",
+        )
+        .await;
+    desktop
+        .wait("turn 2 reply did not finish", reply2.finish())
+        .await;
+    desktop
+        .until("turn 2 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop
+        .until("TOC should hide when viewing a short turn", || {
+            (desktop.controls("Jump to section: Short Note").is_empty()
+                && desktop
+                    .controls("Jump to section: Turn One Overview")
+                    .is_empty())
+            .then_some(())
+        })
+        .await;
+
+    // Turn 3: tall Markdown reply with distinct headings -> TOC switches to Turn 3.
+    desktop.type_text("Turn three long markdown").await;
+    desktop.submit().await;
+    let mut reply3 = desktop.request(&mut fixture).await;
+    reply3
+        .delta(&format!(
+            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n<details><summary>Verify Marker</summary>Verify details.</details>\n\n{}",
+            long_block("rollout", 10),
+            long_block("verify", 10),
+        ))
+        .await;
+    desktop
+        .wait("turn 3 reply did not finish", reply3.finish())
+        .await;
+    desktop
+        .until("turn 3 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("Jump to section: Verification").await;
+    desktop.control("Jump to section: Rollout Plan").await;
+    assert!(
+        desktop
+            .controls("Jump to section: Turn One Overview")
+            .is_empty(),
+        "TOC should reflect Turn 3, not Turn 1"
+    );
+
+    // Jump to top of Turn 3, then Return to latest restores bottom section visibility.
+    desktop.press("Jump to section: Rollout Plan").await;
+    let rollout_marker = desktop.control("▸ Rollout Marker").await;
+    assert!(rollout_marker.origin.y < px(320.));
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Verify Marker").await;
+
+    // Live-resize to a medium desktop width (1180x600 with sidebar open -> ~60pt left margin):
+    // switches from docked TOC to compact left rail + native Popover without overlapping prose.
+    desktop
+        .platform
+        .set_viewport(
+            size(
+                nsh_terminal::DevicePixels(1180),
+                nsh_terminal::DevicePixels(600),
+            ),
+            1.0,
+        )
+        .unwrap();
+    desktop.pump();
+    let rail = desktop.control("Table of contents").await;
+    desktop.artifact("toc-turn3-compact-rail");
+    desktop.hover_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.artifact("toc-turn3-compact-hover");
+    // Pin via click, then dismiss with Escape.
+    desktop.press_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.key("escape", false);
+    desktop
+        .until("compact TOC popover should close on Escape", || {
+            desktop
+                .controls("Jump to section: Rollout Plan")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    // Re-pin via click, then dismiss by pressing outside in the prose column.
+    desktop.press_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.press_at(point(px(900.), px(260.)));
+    desktop
+        .until("compact TOC popover should close on outside press", || {
+            desktop
+                .controls("Jump to section: Rollout Plan")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    // Narrower viewport (960x600 with sidebar open) has no safe left gutter -> TOC hides cleanly.
+    desktop
+        .platform
+        .set_viewport(
+            size(
+                nsh_terminal::DevicePixels(960),
+                nsh_terminal::DevicePixels(600),
+            ),
+            1.0,
+        )
+        .unwrap();
+    desktop.pump();
+    desktop
+        .until("TOC should hide when left gutter is too narrow", || {
+            desktop
+                .controls("Table of contents")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
+    use nsh_terminal::ScrollWheelEvent;
+
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1560),
+            nsh_terminal::DevicePixels(600),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    let toc_bar_peak_luma = |bounds: Bounds<nsh_terminal::Pixels>| -> u8 {
+        let strip = Bounds::new(
+            bounds.origin,
+            size(px(16.).min(bounds.size.width), bounds.size.height),
+        );
+        desktop
+            .pixels(strip)
+            .unwrap_or_default()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[0].max(px[1]).max(px[2]))
+            .max()
+            .unwrap_or(0)
+    };
+
+    let client = fixture.client().await;
+    let session_id = fixture.session.clone();
+    let connection_id = fixture.selection["connectionId"].clone();
+    let model_id = fixture.selection["modelId"].clone();
+    let send_turn = |message: &str| {
+        let client = &client;
+        let session = session_id.clone();
+        let connection_id = connection_id.clone();
+        let model_id = model_id.clone();
+        let message = message.to_string();
+        async move {
+            mutate(
+                client,
+                "send",
+                json!({
+                    "sessionId": session,
+                    "backend": {
+                        "kind": "model",
+                        "connectionId": connection_id,
+                        "modelId": model_id,
+                    },
+                    "message": message,
+                }),
+            )
+            .await;
+        }
+    };
+
+    // Turn 1: one turn split across 7 separate assistant/body final_answer rows so the
+    // outer List virtualizes distant rows of the same turn.
+    send_turn("Multi-row seven chapters").await;
+    let mut reply1 = desktop.request(&mut fixture).await;
+    for chapter in 1..=7 {
+        let paragraphs = (1..=26)
+            .map(|p| {
+                format!(
+                    "Chapter {chapter:02} paragraph {p:02}: sustained multi-line narrative ensuring each outer row spans multiple viewport heights."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let text = format!(
+            "# Chapter {chapter:02}\n\n<details><summary>Start {chapter:02}</summary>Chapter start.</details>\n\n{paragraphs}\n\n<details><summary>End {chapter:02}</summary>Chapter end.</details>"
+        );
+        reply1
+            .packet(json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "id": format!("chapter-{chapter}"),
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [{ "type": "output_text", "text": text }]
+                }
+            }))
+            .await;
+    }
+    reply1
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-multi-row", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply1.finish_stream().await;
+    desktop
+        .until("turn 1 multi-row did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("▸ End 07").await;
+
+    // All 7 chapters appear in the TOC even though Chapters 01..03 are virtualized off-screen.
+    for chapter in 1..=7 {
+        desktop
+            .control(&format!("Jump to section: Chapter {chapter:02}"))
+            .await;
+    }
+    // Chapter 07 (the visible row at the bottom) is highlighted, not an off-screen row like Chapter 05.
+    desktop
+        .until(
+            "Chapter 07 should be active over off-screen Chapter 05",
+            || {
+                let [ch5] = desktop.controls("Jump to section: Chapter 05")[..] else {
+                    return None;
+                };
+                let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(ch7) > toc_bar_peak_luma(ch5).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-multirow-ch7");
+
+    // Clicking unmounted Chapter 01 jumps across outer rows to Start 01 and activates Chapter 01.
+    desktop.press("Jump to section: Chapter 01").await;
+    let start01 = desktop.control("▸ Start 01").await;
+    assert!(
+        start01.origin.y < px(320.),
+        "Start 01 should land near top of viewport: {start01:?}"
+    );
+    desktop
+        .until(
+            "Chapter 01 should become active after cross-row jump",
+            || {
+                let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
+                    return None;
+                };
+                let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(ch1) > toc_bar_peak_luma(ch7).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-multirow-ch1");
+
+    // Clicking now-unmounted Chapter 07 jumps back across outer rows to Start 07 and activates Chapter 07.
+    desktop.press("Jump to section: Chapter 07").await;
+    let start07 = desktop.control("▸ Start 07").await;
+    assert!(
+        start07.origin.y < px(320.),
+        "Start 07 should land near top of viewport: {start07:?}"
+    );
+    desktop
+        .until("Chapter 07 should become active after return jump", || {
+            let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
+                return None;
+            };
+            let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                return None;
+            };
+            (toc_bar_peak_luma(ch7) > toc_bar_peak_luma(ch1).saturating_add(40)).then_some(())
+        })
+        .await;
+
+    // Toggling "Show message source" on Chapter 07 removes its un-jumpable headings from the TOC,
+    // and toggling "Show formatted message" restores them.
+    desktop.press("Return to latest").await;
+    let end07 = desktop.control("▸ End 07").await;
+    desktop.hover_at(end07.center());
+    desktop.press("Show message source").await;
+    desktop
+        .until("source-mode row should be excluded from TOC", || {
+            desktop
+                .controls("Jump to section: Chapter 07")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.press("Show formatted message").await;
+    desktop.control("Jump to section: Chapter 07").await;
+    desktop.control("▸ End 07").await;
+
+    // Turn 2: 48-heading reply where the TOC itself overflows and scrolls.
+    // Keep pointer over prose (never hovering TOC) and verify initial positioning reaches Section 48.
+    desktop.hover_at(point(px(900.), px(260.)));
+    send_turn("Forty eight sections").await;
+    let mut reply2 = desktop.request(&mut fixture).await;
+    let mut body48 = String::new();
+    for section in 1..=48 {
+        body48.push_str(&format!(
+            "## Section {section:02}\n\nSection {section:02} body paragraph one explaining the architecture.\n\nSection {section:02} body paragraph two with concrete details.\n\n"
+        ));
+    }
+    body48.push_str("<details><summary>Section 48 End</summary>Bottom marker.</details>");
+    reply2
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "long-48",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{ "type": "output_text", "text": body48 }]
+            }
+        }))
+        .await;
+    reply2
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-long-48", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply2.finish_stream().await;
+    desktop
+        .until("turn 2 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("▸ Section 48 End").await;
+
+    // Without hovering the TOC, Section 48 is immediately scrolled into view and highlighted.
+    let sec48 = desktop.control("Jump to section: Section 48").await;
+    desktop
+        .until(
+            "Section 48 should be active on initial render of long TOC",
+            || {
+                let [s48] = desktop.controls("Jump to section: Section 48")[..] else {
+                    return None;
+                };
+                let [s47] = desktop.controls("Jump to section: Section 47")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(s48) > toc_bar_peak_luma(s47).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-long48-initial");
+
+    // Manually scroll the TOC list up to Section 01, then move the pointer out over prose:
+    // the TOC must stay at Section 01 instead of snapping back to Section 48.
+    desktop.hover_at(sec48.center());
+    desktop
+        .retry(
+            "manual TOC scroll should reach Section 01",
+            || !desktop.controls("Jump to section: Section 01").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: sec48.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., 24.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.hover_at(point(px(900.), px(260.)));
+    for _ in 0..8 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        desktop.pump();
+    }
+    assert!(
+        !desktop.controls("Jump to section: Section 01").is_empty(),
+        "moving pointer out of TOC must not snap manual TOC scroll back to Section 48"
+    );
+
+    // Re-sync Turn 2 back to Section 48 so the native TOC List sits at the bottom offset,
+    // pause follow while viewing Section 48, add a second 48-section turn, then scroll into
+    // Second 01: the reused TOC List must scroll back to Second 01 instead of staying at 34..48.
+    desktop.press("Jump to section: Section 01").await;
+    desktop.hover_at(point(px(900.), px(260.)));
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Section 48 End").await;
+    desktop.control("Jump to section: Section 48").await;
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+            position: point(px(900.), px(260.)),
+            delta: nsh_terminal::ScrollDelta::Lines(point(0., 3.)),
+        })))
+        .unwrap();
+    desktop.pump();
+
+    let mut body48_second = String::from(
+        "## Second 01\n\n<details><summary>Second 01 Start</summary>Top of second long turn.</details>\n\nSecond 01 body paragraph one.\n\nSecond 01 body paragraph two.\n\n",
+    );
+    for section in 2..=48 {
+        body48_second.push_str(&format!(
+            "## Second {section:02}\n\nSecond {section:02} body paragraph one explaining rollout.\n\nSecond {section:02} body paragraph two with verification details.\n\n"
+        ));
+    }
+    body48_second.push_str("<details><summary>Second 48 End</summary>Bottom marker.</details>");
+    send_turn("Second forty eight sections").await;
+    let mut reply3 = desktop.request(&mut fixture).await;
+    reply3
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "long-48-second",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{ "type": "output_text", "text": body48_second }]
+            }
+        }))
+        .await;
+    reply3
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-long-48-second", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply3.finish_stream().await;
+    desktop
+        .until("turn 3 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    // Scroll down from Turn 2's bottom into Turn 3's top (Second 01).
+    desktop
+        .retry(
+            "scrolling down into Turn 3 did not reveal Second 01 Start",
+            || !desktop.controls("▸ Second 01 Start").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: point(px(900.), px(260.)),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -8.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.control("Jump to section: Second 01").await;
+
+    // Turn 4: short non-overflowing reply with a heading and a URL citation must NOT show TOC
+    // (folded sourceCitation rows are not standalone unmounted output rows).
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Second 48 End").await;
+    send_turn("Short cited answer").await;
+    let mut reply4 = desktop.request(&mut fixture).await;
+    let cite_marker = "\u{E200}cite\u{E202}turn4search0\u{E201}";
+    let cited_prefix = "# Quick Answer\n\nThe result is 42. ";
+    let cited_text = format!(
+        "{cited_prefix}{cite_marker}\n\nShort line two.\n\nShort line three.\n\nShort line four.\n\nShort line five."
+    );
+    let cite_start = cited_prefix.chars().count() as u64;
+    let cite_end = cite_start + cite_marker.chars().count() as u64;
+    reply4
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "short-cited",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{
+                    "type": "output_text",
+                    "text": cited_text,
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://example.com/answer",
+                        "title": "Example Reference",
+                        "start_index": cite_start,
+                        "end_index": cite_end
+                    }]
+                }]
+            }
+        }))
+        .await;
+    reply4
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-short-cited", "usage": { "input_tokens": 10, "output_tokens": 20 } }
+        }))
+        .await;
+    reply4.finish_stream().await;
+    desktop
+        .until("turn 4 short cited reply did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("example.com").await;
+    desktop
+        .until("short cited reply must keep TOC hidden", || {
+            desktop
+                .controls("Table of contents")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
     "desktop_external_agent_satisfies_new_session_connection_prompt",
@@ -3120,6 +3754,8 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
     "desktop_renders_provider_citation_markers_as_clean_inline_chips",
+    "desktop_markdown_toc_follows_active_turn_and_jumps_to_headings",
+    "desktop_markdown_toc_tracks_multi_row_turns_and_long_outline",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -3184,6 +3820,12 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_renders_provider_citation_markers_as_clean_inline_chips" => {
             runtime.block_on(desktop_renders_provider_citation_markers_as_clean_inline_chips())
+        }
+        "desktop_markdown_toc_follows_active_turn_and_jumps_to_headings" => {
+            runtime.block_on(desktop_markdown_toc_follows_active_turn_and_jumps_to_headings())
+        }
+        "desktop_markdown_toc_tracks_multi_row_turns_and_long_outline" => {
+            runtime.block_on(desktop_markdown_toc_tracks_multi_row_turns_and_long_outline())
         }
         other => panic!("unknown native desktop case: {other}"),
     }
