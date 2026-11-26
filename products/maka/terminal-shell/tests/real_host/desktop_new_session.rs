@@ -3231,7 +3231,7 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
     let mut reply3 = desktop.request(&mut fixture).await;
     reply3
         .delta(&format!(
-            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n<details><summary>Verify Marker</summary>Verify details.</details>\n\n{}",
+            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n{}\n\n<details><summary>Verify Marker</summary>Verify details.</details>",
             long_block("rollout", 10),
             long_block("verify", 10),
         ))
@@ -3433,7 +3433,11 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
             desktop.controls("Stop response").is_empty().then_some(())
         })
         .await;
-    desktop.control("▸ End 07").await;
+    // End 07 is already visible in the streaming overlay. Wait for its persisted
+    // row (with message actions) before navigating across the finalized rows.
+    let end07 = desktop.control("▸ End 07").await;
+    desktop.hover_at(end07.center());
+    desktop.control("Show message source").await;
 
     // All 7 chapters appear in the TOC even though Chapters 01..03 are virtualized off-screen.
     for chapter in 1..=7 {
@@ -3676,7 +3680,8 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     // (folded sourceCitation rows are not standalone unmounted output rows).
     desktop.press("Return to latest").await;
     desktop.control("▸ Second 48 End").await;
-    send_turn("Short cited answer").await;
+    desktop.type_text("Short cited answer").await;
+    desktop.submit().await;
     let mut reply4 = desktop.request(&mut fixture).await;
     let cite_marker = "\u{E200}cite\u{E202}turn4search0\u{E201}";
     let cited_prefix = "# Quick Answer\n\nThe result is 42. ";
@@ -3722,10 +3727,10 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     desktop.control("example.com").await;
     desktop
         .until("short cited reply must keep TOC hidden", || {
-            desktop
-                .controls("Table of contents")
-                .is_empty()
-                .then_some(())
+            (desktop.controls("Table of contents").is_empty()
+                && desktop.controls("Jump to section: Quick Answer").is_empty()
+                && desktop.controls("Jump to section: Second 48").is_empty())
+            .then_some(())
         })
         .await;
 
