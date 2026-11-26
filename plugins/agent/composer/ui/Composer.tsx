@@ -352,8 +352,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   gap: platform.idiom === 'terminal' ? 8 : 4,
                 }
           }
-          hoverStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.card : C.line }}
-          focusStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.raised : C.line }}
+          hoverStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.card : C.pressed }}
+          focusStyle={{ backgroundColor: platform.idiom === 'terminal' ? C.raised : C.pressed }}
         >
           <Icon
             name="folder"

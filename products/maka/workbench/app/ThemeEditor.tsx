@@ -481,8 +481,9 @@ function FontRows() {
   // The look Other was chosen on with no name typed yet; any other look shows its own font.
   const naming = signal<Look | null>(null);
   const shownChoice = () => (naming() === appearance.shown() ? 'other' : choice());
-  // A name is shown as it is typed and saved once it is submitted or left.
-  let typed = '';
+  // A name is shown as it is typed and saved once it is submitted or left, unless
+  // the look changed under it meanwhile (an undo, a preset). An empty name clears it.
+  let draft: { name: string; on: Look } | null = null;
   return (
     <>
       <SettingsSelect
@@ -508,12 +509,16 @@ function FontRows() {
           value={choice() === 'other' ? (family() ?? '') : ''}
           placeholder="Avenir Next"
           change={(value) => {
-            typed = value.trim();
-            if (typed) appearance.changeLook(withFont(typed), false);
+            const name = value.trim();
+            appearance.changeLook(withFont(name || undefined), false);
+            // Cleared, the look falls back to the system font; the field stays open to type in.
+            if (!name) naming.set(appearance.shown());
+            draft = { name, on: appearance.shown() };
           }}
           commit={() => {
-            if (typed) appearance.changeLook(withFont(typed), true);
-            typed = '';
+            if (draft?.on === appearance.shown())
+              appearance.changeLook(withFont(draft.name || undefined), true);
+            draft = null;
           }}
         />
       </If>

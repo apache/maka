@@ -55,7 +55,7 @@ export type FontChoice = 'system' | 'serif' | 'mono' | 'geometric';
 export const fontChoices: FontChoice[] = ['system', 'serif', 'mono', 'geometric'];
 // Lists as CSS writes them: each platform draws with the first family it has.
 export const fontFamilies: Record<Exclude<FontChoice, 'system'>, string> = {
-  serif: '"Songti SC", Georgia, "Noto Serif CJK SC", serif',
+  serif: 'Georgia, "Songti SC", "Noto Serif CJK SC", serif',
   mono: 'Menlo, Consolas, "PingFang SC", monospace',
   geometric: 'Futura, "Century Gothic", "PingFang SC", sans-serif',
 };
