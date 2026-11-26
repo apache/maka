@@ -70,10 +70,17 @@ pub(crate) fn replace(
         }
         fuzzy(source, old)?
     };
-    let length = source.len() - span.len() + new.len();
+    let is_crlf = source.contains("\r\n");
+    let adapted_new = if is_crlf && !new.contains("\r\n") && new.contains('\n') {
+        new.replace('\n', "\r\n")
+    } else {
+        new.to_string()
+    };
+
+    let length = source.len() - span.len() + adapted_new.len();
     let mut content = String::with_capacity(length);
     content.push_str(&source[..span.start]);
-    content.push_str(new);
+    content.push_str(&adapted_new);
     content.push_str(&source[span.end..]);
     let start = lines(&source[..span.start]);
     let matched = &source[span];
