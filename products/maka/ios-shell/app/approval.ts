@@ -126,6 +126,44 @@ export function describeChildDecision(value: unknown): string | null {
   return null;
 }
 
+function describeGrantScope(scope: unknown): string | null {
+  if (!scope || typeof scope !== 'object') return null;
+  const { kind } = scope as {
+    kind?: import('../../../../packages/plugin-sdk/src/generated/runtime').GrantScope['kind'];
+  };
+  const fields = (...keys: string[]) => exactObject(scope, ['kind', ...keys]);
+  const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
+  switch (kind) {
+    case 'browser_origin': {
+      const value = fields('origin');
+      return text(value?.origin) ? value.origin : null;
+    }
+    case 'browser_profile': {
+      const value = fields('browserId', 'generation');
+      return text(value?.browserId) && text(value.generation)
+        ? tr('Browser profile') + ': ' + value.browserId + ' · ' + value.generation
+        : null;
+    }
+    case 'capability':
+      return fields() ? tr('Entire capability') : null;
+    case 'mcp_tool': {
+      const value = fields('serverId', 'toolName');
+      return text(value?.serverId) && text(value.toolName)
+        ? 'MCP: ' + value.serverId + ' / ' + value.toolName
+        : null;
+    }
+    case 'computer_app': {
+      const value = fields('platform', 'applicationId');
+      return (value?.platform === 'macos' || value?.platform === 'windows') &&
+        text(value.applicationId)
+        ? value.platform + ': ' + value.applicationId
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
 export function approvalDetail(request: AgentInteractionRequest): {
   command?: string;
   permissions?: string;
@@ -140,19 +178,25 @@ export function approvalDetail(request: AgentInteractionRequest): {
       return { permissions: describeChildDecision(request.answer) ?? tr('Review on Desktop') };
     case 'service_approval':
       return { command: request.service + '.' + request.method + ' (' + request.binding + ')' };
-    case 'client_capability':
+    case 'client_capability': {
+      const target = request.target;
+      const scope = describeGrantScope(target?.scope);
+      if (scope === null) return { permissions: tr('Review on Desktop') };
       return {
-        permissions: [
-          request.target.providerId,
-          request.target.contractId,
-          request.target.serverId,
-          request.target.toolName,
-          request.target.capability,
-          request.target.scope,
-        ]
-          .filter(Boolean)
-          .join(' · '),
+        permissions:
+          [
+            target.providerId,
+            target.contractId,
+            target.serverId,
+            target.toolName,
+            target.capability,
+          ]
+            .filter((value) => typeof value === 'string' && !!value)
+            .join(' · ') +
+          '\n' +
+          scope,
       };
+    }
     case 'computer_app':
       return {
         permissions: [
@@ -214,8 +258,10 @@ export function approvalControls(request: AgentInteractionRequest | undefined) {
         session: { kind: request.kind, decision: 'session' },
         deny,
       };
-    case 'service_approval':
     case 'client_capability':
+      if (describeGrantScope(request.target?.scope) === null) return { deny };
+      return { primary: allow(tr('Allow'), { kind: request.kind, decision: 'allow' }), deny };
+    case 'service_approval':
       return { primary: allow(tr('Allow'), { kind: request.kind, decision: 'allow' }), deny };
     default:
       return {};

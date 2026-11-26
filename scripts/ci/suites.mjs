@@ -208,6 +208,7 @@ export const suites = {
     packages: ['maka-schema', 'maka-workbench'],
     extraInputs: [
       ...productInputs,
+      'products/maka/ios-shell/app',
       'products/maka/terminal-shell/tests/real_host',
       'skills/maka-plugin-authoring/assets',
     ],

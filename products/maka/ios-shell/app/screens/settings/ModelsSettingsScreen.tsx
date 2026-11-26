@@ -52,7 +52,7 @@ export function ModelsSettingsScreen(
   },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const data = signal<{
     catalog: Awaited<ReturnType<typeof connectionCatalog>>;
     models: Awaited<ReturnType<typeof modelChoices>>;
@@ -238,7 +238,7 @@ export function ProviderPicker(
   props: SettingsPageProps & { onSelect: (provider: Identity) => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const providers = signal<Awaited<ReturnType<typeof providerCatalog>> | null>(null);
   const search = signal('');
   const matches = () =>

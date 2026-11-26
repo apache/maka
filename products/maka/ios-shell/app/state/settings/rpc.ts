@@ -23,6 +23,7 @@ import type {
   CredentialStatus,
   CredentialVersionBasis,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
+import { tr } from '../../locale';
 import { activeHostInfo } from '../hostPool';
 import { hostMutate, hostQuery, type MutationProgress } from '../../bridge';
 
@@ -49,7 +50,7 @@ type Output<E extends Endpoint, M extends keyof ServiceMethods[E]> = ServiceMeth
   ? O
   : never;
 
-export function settingsRpc(rootId: string, canWrite?: () => boolean) {
+export function settingsRpc(rootId: string, writeGeneration?: () => number | undefined) {
   const endpoint = (name: Endpoint) => service[name as keyof typeof service] ?? name;
   return {
     query<E extends Endpoint, M extends Method<E, 'query'>>(
@@ -71,9 +72,11 @@ export function settingsRpc(rootId: string, canWrite?: () => boolean) {
       input: Input<E, M>,
       options?: { secret?: string; onProgress?: (progress: MutationProgress) => void },
     ) {
-      if (canWrite && !canWrite()) throw new Error('Settings page is no longer active');
+      const generation = writeGeneration ? writeGeneration() : activeHostInfo(rootId)?.generation;
+      if (generation === undefined) throw new Error(tr('Computer is offline'));
       return hostMutate<Output<E, M>>(endpoint(name), method, input as Record<string, unknown>, {
         rootId,
+        generation,
         ...options,
       });
     },
@@ -92,7 +95,7 @@ export function settingsWork(rootId: string, active?: () => boolean) {
   const error = signal('');
   let alive = true;
   let epoch = 0;
-  let operation: (() => boolean) | undefined;
+  let operation: (() => number | undefined) | undefined;
   const generation = computed(() => activeHostInfo(rootId)?.generation);
   effect(() => {
     active?.();
@@ -110,13 +113,15 @@ export function settingsWork(rootId: string, active?: () => boolean) {
 
   async function run(work: () => Promise<void>, safeError?: string) {
     if (!alive || busy()) return;
-    operation = fence();
+    const current = fence();
+    const connected = generation();
+    operation = () => (connected !== undefined && current() ? connected : undefined);
     busy.set(true);
     error.set('');
     try {
       await work();
     } catch (cause) {
-      if (operation?.())
+      if (current())
         error.set(safeError ?? (cause instanceof Error ? cause.message : String(cause)));
     } finally {
       operation = undefined;
@@ -124,7 +129,14 @@ export function settingsWork(rootId: string, active?: () => boolean) {
     }
   }
 
-  return { busy, error, run, fence, canWrite: () => operation?.() === true };
+  return {
+    busy,
+    error,
+    run,
+    fence,
+    canWrite: () => operation?.() !== undefined,
+    writeGeneration: () => operation?.(),
+  };
 }
 
 export type SettingsWork = ReturnType<typeof settingsWork>;

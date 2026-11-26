@@ -57,7 +57,7 @@ export function ConnectionFormScreen(
   },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const detail = signal<Awaited<ReturnType<typeof readConnection>> | null>(null);
   const provider = signal<SettingsProvider | null>(null);
   const credential = signal<CredentialStatus | null>(null);

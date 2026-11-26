@@ -25,8 +25,9 @@ import type {
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
 import { tr } from '../../locale';
 import { allSessions } from '../../state/sessions';
-import { changeMcp, mcpConfig, type McpConfig } from '../../state/settings/mcp';
+import { changeMcp, mcpConfig, projectMcpSummary, type McpConfig } from '../../state/settings/mcp';
 import { settingsRpc, settingsWork } from '../../state/settings/rpc';
+import { credentialFreeUrl } from '../../state/settings/sourceUrl';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   confirmSettingAction,
@@ -49,7 +50,7 @@ export function McpSettingsScreen(
   props: SettingsPageProps & { open: (target: McpTarget) => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const scope = workspaceScope(props.rootId, work.canWrite);
   const inventory = signal<AgentMcpConfigurationList | null>(null);
   const load = async () => {
@@ -91,13 +92,13 @@ export function McpSettingsScreen(
         work.error.set(tr('No project MCP consent is pending.'));
         return;
       }
+      const summary = projectMcpSummary(proposal);
+      if (summary === null) {
+        work.error.set(tr('Review on Desktop'));
+        return;
+      }
       if (
-        !(await confirmSettingAction(
-          tr('Trust project MCP servers?'),
-          tr('Trust'),
-          false,
-          [proposal.path, ...proposal.servers.map((server) => server.name)].join('\n'),
-        ))
+        !(await confirmSettingAction(tr('Trust project MCP servers?'), tr('Trust'), false, summary))
       )
         return;
       const result = await rpc.mutate('agent', 'trustProjectMcp', {
@@ -217,7 +218,7 @@ function stringMap(text: string): Record<string, string> {
 
 export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const target = props.target;
   const basis = signal<{ revision: string; configuration: McpConfig } | null>(null);
   const name = signal(target.name ?? '');
@@ -263,6 +264,14 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
     void work.run(async () => {
       if (!name().trim() || !address().trim())
         throw new Error(tr('Enter a server name and command or URL.'));
+      if (transport() === 'http' && !credentialFreeUrl(address().trim(), 'mcp')) {
+        work.error.set(
+          tr(
+            'Use an HTTP URL without credentials or query parameters. Use environment references or edit on Desktop.',
+          ),
+        );
+        return;
+      }
       const original = basis()!.configuration;
       const configuration: McpConfig =
         transport() === 'http'
@@ -322,7 +331,12 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
     >
       <If when={requiresDesktop()}>
         <InsetGroup>
-          <GroupRow title={tr('Review on Desktop')} />
+          <GroupRow
+            title={tr('Review on Desktop')}
+            subtitle={tr(
+              'This server stores literal environment variables or HTTP headers. Edit it on Desktop.',
+            )}
+          />
         </InsetGroup>
       </If>
       <InsetGroup>

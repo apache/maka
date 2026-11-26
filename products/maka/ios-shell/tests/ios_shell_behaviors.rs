@@ -404,7 +404,8 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         assert_eq!(state["active"]["rootId"], b_id);
 
         let save = |root: &str| json!({
-            "rootId":root, "endpoint":"web", "method":"save",
+            "rootId":root, "generation":state["connections"][root]["connection"]["generation"],
+            "endpoint":"web", "method":"save",
             "input":{"revision":null,"settings":{"enabled":true,"source":"custom","backend":{"kind":"tavily"}}}
         });
         let watch = |root: &str| json!({
@@ -447,7 +448,8 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         }]])).await;
         assert!(rejected[0]["error"].as_str().unwrap().contains("does not accept a secret"));
         let saved = driver.call("ios.hostMutate", json!({
-            "rootId":b_id, "endpoint":"web", "method":"saveKey", "secret":secret,
+            "rootId":b_id, "generation":state["connections"][&b_id]["connection"]["generation"],
+            "endpoint":"web", "method":"saveKey", "secret":secret,
             "input":{"settingsRevision":snapshots[1]["ok"]["value"]["revision"],"revision":null}
         })).await;
         assert_eq!(saved["value"]["kind"], "updated");
@@ -459,6 +461,13 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         driver.call("ios.connectHost", json!({"rootId":a_id})).await;
         assert_eq!(a.sas().await.0, peers[0]);
         let a_new = driver.call("ios.subscribe", watch(&a_id)).await;
+        let mut unpinned = save(&a_id);
+        unpinned.as_object_mut().unwrap().remove("generation");
+        let rejected = driver.batch(json!([["ios.hostMutate", unpinned]])).await;
+        assert!(rejected[0]["error"].as_str().unwrap().contains("require a connection generation"));
+        let rejected = driver.batch(json!([["ios.hostMutate", save(&a_id)]])).await;
+        assert!(rejected[0]["error"].as_str().unwrap().contains("anchor no longer matches UI"));
+
         assert_eq!(driver.call("ios.unsubscribe", a_handle.clone()).await["cancelled"], false);
         assert_eq!(items.recv().await.unwrap()["rootId"], a_id);
         assert_eq!(driver.call("ios.unsubscribe", a_new).await["cancelled"], true);
@@ -1413,6 +1422,9 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     let skill = json!({"reference":"skill-ref","name":"Release checklist","description":"Release process",
         "bundled":false,"valid":true,"source":"user","path":"/skills/check","preference":{"enabled":true,"pinned":false},
         "installation":{"source":{"kind":"directory","path":"/src"},"directory":"check"}});
+    let bad_launch = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let bad_launch_q = bad_launch.clone();
+    let (discovery_tx, mut discoveries) = mpsc::unbounded_channel();
     let source_q = source.clone();
     let package_q = package.clone();
     channel.handle("ios.hostQuery", move |mut call| {
@@ -1420,7 +1432,8 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
         assert_eq!(data["rootId"], "root-m5");
         let workspace = &data["input"]["workspace"];
         let value = match (data["endpoint"].as_str().unwrap(),data["method"].as_str().unwrap()) {
-            ("agent", "list") => json!({"sessions":[]}),
+            ("agent", "list") => json!({"sessions":[{"id":"project-session","title":"Workspace session","kind":"agent",
+                "workspace":{"path":"/work","name":"Fixture workspace"},"updatedAt":1700000000000u64,"activity":"idle"}]}),
             ("agent", "botOutbox") => json!({"isBot":false,"through":0,"readThrough":0}),
             ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[
                 {"reference":{"id":"project"},"name":"Fixture workspace","path":"/work","archived":false,"available":true}
@@ -1433,6 +1446,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             ("management", "instances") => json!({"source":source_q,"instances":[plugin],"next":null}),
             ("management", "read") => json!({"source":{"reference":source_q,"input":{"instances":{"demo":{"bindings":{}}}}},"packages":[package_q]}),
             ("management", "readSettings") => json!({"fields":[],"next":null}),
+            ("agent", "projectMcp") => {
+                assert_eq!(data["input"]["sessionId"], "project-session");
+                json!({"kind":"configuration","path":"/work/.mcp.json","revision":"trust-basis","trusted":false,
+                    "servers":[{"name":"demo","launch":if bad_launch_q.load(std::sync::atomic::Ordering::SeqCst) {" "} else {"mcp-tool --stdio"},
+                    "environment":["FIXTURE_TOKEN"],"headers":["Authorization"],"readOnlyTools":["look_up"],"preapproved":true}],
+                    "disabled":["old"]})
+            }
             ("agent", "mcpConfigurations") => {
                 let location = if workspace.is_null() { "user:agents" } else {
                     assert_eq!(workspace, &json!({"projectId":"project","path":"/work"}));
@@ -1443,7 +1463,11 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
                 ]}]})
             }
             ("skills", "list") => json!({"kind":"page","revision":"skill-basis","preferenceRevision":3,
-                "entries":[skill],"targets":[],"writable":true}),
+                "entries":[skill],"targets":[{"location":"user:agents","path":"/skills"}],"writable":true}),
+            ("skills", "discoverSource") => {
+                discovery_tx.send(data["input"]["source"].clone()).unwrap();
+                json!({"source":{"kind":"directory","path":"/skills"},"skills":[]})
+            }
             ("skills", "read") => json!({"kind":"page","entry":skill,"revision":"skill-basis","text":"Fixture skill instructions.",
                 "preferencesWritable":true,"preferenceRevision":3,"writable":true,"after":null}),
             method => panic!("unexpected query {method:?}"),
@@ -1460,6 +1484,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "deletePreset" => json!({"kind":"deleted"}),
             "setEnabled" | "editComposition" => json!({"status":"committed","value":source}),
             "installUrl" => json!({"status":"committed","value":{"source":source,"package":{"id":"new.plugin","revision":"v2"}}}),
+            "trustProjectMcp" => json!({"kind":"trusted"}),
             "setPreference" | "delete" => json!({"kind":"applied"}),
             method => panic!("unexpected mutation {method}"),
         };
@@ -1486,6 +1511,21 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "Remove"
         } else if dialog.title.as_deref().unwrap().starts_with("Install") {
             "Install"
+        } else if dialog.title.as_deref() == Some("Trust project MCP servers?") {
+            let message = dialog.message.as_deref().unwrap();
+            for part in [
+                "outside the conversation sandbox",
+                "/work/.mcp.json",
+                "demo: mcp-tool --stdio",
+                "FIXTURE_TOKEN",
+                "Authorization",
+                "look_up",
+                "preapproved",
+                "Disabled servers: old",
+            ] {
+                assert!(message.contains(part), "missing {part} in {message}");
+            }
+            "Trust"
         } else {
             panic!("unexpected dialog {:?}", dialog.title)
         };
@@ -1542,15 +1582,53 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     app.press("label:Workspace").unwrap();
     app.choose_menu_item("Fixture workspace").unwrap();
     app.wait_for("text:Fixture workspace").unwrap();
+    app.press("label:Review project MCP consent").unwrap();
+    app.wait_for("text:Review on Desktop").unwrap();
+    assert!(writes.try_recv().is_err());
+    bad_launch.store(false, std::sync::atomic::Ordering::SeqCst);
+    app.press("label:Review project MCP consent").unwrap();
+    let trust = writes.try_recv().unwrap();
+    assert_eq!(trust["method"], "trustProjectMcp");
+    assert_eq!(trust["input"]["revision"], "trust-basis");
+
     app.press("label:Add MCP server").unwrap();
     app.wait_for("label:Command").unwrap();
     app.type_text("label:Name", "new-server").unwrap();
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("HTTP").unwrap();
+    for url in [
+        "https://user@example.test/mcp",
+        "https://example.test/mcp?token=fixture",
+    ] {
+        app.clear("label:URL").unwrap();
+        app.type_text("label:URL", url).unwrap();
+        app.press("label:Save").unwrap();
+        app.wait_for("text:/Use an HTTP URL without credentials/")
+            .unwrap();
+        assert!(writes.try_recv().is_err());
+    }
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("stdio").unwrap();
     app.type_text("label:Command", "mcp-tool").unwrap();
+    app.send_host_event("ios.hostState", json!({"revision":2, "devicePeerId":"phone",
+        "hosts":[{"rootId":"root-m5","hostName":"Settings computer","peerId":"peer","endpoints":[]}],
+        "active":null,"connections":{"root-m5":{"status":"offline"}}})).unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Could not save the MCP server.").unwrap();
+    assert!(writes.try_recv().is_err());
+    app.send_host_event("ios.hostState", json!({"revision":3, "devicePeerId":"phone",
+        "hosts":[{"rootId":"root-m5","hostName":"Settings computer","peerId":"peer","endpoints":["agent","settings","management","skills"]}],
+        "connections":{"root-m5":{"status":"connected","connection":{
+            "rootId":"root-m5","hostName":"Settings computer","generation":8,
+            "session":"new-anchor","epoch":"e","transport":"quic","endpoints":["agent","settings","management","skills"]
+        }}}})).unwrap();
+    assert!(writes.try_recv().is_err());
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "manageMcpServer");
     assert_eq!(write["input"]["workspace"]["projectId"], "project");
     assert_eq!(write["input"]["location"], "project:agents");
+    assert_eq!(write["generation"], 8);
     assert_eq!(
         write["input"]["change"]["configuration"]["command"],
         "mcp-tool"
@@ -1570,6 +1648,29 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
 
     app.press("label:Skills").unwrap();
     app.wait_for("label:Release checklist").unwrap();
+    for url in [
+        "https://user:fixture@example.test/skills",
+        "https:/user:fixture@example.test/skills",
+        "https:user:fixture@example.test/skills",
+        "https\t:/user@example.test/skills",
+        "https://user@example.test/skills",
+        "https://example.test/skills?token=fixture",
+        "user:fixture@example.test:org/skills",
+    ] {
+        app.clear("label:Source").unwrap();
+        app.type_text("label:Source", url).unwrap();
+        app.press("label:Find skills").unwrap();
+        app.wait_for("text:Use a URL without credentials.").unwrap();
+        assert!(discoveries.try_recv().is_err());
+    }
+    app.clear("label:Source").unwrap();
+    app.type_text("label:Source", "https://example.test/skills")
+        .unwrap();
+    app.press("label:Find skills").unwrap();
+    assert_eq!(
+        discoveries.try_recv().unwrap(),
+        "https://example.test/skills"
+    );
     app.press("label:Release checklist").unwrap();
     app.wait_for("text:Fixture skill instructions.").unwrap();
     app.press("label:Enabled").unwrap();
@@ -1607,7 +1708,24 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
         json!({"kind":"permissions","toolUseId":tool,
         "request":{"reason":"Report access","command":{"command":"read-report"},"permissions":permissions}})
     };
+    let capability = |scope| {
+        json!({"kind":"client_capability","toolUseId":"tool","target":{
+        "providerId":"browser","contractId":"browser","serverId":"browser","toolName":"navigate",
+        "capability":"browser","scope":scope}})
+    };
     let cases = [
+        (
+            capability(json!({"kind":"browser_origin","origin":"https://example.test"})),
+            "https://example.test",
+            "Allow",
+            json!({"kind":"client_capability","decision":"allow"}),
+        ),
+        (
+            capability(json!({"kind":"future_scope","scope":"everything"})),
+            "Review on Desktop",
+            "Deny",
+            json!({"kind":"client_capability","decision":"deny"}),
+        ),
         (
             json!({"kind":"permissions","toolUseId":"tool","request":{"reason":"Future wire permission",
                 "command":{"command":"read-report"},"permissions":{"filesystem":[],"network":"denied","future":true}}}),

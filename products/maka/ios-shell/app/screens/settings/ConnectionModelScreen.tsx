@@ -45,7 +45,7 @@ export function ConnectionModelScreen(
   props: SettingsPageProps & { connectionId: string; modelId: string; onSaved: () => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const detail = signal<Awaited<ReturnType<typeof readConnection>> | null>(null);
   const draft = signal<ModelOverride>({});
   const limits = signal({

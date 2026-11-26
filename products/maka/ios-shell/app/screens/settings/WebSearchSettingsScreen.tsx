@@ -40,7 +40,7 @@ import {
 
 export function WebSearchSettingsScreen(props: SettingsPageProps) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const basis = signal<WebSnapshot | null>(null);
   const draft = signal<WebSettings | null>(null);
   const secret = signal('');
