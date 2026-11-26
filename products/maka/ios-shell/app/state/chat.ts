@@ -18,11 +18,6 @@
  */
 
 import { approvalOutcome, approvalRejectionError } from '../approval';
-import type {
-  AgentInteractionResult,
-  AgentSendResult,
-  QuoteRef,
-} from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
@@ -34,12 +29,19 @@ import {
   type AgentHistoryChunk,
   type AgentHistoryPage,
   type AgentInteractionRecord,
+  type AgentInteractionResult,
   type AgentInteractionSummary,
   type AgentModelChoice,
+  type AgentMetadataResult,
+  type AgentQueueMutationResult,
   type AgentObservation,
   type AgentQueue,
   type AgentRoomMessage,
   type AgentSession,
+  type AgentSendResult,
+  type HistoryOrder,
+  type HistoryRowAddress,
+  type QuoteRef,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
@@ -79,7 +81,10 @@ export const displayModelKey = (backend: AgentBackendPreference) =>
     ? JSON.stringify(['model', backend.connectionId, backend.modelId])
     : backendKey(backend);
 
-export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
+export function compareHistoryRows(
+  a: Pick<AgentHistoryChunk, 'order'>,
+  b: Pick<AgentHistoryChunk, 'order'>,
+): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
     const order = a.order.path[i] - b.order.path[i];
     if (order) return order;
@@ -117,6 +122,40 @@ export function assembleHistoryRows(chunks: readonly AgentHistoryChunk[]): Histo
   return rows;
 }
 
+export function historyAddressKey(position: HistoryRowAddress): string {
+  switch (position.kind) {
+    case 'live':
+      return JSON.stringify([position.kind, position.sequence, position.fact, position.itemIndex]);
+    case 'snapshot':
+      return JSON.stringify([
+        position.kind,
+        position.path,
+        position.snapshot,
+        position.sequence,
+        position.fact,
+        position.itemIndex,
+      ]);
+    case 'imported':
+      return JSON.stringify([
+        position.kind,
+        position.path,
+        position.snapshot,
+        position.messageOrdinal,
+        position.partOrdinal,
+      ]);
+  }
+}
+
+export function historyQuote(row: HistoryRow, text: string): QuoteRef {
+  const { messageId, turnId, role } = row.first;
+  return {
+    text: trimHostWhitespace(text),
+    label: role === 'user' ? tr('You') : 'Maka',
+    sourceMessageId: messageId ?? undefined,
+    sourceTurnId: turnId ?? undefined,
+  };
+}
+
 export function isCompleteHistoryRow(row: HistoryRow): boolean {
   const { last } = row;
   return (
@@ -126,20 +165,32 @@ export function isCompleteHistoryRow(row: HistoryRow): boolean {
 
 export const quoteLimit = 16;
 
+export interface SideAnchor {
+  position: HistoryRowAddress;
+  order: HistoryOrder;
+}
+
 export interface DraftQuote {
   id: number;
   sourceKey: string;
   reference: QuoteRef;
+  anchor?: SideAnchor;
+}
+
+export interface DraftLink {
+  id: string;
+  title: string;
 }
 
 interface Draft {
   // Text and quotes can be edited independently while a snapshot is being sent.
   readonly input: { readonly text: string };
   readonly quotes: readonly DraftQuote[];
+  readonly links: readonly DraftLink[];
   readonly sending: boolean;
 }
 
-const emptyDraft: Draft = { input: { text: '' }, quotes: [], sending: false };
+const emptyDraft: Draft = { input: { text: '' }, quotes: [], links: [], sending: false };
 const draftMap = signal<Record<string, Draft>>({});
 const scrollOffsetMap = new Map<string, number>();
 let nextQuoteId = 0;
@@ -155,7 +206,8 @@ function updateDraft(rootId: string, sessionId: string, update: (draft: Draft) =
     const next = update(current);
     if (next === current) return prev;
     const drafts = { ...prev };
-    if (next.input.text || next.quotes.length || next.sending) drafts[key] = next;
+    if (next.input.text || next.quotes.length || next.links.length || next.sending)
+      drafts[key] = next;
     else delete drafts[key];
     return drafts;
   });
@@ -167,9 +219,47 @@ export function setDraft(rootId: string, sessionId: string, text: string) {
   );
 }
 
+export function seedSideDraft(
+  rootId: string,
+  sessionId: string,
+  text: string,
+  quotes: readonly DraftQuote[],
+) {
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, input: { text }, quotes }));
+}
+
+export function appendSideLink(rootId: string, mainId: string, side: DraftLink) {
+  updateDraft(rootId, mainId, (draft) =>
+    draft.links.some(({ id }) => id === side.id)
+      ? draft
+      : { ...draft, links: [...draft.links, { id: side.id, title: side.title }] },
+  );
+}
+
+export function removeDraftLink(rootId: string, sessionId: string, id: string) {
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    links: draft.links.filter((link) => link.id !== id),
+  }));
+}
+
+function sessionInvocation({ id, title }: DraftLink): string {
+  // Same inline session reference as Desktop's sessionInvocation.
+  const label = (title || id).replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').replace(/[\\\]/]/g, '\\$&');
+  return `[@${label}](maka://session/${id})`;
+}
+
 // Rust str::trim uses Unicode White_Space, not JavaScript's trim set.
 export function trimHostWhitespace(text: string): string {
   return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+}
+
+export function draftQuote(
+  sourceKey: string,
+  reference: QuoteRef,
+  anchor?: SideAnchor,
+): DraftQuote {
+  return { id: ++nextQuoteId, sourceKey, reference, anchor };
 }
 
 export function appendDraftQuote(
@@ -177,6 +267,7 @@ export function appendDraftQuote(
   sessionId: string,
   sourceKey: string,
   reference: QuoteRef,
+  anchor?: SideAnchor,
 ): boolean {
   const text = trimHostWhitespace(reference.text);
   if (!text) return false;
@@ -192,7 +283,7 @@ export function appendDraftQuote(
   }
   updateDraft(rootId, sessionId, (draft) => ({
     ...draft,
-    quotes: [...quotes, { id: ++nextQuoteId, sourceKey, reference: { ...reference, text, label } }],
+    quotes: [...draft.quotes, draftQuote(sourceKey, { ...reference, text, label }, anchor)],
   }));
   return true;
 }
@@ -322,9 +413,98 @@ export async function fetchGitWorkspaceDiff(
   );
 }
 
+// Snapshot and consume only the submitted draft, whether this is the first side question or a normal send.
+export async function sendDraft(
+  rootId: string,
+  sessionId: string,
+  room: boolean,
+  selectedBackend: (generation: number) => Promise<AgentBackendPreference | null | false>,
+  current = () => true,
+  onError?: (message: string) => void,
+): Promise<boolean> {
+  const snapshot = getDraft(rootId, sessionId);
+  const quotes = room ? undefined : snapshot.quotes;
+  const links = room ? [] : snapshot.links;
+  const text = [trimHostWhitespace(snapshot.input.text), ...links.map(sessionInvocation)]
+    .filter(Boolean)
+    .join(' ');
+  if (snapshot.sending || (!text && !quotes?.length)) return false;
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: true }));
+  const fail = (message: string) => {
+    hapticNotification('error');
+    if (current()) onError?.(message);
+    showToast(message);
+    return false;
+  };
+  try {
+    const connection = activeHostInfo(rootId);
+    if (!connection) return fail(tr('Computer is offline'));
+    const { generation } = connection;
+    let backend = room ? null : await selectedBackend(generation);
+    if (backend === false || !current()) return false;
+    if (!room && !backend && connection.endpoints.includes('settings')) {
+      const choice = await readDefaultModel(settingsRpc(rootId));
+      backend = choice ? modelBackend(choice) : null;
+    }
+    if (!current()) return false;
+    if (activeHostInfo(rootId)?.generation !== generation) return fail(tr('Computer is offline'));
+    if (!room && !backend) return fail(tr('Select model'));
+    let res: AgentSendResult;
+    try {
+      res = await hostMutate<AgentSendResult>(
+        'agent',
+        'send',
+        {
+          mentions: [],
+          replyTo: null,
+          onComplete: null,
+          ...(quotes && { quotes: quotes.map((quote) => quote.reference) }),
+          delivery: 'queue',
+          expectedRunId: null,
+          attachments: [],
+          backend,
+          sessionId,
+          message: text,
+        },
+        { rootId, generation },
+      );
+    } catch (cause) {
+      console.warn('Could not confirm send result', cause);
+      return fail(
+        tr(
+          'Could not confirm whether the message was sent. Check the conversation or queue before retrying.',
+        ),
+      );
+    }
+    if (res.kind === 'rejected' || res.kind === 'not_your_worker') {
+      console.warn('Host declined send', res.kind === 'rejected' ? res.reason : res.kind);
+      return fail(tr('Could not send the message.'));
+    }
+    const sentQuoteIds = new Set(quotes?.map((quote) => quote.id));
+    updateDraft(rootId, sessionId, (draft) => ({
+      ...draft,
+      input: draft.input === snapshot.input ? emptyDraft.input : draft.input,
+      quotes: draft.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
+      links: draft.links.filter((link) => !links.includes(link)),
+    }));
+  } catch (cause) {
+    console.warn('Could not send message', cause);
+    return fail(tr('Could not send the message.'));
+  } finally {
+    updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: false }));
+  }
+  hapticSelection();
+  void refreshHostSessions(rootId, hostById(rootId)?.hostName ?? rootId);
+  return true;
+}
+
 let watchSeq = 0;
 
-export function createConversationController(rootId: string, initialSession: AgentSession) {
+export function createConversationController(
+  rootId: string,
+  initialSession: AgentSession,
+  enabled = true,
+) {
   const sessionId = initialSession.id;
   const observed = signal<{ generation: number; value: AgentObservation } | null>(null);
   const observation = () => {
@@ -623,88 +803,38 @@ export function createConversationController(rootId: string, initialSession: Age
   const draft = () => getDraft(rootId, sessionId);
   const sending = () => draft().sending;
   const hasDraftContent = () =>
-    Boolean(trimHostWhitespace(draft().input.text) || (!isRoom() && draft().quotes.length));
+    Boolean(
+      trimHostWhitespace(draft().input.text) ||
+        (!isRoom() && (draft().quotes.length || draft().links.length)),
+    );
 
-  // Always uses 'queue' delivery (never implicit steer-while-running).
   const sendMessage = async () => {
-    if (!hasDraftContent() || sending()) return false;
-    const snapshot = draft();
-    const text = trimHostWhitespace(snapshot.input.text);
-    updateDraft(rootId, sessionId, (current) => ({ ...current, sending: true }));
     error.set(null);
-    try {
-      const connection = activeHostInfo(rootId);
-      if (!connection) throw new Error(tr('Computer is offline'));
-      const { generation } = connection;
-      let backend: AgentBackendPreference | null = null;
-      if (!isRoom()) {
+    const sent = await sendDraft(
+      rootId,
+      sessionId,
+      isRoom(),
+      async (generation) => {
+        if (isRoom()) return null;
         const pending = selectingModel();
         if (pending && !(await pending.done)) return false;
         if (!observation() && activeHostInfo(rootId)?.generation === generation)
           await loadObserve(false);
-        if (disposed) return false;
+        if (disposed) return null;
         if (activeHostInfo(rootId)?.generation !== generation)
           throw new Error(tr('Computer is offline'));
         if (!observation()) throw new Error(error() ?? tr('Select model'));
-        backend = selectedBackend();
-        if (!backend && connection.endpoints.includes('settings')) {
-          const choice = await readDefaultModel(settingsRpc(rootId));
-          if (disposed) return false;
-          if (activeHostInfo(rootId)?.generation !== generation)
-            throw new Error(tr('Computer is offline'));
-          backend = selectedBackend() ?? (choice ? modelBackend(choice) : null);
-        }
-        if (!backend) throw new Error(tr('Select model'));
-      }
-      if (disposed || (isRoom() && !text)) return false;
-      const quotes = isRoom() ? undefined : snapshot.quotes;
-      const res = await hostMutate<AgentSendResult>(
-        'agent',
-        'send',
-        {
-          mentions: [],
-          replyTo: null,
-          onComplete: null,
-          ...(quotes && { quotes: quotes.map((quote) => quote.reference) }),
-          delivery: 'queue',
-          expectedRunId: null,
-          attachments: [],
-          backend,
-          sessionId,
-          message: text,
-        },
-        { rootId, generation },
-      );
-      if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
-        throw new Error(tr('Could not send the message.'), {
-          cause: res.kind === 'rejected' ? res.reason : res.kind,
-        });
-      }
-      const sentQuoteIds = new Set(quotes?.map((quote) => quote.id));
-      updateDraft(rootId, sessionId, (current) => ({
-        ...current,
-        input: current.input === snapshot.input ? emptyDraft.input : current.input,
-        quotes: current.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
-      }));
-    } catch (cause) {
-      hapticNotification('error');
-      const msg = cause instanceof Error ? cause.message : String(cause);
-      error.set(msg);
-      showToast(msg);
-      return false;
-    } finally {
-      updateDraft(rootId, sessionId, (current) => ({ ...current, sending: false }));
-    }
-
-    hapticSelection();
-    if (!disposed) {
+        return selectedBackend();
+      },
+      () => !disposed,
+      (message) => error.set(message),
+    );
+    if (sent && !disposed) {
       void Promise.all([loadObserve(), loadHistory()]).catch((cause) => {
         if (!disposed) error.set(cause instanceof Error ? cause.message : String(cause));
       });
     }
-    const hostName = hostById(rootId)?.hostName ?? rootId;
-    void refreshHostSessions(rootId, hostName);
-    return true;
+    return sent;
   };
 
   const stopRun = async () => {
@@ -733,9 +863,12 @@ export function createConversationController(rootId: string, initialSession: Age
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (!observation()) throw new Error(error() ?? tr('Select model'));
         if (alreadySelected()) return true;
-        const result = await hostMutate<
-          import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
-        >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
+        const result = await hostMutate<AgentMetadataResult>(
+          'agent',
+          'selectBackend',
+          { sessionId, backend },
+          { rootId, generation },
+        );
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (result.kind !== 'committed')
           throw new Error(tr('Could not change the model.'), { cause: result.kind });
@@ -761,9 +894,7 @@ export function createConversationController(rootId: string, initialSession: Age
   const cancelQueuedMessage = async (messageId: string) => {
     const q = queue();
     try {
-      const result = await hostMutate<
-        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentQueueMutationResult
-      >(
+      const result = await hostMutate<AgentQueueMutationResult>(
         'agent',
         'editQueue',
         {
@@ -879,6 +1010,7 @@ export function createConversationController(rootId: string, initialSession: Age
   };
 
   effect(() => {
+    if (!enabled) return;
     const conn = activeHostInfo(rootId);
     if (!conn) {
       stopWatch();

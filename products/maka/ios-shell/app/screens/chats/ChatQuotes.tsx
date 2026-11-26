@@ -18,22 +18,21 @@
  */
 
 import { Clipboard, computed, openUrl, Scroll, signal, Text, token, View, type ViewRef } from 'nsh';
-import { Button, TextView } from 'nsh/base';
+import { Button, ContextMenu, TextView } from 'nsh/base';
 import type { AgentHistoryChunk } from '../../bridge';
 import { tr } from '../../locale';
 import {
-  clearDraftQuotes,
   isCompleteHistoryRow,
   quoteLimit,
-  removeDraftQuote,
   trimHostWhitespace,
+  type DraftLink,
   type DraftQuote,
   type HistoryRow,
 } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { type } from '../../theme/tokens';
-import { Icon } from '../../ui';
+import { ActionButton, Icon } from '../../ui';
 
 function isQuotable(row: HistoryRow) {
   return !row.first.sourceCitation && Boolean(trimHostWhitespace(row.text));
@@ -43,6 +42,7 @@ export function MessageBody(props: {
   row: HistoryRow;
   limitReached: boolean;
   onQuote: (row: HistoryRow, text: string) => boolean;
+  onAskSide?: (row: HistoryRow, text?: string) => boolean;
 }) {
   const selection = signal<{ body: string; text: string } | null>(null);
   const selectedExcerpt = () => {
@@ -53,6 +53,13 @@ export function MessageBody(props: {
   const quoteSelection = () => {
     const text = selectedExcerpt();
     if (text && !props.limitReached && props.onQuote(props.row, text)) {
+      selection.set(null);
+      area?.clearSelection();
+    }
+  };
+
+  const askSide = () => {
+    if (props.onAskSide?.(props.row, selectedExcerpt() || undefined)) {
       selection.set(null);
       area?.clearSelection();
     }
@@ -76,6 +83,15 @@ export function MessageBody(props: {
                   disabled: props.limitReached,
                   onSelect: quoteSelection,
                 },
+                ...(props.onAskSide
+                  ? [
+                      {
+                        label: tr('Ask Side Question'),
+                        symbol: 'arrow.turn.down.right',
+                        onSelect: askSide,
+                      },
+                    ]
+                  : []),
               ]
             : []
         }
@@ -132,38 +148,75 @@ const replyActionStyle = {
 export function ReplyActions(props: {
   bodies: readonly HistoryRow[];
   limitReached: boolean;
-  onQuote: (row: HistoryRow, text: string, combined: boolean) => boolean;
+  onQuote: (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => boolean;
+  onAskSide?: () => void;
 }) {
   const sources = computed(() => props.bodies.filter(isQuotable));
-  return (
+  const canQuote = () =>
+    sources().length > 0 && !props.limitReached && sources().every(isCompleteHistoryRow);
+  const copyReply = () => {
+    hapticSelection();
+    void Clipboard.writeText(props.bodies.map((row) => row.text).join('\n\n'));
+    showToast(tr('Copied'));
+  };
+  const quoteReply = () => {
+    if (!canQuote()) return;
+    const rows = sources();
+    props.onQuote(
+      rows[0],
+      rows.map((row) => row.text).join('\n\n'),
+      rows.length > 1 ? rows : undefined,
+    );
+  };
+  const actions = (
     <View style={{ flexDirection: 'row' }}>
       <Button
         accessibilityLabel={tr('Copy reply')}
         class="active:opacity-60"
         style={replyActionStyle}
-        onPress={() => {
-          hapticSelection();
-          void Clipboard.writeText(props.bodies.map((row) => row.text).join('\n\n'));
-          showToast(tr('Copied'));
-        }}
+        onPress={copyReply}
       >
         <Icon name="copy" color={token('muted-foreground')} size={16} />
       </Button>
       <If when={sources().length}>
         <Button
           accessibilityLabel={tr('Quote')}
-          disabled={props.limitReached || !sources().every(isCompleteHistoryRow)}
+          disabled={!canQuote()}
           class="active:opacity-60 disabled:opacity-45"
           style={replyActionStyle}
-          onPress={() => {
-            const rows = sources();
-            props.onQuote(rows[0], rows.map((row) => row.text).join('\n\n'), rows.length > 1);
-          }}
+          onPress={quoteReply}
         >
           <Icon name="quote" color={token('muted-foreground')} size={16} />
         </Button>
       </If>
     </View>
+  );
+  return (
+    <If when={props.onAskSide} else={actions}>
+      {/* Keep UIKit's context recognizer off the selectable text. */}
+      <ContextMenu
+        trigger={actions}
+        items={[
+          { id: 'copy', label: tr('Copy reply'), icon: 'doc.on.doc' },
+          ...(sources().length
+            ? [
+                {
+                  id: 'quote',
+                  label: tr('Add to quotes'),
+                  icon: 'quote.bubble',
+                  disabled: !canQuote(),
+                },
+              ]
+            : []),
+          { id: 'ask-side', label: tr('Ask Side Question'), icon: 'arrow.turn.down.right' },
+        ]}
+        onSelect={({ id }) => {
+          if (id === 'ask-side') props.onAskSide?.();
+          else if (id === 'quote') quoteReply();
+          else if (id === 'copy') copyReply();
+        }}
+      />
+    </If>
   );
 }
 
@@ -208,30 +261,39 @@ export function HistoryQuotes(props: { quotes: NonNullable<AgentHistoryChunk['qu
 }
 
 export function DraftQuoteStrip(props: {
-  rootId: string;
-  sessionId: string;
   quotes: readonly DraftQuote[];
+  links: readonly DraftLink[];
+  disabled?: boolean;
+  onClearQuotes: () => void;
+  onRemoveQuote: (id: number) => void;
+  onRemoveLink: (id: string) => void;
+  mainActions?: { ask: () => void; send: () => void; canSend: boolean };
 }) {
+  const chips = computed(() => [...props.quotes, ...props.links]);
   return (
     <View style={{ paddingBottom: 8 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Text style={{ ...type.footnote, color: token('muted-foreground'), flex: 1 }}>
-          {props.quotes.length >= quoteLimit
-            ? tr('Quote limit reached ({count})', { count: quoteLimit })
-            : tr('{count, plural, one {# quote} other {# quotes}}', { count: props.quotes.length })}
-        </Text>
-        <View
-          role="button"
-          accessibilityLabel={tr('Clear all quotes')}
-          onPress={() => clearDraftQuotes(props.rootId, props.sessionId)}
-          class="active:opacity-60"
-          style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' }}
-        >
-          <Text style={{ ...type.footnote, color: token('primary') }}>
-            {tr('Clear all quotes')}
+      <If when={props.quotes.length}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={{ ...type.footnote, color: token('muted-foreground'), flex: 1 }}>
+            {props.quotes.length >= quoteLimit
+              ? tr('Quote limit reached ({count})', { count: quoteLimit })
+              : tr('{count, plural, one {# quote} other {# quotes}}', {
+                  count: props.quotes.length,
+                })}
           </Text>
+          <Button
+            accessibilityLabel={tr('Clear all quotes')}
+            disabled={props.disabled}
+            onPress={props.onClearQuotes}
+            class="active:opacity-60 disabled:opacity-45"
+            style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' }}
+          >
+            <Text style={{ ...type.footnote, color: token('primary') }}>
+              {tr('Clear all quotes')}
+            </Text>
+          </Button>
         </View>
-      </View>
+      </If>
       <Scroll
         horizontal
         scrollbar={false}
@@ -239,54 +301,121 @@ export function DraftQuoteStrip(props: {
         style={{ height: 44, flexGrow: 0 }}
       >
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Each of={props.quotes} key={(entry) => entry.id}>
-            {(entry) => (
-              <View
-                style={{
-                  width: 168,
-                  height: 44,
-                  paddingLeft: 8,
-                  borderRadius: 8,
-                  backgroundColor: token('inline-card'),
-                  borderWidth: 1,
-                  borderColor: token('border'),
-                  flexShrink: 0,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                }}
-              >
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text
+          <Each of={chips()} key={(entry) => entry.id}>
+            {(entry) => {
+              const quote = () => {
+                const item = entry();
+                return 'reference' in item ? item.reference : undefined;
+              };
+              const link = () => {
+                const item = entry();
+                return 'title' in item ? item.title : undefined;
+              };
+              return (
+                <View
+                  style={{
+                    width: 168,
+                    height: 44,
+                    paddingLeft: 8,
+                    borderRadius: 8,
+                    backgroundColor: token('inline-card'),
+                    borderWidth: 1,
+                    borderColor: token('border'),
+                    flexShrink: 0,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <If
+                    when={quote()}
+                    else={
+                      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Icon name="link" color={token('muted-foreground')} size={14} />
+                        <Text
+                          style={{
+                            ...type.footnote,
+                            color: token('foreground'),
+                            flex: 1,
+                            numberOfLines: 1,
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {link()}
+                        </Text>
+                      </View>
+                    }
+                  >
+                    {(reference) => (
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <Text
+                          style={{
+                            ...type.caption,
+                            fontWeight: '600',
+                            color: token('muted-foreground'),
+                            numberOfLines: 1,
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {reference().label || tr('Quote')}
+                        </Text>
+                        <Text
+                          style={{ ...type.footnote, color: token('foreground'), numberOfLines: 1 }}
+                        >
+                          {reference().text}
+                        </Text>
+                      </View>
+                    )}
+                  </If>
+                  <Button
+                    accessibilityLabel={
+                      quote()
+                        ? tr('Remove quote: {text}', { text: quote()!.text.slice(0, 80) })
+                        : tr('Remove conversation link: {title}', { title: link()! })
+                    }
+                    disabled={props.disabled}
+                    onPress={() => {
+                      const item = entry();
+                      if ('reference' in item) props.onRemoveQuote(item.id);
+                      else props.onRemoveLink(item.id);
+                    }}
+                    class="active:opacity-60 disabled:opacity-45"
                     style={{
-                      ...type.caption,
-                      fontWeight: '600',
-                      color: token('muted-foreground'),
-                      numberOfLines: 1,
-                      textOverflow: 'ellipsis',
+                      width: 44,
+                      height: 44,
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
                   >
-                    {entry().reference.label || tr('Quote')}
-                  </Text>
-                  <Text style={{ ...type.footnote, color: token('foreground'), numberOfLines: 1 }}>
-                    {entry().reference.text}
-                  </Text>
+                    <Icon name="close" size={14} color={token('muted-foreground')} />
+                  </Button>
                 </View>
-                <View
-                  role="button"
-                  accessibilityLabel={tr('Remove quote: {text}', {
-                    text: entry().reference.text.slice(0, 80),
-                  })}
-                  onPress={() => removeDraftQuote(props.rootId, props.sessionId, entry().id)}
-                  class="active:opacity-60"
-                  style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <Icon name="close" size={14} color={token('muted-foreground')} />
-                </View>
-              </View>
-            )}
+              );
+            }}
           </Each>
         </View>
       </Scroll>
+      <If when={props.mainActions}>
+        {(actions) => (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4, gap: 4 }}>
+            <ActionButton
+              title={tr('Send to Main Chat')}
+              variant="quiet"
+              compact
+              minHeight={44}
+              disabled={!actions().canSend}
+              onPress={() => actions().send()}
+            />
+            <ActionButton
+              title={tr('Ask Side Question')}
+              variant="secondary"
+              compact
+              minHeight={44}
+              onPress={() => actions().ask()}
+            />
+          </View>
+        )}
+      </If>
     </View>
   );
 }
