@@ -5659,11 +5659,11 @@ export function Conversation(props: ConversationProps) {
           })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
-          activeStyle={{ backgroundColor: C.line }}
+          activeStyle={{ backgroundColor: C.pressed }}
         >
           <Text
             style={{
-              color: reading() === 'chat' ? C.accent : C.muted,
+              color: reading() === 'chat' ? C.accentText : C.muted,
               fontWeight: reading() === 'chat' ? '700' : '400',
             }}
           >
@@ -5681,11 +5681,11 @@ export function Conversation(props: ConversationProps) {
           })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
-          activeStyle={{ backgroundColor: C.line }}
+          activeStyle={{ backgroundColor: C.pressed }}
         >
           <Text
             style={{
-              color: reading() === 'trajectory' ? C.accent : C.muted,
+              color: reading() === 'trajectory' ? C.accentText : C.muted,
               fontWeight: reading() === 'trajectory' ? '700' : '400',
             }}
           >

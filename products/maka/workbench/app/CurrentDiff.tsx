@@ -534,7 +534,7 @@ export function CurrentDiff(props: { model: CurrentDiffModel; review?: DiffRevie
             style={{
               ...captionTextStyle,
               fontSize: 12,
-              color: source().kind === 'pr' ? C.accent : C.secondary,
+              color: source().kind === 'pr' ? C.accentText : C.secondary,
             }}
           >
             {sourceBadge()}

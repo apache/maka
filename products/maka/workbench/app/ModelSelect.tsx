@@ -179,8 +179,8 @@ export function ModelSelect(props: {
             alignItems: 'center',
             gap: platform.idiom === 'terminal' ? 8 : 4,
           }}
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
           activeStyle={{ backgroundColor: C.surface }}
         >
           <Text
@@ -611,7 +611,7 @@ function ModelMenu(props: {
                     </View>
                     <View style={[{ width: 16 }, { pointerEvents: 'none' }]}>
                       <If when={checked()}>
-                        <Icon name="check" color={C.accent} />
+                        <Icon name="check" color={C.accentText} />
                       </If>
                     </View>
                   </Button>
@@ -711,7 +711,7 @@ function ModelMenu(props: {
                         </Text>
                         <View style={[{ width: 16 }, { pointerEvents: 'none' }]}>
                           <If when={checked()}>
-                            <Icon name="check" color={C.accent} />
+                            <Icon name="check" color={C.accentText} />
                           </If>
                         </View>
                       </Button>
@@ -796,7 +796,7 @@ function ModelMenu(props: {
           focusStyle={menuRowHoverStyle()}
           disabledStyle={saving() ? controlDisabledStyle : undefined}
         >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
         </Button>
       </If>
       <If when={error()}>
@@ -817,7 +817,7 @@ function ModelMenu(props: {
           focusStyle={menuRowHoverStyle()}
           disabledStyle={saving() ? controlDisabledStyle : undefined}
         >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
         </Button>
       </If>
       <If when={saving()}>

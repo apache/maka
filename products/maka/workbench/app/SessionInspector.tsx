@@ -518,7 +518,7 @@ export function SessionInspector(props: {
                         name="pullRequest"
                         size={14}
                         color={
-                          pr().draft ? C.muted : pr().state === 'closed' ? C.accent : C.success
+                          pr().draft ? C.muted : pr().state === 'closed' ? C.accentText : C.success
                         }
                       />
                       <Text
@@ -578,7 +578,7 @@ export function SessionInspector(props: {
                   style={{
                     fontSize: 12,
                     lineHeight: 16,
-                    color: runningChildren() > 0 ? C.accent : C.muted,
+                    color: runningChildren() > 0 ? C.accentText : C.muted,
                   }}
                 >
                   {runningChildren() > 0
@@ -617,7 +617,7 @@ export function SessionInspector(props: {
                     <Icon
                       name={child().activity !== 'idle' ? 'statusRecorded' : 'statusSuccess'}
                       size={14}
-                      color={child().activity !== 'idle' ? C.accent : C.success}
+                      color={child().activity !== 'idle' ? C.accentText : C.success}
                     />
                     <Text
                       style={[

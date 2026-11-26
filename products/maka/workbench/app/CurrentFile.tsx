@@ -1174,7 +1174,7 @@ function SourceEditorView(props: {
           <MarkdownFileEditor
             renderDiagram={(source) => <MermaidView editable source={() => source} />}
             initialValue={fullText()}
-            linkColor={C.accent}
+            linkColor={C.accentText}
             accessibilityLabel={tr('Markdown document')}
             styles={{
               root: { ...bodyTextStyle, color: C.text },
@@ -1284,7 +1284,7 @@ function SourceEditorView(props: {
               hoverStyle={menuRowHoverStyle()}
               focusStyle={menuRowHoverStyle()}
             >
-              <Icon name="arrow" size={14} color={C.accent} />
+              <Icon name="arrow" size={14} color={C.accentText} />
               <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
                 {tr('Go to definition')}
               </Text>
@@ -1308,7 +1308,7 @@ function SourceEditorView(props: {
               hoverStyle={menuRowHoverStyle()}
               focusStyle={menuRowHoverStyle()}
             >
-              <Icon name="plus" size={14} color={C.accent} />
+              <Icon name="plus" size={14} color={C.accentText} />
               <Text style={{ ...captionTextStyle, flex: 1, color: C.text }}>
                 {tr('Add review note')}
               </Text>

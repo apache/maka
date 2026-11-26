@@ -839,7 +839,7 @@ function RoomReactionPill(props: {
                 style={{
                   fontSize: 11.5,
                   fontWeight: mine() ? '600' : '500',
-                  color: mine() ? C.accent : C.secondary,
+                  color: mine() ? C.accentText : C.secondary,
                   transform: [{ translateY: countSlide }],
                 }}
               >

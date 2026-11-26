@@ -181,7 +181,7 @@ export function ImageThumbnail(props: {
         focusStyle={small ? { borderColor: C.accent } : {}}
       >
         <If when={!small}>
-          <Text style={{ ...captionTextStyle, color: size() ? C.accent : C.muted }}>
+          <Text style={{ ...captionTextStyle, color: size() ? C.accentText : C.muted }}>
             {size()
               ? tr('Open image · {width} × {height}', {
                   width: String(size()!.width),
@@ -264,9 +264,9 @@ export function ImageThumbnail(props: {
             onPress={inputAction(retry, action)}
             style={controlStyle}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
-            <Text style={{ color: C.accent }}>{tr('Retry image')}</Text>
+            <Text style={{ color: C.accentText }}>{tr('Retry image')}</Text>
           </Button>
         </View>
       </If>

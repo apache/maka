@@ -135,7 +135,7 @@ export function SideQuoteTray(props: {
           {tr('{count} passages quoted', { count: props.quotes().length })}
         </Text>
         <TrayButton label={tr('Clear quotes')} color={C.muted} onPress={props.clear} />
-        <TrayButton label={tr('Ask about them beside')} color={C.accent} onPress={props.ask} />
+        <TrayButton label={tr('Ask about them beside')} color={C.accentText} onPress={props.ask} />
       </View>
       <Each
         of={props.quotes().map((text, index) => ({ text, index }))}
@@ -391,7 +391,7 @@ function Reaction(props: {
           backgroundColor: props.labelled ? C.card : 'transparent',
         }}
         hoverStyle={{ backgroundColor: props.labelled ? C.cardRaised : C.card }}
-        activeStyle={{ backgroundColor: C.line }}
+        activeStyle={{ backgroundColor: C.pressed }}
         focusStyle={quietFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >
@@ -575,7 +575,7 @@ export function SideNotes(props: {
               activeStyle={{ backgroundColor: C.cardRaised }}
               focusStyle={quietFocusStyle()}
             >
-              <Text style={{ ...captionTextStyle, color: C.accent }}>↳</Text>
+              <Text style={{ ...captionTextStyle, color: C.accentText }}>↳</Text>
               <Text
                 style={[
                   {

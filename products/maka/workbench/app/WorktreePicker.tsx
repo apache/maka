@@ -143,7 +143,7 @@ export function WorktreePicker(props: {
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={quietFocusStyle()}
           >
-            <Icon name="gitBranch" size={14} color={isOverridden() ? C.accent : C.secondary} />
+            <Icon name="gitBranch" size={14} color={isOverridden() ? C.accentText : C.secondary} />
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 <Text
@@ -208,7 +208,7 @@ export function WorktreePicker(props: {
             hoverStyle={{ backgroundColor: C.cardRaised }}
             focusStyle={quietFocusStyle()}
           >
-            <Icon name="gitBranch" size={13} color={isOverridden() ? C.accent : C.secondary} />
+            <Icon name="gitBranch" size={13} color={isOverridden() ? C.accentText : C.secondary} />
             <Text
               style={[
                 {
@@ -496,7 +496,11 @@ function WorktreeMenu(props: {
                       hoverStyle={menuRowHoverStyle()}
                       focusStyle={menuRowHoverStyle()}
                     >
-                      <Icon name="gitBranch" size={14} color={selected() ? C.accent : C.muted} />
+                      <Icon
+                        name="gitBranch"
+                        size={14}
+                        color={selected() ? C.accentText : C.muted}
+                      />
                       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                         <View
                           style={{
@@ -555,7 +559,7 @@ function WorktreeMenu(props: {
                         </Text>
                       </View>
                       <If when={selected()}>
-                        <Icon name="check" size={14} color={C.accent} />
+                        <Icon name="check" size={14} color={C.accentText} />
                       </If>
                     </Button>
                   );

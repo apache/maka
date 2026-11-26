@@ -394,7 +394,7 @@ export function ComputerStage(props: {
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
-                <Icon name="pin" size={14} color={stage.pinned() ? C.accent : C.secondary} />
+                <Icon name="pin" size={14} color={stage.pinned() ? C.accentText : C.secondary} />
               </Button>
               <If when={stage.pinned() || stage.selected() !== stage.snapshot()?.activeTargetId}>
                 <Button

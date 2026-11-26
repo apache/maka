@@ -331,7 +331,9 @@ function QuickSettings(props: { quick: QuickTools; tool: UiContributionRef; back
             style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 6 }}
             hoverStyle={controlHoverStyle()}
           >
-            <Text style={{ fontSize: 13, lineHeight: 18, color: C.accent }}>{action()!.label}</Text>
+            <Text style={{ fontSize: 13, lineHeight: 18, color: C.accentText }}>
+              {action()!.label}
+            </Text>
           </Button>
         </If>
       </View>

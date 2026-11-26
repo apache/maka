@@ -826,7 +826,7 @@ export function RoomComposer(props: {
                               justifyContent: 'center',
                             }}
                           >
-                            <Icon name="rooms" size={12} color={C.background} />
+                            <Icon name="rooms" size={12} color={C.onAccent} />
                           </View>
                         </If>
                         <View style={{ flex: 1, minWidth: 0 }}>
@@ -1005,7 +1005,7 @@ export function RoomComposer(props: {
                         {roomAvatarInitial(props.name(id()))}
                       </Text>
                     </View>
-                    <Text style={{ ...captionTextStyle, color: C.accent }}>
+                    <Text style={{ ...captionTextStyle, color: C.accentText }}>
                       @{props.name(id())}
                     </Text>
                     <Icon name="close" size={12} color={C.muted} />
@@ -1065,7 +1065,7 @@ export function RoomComposer(props: {
               hoverStyle={{ backgroundColor: C.surface }}
               focusStyle={controlFocusStyle()}
             >
-              <Text style={{ ...bodyTextStyle, color: choosing() ? C.accent : C.secondary }}>
+              <Text style={{ ...bodyTextStyle, color: choosing() ? C.accentText : C.secondary }}>
                 @
               </Text>
             </Button>
@@ -1093,12 +1093,12 @@ export function RoomComposer(props: {
                 <Icon
                   name={delivery() === 'queue' ? 'queue' : 'activity'}
                   size={13}
-                  color={delivery() === 'queue' ? C.accent : C.secondary}
+                  color={delivery() === 'queue' ? C.accentText : C.secondary}
                 />
                 <Text
                   style={{
                     ...captionTextStyle,
-                    color: delivery() === 'queue' ? C.accent : C.secondary,
+                    color: delivery() === 'queue' ? C.accentText : C.secondary,
                   }}
                 >
                   {delivery() === 'queue' ? tr('Queue delivery') : tr('Steer delivery')}
@@ -1124,9 +1124,9 @@ export function RoomComposer(props: {
             >
               <If
                 when={busy()}
-                else={<Icon name="send" color={canSend() ? C.background : C.muted} />}
+                else={<Icon name="send" color={canSend() ? C.onAccent : C.muted} />}
               >
-                <LoadingIndicator color={C.background} />
+                <LoadingIndicator color={C.muted} />
               </If>
             </Button>
           </View>

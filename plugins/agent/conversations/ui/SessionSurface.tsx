@@ -18,6 +18,7 @@
  */
 
 import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
+import { appearance } from '../../../../products/maka/workbench/app/appearance';
 import {
   cleanup,
   untracked,
@@ -2166,6 +2167,7 @@ export function createConversationUi(
       sidebarShown,
       toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
       textSize: changeTextSize,
+      resetTheme: appearance.resetLook,
     });
   // The conversation below (1) or above (-1) the open one in the session browser.
   // Kept here so the browser's collapsed workspaces outlive its unmounting

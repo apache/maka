@@ -211,7 +211,7 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                   }}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
-                  activeStyle={{ backgroundColor: C.line }}
+                  activeStyle={{ backgroundColor: C.pressed }}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator

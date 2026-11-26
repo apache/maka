@@ -122,7 +122,7 @@ function CompactFeedbackButton(props: {
         style={{
           ...captionTextStyle,
           fontWeight: props.primary ? '500' : '400',
-          color: props.primary ? C.accent : C.secondary,
+          color: props.primary ? C.accentText : C.secondary,
         }}
       >
         {props.label}
@@ -403,12 +403,12 @@ export function Toaster(props: {
                 <Icon
                   name={copiedId() === item().id ? 'check' : 'copy'}
                   size={13}
-                  color={copiedId() === item().id ? C.accent : C.secondary}
+                  color={copiedId() === item().id ? C.accentText : C.secondary}
                 />
                 <Text
                   style={{
                     ...captionTextStyle,
-                    color: copiedId() === item().id ? C.accent : C.secondary,
+                    color: copiedId() === item().id ? C.accentText : C.secondary,
                   }}
                 >
                   {copiedId() === item().id ? tr('Copied') : tr('Copy')}
@@ -773,7 +773,7 @@ export function RegionEmptyError(props: {
                 style={{
                   ...captionTextStyle,
                   fontWeight: '500',
-                  color: primaryAction()!.primary === false ? C.secondary : C.accent,
+                  color: primaryAction()!.primary === false ? C.secondary : C.accentText,
                 }}
               >
                 {primaryAction()!.label}

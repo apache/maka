@@ -130,7 +130,7 @@ function CardButton(props: { label: string; primary?: boolean; onPress(): void }
           fontSize: 13,
           lineHeight: 18,
           fontWeight: '500',
-          color: props.primary ? C.background : C.text,
+          color: props.primary ? C.onAccent : C.text,
         }}
       >
         {props.label}
@@ -165,7 +165,7 @@ function ToolButton(props: {
       <Icon
         name={props.icon}
         size={17}
-        color={props.selected || props.accent ? C.accent : C.secondary}
+        color={props.selected || props.accent ? C.accentText : C.secondary}
       />
     </Button>
   );

@@ -190,7 +190,7 @@ export function RoomMessageRow(props: {
               onPress={props.onSaveEdit}
               style={{ ...controlStyle, backgroundColor: C.surface }}
             >
-              <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Save')}</Text>
+              <Text style={{ ...captionTextStyle, color: C.accentText }}>{tr('Save')}</Text>
             </Button>
             <Button
               accessibilityLabel={tr('Cancel')}
@@ -485,7 +485,7 @@ export function RoomMessageRow(props: {
                             style={{
                               fontSize: 13,
                               fontWeight: '600',
-                              color: isInspected() ? C.accent : C.text,
+                              color: isInspected() ? C.accentText : C.text,
                             }}
                           >
                             {props.name(authorId()!)}
@@ -496,7 +496,7 @@ export function RoomMessageRow(props: {
                           <Text style={{ fontSize: 11, color: C.muted }}>{tr('Edited')}</Text>
                         </If>
                         <If when={props.message().pinned}>
-                          <Icon name="pin" size={11} color={C.accent} />
+                          <Icon name="pin" size={11} color={C.accentText} />
                         </If>
                       </View>
                     </If>
@@ -552,7 +552,7 @@ export function RoomMessageRow(props: {
                     }}
                   >
                     <If when={props.message().pinned}>
-                      <Icon name="pin" size={11} color={C.accent} />
+                      <Icon name="pin" size={11} color={C.accentText} />
                     </If>
                     <If when={Boolean(props.message().editedAt) && !isDeleted()}>
                       <Text style={{ fontSize: 10.5, color: C.muted }}>{tr('Edited')}</Text>
