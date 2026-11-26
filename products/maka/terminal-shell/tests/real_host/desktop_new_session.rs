@@ -3764,7 +3764,9 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
     // provisional raw-markdown height far exceeds its parsed height, causing a
     // large positive then negative ScrollBy pair when it enters overscan above
     // the viewport while scrolling upward.
-    let mut tall_markdown = String::from("## Detailed review findings\n\n");
+    let mut tall_markdown = String::from(
+        "## Detailed review findings\n\n<details><summary>Review start</summary>First turn.</details>\n\n",
+    );
     for i in 0..55 {
         tall_markdown.push_str(&format!(
             "- **Finding {i}**: inspect [scroll_anchor_module_{i}.rs](file:///Users/example/workspace/products/maka/crates/scroll-engine/src/internal/layout/scroll_anchor_module_{i}.rs#L120-L245) and [history_viewport_{i}.tsx](file:///Users/example/workspace/plugins/agent/conversations/ui/components/history_viewport_{i}.tsx#L410-L520) for anchor drift during async markdown hydration.\n",
@@ -3784,7 +3786,13 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
         ("Check the first follow-up", filler_reply("Follow-up 1", 6)),
         ("Check the second follow-up", filler_reply("Follow-up 2", 6)),
         ("Check the third follow-up", filler_reply("Follow-up 3", 10)),
-        ("Summarize final checks", filler_reply("Final summary", 6)),
+        (
+            "Summarize final checks",
+            format!(
+                "{}\n<details><summary>Final reply end</summary>Last turn.</details>",
+                filler_reply("Final summary", 6)
+            ),
+        ),
     ];
 
     for (idx, (prompt, body)) in turns.iter().enumerate() {
@@ -3821,29 +3829,8 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
         nsh_core::platform::Appearance::Dark,
     )
     .await;
-    desktop
-        .until("latest reply did not render", || {
-            (!desktop.controls("Copy user message").is_empty()
-                && desktop.controls("Return to latest").is_empty())
-            .then_some(())
-        })
-        .await;
-    let top_visible_prompt = |desktop: &Desktop| {
-        desktop
-            .controls("Copy user message")
-            .into_iter()
-            .filter(|b| b.origin.y >= px(48.) && b.origin.y + b.size.height <= px(960.))
-            .min_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap())
-    };
-    let initial_copy = desktop
-        .until("initial user message copy button not visible", || {
-            top_visible_prompt(&desktop)
-        })
-        .await;
-    let initial_prompt = desktop
-        .copy_at("could not copy initial prompt", initial_copy.center())
-        .await;
-    assert_eq!(initial_prompt, "Summarize final checks");
+    desktop.control("▸ Final reply end").await;
+    assert!(desktop.controls("Return to latest").is_empty());
 
     use nsh_terminal::{ScrollDelta, ScrollWheelEvent, TouchPhase};
     let center = point(px(950.), px(500.));
@@ -3892,12 +3879,8 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
             "upward flick #{flick} jumped back to the bottom"
         );
         if flick >= 10
-            && let Some(copy) = top_visible_prompt(&desktop)
-            && copy.origin.y < px(260.)
-            && desktop
-                .copy_at("could not copy top prompt", copy.center())
-                .await
-                == "Review the full diff"
+            && let [start] = desktop.controls("▸ Review start")[..]
+            && start.origin.y < px(260.)
         {
             reached_first_turn = true;
             break;
@@ -3924,17 +3907,7 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
             },
         )
         .await;
-    let tail_copy = desktop
-        .until("tail user message copy button did not return", || {
-            top_visible_prompt(&desktop)
-        })
-        .await;
-    assert_eq!(
-        desktop
-            .copy_at("could not copy tail prompt", tail_copy.center())
-            .await,
-        "Summarize final checks"
-    );
+    desktop.control("▸ Final reply end").await;
 
     desktop.close().await;
     fixture.finish().await;
