@@ -18,6 +18,7 @@
  */
 
 import { computed, effect, signal, untracked } from 'nsh';
+import { tr } from '../locale';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -91,7 +92,8 @@ export async function openHostBot(rootId: string, hostName: string): Promise<Sco
     {},
     { rootId },
   );
-  if (result.kind !== 'opened') throw new Error(result.reason);
+  if (result.kind !== 'opened')
+    throw new Error(tr('Could not open the conversation.'), { cause: result.reason });
   const observed = await hostQuery<{ session: AgentSession }>(
     'agent',
     'observe',
@@ -337,9 +339,10 @@ export async function togglePinSession(item: ScopedSession): Promise<boolean> {
     );
     if (res.kind === 'revision_conflict') {
       await refreshHostSessions(item.rootId, item.hostName);
-      throw new Error(res.kind);
+      throw new Error(tr('Refresh and try again.'));
     }
-    if (res.kind === 'rejected') throw new Error(String(res.reason ?? 'rejected'));
+    if (res.kind === 'rejected')
+      throw new Error(tr('Could not update the conversation.'), { cause: res.reason });
     hapticSelection();
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
@@ -368,9 +371,10 @@ export async function renameSession(item: ScopedSession, nextTitle: string): Pro
     );
     if (res.kind === 'revision_conflict') {
       await refreshHostSessions(item.rootId, item.hostName);
-      throw new Error(res.kind);
+      throw new Error(tr('Refresh and try again.'));
     }
-    if (res.kind === 'rejected') throw new Error(String(res.reason ?? 'rejected'));
+    if (res.kind === 'rejected')
+      throw new Error(tr('Could not update the conversation.'), { cause: res.reason });
     hapticNotification('success');
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
@@ -395,9 +399,12 @@ export async function deleteSession(item: ScopedSession): Promise<boolean> {
     );
     if (res.kind === 'revision_conflict') {
       await refreshHostSessions(item.rootId, item.hostName);
-      throw new Error(res.kind);
+      throw new Error(tr('Refresh and try again.'));
     }
-    if (res.kind !== 'removed') throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
+    if (res.kind !== 'removed')
+      throw new Error(tr('Could not update the conversation.'), {
+        cause: res.kind === 'rejected' ? res.reason : res.kind,
+      });
     hapticNotification('warning');
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
@@ -421,7 +428,8 @@ export async function listHostProjects(rootId: string, current: () => boolean) {
       rootId,
     );
     if (!current()) return [];
-    if (page.kind !== 'projects') throw new Error(page.kind);
+    if (page.kind !== 'projects')
+      throw new Error(tr('Projects are unavailable.'), { cause: page.kind });
     for (const project of page.projects) {
       if (!project.archived && project.available !== false && project.path != null)
         projects.push({ ...project, path: project.path });
@@ -438,7 +446,7 @@ export async function listHostModels(rootId: string, current: () => boolean) {
   for (;;) {
     const page: Page = await hostQuery<Page>('agent', 'models', input, undefined, rootId);
     if (!current()) return [];
-    if (page.kind !== 'ready') throw new Error(page.kind);
+    if (page.kind !== 'ready') throw new Error(tr('Could not load models.'), { cause: page.kind });
     choices.push(...page.choices);
     if (page.next == null) return choices;
     input = { kind: 'continue', revision: page.revision, cursor: page.next };
@@ -455,7 +463,7 @@ export async function listHostDirectoryRoots(
     undefined,
     rootId,
   );
-  if (page.kind !== 'roots') throw new Error(page.kind);
+  if (page.kind !== 'roots') throw new Error(tr('Unavailable'), { cause: page.kind });
   return page.roots;
 }
 
@@ -467,7 +475,8 @@ export async function roomMembers(rootId: string, sessionId: string) {
     undefined,
     rootId,
   );
-  if (result.kind !== 'room') throw new Error(result.kind);
+  if (result.kind !== 'room')
+    throw new Error(tr('Could not load conversation history.'), { cause: result.kind });
   return result.page.participants ?? [];
 }
 
@@ -510,7 +519,8 @@ export async function createHostSession(params: {
     },
     { rootId: params.rootId, generation: params.generation },
   );
-  if (res.kind === 'rejected') throw new Error(res.reason);
+  if (res.kind === 'rejected')
+    throw new Error(tr('Could not open the conversation.'), { cause: res.reason });
   const session = res.session;
   const hostName = hostById(params.rootId)?.hostName ?? params.rootId;
   await refreshHostSessions(params.rootId, hostName);

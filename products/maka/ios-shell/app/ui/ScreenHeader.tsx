@@ -18,6 +18,7 @@
  */
 
 import { Text, View, token, type JSX } from 'nsh';
+import { tr } from '../locale';
 import { spacing, type } from '../theme/tokens';
 import { Icon } from './Icon';
 
@@ -55,7 +56,7 @@ export function ScreenHeader(props: {
           <If when={props.onBack}>
             <View
               role="button"
-              accessibilityLabel={props.backLabel ?? 'Back'}
+              accessibilityLabel={props.backLabel ?? tr('Back')}
               onPress={props.onBack}
               class="active:opacity-60"
               style={{

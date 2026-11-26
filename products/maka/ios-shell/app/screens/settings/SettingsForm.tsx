@@ -264,7 +264,10 @@ export function SettingChoice<T extends string>(props: {
     >
       <GroupRow
         title={props.title}
-        value={props.options.find((item) => item.id === props.value)?.label ?? props.value}
+        value={
+          props.options.find((item) => item.id === props.value)?.label ??
+          (props.value ? tr('Unavailable') : '')
+        }
         divider={props.divider}
         chevron
         disabled={props.disabled}

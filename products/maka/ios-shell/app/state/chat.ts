@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { approvalOutcome } from '../approval';
+import { approvalOutcome, approvalRejectionError } from '../approval';
 import type {
   AgentInteractionResult,
   AgentSendResult,
@@ -570,7 +570,9 @@ export function createConversationController(rootId: string, initialSession: Age
         { rootId, generation },
       );
       if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
-        throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
+        throw new Error(tr('Could not send the message.'), {
+          cause: res.kind === 'rejected' ? res.reason : res.kind,
+        });
       }
       if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
       hapticSelection();
@@ -619,7 +621,8 @@ export function createConversationController(rootId: string, initialSession: Age
           import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
         >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
-        if (result.kind !== 'committed') throw new Error(result.kind);
+        if (result.kind !== 'committed')
+          throw new Error(tr('Could not change the model.'), { cause: result.kind });
         const current = observation()!;
         if (result.session.revision >= current.session.revision) {
           observed.set({ generation, value: { ...current, session: result.session } });
@@ -656,7 +659,9 @@ export function createConversationController(rootId: string, initialSession: Age
       );
       queue.set(await hostQuery<AgentQueue>('agent', 'queue', { sessionId }, undefined, rootId));
       if (result.kind !== 'committed')
-        throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+        throw new Error(tr('Could not update the message queue.'), {
+          cause: result.kind === 'rejected' ? result.reason : result.kind,
+        });
       hapticSelection();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause));
@@ -676,7 +681,7 @@ export function createConversationController(rootId: string, initialSession: Age
       );
       if (result.kind === 'rejected') {
         void loadInteractions();
-        throw new Error(result.reason);
+        throw approvalRejectionError(result.reason);
       }
       if (activeHostInfo(rootId)?.generation === generation)
         dismissInboxRequest(rootId, sessionId, requestId);

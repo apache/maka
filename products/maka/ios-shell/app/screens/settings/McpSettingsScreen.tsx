@@ -26,7 +26,7 @@ import type {
 import { tr } from '../../locale';
 import { allSessions } from '../../state/sessions';
 import { changeMcp, mcpConfig, projectMcpSummary, type McpConfig } from '../../state/settings/mcp';
-import { settingsRpc, settingsWork } from '../../state/settings/rpc';
+import { LocalizedSettingsError, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { credentialFreeUrl } from '../../state/settings/sourceUrl';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
@@ -205,15 +205,20 @@ export function McpSettingsScreen(
 }
 
 function stringMap(text: string): Record<string, string> {
-  const value = JSON.parse(text);
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (cause) {
+    throw new LocalizedSettingsError('Enter a JSON object.', { cause });
+  }
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
     Object.values(value).some((entry) => typeof entry !== 'string')
   )
-    throw new Error(tr('Enter a JSON object.'));
-  return value;
+    throw new LocalizedSettingsError('Enter a JSON object.');
+  return value as Record<string, string>;
 }
 
 export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }) {
@@ -272,19 +277,15 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
   const save = () =>
     void work.run(async () => {
       if (!name().trim() || !address().trim())
-        throw new Error(tr('Enter a server name and command or URL.'));
-      if (transport() === 'http' && !credentialFreeUrl(address().trim(), 'mcp')) {
-        work.error.set(
-          tr(
-            'Use an HTTP URL without credentials or query parameters. Use environment references or edit on Desktop.',
-          ),
+        throw new LocalizedSettingsError('Enter a server name and command or URL.');
+      if (transport() === 'http' && !credentialFreeUrl(address().trim(), 'mcp'))
+        throw new LocalizedSettingsError(
+          'Use an HTTP URL without credentials or query parameters. Use environment references or edit on Desktop.',
         );
-        return;
-      }
-      if (!target.name && basis()!.names.includes(name().trim())) {
-        work.error.set(tr('A server with this name already exists at this location.'));
-        return;
-      }
+      if (!target.name && basis()!.names.includes(name().trim()))
+        throw new LocalizedSettingsError(
+          'A server with this name already exists at this location.',
+        );
       const original = basis()!.configuration;
       const configuration: McpConfig =
         transport() === 'http'
@@ -307,7 +308,7 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
               passEnv: environment().split('\n').filter(Boolean),
               disabled: !enabled(),
             };
-      if (requiresDesktop()) throw new Error(tr('Review on Desktop'));
+      if (requiresDesktop()) throw new LocalizedSettingsError('Review on Desktop');
       await changeMcp(rpc, {
         ...target,
         name: name().trim(),

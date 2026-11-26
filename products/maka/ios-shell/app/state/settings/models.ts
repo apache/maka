@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { tr } from '../../locale';
 import type * as Runtime from '../../../../../../packages/plugin-sdk/src/generated/runtime';
 import type {
   ConnectionCredentialKind,
@@ -34,7 +35,7 @@ export const connectionBasis = ({ connectionId, revision }: ConnectionCredential
 
 export async function readDefaultModel(rpc: SettingsRpc) {
   const page = await rpc.query('settings', 'connections', { kind: 'start' });
-  if (page.kind !== 'ready') throw new Error(page.kind);
+  if (page.kind !== 'ready') throw new Error(tr('Refresh and try again.'), { cause: page.kind });
   return resolveDefaultModel(rpc, page.defaultTarget);
 }
 
@@ -54,7 +55,7 @@ export function modelBackend(choice: Runtime.SettingsModelChoice): Runtime.Agent
 
 export async function connectionCatalog(rpc: SettingsRpc) {
   const first = await rpc.query('settings', 'connections', { kind: 'start' });
-  if (first.kind !== 'ready') throw new Error(first.kind);
+  if (first.kind !== 'ready') throw new Error(tr('Refresh and try again.'), { cause: first.kind });
   const rows: SettingsConnectionSummary[] = [...first.connections];
   let offset = first.next;
   while (offset !== null) {
@@ -63,7 +64,7 @@ export async function connectionCatalog(rpc: SettingsRpc) {
       revision: first.revision,
       offset,
     });
-    if (page.kind !== 'ready') throw new Error(page.kind);
+    if (page.kind !== 'ready') throw new Error(tr('Refresh and try again.'), { cause: page.kind });
     rows.push(...page.connections);
     offset = page.next;
   }
@@ -152,7 +153,7 @@ export async function readConnection(rpc: SettingsRpc, connectionId: string) {
     connectionId,
     includeEditingFacts: true,
   });
-  if (detail.kind !== 'ready' || !detail.editing) throw new Error('Connection is not editable');
+  if (detail.kind !== 'ready' || !detail.editing) throw new Error(tr('Connection is unavailable'));
   return { ...detail, editing: detail.editing };
 }
 
@@ -164,7 +165,8 @@ export async function readCredential(
   const result = await rpc.query('settings', 'credentialStatus', {
     locator: { scope: 'connection', connectionId, kind },
   });
-  if (result.kind !== 'status') throw new Error(result.kind);
+  if (result.kind !== 'status')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
   return result.status;
 }
 
@@ -184,7 +186,8 @@ export async function saveCredential(
     },
     { secret },
   );
-  if (result.kind !== (usage ? 'committed' : 'saved')) throw new Error(result.kind);
+  if (result.kind !== (usage ? 'committed' : 'saved'))
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
 }
 
 export async function deleteCredential(
@@ -195,12 +198,13 @@ export async function deleteCredential(
   const expected = credentialBasis(status);
   if (!expected) return;
   const result = await rpc.mutate('settings', 'deleteCredential', { expected, expectedConnection });
-  if (result.kind !== 'committed') throw new Error(result.kind);
+  if (result.kind !== 'committed')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
 }
 
 export async function modelChoices(rpc: SettingsRpc) {
   const page = await rpc.query('settings', 'models', { kind: 'start' });
-  if (page.kind !== 'ready') throw new Error(page.kind);
+  if (page.kind !== 'ready') throw new Error(tr('Refresh and try again.'), { cause: page.kind });
   const rows = [...page.choices];
   let cursor = page.next;
   while (cursor !== null) {
@@ -209,7 +213,7 @@ export async function modelChoices(rpc: SettingsRpc) {
       revision: page.revision,
       cursor,
     });
-    if (next.kind !== 'ready') throw new Error(next.kind);
+    if (next.kind !== 'ready') throw new Error(tr('Refresh and try again.'), { cause: next.kind });
     rows.push(...next.choices);
     cursor = next.next;
   }
@@ -228,9 +232,8 @@ export async function setExternalRuntime(rpc: SettingsRpc, runtime: string, enab
     target.source.deployment !== after.deployment ||
     target.source.stateDomain !== after.stateDomain
   )
-    throw new Error('External agent deployment changed. Reload its settings.');
-  if (!details.runtimes.some(({ id }) => id === runtime))
-    throw new Error('External agent unavailable');
+    throw new Error(tr('Refresh and try again.'));
+  if (!details.runtimes.some(({ id }) => id === runtime)) throw new Error(tr('Unavailable'));
   const path = target.path as [string, ...string[]];
   const change: Runtime.SettingChange = {
     path: [...path, 'runtimes', runtime],
@@ -245,5 +248,6 @@ export async function setExternalRuntime(rpc: SettingsRpc, runtime: string, enab
       },
     ],
   });
-  if (result.status !== 'committed') throw new Error(result.status);
+  if (result.status !== 'committed')
+    throw new Error(tr('Could not read or update settings.'), { cause: result.status });
 }

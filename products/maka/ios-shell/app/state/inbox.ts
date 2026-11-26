@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { approvalOutcome } from '../approval';
+import { approvalOutcome, approvalRejectionError } from '../approval';
 import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { computed, effect, signal, untracked } from 'nsh';
 import {
@@ -281,7 +281,7 @@ export async function respondInboxItem(item: InboxItem, answer: Record<string, u
     }
     refreshHostInbox(item.rootId);
     if (result.kind === 'rejected') {
-      throw new Error(result.reason);
+      throw approvalRejectionError(result.reason);
     }
     hapticNotification(approvalOutcome(result.record.outcome) === false ? 'warning' : 'success');
     void refreshAllSessions();

@@ -25,7 +25,7 @@ import type {
   SkillLibraryDiscoveredSource,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
 import { tr } from '../../locale';
-import { settingsRpc, settingsWork } from '../../state/settings/rpc';
+import { LocalizedSettingsError, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { manageSkill, readSkill, readSkills } from '../../state/settings/skills';
 import { credentialFreeUrl } from '../../state/settings/sourceUrl';
 import { GroupRow, InsetGroup } from '../../ui';
@@ -248,9 +248,10 @@ export function SkillDetailScreen(props: SettingsPageProps & { target: SkillTarg
         revision: current.preferenceRevision,
         preference: { ...current.entry.preference, enabled },
       });
-      if (result.kind !== 'applied') throw new Error(result.kind);
+      if (result.kind !== 'applied')
+        throw new LocalizedSettingsError('Could not read or update settings.', { cause: result });
       if (work.canWrite()) props.onBack();
-    });
+    }, tr('Could not read or update settings.'));
   const manage = async (method: 'update' | 'delete') => {
     const current = work.fence();
     if (
@@ -265,7 +266,7 @@ export function SkillDetailScreen(props: SettingsPageProps & { target: SkillTarg
     await work.run(async () => {
       await manageSkill(rpc, method, workspace, reference);
       if (work.canWrite()) props.onBack();
-    });
+    }, tr('Could not read or update settings.'));
   };
   const editable = () => document()?.writable && !document()?.entry.bundled;
   return (

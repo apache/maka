@@ -21,7 +21,7 @@ import { hostQuery, type AgentObservation } from './bridge';
 import { effect, Overlay, safeAreaInsets, signal, Text, View, token } from 'nsh';
 import { createNavStack, NavStack, Toast, ToastStack } from 'nsh/base';
 import { isAvailable, TabBar, type TabBarItem } from 'nsh/mobile';
-import { tr } from './locale';
+import { formatCount, tr } from './locale';
 import { ChatListScreen } from './screens/chats/ChatListScreen';
 import { ChatScreen } from './screens/chats/ChatScreen';
 import { DiffScreen } from './screens/chats/DiffScreen';
@@ -188,7 +188,7 @@ function MainTabShell() {
       {
         title: tr('Pending'),
         icon: pending > 0 ? 'tray.full' : 'tray',
-        badge: pending > 0 ? String(pending) : undefined,
+        badge: pending > 0 ? formatCount(pending) : undefined,
       },
       {
         title: tr('Settings'),
