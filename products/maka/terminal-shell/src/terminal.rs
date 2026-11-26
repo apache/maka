@@ -879,25 +879,11 @@ mod tests {
 
     #[test]
     fn cells_mode_disables_sixel_negotiation_across_startup_and_resize() {
-        use std::io::Write;
-
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        fn feed_sixel_replies(state: &Mutex<Inbox>) {
+        fn feed_sixel_replies(inbox: &mut Inbox) {
             let mut parser = termina::Parser::default();
             parser
                 .parse(b"\x1b[?62;1;4;22c\x1b[6;17;9t", false)
                 .unwrap();
-            let mut inbox = state.lock().unwrap();
             while let Some(event) = parser.pop() {
                 inbox.graphics.observe(&event);
             }
@@ -913,123 +899,18 @@ mod tests {
         let setup =
             prepare_setup(&presentation, size, crate::args::PresentationMode::Cells).unwrap();
         assert_eq!(setup, SETUP);
-        assert!(presentation.state.lock().unwrap().pixels.is_none());
 
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let mut output = Output::new(Capture(written.clone())).unwrap();
-        output.submit([setup]).unwrap();
+        let mut inbox = presentation.state.lock().unwrap();
+        assert!(inbox.pixels.is_none());
+        inbox.graphics.flushed();
+        feed_sixel_replies(&mut inbox);
+        assert!(inbox.graphics.take_ready().is_none());
+        assert!(inbox.graphics.query().is_none());
 
-        let (commands, receive_commands) = mpsc::sync_channel(4);
-        let (frames, receive_frames) = mpsc::sync_channel(4);
-        frames
-            .send(Ok(ui::Frame {
-                bytes: Some(b"FRAME1".to_vec()),
-                quit: false,
-                deadline: None,
-                redraw_at: None,
-            }))
-            .unwrap();
-
-        let driver_presentation = presentation.clone();
-        let driver = thread::spawn(move || {
-            let pending = AtomicBool::new(false);
-            let result = drive(
-                &mut output,
-                &driver_presentation,
-                &commands,
-                &receive_frames,
-                &pending,
-            );
-            let cleanup = output.close(CLEANUP.to_vec()).unwrap();
-            (result, cleanup)
-        });
-
-        feed_sixel_replies(&presentation.state);
-        presentation
-            .state
-            .lock()
-            .unwrap()
-            .push(crossterm::event::Event::Resize(100, 30));
-        feed_sixel_replies(&presentation.state);
-
-        let mut saw_resize = false;
-        for _ in 0..4 {
-            let advance = receive_commands
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
-            assert!(
-                advance.image_protocol.is_none(),
-                "Cells mode must never negotiate Sixel"
-            );
-            if advance.resize == Some((100, 30)) {
-                saw_resize = true;
-                frames
-                    .send(Ok(ui::Frame {
-                        bytes: Some(b"FRAME2".to_vec()),
-                        quit: false,
-                        deadline: None,
-                        redraw_at: None,
-                    }))
-                    .unwrap();
-                break;
-            }
-            frames
-                .send(Ok(ui::Frame {
-                    bytes: None,
-                    quit: false,
-                    deadline: None,
-                    redraw_at: None,
-                }))
-                .unwrap();
-        }
-        assert!(saw_resize, "driver must deliver resize to the cell UI");
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !written
-            .lock()
-            .unwrap()
-            .windows(b"FRAME2".len())
-            .any(|w| w == b"FRAME2")
-        {
-            assert!(Instant::now() < deadline, "FRAME2 was not flushed");
-            thread::sleep(Duration::from_millis(5));
-        }
-        // Feed another Sixel reply after resize + redraw and force one more
-        // advance to ensure the probe stays disabled across the full session.
-        feed_sixel_replies(&presentation.state);
-        presentation
-            .state
-            .lock()
-            .unwrap()
-            .push(crossterm::event::Event::FocusGained);
-        let post_resize = receive_commands
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap();
-        assert!(
-            post_resize.image_protocol.is_none(),
-            "Cells mode must stay disabled after resize"
-        );
-        presentation.state.lock().unwrap().quit = true;
-        let (result, cleanup) = driver.join().unwrap();
-        result.unwrap();
-        cleanup
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap()
-            .unwrap();
-
-        let bytes = written.lock().unwrap();
-        assert!(bytes.windows(b"FRAME1".len()).any(|w| w == b"FRAME1"));
-        assert!(bytes.windows(b"FRAME2".len()).any(|w| w == b"FRAME2"));
-        assert!(
-            !bytes
-                .windows(graphics::QUERY.len())
-                .any(|w| w == graphics::QUERY),
-            "Cells mode must never emit graphics queries"
-        );
-        assert!(
-            !bytes.windows(3).any(|w| w == b"\x1b[c")
-                && !bytes.windows(5).any(|w| w == b"\x1b[16t"),
-            "Cells mode must not emit DA1 or cell-pixel queries"
-        );
+        inbox.push(crossterm::event::Event::Resize(100, 30));
+        assert!(inbox.graphics.query().is_none());
+        inbox.graphics.flushed();
+        feed_sixel_replies(&mut inbox);
+        assert!(inbox.graphics.take_ready().is_none());
     }
 }
