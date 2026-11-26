@@ -39,7 +39,7 @@ import {
   SettingsSwitch,
   settingsInset,
 } from './SettingsPage';
-import { C } from './ui';
+import { C, lineWidth, radius } from './ui';
 
 function widgetLabel(widget: ComposerToolbarWidget): string {
   switch (widget) {
@@ -199,9 +199,9 @@ export function ComposerToolbarSettings() {
           accessibilityLabel={tr('Composer toolbar layout')}
           style={{
             backgroundColor: C.panel,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
-            borderRadius: 14,
+            borderRadius: radius(14),
             padding: 6,
             flexDirection: 'row',
             alignItems: 'center',
@@ -241,8 +241,8 @@ export function ComposerToolbarSettings() {
                         flex: 1,
                         minWidth: 20,
                         height: 28,
-                        borderRadius: 6,
-                        borderWidth: 1,
+                        borderRadius: radius(6),
+                        borderWidth: lineWidth(),
                         borderStyle: 'dashed',
                         borderColor: drag()?.overSpacer ? C.accent : C.line,
                         backgroundColor: drag()?.overSpacer ? C.cardRaised : 'transparent',
@@ -300,9 +300,9 @@ export function ComposerToolbarSettings() {
                       height: 30,
                       paddingLeft: 6,
                       paddingRight: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.card,
-                      borderWidth: 1,
+                      borderWidth: lineWidth(),
                       borderStyle: isOff(widget) ? 'dashed' : 'solid',
                       borderColor: selected() === widget ? C.accent : C.line,
                       flexDirection: 'row',

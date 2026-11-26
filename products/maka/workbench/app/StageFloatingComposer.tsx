@@ -31,9 +31,12 @@ import {
   captionTextStyle,
   controlDisabledStyle,
   controlStyle,
+  floatingShadow,
+  lineWidth,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -88,11 +91,11 @@ export function StageFloatingComposer(props: {
       style={{
         width: '100%',
         maxWidth: 560,
-        borderRadius: 16,
+        borderRadius: radius(16),
         backgroundColor: C.floating,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        boxShadow: `0 8px 24px ${C.shadow}`,
+        boxShadow: floatingShadow(`0 8px 24px ${C.shadow}`),
         overflow: 'hidden',
       }}
     >
@@ -116,7 +119,7 @@ export function StageFloatingComposer(props: {
             else minimized.set(!minimized());
           }}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 28,
             minHeight: 28,
             height: 28,
@@ -142,7 +145,7 @@ export function StageFloatingComposer(props: {
             minHeight: 28,
             height: 28,
             paddingHorizontal: 8,
-            borderRadius: 8,
+            borderRadius: radius(8),
             flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'flex-start',
@@ -179,7 +182,7 @@ export function StageFloatingComposer(props: {
           tooltip={textTooltip(() => tr('Exit fullscreen'))}
           onPress={props.exitFullscreen}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 28,
             minHeight: 28,
             height: 28,

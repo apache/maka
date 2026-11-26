@@ -44,7 +44,9 @@ import {
   captionTextStyle,
   controlDisabledStyle,
   IconButton,
+  lineWidth,
   quietFocusStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -64,8 +66,8 @@ export function SideCardFrame(props: { children: JSX.Element }) {
       style={{
         flexShrink: 1,
         minHeight: 0,
-        borderRadius: 14,
-        borderWidth: 1,
+        borderRadius: radius(14),
+        borderWidth: lineWidth(),
         borderColor: C.line,
         // Beside the conversation, in the tone of what stands beside it (the
         // sidebar's); what is said inside steps back up to the panel's.
@@ -121,9 +123,9 @@ export function SideQuoteTray(props: {
         paddingVertical: 4,
         paddingLeft: 12,
         paddingRight: 4,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: 14,
+        borderRadius: radius(14),
         backgroundColor: C.chrome,
         opacity: shown,
         transform: [{ translateY: shown.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }],
@@ -170,7 +172,12 @@ function TrayButton(props: { label: string; color: string; onPress(): void }) {
     <Button
       accessibilityLabel={props.label}
       onPress={props.onPress}
-      style={{ height: 28, paddingHorizontal: 8, borderRadius: 8, justifyContent: 'center' }}
+      style={{
+        height: 28,
+        paddingHorizontal: 8,
+        borderRadius: radius(8),
+        justifyContent: 'center',
+      }}
       hoverStyle={{ backgroundColor: C.card }}
       focusStyle={quietFocusStyle()}
     >
@@ -571,7 +578,7 @@ export function SideNotes(props: {
                 maxWidth: '100%',
                 height: 28,
                 paddingHorizontal: 8,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 backgroundColor: props.shown() === item().id ? C.card : 'transparent',
               }}
               hoverStyle={{ backgroundColor: C.card }}

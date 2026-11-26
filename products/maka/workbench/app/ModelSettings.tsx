@@ -67,6 +67,7 @@ import {
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -239,20 +240,21 @@ export function ModelSettings(props: {
     if (lastNotice) toast.dismiss(SETTINGS_NOTICE_TOAST_ID);
     if (!operations.pending().length) operations.notice.set('');
   });
-  const iconButton = {
-    ...controlStyle,
-    width: 32,
-    ...(terminal ? { minHeight: 16, paddingVertical: 0, borderRadius: 0 } : {}),
-    paddingHorizontal: 8,
-    alignItems: 'center',
-  } as const;
+  const iconButton = () =>
+    ({
+      ...controlStyle(),
+      width: 32,
+      ...(terminal ? { minHeight: 16, paddingVertical: 0, borderRadius: 0 } : {}),
+      paddingHorizontal: 8,
+      alignItems: 'center',
+    }) as const;
   const backToApp = (fullWidth: boolean) => (
     <Button
       accessibilityLabel={tr('Back to app')}
       disabled={busy()}
       onPress={inputAction(close, null)}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         ...(terminal
           ? { minHeight: 16, paddingHorizontal: 8, paddingVertical: 0, borderRadius: 0 }
           : { paddingHorizontal: 8, paddingVertical: 6 }),
@@ -297,7 +299,7 @@ export function ModelSettings(props: {
             to: item().key,
           })}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             ...(terminal
               ? { minHeight: 16, paddingHorizontal: 8, paddingVertical: 0, borderRadius: 0 }
               : { paddingHorizontal: rail() ? 8 : 12, paddingVertical: 6 }),
@@ -444,7 +446,7 @@ export function ModelSettings(props: {
           marginTop: terminal ? 0 : rail() ? PANEL_INSET : 0,
           ...(terminal && rail() ? { paddingLeft: 16 } : {}),
           backgroundColor: terminal ? undefined : C.panel,
-          borderRadius: terminal ? 0 : 12,
+          borderRadius: terminal ? 0 : radius(12),
           overflow: 'hidden',
         }}
       >
@@ -466,7 +468,7 @@ export function ModelSettings(props: {
               tooltip={textTooltip(() => tr('Back'))}
               onPress={inputAction(back, backAction())}
               style={{
-                ...iconButton,
+                ...iconButton(),
                 marginLeft: terminal ? 0 : -8,
               }}
               hoverStyle={quietHoverStyle()}

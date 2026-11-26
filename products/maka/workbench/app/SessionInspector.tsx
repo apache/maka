@@ -41,12 +41,15 @@ import {
   C,
   captionTextStyle,
   controlStyle,
+  floatingShadow,
   floatingStyle,
+  lineWidth,
   menuRowHoverStyle,
   menuRowStyle,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   textTooltip,
 } from './ui';
 import { compactHomePath, WorktreePicker } from './WorktreePicker';
@@ -265,13 +268,13 @@ export function SessionInspector(props: {
         marginTop: props.floating ? 4 : 8,
         marginBottom: 12,
         marginRight: 12,
-        borderRadius: 12,
+        borderRadius: radius(12),
         backgroundColor: props.floating ? C.floating : C.card,
         ...(props.floating
           ? {
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
-              boxShadow: `0 8px 24px ${C.shadow}`,
+              boxShadow: floatingShadow(`0 8px 24px ${C.shadow}`),
             }
           : {}),
         overflow: 'hidden',
@@ -302,7 +305,7 @@ export function SessionInspector(props: {
                   tooltip={textTooltip(() => tr('Refresh'))}
                   onPress={() => void refreshGit()}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     width: 24,
                     minHeight: 24,
                     height: 24,
@@ -392,7 +395,7 @@ export function SessionInspector(props: {
                     <Button
                       accessibilityLabel={tr('More')}
                       style={{
-                        ...controlStyle,
+                        ...controlStyle(),
                         width: 24,
                         minHeight: 24,
                         height: 24,
@@ -450,7 +453,7 @@ export function SessionInspector(props: {
                   paddingHorizontal: 8,
                   paddingVertical: 4,
                   marginHorizontal: -8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
@@ -528,7 +531,7 @@ export function SessionInspector(props: {
                         paddingHorizontal: 8,
                         paddingVertical: 4,
                         marginHorizontal: -8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 8,
@@ -582,7 +585,7 @@ export function SessionInspector(props: {
                     minHeight: 20,
                     height: 20,
                     paddingHorizontal: 6,
-                    borderRadius: 4,
+                    borderRadius: radius(4),
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 2,
@@ -628,7 +631,7 @@ export function SessionInspector(props: {
                       paddingHorizontal: 8,
                       paddingVertical: 4,
                       marginHorizontal: -8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 8,
@@ -662,7 +665,7 @@ export function SessionInspector(props: {
                     paddingHorizontal: 8,
                     paddingVertical: 4,
                     marginHorizontal: -8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 4,
@@ -700,7 +703,7 @@ export function SessionInspector(props: {
                   tooltip={textTooltip(() => tr('Browse files'))}
                   onPress={() => props.openFiles?.()}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     width: 24,
                     minHeight: 24,
                     height: 24,
@@ -734,7 +737,7 @@ export function SessionInspector(props: {
                       paddingHorizontal: 8,
                       paddingVertical: 4,
                       marginHorizontal: -8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 8,
@@ -777,7 +780,7 @@ export function SessionInspector(props: {
                   paddingHorizontal: 8,
                   paddingVertical: 4,
                   marginHorizontal: -8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                   flexDirection: 'row',
                   alignItems: 'center',
                 }}

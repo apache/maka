@@ -23,7 +23,15 @@ import { Button, DiffView } from 'nsh/base';
 import { ToolCopyButton as Copy, ToolFieldDivider, type ToolSource } from './ToolSource';
 import { TokenCount } from './TokenCount';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
-import { C, bodyTextStyle, captionTextStyle, codeTextStyle, isDark, quietFocusStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  captionTextStyle,
+  codeTextStyle,
+  isDark,
+  quietFocusStyle,
+  radius,
+} from './ui';
 import { Icon } from './Icon';
 import { codePieces, foldCodeLines } from './codePieces';
 
@@ -396,7 +404,7 @@ function FileDiff(props: {
           fontSize={codeTextStyle.fontSize}
           lineHeight={codeTextStyle.lineHeight}
           softWrap
-          style={{ height: height(), borderRadius: 6, overflow: 'hidden' }}
+          style={{ height: height(), borderRadius: radius(6), overflow: 'hidden' }}
           onScroll={({ offset, contentSize }) => {
             if (contentSize.height > 0)
               height.set(Math.min(240, Math.max(codeTextStyle.lineHeight, contentSize.height)));
@@ -636,7 +644,7 @@ function Sections(props: {
                       minHeight: 28,
                       paddingHorizontal: 10,
                       paddingVertical: 4,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       backgroundColor: C.cardRaised,
                       marginTop: 8,
                     }}

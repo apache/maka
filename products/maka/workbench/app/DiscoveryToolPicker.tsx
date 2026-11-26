@@ -21,7 +21,14 @@ import { Checkbox } from 'nsh/base';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { SettingsButton } from './SettingsPage';
 import { tr, type MessageKey } from './locale';
-import { C, bodyTextStyle, captionTextStyle, controlFocusStyle, controlDisabledStyle } from './ui';
+import {
+  bodyTextStyle,
+  C,
+  captionTextStyle,
+  controlDisabledStyle,
+  controlFocusStyle,
+  radius,
+} from './ui';
 import {
   approvedDiscoveryNames,
   type DiscoveryToolPreview,
@@ -133,7 +140,7 @@ export function DiscoveryToolPicker(props: {
                   minHeight: platform.idiom === 'terminal' ? 16 : 32,
                   paddingHorizontal: 4,
                   paddingVertical: 2,
-                  borderRadius: 6,
+                  borderRadius: radius(6),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,

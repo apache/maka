@@ -42,7 +42,7 @@ import {
   type CommandChoices,
 } from './quick-commands';
 import { SettingsButton, SettingsInlineInput, SettingsRow, SettingsSection } from './SettingsPage';
-import { C } from './ui';
+import { C, lineWidth, radius } from './ui';
 
 const KEY = 'maka.quick-launcher.commands';
 const LAUNCHER_KEY = 'maka.quick-launcher.shortcut';
@@ -163,8 +163,8 @@ function ShortcutRecorder(props: {
           minWidth: 120,
           height: 28,
           paddingHorizontal: 10,
-          borderRadius: 6,
-          borderWidth: 1,
+          borderRadius: radius(6),
+          borderWidth: lineWidth(),
           borderColor: props.recording ? C.accent : C.line,
           alignItems: 'center',
           justifyContent: 'center',

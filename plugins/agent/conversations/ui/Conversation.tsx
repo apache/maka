@@ -5736,7 +5736,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'chat',
@@ -5758,7 +5758,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'trajectory',

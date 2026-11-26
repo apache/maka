@@ -35,14 +35,16 @@ import { createText, errorText, renderText, UiError, type UiText } from './text'
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { ModalDialog } from './ModalDialog';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
   compact,
   controlFocusStyle,
   controlHoverStyle,
   controlStyle,
   inputBorderRadius,
+  lineWidth,
+  radius,
 } from './ui';
 
 export type RecallAnchor = { messageId: string; position: HistoryRowAddress; through: number };
@@ -323,7 +325,7 @@ export function RecallSearch(props: {
                 selected={within() === value()}
                 disabled={opening()}
                 onPress={inputAction(widen, value())}
-                style={{ ...controlStyle, paddingHorizontal: 10 }}
+                style={{ ...controlStyle(), paddingHorizontal: 10 }}
                 hoverStyle={controlHoverStyle()}
                 focusStyle={controlFocusStyle()}
               >
@@ -378,7 +380,7 @@ export function RecallSearch(props: {
           placeholderColor: C.muted,
           height: compact() ? 32 : 40,
           backgroundColor: C.background,
-          borderRadius: inputBorderRadius,
+          borderRadius: inputBorderRadius(),
           paddingHorizontal: 12,
           fontSize: 14,
         }}
@@ -453,8 +455,8 @@ export function RecallSearch(props: {
                         justifyContent: 'center',
                         padding: 12,
                         gap: 4,
-                        borderRadius: 8,
-                        borderWidth: 1,
+                        borderRadius: radius(8),
+                        borderWidth: lineWidth(),
                         borderColor: 'transparent',
                         backgroundColor: index() === row.index ? C.raised : C.surface,
                       }}

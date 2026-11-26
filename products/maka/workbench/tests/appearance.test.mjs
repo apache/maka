@@ -182,6 +182,17 @@ test('a color made readable on a mid-gray background reaches the ratio', () => {
     assert.ok(look.contrast(look.readable(gray, gray, 4.5), gray) >= 4.5, gray);
 });
 
+test('a saved shape keeps the values in range, and the default radius draws corners as before', () => {
+  const saved = structuredClone(look.presetLooks.brutalist);
+  Object.assign(saved.cssVars.theme, { radius: 40, 'letter-spacing': 'wide' });
+  const read = look.readLook(saved);
+  assert.equal(read.cssVars.theme.radius, undefined);
+  assert.equal(read.cssVars.theme['letter-spacing'], undefined);
+  assert.equal(read.cssVars.theme['border-width'], 2);
+  assert.equal(look.lookShadow(read, true), '4px 4px 0px 0px #55555eff');
+  for (const n of [1, 4, 8, 12, 16, 20]) assert.equal(look.scaledRadius(n, 8), n);
+});
+
 test('every preset reads in both appearances', () => {
   for (const id of look.lookIds)
     for (const mode of ['light', 'dark']) {

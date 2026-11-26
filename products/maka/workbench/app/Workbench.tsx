@@ -29,7 +29,7 @@ import {
   type JSX,
 } from 'nsh';
 import { ResizablePanel, ResizablePanelGroup } from 'nsh/base';
-import { C } from './ui';
+import { C, radius } from './ui';
 import { tr } from './locale';
 import { dialogTop, PANEL_INSET } from './chrome';
 import { WindowDialog } from './ModalDialog';
@@ -259,7 +259,7 @@ export function Workbench(props: {
                 minHeight: 0,
                 margin: INSET,
                 marginLeft: browser() ? 0 : INSET,
-                borderRadius: 12,
+                borderRadius: radius(12),
                 overflow: 'hidden',
                 backgroundColor: C.panel,
               }}

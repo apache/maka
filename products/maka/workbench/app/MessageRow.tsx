@@ -44,20 +44,22 @@ import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './Compac
 import { replyDetails, replyMetrics } from './replyDetails';
 import { SkillMessage, userMessagePresentation } from './SkillMessage';
 import {
-  C,
   bodyTextStyle,
+  C,
   captionTextStyle,
-  textTooltip,
   controlDisabledStyle,
   controlStyle,
-  secondaryTextStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
-  IconButton,
   floatingStyle,
+  IconButton,
   menuRowHoverStyle,
   menuRowStyle,
+  radius,
+  secondaryTextStyle,
+  textTooltip,
+  raisedShadow,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
@@ -378,7 +380,7 @@ export function MessageRow({
                 tooltip={title()}
                 icon={automation() ? 'activity' : 'split'}
                 open={expanded()}
-                terminalInset={controlStyle.paddingHorizontal}
+                terminalInset={controlStyle().paddingHorizontal}
                 onPress={inputAction(setExpanded, {
                   sessionId,
                   key: rowKey(row()),
@@ -867,9 +869,10 @@ export function MessageRow({
                         width: userPresentation().kind === 'markdown' ? '78%' : undefined,
                         paddingHorizontal: 16,
                         paddingVertical: compactChat ? 10 : 16,
-                        borderRadius: compactChat ? 17 : 20,
+                        borderRadius: compactChat ? radius(17) : radius(20),
                         backgroundColor: highlighted?.() ? C.cardRaised : beside ? C.panel : C.card,
                         gap: 8,
+                        ...raisedShadow(),
                       }}
                     >
                       <MessageQuotes quotes={() => row().quotes ?? []} />

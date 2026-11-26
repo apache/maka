@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import { textTooltip } from '../../../../products/maka/workbench/app/ui';
+import {
+  lineWidth,
+  radius,
+  raisedShadow,
+  textTooltip,
+} from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
@@ -166,7 +171,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   });
   const hero = () => props.session() === null || props.session()!.empty();
   // On the desktop the card's 8-point inset makes its corners concentric with the 32-point round buttons.
-  const cardRadius = () => (platform.idiom === 'terminal' && compact() ? 16 : 24);
+  const cardRadius = () => (platform.idiom === 'terminal' && compact() ? 16 : radius(24));
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => platform.idiom !== 'terminal' && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
@@ -348,9 +353,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           onPress={props.chooseWorkspace}
           style={
             narrowToolbar()
-              ? { ...composerIconSlot, borderRadius: 8 }
+              ? { ...composerIconSlot, borderRadius: radius(8) }
               : {
-                  ...(platform.idiom === 'terminal' ? controlStyle : composerToolbarControlStyle),
+                  ...(platform.idiom === 'terminal'
+                    ? controlStyle()
+                    : composerToolbarControlStyle()),
                   flexDirection: 'row',
                   alignItems: 'center',
                   maxWidth: '100%',
@@ -439,6 +446,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         ...composerIconSlot,
         backgroundColor: C.accent,
         borderRadius: composerIconSlot.height / 2,
+        ...raisedShadow(),
       }}
       hoverStyle={{ backgroundColor: C.accentHover }}
       focusStyle={{ backgroundColor: C.accentHover }}
@@ -580,7 +588,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 accessibilityLabel={tr('Connections & models')}
                 onPress={props.settings}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
@@ -597,7 +605,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
               accessibilityLabel={tr('Add a model connection')}
               onPress={props.settings}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 alignSelf: 'center',
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -667,7 +675,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             flexShrink: 0,
             backgroundColor: platform.idiom === 'terminal' ? C.raised : C.card,
             borderRadius: cardRadius(),
-            borderWidth: 1,
+            borderWidth: lineWidth(),
+            ...raisedShadow(),
             borderColor: fileDragging()
               ? C.accent
               : platform.idiom === 'terminal'
@@ -773,7 +782,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       bottom: 0,
                     }}
                     focusStyle={{
-                      borderWidth: 1,
+                      borderWidth: lineWidth(),
                       borderColor: C.accent,
                       borderRadius: cardRadius(),
                     }}
@@ -808,8 +817,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             ...inputTextStyle,
                             height: 32,
                             paddingHorizontal: 8,
-                            borderWidth: 1,
-                            borderRadius: 6,
+                            borderWidth: lineWidth(),
+                            borderRadius: radius(6),
                             borderColor: C.line,
                             color: C.text,
                             placeholderColor: C.muted,
@@ -828,7 +837,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             if (path().trim())
                               local?.intake({ kind: 'files', paths: [path().trim()] });
                           }}
-                          style={controlStyle}
+                          style={controlStyle()}
                         >
                           <Text style={{ color: C.secondary }}>{tr('Upload selected file')}</Text>
                         </Button>
@@ -982,7 +991,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             })}
                             style={{
                               fontSize: captionTextStyle.fontSize,
-                              borderRadius: 4,
+                              borderRadius: radius(4),
                               backgroundColor: `${C.text}0f`,
                             }}
                           >

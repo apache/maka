@@ -48,11 +48,13 @@ import {
   floatingStyle,
   inputBorderRadius,
   inputTextStyle,
+  lineWidth,
   menuDetailTextStyle,
   menuRowStyle,
   quietActiveStyle,
   quietFocusStyle,
   quietHoverStyle,
+  radius,
   secondaryTextStyle,
   tooltipStyle,
   tooltipTextStyle,
@@ -175,9 +177,9 @@ function renderCard(ctx: SpecElementRenderContext): JSX.Element {
         padding: pad(),
         gap: 12,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 12,
+        borderRadius: terminal ? 0 : radius(12),
       }}
     >
       <If when={title() || description() || ctx.hasSlot('header')}>
@@ -298,9 +300,9 @@ function renderBox(ctx: SpecElementRenderContext): JSX.Element {
         flexGrow: typeof p().grow === 'number' ? (p().grow as number) : undefined,
         ...(p().bordered
           ? {
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
-              borderRadius: terminal ? 0 : 8,
+              borderRadius: terminal ? 0 : radius(8),
               backgroundColor: C.card,
             }
           : {}),
@@ -438,7 +440,7 @@ function renderText(ctx: SpecElementRenderContext): JSX.Element {
           fontStyle: p().italic ? 'italic' : undefined,
           textAlign: (p().align as 'left' | 'center' | 'right') ?? undefined,
           ...(p().variant === 'code'
-            ? { backgroundColor: C.cardRaised, paddingHorizontal: 4, borderRadius: 4 }
+            ? { backgroundColor: C.cardRaised, paddingHorizontal: 4, borderRadius: radius(4) }
             : {}),
         },
         p().truncate ? { numberOfLines: 1, textOverflow: 'ellipsis' } : {},
@@ -482,7 +484,7 @@ function renderMarkdown(ctx: SpecElementRenderContext): JSX.Element {
         root: { ...secondaryTextStyle, color: C.text },
         paragraph: secondaryTextStyle,
         link: { color: C.accentText },
-        code: { color: C.text, backgroundColor: C.cardRaised, borderRadius: 4 },
+        code: { color: C.text, backgroundColor: C.cardRaised, borderRadius: radius(4) },
       }}
     />
   );
@@ -509,7 +511,7 @@ function renderCodeBlock(ctx: SpecElementRenderContext): JSX.Element {
         codeBlock: {
           backgroundColor: C.background,
           borderColor: C.line,
-          borderRadius: terminal ? 0 : 8,
+          borderRadius: terminal ? 0 : radius(8),
         },
       }}
     />
@@ -546,7 +548,7 @@ function renderBadge(ctx: SpecElementRenderContext): JSX.Element {
         paddingVertical: 2,
         borderRadius: terminal ? 0 : 999,
         backgroundColor: tone().bg,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: tone().border,
       }}
     >
@@ -610,9 +612,9 @@ function renderAlert(ctx: SpecElementRenderContext): JSX.Element {
         padding: terminal ? 8 : 12,
         gap: 4,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: accentColor(),
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
       }}
     >
       <Text style={{ ...secondaryTextStyle, fontWeight: '600', color: accentColor() }}>
@@ -651,7 +653,7 @@ function renderCallout(ctx: SpecElementRenderContext): JSX.Element {
         backgroundColor: C.card,
         borderLeftWidth: 3,
         borderLeftColor: stripe(),
-        borderRadius: terminal ? 0 : 6,
+        borderRadius: terminal ? 0 : radius(6),
       }}
     >
       <If when={typeof p().title === 'string' && p().title}>
@@ -687,9 +689,9 @@ function renderMetric(ctx: SpecElementRenderContext): JSX.Element {
         padding: terminal ? 8 : 12,
         gap: 6,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
         minWidth: 0,
       }}
     >
@@ -759,7 +761,7 @@ function renderKeyValue(ctx: SpecElementRenderContext): JSX.Element {
               paddingVertical: 4,
               paddingHorizontal: p().striped ? 8 : 0,
               backgroundColor: p().striped && index() % 2 === 1 ? C.cardRaised : undefined,
-              borderRadius: terminal ? 0 : 4,
+              borderRadius: terminal ? 0 : radius(4),
             }}
           >
             <Text style={{ ...captionTextStyle, color: C.muted, flexShrink: 0 }}>{r().key}</Text>
@@ -837,9 +839,9 @@ function renderTable(ctx: SpecElementRenderContext): JSX.Element {
       <View
         style={{
           width: '100%',
-          borderWidth: 1,
+          borderWidth: lineWidth(),
           borderColor: C.line,
-          borderRadius: terminal ? 0 : 10,
+          borderRadius: terminal ? 0 : radius(10),
           overflow: 'hidden',
           backgroundColor: C.card,
         }}
@@ -1022,7 +1024,7 @@ function renderListItem(ctx: SpecElementRenderContext): JSX.Element {
         gap: 10,
         paddingVertical: 6,
         paddingHorizontal: 8,
-        borderRadius: terminal ? 0 : 8,
+        borderRadius: terminal ? 0 : radius(8),
       }}
       hoverStyle={quietHoverStyle()}
       activeStyle={quietActiveStyle()}
@@ -1151,7 +1153,7 @@ function ProgressRow(props: {
             style={{
               width: `${pct()}%`,
               height: '100%',
-              borderRadius: 4,
+              borderRadius: radius(4),
               backgroundColor: props.color(),
             }}
           />
@@ -1242,8 +1244,8 @@ function renderTabs(ctx: SpecElementRenderContext): JSX.Element {
             gap: 4,
             padding: 3,
             backgroundColor: C.surface,
-            borderRadius: terminal ? 0 : 10,
-            borderWidth: 1,
+            borderRadius: terminal ? 0 : radius(10),
+            borderWidth: lineWidth(),
             borderColor: C.line,
             alignSelf: 'flex-start',
           }}
@@ -1264,7 +1266,7 @@ function renderTabs(ctx: SpecElementRenderContext): JSX.Element {
                   style={{
                     height: 28,
                     paddingHorizontal: 10,
-                    borderRadius: terminal ? 0 : 7,
+                    borderRadius: terminal ? 0 : radius(7),
                     justifyContent: 'center',
                     backgroundColor: selected() ? C.cardRaised : 'transparent',
                   }}
@@ -1333,9 +1335,9 @@ function renderAccordion(ctx: SpecElementRenderContext): JSX.Element {
     <View
       style={{
         width: '100%',
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
         backgroundColor: C.card,
         overflow: 'hidden',
       }}
@@ -1400,9 +1402,9 @@ function renderCollapsible(ctx: SpecElementRenderContext): JSX.Element {
     <View
       style={{
         width: '100%',
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
         backgroundColor: C.card,
       }}
     >
@@ -1466,7 +1468,7 @@ function renderOverlaySheet(ctx: SpecElementRenderContext, size: 'form' | 'edito
           <Button
             accessibilityLabel={tr('Close')}
             onPress={close}
-            style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+            style={{ ...controlStyle(), borderWidth: lineWidth(), borderColor: C.line }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
           >
@@ -1489,9 +1491,9 @@ function renderPopover(ctx: SpecElementRenderContext): JSX.Element {
         <Button
           accessibilityLabel={String(p().trigger ?? '')}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             alignSelf: 'flex-start',
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
             backgroundColor: C.card,
           }}
@@ -1565,9 +1567,9 @@ function renderCarousel(ctx: SpecElementRenderContext): JSX.Element {
         padding: 12,
         gap: 10,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
       }}
     >
       <If when={items().length > 0} else={ctx.children()}>
@@ -1593,10 +1595,10 @@ function renderCarousel(ctx: SpecElementRenderContext): JSX.Element {
             disabled={current() <= 0}
             onPress={() => idx.set(Math.max(0, current() - 1))}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               paddingVertical: 4,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
             }}
             hoverStyle={controlHoverStyle()}
@@ -1613,10 +1615,10 @@ function renderCarousel(ctx: SpecElementRenderContext): JSX.Element {
             disabled={current() >= count() - 1}
             onPress={() => idx.set(Math.min(count() - 1, current() + 1))}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               minHeight: 28,
               paddingVertical: 4,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: C.line,
             }}
             hoverStyle={controlHoverStyle()}
@@ -1646,8 +1648,8 @@ function renderImage(ctx: SpecElementRenderContext): JSX.Element {
         <View
           style={{
             padding: 12,
-            borderRadius: terminal ? 0 : 8,
-            borderWidth: 1,
+            borderRadius: terminal ? 0 : radius(8),
+            borderWidth: lineWidth(),
             borderColor: C.line,
             backgroundColor: C.card,
             flexDirection: 'row',
@@ -1704,7 +1706,7 @@ function renderAvatar(ctx: SpecElementRenderContext): JSX.Element {
         height: dim(),
         borderRadius: terminal ? 0 : dim() / 2,
         backgroundColor: C.cardRaised,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
         alignItems: 'center',
         justifyContent: 'center',
@@ -1730,7 +1732,7 @@ function renderSkeleton(ctx: SpecElementRenderContext): JSX.Element {
             style={{
               width: i() === count() - 1 && count() > 1 ? '68%' : '100%',
               height: h(),
-              borderRadius: terminal ? 0 : 6,
+              borderRadius: terminal ? 0 : radius(6),
               backgroundColor: C.cardRaised,
             }}
           />
@@ -1764,9 +1766,9 @@ function renderEmptyState(ctx: SpecElementRenderContext): JSX.Element {
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
       }}
     >
       <Text style={{ ...secondaryTextStyle, fontWeight: '600', color: C.text }}>
@@ -1839,9 +1841,9 @@ function renderTextField(ctx: SpecElementRenderContext, multiline: boolean): JSX
             color: disabled() ? C.muted : C.text,
             placeholderColor: C.muted,
             backgroundColor: C.background,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: bound.errors().length > 0 ? C.danger : C.line,
-            borderRadius: inputBorderRadius,
+            borderRadius: inputBorderRadius(),
             paddingHorizontal: terminal ? 0 : 10,
             paddingVertical: terminal ? 0 : multiline ? 8 : 4,
             ...(multiline ? { flex: 1 } : { height: terminal ? 16 : 32 }),
@@ -1924,11 +1926,11 @@ function renderNumberInput(ctx: SpecElementRenderContext): JSX.Element {
           disabled={disabled()}
           onPress={() => stepBy(-step())}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 32,
             paddingHorizontal: 0,
             alignItems: 'center',
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
             backgroundColor: C.card,
           }}
@@ -1968,9 +1970,9 @@ function renderNumberInput(ctx: SpecElementRenderContext): JSX.Element {
             textAlign: 'center',
             color: disabled() ? C.muted : C.text,
             backgroundColor: C.background,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: bound.errors().length > 0 ? C.danger : C.line,
-            borderRadius: inputBorderRadius,
+            borderRadius: inputBorderRadius(),
             paddingHorizontal: terminal ? 0 : 8,
           }}
           focusStyle={{ borderColor: C.accent }}
@@ -1980,11 +1982,11 @@ function renderNumberInput(ctx: SpecElementRenderContext): JSX.Element {
           disabled={disabled()}
           onPress={() => stepBy(step())}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 32,
             paddingHorizontal: 0,
             alignItems: 'center',
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
             backgroundColor: C.card,
           }}
@@ -2050,9 +2052,9 @@ function renderSelect(ctx: SpecElementRenderContext): JSX.Element {
             style={{
               minHeight: terminal ? 16 : 32,
               paddingHorizontal: terminal ? 0 : 10,
-              borderRadius: inputBorderRadius,
+              borderRadius: inputBorderRadius(),
               backgroundColor: C.background,
-              borderWidth: 1,
+              borderWidth: lineWidth(),
               borderColor: bound.errors().length > 0 ? C.danger : C.line,
               flexDirection: 'row',
               alignItems: 'center',
@@ -2155,8 +2157,8 @@ function renderMultiSelect(ctx: SpecElementRenderContext): JSX.Element {
                   gap: 6,
                   paddingHorizontal: 10,
                   paddingVertical: 6,
-                  borderRadius: terminal ? 0 : 8,
-                  borderWidth: 1,
+                  borderRadius: terminal ? 0 : radius(8),
+                  borderWidth: lineWidth(),
                   borderColor: checked() ? C.accent : C.line,
                   backgroundColor: checked() ? C.cardRaised : C.background,
                 }}
@@ -2407,13 +2409,13 @@ function renderButton(ctx: SpecElementRenderContext): JSX.Element {
       disabled={Boolean(p().disabled)}
       onPress={() => ctx.emit('press')}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         minHeight: small() ? 28 : 32,
         paddingHorizontal: small() ? 10 : 14,
         paddingVertical: small() ? 4 : 6,
         alignSelf: 'flex-start',
         backgroundColor: look().bg,
-        borderWidth: look().border === 'transparent' ? 0 : 1,
+        borderWidth: look().border === 'transparent' ? 0 : lineWidth(),
         borderColor: look().border === 'transparent' ? undefined : look().border,
       }}
       hoverStyle={
@@ -2468,12 +2470,12 @@ function renderButtonGroup(ctx: SpecElementRenderContext): JSX.Element {
                 ctx.emit('change');
               }}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 paddingHorizontal: 10,
                 paddingVertical: 4,
                 backgroundColor: isCurrent() ? C.accent : C.card,
-                borderWidth: 1,
+                borderWidth: lineWidth(),
                 borderColor: isCurrent() ? C.accent : C.line,
               }}
               hoverStyle={isCurrent() ? { opacity: 0.9 } : controlHoverStyle()}
@@ -2516,13 +2518,13 @@ function renderToggle(ctx: SpecElementRenderContext): JSX.Element {
         ctx.emit('change');
       }}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         minHeight: 28,
         paddingHorizontal: 10,
         paddingVertical: 4,
         alignSelf: 'flex-start',
         backgroundColor: pressed() ? C.cardRaised : 'transparent',
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: pressed() ? C.accent : C.line,
       }}
       hoverStyle={controlHoverStyle()}
@@ -2583,12 +2585,12 @@ function renderToggleGroup(ctx: SpecElementRenderContext): JSX.Element {
               selected={active()}
               onPress={() => toggle(it().value)}
               style={{
-                ...controlStyle,
+                ...controlStyle(),
                 minHeight: 28,
                 paddingHorizontal: 10,
                 paddingVertical: 4,
                 backgroundColor: active() ? C.cardRaised : C.background,
-                borderWidth: 1,
+                borderWidth: lineWidth(),
                 borderColor: active() ? C.accent : C.line,
               }}
               hoverStyle={controlHoverStyle()}
@@ -2629,12 +2631,12 @@ function renderDropdownMenu(ctx: SpecElementRenderContext): JSX.Element {
         <Button
           accessibilityLabel={String(p().label ?? '')}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             alignSelf: 'flex-start',
             flexDirection: 'row',
             alignItems: 'center',
             gap: 6,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
             backgroundColor: C.card,
           }}
@@ -2696,10 +2698,10 @@ function renderPagination(ctx: SpecElementRenderContext): JSX.Element {
         disabled={current() <= 1}
         onPress={() => go(current() - 1)}
         style={{
-          ...controlStyle,
+          ...controlStyle(),
           minHeight: 28,
           paddingVertical: 4,
-          borderWidth: 1,
+          borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.card,
         }}
@@ -2717,10 +2719,10 @@ function renderPagination(ctx: SpecElementRenderContext): JSX.Element {
         disabled={current() >= total()}
         onPress={() => go(current() + 1)}
         style={{
-          ...controlStyle,
+          ...controlStyle(),
           minHeight: 28,
           paddingVertical: 4,
-          borderWidth: 1,
+          borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.card,
         }}
@@ -2753,9 +2755,9 @@ function renderConfirmInput(ctx: SpecElementRenderContext): JSX.Element {
         padding: 12,
         gap: 10,
         backgroundColor: C.card,
-        borderWidth: 1,
+        borderWidth: lineWidth(),
         borderColor: C.line,
-        borderRadius: terminal ? 0 : 10,
+        borderRadius: terminal ? 0 : radius(10),
         flexDirection: 'row',
         flexWrap: 'wrap',
         alignItems: 'center',
@@ -2773,10 +2775,10 @@ function renderConfirmInput(ctx: SpecElementRenderContext): JSX.Element {
             ctx.emit('cancel');
           }}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             minHeight: 28,
             paddingVertical: 4,
-            borderWidth: 1,
+            borderWidth: lineWidth(),
             borderColor: C.line,
           }}
           hoverStyle={controlHoverStyle()}
@@ -2790,7 +2792,12 @@ function renderConfirmInput(ctx: SpecElementRenderContext): JSX.Element {
             bound.write(true);
             ctx.emit('confirm');
           }}
-          style={{ ...controlStyle, minHeight: 28, paddingVertical: 4, backgroundColor: C.accent }}
+          style={{
+            ...controlStyle(),
+            minHeight: 28,
+            paddingVertical: 4,
+            backgroundColor: C.accent,
+          }}
           hoverStyle={{ opacity: 0.9 }}
           focusStyle={controlFocusStyle()}
         >

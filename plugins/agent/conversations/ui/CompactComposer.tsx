@@ -25,7 +25,7 @@ import { DraftQuotes } from '../../composer/ui/DraftQuotes';
 import { InlineCallout } from '../../../../products/maka/workbench/app/Feedback';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { CompactInputBar } from '../../../../products/maka/workbench/app/QuickBar';
-import { C, IconButton } from '../../../../products/maka/workbench/app/ui';
+import { C, IconButton, radius } from '../../../../products/maka/workbench/app/ui';
 
 /** The conversation's input in the popup's top bar, where the launcher's input was. */
 export function CompactComposer(props: {
@@ -85,7 +85,7 @@ export function CompactComposer(props: {
                       style={{
                         paddingHorizontal: 8,
                         paddingVertical: 4,
-                        borderRadius: 6,
+                        borderRadius: radius(6),
                         backgroundColor: C.raised,
                       }}
                     >
