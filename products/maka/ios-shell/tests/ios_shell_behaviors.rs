@@ -513,6 +513,116 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
     }).await.expect("multi-Host bridge test timed out");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn detached_engine_subscriptions_do_not_reach_the_replacement_engine() {
+    use std::io::Write;
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (relay, config, relay_url) = https_relay().await;
+        let mut remote = Live::start(&config, "Log Host").await;
+        let support = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let _bridge = HostBridge::attach(
+            channel.clone(),
+            support.path().into(),
+            tokio::runtime::Handle::current(),
+        )
+        .unwrap();
+        let (reply_tx, replies) = mpsc::unbounded_channel();
+        channel.handle("test.reply", move |mut call| {
+            reply_tx.send(call.take_data()).unwrap();
+        });
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        channel.handle("test.subscription", move |mut call| {
+            event_tx.send(call.take_data()).unwrap();
+        });
+        let start_engine = || {
+            let bundle = Bundle::source(
+                r#"
+                import { host } from 'nsh';
+                host.on('test.rpc', async ([[name, data]]) => {
+                  try { host.post('test.reply', [{ok: await host.call(name, data)}]); }
+                  catch (error) { host.post('test.reply', [{error: String(error)}]); }
+                });
+                host.on('ios.subscriptionItem', event => host.post('test.subscription', event));
+                host.on('ios.subscriptionEnded', event => host.post('test.subscription', event));
+            "#
+                .to_owned(),
+            )
+            .with_capabilities_json(Some(r#"{"host":true}"#))
+            .unwrap();
+            let mut engine = EngineConfig::new(bundle);
+            engine.host = channel.clone();
+            engine.runtime = Some(tokio::runtime::Handle::current());
+            Headless::start(engine).unwrap()
+        };
+
+        let a = start_engine();
+        let mut driver = RpcDriver {
+            channel: channel.clone(),
+            replies,
+        };
+        let ticket = driver
+            .call(
+                "ios.beginPairing",
+                json!({
+                    "uri":remote.uri,"relayUrl":relay_url,"relayToken":RELAY_TOKEN
+                }),
+            )
+            .await;
+        let (_, sas) = remote.sas().await;
+        let state = driver
+            .call(
+                "ios.confirmPairing",
+                json!({"pairingId":ticket["pairingId"],"sas":sas}),
+            )
+            .await;
+        let root = remote.host.root_id();
+        assert_eq!(state["connections"][root]["status"], "connected");
+        let handle = driver.call("ios.subscribe", json!({
+            "rootId":root,"endpoint":"hostLogs","method":"watch","subscriptionId":"engine-a",
+            "input":{"position":{"kind":"tail"}}
+        })).await;
+        let first = events.recv().await.unwrap();
+        assert_eq!(first["generation"], handle["generation"]);
+        assert_eq!(first["item"]["kind"], "missing");
+        drop(a);
+
+        let b = start_engine();
+        let state = driver.call("ios.bootstrap", json!({})).await;
+        assert_eq!(state["connections"][root]["status"], "connected");
+        let source = maka_host_runtime::logs::Source::for_root(
+            root,
+            &RootNamespaces {
+                ownership: remote._root.path().join("ownership"),
+                control: remote._root.path().join("control"),
+            },
+        )
+        .unwrap();
+        source
+            .open_capture()
+            .unwrap()
+            .write_all(b"after engine replacement\n")
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .is_err(),
+            "the replacement engine received an event from the old subscription"
+        );
+        assert_eq!(
+            driver.call("ios.unsubscribe", handle).await,
+            json!({"cancelled":false})
+        );
+
+        drop(b);
+        remote.shutdown().await;
+        relay.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn pairing_uses_simplified_and_traditional_device_locale() {
     for (language, label) in [("zh-CN", "连接并核对"), ("zh-TW", "連接並核對")] {
@@ -797,11 +907,13 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         assert_eq!(data["endpoint"], "agent");
         match data["method"].as_str().unwrap() {
             "catalog" => {
+                let filter = &data["input"]["filter"];
+                assert!(filter == "all" || filter == "needs_you");
                 assert_eq!(
                     data["input"],
-                    json!({"kind":null,"filter":"all","includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""})
+                    json!({"kind":null,"filter":filter,"includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""})
                 );
-                if data["rootId"] == "root-a" {
+                if data["rootId"] == "root-a" && filter == "all" {
                     id = Some(data["subscriptionId"].clone());
                 }
             }
@@ -910,8 +1022,480 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     );
 }
 
+async fn fixture_recv<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_catalog_watch_unsubscribes_when_setup_replies_late() {
+    let host = json!({"rootId":"root","hostName":"Late Host","generation":1,"endpoints":["agent"]});
+    let initial = json!({"revision":1,"hosts":[host],"active":host,
+        "connections":{"root":{"status":"connected","connection":host}}});
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", move |call| call.resolve(initial.clone()));
+    channel.handle("ios.hostQuery", |mut call| {
+        let data = call.take_data();
+        let value = if data["method"] == "list" {
+            json!({"revision":"1","sessions":[],"after":null,"before":null,"needsYouCount":0})
+        } else {
+            json!({"isBot":false})
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (opening_tx, mut opening_rx) = mpsc::unbounded_channel();
+    let sub_generation = std::sync::atomic::AtomicU64::new(2);
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let generation = sub_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation});
+        if data["input"]["filter"] == "all" {
+            opening_tx.send((handle, call)).unwrap();
+        } else {
+            call.resolve(handle);
+        }
+    });
+    let active = Arc::new(std::sync::Mutex::new(None::<Value>));
+    let native = active.clone();
+    let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.unsubscribe", move |mut call| {
+        let data = call.take_data();
+        let mut native = native.lock().unwrap();
+        let cancelled = native.as_ref() == Some(&data);
+        if cancelled {
+            *native = None;
+            cancel_tx.send(data).unwrap();
+        }
+        call.resolve(json!({"cancelled":cancelled}));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Search chats or projects").unwrap();
+    let (handle, opening) = fixture_recv(&mut opening_rx).await;
+    app.send_host_event(
+        "ios.hostState",
+        json!({"revision":2,"hosts":[host],"active":null,
+        "connections":{"root":{"status":"offline"}}}),
+    )
+    .unwrap();
+    app.wait_for("text:Late Host is offline").unwrap();
+
+    // If the JS timeout still owns this handshake, it discards the late
+    // handle and cannot cancel it. Native, not the app clock, owns the deadline.
+    app.fast_forward(Duration::from_secs(31)).unwrap();
+    *active.lock().unwrap() = Some(handle.clone());
+    opening.resolve(handle.clone());
+    assert_eq!(fixture_recv(&mut cancel_rx).await, handle);
+    assert!(active.lock().unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    fn row(i: usize, title: &str) -> Value {
+        json!({
+            "id":format!("s-{i}"), "title":title, "kind":"agent", "parentSessionId":null,
+            "workspace":{"path":"/repo"}, "labels":[], "revision":1,
+            "updatedAt":1700000002000u64 - i as u64,
+            "archived":false, "pinned":false, "hasUnread":false, "activity":"waiting"
+        })
+    }
+    fn page(revision: &str, sessions: &[Value], after: Option<&str>) -> Value {
+        json!({"revision":revision,"needsYouCount":33,"before":null,"after":after,"sessions":sessions})
+    }
+
+    let snapshot = |revision, with_offline_peer| {
+        let host = json!({"rootId":"root","hostName":"Paged Host","epoch":"ea","session":"sa",
+            "generation":1,"endpoints":["agent"],"transport":"quic"});
+        let mut snapshot = json!({"revision":revision,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}});
+        if with_offline_peer {
+            snapshot["hosts"].as_array_mut().unwrap().push(json!({
+                "rootId":"offline","hostName":"Offline peer","peerId":"another-peer","connected":false
+            }));
+            snapshot["connections"]["offline"] = json!({"status":"offline"});
+        }
+        snapshot
+    };
+    let channel = HostChannel::new();
+    let initial = snapshot(1, false);
+    channel.handle("ios.bootstrap", move |call| call.resolve(initial.clone()));
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    let sub_generation = AtomicU64::new(2);
+    let fail_reopen = Arc::new(AtomicBool::new(false));
+    let fail_pending = fail_reopen.clone();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(
+            data["generation"], 1,
+            "subscribe is pinned to the connection"
+        );
+        if data["input"]["filter"] == "needs_you" && fail_pending.swap(false, Ordering::SeqCst) {
+            call.reject("pending subscription unavailable");
+            return;
+        }
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root",
+            "generation":sub_generation.fetch_add(1, Ordering::SeqCst)});
+        call.resolve(handle.clone());
+        sub_tx.send((data, handle)).unwrap();
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+
+    let first: Vec<_> = (0..32)
+        .map(|i| {
+            row(
+                i,
+                if i == 31 {
+                    "Needle moved down"
+                } else {
+                    "Earlier chat"
+                },
+            )
+        })
+        .collect();
+    let pending_head = page("pending-live", &first, Some("s-31"));
+    let mut chats_head = page("chats-1", &first, Some("s-31"));
+    chats_head["sessions"][0]["title"] = json!("Catalog after peer update");
+    let pending_basis = Arc::new(std::sync::Mutex::new(page(
+        "pending-unavailable",
+        &[row(31, "Unavailable review")],
+        Some("s-31"),
+    )));
+    let basis = pending_basis.clone();
+    let (bot_tx, mut bot_rx) = mpsc::unbounded_channel();
+    let hold_bot_query = AtomicBool::new(true);
+    let hold_detail = Arc::new(AtomicBool::new(false));
+    let hold = hold_detail.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let is_settled = settled.clone();
+    let (page_tx, mut page_rx) = mpsc::unbounded_channel();
+    let (detail_tx, mut detail_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root");
+        let input = &data["input"];
+        let value = match data["method"].as_str().unwrap() {
+            "list" if input["position"]["kind"] == "after" => {
+                if matches!(input["position"]["revision"].as_str(), Some("pending-live" | "pending-burst")) {
+                    assert_eq!(input["filter"], "needs_you");
+                    assert_eq!(input["position"]["cursor"], "s-31");
+                    page(input["position"]["revision"].as_str().unwrap(), &[row(32, "Second page review")], None)
+                } else {
+                    page_tx.send((data, call)).unwrap();
+                    return;
+                }
+            }
+            "list" if input["filter"] == "needs_you" => {
+                if is_settled.load(Ordering::SeqCst) {
+                    page("pending-settled", &[row(32, "Second page review")], None)
+                } else {
+                    basis.lock().unwrap().clone()
+                }
+            }
+            "list" => chats_head.clone(),
+            "botOutbox" if hold_bot_query.swap(false, Ordering::SeqCst) => {
+                bot_tx.send(call).unwrap();
+                return;
+            }
+            "botOutbox" => json!({"isBot":true,"through":2,"readThrough":0,"preview":"New bot preview"}),
+            "pendingInteractions" => {
+                let entry = |id| json!({"requestId":id,"kind":"service_approval","toolUseId":"tu"});
+                let entries = if input["sessionId"] == "s-32" {
+                    if is_settled.load(Ordering::SeqCst) {
+                        vec![entry("extra")]
+                    } else {
+                        vec![entry("page-two"), entry("extra")]
+                    }
+                } else {
+                    vec![entry("other")]
+                };
+                let value = json!({"revision":1,"entries":entries});
+                if input["sessionId"] == "s-32" && hold.swap(false, Ordering::SeqCst) {
+                    detail_tx.send((call, value)).unwrap();
+                    return;
+                }
+                value
+            }
+            "interaction" => {
+                let id = &input["requestId"];
+                let page_two = id == "page-two";
+                json!({
+                    "requestId":id,"createdAt":if page_two { 100 } else { 1 },
+                    "outcome":if page_two && is_settled.load(Ordering::SeqCst) {
+                        json!(InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 101 })
+                    } else { Value::Null },
+                    "request":{"kind":"service_approval","toolUseId":"tu",
+                        "toolName":if page_two { "PageTwoTool" } else { "OtherTool" },
+                        "service":"fixture","method":"run","binding":"test","through":1}
+                })
+            }
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (answer_tx, mut answer_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        answer_tx.send(call.take_data()).unwrap();
+        settled.store(true, Ordering::SeqCst);
+        call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":
+            InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 101 }
+        }}}));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Search chats or projects").unwrap();
+    let mut subscriptions = BTreeMap::new();
+    for _ in 0..3 {
+        let (request, handle) = fixture_recv(&mut sub_rx).await;
+        let key = request["input"]["filter"]
+            .as_str()
+            .unwrap_or_else(|| request["method"].as_str().unwrap());
+        subscriptions.insert(key.to_owned(), handle);
+    }
+    let chats_watch = &subscriptions["all"];
+    let pending_watch = &subscriptions["needs_you"];
+    let push = |app: &mut Headless, handle: &Value, item: Value| {
+        let mut event = handle.clone();
+        event["item"] = item;
+        app.send_host_event("ios.subscriptionItem", event).unwrap();
+    };
+    let old_bot = fixture_recv(&mut bot_rx).await;
+    push(
+        &mut app,
+        &subscriptions["watchBotOutbox"],
+        json!({"isBot":true,"through":2,"readThrough":0,"preview":"New bot preview"}),
+    );
+    app.wait_for("text:New bot preview").unwrap();
+    old_bot.resolve(
+        json!({"value":{"isBot":true,"through":1,"readThrough":0,"preview":"Old bot preview"}}),
+    );
+    assert!(app.screen().matches("text:New bot preview").unwrap());
+    assert!(!app.screen().matches("text:Old bot preview").unwrap());
+
+    let mut first_push = first.clone();
+    first_push[0]["title"] = json!("Initial catalog push");
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-initial-push", &first_push, Some("s-31")),
+    );
+    app.wait_for("label:Conversation: Initial catalog push")
+        .unwrap();
+    // A failed continuation isn't a confirmed empty inbox.
+    let (pending_query, pending_failure) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        pending_query["input"]["position"]["revision"],
+        "pending-unavailable"
+    );
+    pending_failure.reject("second page unavailable");
+    app.wait_for("text:New bot preview").unwrap();
+    assert!(app.settle());
+    assert!(app.screen().matches("text:New bot preview").unwrap());
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Could not sync Pending").unwrap();
+    app.wait_for("text:second page unavailable").unwrap();
+    assert!(!app.screen().matches("text:All caught up").unwrap());
+    app.press("label:Retry").unwrap();
+    let (_, retry_page) = fixture_recv(&mut page_rx).await;
+    // R1 travels on the subscription while the continuation is still held.
+    // Its single page has no cursor and used to overwrite R2 after the retry.
+    let delayed = page("pending-stale-head", &[row(90, "Delayed review")], None);
+    push(&mut app, pending_watch, delayed);
+    *pending_basis.lock().unwrap() = pending_head.clone();
+    hold_detail.store(true, Ordering::SeqCst);
+    retry_page.reject("Host rejected call or control request: agent_catalog_changed");
+    let (details, value) = fixture_recv(&mut detail_rx).await;
+    push(&mut app, pending_watch, pending_head.clone());
+    details.resolve(json!({"value":value}));
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    assert!(app.settle());
+    assert!(app.screen().matches("id:main-tab-bar >> text:34").unwrap());
+
+    // While another round is reading request details, coalesce a burst of
+    // changes and still publish that round before loading the trailing one.
+    let burst = page("pending-burst", &first, Some("s-31"));
+    *pending_basis.lock().unwrap() = burst.clone();
+    hold_detail.store(true, Ordering::SeqCst);
+    push(&mut app, pending_watch, burst.clone());
+    let (details, value) = fixture_recv(&mut detail_rx).await;
+    push(&mut app, pending_watch, burst);
+    push(
+        &mut app,
+        pending_watch,
+        page("pending-intermediate", &first, Some("s-31")),
+    );
+    let latest = page("pending-latest", &first, Some("s-31"));
+    *pending_basis.lock().unwrap() = latest.clone();
+    push(&mut app, pending_watch, latest);
+    assert!(
+        page_rx.try_recv().is_err(),
+        "a continuation started while detail was still held"
+    );
+    details.resolve(json!({"value":value}));
+    let (trailing, trailing_page) = fixture_recv(&mut page_rx).await;
+    assert_eq!(trailing["input"]["position"]["revision"], "pending-latest");
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    trailing_page.resolve(json!({"value":page("pending-latest", &[row(32, "Second page review"), row(33, "New review")], None)}));
+    app.wait_for("id:main-tab-bar >> text:35").unwrap();
+    app.wait_for_gone("text:Could not sync Pending", Duration::from_secs(2))
+        .unwrap();
+
+    // Topology effects rerun when another peer is added, not when A's native
+    // stream ends. Both original A handles must still deliver after that rerun.
+    app.press("label:Chats").unwrap();
+    app.send_host_event("ios.hostState", snapshot(2, true))
+        .unwrap();
+    app.wait_for("label:Offline peer").unwrap();
+    let mut chats_after_peer = first.clone();
+    chats_after_peer[0]["title"] = json!("Catalog after peer update");
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-1", &chats_after_peer, Some("s-31")),
+    );
+    app.wait_for("label:Conversation: Catalog after peer update")
+        .unwrap();
+    let after_peer = page("pending-after-peer", &[row(32, "Second page review")], None);
+    *pending_basis.lock().unwrap() = after_peer.clone();
+    push(&mut app, pending_watch, after_peer);
+    app.wait_for("id:main-tab-bar >> text:2").unwrap();
+    app.press("label:Pending").unwrap();
+    *pending_basis.lock().unwrap() = pending_head.clone();
+    // An unexpected end is visible and retry attaches a fresh subscription.
+    app.send_host_event("ios.subscriptionEnded", pending_watch.clone())
+        .unwrap();
+    app.wait_for("text:Could not sync Pending").unwrap();
+    fail_reopen.store(true, Ordering::SeqCst);
+    app.press("label:Retry").unwrap();
+    app.wait_for("text:pending subscription unavailable")
+        .unwrap();
+    app.press("label:Retry").unwrap();
+    let (_, replacement) = fixture_recv(&mut sub_rx).await;
+    assert_ne!(replacement["generation"], pending_watch["generation"]);
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    let pending_current = page("pending-current", &[row(32, "Second page review")], None);
+    *pending_basis.lock().unwrap() = pending_current.clone();
+    push(&mut app, pending_watch, page("stale-watch", &[], None));
+    let mut wrong_generation = replacement.clone();
+    wrong_generation["generation"] = json!(1);
+    push(
+        &mut app,
+        &wrong_generation,
+        page("wrong-generation", &[], None),
+    );
+    assert!(app.settle());
+    assert!(app.screen().matches("id:main-tab-bar >> text:34").unwrap());
+    push(&mut app, &replacement, pending_current);
+    app.wait_for("id:main-tab-bar >> text:2").unwrap();
+
+    app.press("label:Chats").unwrap();
+    let mut wrong_generation = chats_watch.clone();
+    wrong_generation["generation"] = json!(1);
+    push(
+        &mut app,
+        &wrong_generation,
+        page("wrong-generation", &[row(80, "Wrong chat")], None),
+    );
+    assert!(app.settle());
+    assert!(!app.screen().matches("text:Wrong chat").unwrap());
+    app.type_text("label:Search chats or projects", "Needle moved up")
+        .unwrap();
+    app.wait_for("text:No matches in loaded chats").unwrap();
+    assert!(page_rx.try_recv().is_err(), "Chats must not auto-drain");
+    app.press("label:Load more chats").unwrap();
+    let (failed_query, failed_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(failed_query["input"]["position"]["revision"], "chats-1");
+    failed_reply.reject("chat second page unavailable");
+    app.wait_for("text:chat second page unavailable").unwrap();
+    app.press("label:Load more chats").unwrap();
+    let (retry_query, retry_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        retry_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-31"})
+    );
+    retry_reply
+        .resolve(json!({"value":page("chats-1", &[row(32, "Needle moved up")], Some("s-32"))}));
+    app.wait_for("label:Conversation: Needle moved up").unwrap();
+
+    // Swap rows across the boundary while a further page is outstanding.
+    app.press("label:Load more chats").unwrap();
+    let (old_query, old_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        old_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-32"})
+    );
+    let mut new_head = first[..31].to_vec();
+    new_head.push(row(32, "Needle moved up in live catalog"));
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-2", &new_head, Some("s-32")),
+    );
+    let (new_query, new_reply) = tokio::time::timeout(Duration::from_secs(2), page_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        new_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-2","cursor":"s-32"})
+    );
+    new_reply.resolve(json!({"value":page("chats-2", &[row(31, "Needle moved down"), row(33, "Newest chat")], None)}));
+    app.wait_for("label:Conversation: Needle moved up in live catalog")
+        .unwrap();
+    old_reply.resolve(json!({"value":page("chats-1", &[row(33, "Needle stale")], None)}));
+    assert!(app.settle());
+    app.press("label:Clear search").unwrap();
+    app.type_text("label:Search chats or projects", "Needle")
+        .unwrap();
+    app.wait_for("text:Needle moved down").unwrap();
+    for label in ["Needle moved up in live catalog", "Needle moved down"] {
+        assert_eq!(
+            app.screen()
+                .count(&format!("label:Conversation: {label}"))
+                .unwrap(),
+            1
+        );
+    }
+    assert!(!app.screen().matches("text:Needle stale").unwrap());
+    assert!(!app.screen().matches("label:Load more chats").unwrap());
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Allow service call PageTwoTool?")
+        .unwrap();
+    app.press("text:Allow service call PageTwoTool?").unwrap();
+    app.press("label:Deny").unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(2), answer_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["method"], "respond");
+    assert_eq!(answer["input"]["sessionId"], "s-32");
+    assert_eq!(answer["input"]["requestId"], "page-two");
+    assert_eq!(answer["input"]["answer"]["decision"], "deny");
+    app.wait_for("text:Denied").unwrap();
+    app.press("label:Pending").unwrap();
+    app.wait_for("id:main-tab-bar >> text:1").unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         call.reply(Ok(json!({
@@ -936,10 +1520,18 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
         "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "working"
     });
     let session_q = session.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let is_settled = settled.clone();
+    let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let method = data["method"].as_str().unwrap();
+        let resolved = is_settled.load(Ordering::SeqCst);
         let value = match method {
+            "list" if resolved && data["input"]["filter"] == "needs_you" => {
+                inbox_tx.send(call).unwrap();
+                return;
+            }
             "list" => json!({ "revision": "1", "needsYouCount": 1, "before": null, "after": null, "sessions": [session_q] }),
             "observe" => json!({
                 "session": session_q, "lastCompletedTurnId": "t0", "compacting": null, "through": 5,
@@ -957,6 +1549,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 ]
             }),
             "models" => json!({ "kind": "ready", "choices": [{ "selection": { "kind": "model", "modelId": "claude-sonnet", "thinkingLevel": "high" }, "label": "Claude Sonnet · High", "sourceName": "anthropic", "thinkingLevels": ["high"], "defaultThinkingLevel": "high" }] }),
+            "pendingInteractions" if resolved => json!({"revision":2,"entries":[]}),
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "perm-1", "kind": "permissions", "toolUseId": "tu2" }] }),
             "interaction" => json!({
                 "requestId": "perm-1", "outcome": null,
@@ -970,15 +1563,17 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
         call.reply(Ok(json!({ "value": value })));
     });
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    let sub_generation = AtomicU64::new(2);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        let sub_id = data["subscriptionId"].as_str().unwrap().to_owned();
+        assert_eq!(data["generation"], 1);
+        let generation = sub_generation.fetch_add(1, Ordering::SeqCst);
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root-a","generation":generation});
         if data["method"] == "watch" {
-            let _ = watch_tx.send(sub_id.clone());
+            watch_tx.send((handle, call)).unwrap();
+        } else {
+            call.resolve(handle);
         }
-        call.reply(Ok(
-            json!({ "subscriptionId": sub_id, "rootId": "root-a", "generation": 1 }),
-        ));
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -998,6 +1593,11 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 revision: 4,
                 completion: None,
             })
+        } else if data["method"] == "respond" {
+            settled.store(true, Ordering::SeqCst);
+            json!({"kind":"recorded","record":{"outcome":
+                InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 1 }
+            }})
         } else {
             json!({"kind":"recorded"})
         };
@@ -1015,6 +1615,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     let mut app = Headless::start(config).unwrap();
 
     app.wait_for("label:Conversation: Auth refactor").unwrap();
+    app.wait_for("id:main-tab-bar >> text:1").unwrap();
     app.press("label:Conversation: Auth refactor").unwrap();
 
     // Committed turns + collapsible activity summary + inline approval render cleanly.
@@ -1030,11 +1631,17 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.wait_for("text:Run integration test suite").unwrap();
 
     // Stream live Markdown preview + queued turn over watch subscription.
-    let watch_sub_id = watch_rx.recv().await.unwrap();
+    let (watch_handle, open_watch) = fixture_recv(&mut watch_rx).await;
+    let watch_sub_id = &watch_handle["subscriptionId"];
+    let generation = &watch_handle["generation"];
+    app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":watch_sub_id,"rootId":"root-a","generation":1,
+        "item":{"kind":"queue","queue":{"revision":2,"entries":[{"messageId":"stale","kind":"followup","preview":"Stale queued message"}]}}
+    })).unwrap();
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId": watch_sub_id,
         "rootId": "root-a",
-        "generation": 1,
+        "generation": generation,
         "item": {
             "kind": "preview",
             "page": {
@@ -1044,12 +1651,15 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
             }
         }
     })).unwrap();
+    // Simulate JS receiving the first item before the subscribe promise runs.
+    open_watch.resolve(watch_handle.clone());
     app.wait_for("text:Streaming live verification...").unwrap();
+    assert!(!app.screen().matches("text:1 message queued").unwrap());
 
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId": watch_sub_id,
         "rootId": "root-a",
-        "generation": 1,
+        "generation": generation,
         "item": {
             "kind": "queue",
             "queue": { "revision": 2, "entries": [{ "messageId": "q1", "kind": "followup", "preview": "Add changelog entry" }] }
@@ -1075,6 +1685,16 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     assert_eq!(sent["method"], "send");
     assert_eq!(sent["input"]["delivery"], "queue");
     assert_eq!(sent["input"]["message"], "Follow up after tests");
+
+    app.press("label:Deny").unwrap();
+    let answered = fixture_recv(&mut send_rx).await;
+    assert_eq!(answered["method"], "respond");
+    assert_eq!(answered["input"]["requestId"], "perm-1");
+    let held_refresh = fixture_recv(&mut inbox_rx).await;
+    app.press("label:Chats").unwrap();
+    app.wait_for("id:main-tab-bar").unwrap();
+    assert!(!app.screen().matches("id:main-tab-bar >> text:1").unwrap());
+    held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1229,13 +1849,13 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
         call.reply(Ok(json!({ "value": value })));
     });
     let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    let subscription_generation = std::sync::atomic::AtomicU64::new(2);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        let id = data["subscriptionId"].as_str().unwrap().to_owned();
-        let _ = sub_tx.send(id.clone());
-        call.reply(Ok(
-            json!({ "subscriptionId": id, "rootId": "root-a", "generation": 1 }),
-        ));
+        let generation = subscription_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root-a","generation":generation});
+        call.resolve(handle.clone());
+        sub_tx.send(handle).unwrap();
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -1260,18 +1880,22 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
-    let sub_id = loop {
-        let id = sub_rx.recv().await.unwrap();
-        if id.starts_with("review:") {
-            break id;
+    let watch = loop {
+        let handle = fixture_recv(&mut sub_rx).await;
+        if handle["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .starts_with("review:")
+        {
+            break handle;
         }
     };
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
-            "subscriptionId": sub_id,
+            "subscriptionId": watch["subscriptionId"],
             "rootId": "root-a",
-            "generation": 1,
+            "generation": watch["generation"],
             "item": DeliveryPage::Preview { page: PreviewPage::Empty { host_epoch: "ea".into() } }
         }),
     )
@@ -1281,9 +1905,9 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
-            "subscriptionId": sub_id,
+            "subscriptionId": watch["subscriptionId"],
             "rootId": "root-a",
-            "generation": 1,
+            "generation": watch["generation"],
             "item": DeliveryPage::Interactions { pending: PendingInteractions { revision: 2, entries: vec![] } }
         }),
     )
@@ -2124,7 +2748,8 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
                 match query_phase.load(std::sync::atomic::Ordering::SeqCst) {
                     0 => json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}}),
                     1 => json!({"kind":"room","page":{"items":[message(3,"m3","Live room message")],"through":1,"before":"m3"}}),
-                    _ => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
+                    2 => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
+                    _ => json!({"kind":"room","page":{"items":[message(5,"m5","Updated room after reconnect")],"through":3,"before":"m5"}}),
                 }
             }
             method => {
@@ -2136,16 +2761,15 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         call.resolve(json!({"value":value}));
     });
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
-    let subscribe_phase = phase.clone();
+    let subscription_generation = std::sync::atomic::AtomicU64::new(3);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
+        let generation = subscription_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation});
+        call.resolve(handle.clone());
         if data["method"] == "watch" {
-            watch_tx.send(data["subscriptionId"].clone()).unwrap();
+            watch_tx.send(handle).unwrap();
         }
-        let generation = if subscribe_phase.load(std::sync::atomic::Ordering::SeqCst) == 2 { 2 } else { 1 };
-        call.resolve(
-            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation}),
-        );
     });
     channel.handle("ios.unsubscribe", |call| {
         call.resolve(json!({"cancelled":true}))
@@ -2181,7 +2805,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     phase.store(1, std::sync::atomic::Ordering::SeqCst);
     app.send_host_event(
         "ios.subscriptionItem",
-        json!({"rootId":"root","generation":1,"subscriptionId":watch,
+        json!({"rootId":"root","generation":watch["generation"],"subscriptionId":watch["subscriptionId"],
         "item":{"kind":"room","through":1,"revision":1}}),
     )
     .unwrap();
@@ -2211,6 +2835,20 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     assert!(app.settle());
     assert!(!app.shows("Stale page from first connection"));
     app.wait_for("label:Load earlier messages").unwrap();
+    let new_watch = fixture_recv(&mut watch_rx).await;
+    let deliver = |app: &mut Headless, mut handle: Value| {
+        handle["item"] = json!({"kind":"room","through":3,"revision":3});
+        app.send_host_event("ios.subscriptionItem", handle).unwrap();
+    };
+    phase.store(3, std::sync::atomic::Ordering::SeqCst);
+    deliver(&mut app, watch);
+    assert!(
+        !app.screen()
+            .matches("text:Updated room after reconnect")
+            .unwrap()
+    );
+    deliver(&mut app, new_watch);
+    app.wait_for("text:Updated room after reconnect").unwrap();
     assert!(unexpected.try_recv().is_err());
 }
 
@@ -2601,17 +3239,16 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         call.resolve(json!({"value":value}));
     });
     let generation = Arc::new(AtomicU64::new(1));
-    let subscription_generation = generation.clone();
+    let subscription_generation = AtomicU64::new(3);
     let (watch_tx, mut watches) = mpsc::unbounded_channel();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
+        let generation = subscription_generation.fetch_add(1, Ordering::SeqCst);
+        let handle = json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]});
+        call.resolve(handle.clone());
         if data["method"] == "watch" {
-            watch_tx
-                .send(data["subscriptionId"].as_str().unwrap().to_owned())
-                .unwrap();
+            watch_tx.send(handle).unwrap();
         }
-        let generation = subscription_generation.load(Ordering::SeqCst);
-        call.resolve(json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}));
     });
     channel.handle("ios.unsubscribe", |call| {
         call.resolve(json!({"cancelled":true}))
@@ -2745,7 +3382,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
 
     // An ended watch event arriving while a stale running observe is in flight
     // must schedule a catch-up observe rather than sticking in the running state.
-    let watch_id = std::iter::from_fn(|| watches.try_recv().ok())
+    let watch = std::iter::from_fn(|| watches.try_recv().ok())
         .last()
         .unwrap();
     hold_observe.store(true, Ordering::SeqCst);
@@ -2753,7 +3390,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         "ios.subscriptionItem",
         json!({
             "rootId": "root",
-            "subscriptionId": watch_id,
+            "subscriptionId": watch["subscriptionId"],
+            "generation": watch["generation"],
             "item": { "kind": "events", "through": 2, "events": [{ "runId": "r1", "fact": { "kind": "opened" } }] }
         }),
     )
@@ -2763,7 +3401,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         "ios.subscriptionItem",
         json!({
             "rootId": "root",
-            "subscriptionId": watch_id,
+            "subscriptionId": watch["subscriptionId"],
+            "generation": watch["generation"],
             "item": { "kind": "events", "through": 3, "events": [{ "runId": "r1", "fact": { "kind": "ended" } }] }
         }),
     )

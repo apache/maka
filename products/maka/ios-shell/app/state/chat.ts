@@ -26,10 +26,7 @@ import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
   hostQuery,
-  onSubscriptionEnded,
-  onSubscriptionItem,
-  subscribe,
-  unsubscribe,
+  watchHost,
   type AgentBackendPreference,
   type AgentDeliveryPage,
   type AgentGitWorkspaceDiff,
@@ -42,11 +39,10 @@ import {
   type AgentQueue,
   type AgentRoomMessage,
   type AgentSession,
-  type SubscriptionHandle,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
-import { refreshHostInbox } from './inbox';
+import { dismissInboxRequest, refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
 import { refreshHostSessions } from './sessions';
 import { modelBackend, readDefaultModel } from './settings/models';
@@ -235,17 +231,12 @@ export function createConversationController(rootId: string, initialSession: Age
 
   let disposed = false;
   let lastThrough: number | null = null;
-  let watchHandle: SubscriptionHandle | null = null;
-  let watchSubId: string | null = null;
+  let stopSubscription: (() => void) | undefined;
   let activeGeneration = -1;
 
   const stopWatch = () => {
-    watchSubId = null;
-    if (watchHandle) {
-      const h = watchHandle;
-      watchHandle = null;
-      void unsubscribe(h).catch(() => {});
-    }
+    stopSubscription?.();
+    stopSubscription = undefined;
   };
 
   const loadInteractions = async () => {
@@ -431,17 +422,15 @@ export function createConversationController(rootId: string, initialSession: Age
   const startWatch = (gen: number) => {
     stopWatch();
     const subId = 'watch:' + rootId + ':' + sessionId + ':' + String(++watchSeq);
-    watchSubId = subId;
-    void subscribe(subId, 'agent', 'watch', { sessionId, after: lastThrough ?? 0 }, rootId)
-      .then((handle) => {
-        if (disposed || watchSubId !== subId) {
-          void unsubscribe(handle).catch(() => {});
-          return;
-        }
-        watchHandle = handle;
-        activeGeneration = gen;
-      })
-      .catch(() => {});
+    stopSubscription = watchHost<AgentDeliveryPage>(
+      rootId,
+      gen,
+      subId,
+      'watch',
+      { sessionId, after: lastThrough ?? 0 },
+      applyWatchItem,
+      (cause) => console.warn('Could not watch conversation', cause),
+    );
   };
 
   const refreshAll = async () => {
@@ -638,6 +627,7 @@ export function createConversationController(rootId: string, initialSession: Age
   const respondInteraction = async (requestId: string, answer: Record<string, unknown>) => {
     if (busyInteractionIds()[requestId]) return null;
     busyInteractionIds.update((prev) => ({ ...prev, [requestId]: true }));
+    const generation = activeHostInfo(rootId)?.generation;
     try {
       const result = await hostMutate<AgentInteractionResult>(
         'agent',
@@ -649,14 +639,12 @@ export function createConversationController(rootId: string, initialSession: Age
         void loadInteractions();
         throw new Error(result.reason);
       }
+      if (activeHostInfo(rootId)?.generation === generation)
+        dismissInboxRequest(rootId, sessionId, requestId);
       hapticNotification(approvalOutcome(result.record.outcome) === false ? 'warning' : 'success');
       const hostName = hostById(rootId)?.hostName ?? rootId;
-      await Promise.all([
-        loadInteractions(),
-        loadObserve(),
-        refreshHostInbox(rootId, hostName),
-        refreshHostSessions(rootId, hostName),
-      ]);
+      refreshHostInbox(rootId);
+      await Promise.all([loadInteractions(), loadObserve(), refreshHostSessions(rootId, hostName)]);
       return result.record;
     } catch (cause) {
       hapticNotification('error');
@@ -673,12 +661,7 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  const offItem = onSubscriptionItem((payload) => {
-    if (disposed || !watchSubId || payload.subscriptionId !== watchSubId) return;
-    if (payload.rootId && payload.rootId !== rootId) return;
-    const page = payload.item as AgentDeliveryPage | undefined;
-    if (!page || typeof page !== 'object') return;
-
+  const applyWatchItem = (page: AgentDeliveryPage) => {
     if (page.kind === 'preview') {
       livePreview.set(accumulator.applyPreviewPage(page.page));
       return;
@@ -689,8 +672,7 @@ export function createConversationController(rootId: string, initialSession: Age
     }
     if (page.kind === 'interactions') {
       void loadInteractions();
-      const hostName = hostById(rootId)?.hostName ?? rootId;
-      void refreshHostInbox(rootId, hostName);
+      refreshHostInbox(rootId);
       return;
     }
     if (page.kind === 'room') {
@@ -734,13 +716,7 @@ export function createConversationController(rootId: string, initialSession: Age
         void refreshHostSessions(rootId, hostName);
       }
     }
-  });
-
-  const offEnded = onSubscriptionEnded((payload) => {
-    if (disposed || !watchSubId || payload.subscriptionId !== watchSubId) return;
-    watchHandle = null;
-    watchSubId = null;
-  });
+  };
 
   effect(() => {
     const conn = activeHostInfo(rootId);
@@ -749,8 +725,9 @@ export function createConversationController(rootId: string, initialSession: Age
       activeGeneration = -1;
       return;
     }
-    const gen = conn.generation ?? 0;
+    const gen = conn.generation;
     if (gen === activeGeneration) return;
+    stopWatch();
     activeGeneration = gen;
     void refreshAll().then(() => {
       if (!disposed && activeHostInfo(rootId)?.generation === gen) {
@@ -761,8 +738,6 @@ export function createConversationController(rootId: string, initialSession: Age
 
   cleanup(() => {
     disposed = true;
-    offItem();
-    offEnded();
     stopWatch();
   });
 

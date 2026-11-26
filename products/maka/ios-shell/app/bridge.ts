@@ -95,20 +95,20 @@ export interface ParsedTicketInfo {
   pathSummary: PathSummary | null;
 }
 
-export interface SubscriptionHandle {
+interface SubscriptionHandle {
   rootId: string;
   subscriptionId: string;
   generation: number;
 }
 
-export interface SubscriptionItemPayload {
+interface SubscriptionItemPayload {
   rootId?: string;
   subscriptionId: string;
   generation: number;
   item: unknown;
 }
 
-export interface SubscriptionEndedPayload {
+interface SubscriptionEndedPayload {
   rootId?: string;
   subscriptionId: string;
   generation: number;
@@ -324,24 +324,31 @@ export async function hostMutate<T = unknown>(
   }
 }
 
-export function subscribe(
+function subscribe(
   subscriptionId: string,
   endpoint: string,
   method: string,
-  input: Record<string, unknown> = {},
-  rootId?: string,
+  input: Record<string, unknown>,
+  rootId: string,
+  connectionGeneration: number,
 ): Promise<SubscriptionHandle> {
-  return host.call('ios.subscribe', {
-    subscriptionId,
-    rootId,
-    anchorSession: rootId ? undefined : hostState?.active?.session,
-    endpoint,
-    method,
-    input,
-  }) as Promise<SubscriptionHandle>;
+  // The native handshake has its own deadline. Keep the reply alive so a
+  // stopped watch can still unsubscribe if setup succeeds after it stops.
+  return host.call(
+    'ios.subscribe',
+    {
+      subscriptionId,
+      rootId,
+      generation: connectionGeneration,
+      endpoint,
+      method,
+      input,
+    },
+    { timeout: 0 },
+  ) as Promise<SubscriptionHandle>;
 }
 
-export function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: boolean }> {
+function unsubscribe(handle: SubscriptionHandle): Promise<{ cancelled: boolean }> {
   return host.call('ios.unsubscribe', handle) as Promise<{ cancelled: boolean }>;
 }
 
@@ -362,24 +369,77 @@ export function onOperationRecovery(
   });
 }
 
-export function onSubscriptionItem(
-  listener: (payload: SubscriptionItemPayload) => void,
-): () => void {
-  return host.on('ios.subscriptionItem', (payload) => {
-    if (payload && typeof payload === 'object') {
-      listener(payload as unknown as SubscriptionItemPayload);
-    }
-  });
-}
+type SubscriptionEvent = SubscriptionItemPayload | SubscriptionEndedPayload;
+const subscriptionRoutes = new Map<string, (event: SubscriptionEvent) => void>();
 
-export function onSubscriptionEnded(
-  listener: (payload: SubscriptionEndedPayload) => void,
+// Register at module scope: host.on inside an effect is removed on its next run.
+const dispatchSubscription = (payload: unknown) => {
+  if (!payload || typeof payload !== 'object') return;
+  const event = payload as SubscriptionEvent;
+  subscriptionRoutes.get(event.subscriptionId)?.(event);
+};
+host.on('ios.subscriptionItem', dispatchSubscription);
+host.on('ios.subscriptionEnded', dispatchSubscription);
+
+// IDs are unique per watch attempt. The native reply precedes stream startup,
+// but the event and promise can reach JS in different turns.
+export function watchHost<T>(
+  rootId: string,
+  connectionGeneration: number,
+  subscriptionId: string,
+  method: string,
+  input: Record<string, unknown>,
+  onItem: (item: T) => void,
+  onError: (cause: unknown) => void,
+  onOpen?: () => void,
 ): () => void {
-  return host.on('ios.subscriptionEnded', (payload) => {
-    if (payload && typeof payload === 'object') {
-      listener(payload as unknown as SubscriptionEndedPayload);
+  let handle: SubscriptionHandle | undefined;
+  let stopped = false;
+  const early: SubscriptionEvent[] = [];
+  const current = () => !stopped && connection(rootId)?.generation === connectionGeneration;
+  const detach = () => {
+    stopped = true;
+    early.length = 0;
+    subscriptionRoutes.delete(subscriptionId);
+  };
+  const receive = (event: SubscriptionEvent) => {
+    if (!current() || event.rootId !== rootId || event.subscriptionId !== subscriptionId) return;
+    if (!handle) {
+      early.push(event);
+      return;
     }
-  });
+    if (event.generation !== handle.generation) return;
+    if ('item' in event) onItem(event.item as T);
+    else {
+      detach();
+      onError(event.error ?? 'Host subscription ended');
+    }
+  };
+  subscriptionRoutes.set(subscriptionId, receive);
+  const cancel = (opened: SubscriptionHandle) =>
+    void unsubscribe(opened).catch((cause) => console.warn('Could not stop Host watch', cause));
+  void subscribe(subscriptionId, 'agent', method, input, rootId, connectionGeneration).then(
+    (opened) => {
+      if (!current()) {
+        detach();
+        cancel(opened);
+        return;
+      }
+      handle = opened;
+      onOpen?.();
+      for (const event of early.splice(0)) receive(event);
+    },
+    (cause) => {
+      const report = current();
+      detach();
+      if (report) onError(cause);
+    },
+  );
+  return () => {
+    if (stopped) return;
+    detach();
+    if (handle) cancel(handle);
+  };
 }
 
 /* ---- Typed Agent Host RPC helpers ---- */
