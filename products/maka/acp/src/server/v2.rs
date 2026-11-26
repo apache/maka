@@ -136,26 +136,30 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         responder: Responder<acp::ResumeSessionResponse>,
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = resume.clone();
-                resume.dispatch(responder, async move {
-                    let replay = match request.replay_from {
-                        None => false,
-                        Some(acp::ReplayFrom::Start(_)) => true,
-                        Some(_) => return Err("Unsupported ACP replay cursor".into()),
-                    };
-                    let servers = crate::mcp::v2(request.mcp_servers, request.cwd.as_ref())?;
-                    let setup = app
-                        .sessions
-                        .resume(
-                            &app.client,
-                            &app.initialized()?.peer,
-                            &request.session_id.to_string(),
-                            request.cwd.as_ref(),
-                            replay,
-                            servers,
-                        )
-                        .await?;
-                    Ok(acp::ResumeSessionResponse::new()
-                        .config_options(transport::v2::config(setup.options)))
+                resume.dispatch_reply(responder, async move |responder| {
+                    // On failure, release held live updates only after the error is on the wire queue.
+                    let scope = app.sessions.resuming(request.session_id.to_string()).await;
+                    let result = async {
+                        let replay = match request.replay_from {
+                            None => false,
+                            Some(acp::ReplayFrom::Start(_)) => true,
+                            Some(_) => return Err("Unsupported ACP replay cursor".into()),
+                        };
+                        let servers = crate::mcp::v2(request.mcp_servers, request.cwd.as_ref())?;
+                        let setup = scope
+                            .load(
+                                &app.client,
+                                &app.initialized()?.peer,
+                                request.cwd.as_ref(),
+                                replay,
+                                servers,
+                            )
+                            .await?;
+                        Ok(acp::ResumeSessionResponse::new()
+                            .config_options(transport::v2::config(setup.options)))
+                    }
+                    .await;
+                    super::reply(responder, result)
                 })
             },
             agent_client_protocol::on_receive_request!(),

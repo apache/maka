@@ -103,7 +103,7 @@ impl Registry {
         let mut guards = Vec::with_capacity(sessions.len());
         for session in sessions {
             guards.push(session.gate.clone().lock_owned().await);
-            session.stop_following().await?;
+            session.replace_following(None).await?;
             if let Some(lease) = session.mcp.lock().await.take() {
                 lease.close().await?;
             }
@@ -147,20 +147,39 @@ impl Registry {
         self.sessions.lock().unwrap().insert(id.clone(), local);
         Ok(Setup { id, options })
     }
-    pub async fn resume(
+    pub async fn resuming(&self, id: String) -> Resume<'_> {
+        let creation = self.creation.lock().await;
+        let existing = self.sessions.lock().unwrap().get(&id).cloned();
+        let local = existing.unwrap_or_else(|| Session::new(id));
+        let paused = local.pause_following().await;
+        Resume {
+            registry: self,
+            local,
+            _creation: creation,
+            _paused: paused,
+        }
+    }
+}
+
+pub(crate) struct Resume<'a> {
+    registry: &'a Registry,
+    local: Arc<Session>,
+    _creation: tokio::sync::MutexGuard<'a, ()>,
+    _paused: Option<OwnedMutexGuard<()>>,
+}
+
+impl Resume<'_> {
+    pub async fn load(
         &self,
         client: &Client,
         peer: &Peer,
-        id: &str,
         cwd: &Path,
         replay_history: bool,
         servers: Vec<maka_agent_facts::configuration::mcp::ServerConfiguration>,
     ) -> Result<Setup, Error> {
         let cwd = list::directory(cwd)?;
-        let _creation = self.creation.lock().await;
-        let id = id.to_owned();
-        let existing = self.sessions.lock().unwrap().get(&id).cloned();
-        let local = existing.unwrap_or_else(|| Session::new(id.clone()));
+        let local = &self.local;
+        let id = &local.id;
         let active = local.enter(&peer.stop)?;
         let mut observation: Observation = client
             .query("agent", "observe", json!({"sessionId":id}))
@@ -187,13 +206,12 @@ impl Registry {
             if let Some(lease) = mcp.take() {
                 lease.close().await?;
             }
-            *mcp = crate::mcp::attach(client, &id, servers).await?;
+            *mcp = crate::mcp::attach(client, id, servers).await?;
         }
         drop(mcp);
-        local.stop_following().await?;
         if replay_history {
-            peer.reset(&id);
-            replay(client, peer, &id, observation.through, &active.cancel).await?;
+            peer.reset(id);
+            replay(client, peer, id, observation.through, &active.cancel).await?;
         }
         if replay_history || change_servers {
             // Replay has a fixed history fence, but the resume snapshot is current.
@@ -211,16 +229,22 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        local
-            .publish_resume(client, peer, observation, replay_history)
-            .await?;
-        peer.reset(&id);
-        self.sessions
+        let next = follow::Follow::resume(client, peer, observation, replay_history).await?;
+        local.replace_following(next).await?;
+        peer.reset(id);
+        self.registry
+            .sessions
             .lock()
             .unwrap()
             .insert(id.clone(), local.clone());
-        Ok(Setup { id, options })
+        Ok(Setup {
+            id: id.clone(),
+            options,
+        })
     }
+}
+
+impl Registry {
     pub async fn list(
         &self,
         client: &Client,
@@ -245,7 +269,7 @@ impl Registry {
             tokio::time::timeout(Duration::from_secs(20), session.gate.clone().lock_owned())
                 .await
                 .map_err(|_| "ACP session cancellation has not settled")?;
-        session.stop_following().await?;
+        session.replace_following(None).await?;
         if let Some(lease) = session.mcp.lock().await.take() {
             lease.close().await?;
         }
@@ -280,6 +304,7 @@ impl Registry {
         Ok(options)
     }
 }
+
 async fn replay(
     client: &Client,
     peer: &Peer,

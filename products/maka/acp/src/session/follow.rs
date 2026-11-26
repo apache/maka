@@ -25,36 +25,49 @@ use crate::{
 };
 use maka_agent_api::contract::{DeliveryFact, DeliveryPage, Observation, SessionActivity};
 use serde_json::json;
-use tokio::task::JoinHandle;
+use std::sync::Arc;
+use tokio::{
+    sync::{Mutex, OwnedMutexGuard},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 
-pub(super) struct Follow {
+pub(crate) struct Follow {
+    publish: Arc<Mutex<()>>,
     stop: CancellationToken,
     task: JoinHandle<Result<(), Error>>,
 }
 
 impl Session {
+    // Keep the old stream and cursor intact until the replacement snapshot commits.
+    pub(super) async fn pause_following(&self) -> Option<OwnedMutexGuard<()>> {
+        let publish = self.follow.lock().unwrap().as_ref()?.publish.clone();
+        Some(publish.lock_owned().await)
+    }
+
     // The session gate orders replacement, close and handoff to a local foreground.
-    pub(crate) async fn stop_following(&self) -> Result<(), Error> {
-        let follow = self.follow.lock().unwrap().take();
+    pub(crate) async fn replace_following(&self, next: Option<Follow>) -> Result<(), Error> {
+        let follow = std::mem::replace(&mut *self.follow.lock().unwrap(), next);
         if let Some(follow) = follow {
             follow.stop.cancel();
             follow.task.await??;
         }
         Ok(())
     }
+}
 
-    pub(super) async fn publish_resume(
-        &self,
+impl Follow {
+    pub(super) async fn resume(
         client: &Client,
         peer: &Peer,
         observation: Observation,
         replayed: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Self>, Error> {
         let session = observation.session;
         let activity = session.activity;
         if !peer.is_v2() || activity == SessionActivity::Idle {
-            return peer.synchronize(&session, replayed);
+            peer.synchronize(&session, replayed)?;
+            return Ok(None);
         }
         let mut watch = client
             .subscribe(
@@ -72,8 +85,11 @@ impl Session {
         let peer = peer.clone();
         let stop = peer.stop.child_token();
         let cancel = stop.clone();
+        let publish = Arc::<Mutex<()>>::default();
+        let output = publish.clone();
         let task = tokio::spawn(async move {
-            let result = until_idle(&client, &peer, &id, &mut watch, activity, &cancel).await;
+            let result =
+                until_idle(&client, &peer, &id, &mut watch, activity, &cancel, &output).await;
             let closed = watch.close().await;
             if result.is_err() || closed.is_err() {
                 peer.stop.cancel();
@@ -81,8 +97,11 @@ impl Session {
             closed?;
             result
         });
-        *self.follow.lock().unwrap() = Some(Follow { stop, task });
-        Ok(())
+        Ok(Some(Self {
+            publish,
+            stop,
+            task,
+        }))
     }
 }
 
@@ -93,6 +112,7 @@ async fn until_idle(
     watch: &mut Subscription,
     mut activity: SessionActivity,
     cancel: &CancellationToken,
+    output: &Mutex<()>,
 ) -> Result<(), Error> {
     loop {
         let page = tokio::select! {
@@ -113,12 +133,14 @@ async fn until_idle(
         let current: Observation = client
             .query("agent", "observe", json!({"sessionId":id}))
             .await?;
-        if cancel.is_cancelled() {
-            return Ok(());
-        }
         if activity == current.session.activity {
             continue;
         }
+        let _publish = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            guard = output.lock() => guard,
+        };
         activity = current.session.activity;
         if activity == SessionActivity::Idle && current.last_completed_turn_id.is_some() {
             return peer.complete(id, Ok(Completion::Completed)).await;

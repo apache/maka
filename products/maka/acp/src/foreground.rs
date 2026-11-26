@@ -119,7 +119,7 @@ impl Foreground {
         Ok(())
     }
     async fn observe(&mut self) -> Result<Completion, Error> {
-        self.session.stop_following().await?;
+        self.session.replace_following(None).await?;
         let mut subscription = self
             .client
             .subscribe(

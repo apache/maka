@@ -110,10 +110,11 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<Client> {
                     let servers = crate::mcp::v1(request.mcp_servers, &request.cwd)?;
                     let setup = app
                         .sessions
-                        .resume(
+                        .resuming(request.session_id.to_string())
+                        .await
+                        .load(
                             &app.client,
                             &app.initialized()?.peer,
-                            &request.session_id.to_string(),
                             &request.cwd,
                             true,
                             servers,

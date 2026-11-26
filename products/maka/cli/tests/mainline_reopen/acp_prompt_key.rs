@@ -294,6 +294,15 @@ async fn acp_prompt_key_cancel_before_insertion_allows_a_fresh_retry() {
 
 #[tokio::test]
 async fn acp_prompt_key_reconnect_during_independent_host_work() {
+    reconnect_during_host_work(false).await;
+}
+
+#[tokio::test]
+async fn acp_prompt_key_cancelled_repeat_resume_keeps_the_live_connection() {
+    reconnect_during_host_work(true).await;
+}
+
+async fn reconnect_during_host_work(cancel_replay: bool) {
     tokio::time::timeout(Duration::from_secs(90), async {
         let sandbox = Sandbox::new().await.unwrap();
         let mut server = MockAiBuilder::new().interactive(2)
@@ -341,6 +350,17 @@ async fn acp_prompt_key_reconnect_during_independent_host_work() {
             }
         }).collect::<Vec<_>>();
         assert_eq!(snapshot, ["complete", "running"]);
+        if cancel_replay {
+            write_frame(&mut b, json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{"sessionId":session,"cwd":sandbox.workspace,"replayFrom":{"type":"start"}}})).await;
+            // A busy reply proves the second resume has entered this session's gate.
+            let (busy, _) = rpc(&mut b, 5, "session/set_config_option", json!({"sessionId":session,"configId":"model","type":"id","value":"unused"})).await;
+            assert_eq!(busy["error"]["data"], "ACP session is busy", "{busy}");
+            write_frame(&mut b, json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}})).await;
+            let (cancelled, notes) = response(&mut b).await;
+            assert_eq!(cancelled["id"], 4, "{cancelled}");
+            assert_eq!(cancelled["error"]["data"], "ACP replay cancelled", "{cancelled}");
+            assert!(!notes.iter().any(|n| n["params"]["update"]["sessionUpdate"] == "replay_complete"), "{notes:?}");
+        }
         let (retry, _) = rpc(&mut b, 3, "session/prompt", prompt).await;
         assert_eq!(retry["result"]["messageId"], message, "{retry}");
         assert!(blocked.delta("Done.").await);
