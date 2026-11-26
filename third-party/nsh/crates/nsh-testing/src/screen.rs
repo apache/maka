@@ -2396,14 +2396,13 @@ impl Screen {
     /// in document order: each text view, its text and its content box in
     /// `area`'s points. Hidden views and texts kept out
     /// (`selectable={false}`) are left out.
-    pub(crate) fn area_texts(
-        &self,
-        area: NodeId,
-    ) -> Vec<(NodeId, Arc<nsh_core::AttributedText>, Bounds<Points>)> {
+    pub(crate) fn area_texts(&self, area: NodeId) -> Vec<AreaText> {
         let mut out = Vec::new();
         let Some(origin) = self.bounds_in_root(area).map(|b| b.origin) else {
             return out;
         };
+        // The last text selection leaves out: a list marker, maybe.
+        let mut chrome = None;
         let mut stack = vec![area];
         while let Some(id) = stack.pop() {
             let Some(view) = self.nodes.get(&id) else {
@@ -2413,15 +2412,16 @@ impl Screen {
                 continue;
             }
             if let Some(text) = &view.attributed
-                && text.selectable != Some(false)
                 && let Some(bounds) = self.bounds_in_root(id)
             {
                 let content = view.text_content;
-                out.push((
-                    id,
-                    Arc::clone(text),
-                    Bounds::new(bounds.origin - origin + content.origin, content.size),
-                ));
+                let frame = Bounds::new(bounds.origin - origin + content.origin, content.size);
+                if text.selectable == Some(false) {
+                    chrome = Some((text.text.clone(), frame));
+                } else {
+                    let marker = nsh_core::selection::marker_of(chrome.take().as_ref(), frame);
+                    out.push((id, Arc::clone(text), frame, marker));
+                }
             }
             if let Some(children) = self.children.get(&id) {
                 stack.extend(children.iter().rev());
@@ -3790,6 +3790,15 @@ pub(crate) fn protocol_accessibility(n: AccessibilityNode) -> nsh_dev::protocol:
     out.children = n.children.into_iter().map(protocol_accessibility).collect();
     out
 }
+
+/// One text of a selectable area: its view, text, content box in the
+/// area's points and the list marker it carries, if any.
+pub(crate) type AreaText = (
+    NodeId,
+    Arc<nsh_core::AttributedText>,
+    Bounds<Points>,
+    Option<String>,
+);
 
 #[cfg(test)]
 mod tests {

@@ -20,8 +20,9 @@ pub struct FileDropEvent {
     /// (TS: `mimeTypes`): `""` when the name says none (a directory, no
     /// extension), as the DOM's `File.type`.
     pub mime_types: Vec<String>,
-    /// Where the files were let go, in the window's coordinates (TS:
-    /// `pagePosition`), on backends that know it (Linux).
+    /// Where the files were let go, in the window's coordinates, as a
+    /// mouse event's `page_position` (TS: `pagePosition`): on AppKit, GTK,
+    /// Win32, iOS, Android and the Web; `None` on the GPUI backend.
     pub page_position: Option<Point<Points>>,
     /// The dropped regular files with their contents, on backends that hand
     /// over contents instead of paths (the Web, and on macOS files a drag

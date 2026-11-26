@@ -54,6 +54,8 @@ struct Text {
     /// Its lines: where each starts (UTF-16 units) and its characters'
     /// UTF-16 offsets after the first, a line break left out.
     lines: Vec<Vec<u32>>,
+    /// The list marker beside it (`selection::marker_of`).
+    marker: Option<String>,
 }
 
 impl Text {
@@ -99,6 +101,7 @@ impl Text {
             advance,
             line: line.0,
             lines,
+            marker: None,
         }
     }
 
@@ -142,6 +145,10 @@ impl SelectionTexts for Texts {
         u64::from(self.0[i].id)
     }
 
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.0[i].marker.as_deref()
+    }
+
     fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
         let text = &self.0[i];
         let origin = text.frame.origin;
@@ -171,7 +178,10 @@ impl Headless {
             self.screen
                 .area_texts(area)
                 .into_iter()
-                .map(|(id, text, frame)| Text::new(id, text, frame))
+                .map(|(id, text, frame, marker)| Text {
+                    marker,
+                    ..Text::new(id, text, frame)
+                })
                 .collect(),
         )
     }

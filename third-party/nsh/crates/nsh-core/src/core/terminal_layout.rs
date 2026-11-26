@@ -19,8 +19,10 @@
 //!   size (icon-sized videos, web views, shaders and canvases, [`ICON`])
 //!   is laid out as `display: none`, taking no Cells and no spacing;
 //!   larger ones keep their box, blank (a canvas drawn in braille), so
-//!   what is around them stays apart; an image keeps its box at every
-//!   size, as the terminal draws pictures (a star, an avatar's portrait);
+//!   what is around them stays apart; an image keeps its box, as the
+//!   terminal draws pictures (an avatar's portrait), unless it is a
+//!   glyph-sized icon ([`PICTURE_ICON`]), which half blocks show only as
+//!   a blot of color;
 //!   and so are a view with nothing in it smaller than a row
 //!   both ways (a status dot, a swatch: a hued dot pinned on a box or
 //!   leading a text in a row is one Cell, [`pin`]) and a view whose content is all
@@ -226,6 +228,9 @@ pub(crate) struct Role {
     /// A control's accessibility label, in columns (0 without one): an
     /// icon button shows it in place of its icon.
     pub(crate) label: u16,
+    /// The label's first word, in columns (the whole label when it is
+    /// one word): a label short of room keeps this before it is cut.
+    pub(crate) word: u16,
     /// A text or a text input: a box holding only such is a box of text.
     pub(crate) text: bool,
     /// A scroll view or a list: its content is laid out unbounded along
@@ -306,8 +311,10 @@ pub(crate) enum LeftOut {
     /// It is shown.
     #[default]
     No,
-    /// An image: shown at every size, as media that keeps its box (the
-    /// terminal draws the picture in it).
+    /// An image: shown as media that keeps its box (the terminal draws the
+    /// picture in it), unless it is a glyph-sized icon ([`PICTURE_ICON`]):
+    /// two columns by one row of half blocks show no glyph, only a blot of
+    /// color in front of a label, so it is left out.
     Picture,
     /// A video, a web view, a shader or a canvas: left out when
     /// it is icon-sized ([`ICON`]); larger, it keeps its box (a canvas
@@ -320,18 +327,27 @@ pub(crate) enum LeftOut {
 /// or a canvas a terminal takes for an icon and leaves out, in points.
 const ICON: f32 = 48.0;
 
+/// The largest explicit width and height of an image a terminal takes for
+/// an icon and leaves out, in points: at most about two columns by one row
+/// (a 16pt or 20pt glyph), smaller than an avatar's portrait.
+const PICTURE_ICON: f32 = 20.0;
+
 /// A tolerance for `f32` sums that stand for whole Cells or an exact half.
 const EPSILON: f32 = 1.0e-4;
 
 /// Whether a box styled `style` is left out ([`LeftOut`]).
 pub(crate) fn left_out(style: &Style, left_out: LeftOut) -> bool {
     match left_out {
-        LeftOut::No | LeftOut::Picture => false,
-        LeftOut::IfIcon => {
-            let icon = |d: Dimension| length(d.into_raw()).is_some_and(|v| v <= ICON);
-            icon(style.size.width) && icon(style.size.height)
-        }
+        LeftOut::No => false,
+        LeftOut::Picture => icon_sized(style, PICTURE_ICON),
+        LeftOut::IfIcon => icon_sized(style, ICON),
     }
+}
+
+/// Whether `style` has an explicit width and height of at most `max` points.
+fn icon_sized(style: &Style, max: f32) -> bool {
+    let icon = |d: Dimension| length(d.into_raw()).is_some_and(|v| v <= max);
+    icon(style.size.width) && icon(style.size.height)
 }
 
 /// The tree [`compute`] lays out: the core's layout tree, its children
@@ -920,7 +936,21 @@ fn own_insets(
         // 12pt, one from 4pt; a popup's panel (an anchored overlay's first
         // face) a column each side from 4pt and no rows, its band all the
         // frame it needs.
-        let border = Sides::default();
+        // A filled box framed on every side around a text field (a
+        // composer: its field, its send button) keeps its line: without
+        // it the field is a lone underlined line and its buttons float
+        // beside it, nothing showing they are one input.
+        let border = if kind.container && framed_field(tree, node) {
+            let has = |v: LengthPercentage| i32::from(lp(v, parent_width) > 0.0);
+            Sides {
+                l: has(s.border.left),
+                r: has(s.border.right),
+                t: has(s.border.top),
+                b: has(s.border.bottom),
+            }
+        } else {
+            Sides::default()
+        };
         let popup = popup_panel(tree, node);
         let px = |v: LengthPercentage| {
             let p = lp(v, parent_width);
@@ -1337,6 +1367,27 @@ fn ring(tree: &impl Tree, node: NodeId, kind: Kind, parent_width: Option<f32>) -
 /// Below this many columns a box of an explicit width is small
 /// ([`compute`]): it takes its content's words when they are wider.
 const SMALL_BOX: i32 = 6;
+
+/// How deep [`framed_field`] looks for a text field.
+const FIELD_DEPTH: usize = 4;
+
+/// Whether `node` is framed on every side and holds a text field within
+/// [`FIELD_DEPTH`] levels (a composer around its field), and is not a
+/// field itself.
+fn framed_field(tree: &impl Tree, node: NodeId) -> bool {
+    fn holds(tree: &impl Tree, node: NodeId, depth: usize) -> bool {
+        (0..tree.child_count(node)).any(|i| {
+            let child = tree.child(node, i);
+            tree.role(child).input || (depth > 1 && holds(tree, child, depth - 1))
+        })
+    }
+    let b = tree.style(node).border;
+    !tree.role(node).input
+        && [b.left, b.right, b.top, b.bottom]
+            .iter()
+            .all(|&v| length(v.into_raw()).is_some_and(|v| v > 0.0))
+        && holds(tree, node, FIELD_DEPTH)
+}
 
 /// A corner radius that rounds any box fully (`rounded-full` is 9999).
 const FULLY_ROUND: f32 = 1000.0;
@@ -2179,6 +2230,10 @@ struct Item {
     /// anything else. They give their columns before anything else but
     /// the gaps: down to three a label (cut short), then out.
     labels: i32,
+    /// Its labels' first words and a column between them
+    /// ([`labels_short`]): its labels give down to this before they are
+    /// cut to three columns.
+    short: i32,
     /// A negative margin pulls it over its sibling (stacked avatars): in a
     /// row it keeps a column from it instead.
     overlaps: bool,
@@ -2295,8 +2350,9 @@ fn min_content_cols(
 }
 
 /// Gives `over` columns of a row back from its gaps (down to one column)
-/// and then its icon controls shown as labels (down to three columns,
-/// cut short, then out, the last first); returns what is still over.
+/// and then its icon controls shown as labels (down to their first words,
+/// the widest first, then three columns, cut short, then out, the last
+/// first); returns what is still over.
 fn give_gaps_and_labels(items: &mut [Item], before: &mut [i32], mut over: i32) -> i32 {
     while over > 0 {
         let pick = (1..before.len())
@@ -2308,6 +2364,20 @@ fn give_gaps_and_labels(items: &mut [Item], before: &mut [i32], mut over: i32) -
     }
     // Three columns a label, and a column between a group's.
     let least = |i: &Item| i.labels * 3 + (i.labels - 1).max(0);
+    // A label keeps its first word while another has more to give
+    // (`Edit` of `Edit folder`), so each still says what it does.
+    let word = |i: &Item| i.short.max(least(i));
+    while over > 0 {
+        let pick = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.labels > 0 && i.main > word(i))
+            .max_by_key(|(_, i)| i.main - word(i))
+            .map(|(n, _)| n);
+        let Some(pick) = pick else { break };
+        items[pick].main -= 1;
+        over -= 1;
+    }
     while over > 0 {
         let pick = items
             .iter()
@@ -2393,6 +2463,27 @@ fn labels_held(tree: &impl Tree, node: NodeId) -> i32 {
         }
     }
     if n > 1 && !row { 0 } else { n }
+}
+
+/// The columns `node`'s labels ([`labels_held`]) take showing only their
+/// first words, a column between two: what they give down to first.
+fn labels_short(tree: &impl Tree, node: NodeId) -> i32 {
+    if kind(tree, node).labelled {
+        return i32::from(tree.role(node).word);
+    }
+    let mut cols = 0;
+    let mut n = 0;
+    for i in 0..tree.child_count(node) {
+        let child = tree.child(node, i);
+        if hidden(tree, child) || tree.style(child).position.is_out_of_flow() {
+            continue;
+        }
+        if labels_held(tree, child) > 0 {
+            cols += labels_short(tree, child);
+            n += 1;
+        }
+    }
+    cols + (n - 1).max(0)
 }
 
 /// The longest words of `node`'s children ([`min_content_cols`]): the
@@ -2521,6 +2612,7 @@ fn arrange_flex(
                 content: !k.empty || tree.role(node).splitter != Splitter::No,
                 floor: 0,
                 labels: labels_held(tree, node),
+                short: labels_short(tree, node),
                 control: tree.role(node).control,
                 filled: surface(tree.role(node), tree.backdrop(node).unwrap_or(grid.page))
                     .is_some(),
@@ -3636,6 +3728,32 @@ fn arrange_grid(
         w: total_w,
         h: total_h,
     }
+}
+
+/// The terminal columns `text` takes: two for a wide (East Asian or emoji)
+/// character, one for any other.
+pub(crate) fn columns(text: &str) -> usize {
+    text.chars()
+        .map(|c| {
+            let c = c as u32;
+            let wide = matches!(c,
+                0x1100..=0x115F
+                | 0x2E80..=0x303E
+                | 0x3041..=0x33FF
+                | 0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xA000..=0xA4CF
+                | 0xAC00..=0xD7A3
+                | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE4F
+                | 0xFF00..=0xFF60
+                | 0xFFE0..=0xFFE6
+                | 0x1F300..=0x1F64F
+                | 0x1F900..=0x1F9FF
+                | 0x20000..=0x3FFFD);
+            1 + usize::from(wide)
+        })
+        .sum()
 }
 
 #[cfg(test)]

@@ -61,7 +61,10 @@ jobs:
     environment:
       name: ci-debounce
       deployment: false
-    runs-on: ubuntu-24.04
+    # Pull requests from forks and the scheduled runs (which save the
+    # dependencies' caches forks restore) run on GitHub's runners, everything
+    # else on the self-hosted ones (docs/dev/tooling.md "Runners").
+    runs-on: ${{ (github.event_name == 'schedule' || (github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["public", "Linux", "X64"]') }}
     steps:
       # A pull request runs the checks when it changes what they build;
       # main and manual runs always do.
@@ -78,6 +81,7 @@ jobs:
               - "crates/nsh-core/**"
               - "crates/nsh-dev/**"
               - "crates/nsh-engine/**"
+              - "crates/nsh-gpu/**"
               - "crates/nsh-i18n/**"
               - "crates/nsh-js/**"
               - "crates/nsh-macros/**"
@@ -118,11 +122,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
 
       - name: Setup Rust
-        if: steps.run.outputs.check == 'true'
+        if: steps.run.outputs.check == 'true' && runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@stable
 
-      # huacnlee/cargo, and the dependencies' builds: main's runs save
-      # them, pull requests restore them.
+      # The self-hosted runners are shared: install the toolchain without
+      # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
+      - name: Setup Rust (self-hosted)
+        if: steps.run.outputs.check == 'true' && runner.environment == 'self-hosted'
+        run: |
+          bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+          export PATH="$bin:$PATH"
+          command -v rustup || curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          rustup toolchain install stable --profile minimal
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # huacnlee/cargo, and the dependencies' builds: on GitHub's runners
+      # main's runs save them and pull requests restore them; the
+      # self-hosted runners keep their own and skip the caches.
       - name: Cargo
         if: steps.run.outputs.check == 'true'
         uses: ./nsh/.github/actions/cargo

@@ -206,6 +206,26 @@ impl RichEditorSelection {
     }
 }
 
+/// A table's row or column asking for its menu (`onTableMenu`): its handle
+/// was pressed and let go without dragging, after the press selected that
+/// row or column. A drag moves the row or column instead and reports nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct RichEditorTableMenu {
+    /// The position before the table, the `table` the table commands take
+    /// (`moveTableRow`, `setColumnWidth`).
+    pub table: u32,
+    /// The row, for a row's handle.
+    #[prop(skip_none)]
+    pub row: Option<u32>,
+    /// The column, for a column's handle.
+    #[prop(skip_none)]
+    pub column: Option<u32>,
+    /// The pressed handle's box in the root view: what a menu is placed
+    /// against.
+    pub bounds: Bounds<Points>,
+}
+
 /// The events of a [`RichEditor`].
 #[derive(Debug, Clone, PartialEq, Event)]
 #[non_exhaustive]
@@ -238,6 +258,18 @@ pub enum RichEditorEvent {
     /// updated; a cancel can end composition without a document change.
     #[args(composing)]
     CompositionChange(bool),
+    /// Text was typed while the editor cannot be edited; the document is
+    /// unchanged. One per change of the platform's text (a key, a soft
+    /// keyboard's word, an input method's commit), not for text the app
+    /// inserts. A keyboard that replaces a word it typed (autocorrect, a
+    /// picked suggestion) reports again, so this is a sign of typing, not a
+    /// count of characters.
+    ReadonlyInput,
+    /// A table's row or column handle was pressed and let go without
+    /// dragging, after the press selected its row or column: where the app
+    /// opens its own menu for that row or column.
+    #[args(event)]
+    TableMenu(RichEditorTableMenu),
 }
 
 /// The methods of a [`RichEditor`]'s ref.

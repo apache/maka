@@ -395,6 +395,9 @@ impl PathBounds {
 #[derive(Default)]
 pub struct DamageScan {
     stack: Vec<State>,
+    /// The areas of the last scan, one per painting operation that read a
+    /// changed value ([`DamageScan::areas`]).
+    areas: Vec<geo::Bounds<Points>>,
 }
 
 impl DamageScan {
@@ -438,6 +441,7 @@ impl DamageScan {
         let path_dep = |ops: &[PathOp]| ops.iter().any(|op| path_op_dep(op, &dep));
 
         self.stack.clear();
+        self.areas.clear();
         let mut state = State::default();
         let mut path = PathBounds::EMPTY;
         let mut area = Bounds::EMPTY;
@@ -664,6 +668,9 @@ impl DamageScan {
                 let shadow = bounds.offset(dx, dy).inflate(blur * 2.0);
                 bounds.union(&shadow);
             }
+            if bounds.finite() && !bounds.is_empty() {
+                self.areas.push(whole(bounds.inflate(AA)));
+            }
             area.union(&bounds);
         }
         if area.is_empty() {
@@ -672,15 +679,22 @@ impl DamageScan {
         if !area.finite() {
             return Damage::All;
         }
-        let area = area.inflate(AA);
-        let (x, y) = (area.min[0].floor(), area.min[1].floor());
-        Damage::Rect(geo::rect(
-            x,
-            y,
-            area.max[0].ceil() - x,
-            area.max[1].ceil() - y,
-        ))
+        Damage::Rect(whole(area.inflate(AA)))
     }
+
+    /// The areas the last scan added up into its [`Damage::Rect`], one per
+    /// operation: separate changes (two dots in opposite corners) cover
+    /// much less than their union. Meaningful only when the scan returned a
+    /// `Rect`.
+    pub fn areas(&self) -> &[geo::Bounds<Points>] {
+        &self.areas
+    }
+}
+
+/// `b` grown to whole points.
+fn whole(b: Bounds) -> geo::Bounds<Points> {
+    let (x, y) = (b.min[0].floor(), b.min[1].floor());
+    geo::rect(x, y, b.max[0].ceil() - x, b.max[1].ceil() - y)
 }
 
 /// The index of the first operation of `ops` that reads an animated value

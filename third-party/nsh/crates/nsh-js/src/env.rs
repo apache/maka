@@ -58,9 +58,10 @@ enum Part {
     Network,
     HorizontalSizeClass,
     VerticalSizeClass,
+    ReservedRegions,
 }
 
-const PARTS: usize = 21;
+const PARTS: usize = 22;
 
 /// The environment's part of a context's state.
 pub(crate) struct Env {
@@ -189,9 +190,9 @@ impl Env {
 pub(crate) fn init(cx: *mut JsContext) {
     let e = env(cx);
     for i in 0..PARTS {
-        // The displays are an empty list until the platform reports any
-        // (off desktops, for good).
-        let initial = if i == Part::Displays as usize {
+        // The displays and the reserved regions are empty lists until the
+        // platform reports any (displays off desktops, for good).
+        let initial = if i == Part::Displays as usize || i == Part::ReservedRegions as usize {
             // SAFETY: a new array, borrowed by the signal and freed after.
             unsafe { qjs::JS_NewArray(cx) }
         } else if i == Part::Fps as usize {
@@ -410,6 +411,34 @@ fn number(v: f32) -> JsValue {
     qjs::JS_NewFloat64(shortest)
 }
 
+/// `reservedRegions()`'s list: `{ kind, bounds: { origin, size } }` each.
+fn reserved_regions(cx: *mut JsContext, regions: &nsh_core::platform::ReservedRegions) -> JsValue {
+    let mut items: Vec<JsValue> = regions
+        .iter()
+        .map(|r| {
+            let b = r.bounds;
+            let origin = object(
+                cx,
+                &[(c"x", number(b.origin.x.0)), (c"y", number(b.origin.y.0))],
+            );
+            let size = object(
+                cx,
+                &[
+                    (c"width", number(b.size.width.0)),
+                    (c"height", number(b.size.height.0)),
+                ],
+            );
+            let bounds = object(cx, &[(c"origin", origin), (c"size", size)]);
+            object(
+                cx,
+                &[(c"kind", string(cx, r.kind.name())), (c"bounds", bounds)],
+            )
+        })
+        .collect();
+    // SAFETY: the array takes the objects.
+    unsafe { qjs::JS_NewArrayFrom(cx, items.len() as c_int, items.as_mut_ptr()) }
+}
+
 fn boolean(v: bool) -> JsValue {
     if v { qjs::JS_TRUE } else { qjs::JS_FALSE }
 }
@@ -514,6 +543,12 @@ pub(crate) fn set_environment(cx: *mut JsContext, next: &Environment) -> Result<
     }
     if changed(&|p| p.safe_area == next.safe_area) {
         writes.push((Part::SafeArea, object(cx, &insets(&next.safe_area))));
+    }
+    if changed(&|p| p.reserved_regions == next.reserved_regions) {
+        writes.push((
+            Part::ReservedRegions,
+            reserved_regions(cx, &next.reserved_regions),
+        ));
     }
     if changed(&|p| p.title_bar == next.title_bar) {
         let t = next.title_bar;
@@ -994,6 +1029,14 @@ pub(crate) const DEVICE_EXPORTS: &[Item] = &[
         ),
     ),
     (
+        "reservedRegions",
+        Export::Value(|cx| accessor(cx, Part::ReservedRegions)),
+        Ts::value(
+            "The parts of the surface the device reserves inside the safe area, in\nthe surface's points (reactive): the fold of a partly folded display\n(`\"division\"`, iPhone Duo's inner display while it is partly open), a\ncamera that shows through it (`\"occlusion\"`). Keep what matters clear of\nthem, with small adjustments rather than a new layout; the system's own\ncontrols (alerts, menus, sheets) move by themselves. Empty where the\nplatform reports none.",
+            "Accessor<readonly ReservedRegion[]>",
+        ),
+    ),
+    (
         "windowSize",
         Export::Value(|cx| accessor(cx, Part::Window)),
         Ts::value(
@@ -1111,6 +1154,17 @@ pub(crate) const DEVICE_EXPORTS: &[Item] = &[
 pub(crate) const DEVICE_TYPES: &str = r#"/** Space available along one axis of the surface. */
 export type SizeClass = "compact" | "regular";
 
+/** A part of the surface the device reserves (`reservedRegions()`). */
+export interface ReservedRegion {
+  /** What it asks of the content in it: `"occlusion"`, something covers it
+   * (a camera); `"division"`, the display divides there (a fold), so keep
+   * content on either side of it. */
+  readonly kind: "occlusion" | "division";
+  /** Where it is, in the surface's points (as layout places views), with
+   * the margin interactive content keeps from it. */
+  readonly bounds: Bounds;
+}
+
 export interface PlatformSelectSpec<T> {
   ios?: T;
   android?: T;
@@ -1143,6 +1197,10 @@ export interface PerfStats {
   /** The share of recent frames that took longer than one refresh, from 0
    * to 1 (`0.05` is 5%), as Rust's `dropped` (a `Percentage`) reads it. */
   readonly dropped: number;
+  /** Memory the process owns, in bytes: the physical footprint on Apple
+   * platforms (Activity Monitor's Memory column), the resident set
+   * elsewhere; `null` where the platform does not say, and on the web. */
+  readonly memory: number | null;
 }
 
 /** The kind of link the device's default route takes (`network().kind`):

@@ -25,6 +25,31 @@ test("typing a shared prefix after clearing the Editor keeps the whole input", a
   expect(app.value("ed")).toBe("ab cd");
 });
 
+test("clear empties the Editor's whole document", async () => {
+  for (const platform of ["macos", "linux"]) {
+    const app = await open("./App.tsx", { platform });
+    await app.clear("ed");
+    expect(app.value("ed")).toBe("");
+    await app.type("ed", "ab ");
+    expect(app.value("ed")).toBe("ab ");
+    await app.clear("ed");
+    expect(app.value("ed")).toBe("");
+    await app.press("Update document");
+    await app.clear("ed");
+    expect(app.value("ed")).toBe("");
+  }
+});
+
+test("clear empties a plain Input", async () => {
+  const app = await open("./App.tsx");
+  await app.clear("over");
+  expect(app.value("over")).toBe("");
+  await app.type("over", "abc");
+  await app.clear("over");
+  expect(app.value("over")).toBe("");
+  expect(app.texts()).toContain("under=U over=");
+});
+
 test("covered input steps never edit the input above", async () => {
   const app = await open("./App.tsx");
   // Headless can address the input directly; native targets must reject

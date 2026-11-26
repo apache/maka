@@ -1,0 +1,161 @@
+name: Package
+
+# `nsh package` on Linux (directory and `.tar.gz`) and Windows (directory,
+# `.zip` and MSIX), which no other workflow runs: Packages tests only the
+# Homebrew formula on macOS. Pull requests run it only when the packaging
+# code or the release runners change; main runs it every three hours when
+# anything it builds moved.
+
+on:
+  schedule:
+    - cron: "30 */3 * * *"
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "crates/nsh-cli/src/package.rs"
+      - "crates/nsh-cli/src/msix.rs"
+      - "crates/nsh-cli/src/windows.rs"
+      - "crates/nsh-cli/src/linux_store.rs"
+      - "crates/nsh-cli/src/runtime.rs"
+      - "crates/nsh-cli/src/rust_app.rs"
+      - "crates/nsh-cli/src/native_features.rs"
+      - "crates/nsh-package/**"
+      - "crates/nsh-linux-app/**"
+      - "crates/nsh-windows-app/**"
+      - "examples/counter/**"
+      - "examples/gallery/icon.png"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/package.yml"
+      - ".github/actions/cargo/**"
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUSTUP_TOOLCHAIN: stable
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
+  linux:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI").
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install clang, GTK 4, WebKitGTK and GStreamer
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: package-linux
+
+      # A checkout's CLI builds the release runner with cargo, as an
+      # installed one takes its prebuilt one.
+      - name: Package the counter
+        run: |
+          cargo build -p nsh-cli
+          ./target/debug/nsh package examples/counter --target linux -o "$RUNNER_TEMP/out"
+
+      - name: Check the package
+        run: |
+          cd "$RUNNER_TEMP/out"
+          ls -la . Counter
+          test -x Counter/Counter
+          test -f Counter/com.example.counter.desktop
+          tar -tzf Counter.tar.gz | tee files.txt
+          grep -q '^Counter/Counter$' files.txt
+          grep -q '^Counter/com.example.counter.desktop$' files.txt
+
+  windows:
+    needs: changed
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # QuickJS is C: bindgen needs libclang, which the image's LLVM has.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # rustc can overflow its default stack on the `windows` crate's
+      # bindings (STATUS_STACK_BUFFER_OVERRUN).
+      RUST_MIN_STACK: "268435456"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: package-windows
+
+      # As windows.yml: Cargo retries oversized compiler commands with an
+      # argument file only when it starts rustc directly.
+      - name: Use the toolchain compiler directly
+        shell: pwsh
+        run: |
+          $rustc = rustup which rustc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTC=$rustc" >> $env:GITHUB_ENV
+
+      # MSIX needs the app's logos and the counter has no icon: package a
+      # copy of it with the gallery's.
+      - name: Package the counter (directory, zip and MSIX)
+        run: |
+          cargo build -p nsh-cli
+          app=target/package-counter
+          mkdir -p "$app"
+          cp examples/counter/App.tsx examples/counter/tsconfig.json "$app/"
+          cp examples/gallery/icon.png "$app/"
+          printf '{\n  "name": "Counter",\n  "id": "com.example.counter",\n  "icon": "icon.png"\n}\n' > "$app/nsh.json"
+          # `--format msix` writes the directory and `.zip` as well.
+          ./target/debug/nsh package "$app" --target windows --format msix -o "$RUNNER_TEMP/out"
+
+      - name: Check the packages
+        run: |
+          cd "$RUNNER_TEMP/out"
+          ls -la . Counter
+          test -f Counter/Counter.exe
+          unzip -l Counter.zip | tee zip.txt
+          grep -q 'Counter/Counter.exe' zip.txt
+          unzip -l Counter.msix | tee msix.txt
+          grep -q AppxManifest.xml msix.txt
+          grep -q Counter.exe msix.txt

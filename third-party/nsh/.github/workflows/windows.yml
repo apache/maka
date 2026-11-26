@@ -20,6 +20,7 @@ on:
       - "crates/nsh-core/**"
       - "crates/nsh-dev/**"
       - "crates/nsh-engine/**"
+      - "crates/nsh-gpu/**"
       - "crates/nsh-i18n/**"
       - "crates/nsh-js/**"
       - "crates/nsh-macros/**"
@@ -123,9 +124,59 @@ jobs:
       - name: Test
         run: cargo test -p nsh-platform-windows -p nsh-windows-host -p nsh-windows-app -p nsh-cli -p nsh-dev -p xtask
 
-      # The examples' tests in Win32 windows, with the platform's input
-      # (`nsh test --target windows`): those a real platform runs (real
-      # time).
+      # The apps with Rust crates build a host of their own from the
+      # workspace the steps above built, so they stay in this job.
+      - name: Run the Rust examples' tests in Win32 windows
+        shell: bash
+        run: |
+          cargo build -p nsh-cli
+          run() { ./target/debug/nsh test "$@" --target windows; }
+          run examples/rust-exports/App.test.tsx
+          run examples/gallery-rs/App.test.tsx
+
+  # The TSX examples' tests in Win32 windows, with the platform's input
+  # (`nsh test --target windows`): those a real platform runs (real time).
+  # The job of its own takes the build these need, and runs it beside the
+  # lints and unit tests above.
+  examples:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: windows-latest
+    env:
+      # QuickJS is C: bindgen needs libclang, which the image's LLVM has.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # rustc can overflow its default stack on the `windows` crate's
+      # bindings (STATUS_STACK_BUFFER_OVERRUN).
+      RUST_MIN_STACK: "268435456"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: windows
+
+      # Cargo retries oversized compiler commands with an argument file when
+      # it receives the Windows launch error directly from starting rustc.
+      - name: Use the toolchain compiler directly
+        shell: pwsh
+        run: |
+          $rustc = rustup which rustc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTC=$rustc" >> $env:GITHUB_ENV
+
       - name: Run the examples' tests in Win32 windows
         shell: bash
         run: |
@@ -136,7 +187,3 @@ jobs:
             run "examples/gallery/tests/$file.test.tsx"
           done
           run examples/gallery/tests/environment.test.tsx --filter appearance
-          # Apps with Rust crates, in hosts built with them: a TSX app and a
-          # Rust app (its root).
-          run examples/rust-exports/App.test.tsx
-          run examples/gallery-rs/App.test.tsx

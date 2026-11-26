@@ -81,6 +81,7 @@ fn player() -> impl IntoElement {
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `src` | `video(url)` | `string` | | 视频的 URL（在 Rust 中也可以是资源的 `uri`：`video(CLIP.uri)`）。 |
+| `poster` | `.poster(url)` | `string` | | 视频加载时显示的图片，直到第一帧就绪。 |
 | `paused` | `.paused(..)` | `boolean` | `false` | 暂停播放。 |
 | `muted` | `.muted(..)` | `boolean` | `false` | 静音。 |
 | `volume` | `.volume(..)` | `number` | `1` | 0..1。 |

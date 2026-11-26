@@ -1670,16 +1670,13 @@ setTimeout(async () => {
 mount(() => <Text>{shown()}</Text>);
 "#;
 
-/// Android's backend, and a platform built outside NSH that says so
-/// (`Environment::clipboard_images`), hold text only on the clipboard.
+/// A platform built outside NSH that says so
+/// (`Environment::clipboard_images`) holds text only on the clipboard.
 #[test]
 fn clipboard_images_are_unavailable_where_the_clipboard_holds_text_only() {
-    // Android by its OS alone, as an environment that names only the OS
-    // has it; a platform built outside NSH by what it says.
-    for (os, platform, clipboard_images) in [
-        (nsh_engine::Os::Android, None, None),
-        (nsh_engine::Os::Ios, Some("miniprogram"), Some(false)),
-    ] {
+    {
+        let (os, platform, clipboard_images) =
+            (nsh_engine::Os::Ios, Some("miniprogram"), Some(false));
         let (_engine, rx) = start_in(
             CLIPBOARD_IMAGE_TEXT_ONLY,
             Environment {
@@ -1713,6 +1710,37 @@ fn clipboard_images_are_unavailable_where_the_clipboard_holds_text_only() {
         assert!(batches.iter().any(|b| shows(b, wanted)), "{os:?} {wanted}");
         assert_eq!(commands, 0, "an image call reached the platform on {os:?}");
     }
+}
+
+/// Android's backend reads and writes clipboard images (`ClipboardReads.java`):
+/// its image calls reach the platform.
+#[test]
+fn android_clipboard_images_reach_the_platform() {
+    let (_engine, rx) = start_in(
+        CLIPBOARD_IMAGE_TEXT_ONLY,
+        Environment {
+            os: nsh_engine::Os::Android,
+            ..Environment::default()
+        },
+    );
+    let (mut wrote, mut read) = (false, false);
+    until(&rx, |batch| {
+        for item in &batch.items {
+            match item {
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::SetClipboardImage(_),
+                } => wrote = true,
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::ReadClipboardImage { .. },
+                } => read = true,
+                _ => {}
+            }
+        }
+        wrote && read
+    });
+    assert!(wrote && read, "writeImage {wrote}, readImage {read}");
 }
 
 const CLIPBOARD_REFUSED: &str = r#"import { mount, signal, Text } from "nsh";
@@ -2313,17 +2341,20 @@ mount(() => (
 ));
 "##;
 
-const ORIENTATIONS: &str = r##"import { signal, mount, View } from "nsh";
+const ORIENTATIONS: &str = r##"import { signal, mount, Text, View } from "nsh";
 import { NavPage, NavStack, createNavStack } from "nsh/base";
 
 type Route = { name: string };
 const a = createNavStack<Route>([{ name: "home" }]);
 const b = createNavStack<Route>([{ name: "more" }]);
 const tab = signal<"a" | "b">("b");
-setTimeout(() => b.push({ name: "viewer" }), 30);
-setTimeout(() => tab.set("a"), 60);
-setTimeout(() => tab.set("b"), 90);
-setTimeout(() => b.pop(), 120);
+const steps = [
+  () => b.push({ name: "viewer" }),
+  () => tab.set("a"),
+  () => tab.set("b"),
+  () => b.pop(),
+];
+let step = 0;
 
 const page = (route: Route) => (
   <NavPage
@@ -2339,6 +2370,7 @@ const page = (route: Route) => (
 
 mount(() => (
   <View style={{ flex: 1 }}>
+    <Text onPress={() => steps[step++]()}>Next orientation</Text>
     <View style={{ flex: 1, display: tab() === "a" ? "flex" : "none" }}>
       <NavStack state={a} style={{ flex: 1 }}>{page}</NavStack>
     </View>
@@ -2356,7 +2388,7 @@ mount(() => (
 fn the_page_shown_decides_the_orientations() {
     use nsh_core::{ModalConfig as M, platform::Os};
 
-    let (_engine, rx) = start_in(
+    let (engine, rx) = start_in(
         ORIENTATIONS,
         Environment {
             os: Os::Android,
@@ -2364,18 +2396,36 @@ fn the_page_shown_decides_the_orientations() {
         },
     );
     let mut sent = Vec::new();
-    until(&rx, |batch| {
-        for item in &batch.items {
-            if let MountItem::Command {
+    let mut record = |batch: &MountBatch| {
+        let before = sent.len();
+        sent.extend(batch.items.iter().filter_map(|item| match item {
+            MountItem::Command {
                 id: ROOT_ID,
                 command: Command::Orientations(bits),
-            } = item
-            {
-                sent.push(*bits);
+            } => Some(*bits),
+            _ => None,
+        }));
+        sent.len() > before
+    };
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let next = text_ids(&first, "Next orientation").expect("orientation step");
+    record(&first);
+    for step in 0..4 {
+        engine
+            .control()
+            .dispatch_event(next, EventKind::Press, EventPayload::None);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let batch = rx
+                .recv_deadline(deadline)
+                .unwrap_or_else(|err| panic!("orientation for step {step}: {err}"));
+            if record(&batch) {
+                break;
             }
         }
-        sent.len() >= 4
-    });
+    }
     // Tab b shows a page with none (the home page with portrait is in the
     // hidden tab): nothing sent. The viewer pushed: landscape. Tab a shown:
     // its home page's portrait. Tab b again: the viewer's. Popped, with tab
@@ -5976,6 +6026,9 @@ fn a_base_slider_moves_the_nearer_thumb_and_tells_screen_readers_each_value() {
                 pressure: 0.5,
                 tilt_x: 0.0,
                 tilt_y: 0.0,
+                coalesced: Vec::new(),
+                eraser: false,
+                barrel: false,
             }],
         }))
     };
@@ -6099,6 +6152,9 @@ fn a_base_sliders_drag_ends_on_the_apps_answer_to_its_last_move() {
                 pressure: 0.5,
                 tilt_x: 0.0,
                 tilt_y: 0.0,
+                coalesced: Vec::new(),
+                eraser: false,
+                barrel: false,
             }],
         }))
     };

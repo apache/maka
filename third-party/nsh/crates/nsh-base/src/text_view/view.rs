@@ -11,10 +11,10 @@ use nsh_core::{
     ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     element::{
-        Arg, CallCx, ElementRef, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError,
-        Reactive, Renderer, Ret, ScrollIntent, Style, StyleRefinement, TsTypes, ViewableItems,
+        Arg, CallCx, ElementRef, InContext, Instance, JsHost, JsIn, JsOwned, JsValue, Owner,
+        PropError, Reactive, Renderer, Ret, ScrollIntent, StyleRefinement, TsTypes, ViewableItems,
     },
-    geometry::{Length, Percentage},
+    geometry::{DefiniteLength, Length, Percentage},
     keymap::Modifiers,
     prelude::*,
 };
@@ -24,6 +24,7 @@ use super::{
     ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table, TextViewMark,
     TextViewMarkPressEvent, TextViewMarksMatchEvent,
     markdown::{Projection, ProjectionKind},
+    merge_styles,
     parse::{DocumentState, SourceOrigin},
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
     selection::{Reported, Source, TextSelectionOptions, selected},
@@ -128,8 +129,33 @@ pub struct TextViewProps {
     /// size, at most as wide as the text; in a line of text, the size it
     /// asks for, else three quarters of a line tall. A press on an image in
     /// a link reports the link (`onLinkPress`), on another the image
-    /// (`onImagePress`).
-    pub render_image: Prop<Option<Renderer<TextViewImageContext>>>,
+    /// (`onImagePress`). Beside the image it gets what surrounds it: the
+    /// link it is in (`context.link`), to draw a linked image as a link.
+    pub render_image: Prop<Option<Renderer<InContext<Image, TextViewImageContext>>>>,
+}
+
+/// What surrounds an image of a [`TextView`]'s document, beside the image
+/// its `renderImage` gets.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewImageContext {
+    /// The link the image is in (`[![alt](src)](url)`): the one a press on
+    /// the image reports (`onLinkPress`). None for an image outside links.
+    pub link: Option<TextViewImageLink>,
+    /// Whether the image stands alone or is an attachment in text.
+    pub flow: TextViewImageFlow,
+    /// Height of its surrounding text line, in points.
+    pub line_height: f32,
+}
+
+/// The link around an image of a [`TextView`] ([`TextViewImageContext`]).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewImageLink {
+    /// The link's URL.
+    pub url: SharedString,
+    /// The link's title (`[..](url "title")`), if it has one.
+    pub title: Option<SharedString>,
 }
 
 /// Localized labels for native document controls.
@@ -141,24 +167,11 @@ pub struct TextViewLabels {
     pub copied: Option<SharedString>,
 }
 
-/// Layout and activation context for an app's image renderer. The app owns
-/// standalone image activation; linked images activate their enclosing link.
-#[derive(Debug, Clone, PartialEq, JsObject)]
-pub struct TextViewImageContext {
-    /// The immutable parsed image.
-    pub image: Image,
-    /// The image belongs to a link (do not add a competing press target).
-    pub linked: bool,
-    /// Whether the image stands alone or is an attachment in text.
-    pub flow: TextViewImageFlow,
-    /// Height of its surrounding text line, in points.
-    pub line_height: f32,
-}
-
 /// How an image participates in the document's text flow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PropEnum)]
 pub enum TextViewImageFlow {
     /// An image on its own line.
+    #[default]
     Block,
     /// An attachment inside a text line.
     Inline,
@@ -373,7 +386,6 @@ impl TextViewApi {
         }
         let target = block_index as usize;
         let terminal = untracked(is_terminal);
-        let custom_image = self.props.render_image.with_untracked(Option::is_some);
         let slot = self.document.with_untracked(|proj| {
             if proj.kind != ProjectionKind::Parsed || target >= proj.document.blocks.len() {
                 return None;
@@ -381,12 +393,12 @@ impl TextViewApi {
             if !terminal {
                 return Some(target as u32);
             }
-            if blank_in_terminal(&proj.document.blocks[target], custom_image) {
+            if blank_in_terminal(&proj.document.blocks[target]) {
                 return None;
             }
             let preceding = proj.document.blocks[..target]
                 .iter()
-                .filter(|b| !blank_in_terminal(b, custom_image))
+                .filter(|b| !blank_in_terminal(b))
                 .count();
             Some(preceding as u32)
         });
@@ -667,12 +679,11 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
         effect(move || source_document.with(|document| prune.retain(document)));
         let visible = computed(move || {
             let terminal = is_terminal();
-            let custom_image = props.render_image.with(Option::is_some);
             document.with(|d| {
                 d.blocks
                     .iter()
                     .enumerate()
-                    .filter(|(_, b)| !terminal || !blank_in_terminal(b, custom_image))
+                    .filter(|(_, b)| !terminal || !blank_in_terminal(b))
                     .map(|(i, _)| i)
                     .collect::<Vec<_>>()
             })
@@ -913,7 +924,11 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                         .with(|s| s.root.as_ref().map(|s| s.0.clone()).unwrap_or_default())
                 })
                 .child(each(rows, DocumentRow::key, move |item, _| {
-                    render_row(item, row_plugins.clone(), choices.clone())
+                    view().__pass_position(true).child(render_row(
+                        item,
+                        row_plugins.clone(),
+                        choices.clone(),
+                    ))
                 }))
                 .into_element()
         }
@@ -1177,7 +1192,7 @@ struct Cx {
     code_block_actions: Vec<TextViewCodeAction>,
     render_table_actions: Option<Renderer<Table>>,
     render_math: Option<Renderer<TextViewMath>>,
-    render_image: Option<Renderer<TextViewImageContext>>,
+    render_image: Option<Renderer<InContext<Image, TextViewImageContext>>>,
     plugins: Rc<MarkdownPlugins>,
     /// Set when the formula typesetter finished loading (`formula.rs`).
     math_loaded: Signal<bool>,
@@ -1497,6 +1512,7 @@ impl Cx {
             if tail.get() && current.caret.is_some() && !current.caret_placed.get() {
                 view()
                     .flex_col()
+                    .__pass_position(true)
                     .child(el)
                     .child(current.caret_after(current.chrome(text("")), true))
                     .into_element()
@@ -1645,15 +1661,13 @@ impl Cx {
         key: String,
         tail: Memo<bool>,
     ) -> E {
-        let render_image = self.props.render_image;
         let rows = computed(move || {
             let terminal = is_terminal();
-            let custom_image = render_image.with(Option::is_some);
             blocks
                 .get()
                 .into_iter()
                 .enumerate()
-                .filter(|(_, b)| !terminal || !blank_in_terminal(b, custom_image))
+                .filter(|(_, b)| !terminal || !blank_in_terminal(b))
                 .collect::<Vec<_>>()
         });
         let cx = self.clone();
@@ -1676,6 +1690,7 @@ impl Cx {
                 let list_depth = cx.list_depth.get();
                 view()
                     .flex_col()
+                    .__pass_position(true)
                     .child(dynamic(move || {
                         (is_terminal() && list_depth == 0 && index.get() > 0)
                             .then(|| view().h(crate::terminal::cell_height()))
@@ -1956,15 +1971,9 @@ impl Cx {
                 (!classes.is_empty()).then(|| SharedString::from(classes))
             })
         })
-        .inline_style(move || {
-            style_prop.with(|styles| {
-                Style::from_decls(
-                    style_parts
-                        .iter()
-                        .filter_map(|p| styles.get(*p))
-                        .flat_map(|s| s.decls().iter().cloned()),
-                )
-            })
+        .state_inline_style(move || {
+            style_prop
+                .with(|styles| merge_styles(style_parts.iter().filter_map(|p| styles.get(*p))))
         })
     }
 
@@ -2399,8 +2408,10 @@ impl Cx {
             |glyph: &'static str| crate::terminal::glyph_column(glyph, move || theme().border);
         let last_row = table.rows.len();
         let mut lines = vec![ruled(['┌', '┬', '┐'])];
+        // Row 0 is the header's, when there is one.
+        let headless = usize::from(table.head.is_empty());
         let rows = std::iter::once(&table.head).chain(&table.rows);
-        for (r, cells) in rows.enumerate() {
+        for (r, cells) in rows.enumerate().skip(headless) {
             let head = r == 0;
             let row_parts: &[Part] = if head {
                 &[Part::TableRow, Part::TableHead]
@@ -2620,10 +2631,12 @@ impl Cx {
             .collect::<Vec<_>>()
             .join(" ");
         let mut grid = Vec::with_capacity((columns + 1) * (last_row + 1));
+        // Row 0 is the header's, when there is one.
+        let headless = usize::from(table.head.is_empty());
         let rows = std::iter::once(&table.head).chain(&table.rows);
-        for (r, cells) in rows.enumerate() {
+        for (r, cells) in rows.enumerate().skip(headless) {
             let head = r == 0;
-            let line = i16::try_from(r + 1).unwrap_or(i16::MAX);
+            let line = i16::try_from(r + 1 - headless).unwrap_or(i16::MAX);
             let row_parts: &[Part] = if head {
                 &[Part::TableRow, Part::TableHead]
             } else {
@@ -2854,16 +2867,17 @@ impl Cx {
                 let target = element_ref();
                 // Where it goes, shown while the pointer rests on it (an
                 // `#anchor` of the document and a path too: every
-                // destination shows; a terminal links the text to it).
-                let hint = (!is_terminal()).then(|| {
+                // destination shows, in a terminal too, where the keyboard's
+                // focus on the link shows it as well).
+                let hint = {
                     let href = url.clone();
                     let title = title.clone().map(SharedString::from);
-                    link_hint(
+                    Some(link_hint(
                         move || Some(href.clone()),
                         move || title.clone(),
                         HintAt::Pointer,
-                    )
-                });
+                    ))
+                };
                 let el = span
                     .element_ref(&target)
                     .focusable(true)
@@ -3010,6 +3024,7 @@ impl Cx {
     /// Images that stand alone (a paragraph or a cell with no text), one
     /// under another.
     fn image_column(&self, images: &[ImageOnly<'_>], key: &str) -> View {
+        let mapped = self.props.source_id.with(Option::is_some);
         view()
             .flex_col()
             .w_full()
@@ -3021,16 +3036,23 @@ impl Cx {
                         title.map(|t| SharedString::from(t.to_owned())),
                     )
                 });
+                let key = format!("{key}.{i}");
+                let Some(segments) = source.filter(|_| mapped) else {
+                    return self.image(image, link, ImageFlow::Block(None), &key);
+                };
+                // A mapped image is a selectable source atom. Its attachment
+                // gets the row's width from layout, not from a parent CSS box.
                 let width = signal(px(0.0));
-                let image = self.image(image, link, ImageFlow::Block(width), &format!("{key}.{i}"));
+                let image = self.image(image, link, ImageFlow::Block(Some(width)), &key);
                 self.source(
                     text("")
                         .w_full()
                         .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width))
                         .when(self.selectable, |t| t.select_text())
                         .child(image),
-                    source.unwrap_or_default().to_vec(),
+                    segments.to_vec(),
                 )
+                .into_element()
             }))
     }
 
@@ -3044,15 +3066,17 @@ impl Cx {
         let is_link = link.is_some();
         // Where the link goes, on the image that takes its press (below
         // it: the image's own title, a tooltip, shows above), as on a link
-        // of text; a terminal links the text it reads as instead.
-        let hint = link.clone().filter(|_| !is_terminal()).map(|(url, title)| {
+        // of text.
+        let hint = link.clone().map(|(url, title)| {
             LinkImageHint(link_hint(
                 move || Some(url.clone()),
                 move || title.clone(),
                 HintAt::Link,
             ))
         });
-        let press_link = link.map(|(url, _)| self.link_press(url, target));
+        let press_link = link
+            .as_ref()
+            .map(|(url, _)| self.link_press(url.clone(), target));
         // In a link it is the link's; else a press reports the image.
         let press = move |e: &PressEvent| match &press_link {
             Some(press) => press(e),
@@ -3064,24 +3088,19 @@ impl Cx {
             AccessibilityRole::ImageButton
         };
         if let Some(render) = &self.render_image {
-            let el = render.render(
-                format!("image:{key}"),
-                TextViewImageContext {
-                    image: image.clone(),
-                    linked: is_link,
-                    flow: match flow {
-                        ImageFlow::Block(_) => TextViewImageFlow::Block,
-                        ImageFlow::Inline(_) => TextViewImageFlow::Inline,
-                    },
-                    line_height: match flow {
-                        ImageFlow::Inline(line) => line,
-                        ImageFlow::Block(_) => self.line.get(),
-                    },
-                },
-            );
+            let (flow_kind, line_height) = match flow {
+                ImageFlow::Block(_) => (TextViewImageFlow::Block, self.line.get()),
+                ImageFlow::Inline(line) => (TextViewImageFlow::Inline, line),
+            };
+            let context = TextViewImageContext {
+                link: link.map(|(url, title)| TextViewImageLink { url, title }),
+                flow: flow_kind,
+                line_height,
+            };
+            let el = render.render(format!("image:{key}"), InContext(image.clone(), context));
             if let ImageFlow::Block(width) = flow {
                 return view()
-                    .w(move || width.get())
+                    .w(move || width.map_or(relative(1.0).into(), |w| Length::from(w.get())))
                     .items_start()
                     .when(is_link, |v| {
                         v.role(role)
@@ -3100,23 +3119,17 @@ impl Cx {
                 .label(SharedString::from(image.alt.clone()))
                 .into_element();
         }
-        // A terminal's block image reads as its alt text in brackets, as a
-        // text browser shows one: a line of text, pressable as the image
-        // (`block` leaves out a paragraph of images without alt text).
-        if is_terminal() && matches!(flow, ImageFlow::Block(_)) {
-            if image.alt.trim().is_empty() {
-                return view().into_element();
-            }
-            let el = text(format!("[{}]", image.alt.trim()))
-                .text_color(move || theme().muted_foreground)
-                .label(SharedString::from(image.alt.clone()))
-                .role(role)
-                .focusable(true)
-                .element_ref(&target)
-                .on_press(press);
-            return self.part(el, Part::Image).into_element();
+        // A source no image loads from (an email's `cid:` part the app
+        // did not resolve) shows its alt text, not a blank box its size.
+        if !loadable(&image.src) {
+            return alt_text(image.alt.clone());
         }
+        // A terminal draws the picture as the desktops do (in half
+        // blocks or with kitty graphics); one that cannot shows its alt text
+        // in brackets in its box instead.
         let (width, height) = (image.width, image.height);
+        // It failed to load: it takes no room, and its alt text shows.
+        let failed = signal(false);
         // Its natural size (a pixel a point, as a browser takes it), once
         // known, for what its own size leaves to its aspect ratio.
         let natural = signal(None::<Size<Points>>);
@@ -3143,6 +3156,7 @@ impl Cx {
                 .map(|s| s.width / s.height)
         };
         let el = nsh_core::element::image(image.src.clone())
+            .on_error(move |_: &str| failed.set(true))
             .object_fit(ResizeMode::Contain)
             .label(SharedString::from(image.alt.clone()))
             .when_some(image.title.clone(), |el, title| el.hint(title));
@@ -3159,9 +3173,14 @@ impl Cx {
                     _ => None,
                 };
                 let box_width = move || -> Length {
+                    if failed.get() {
+                        return Length::Auto;
+                    }
                     match (width, height) {
-                        (Some(ImageLength::Points(w)), _) => w.into(),
-                        (Some(ImageLength::Fraction(w)), _) => (available.get() * w.0).into(),
+                        (Some(ImageLength::Fraction(w)), _) if let Some(available) = available => {
+                            (available.get() * w.0).into()
+                        }
+                        (Some(w), _) => DefiniteLength::from(w).into(),
                         (None, Some(ImageLength::Points(h))) => {
                             (h * aspect().unwrap_or(1.0)).into()
                         }
@@ -3170,7 +3189,12 @@ impl Cx {
                 };
                 let el = el
                     .rounded(px(8.0))
-                    .w_full()
+                    .w(move || -> Length {
+                        match failed.get() {
+                            true => px(0.0).into(),
+                            false => relative(1.0).into(),
+                        }
+                    })
                     .aspect_ratio(move || ratio.or_else(aspect).unwrap_or(1.0));
                 let el = el
                     .role(role)
@@ -3178,24 +3202,26 @@ impl Cx {
                     .element_ref(&target)
                     .on_press(press)
                     .when_some(hint, |el, hint| el.tooltip(hint));
+                let alt = image.alt.clone();
                 return view()
                     .w(box_width)
-                    .max_w(move || available.get())
+                    .max_w(move || {
+                        available.map_or(relative(1.0).into(), |w| Length::from(w.get()))
+                    })
                     .child(self.part(el, Part::Image))
+                    .child(when(failed, move || alt_text(alt.clone())))
                     .into_element();
             }
             // In a line of text: its size, else as tall as most of the
             // line, as gpui-kit's text flow sizes images.
             ImageFlow::Inline(line) => {
-                let size = move || inline_image_size(width, height, aspect(), line);
-                // An attachment sits on the baseline; moved down (drawing
-                // only) so its middle is the middle of the lowercase
-                // letters, about 0.35 em above the baseline: centered on
-                // the line. The text's size is its line's over 1.7.
-                let em = line / 1.7;
+                let size = move || match failed.get() {
+                    true => Size::new(px(0.0), px(0.0)),
+                    false => inline_image_size(width, height, aspect(), line),
+                };
                 el.w(move || size().width)
                     .h(move || size().height)
-                    .translate_y(move || size().height / 2.0 - px(0.35 * em))
+                    .translate_y(move || inline_image_shift(size().height, line))
             }
         };
         let el = el
@@ -3204,8 +3230,44 @@ impl Cx {
             .element_ref(&target)
             .on_press(press)
             .when_some(hint, |el, hint| el.tooltip(hint));
-        self.part(el, Part::Image).into_element()
+        let alt = image.alt.clone();
+        view()
+            .flex_row()
+            .child(self.part(el, Part::Image))
+            .child(when(failed, move || alt_text(alt.clone())))
+            .into_element()
     }
+}
+
+/// Whether an image may load from `src`: not from a part of an email
+/// (`cid:`, `mid:`, RFC 2392), which only the app that has the email can
+/// resolve (to a `data:` URL, or with its own `renderImage`).
+fn loadable(src: &str) -> bool {
+    let scheme = src.trim_start().split_once(':').map(|(s, _)| s);
+    !scheme.is_some_and(|s| s.eq_ignore_ascii_case("cid") || s.eq_ignore_ascii_case("mid"))
+}
+
+/// An image's alt text, in its place when the image cannot show: as much
+/// room as its text, none when it has none.
+fn alt_text(alt: String) -> AnyElement {
+    match alt.trim().is_empty() {
+        true => view().into_element(),
+        false => text(alt)
+            .text_color(move || theme().muted_foreground)
+            .into_element(),
+    }
+}
+
+/// How far an image `height` tall in text with lines `line` tall is moved
+/// down (drawing only) from the baseline it sits on. One as tall as the
+/// line or less: its middle on the middle of the lowercase letters (about
+/// 0.35 em above the baseline; the text's size is its line's over 1.7),
+/// centered on the line. A taller one (a picture on a line of its own)
+/// stays as low as a line-tall one: its bottom near the line's, as a
+/// browser's, not half its height below the room the line made for it.
+fn inline_image_shift(height: Points, line: f32) -> Points {
+    let em = line / 1.7;
+    height.min(px(line)) / 2.0 - px(0.35 * em)
 }
 
 /// A container changes presentation kind as its opening syntax completes.
@@ -3239,8 +3301,8 @@ impl IntoTooltip for LinkImageHint {
 /// Where an image is laid out.
 #[derive(Debug, Clone, Copy)]
 enum ImageFlow {
-    /// On its own: a block.
-    Block(Signal<Points>),
+    /// A block, with the measured row width when mounted as a source atom.
+    Block(Option<Signal<Points>>),
     /// In text whose lines are this tall.
     Inline(f32),
 }
@@ -3567,20 +3629,11 @@ fn inline_source_bounds(content: &[Inline]) -> Option<(u64, u64)> {
 }
 
 /// Whether a terminal leaves `block` out, its row and the blank row
-/// before it with it: a rule (the blank row between the blocks around it
-/// is the break) and a paragraph of images with no alt text when no custom
-/// image renderer is provided (a terminal draws no images; one with alt
-/// text reads as `[alt]`).
-fn blank_in_terminal(block: &Block, custom_image: bool) -> bool {
-    match block {
-        Block::Rule => true,
-        Block::Paragraph { content } => {
-            !custom_image
-                && only_images(content)
-                    .is_some_and(|images| images.iter().all(|(i, _, _)| i.alt.trim().is_empty()))
-        }
-        _ => false,
-    }
+/// before it with it: a rule, as the blank row between the blocks around
+/// it is the break. Images show, with alt text or without: the terminal
+/// draws the picture.
+fn blank_in_terminal(block: &Block) -> bool {
+    matches!(block, Block::Rule)
 }
 
 /// A browser's list markers by depth: disc, circle, square.
@@ -3924,6 +3977,32 @@ mod tests {
         );
     }
 
+    /// An inline image as tall as its line or less is centered on it; a
+    /// taller one (a 300pt picture after a `<br>`) is not moved down half
+    /// its height, which left a blank as tall above it.
+    #[test]
+    fn a_tall_inline_image_is_not_moved_down_half_its_height() {
+        let line = 25.5;
+        let em = line / 1.7;
+        let close = |a: Points, b: f32| (a.0 - b).abs() < 1e-3;
+        assert!(close(inline_image_shift(px(10.0), line), 5.0 - 0.35 * em));
+        let at_line = 12.75 - 0.35 * em;
+        assert!(close(inline_image_shift(px(line), line), at_line));
+        assert!(close(inline_image_shift(px(300.0), line), at_line));
+    }
+
+    /// An email's `cid:` / `mid:` parts never load: their images show
+    /// their alt text instead of a blank box their size.
+    #[test]
+    fn email_part_images_are_not_loadable() {
+        assert!(!loadable("cid:logo@example.com"));
+        assert!(!loadable(" CID:logo"));
+        assert!(!loadable("mid:a@b/c"));
+        assert!(loadable("https://example.com/a.png"));
+        assert!(loadable("data:image/png;base64,AAAA"));
+        assert!(loadable("images/cid.png"));
+    }
+
     /// Render props take closures of the value they render, events their
     /// data, as the setters of other props take their values (built, not
     /// run: an element is made in a component's reactive scope; the core's
@@ -3934,7 +4013,11 @@ mod tests {
             text_view()
                 .markdown("# Title")
                 .selectable(true)
-                .render_image(|context: &TextViewImageContext| text(context.image.alt.clone()))
+                .render_image(
+                    |InContext(image, _): &InContext<Image, TextViewImageContext>| {
+                        text(image.alt.clone())
+                    },
+                )
                 .render_code_block(|code: &CodeBlock| text(code.code.clone()))
                 .on_link_press(|_event: &TextViewLinkPressEvent| {})
                 .into_element()

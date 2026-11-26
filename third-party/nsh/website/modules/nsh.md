@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` is the core module: the reactive API (signals, computed values, effects, context), `mount`, `token`, `setTheme`, the host elements `View`, `Text`, `Scroll` and `Overlay`, [selectable views](#selectable-views), [the safe area and the keyboard](#safe-area-and-keyboard), [animation](#animation), [the device and its environment](#device), [`PanResponder`](#panresponder), the [clipboard](#clipboard), the [photo picker](#picker), the [share sheet](#share), [sound](#sound), [storage](#storage), the [host channel](#host), [keyboard shortcuts](#keymap), [native components and modules](#nativecomponent-and-nativemodule), [accessibility](#accessibility), and the TypeScript types of elements, styles and events. The reactive graph itself runs natively in Rust; reading a signal is a call into the runtime that costs a few nanoseconds, and only your own closures run in the JavaScript interpreter.
+`nsh` is the core module: the reactive API (signals, computed values, effects, context), `mount`, `token`, `setTheme`, the host elements `View`, `Text`, `Scroll` and `Overlay`, [selectable views](#selectable-views), [the safe area and the keyboard](#safe-area-and-keyboard), [animation](#animation), [the device and its environment](#device), [`PanResponder`](#panresponder), the [clipboard](#clipboard), the [photo picker](#picker), the [share sheet](#share), [sound](#sound), [storage](#storage), the [host channel](#host), [keyboard shortcuts](#keymap), [native components and modules](#nativecomponent-and-nativemodule), [GPU views](#gpuview), [accessibility](#accessibility), and the TypeScript types of elements, styles and events. The reactive graph itself runs natively in Rust; reading a signal is a call into the runtime that costs a few nanoseconds, and only your own closures run in the JavaScript interpreter.
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -997,7 +997,7 @@ See [Device and environment](../docs/device-and-environment.md) for the guide.
 const windowSize: Accessor<Size>;
 ```
 
-The size of the surface in points: the window, or the embedded `NshAppView` / `NshView`. Reactive. Rust: `window() -> Size<Points>`.
+The size of the surface in points: the window, or the embedded `NshAppView` / `NshView`. On macOS, Windows and Linux it is the content size of the app's primary window, the first of its own windows still open; a window's own size is its [`state()`](./nsh-desktop.md#the-windows-state-and-the-displays)`?.contentBounds`. Reactive. Rust: `window() -> Size<Points>`.
 
 ```tsx tabs
 const wide = () => windowSize().width >= 600;
@@ -1219,10 +1219,11 @@ interface PerfStats {
   readonly fps: number;
   readonly refreshRate: number | null;
   readonly dropped: number;
+  readonly memory: number | null;
 }
 ```
 
-What the monitor measured over the last second, read once a second while it measures (`fpsEnabled()`), and `null` while it does not and until its first second, so an app can show it its own way. `fps` is the frames shown per second: an idle app reads low, which is not slowness (only display refreshes in which the app changed count). `refreshRate` is the rate the display refreshes at (Hz), `null` until the monitor saw it refresh; `dropped` is the share of recent frames that took longer than one refresh, from 0 to 1 (`0.05` is 5%; in Rust a `Percentage`, the same fraction). Headless test runs measure too and draw no frames: they read 0 fps. Rust: `perf_stats() -> Option<PerfStats>`.
+What the monitor measured over the last second, read once a second while it measures (`fpsEnabled()`), and `null` while it does not and until its first second, so an app can show it its own way. `fps` is the frames shown per second: an idle app reads low, which is not slowness (only display refreshes in which the app changed count). `refreshRate` is the rate the display refreshes at (Hz), `null` until the monitor saw it refresh; `dropped` is the share of recent frames that took longer than one refresh, from 0 to 1 (`0.05` is 5%; in Rust a `Percentage`, the same fraction). `memory` is the memory the process owns, in bytes, as the panel shows it: the physical footprint on Apple platforms (Activity Monitor's Memory column), the resident set elsewhere; `null` where the platform does not say, and in headless test runs. Headless test runs measure too and draw no frames: they read 0 fps. Rust: `perf_stats() -> Option<PerfStats>`.
 
 ```tsx
 <If when={perfStats()}>
@@ -2427,6 +2428,9 @@ notifications and those other native code scheduled go to the handler Rust code 
 `press`. On Linux a press reaches
 only the running app: one left on screen after the app exits does nothing.
 
+On Windows, pressing a notification brings a focusable app window to the foreground, preferring an unminimized window and restoring a minimized one if none is open on screen.
+Hidden windows stay hidden, and the app still receives `press` when there is no window to activate.
+
 ### Notifications.permission
 
 `permission()` answers without asking, `requestPermission()` shows the system's prompt the first time. Both resolve with
@@ -3218,14 +3222,14 @@ interface KeyBindingOptions {
   repeat?: boolean;
   passThrough?: boolean;
   forFocus?: boolean;
-  overFocused?: boolean;
+  overFocused?: boolean | "pointer";
 }
 ```
 
 | TS | Rust |
 |---|---|
 | `keymap.bind(keystroke, handler)` | `on_key(keystroke, handler)` |
-| `keymap.bind(keystroke, handler, { scope, when, repeat, passThrough, forFocus, overFocused })` | `on_key_with(keystroke, KeyOptions { scope, when, repeat, pass_through, for_focus, over_focused }, handler)`; `scope` is `KeyScope::Window` (default) or `KeyScope::App`; `when` is `nsh_core::keymap::When` (`Auto`, `Always`, `NotEditing`) |
+| `keymap.bind(keystroke, handler, { scope, when, repeat, passThrough, forFocus, overFocused })` | `on_key_with(keystroke, KeyOptions { scope, when, repeat, pass_through, for_focus, over_focused }, handler)`; `scope` is `KeyScope::Window` (default) or `KeyScope::App`; `when` is `nsh_core::keymap::When` (`Auto`, `Always`, `NotEditing`); `over_focused` is `nsh_core::keymap::OverFocused` (`Never`, default; `Always`, which `true` gives; `Pointer`) |
 | `keymap.bind({ … })` | one `on_key` per keystroke |
 | `keymap.label(keystroke)` | `key_label(keystroke)` |
 
@@ -3414,9 +3418,20 @@ With the keyboard focus on a view that takes presses (`onPress`), a plain Return
 on_key_with("space", KeyOptions { for_focus: true, ..KeyOptions::default() }, move |_| flip());
 ```
 
+Single-key shortcuts such as a media player's Space take the key from a control the pointer focused with `overFocused: "pointer"`. On Windows a click focuses the button it lands on, as native buttons do, and except on macOS and iOS a `Select`, `Menu`, `Popover` or `DatePicker` that a click opened gives the focus back to its trigger as it closes. (On macOS and iOS a click leaves the focus where it was, so the option rarely has anything to take.) Without the option, Space presses that control again: after a click on Mute, Space mutes again; after choosing a quality, Space opens the list again. With it, the binding fires instead. A control the keyboard focused (Tab, the arrows) still takes Return and Space, so keyboard users press what they moved to, and text inputs keep their keys as `when` says:
+
+```tsx tabs
+keymap.bind("space", togglePlayback, { when: "notEditing", overFocused: "pointer" });
+```
+
+```rust tabs
+let options = KeyOptions { when: When::NotEditing, over_focused: OverFocused::Pointer, ..KeyOptions::default() };
+on_key_with("space", options, move |_| toggle_playback());
+```
+
 The keys belong to the newest dialog: when the focus stays on a view a dialog covers (a menu gives it back to its trigger as its item opens a dialog), Return and Space go to the dialog's bindings, and that view's `forFocus` bindings and its press wait until the dialog closes.
 
-A focused component's own bindings come before the app's: while an `Editor` has the focus, its Mod+Enter inserts a line below, whatever the app bound to that key. A binding with `overFocused: true` comes before them instead, so the app takes a key a focused component binds, as a query editor running its text with Mod+Enter does. Bind it while that view has the focus and let it go as the focus leaves, so the component keeps the key elsewhere (Rust: `KeyOptions { over_focused: true, .. }`). Without the option the order is as before, and a popup's Escape still closes the popup first.
+A focused component's own bindings come before the app's: while an `Editor` has the focus, its Mod+Enter inserts a line below, whatever the app bound to that key. A binding with `overFocused: true` comes before them instead, so the app takes a key a focused component binds, as a query editor running its text with Mod+Enter does. Bind it while that view has the focus and let it go as the focus leaves, so the component keeps the key elsewhere (Rust: `KeyOptions { over_focused: OverFocused::Always, .. }`). Without the option the order is as before, and a popup's Escape still closes the popup first.
 
 ```tsx
 const focused = signal(false);
@@ -3636,6 +3651,83 @@ nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry(), trading]);
 
 > [!NOTE]
 > Props, events and command arguments cross to the native side as JSON. Registered components and functions are the host app's own code: NSH's [sandbox limits and capabilities](../docs/sandbox-and-capabilities.md) do not apply to what they do.
+
+## gpuView
+
+`gpuView` gives you a component whose box your own Rust code draws with [wgpu](https://wgpu.rs), on every frame it needs one: a drawing of hundreds of thousands of lines, a 3D model, a simulation, at the display's rate. The renderer runs on a render thread, never in JS and never on the main thread, and its frames are shown under the view's children like a background, clipped to its rounded corners, scrolled and overlapped like any view.
+
+```ts
+function gpuView<P extends object = {}, E extends object = {}>(
+  name: string,
+  spec: NativeComponentSpec<P, E>,
+): (props: GpuViewProps<P, E>) => JSX.Element;
+
+type GpuViewProps<P, E> = ViewProps & P & NativeEventHandlers<E>;
+```
+
+`name` is a renderer your app's Rust crate registers; `spec` lists its props and events as [`nativeComponent`](#nativecomponent)'s does. Each prop is sent to the renderer when it changes, and a prop bound to an animated value moves it on every frame without JS. Children are drawn over the renderer's frame.
+
+The renderer implements `GpuRenderer` from the `nsh-gpu` crate, which re-exports `wgpu`. It builds its pipelines once in `prepare`, takes its props in `set_prop`, and encodes a frame into `frame.target()` in `render`. A frame is rendered when a prop, the view's size or its scale changed, and on every display frame while `animating()` returns `true`. `frame.emit(name, data)` sends an event: `pick` reaches `onPick`.
+
+```tsx tabs
+import { gpuView } from "nsh";
+
+const Spinner = gpuView<{ speed: number }, { pick: { x: number; y: number } }>("app/spinner", {
+  props: ["speed"],
+  events: ["pick"],
+});
+
+<Spinner speed={2} onPick={(e) => console.log(e.x, e.y)} style={{ height: 240, borderRadius: 12 }} />;
+```
+
+```rust tabs
+use nsh_core::{JsonValue, prelude::*};
+use nsh_gpu::{GpuFrame, GpuRegistry, GpuRenderer, wgpu};
+
+#[derive(Default)]
+struct Spinner {
+    speed: f64,
+}
+
+impl GpuRenderer for Spinner {
+    fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
+        if name == "speed" {
+            self.speed = value.and_then(JsonValue::as_f64).unwrap_or(1.0);
+        }
+    }
+
+    fn animating(&self) -> bool {
+        true
+    }
+
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        let t = frame.time().as_secs_f64() * self.speed;
+        let target = frame.target().clone();
+        frame.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: t.sin() * 0.5 + 0.5, g: 0.3, b: 0.6, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+}
+
+#[native_module("app/scenes")]
+fn scenes(registry: &mut Registry) {
+    registry.gpu_renderer("app/spinner", Spinner::default);
+}
+```
+
+Rust UI places one with `gpu_view().renderer(Spinner::default)` (or `.renderer_named("app/spinner")`), sets props with `.prop(name, value)`, binds them with `.bind_animated_prop(name, &value)` and hears events with `.on_native_event(…)`.
+
+The frame is `frame.width()` × `frame.height()` pixels of `frame.format()`, 8-bit RGBA or BGRA: clear it first, and write sRGB-encoded colors with premultiplied alpha, as CSS colors. The device is shared by the views of a window: a high-performance GPU, with all of its features and limits. Where no GPU is available, or nothing is registered under `name`, the view draws only its own style and children. GPU views draw on Linux, macOS and iOS today; the other platforms show their style and children while their support lands.
 
 ## Accessibility
 

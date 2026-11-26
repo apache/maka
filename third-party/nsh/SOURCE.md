@@ -20,7 +20,7 @@
 # Native Shell (NSH)
 
 This directory contains NSH from [`longbridge/nsh`](https://github.com/longbridge/nsh),
-synchronized through revision `3f8ecd8b3c55ad6274c6babbf7ee55c4cd4ae359`.
+synchronized through revision `6cf51dcf8890debafe0af803512718d4ce4ded8e`.
 The original import came from `M4n5ter/nsh`, branch
 `tui/terminal-backend`, at `de176695240d550f2b303643b8019146c7989e7f`.
 
@@ -37,8 +37,10 @@ Maka uses the canonical NSH component, event, ref, module and typed-style APIs.
 Desktop `Input` uses the platform's native editing path; Windows uses upstream's
 windowless RichEdit/TSF composition and window-specific IME association. The
 structured skill composer uses RichEditor's schema and node-view model, as
-upstream's structured editors do. NSH 0.7 moves `Speech` to `nsh-extra`; Maka
-dictation uses its own host binding.
+upstream's structured editors do. RichEditor's graphical sink reports typing
+attempts through `onReadonlyInput` without changing the read-only document.
+The TUI keeps autofocus pending until the input sink becomes editable.
+NSH 0.7 moves `Speech` to `nsh-extra`; Maka dictation uses its own host binding.
 
 Lists, reactive item publication, component event traversal, input modality and
 focus-visible behavior use upstream implementations. Immutable captured files
@@ -72,11 +74,12 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   `ROOT_ID`; configured host loading, lazy plugin chunks,
   `import.meta.assetBase` resource namespaces, main-thread lifecycle hooks and
   terminal inspection are required by Maka's shells and plugin composition.
-- **Caller-scoped Host events:** `HostChannel::send_to_caller` and
-  `Message::CallerHostEvent` keep progress with the originating app;
-  `HostChannel::caller_detached` wakes pending delivery when that app detaches.
+- **WebSocket TLS:** the native clients use the Host's crypto provider when set,
+  otherwise AWS-LC, matching Maka's Rust TLS stack.
 - **Source-aware reading:** TextView preserves canonical source identity,
   byte offsets and reading anchors through Markdown rendering and repair.
+  Workbench uses upstream's `renderImage(image, context)` with Maka's image
+  flow and line height for inline attachments.
   Markdown without source mapping uses the upstream incremental parser,
   including chunked reads for long documents with eligible plugins.
   RichEditor exposes leased geometry for the composer and terminal surfaces.

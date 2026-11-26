@@ -160,7 +160,12 @@ A floor, not a substitute for the guides.
 - **Parts draw nothing until styled.** A switch with no track and thumb style shows no
   switch, and a test still passes. Style every part, and look at the result.
 - **Use the semantic component.** Button, Menu, Popover, Sheet, Dialog and Select bring
-  focus, keyboard, dismissal and accessibility. Do not rebuild them from a view.
+  focus, keyboard, dismissal and accessibility. Do not rebuild them from a view. Each
+  `ui` control wraps its `nsh/base` counterpart: `Select` (not a `Popover` list),
+  `Tabs`, `Menu` with `Submenu` (not inline nested rows). See the Design Guides,
+  "Build each `ui` control on its `nsh/base` counterpart".
+- **Icons are SVG from one family through the `ui` `Icon`.** Never text characters
+  (`▾ › ✕ ☰`) or emoji as icons in GUI targets.
 - **Use a virtualized list by default for collections that can grow,** including chat,
   feeds and history: `List` in TSX, `virtual_list` in Rust. Use `Scroll` and `Each`
   for small, bounded content. Keep per-item state in data keyed by id, never in a

@@ -362,7 +362,7 @@ const angle = createAnimatedValue(0);
 |---|---|---|---|
 | `filter` | `string` | `.blur(r)`、`.brightness(…)`、`.contrast(…)`、`.grayscale(…)`、`.hue_rotate(…)`、`.invert(…)`、`.saturate(…)`、`.sepia(…)` | 作用于视图及其内容的 CSS 滤镜：`brightness()`、`contrast()`、`grayscale()`、`hue-rotate()`、`invert()`、`saturate()`、`sepia()`、`opacity()`、`blur()`、`drop-shadow()`。 |
 | `backdropFilter` | `string` | `.backdrop_blur(r)`、`.backdrop_brightness(…)` 等 | 作用于视图背后内容的 CSS 滤镜，例如毛玻璃效果 `"blur(10px)"`。 |
-| `maskImage` | `string` | `.mask_linear(angle, stops)`、`.mask_radial(stops)`、`.mask_none()` | 一个 CSS 渐变，它的 alpha 决定视图绘制多少：不透明处完全绘制，透明处完全不绘制：`linear-gradient(...)`、`radial-gradient(...)`、`conic-gradient(...)`。遮罩视图绘制的一切，包括它的背景滤镜。 此时模糊不带系统材质的色调。Windows 和 GPUI 上不绘制。 |
+| `maskImage` | `string` | `.mask_linear(angle, stops)`、`.mask_radial(stops)`、`.mask_none()` | 一个 CSS 渐变，它的 alpha 决定视图绘制多少：不透明处完全绘制，透明处完全不绘制：`linear-gradient(...)`、`radial-gradient(...)`、`conic-gradient(...)`。遮罩视图绘制的一切，包括它的背景滤镜。 此时模糊不带系统材质的色调。过渡可以为它播放动画（`transitionProperty: "mask-image"`、`.transition_mask()`），在种类和色标数量都相同的渐变之间逐个色标变化；其他变化，以及变成 `"none"` 或从 `"none"` 变过来，都立即生效，与 CSS 一致。Windows 和 GPUI 上不绘制。 |
 | `glassEffect` | `"none" \| "regular" \| "clear"` | `.glass_effect(GlassEffect::Regular)` | 在 iOS 26、macOS 26 及更高版本中，于视图内容背后绘制 Liquid Glass。`"regular"` 使用标准材质，`"clear"` 从背景获取的颜色更少，默认值为 `"none"`。配合 `backdropFilter`，可在更早的 iOS 版本及其他平台上显示模糊效果。 |
 | `mixBlendMode` | `"normal" \| "multiply" \| "screen" \| "overlay" \| "darken" \| "lighten" \| "color-dodge" \| "color-burn" \| "hard-light" \| "soft-light" \| "difference" \| "exclusion" \| "hue" \| "saturation" \| "color" \| "luminosity" \| "plus-darker" \| "plus-lighter"` | `.mix_blend_mode(mode)` | 视图与背后内容的混合方式。 |
 
@@ -378,7 +378,7 @@ const angle = createAnimatedValue(0);
 
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
-| `transitionProperty` | `string` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_shadow()`、`.transition_transform()`、`.transition_clip_path()`、`.transition_none()` | 参与动画的属性，用逗号分隔：`"all"`、`"colors"`（`color`、`backgroundColor`、`borderColor` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"`、`"borderWidth"`、`"clip-path"`，或 `"none"`。 |
+| `transitionProperty` | `string` | `.transition()`、`.transition_all()`、`.transition_colors()`、`.transition_opacity()`、`.transition_shadow()`、`.transition_transform()`、`.transition_clip_path()`、`.transition_mask()`、`.transition_none()` | 参与动画的属性，用逗号分隔：`"all"`、`"colors"`（`color`、`backgroundColor`、`borderColor` 等）、`"opacity"`、`"transform"`（所有变换属性）、`"boxShadow"`、`"borderRadius"`、`"borderWidth"`、`"clip-path"`、`"mask-image"`，或 `"none"`。 |
 | `transitionDuration` | `number \| "${number}ms" \| "${number}s"` | `.duration(ms)` | 数字表示毫秒，也可写 `"150ms"` / `"0.2s"`。 |
 | `transitionDelay` | `number \| "${number}ms" \| "${number}s"` | `.delay(ms)` | 过渡开始前的延迟。 |
 | `transitionTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)" \| "spring(...)"` | `.ease_linear()`、`.ease_in()`、`.ease_out()`、`.ease_in_out()`、`.ease_bezier(…)`、`.ease_spring(…)` | 缓动曲线（`cubic-bezier()` 的 `y` 超出 0..1 时会越过目标），或 NSH 的 `spring(stiffness, damping[, mass])`：弹簧自己决定时长，持续到稳定为止，不使用 `transitionDuration`。 |

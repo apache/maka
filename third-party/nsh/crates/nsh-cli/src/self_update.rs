@@ -44,7 +44,7 @@ pub(crate) enum Channel {
 
 impl Channel {
     /// The channel this build was published on.
-    fn current() -> Channel {
+    pub(crate) fn current() -> Channel {
         if env!("NSH_CHANNEL") == "nightly" {
             Channel::Nightly
         } else {

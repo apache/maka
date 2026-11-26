@@ -1,8 +1,10 @@
 //! A dependency on an nshm as `nsh.json` `"dependencies"` declares it (an
 //! app's, or an nshm's own): its package name, where it comes from, the
-//! versions it accepts and the Cargo features it turns on.
+//! versions it accepts, the Cargo features it turns on and, in an app's,
+//! the targets it is linked for.
 
 use anyhow::{Context as _, bail};
+use nsh_core::platform::Os;
 use serde::Deserialize;
 
 /// Where an nshm comes from.
@@ -100,6 +102,9 @@ pub(crate) struct Dep {
     pub req: Option<String>,
     /// Its Cargo features to turn on (an nshm with Rust).
     pub features: Vec<String>,
+    /// The targets its Rust is linked for, by `platform.os` name
+    /// (`"targets"`); none: every target.
+    pub targets: Vec<Os>,
 }
 
 impl Dep {
@@ -111,10 +116,16 @@ impl Dep {
             .unwrap_or(semver::VersionReq::STAR)
     }
 
+    /// Whether its Rust is linked for `target` (`None`: a command for
+    /// every target, which links it).
+    pub(crate) fn is_for(&self, target: Option<Os>) -> bool {
+        self.targets.is_empty() || target.is_none_or(|t| self.targets.contains(&t))
+    }
+
     /// Reads `"dependencies"` entry `name`: a crates.io version requirement
-    /// (`"^0.3"`), or an object with `"version"`, `"features"` and, for an
-    /// nshm not from crates.io, one of `"github"`, `"git"` or `"path"` (Git
-    /// with `"tag"` or `"rev"`), as a `Cargo.toml` dependency.
+    /// (`"^0.3"`), or an object with `"version"`, `"features"`, `"targets"`
+    /// and, for an nshm not from crates.io, one of `"github"`, `"git"` or
+    /// `"path"` (Git with `"tag"` or `"rev"`), as a `Cargo.toml` dependency.
     pub(crate) fn read(name: &str, value: &serde_json::Value) -> anyhow::Result<Self> {
         if !is_package_name(name) {
             bail!("dependencies: {name:?} is not a package name");
@@ -126,6 +137,7 @@ impl Dep {
                 origin: Origin::Registry,
                 req: star(Some(req.to_owned())),
                 features: Vec::new(),
+                targets: Vec::new(),
             };
             dep.validate()?;
             return Ok(dep);
@@ -141,11 +153,12 @@ impl Dep {
             version: Option<String>,
             #[serde(default)]
             features: Vec<String>,
+            targets: Option<Vec<String>>,
         }
         let full: Full = serde_json::from_value(value.clone()).with_context(|| {
             format!(
                 "dependencies: {name} is a version requirement (\"^0.3\") or \
-                 {{ \"version\", \"features\", \"github\" | \"git\" | \"path\", \"tag\" | \"rev\" }}"
+                 {{ \"version\", \"features\", \"targets\", \"github\" | \"git\" | \"path\", \"tag\" | \"rev\" }}"
             )
         })?;
         if full.git.is_some() && full.github.is_some() {
@@ -176,11 +189,30 @@ impl Dep {
             (None, Some(path)) => Origin::Path(path),
             (None, None) => Origin::Registry,
         };
+        if full.targets.as_ref().is_some_and(Vec::is_empty) {
+            bail!(
+                "dependencies: {name}: \"targets\" names the targets it is linked for; \
+                 leave it out to link it for every target"
+            );
+        }
+        let mut targets = Vec::new();
+        for target in full.targets.iter().flatten() {
+            let os = os_named(target).with_context(|| {
+                format!(
+                    "dependencies: {name}: targets: {target:?} is not a target ({})",
+                    OSES.map(Os::name).join(", ")
+                )
+            })?;
+            if !targets.contains(&os) {
+                targets.push(os);
+            }
+        }
         let dep = Dep {
             name: name.to_owned(),
             req: star(full.version),
             origin,
             features: Vec::new(),
+            targets,
         }
         .with_features(full.features)?;
         Ok(dep)
@@ -190,7 +222,7 @@ impl Dep {
     /// one (`"*"` for any), else the object form.
     pub(crate) fn value(&self) -> serde_json::Value {
         use serde_json::json;
-        if self.origin == Origin::Registry && self.features.is_empty() {
+        if self.origin == Origin::Registry && self.features.is_empty() && self.targets.is_empty() {
             return json!(self.req.as_deref().unwrap_or("*"));
         }
         let mut o = serde_json::Map::new();
@@ -226,6 +258,10 @@ impl Dep {
         }
         if !self.features.is_empty() {
             o.insert("features".into(), json!(self.features));
+        }
+        if !self.targets.is_empty() {
+            let names: Vec<&str> = self.targets.iter().map(|t| t.name()).collect();
+            o.insert("targets".into(), json!(names));
         }
         serde_json::Value::Object(o)
     }
@@ -283,6 +319,21 @@ pub(crate) fn read_all(config: &serde_json::Value) -> anyhow::Result<Vec<Dep>> {
     map.iter()
         .map(|(name, v)| Dep::read(name, v).map_err(|e| e.context("nsh.json")))
         .collect()
+}
+
+/// The targets a dependency can be linked for, as `platform.os` names
+/// them: Mac Catalyst is `ios`, a GPUI or terminal host its machine's OS.
+const OSES: [Os; 6] = [
+    Os::MacOs,
+    Os::Windows,
+    Os::Linux,
+    Os::Ios,
+    Os::Android,
+    Os::Web,
+];
+
+fn os_named(name: &str) -> Option<Os> {
+    OSES.into_iter().find(|os| os.name() == name)
 }
 
 /// What `nsh add` was given: an nshm not named yet when it comes from Git
@@ -473,6 +524,37 @@ mod tests {
             assert!(read_all(&bad).is_err(), "{bad}");
         }
         assert!(read_all(&json!({})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn targets_are_read_and_written_back() {
+        let config = json!({ "dependencies": {
+            "nsh-extra": { "version": "^0.6", "features": ["speech"], "targets": ["macos", "ios"] },
+            "acme-gauge": { "version": "^1", "targets": ["web"] }
+        } });
+        let deps = read_all(&config).unwrap();
+        let by = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(by("acme-gauge").targets, [Os::Web]);
+        assert_eq!(by("nsh-extra").targets, [Os::MacOs, Os::Ios]);
+        for d in &deps {
+            assert_eq!(d.value(), config["dependencies"][&d.name], "{}", d.name);
+        }
+        let extra = by("nsh-extra");
+        assert!(extra.is_for(Some(Os::Ios)));
+        assert!(!extra.is_for(Some(Os::Web)));
+        // A command for every target links it.
+        assert!(extra.is_for(None));
+        let any = Dep::read("a", &json!("^1")).unwrap();
+        assert!(any.is_for(Some(Os::Web)));
+        let err = |v: serde_json::Value| Dep::read("a", &v).unwrap_err().to_string();
+        let e = err(json!({ "version": "1", "targets": ["catalyst"] }));
+        assert!(
+            e.contains("\"catalyst\" is not a target (macos, windows, linux, ios, android, web)"),
+            "{e}"
+        );
+        let e = err(json!({ "version": "1", "targets": [] }));
+        assert!(e.contains("leave it out"), "{e}");
+        assert!(Dep::read("a", &json!({ "targets": "web" })).is_err());
     }
 
     #[test]

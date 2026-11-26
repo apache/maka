@@ -139,6 +139,32 @@ nsh add nsh-extra --features camera
 }
 ```
 
+An nshm whose Rust only some targets need is linked for those alone with `"targets"`, named as `platform.os` names
+them: `macos`, `windows`, `linux`, `ios`, `android` and `web` (Mac Catalyst is `ios`; a GPUI or terminal host is
+its machine's OS). An app that dictates through the browser's own recognizer on the web, for example:
+
+```json
+{
+  "dependencies": {
+    "nsh-extra": { "version": "^0.7", "features": ["speech"], "targets": ["macos", "windows", "ios", "android"] }
+  },
+  "resolve": { "alias": { "nsh-extra": "./src/speech-web.ts" } }
+}
+```
+
+The other targets build none of its Rust: here `nsh run --target web` and `nsh package --target web` use the prebuilt
+web runtime. `nsh.lock` is the same on every target. `nsh run`, `nsh dev` and `nsh package` link the nshm for the
+target they build, and `nsh test` for the one it runs on (this machine's OS when headless). `nsh check`, `nsh build`,
+`nsh publish` and `nsh dev --server-only` serve every target and link every nshm, so the app's TSX is checked against
+its declarations, and `.nsh/types` keeps them when a command for another target runs.
+
+On a target that leaves the nshm out, its module is not there. A static `import` of it fails the build, unless
+`"resolve"` `"alias"` gives the specifier a stand-in, as above: only the targets without the nshm use it, and the
+others import the module. An `import()` of it builds on every target and rejects where the nshm is not linked, so
+code behind a `platform.os` check can load it. `"targets"` is for nshm with Rust (a TSX nshm is part of the bundle on
+every target) and for the app's own entries: an nshm's dependencies are linked wherever it is, and an nshm that a
+linked one depends on is linked whatever the app's entry for it says.
+
 An app listing them in the older `"modules"` array still builds; the next `nsh add` rewrites it as `"dependencies"`, keeping each requirement (a bare name becomes `"*"`) and what `nsh.lock` pinned.
 
 [CLI: nsh add](./cli.md#nsh-add) covers every source form; [nsh upgrade](./cli.md#nsh-upgrade) and [nsh remove](./cli.md#nsh-remove) the others.
@@ -649,7 +675,7 @@ pub fn Gauge(props: GaugeProps) -> impl IntoElement {
 }
 ```
 
-The NSH versions an nshm builds with are its own `nsh-core` requirement (`nsh-core = "0.6"`), which `nsh add` checks against the running `nsh` before anything compiles. Its TypeScript declarations are generated from its Rust types, so apps check their TSX against it as they do against their own crate.
+The NSH versions an nshm builds with are its own `nsh-core` requirement (`nsh-core = "0.6"`, or its workspace's with `nsh-core.workspace = true`), which `nsh add` checks against the running `nsh` before anything compiles. An nshm developed in a Cargo workspace takes its version and this requirement from the workspace as Cargo does, its own manifest's when it is the workspace's root package. Its TypeScript declarations are generated from its Rust types, so apps check their TSX against it as they do against their own crate.
 
 [nsh-omarchy's `src/lib.rs`](https://github.com/huacnlee/nsh-omarchy/blob/main/src/lib.rs) is a complete one: its components, exported to TSX by `#[native_module("nsh-omarchy")]`, with the `Omarchy` theme module.
 
@@ -769,7 +795,7 @@ A Rust nshm can export TSX as well, by the same `"exports"` in an `nsh.json` bes
 
 ### Dependencies
 
-An nshm lists the nshm it needs in its `nsh.json` `"dependencies"`, in the app's form: from crates.io or Git, with a version requirement as wide as it works with, so that apps and the other nshm they use can agree on one version. A published nshm cannot depend on a directory. The app's own entry for a package decides where it comes from: an app can take an nshm its nshm depend on from a fork or a local directory while their version requirements still apply.
+An nshm lists the nshm it needs in its `nsh.json` `"dependencies"`, in the app's form: from crates.io or Git, with a version requirement as wide as it works with, so that apps and the other nshm they use can agree on one version. A published nshm cannot depend on a directory, nor name `"targets"`: the app chooses where what it links goes ([Using an nshm](#using-an-nshm)). The app's own entry for a package decides where it comes from: an app can take an nshm its nshm depend on from a fork or a local directory while their version requirements still apply.
 
 ## Platform nshm
 

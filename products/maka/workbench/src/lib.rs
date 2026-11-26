@@ -938,7 +938,7 @@ mod tests {
         );
         compose(&mut app, false);
         app.wait_for(r#"text:Draft "ab文""#).unwrap();
-        assert!(app.type_text("label:前😀 /skill:review 后", "x").is_err());
+        app.type_text("label:前😀 /skill:review 后", "x").unwrap();
         app.press("text:/前😀/").unwrap();
         app.press_key("mod+a").unwrap();
         app.press_key("mod+c").unwrap();

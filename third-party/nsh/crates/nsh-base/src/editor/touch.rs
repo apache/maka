@@ -196,9 +196,8 @@ pub(crate) fn selection_bounds(
     end: usize,
     rows: std::ops::Range<usize>,
 ) -> Bounds<Points> {
-    let lh = st.line_height();
     let a = st.caret_point(start);
-    let b = st.caret_point(end);
+    let (b, lh) = st.caret_box(end);
     let (mut left, mut right) = (a.x.min(b.x), a.x.max(b.x));
     if a.y != b.y {
         for r in st.range_rects(start..end, rows, false) {
@@ -216,14 +215,14 @@ pub(crate) fn selection_bounds(
 /// line's height and the knob's room, above the line for the start, below
 /// it for the end.
 pub(crate) fn handle_box(st: &State, edge: Edge, offset: usize) -> Bounds<Points> {
-    let p = st.caret_point(offset);
+    let (p, lh) = st.caret_box(offset);
     let top = match edge {
         Edge::Start => p.y - px(KNOB_ROOM),
         Edge::End => p.y,
     };
     Bounds::new(
         Point::new(p.x - px(HANDLE_WIDTH / 2.0), top),
-        Size::new(px(HANDLE_WIDTH), st.line_height() + px(KNOB_ROOM)),
+        Size::new(px(HANDLE_WIDTH), lh + px(KNOB_ROOM)),
     )
 }
 
@@ -368,9 +367,9 @@ impl Ed {
         };
         let (anchor, handle) = {
             let st = self.st.borrow();
-            let p = st.caret_point(moving);
+            let (p, lh) = st.caret_box(moving);
             (
-                Point::new(p.x, p.y + st.line_height() / 2.0),
+                Point::new(p.x, p.y + lh / 2.0),
                 handle_box(&st, edge, moving),
             )
         };
@@ -462,12 +461,10 @@ fn handle(ed: Ed, edge: Edge) -> impl IntoElement {
             Some(handle_box(&ed.st.borrow(), edge, offset))
         })
     };
-    let lh = {
-        let ed = ed.clone();
-        move || {
-            ed.text_rev.get();
-            ed.st.borrow().line_height()
-        }
+    // The caret's row: the handle's box less the knob's room.
+    let lh = move || {
+        at.get()
+            .map_or(px(0.0), |b| (b.size.height - px(KNOB_ROOM)).max(px(0.0)))
     };
     let list: &'static [EditorPart] = match edge {
         Edge::Start => &[

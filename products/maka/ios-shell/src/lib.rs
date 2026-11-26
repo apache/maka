@@ -88,7 +88,6 @@ pub fn run() {
         AppSource::Bundle(ios_bundle()),
         AppOptions {
             host,
-            runtime: Some(runtime.handle().clone()),
             support_dir: Some(support_dir),
             ..AppOptions::default()
         },

@@ -87,11 +87,37 @@ final class WebBox extends WidgetBox {
         web.setWebChromeClient(new Chrome());
         web.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                // The page scrolls itself: keep enclosing scroll views out.
+                // The page handles its drags (scrolls, sliders, sortable lists): keep enclosing scroll views out.
                 v.getParent().requestDisallowInterceptTouchEvent(true);
             }
-            return !scrollable && e.getActionMasked() == MotionEvent.ACTION_MOVE;
+            // Every touch reaches the page, also with `scrollable={false}`, which only stops its viewport
+            // scrolling ({@link #NO_SCROLL}): its own drag handlers still hear the moves.
+            return false;
         });
+    }
+
+    /**
+     * {@code scrollable={false}}: a style keeps the page's viewport from scrolling ({@code overflow: hidden} on
+     * its root element) while its scripts still may and its inner scrollable elements still scroll, as on iOS
+     * (a {@code UIScrollView} with scrolling off), Windows and Linux. Applied as each document starts and when
+     * the prop changes; {@code scrollable} turned back on removes it.
+     */
+    private static String noScroll(boolean scrollable) {
+        return "(function () { var on = " + scrollable + "; var id = 'nsh-no-scroll';"
+                + " function apply() { var s = document.getElementById(id);"
+                + " if (on) { if (s) s.remove(); return; }"
+                + " if (!s && document.documentElement) { s = document.createElement('style'); s.id = id;"
+                + " s.textContent = 'html { overflow: hidden !important; }';"
+                + " document.documentElement.appendChild(s); } }"
+                + " if (document.documentElement) apply();"
+                + " else document.addEventListener('readystatechange', apply, { once: true }); })();";
+    }
+
+    private static final String NO_SCROLL = noScroll(false);
+
+    /** Puts the {@link #NO_SCROLL} style in the current document when the page does not scroll. */
+    private void applyNoScroll(WebView view) {
+        if (!scrollable) view.evaluateJavascript(NO_SCROLL, null);
     }
 
     /** Lets captures sample the page without replaying its functor at another viewport size. */
@@ -156,8 +182,16 @@ final class WebBox extends WidgetBox {
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
             if (disposed || processGone) return;
             cancelEvaluations("ERR_NSH_WEBVIEW_ABORTED", "The document navigated");
+            applyNoScroll(view);
             if (injectedBefore != null) view.evaluateJavascript(injectedBefore, null);
             state(Native.LOAD_START, url, true);
+        }
+
+        @Override
+        public void onPageCommitVisible(WebView view, String url) {
+            // onPageStarted can come before the new document replaces the old one: its first paint has the style.
+            if (disposed || processGone) return;
+            applyNoScroll(view);
         }
 
         @Override
@@ -278,6 +312,8 @@ final class WebBox extends WidgetBox {
                 || !Objects.equals(injectedBefore, this.injectedBefore);
         this.injected = injected;
         this.injectedBefore = injectedBefore;
+        // The page shown takes the change now; pages loaded later as they start.
+        if (this.source != null && scrollable != this.scrollable) web.evaluateJavascript(noScroll(scrollable), null);
         this.scrollable = scrollable;
         this.javaScriptEnabled = javaScriptEnabled;
         if (this.source == null) {

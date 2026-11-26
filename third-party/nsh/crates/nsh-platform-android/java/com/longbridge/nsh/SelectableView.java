@@ -35,7 +35,7 @@ final class SelectableView implements SelectionHandle.Owner {
 
     private static native void nativeDestroy(long handle);
 
-    private static native boolean nativeSetTexts(long handle, SelectableView area, String[] contents, int[] keys, boolean[] continues, float[] frames);
+    private static native boolean nativeSetTexts(long handle, SelectableView area, String[] contents, int[] keys, boolean[] continues, float[] frames, String[] chromes, float[] chromeFrames);
 
     private static native boolean nativeGesture(long handle, SelectableView area, float[] frames, int kind, float x, float y);
 
@@ -206,7 +206,7 @@ final class SelectableView implements SelectionHandle.Owner {
         collect();
         if (texts.isEmpty()) return false;
         if (handle == 0) handle = nativeCreate();
-        nativeSetTexts(handle, this, contents(), keys(), continues(), frames());
+        nativeSetTexts(handle, this, contents(), keys(), continues(), frames(), chromeTexts(), chromeFrames());
         if (mounter.selectedText != null) mounter.selectedText.clearSelection();
         if (mounter.selectedArea != null && mounter.selectedArea != this) mounter.selectedArea.clear();
         mounter.selectedArea = this;
@@ -281,7 +281,7 @@ final class SelectableView implements SelectionHandle.Owner {
             clear();
             return;
         }
-        nativeSetTexts(handle, this, contents(), keys(), continues(), frames());
+        nativeSetTexts(handle, this, contents(), keys(), continues(), frames(), chromeTexts(), chromeFrames());
         update();
         if (empty() && !extending) clear();
     }
@@ -296,19 +296,41 @@ final class SelectableView implements SelectionHandle.Owner {
      */
     private void collect() {
         texts.clear();
+        chromes.clear();
+        chrome = null;
         runsLength = 0;
         collect(view);
         if (texts.size() < 2) return;
         int[] order = nativeReadingOrder(texts.size(), java.util.Arrays.copyOf(runs, runsLength));
         if (order == null || order.length != texts.size()) return;
         java.util.ArrayList<TextBox> listed = new java.util.ArrayList<>(texts);
-        for (int i = 0; i < order.length; i++) texts.set(i, listed.get(order[i]));
+        java.util.ArrayList<TextBox> listedChromes = new java.util.ArrayList<>(chromes);
+        for (int i = 0; i < order.length; i++) {
+            texts.set(i, listed.get(order[i]));
+            chromes.set(i, listedChromes.get(order[i]));
+        }
     }
+
+    /**
+     * For each text, the text left out ({@code selectable={false}}) listed last before it, or null: maybe its
+     * list marker, which a copy puts before it ({@code selection::marker_of} decides).
+     */
+    private final java.util.ArrayList<TextBox> chromes = new java.util.ArrayList<>();
+    /** The text left out listed last while collecting. */
+    private TextBox chrome;
 
     private void collect(View v) {
         if (v instanceof TextBox) {
             TextBox t = (TextBox) v;
-            if (!t.excluded && t.layout() != null) texts.add(t);
+            if (t.layout() != null) {
+                if (t.excluded) {
+                    chrome = t;
+                } else {
+                    texts.add(t);
+                    chromes.add(chrome);
+                    chrome = null;
+                }
+            }
         }
         if (v instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) v;
@@ -374,6 +396,33 @@ final class SelectableView implements SelectionHandle.Owner {
             out[i * 4 + 1] = y / d;
             out[i * 4 + 2] = t.contentWidth() / d;
             out[i * 4 + 3] = t.contentHeight() / d;
+        }
+        return out;
+    }
+
+    /** The text of each text's {@link #chromes} entry, or null. */
+    private String[] chromeTexts() {
+        String[] out = new String[chromes.size()];
+        for (int i = 0; i < out.length; i++) {
+            TextBox c = chromes.get(i);
+            if (c != null && c.layout() != null) out[i] = c.layout().getText().toString();
+        }
+        return out;
+    }
+
+    /** The content boxes of {@link #chromes} in the area (dp: x, y, width, height each; zeros for none). */
+    private float[] chromeFrames() {
+        float[] out = new float[chromes.size() * 4];
+        float d = mounter.density;
+        view.getLocationOnScreen(at);
+        for (int i = 0; i < chromes.size(); i++) {
+            TextBox c = chromes.get(i);
+            if (c == null) continue;
+            c.getLocationOnScreen(at2);
+            out[i * 4] = (at2[0] - at[0] + c.contentX()) / d;
+            out[i * 4 + 1] = (at2[1] - at[1] + c.contentY()) / d;
+            out[i * 4 + 2] = c.contentWidth() / d;
+            out[i * 4 + 3] = c.contentHeight() / d;
         }
         return out;
     }

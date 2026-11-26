@@ -96,7 +96,7 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `viewport` | `.viewport(ListViewport::..)` | `"own" \| "parent"` | `"own"` | `"own"`：列表在自己的滚动视图中滚动。`"parent"`：列表没有自己的滚动视图，以完整长度排在父视图的布局中，只渲染外层滚动视图视口附近的行，随页面一起滚动（见[页面中的列表](../docs/lists.md#页面中的列表viewportparent)）。在列表创建时确定。 |
 | `numColumns` | `.columns(n)` | `number` | `1` | 每行的条目数（纵向列表）。 |
 | `inverted` | `.inverted()` | `boolean` | `false` | 从末端开始布局，第 0 项在最后（聊天样式）：初始滚动到末端，内容变化时保持与末端的距离。 |
-| `maintainVisibleContentPosition` | `.follow_end(px(threshold))` | `{ autoscrollToBottomThreshold?: number }` | | 用于非倒序列表：位于内容末端或距末端不超过该点数时，内容增长或视口缩小时列表保持在末端；向上滚得更远时，可见内容保持不动。 |
+| `maintainVisibleContentPosition` | `.follow_end(px(threshold))`、`.follow_end_animated(animated)` | `{ autoscrollToBottomThreshold?: number; animated?: boolean }` | | 用于非倒序列表：位于内容末端或距末端不超过该点数时，内容增长或视口缩小时列表保持在末端；向上滚得更远时，可见内容保持不动。设置 `animated` 后，末端一次后移达到列表高度的四分之一或更多时，以动画滚动跟随。 |
 | `stickyHeaderIndices` | `.sticky_header_indices([..])` | `number[]` | | 滚动经过时吸附在起始端的条目（单列、非倒序）。 |
 | `contentStyle` | `.content_padding(..)`、`.content_padding_x(..)`、`.row_gap(..)`、`.column_gap(..)` 等 | `ListContentStyle` | | 内容的内边距和间距（点）：`padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`、`gap`、`rowGap`、`columnGap`。`alignItems` 在交叉轴上对齐单元格：`stretch`（默认）、`flex-start`、`center` 或 `flex-end`。 |
 | `contentClass` | | `string` | | 以类名给出的内容内边距、间距和交叉轴对齐（`p-*`、`gap-*`、`items-start`、`items-center`、`items-end`、`items-stretch`）；`contentStyle` 优先。 |

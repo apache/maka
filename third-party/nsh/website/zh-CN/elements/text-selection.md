@@ -157,7 +157,7 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
 
 | 平台 | 如何选择 |
 |---|---|
-| macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。 |
+| macOS、Windows、Linux、GPUI | 在文字上拖动；双击选择一个词，三击选择一个段落，之后的拖动按词或段落继续。Shift+点击扩展选区。Ctrl / Cmd+A 选择视图中的全部内容，Ctrl / Cmd+C 复制，Escape 或在外部按下会清除选区。在 macOS 上，Shift 加方向键会从按下的位置扩展可选择视图的选区，与文本视图一致：按字符或按行，加 Option 按词或按段落，加 Cmd 到行或视图的开头 / 结尾（Shift+Home / End 亦可）。 |
 | iOS、Android | 长按选择一个词；平台的选择手柄可以扩展它，编辑菜单中有拷贝和全选。 |
 | Web | 浏览器自己的选择，以及它的手势、菜单和快捷键。 |
 

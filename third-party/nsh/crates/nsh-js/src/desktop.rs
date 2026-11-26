@@ -1311,7 +1311,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "windowState",
         Export::Function(crate::window::window_state, 0),
         Ts::function(
-            "The current window's state (reactive): `currentWindow().state()`.\n`null` off desktops.",
+            "The current window's state (reactive): `currentWindow().state()` while\nrendering, or the open `\"main\"` window's outside a render (event\nhandlers, timers, async callbacks, for compatibility). Returns `null`\noff desktops, before the window shows, or when no matching window is\nopen. In multi-window apps, capture `currentWindow()` while rendering\nand call `win.state()`.",
             &["(): WindowState | null"],
         ),
     ),
@@ -1319,7 +1319,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "titleBar",
         Export::Function(crate::window::title_bar, 0),
         Ts::function(
-            "The current window's hidden title bar area, in points (reactive):\n`currentWindow().titleBar()`. All 0 while the system shows its title\nbar, and off desktops.",
+            "The current window's hidden title bar area, in points (reactive):\n`currentWindow().titleBar()` while rendering, or the open `\"main\"`\nwindow's outside a render (event handlers, timers, async callbacks, for\ncompatibility). All 0 while the system shows its title bar, off\ndesktops, or when no matching window is open. In multi-window apps,\ncapture `currentWindow()` while rendering and call `win.titleBar()`.",
             &["(): TitleBarArea"],
         ),
     ),

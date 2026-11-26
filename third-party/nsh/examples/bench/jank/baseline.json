@@ -1,0 +1,66 @@
+{
+  "macos": {
+    "startup_ms": 576,
+    "startup_runs": [
+      569,
+      564,
+      576,
+      578,
+      596
+    ],
+    "animation": {
+      "hz": 41,
+      "budget_ms": 24.39,
+      "frame_p95_ms": 0.6,
+      "frame_max_ms": 0.65,
+      "gap_p50_ms": 22.32,
+      "gap_p95_ms": 25.96,
+      "gap_max_ms": 28.37,
+      "over_pct": 0,
+      "seconds": 15
+    },
+    "scroll": {
+      "hz": 46,
+      "budget_ms": 21.74,
+      "frame_p95_ms": 3.37,
+      "frame_max_ms": 4.01,
+      "gap_p50_ms": 21.43,
+      "gap_p95_ms": 27.46,
+      "gap_max_ms": 29.47,
+      "over_pct": 0,
+      "seconds": 25
+    }
+  },
+  "linux": {
+    "startup_ms": 575,
+    "startup_runs": [
+      571,
+      575,
+      595,
+      563,
+      579
+    ],
+    "animation": {
+      "hz": 60,
+      "budget_ms": 16.67,
+      "frame_p95_ms": 1.62,
+      "frame_max_ms": 2.57,
+      "gap_p50_ms": 16.66,
+      "gap_p95_ms": 17.05,
+      "gap_max_ms": 19.17,
+      "over_pct": 0,
+      "seconds": 15
+    },
+    "scroll": {
+      "hz": 60.0,
+      "budget_ms": 16.67,
+      "frame_p95_ms": 2.24,
+      "frame_max_ms": 3.71,
+      "gap_p50_ms": 16.66,
+      "gap_p95_ms": 17.36,
+      "gap_max_ms": 18.43,
+      "over_pct": 0,
+      "seconds": 20
+    }
+  }
+}

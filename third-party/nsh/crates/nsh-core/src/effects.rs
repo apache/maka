@@ -7,8 +7,8 @@ use std::sync::Arc;
 use crate::{
     color::Hsla,
     geometry::{
-        Bounds, Corners, DefiniteLength, Edges, Percentage, Point, Points, REM_SIZE, Radians, Size,
-        deg, point, size,
+        AbsoluteLength, Bounds, Corners, DefiniteLength, Edges, Percentage, Point, Points,
+        REM_SIZE, Radians, Size, deg, point, size,
     },
     style::{BorderStyle, Color, CornerRadii},
 };
@@ -432,6 +432,94 @@ impl<T: Into<ColorStop>> crate::element::IntoReactive<Vec<ColorStop>> for Vec<T>
 }
 
 impl Gradient {
+    /// The gradient `t` of the way to `to` (`t` beyond 0..1 overshoots):
+    /// each stop's color (in premultiplied RGBA, as CSS mixes them) and
+    /// position, and the geometry's angle and center. `None` when the two
+    /// do not interpolate and `to` applies at once, as CSS's discrete
+    /// interpolation does: different kinds, sizes or repeating, a different
+    /// number of stops, a linear gradient toward a different corner, or a
+    /// stop placed in one and not the other, or as a fraction in one and a
+    /// length in the other.
+    pub fn lerp(&self, to: &Self, t: f32) -> Option<Self> {
+        if self.repeating != to.repeating || self.stops.len() != to.stops.len() {
+            return None;
+        }
+        let l = |a: f32, b: f32| a + (b - a) * t;
+        let kind = match (self.kind, to.kind) {
+            (GradientKind::Linear { angle: a }, GradientKind::Linear { angle: b }) => {
+                GradientKind::Linear {
+                    angle: Radians(l(a.0, b.0)),
+                }
+            }
+            (a @ GradientKind::LinearCorner { .. }, b) if a == b => a,
+            (
+                GradientKind::Radial {
+                    circle,
+                    size,
+                    x: ax,
+                    y: ay,
+                },
+                GradientKind::Radial {
+                    circle: bc,
+                    size: bs,
+                    x: bx,
+                    y: by,
+                },
+            ) if circle == bc && size == bs => GradientKind::Radial {
+                circle,
+                size,
+                x: Percentage(l(ax.0, bx.0)),
+                y: Percentage(l(ay.0, by.0)),
+            },
+            (
+                GradientKind::Conic {
+                    from: af,
+                    x: ax,
+                    y: ay,
+                },
+                GradientKind::Conic {
+                    from: bf,
+                    x: bx,
+                    y: by,
+                },
+            ) => GradientKind::Conic {
+                from: Radians(l(af.0, bf.0)),
+                x: Percentage(l(ax.0, bx.0)),
+                y: Percentage(l(ay.0, by.0)),
+            },
+            _ => return None,
+        };
+        let stops = self
+            .stops
+            .iter()
+            .zip(&to.stops)
+            .map(|(a, b)| {
+                let position = match (a.position, b.position) {
+                    (None, None) => None,
+                    (Some(DefiniteLength::Fraction(pa)), Some(DefiniteLength::Fraction(pb))) => {
+                        Some(DefiniteLength::Fraction(Percentage(l(pa.0, pb.0))))
+                    }
+                    (Some(DefiniteLength::Absolute(pa)), Some(DefiniteLength::Absolute(pb))) => {
+                        let (pa, pb) = (pa.to_points(REM_SIZE), pb.to_points(REM_SIZE));
+                        Some(DefiniteLength::Absolute(AbsoluteLength::Points(Points(l(
+                            pa.0, pb.0,
+                        )))))
+                    }
+                    _ => return None,
+                };
+                Some(ColorStop {
+                    color: crate::transition::lerp_color(a.color, b.color, t),
+                    position,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Gradient {
+            kind,
+            stops,
+            repeating: self.repeating,
+        })
+    }
+
     /// Whether a stop is placed in points, so the stops depend on the
     /// size of the box ([`Gradient::resolved_stops`]).
     pub fn has_lengths(&self) -> bool {
@@ -1232,10 +1320,20 @@ impl TransitionProps {
     pub const SHAPE: u8 = 16;
     /// `clipPath` (CSS's `clip-path`).
     pub const CLIP_PATH: u8 = 32;
+    /// `maskImage` (CSS's `mask-image`): gradients of the same shape and
+    /// stop count, stop by stop.
+    pub const MASK: u8 = 64;
     /// A single foreground blur filter, including transitions to/from none.
-    pub const FILTER: u8 = 64;
+    pub const FILTER: u8 = 128;
     /// Everything that can transition.
-    pub const ALL: u8 = 0x7f;
+    pub const ALL: u8 = Self::COLORS
+        | Self::OPACITY
+        | Self::TRANSFORM
+        | Self::SHADOW
+        | Self::SHAPE
+        | Self::CLIP_PATH
+        | Self::MASK
+        | Self::FILTER;
 
     /// True if `group` is included.
     #[inline]

@@ -6,7 +6,10 @@
 // The page's host (`app.host`, nsh.json `web.host`) answers the app's
 // `nsh/host` calls: its `createHost(player)` runs once the player exists,
 // before the app starts, so no call comes earlier. Its pages and dialogs
-// are browser history entries as nsh.json `web.history` says.
+// are browser history entries as nsh.json `web.history` says. A shared
+// runtime (`nsh package --shared-runtime`) links none of the app's parts of
+// `nsh/base`: the side modules the entry needs (`app.entrySides`, requested
+// with the main module by the head's script) load before the app starts.
 //
 // What it starts is in the page (`#nsh-app`, JSON). With nsh.json
 // `web.base` its URLs are absolute paths (or the `--asset-url`'s) and the
@@ -70,6 +73,8 @@ try {
       assets: app.assets,
       data: app.data,
       sides: app.sides,
+      // A side module the head's script requested (the entry's).
+      prefetched: (url) => (fetches.has(url) ? take(url) : undefined),
       // nsh.json `web.history`; without it the player's default.
       history: app.history,
       // nsh.json `web.base`: what the app's relative URLs resolve against.
@@ -92,6 +97,11 @@ try {
     ...(app.entryChunks ?? []).flatMap(id => (app.chunkFonts[id] ?? []).map(loadFont)),
   ]);
   player = loaded;
+  // While the page's host starts; awaited before the app runs (the empty
+  // `catch` only keeps a failure before then from being logged as
+  // unhandled).
+  const entrySides = player.loadSides(app.entrySides, app.sides);
+  entrySides.catch(() => {});
   // The side modules not `onDemand`, downloaded behind its first
   // screen. `nsh package` marks every one it writes `onDemand` (each is
   // code only a lazy chunk or a feature's first use needs), so a side
@@ -107,6 +117,7 @@ try {
   // `host.params`.
   const served = document.getElementById("nsh-params");
   const params = served ? JSON.parse(served.textContent) : undefined;
+  await entrySides;
   if (app.rust) player.runRust();
   else await player.runModule(app.code, { capabilities: app.capabilities ?? "", appId: app.id ?? "", chunks: app.chunks, nativeExports: app.nativeExports, linked: app.linked, params });
   player.preloadSides(app.sides);

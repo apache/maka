@@ -27,7 +27,8 @@ use nsh_core::{
     AttributedText, Bounds, EventKind, EventPayload, NodeId, PayloadValue, Point, Points,
     geometry::point,
     selection::{
-        KeptRows, SelectionModel, SelectionTexts, autoscroll_step, reading_order, reorder,
+        KeptRows, SelectionModel, SelectionTexts, autoscroll_step, marker_of, reading_order,
+        reorder,
     },
 };
 
@@ -56,6 +57,11 @@ struct Texts {
     frames: Vec<Bounds<Points>>,
     /// Each text view's transform to the root.
     to_root: Vec<Mat4>,
+    /// The list marker beside each text (`selection::marker_of`).
+    markers: Vec<Option<String>>,
+    /// The last text left out (`selectable={false}`) while listing, its
+    /// content and frame: maybe the marker of the next.
+    chrome: Option<(String, Bounds<Points>)>,
     /// The area's transform to the root.
     area: Mat4,
 }
@@ -68,6 +74,8 @@ impl Texts {
             texts: Vec::new(),
             frames: Vec::new(),
             to_root: Vec::new(),
+            markers: Vec::new(),
+            chrome: None,
             area: area.to_root().unwrap_or_default(),
         };
         if area.attached() {
@@ -94,6 +102,7 @@ impl Texts {
             reorder(&mut self.texts, start, &order);
             reorder(&mut self.frames, start, &order);
             reorder(&mut self.to_root, start, &order);
+            reorder(&mut self.markers, start, &order);
         }
     }
 
@@ -102,7 +111,7 @@ impl Texts {
         let (text, content) = {
             let s = view.state();
             match &s.text {
-                Some(d) if takes_part(&d.text) => (d.text.clone(), d.content),
+                Some(d) => (d.text.clone(), d.content),
                 _ => return,
             }
         };
@@ -112,6 +121,13 @@ impl Texts {
         let Some(frame) = self.to_area(&to_root, content) else {
             return;
         };
+        if !takes_part(&text) {
+            // A list marker, maybe: the next text's copy starts with it.
+            self.chrome = Some((text.text.to_string(), frame));
+            return;
+        }
+        self.markers
+            .push(marker_of(self.chrome.take().as_ref(), frame));
         self.views.push(view.clone());
         self.texts.push(text);
         self.frames.push(frame);
@@ -148,6 +164,10 @@ impl SelectionTexts for Texts {
         self.texts[i].copied_text(range)
     }
 
+    fn attributed(&self, i: usize) -> Option<&AttributedText> {
+        Some(&self.texts[i])
+    }
+
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.frames[i]
     }
@@ -167,6 +187,10 @@ impl SelectionTexts for Texts {
 
     fn continues(&self, i: usize) -> bool {
         self.views[i].state().props.continues_text
+    }
+
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.markers[i].as_deref()
     }
 
     fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
@@ -341,9 +365,7 @@ pub(crate) fn menu_role(
     }
     match role {
         MenuRole::Copy => {
-            if let Some(text) = selected_text(surface.key(), Some(area)) {
-                crate::system::set_clipboard_text(&text);
-            }
+            copy(surface.key(), Some(area));
             true
         }
         MenuRole::SelectAll => {
@@ -741,6 +763,23 @@ fn autoscroll(surface: Weak<Surface>) {
     schedule(surface);
 }
 
+/// Copies the selection of `area`, if it is current and has one: its text
+/// and, with bold, italic or links, its HTML (`SelectionModel::html`).
+fn copy(surface: u64, area: Option<&NshView>) {
+    let Some(current) = take(surface, area) else {
+        return;
+    };
+    let copied = (!current.model.is_empty()).then(|| {
+        let texts = Texts::of(&current.area);
+        (current.model.text(&texts), current.model.html(&texts))
+    });
+    put(current);
+    // A selection of hidden characters only copies nothing.
+    if let Some((text, html)) = copied.filter(|(t, _)| !t.is_empty()) {
+        crate::system::set_clipboard_item(&text, html.as_deref());
+    }
+}
+
 /// The selected text of `area`, if it is current and has a selection.
 fn selected_text(surface: u64, area: Option<&NshView>) -> Option<String> {
     let current = take(surface, area)?;
@@ -816,16 +855,14 @@ pub(crate) fn context_menu(surface: &Rc<Surface>, area: &NshView) {
     use crate::chrome::LocalItem;
     let key = surface.key();
     let selected = selected_text(key, Some(area)).is_some_and(|t| !t.is_empty());
-    let (copy, all) = (area.clone(), area.clone());
+    let (copied, all) = (area.clone(), area.clone());
     let mut items = vec![
         LocalItem::Item {
             role: Some(MenuRole::Copy),
             label: String::new(),
             enabled: selected,
             action: Rc::new(move |s| {
-                if let Some(text) = selected_text(s.key(), Some(&copy)) {
-                    crate::system::set_clipboard_text(&text);
-                }
+                copy(s.key(), Some(&copied));
             }),
         },
         LocalItem::Item {
@@ -862,9 +899,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     let ctrl = event.modifiers.ctrl && !event.modifiers.alt;
     match event.vk {
         VK_C | VK_INSERT if ctrl && !empty => {
-            if let Some(text) = selected_text(key, Some(&area)) {
-                crate::system::set_clipboard_text(&text);
-            }
+            copy(key, Some(&area));
         }
         VK_A if ctrl => select_all(key, &area),
         VK_ESCAPE if !empty => {

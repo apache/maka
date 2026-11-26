@@ -6,7 +6,7 @@ mod common;
 pub mod document;
 mod extension;
 mod formula;
-mod highlight;
+pub(crate) mod highlight;
 mod html;
 mod markdown;
 mod marks;
@@ -23,14 +23,15 @@ mod view;
 #[cfg(all(feature = "math", target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use self::formula::install as install_math;
+pub(crate) use self::parts::merge_styles;
 pub use self::{
     document::{
         Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Footnote, Image, ImageLength,
         Inline, ListItem, Table, TableCell,
     },
     extension::{
-        MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins, ParseContext, Parser,
-        mdast,
+        ConversionId, MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins,
+        ParseContext, Parser, mdast,
     },
     marks::{TextViewMark, TextViewMarkPressEvent, TextViewMarksMatchEvent},
     parts::{PartStyle, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles},
@@ -38,8 +39,8 @@ pub use self::{
     view::{
         CodeHighlighter, TextView, TextViewApi, TextViewCodeAction, TextViewCodeActionEvent,
         TextViewElement, TextViewEvent, TextViewHeading, TextViewHeadingsEvent,
-        TextViewImageContext, TextViewImageFlow, TextViewLabels, TextViewLinkPressEvent,
-        TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
+        TextViewImageContext, TextViewImageFlow, TextViewImageLink, TextViewLabels,
+        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
         TextViewScrollToBlockOptions, TextViewSelectionEvent, TextViewTaskPressEvent,
         TextViewVisibleBlocksEvent, text_view,
     },

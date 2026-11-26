@@ -103,14 +103,14 @@ define_class!(
             }
             let changed: Vec<u32> = began.iter().map(|t| t.id).collect();
             self.ivars().tracked.borrow_mut().extend(began);
-            self.report(TouchPhase::Start, &changed);
+            self.report(TouchPhase::Start, &changed, None);
         }
 
         #[unsafe(method(touchesMoved:withEvent:))]
-        fn touches_moved(&self, touches: &NSSet<UITouch>, _event: &UIEvent) {
+        fn touches_moved(&self, touches: &NSSet<UITouch>, event: &UIEvent) {
             let changed = self.ids_of(touches);
             if !changed.is_empty() {
-                self.report(TouchPhase::Move, &changed);
+                self.report(TouchPhase::Move, &changed, Some(event));
             }
         }
 
@@ -175,7 +175,7 @@ impl TouchTracker {
         }
         self.ivars().activated.set(Some(id));
         if self.ivars().reported.get() == timestamp * 1000.0 {
-            self.report(TouchPhase::Move, &tracked);
+            self.report(TouchPhase::Move, &tracked, None);
         }
     }
 
@@ -186,7 +186,7 @@ impl TouchTracker {
             return;
         }
         let changed: Vec<u32> = self.ivars().tracked.borrow().iter().map(|t| t.id).collect();
-        self.report(TouchPhase::Cancel, &changed);
+        self.report(TouchPhase::Cancel, &changed, None);
         self.ivars().tracked.borrow_mut().clear();
     }
 
@@ -206,7 +206,7 @@ impl TouchTracker {
     fn lift(&self, touches: &NSSet<UITouch>, phase: TouchPhase) {
         let changed = self.ids_of(touches);
         if !changed.is_empty() {
-            self.report(phase, &changed);
+            self.report(phase, &changed, None);
             self.ivars()
                 .tracked
                 .borrow_mut()
@@ -221,8 +221,9 @@ impl TouchTracker {
     }
 
     /// Sends the tracked fingers, `changed` marking those the event is
-    /// about (with their paths when they `start`).
-    fn report(&self, phase: TouchPhase, changed: &[u32]) {
+    /// about (with their paths when they `start`), and when they `move`,
+    /// the samples `event` merged into them.
+    fn report(&self, phase: TouchPhase, changed: &[u32], event: Option<&UIEvent>) {
         let Some(root) = self.view() else { return };
         let tracked = self.ivars().tracked.borrow();
         let mut timestamp = 0.0;
@@ -234,16 +235,8 @@ impl TouchTracker {
                 timestamp = t.touch.timestamp() * 1000.0;
                 let is_changed = changed.contains(&t.id);
                 let pencil = t.touch.r#type() == objc2_ui_kit::UITouchType::Pencil;
-                let max_force = t.touch.maximumPossibleForce();
-                let tilt = if pencil {
-                    tilt(
-                        t.touch.altitudeAngle(),
-                        t.touch.azimuthAngleInView(Some(&root)),
-                    )
-                } else {
-                    (0.0, 0.0)
-                };
-                TouchPoint {
+                let (pressure, tilt) = sample(&t.touch, &root, pencil);
+                let mut finger = TouchPoint {
                     id: t.id,
                     target: t.target,
                     path: if phase == TouchPhase::Start && is_changed {
@@ -262,14 +255,34 @@ impl TouchTracker {
                     pressure: if is_changed && matches!(phase, TouchPhase::End | TouchPhase::Cancel)
                     {
                         0.0
-                    } else if max_force > 0.0 {
-                        (t.touch.force() / max_force).clamp(0.0, 1.0) as f32
                     } else {
-                        0.5
+                        pressure
                     },
                     tilt_x: tilt.0,
                     tilt_y: tilt.1,
+                    coalesced: Vec::new(),
+                    eraser: false,
+                    barrel: false,
+                };
+                // The merged samples end with the touch itself (`finger`).
+                if is_changed
+                    && phase == TouchPhase::Move
+                    && let Some(merged) = event.and_then(|e| e.coalescedTouchesForTouch(&t.touch))
+                {
+                    let older = merged.count().saturating_sub(1);
+                    for c in merged.iter().take(older) {
+                        let page = c.locationInView(Some(&root));
+                        let (pressure, tilt) = sample(&c, &root, pencil);
+                        finger.push_coalesced(
+                            point(Points(page.x as f32), Points(page.y as f32)),
+                            pressure,
+                            tilt.0,
+                            tilt.1,
+                            c.timestamp() * 1000.0,
+                        );
+                    }
                 }
+                finger
             })
             .collect();
         drop(tracked);
@@ -611,6 +624,23 @@ fn scrolls_along(scroll: &UIScrollView, horizontal: bool) -> bool {
     } else {
         scroll.alwaysBounceVertical() || content.height + inset.top + inset.bottom > bounds.height
     }
+}
+
+/// A touch's pressure (0.5 without force sensing) and, for a pencil, its
+/// tilt (see [`tilt`]), measured in `root`.
+fn sample(touch: &UITouch, root: &UIView, pencil: bool) -> (f32, (f32, f32)) {
+    let max_force = touch.maximumPossibleForce();
+    let pressure = if max_force > 0.0 {
+        (touch.force() / max_force).clamp(0.0, 1.0) as f32
+    } else {
+        0.5
+    };
+    let tilt = if pencil {
+        tilt(touch.altitudeAngle(), touch.azimuthAngleInView(Some(root)))
+    } else {
+        (0.0, 0.0)
+    };
+    (pressure, tilt)
 }
 
 /// A pen's `tiltX` / `tiltY` in degrees (the DOM's) from its altitude

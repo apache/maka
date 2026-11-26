@@ -463,19 +463,17 @@ function renderMarkdown(ctx: SpecElementRenderContext): JSX.Element {
           void runtime.openLink(e.url, () => (target ? target.focus() : false));
         }
       }}
-      renderImage={(context) =>
+      renderImage={(image, context) =>
         runtime.sessionId ? (
           <MarkdownImageView
-            image={() => context.image}
+            image={() => image}
             sessionId={runtime.sessionId}
-            linked={context.linked}
+            linked={context.link != null}
             flow={context.flow}
             lineHeight={context.lineHeight}
           />
         ) : (
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>
-            {context.image.alt || context.image.src}
-          </Text>
+          <Text style={{ ...captionTextStyle, color: C.secondary }}>{image.alt || image.src}</Text>
         )
       }
       styles={{

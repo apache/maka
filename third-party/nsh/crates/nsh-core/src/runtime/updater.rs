@@ -1,7 +1,10 @@
 //! `nsh/updater`: the app updates itself (`docs/dev/updater.md`). The rules
 //! are `nsh-updater`'s; this module is its JS face over the platform's HTTP
 //! stack ([`UpdaterHost`]). The source comes from the package, never from
-//! the caller, so what the app's code can do is ask, not point it elsewhere.
+//! the caller, so what the app's code can do is ask, not point it elsewhere;
+//! the one exception is opted into in `nsh.json`: packages from a feed the
+//! code names (`"packages": { "source": "runtime" }`), still signed with the
+//! package's keys.
 //!
 //! Needs no capability: the developer named the source in `nsh.json`, and a
 //! module running inside another app has no installation to replace.
@@ -117,6 +120,15 @@ pub(crate) struct PackageCheckOptions {
     /// As `checkForUpdate`'s: the language `notes` is in, when the
     /// manifest has it.
     pub(crate) locale: Option<String>,
+    /// The manifest to check, for an app whose `nsh.json` lets its code
+    /// name it (`"updater": { "packages": { "source": "runtime" } }`): one
+    /// build of the app for several servers. HTTPS, or plain HTTP with
+    /// `"allowHttp": true`, which keeps the feed's files and redirects on
+    /// its origin. The manifest's signature and the package's are checked
+    /// against the keys in `nsh.json` as for any source, and a package not
+    /// newer than the running build is never offered. `downloadPackage`
+    /// downloads what this check found.
+    pub(crate) url: Option<String>,
 }
 
 /// A newer version of the app.
@@ -238,7 +250,8 @@ impl Updater {
     /// interrupted transfer keeps its partial file keyed to the asset and
     /// resumes on the next call when the host supports HTTP `Range` requests,
     /// starting over when the server ignores the range or the file does not
-    /// match. Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found
+    /// match. Transient network failures are retried within the call.
+    /// Rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when it found
     /// none or `canInstall` is false, and when the download fails or does not
     /// match.
     pub(crate) fn download_update(
@@ -304,16 +317,20 @@ impl Updater {
     /// Asks the source in `nsh.json`'s `"updater"` for a newer build of the
     /// app's code: a signed package newer than the running build (the
     /// running package's, else the one the app shipped with) that this
-    /// runtime runs. Resolves with it, or `null` when there is none, the
+    /// runtime runs. With `url`, asks that manifest instead, when the
+    /// package lets the app's code choose (`"packages": { "source":
+    /// "runtime" }`). Resolves with it, or `null` when there is none, the
     /// app trusts no package roots (`"updater": { "packages": { "roots" } }`)
     /// or runs where apps do not update (the web, a development run).
-    /// Rejects as `checkForUpdate` does.
+    /// Rejects as `checkForUpdate` does, and for a `url` the package does
+    /// not let the app choose, or without one when the package names no
+    /// source of its own.
     pub(crate) fn check_for_package(
         options: Option<PackageCheckOptions>,
         sys: System,
     ) -> Later<Option<PackageUpdate>> {
-        let locale = options.and_then(|options| options.locale);
-        Later::new(native::check_package(sys, locale))
+        let options = options.unwrap_or_default();
+        Later::new(native::check_package(sys, options.locale, options.url))
     }
 
     /// Downloads the package the last `checkForPackage` found, checks it
@@ -324,7 +341,8 @@ impl Updater {
     /// arrive. An interrupted transfer keeps its partial file keyed to the
     /// package and resumes on the next call when the host supports HTTP
     /// `Range` requests, starting over when the server ignores the range or
-    /// the file does not match. Rejects with
+    /// the file does not match. Transient network failures are retried
+    /// within the call. Rejects with
     /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
     /// with an error saying why when the download fails or the package is
     /// refused (a refused package leaves nothing behind).
@@ -479,6 +497,13 @@ mod native {
                 return Ok(None);
             };
             let config = Config::parse(&bytes).map_err(|e| e.to_string())?;
+            if !config.has_source() && channel.is_none() {
+                return Err(
+                    "no update source: the app's nsh.json names no github or url, only \
+                            package feeds its code chooses (checkForPackage({ url }))"
+                        .to_owned(),
+                );
+            }
             // Only the source changes: the id, version and key are the
             // package's, and the installation is found by its own file.
             let config = match &channel {
@@ -842,7 +867,7 @@ mod native {
         mut resumed: bool,
         progress: &mut impl FnMut(u64, Option<u64>) -> bool,
         verify: &impl Fn(&std::path::Path) -> Result<(), String>,
-    ) -> Result<TransferStep, String> {
+    ) -> Result<TransferStep, DownloadError> {
         use std::io::{Seek as _, Write as _};
 
         // Upper bound on server-capped `206` slices in one call.
@@ -854,6 +879,8 @@ mod native {
             let mut kind = ResponseKind::None;
             let mut server_total: Option<u64> = None;
             let mut exceeded_size = false;
+            // Set when the failure is ours (cancel, disk), not the network's.
+            let mut local_failure = false;
 
             let transfer = target
                 .host
@@ -865,9 +892,13 @@ mod native {
                         if at == 0 {
                             kind = ResponseKind::Full;
                             if check.received() > 0 {
-                                file.set_len(0).map_err(|e| e.to_string())?;
-                                file.seek(std::io::SeekFrom::Start(0))
-                                    .map_err(|e| e.to_string())?;
+                                let reset = file
+                                    .set_len(0)
+                                    .and_then(|()| file.seek(std::io::SeekFrom::Start(0)));
+                                if let Err(e) = reset {
+                                    local_failure = true;
+                                    return Err(e.to_string());
+                                }
                                 check = Download::new(target.sha256, target.size);
                                 resumed = false;
                             }
@@ -875,6 +906,7 @@ mod native {
                             kind = ResponseKind::Partial;
                             // Show the kept bytes before the new ones arrive.
                             if !progress(offset, target.size.or(total)) {
+                                local_failure = true;
                                 return Err("download cancelled".to_owned());
                             }
                         } else {
@@ -894,8 +926,12 @@ mod native {
                             return Err(e.to_string());
                         }
                     };
-                    file.write_all(chunk).map_err(|e| e.to_string())?;
+                    if let Err(e) = file.write_all(chunk) {
+                        local_failure = true;
+                        return Err(e.to_string());
+                    }
                     if !progress(received, target.size.or(server_total)) {
+                        local_failure = true;
                         return Err("download cancelled".to_owned());
                     }
                     Ok(())
@@ -915,14 +951,18 @@ mod native {
                     if resumed {
                         return Ok(TransferStep::RestartFresh);
                     }
-                    return Err(err);
+                    return Err(err.into());
                 }
                 // Keep partial progress on transport / HTTP errors or cancellation
                 // so the next call resumes; drop empty 0-byte placeholders.
                 if received == 0 {
                     let _ = std::fs::remove_file(target.part);
                 }
-                return Err(err);
+                let retryable = !local_failure && is_transient(&err);
+                return Err(DownloadError {
+                    message: err,
+                    retryable,
+                });
             }
 
             match kind {
@@ -936,7 +976,7 @@ mod native {
                         if check.finish().is_ok() {
                             if let Err(err) = verify(target.part) {
                                 let _ = std::fs::remove_file(target.part);
-                                return Err(err);
+                                return Err(err.into());
                             }
                             let _ = progress(received, target.size.or(Some(received)));
                             std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
@@ -947,7 +987,7 @@ mod native {
                     if resumed {
                         return Ok(TransferStep::RestartFresh);
                     }
-                    return Err("HTTP 416".to_owned());
+                    return Err("HTTP 416".to_owned().into());
                 }
                 ResponseKind::Partial => {
                     let expected = target.size.or(server_total);
@@ -977,7 +1017,10 @@ mod native {
                     if received == 0 {
                         let _ = std::fs::remove_file(target.part);
                     }
-                    return Err("empty response".to_owned());
+                    return Err(DownloadError {
+                        message: "empty response".to_owned(),
+                        retryable: true,
+                    });
                 }
             }
         }
@@ -1006,11 +1049,106 @@ mod native {
     /// Downloads `target.url` into `target.part` (resuming an existing partial
     /// file when present), verifies its size, SHA-256 and `verify`, and moves
     /// it atomically to `target.dest`.
+    #[cfg(test)]
     fn download_resumable(
         target: &DownloadTarget<'_>,
+        progress: impl FnMut(u64, Option<u64>) -> bool,
+        verify: impl Fn(&std::path::Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        download_once(target, progress, verify).map_err(|e| e.message)
+    }
+
+    /// How [`download_with_retry`] backs off between attempts.
+    #[derive(Clone, Copy)]
+    struct RetryPolicy {
+        /// Retries in a row without any new byte before giving up.
+        attempts: u32,
+        /// First wait; doubles per retry without progress, capped at 16x.
+        backoff: std::time::Duration,
+    }
+
+    impl RetryPolicy {
+        const DEFAULT: Self = Self {
+            attempts: 5,
+            backoff: std::time::Duration::from_secs(1),
+        };
+    }
+
+    /// [`download_resumable`] that retries transient network failures
+    /// (resets, stalls, truncated bodies, `5xx`, `408`, `429`) from the
+    /// bytes already on disk, so a flaky link does not need the app to call
+    /// `download` again. The attempt budget resets whenever a pass made
+    /// progress; cancellation, verification and `4xx` errors fail at once.
+    fn download_with_retry(
+        target: &DownloadTarget<'_>,
+        policy: RetryPolicy,
         mut progress: impl FnMut(u64, Option<u64>) -> bool,
         verify: impl Fn(&std::path::Path) -> Result<(), String>,
     ) -> Result<(), String> {
+        let mut failures = 0u32;
+        let mut furthest = 0u64;
+        loop {
+            let mut reached = 0u64;
+            let result = download_once(
+                target,
+                |received, total| {
+                    reached = reached.max(received);
+                    progress(received, total)
+                },
+                &verify,
+            );
+            let err = match result {
+                Ok(()) => return Ok(()),
+                Err(err) if !err.retryable => return Err(err.message),
+                Err(err) => err,
+            };
+            if reached > furthest {
+                furthest = reached;
+                failures = 0;
+            }
+            failures += 1;
+            if failures > policy.attempts {
+                return Err(err.message);
+            }
+            let wait = policy.backoff * (1u32 << (failures - 1).min(4));
+            std::thread::sleep(wait);
+            // Let a cancellation made during the wait stop the retry.
+            if !progress(furthest, target.size) {
+                return Err("download cancelled".to_owned());
+            }
+        }
+    }
+
+    /// Whether a transfer error from the host is worth retrying.
+    fn is_transient(err: &str) -> bool {
+        match err
+            .strip_prefix("HTTP ")
+            .and_then(|code| code.trim().parse::<u16>().ok())
+        {
+            Some(status) => status >= 500 || status == 408 || status == 429,
+            None => !err.starts_with("redirect to non-HTTPS") && err != "too many redirects",
+        }
+    }
+
+    struct DownloadError {
+        message: String,
+        retryable: bool,
+    }
+
+    impl From<String> for DownloadError {
+        fn from(message: String) -> Self {
+            Self {
+                message,
+                retryable: false,
+            }
+        }
+    }
+
+    fn download_once(
+        target: &DownloadTarget<'_>,
+        mut progress: impl FnMut(u64, Option<u64>) -> bool,
+        verify: impl Fn(&std::path::Path) -> Result<(), String>,
+    ) -> Result<(), DownloadError> {
         // One download of an asset at a time, also across processes: the
         // `.part` is shared, so a second one would interleave its bytes.
         let _lock = lock_part(target.part)?;
@@ -1027,7 +1165,7 @@ mod native {
                 let _ = std::fs::remove_file(target.part);
                 if let Err(err) = verify(target.dest) {
                     let _ = std::fs::remove_file(target.dest);
-                    return Err(err);
+                    return Err(err.into());
                 }
                 let _ = progress(received, target.size.or(Some(received)));
                 return Ok(());
@@ -1047,7 +1185,7 @@ mod native {
             if check.finish().is_ok() {
                 if let Err(err) = verify(target.part) {
                     let _ = std::fs::remove_file(target.part);
-                    return Err(err);
+                    return Err(err.into());
                 }
                 let _ = progress(received, Some(received));
                 std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
@@ -1081,11 +1219,11 @@ mod native {
                             resumed = false;
                             continue;
                         }
-                        return Err(err.to_string());
+                        return Err(err.to_string().into());
                     }
                     if let Err(err) = verify(target.part) {
                         let _ = std::fs::remove_file(target.part);
-                        return Err(err);
+                        return Err(err.into());
                     }
                     std::fs::rename(target.part, target.dest).map_err(|e| e.to_string())?;
                     return Ok(());
@@ -1150,8 +1288,9 @@ mod native {
                 sha256: &sha256,
                 size,
             };
-            download_resumable(
+            download_with_retry(
                 &target,
+                RetryPolicy::DEFAULT,
                 |received, total| tx.send((received, total)).is_ok(),
                 |_| Ok(()),
             )?;
@@ -1236,7 +1375,7 @@ mod native {
                 sha256: &delta.sha256,
                 size: Some(delta.size),
             };
-            download_resumable(&target, progress, |_| Ok(()))?;
+            download_with_retry(&target, RetryPolicy::DEFAULT, progress, |_| Ok(()))?;
             let base = fs::read(&base_path).map_err(|e| e.to_string())?;
             let out_path = dir.join(format!("delta-{key}.tar"));
             let applied = (|| {
@@ -1262,6 +1401,7 @@ mod native {
     pub(super) async fn check_package(
         sys: System,
         locale: Option<String>,
+        url: Option<String>,
     ) -> Result<Option<PackageUpdate>, JsError> {
         let found = sys.locals.get::<Found>();
         let _operation = begin(&found)?;
@@ -1278,6 +1418,17 @@ mod native {
             if config.package_roots().is_empty() {
                 return Ok(None);
             }
+            // Only the source changes, as for a channel: the id, keys and
+            // roots stay the package's.
+            let config = match &url {
+                Some(url) => config.package_feed(url).map_err(|e| e.to_string())?,
+                None if !config.has_source() => {
+                    return Err("checkForPackage: pass `url`: the app's nsh.json names no \
+                                source of its own (\"packages\": { \"source\": \"runtime\" })"
+                        .to_owned());
+                }
+                None => config,
+            };
             let running_build = worker
                 .running_package()
                 .map(|running| running.build)
@@ -1350,8 +1501,9 @@ mod native {
                 sha256: &available.sha256,
                 size: available.size,
             };
-            download_resumable(
+            download_with_retry(
                 &target,
+                RetryPolicy::DEFAULT,
                 |received, total| tx.send((received, total)).is_ok(),
                 |file| {
                     pending
@@ -1748,6 +1900,8 @@ mod native {
             package_manifest: Option<Vec<u8>>,
             verify_error: Option<String>,
             verify_calls: std::sync::atomic::AtomicUsize,
+            /// Every URL asked for, in order.
+            urls: std::sync::Mutex<Vec<String>>,
         }
 
         enum ScriptedResponse {
@@ -1775,6 +1929,7 @@ mod native {
                     package_manifest: None,
                     verify_error: None,
                     verify_calls: std::sync::atomic::AtomicUsize::new(0),
+                    urls: std::sync::Mutex::new(Vec::new()),
                 }
             }
 
@@ -1789,6 +1944,7 @@ mod native {
             }
 
             fn get(&self, url: &str, from: u64, sink: UpdaterSink<'_>) -> Result<(), String> {
+                self.urls.lock().unwrap().push(url.to_owned());
                 if let Some(manifest) = &self.package_manifest
                     && !url.ends_with(".nshpkg")
                 {
@@ -1844,6 +2000,116 @@ mod native {
                     build: 2,
                 })
             }
+        }
+
+        const NO_WAIT: RetryPolicy = RetryPolicy {
+            attempts: 2,
+            backoff: std::time::Duration::ZERO,
+        };
+
+        #[test]
+        fn transient_failures_retry_from_the_partial_file() {
+            let dir = TempDir::new("retry");
+            let payload = b"0123456789abcdef";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join("retry.part");
+            let dest = dir.path().join("retry");
+            // Each pass makes progress, so the budget of 2 resets each time.
+            let host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::DropAfter {
+                        bytes: 4,
+                        err: "connection reset",
+                    },
+                    ScriptedResponse::DropAfter {
+                        bytes: 4,
+                        err: "download stalled",
+                    },
+                    ScriptedResponse::ImmediateErr("HTTP 503"),
+                    ScriptedResponse::DropAfter {
+                        bytes: 4,
+                        err: "truncated response",
+                    },
+                    ScriptedResponse::Complete,
+                ],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            download_with_retry(&target, NO_WAIT, |_, _| true, |_| Ok(())).unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), payload);
+            assert_eq!(host.offsets(), [0, 4, 8, 8, 12]);
+        }
+
+        #[test]
+        fn retry_gives_up_without_progress_and_keeps_the_part() {
+            let dir = TempDir::new("retry-give-up");
+            let payload = b"0123456789abcdef";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join("retry.part");
+            let dest = dir.path().join("retry");
+            let host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::DropAfter {
+                        bytes: 5,
+                        err: "connection reset",
+                    },
+                    ScriptedResponse::ImmediateErr("connection refused"),
+                    ScriptedResponse::ImmediateErr("connection refused"),
+                ],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            let err = download_with_retry(&target, NO_WAIT, |_, _| true, |_| Ok(())).unwrap_err();
+            assert_eq!(err, "connection refused");
+            // One pass with progress, then two retries without any.
+            assert_eq!(host.offsets(), [0, 5, 5]);
+            assert_eq!(std::fs::read(&part).unwrap(), &payload[..5]);
+        }
+
+        #[test]
+        fn retry_skips_client_errors_and_cancellation() {
+            let dir = TempDir::new("retry-fatal");
+            let payload = b"0123456789abcdef";
+            let sha256 = nsh_updater::sha256(payload);
+            let part = dir.path().join("retry.part");
+            let dest = dir.path().join("retry");
+            let host = ScriptedHost::new(
+                payload,
+                [
+                    ScriptedResponse::ImmediateErr("HTTP 404"),
+                    ScriptedResponse::Complete,
+                ],
+            );
+            let target = DownloadTarget {
+                host: &host,
+                url: "https://x.dev/app.tar.gz",
+                part: &part,
+                dest: &dest,
+                remove_invalid_dest: true,
+                sha256: &sha256,
+                size: Some(payload.len() as u64),
+            };
+            let err = download_with_retry(&target, NO_WAIT, |_, _| true, |_| Ok(())).unwrap_err();
+            assert_eq!(err, "HTTP 404");
+            let err = download_with_retry(&target, NO_WAIT, |_, _| false, |_| Ok(())).unwrap_err();
+            assert_eq!(err, "download cancelled");
+            assert_eq!(host.offsets(), [0, 0]);
         }
 
         #[test]
@@ -2261,6 +2527,70 @@ mod native {
         }
 
         #[test]
+        fn a_package_check_reads_the_feed_the_app_names_when_it_opts_in() {
+            let payload = b"signed-nshpkg-bytes";
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "id": "dev.noop.app",
+                "version": "1.0.1",
+                "package": {
+                    "version": "1.0.1", "build": 2, "url": "app-2.nshpkg",
+                    "sha256": nsh_updater::sha256(payload), "size": payload.len(),
+                    "minRuntime": "0.1.0",
+                },
+            }))
+            .unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let dir = TempDir::new("package-feed");
+            let host = |config: String| {
+                let mut host = ScriptedHost::new(payload, [ScriptedResponse::Complete]);
+                host.package_config = Some(config.into_bytes());
+                host.package_manifest = Some(manifest.clone());
+                let host = Arc::new(host);
+                let mut sys = System::default().with_updater(Some(host.clone()));
+                sys.data_dir = Some(dir.path().to_path_buf());
+                (host, sys)
+            };
+            let feed = "http://10.0.0.2:8080/updates/latest.json";
+            let check_feed = |sys: &System, url: Option<&str>| {
+                rt.block_on(check_package(sys.clone(), None, url.map(str::to_owned)))
+            };
+
+            // A runtime feed: no source of its own, plain HTTP opted into.
+            let (runtime, sys) = host(format!(
+                r#"{{"id":"dev.noop.app","version":"1.0.0","build":1,"publicKey":"{PUBLIC}","packages":{{"roots":["{PUBLIC}"],"source":"runtime","allowHttp":true}}}}"#
+            ));
+            let err = check_feed(&sys, None).unwrap_err();
+            assert!(format!("{err:?}").contains("pass `url`"), "{err:?}");
+            let err = rt.block_on(check(sys.clone(), None, None)).unwrap_err();
+            assert!(format!("{err:?}").contains("no update source"), "{err:?}");
+            assert!(runtime.urls.lock().unwrap().is_empty());
+            assert_eq!(check_feed(&sys, Some(feed)).unwrap().unwrap().build, 2.0);
+            rt.block_on(download_package(sys.clone(), None)).unwrap();
+            assert_eq!(
+                *runtime.urls.lock().unwrap(),
+                [
+                    feed.to_owned(),
+                    format!("{feed}.sig"),
+                    "http://10.0.0.2:8080/updates/app-2.nshpkg".to_owned(),
+                ]
+            );
+            // Another feed's plain-HTTP origin is refused before any request.
+            runtime.urls.lock().unwrap().clear();
+            assert!(check_feed(&sys, Some("ftp://10.0.0.2/latest.json")).is_err());
+            assert!(runtime.urls.lock().unwrap().is_empty());
+
+            // An app whose nsh.json names the source: its code cannot.
+            let (fixed, sys) = host(format!(
+                r#"{{"id":"dev.noop.app","version":"1.0.0","build":1,"url":"{STABLE}","publicKey":"{PUBLIC}","packages":{{"roots":["{PUBLIC}"]}}}}"#
+            ));
+            let err = check_feed(&sys, Some("https://evil.dev/latest.json")).unwrap_err();
+            assert!(format!("{err:?}").contains("source"), "{err:?}");
+            assert!(fixed.urls.lock().unwrap().is_empty());
+        }
+
+        #[test]
         fn download_package_resumes_and_cleans_up_refused_packages() {
             let dir = TempDir::new("package-resume");
             let payload = b"signed-nshpkg-bytes";
@@ -2296,7 +2626,7 @@ mod native {
                         bytes: 7,
                         err: "network lost",
                     },
-                    ScriptedResponse::ImmediateErr("HTTP 503"),
+                    ScriptedResponse::ImmediateErr("HTTP 404"),
                     ScriptedResponse::Complete,
                 ],
             );
@@ -2311,28 +2641,22 @@ mod native {
                 .unwrap();
 
             let offered = rt
-                .block_on(check_package(sys.clone(), None))
+                .block_on(check_package(sys.clone(), None, None))
                 .unwrap()
                 .unwrap();
             assert_eq!(offered.build, 2.0);
 
-            // Attempt 1 drops after 7 bytes: part stays, older `next.nshpkg` stays.
+            // Attempt 1 drops after 7 bytes, retries on its own and stops
+            // at a `404`: part stays at 7 bytes, older `next.nshpkg` stays.
             let err = rt
                 .block_on(download_package(sys.clone(), None))
                 .unwrap_err();
-            assert!(format!("{err:?}").contains("network lost"), "{err:?}");
+            assert!(format!("{err:?}").contains("HTTP 404"), "{err:?}");
             let part = updates.join(format!("next-{sha256}.nshpkg.part"));
             assert_eq!(std::fs::read(&part).unwrap(), &payload[..7]);
             assert_eq!(std::fs::read(updates.join(NEXT)).unwrap(), b"older-build");
 
-            // Attempt 2 hits HTTP 503: part still stays at 7 bytes.
-            let err = rt
-                .block_on(download_package(sys.clone(), None))
-                .unwrap_err();
-            assert!(format!("{err:?}").contains("HTTP 503"), "{err:?}");
-            assert_eq!(std::fs::read(&part).unwrap(), &payload[..7]);
-
-            // Attempt 3 resumes from byte 7, verifies, and atomically replaces `next.nshpkg`.
+            // Attempt 2 resumes from byte 7, verifies, and atomically replaces `next.nshpkg`.
             rt.block_on(download_package(sys.clone(), None)).unwrap();
             assert_eq!(host.offsets(), [0, 7, 7]);
             assert!(!part.exists());
@@ -2347,7 +2671,7 @@ mod native {
             let bad_host = Arc::new(bad_host);
             let mut sys2 = System::default().with_updater(Some(bad_host.clone()));
             sys2.data_dir = Some(dir2.path().to_path_buf());
-            rt.block_on(check_package(sys2.clone(), None))
+            rt.block_on(check_package(sys2.clone(), None, None))
                 .unwrap()
                 .unwrap();
             let err = rt.block_on(download_package(sys2, None)).unwrap_err();
@@ -2431,6 +2755,7 @@ mod native {
     pub(super) async fn check_package(
         sys: System,
         _: Option<String>,
+        _: Option<String>,
     ) -> Result<Option<PackageUpdate>, JsError> {
         configured(&sys).await?;
         Ok(None)
@@ -2481,13 +2806,17 @@ mod native {
                         .unwrap()
                         .is_none()
                 );
-                assert!(rt.block_on(check_package(sys, None)).unwrap().is_none());
+                assert!(
+                    rt.block_on(check_package(sys, None, None))
+                        .unwrap()
+                        .is_none()
+                );
             }
             // An app that ships a configuration hears why it cannot update.
             let sys = with(Some(Host(Some("{}"))));
             let err = rt.block_on(check(sys.clone(), None, None)).unwrap_err();
             assert_eq!(err.code(), Some(codes::UNAVAILABLE));
-            let err = rt.block_on(check_package(sys, None)).unwrap_err();
+            let err = rt.block_on(check_package(sys, None, None)).unwrap_err();
             assert_eq!(err.code(), Some(codes::UNAVAILABLE));
         }
     }

@@ -273,6 +273,11 @@ define_class!(
             self.with_mounter(|m| m.shader_frame());
         }
 
+        #[unsafe(method(gpuFrame:))]
+        fn gpu_frame(&self, _link: &CADisplayLink) {
+            self.with_mounter(|m| m.gpu_frame());
+        }
+
         #[unsafe(method(textColorFrame:))]
         fn text_color_frame(&self, _link: &CADisplayLink) {
             self.with_mounter(|m| m.text_color_frame());

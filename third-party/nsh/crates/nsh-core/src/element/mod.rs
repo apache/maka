@@ -168,11 +168,11 @@ pub use self::{
     },
     flow::{Each, If, IntoElements, Reset, catch_error, dynamic, each, when},
     host::{
-        CanvasArg, CanvasPaint, CanvasView, Input, InputAccessoryView, IntoUniform, Modal,
+        CanvasArg, CanvasPaint, CanvasView, GpuView, Input, InputAccessoryView, IntoUniform, Modal,
         NativeView, Orientation, Overlay, Painter, Screen, Scroll, ShaderView, Stack, Svg, Uniform,
-        Video, WebView, canvas, input, input_accessory_view, native, overlay, screen_effect,
-        screen_transition, scroll, shader, shader_effect, shader_transition, svg, video, web_view,
-        web_view_html,
+        Video, WebView, canvas, gpu_view, input, input_accessory_view, native, overlay,
+        screen_effect, screen_transition, scroll, shader, shader_effect, shader_transition, svg,
+        video, web_view, web_view_html,
     },
     js::{JsClass, JsHost, JsIn, JsKind, JsOwned, JsPrimitive, JsRaw},
     json_host::from_json,
@@ -207,7 +207,10 @@ pub use self::{
         DialogReply, ImageSize, Task,
     },
     tokens::{FONT_MONO, FONT_SANS, ThemeTokens, Token, TokenSource, Tokens},
-    value::{JsValue, NodeRef, PropEnum, PropError, SharedString, TsType, TsTypes, ts_of},
+    value::{
+        InContext, JsValue, NodeRef, PropEnum, PropError, SharedString, TsType, TsTypes,
+        render_params_of, ts_of,
+    },
     virtual_list::{ListLayout, ViewableItems, VirtualList, virtual_list},
     watch::OrderWatch,
 };
@@ -246,7 +249,8 @@ pub use crate::{
     platform::{
         Appearance, CellularData, HourCycle, HttpBody, HttpHead, HttpRequest, Idiom, Languages,
         Lifecycle, Locale, LocaleSettings, MeasurementSystem, Network, NetworkKind, Os, PerfStats,
-        SizeClass, TemperatureUnit, TimeZone, Weekday,
+        ReservedRegion, ReservedRegionKind, ReservedRegions, SizeClass, TemperatureUnit, TimeZone,
+        Weekday,
     },
     style::Color,
 };
@@ -255,6 +259,9 @@ pub use crate::{
 #[doc(hidden)]
 pub mod __private {
     pub use serde_json::Map as JsonMap;
+
+    pub use super::component::BY_NAME_MARKER;
+    pub use crate::shader::USE_MARKER as SHADER_USE_MARKER;
 
     /// The type of a props struct's field `I` as its setter takes it (the
     /// value of an `Option`): `#[derive(Props)]` implements it where the

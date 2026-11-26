@@ -343,6 +343,7 @@ press action and their row role, and labels and text children remain available t
 | Option+Left, Cmd+[, mouse back button | Go back (not while a field has the focus: there Option+Left moves the caret) |
 | Option / Cmd + arrows, with Shift; Option+Delete, Cmd+Delete; Ctrl+A / E / K | Move, select and delete by word and line in a field, as in every Mac app |
 | Cmd+Z, Shift+Cmd+Z, Cmd+X / C / V / A | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Cmd+A / Cmd+C select and copy selectable text |
+| Shift + arrows, with Option or Cmd; Shift+Home / End | Extend the selection of the selectable view last pressed: by a character or a line, by a word or a paragraph (Option), to the line's or the view's ends (Cmd, Home / End); the scroll views around it follow |
 | Arrows; Page Up / Down, Space, Shift+Space, Option+Up / Down; Home / End, Cmd+Up / Down | Scroll the scroll view around the focused view or under the mouse by a line, a page, to the start / end (not while a field has the focus) |
 | Cmd+W, Cmd+M, Ctrl+Cmd+F, Cmd+H, Option+Cmd+H, Cmd+Q | Close, minimize, full screen, hide, hide others, quit (`nsh package` and `nsh run` apps' menus) |
 | Cmd+R | Reloads the latest build (`nsh run`) |

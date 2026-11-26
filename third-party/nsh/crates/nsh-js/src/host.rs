@@ -67,7 +67,10 @@ pub(crate) struct Shared {
     /// sockets), handed to their calls' `System`.
     pub(crate) system_quotas: nsh_core::element::Quotas,
     /// The VM's scheduler, for native transports that start its I/O runtime.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    #[cfg_attr(
+        not(all(not(target_arch = "wasm32"), feature = "websocket")),
+        allow(dead_code)
+    )]
     pub(crate) scheduler: std::rc::Weak<Scheduler>,
     /// The VM's state of the runtime's Rust modules (`process`'s
     /// children), closed when the VM goes.
@@ -1619,6 +1622,22 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 o.set("pressure", p.pressure)?;
                 o.set("tiltX", p.tilt_x)?;
                 o.set("tiltY", p.tilt_y)?;
+                o.set("eraser", p.eraser)?;
+                o.set("barrel", p.barrel)?;
+                let coalesced = rquickjs::Array::new(cx.clone())?;
+                for (j, c) in p.coalesced.iter().enumerate() {
+                    let s = rquickjs::Object::new(cx.clone())?;
+                    s.set("pageX", c.page.x.0)?;
+                    s.set("pageY", c.page.y.0)?;
+                    s.set("locationX", c.location.x.0)?;
+                    s.set("locationY", c.location.y.0)?;
+                    s.set("pressure", c.pressure)?;
+                    s.set("tiltX", c.tilt_x)?;
+                    s.set("tiltY", c.tilt_y)?;
+                    s.set("timestamp", c.timestamp)?;
+                    coalesced.set(j, s)?;
+                }
+                o.set("coalesced", coalesced)?;
                 o.set("timestamp", touch.timestamp)?;
                 points.set(i, o)?;
             }
@@ -3084,7 +3103,11 @@ const report = (v) => text(String(v));
             report(new Date(Date.UTC(2026, 6, 4, 16, 0)).toLocaleTimeString("en-US", {{ timeZone: "America/New_York" }}));
             report(new Intl.DateTimeFormat("en-US", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 6, 4, 16, 0)));
             report(new Intl.DateTimeFormat("de", {{ timeZone: "America/New_York", timeStyle: "long" }}).format(Date.UTC(2026, 0, 1)));
-            try {{ new Intl.DateTimeFormat("en", {{ timeZone: "Europe/Berlin" }}); }} catch (e) {{ report(e.name); }}
+            // A zone the app doesn't ship is a RangeError, unless it is the
+            // machine's own: local time is always there to name.
+            const local = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const unshipped = ["Pacific/Chatham", "America/Sao_Paulo"].find((zone) => zone !== local);
+            try {{ new Intl.DateTimeFormat("en", {{ timeZone: unshipped }}); }} catch (e) {{ report(e.name); }}
             "#
         ))
         .unwrap();

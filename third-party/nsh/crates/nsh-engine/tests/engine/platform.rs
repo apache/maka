@@ -409,7 +409,7 @@ fn the_performance_monitor_reports_its_stats_once_a_second() {
     std::fs::write(
         &entry,
         r#"import { mount, perfStats, Text } from "nsh";
-mount(() => <Text>{`reading ${perfStats()?.fps ?? "none"}`}</Text>);
+mount(() => <Text>{`reading ${perfStats()?.fps ?? "none"} ${perfStats()?.memory ?? "none"}`}</Text>);
 "#,
     )
     .unwrap();
@@ -438,10 +438,14 @@ mount(() => <Text>{`reading ${perfStats()?.fps ?? "none"}`}</Text>);
         }
         panic!("the reading never showed");
     };
-    read(&|t| t == "reading none");
-    // The platform installs a monitor and shows frames, one a refresh,
-    // until the reading has them.
+    read(&|t| t == "reading none none");
+    // The platform installs a monitor, samples the process and shows
+    // frames, one a refresh, until the reading has them.
     let monitor = std::sync::Arc::new(nsh_engine::perf::PerfMonitor::new());
+    monitor.set_process(nsh_engine::perf::ProcessSample {
+        memory: Some(42 << 20),
+        ..Default::default()
+    });
     engine.control().set_perf_monitor(Some(monitor.clone()));
     let showing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let frames = {
@@ -456,15 +460,16 @@ mount(() => <Text>{`reading ${perfStats()?.fps ?? "none"}`}</Text>);
     };
     let shown = read(&|t| {
         t.strip_prefix("reading ")
-            .and_then(|n| n.parse::<f32>().ok())
+            .and_then(|r| r.split_once(' '))
+            .and_then(|(fps, _)| fps.parse::<f32>().ok())
             .is_some_and(|fps| fps > 0.0)
     });
     showing.store(false, std::sync::atomic::Ordering::SeqCst);
     frames.join().unwrap();
-    assert!(shown.starts_with("reading "), "{shown}");
+    assert!(shown.ends_with(&format!(" {}", 42u64 << 20)), "{shown}");
     // Removed, it reads none again.
     engine.control().set_perf_monitor(None);
-    read(&|t| t == "reading none");
+    read(&|t| t == "reading none none");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1283,6 +1288,81 @@ mount(() => <Text>{`${horizontalSizeClass()} ${verticalSizeClass()}`}</Text>);
     environment.vertical_size_class = None;
     engine.control().set_environment(environment);
     read("regular compact");
+}
+
+#[test]
+fn reserved_regions_reach_js_as_the_platform_reports_them() {
+    use nsh_core::platform::{ReservedRegion, ReservedRegionKind, ReservedRegions};
+    let dir = std::env::temp_dir().join(format!("nsh-reserved-regions-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("App.tsx");
+    std::fs::write(
+        &entry,
+        r#"
+import { mount, Text, reservedRegions } from "nsh";
+const show = () =>
+  reservedRegions()
+    .map((r) => `${r.kind} ${r.bounds.origin.x},${r.bounds.origin.y} ${r.bounds.size.width}x${r.bounds.size.height}`)
+    .join("; ");
+mount(() => <Text>{`reserved [${show()}]`}</Text>);
+"#,
+    )
+    .unwrap();
+    let bundle = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
+        entry,
+        minify: false,
+        split: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let mut environment = Environment {
+        window: Size::new(px(951.0), px(669.0)),
+        os: Os::Ios,
+        ..Default::default()
+    };
+    let config = EngineConfig {
+        viewport: environment.window,
+        environment,
+        ..EngineConfig::new(nsh_engine::App::Js(Bundle::source(bundle.code)))
+    };
+    let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
+    let read =
+        |expected: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while let Ok(batch) = rx.recv_deadline(deadline) {
+                if batch.items.iter().any(
+                    |item| matches!(item, MountItem::Text { text, .. } if text.text == expected),
+                ) {
+                    return;
+                }
+            }
+            panic!("no text {expected:?}");
+        };
+    read("reserved []");
+    // The device folds partly: its fold divides the display, and a camera
+    // shows through it.
+    environment.reserved_regions = ReservedRegions::new([
+        ReservedRegion::new(
+            ReservedRegionKind::Division,
+            nsh_core::geometry::Bounds::new(
+                nsh_core::geometry::point(px(460.0), px(0.0)),
+                Size::new(px(31.0), px(669.0)),
+            ),
+        ),
+        ReservedRegion::new(
+            ReservedRegionKind::Occlusion,
+            nsh_core::geometry::Bounds::new(
+                nsh_core::geometry::point(px(400.0), px(29.5)),
+                Size::new(px(37.0), px(37.0)),
+            ),
+        ),
+    ]);
+    engine.control().set_environment(environment);
+    read("reserved [division 460,0 31x669; occlusion 400,29.5 37x37]");
+    environment.reserved_regions = ReservedRegions::NONE;
+    engine.control().set_environment(environment);
+    read("reserved []");
 }
 
 const RUST_IN_JS_WINDOWS_APP: &str = r#"import { mount, View } from "nsh";

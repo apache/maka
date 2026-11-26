@@ -8,8 +8,8 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork } = await import(
-  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork };`)}`
+const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed } = await import(
+  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed };`)}`
 );
 
 test("the network is the browser's link, none while it is offline", () => {
@@ -5148,4 +5148,49 @@ test("point, corner, wheel, context menu, pinch, and scrollbar drag undo ancesto
     if (savedStyle === undefined) delete globalThis.getComputedStyle;
     else globalThis.getComputedStyle = savedStyle;
   }
+});
+
+test("sharing is available when the browser says the document may share", () => {
+  const share = () => {};
+  const canShare = (answer) => (data) => {
+    assert.equal(typeof data.text, "string", "canShare gets valid share data");
+    return answer;
+  };
+  // No share sheet at all.
+  assert.equal(webShareAllowed({}, {}), false);
+  assert.equal(webShareAllowed(undefined, {}), false);
+  // `canShare` is the answer, and a throw is "no".
+  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, {}), true);
+  assert.equal(webShareAllowed({ share, canShare: canShare(false) }, {}), false);
+  assert.equal(
+    webShareAllowed({ share, canShare: () => { throw new TypeError("no"); } }, {}),
+    false,
+  );
+  // With `canShare` the policy is never asked by name (that is what logs
+  // "Unrecognized feature").
+  const asked = [];
+  const policy = { features: () => [], allowsFeature: (name) => (asked.push(name), false) };
+  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, { permissionsPolicy: policy }), true);
+  assert.deepEqual(asked, []);
+});
+
+test("without canShare the permissions policy decides, and an unlisted name is not asked", () => {
+  const nav = { share() {} };
+  const asked = [];
+  const policy = (features, allowed) => ({
+    features: () => features,
+    allowsFeature: (name) => (asked.push(name), allowed),
+  });
+  // Listed: the policy's answer, for `permissionsPolicy` and the older `featurePolicy`.
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], true) }), true);
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], false) }), false);
+  assert.equal(webShareAllowed(nav, { featurePolicy: policy(["web-share"], false) }), false);
+  assert.deepEqual(asked, ["web-share", "web-share", "web-share"]);
+  // Not listed: the browser does not gate sharing on it; no lookup, no console warning.
+  asked.length = 0;
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["camera"], false) }), true);
+  assert.deepEqual(asked, []);
+  // No policy API at all.
+  assert.equal(webShareAllowed(nav, {}), true);
+  assert.equal(webShareAllowed(nav, undefined), true);
 });

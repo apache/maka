@@ -5,8 +5,8 @@ import { IconButton, TOOL_GAP, ToolbarSeparator } from "./RichEditorUi";
 
 // An extension's node view (`addNodeView`): the app's own component renders
 // every node of the extension's type, here a stock tag in the text and a
-// stock card between paragraphs. Both are atoms: the caret steps over them
-// as one character or one block, Backspace deletes them. Typing never calls the components: they run when a node appears,
+// stock card between paragraphs. Both are atoms: an arrow selects them
+// before the next one moves past them, Backspace deletes them. Typing never calls the components: they run when a node appears,
 // and their props (`node`, `selected`) change in place when its attributes
 // or its selection do. `updateAttributes` and `deleteNode` change the
 // document through the editor, one undoable change each.

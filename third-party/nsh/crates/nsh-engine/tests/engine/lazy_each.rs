@@ -2,7 +2,11 @@
 //! viewport are rendered as they come near, and changes of the array
 //! reach rows rendered and rows waiting alike.
 
-use std::{collections::HashMap, sync::mpsc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 use nsh_core::{ApproxTextEngine, MountBatch, MountItem, NodeId, Size, ViewKind, geometry::px};
 use nsh_engine::{Bundle, Engine, EngineConfig, MountSink};
@@ -77,8 +81,19 @@ struct Seen {
 }
 
 impl Seen {
-    fn take(&mut self, rx: &mpsc::Receiver<MountBatch>) {
-        while let Ok(batch) = rx.recv_timeout(Duration::from_millis(500)) {
+    fn take(&mut self, rx: &mpsc::Receiver<MountBatch>, ready: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            // Start checking for quiescence only after the viewport arrives.
+            let wait = if ready(self) {
+                left.min(Duration::from_millis(500))
+            } else {
+                left
+            };
+            let Ok(batch) = rx.recv_timeout(wait) else {
+                break;
+            };
             for item in batch.items {
                 match item {
                     MountItem::Create {
@@ -154,7 +169,7 @@ fn start() -> (Engine, mpsc::Receiver<MountBatch>, std::path::PathBuf) {
 fn each_in_a_culling_scroll_view_renders_rows_as_they_come_near() {
     let (engine, rx, dir) = start();
     let mut seen = Seen::default();
-    seen.take(&rx);
+    seen.take(&rx, |s| s.y("item 9").is_some());
     // The first rows only, not 2000.
     assert!(
         seen.rendered >= 10 && seen.rendered <= 64,
@@ -170,7 +185,7 @@ fn each_in_a_culling_scroll_view_renders_rows_as_they_come_near() {
     let before = seen.rendered;
     let to = |y: f32| nsh_core::geometry::point(px(0.0), px(y));
     engine.control().scroll(scroll, to(20_000.0), u32::MAX);
-    seen.take(&rx);
+    seen.take(&rx, |s| s.y("item 402").is_some());
     assert!(
         seen.rendered > before && seen.rendered < before + 100,
         "{before} then {}",
@@ -182,7 +197,7 @@ fn each_in_a_culling_scroll_view_renders_rows_as_they_come_near() {
     // A little further, the array changes: the new row is rendered in its
     // place, the one removed goes.
     engine.control().scroll(scroll, to(20_010.0), u32::MAX);
-    seen.take(&rx);
+    seen.take(&rx, |s| s.y("fresh").is_some());
     assert_eq!(seen.y("fresh"), Some(401.0 * 50.0));
     assert_eq!(seen.y("item 401"), Some(402.0 * 50.0));
     assert!(seen.deleted.contains(&removed));
@@ -191,7 +206,7 @@ fn each_in_a_culling_scroll_view_renders_rows_as_they_come_near() {
     // Far down, the two rows swapped before they were rendered come in
     // the array's order.
     engine.control().scroll(scroll, to(1499.0 * 50.0), u32::MAX);
-    seen.take(&rx);
+    seen.take(&rx, |s| s.y("item 1500").is_some());
     assert_eq!(seen.y("item 1501"), Some(1500.0 * 50.0));
     assert_eq!(seen.y("item 1500"), Some(1501.0 * 50.0));
     assert!(seen.rendered < 300, "{}", seen.rendered);

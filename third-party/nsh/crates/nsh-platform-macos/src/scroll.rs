@@ -382,6 +382,13 @@ fn clamp(p: Offset, (min, max): (Offset, Offset)) -> Offset {
     )
 }
 
+/// Where an offset `p` at rest goes back to: within `limits`, or `None`
+/// when it is already there (to half a point).
+fn rest_at(p: Offset, (min, max): (Offset, Offset)) -> Option<Offset> {
+    let to = clamp(p, (min, max));
+    ((to.x - p.x).abs() > 0.5 || (to.y - p.y).abs() > 0.5).then_some(to)
+}
+
 /// `p` moved by `d`, stopping at the limits; past them (the refresh space)
 /// it only moves back.
 fn stop_at_edges(p: Offset, d: Offset, (min, max): (Offset, Offset)) -> Offset {
@@ -1222,7 +1229,6 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
         };
         (s.live.phase, pos(s), limits(&state))
     };
-    let hi = Offset::new(max.x.max(min.x), max.y.max(min.y));
     match phase {
         Phase::Animate {
             from,
@@ -1306,8 +1312,11 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
             set_phase(view, Phase::Idle);
             emit(surface, view, EventKind::ScrollEnd);
         }
-        Phase::Idle if p.x > hi.x + 0.5 || p.y > hi.y + 0.5 => {
-            moved_to(surface, view, Offset::new(p.x.min(hi.x), p.y.min(hi.y)));
+        // Nothing moves it: an offset past either end goes back.
+        Phase::Idle => {
+            if let Some(to) = rest_at(p, (min, max)) {
+                moved_to(surface, view, to);
+            }
         }
         _ => {}
     }
@@ -1515,8 +1524,9 @@ fn thumb(s: &ScrollState, w: f32, h: f32) -> Option<(CGRect, f32)> {
     Some((frame, dim - before - after - 2.0 * INDICATOR_MARGIN - len))
 }
 
-/// Updates the indicator and the refresh spinner of `view` to its offset.
-fn update_overlays(view: &NshView) {
+/// Updates the indicator and the refresh spinner of `view` to its offset
+/// and its frame.
+pub(crate) fn update_overlays(view: &NshView) {
     let mut state = view.state_mut();
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
     let refresh_listened = state.events.contains(EventKind::Refresh);
@@ -1832,7 +1842,11 @@ pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
 }
 
 /// `ScrollBy`: the core keeps the visible content in place (items above
-/// the viewport changed size); not clamped, the core knows its content.
+/// the viewport changed size); not clamped, the core knows its content
+/// (a `ScrollContent` later in the batch may make room for it). At rest,
+/// an offset it leaves past either end goes back on the next frame
+/// ([`tick`]): the offset reported is within the content, so the core
+/// would never correct a view resting before its start (#3235).
 pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32) {
     let (p, d) = {
         let mut state = view.state_mut();
@@ -1892,6 +1906,17 @@ pub(crate) fn scroll_by(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32)
     };
     if d != Offset::default() {
         moved_to(surface, view, p + d);
+        let outside = {
+            let state = view.state();
+            state
+                .scroll
+                .as_ref()
+                .is_some_and(|s| s.live.phase == Phase::Idle)
+                && rest_at(p + d, limits(&state)).is_some()
+        };
+        if outside {
+            ensure_ticking(surface, view);
+        }
     }
     report(surface, view);
 }
@@ -2802,6 +2827,50 @@ fn scroll_intent(surface: &Surface, view: &NshView, intent: &'static str, delta:
 pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
     // The rectangles are AppKit's, which the bounds place.
     commit_ancestors(target);
+    reveal_with(surface, target, |view| {
+        // In the scroll view's coordinates: zoomed, as AppKit converts.
+        target
+            .ns()
+            .convertRect_toView(target.ns().bounds(), Some(view.ns()))
+    });
+}
+
+/// Scrolls the scroll views around `target` (animated) so that `rect` (in
+/// `target`'s coordinates) shows: the caret a key moved a selection's
+/// focus to. A text view draws in its parent's layer, with no superview
+/// AppKit could convert through: `rect` goes up the views' tree instead
+/// ([`rect_in`]).
+pub(crate) fn reveal_rect(surface: &Rc<Surface>, target: &NshView, rect: CGRect) {
+    reveal_with(surface, target, |view| rect_in(target, rect, view));
+}
+
+/// `rect` of `target` in the viewport of `scroll`, a view around it: moved
+/// by the frames of the views between, and by the offset and zoom of each
+/// scroll view on the way, as [`crate::selectable_view`] places its texts.
+fn rect_in(target: &NshView, rect: CGRect, scroll: &NshView) -> CGRect {
+    let (mut x, mut y, mut scale) = (rect.origin.x, rect.origin.y, 1.0);
+    let mut current = target.clone();
+    while let Some(parent) = current.parent_view() {
+        let frame = current.ns().frame();
+        let (ox, oy) = bounds_origin(&parent);
+        let z = f64::from(zoom(&parent));
+        x = (frame.origin.x + x - f64::from(ox)) * z;
+        y = (frame.origin.y + y - f64::from(oy)) * z;
+        scale *= z;
+        if &parent == scroll {
+            break;
+        }
+        current = parent;
+    }
+    CGRect::new(
+        CGPoint::new(x, y),
+        CGSize::new(rect.size.width * scale, rect.size.height * scale),
+    )
+}
+
+/// Scrolls the scroll views around `target` (animated) so that the
+/// rectangle `rect_in` gives in each one's viewport shows.
+fn reveal_with(surface: &Rc<Surface>, target: &NshView, rect_in: impl Fn(&NshView) -> CGRect) {
     // Content moved by the scroll views inside, which rectangles measured
     // now do not show yet.
     let (mut moved_x, mut moved_y) = (0.0, 0.0);
@@ -2811,10 +2880,7 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
         if view.kind() != ViewKind::Scroll || !mapped(&view) {
             continue;
         }
-        // In the scroll view's coordinates: zoomed, as AppKit converts.
-        let bounds = target
-            .ns()
-            .convertRect_toView(target.ns().bounds(), Some(view.ns()));
+        let bounds = rect_in(&view);
         let (base, p, lims, dims) = {
             let state = view.state();
             let Some(s) = &state.scroll else { continue };
@@ -2854,6 +2920,34 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A view at rest goes back within its limits from past either end:
+    /// a `ScrollBy` that left a list 144 pt before its start comes back
+    /// to it, as one past its end does (#3235); within them (to half a
+    /// point, and the refresh space above the top while it refreshes) it
+    /// stays.
+    #[test]
+    fn a_view_at_rest_goes_back_from_past_either_end() {
+        let limits = (Offset::new(0.0, 0.0), Offset::new(0.0, 600.0));
+        assert_eq!(
+            rest_at(Offset::new(0.0, -144.0), limits),
+            Some(Offset::new(0.0, 0.0))
+        );
+        assert_eq!(
+            rest_at(Offset::new(0.0, 700.0), limits),
+            Some(Offset::new(0.0, 600.0))
+        );
+        assert_eq!(rest_at(Offset::new(0.0, 200.0), limits), None);
+        assert_eq!(rest_at(Offset::new(0.0, -0.4), limits), None);
+        let refreshing = (Offset::new(0.0, -60.0), Offset::new(0.0, 600.0));
+        assert_eq!(rest_at(Offset::new(0.0, -60.0), refreshing), None);
+        // Content shorter than the viewport rests at its start.
+        let short = (Offset::new(0.0, 0.0), Offset::new(0.0, -100.0));
+        assert_eq!(
+            rest_at(Offset::new(0.0, -50.0), short),
+            Some(Offset::new(0.0, 0.0))
+        );
+    }
 
     /// A scroll view of `content` points in a 300 x 200 viewport.
     fn movable_with(content: (f32, f32), horizontal: bool, enabled: bool) -> bool {

@@ -5,8 +5,10 @@
 //! Hyprland's portal).
 //!
 //! - A portal session binds a set of shortcuts once: each change of the set
-//!   closes the session and binds the whole set in a new one, on the next
-//!   idle, so registering several at once asks once.
+//!   binds the whole set in a new session, on the next idle, so registering
+//!   several at once asks once. The last session stays until the new one is
+//!   bound, so the shortcuts already registered keep working meanwhile, and
+//!   still work when the portal or the user refuses the new set.
 //! - A shortcut's id on the portal is its keystroke (`ctrl+shift+k`): what a
 //!   desktop that lets the user bind it shows, and what Hyprland's
 //!   `bind = …, global, <app id>:<id>` names. Its keystroke is only the
@@ -49,7 +51,8 @@ struct Global {
 #[derive(Default)]
 struct State {
     globals: Vec<Global>,
-    /// The portal session bound to the set, once created.
+    /// The portal session bound to the set last answered, whose presses
+    /// count. Replaced only once a new session is bound.
     session: Option<String>,
     /// The `Activated` subscription.
     activated: Option<gio::SignalSubscription>,
@@ -182,26 +185,48 @@ fn answer(registered: impl Fn(&str) -> bool) {
     }
 }
 
-/// Binds the set in a new session, closing the last one.
+/// Binds the set in a new session, which replaces the last one once bound
+/// ([`bound`]). An empty set closes the last session at once.
 fn bind() {
-    let (old, generation, empty) = STATE.with(|s| {
+    let (generation, empty) = STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.scheduled.take();
         s.generation += 1;
-        (s.session.take(), s.generation, s.globals.is_empty())
+        (s.generation, s.globals.is_empty())
     });
     connect(move |bus| {
         let Some(bus) = bus else {
             return answer(|_| false);
         };
-        if let Some(old) = old {
-            close_session(&bus, &old);
+        if !current(generation) {
+            return;
         }
-        if empty || !current(generation) {
+        if empty {
+            if let Some(old) = STATE.with(|s| s.borrow_mut().session.take()) {
+                close_session(&bus, &old);
+            }
             return;
         }
         create_session(&bus, generation);
     });
+}
+
+/// `BindShortcuts` of `session` answered (`None`: refused or cancelled).
+/// A bound session replaces the last one; a refused or outdated one is
+/// closed, and the last session keeps the shortcuts it bound.
+fn bound(bus: &gio::DBusConnection, session: &str, generation: u64, bound: Option<Vec<String>>) {
+    if !current(generation) {
+        return close_session(bus, session);
+    }
+    let Some(bound) = bound else {
+        close_session(bus, session);
+        return answer(|_| false);
+    };
+    let old = STATE.with(|s| s.borrow_mut().session.replace(session.to_owned()));
+    if let Some(old) = old.filter(|old| old != session) {
+        close_session(bus, &old);
+    }
+    answer(|id| bound.iter().any(|b| b == id));
 }
 
 /// Hands `done` the shortcuts' connection, opening it and registering the
@@ -250,7 +275,14 @@ fn connect(done: impl FnOnce(Option<gio::DBusConnection>) + 'static) {
             // An older portal, or a sandboxed app (whose id the sandbox
             // gives), has nothing to register: the session may still work.
             if let Err(e) = result {
-                log::debug!("nsh: the desktop portal did not register the app: {e}");
+                if e.message().contains("App info not found") {
+                    // 1.22+ refuses the session too: say what fixes it.
+                    log::warn!(
+                        "nsh: the desktop portal has no {app_id}.desktop entry, so global shortcuts will not register: install the app's package, or run it with `nsh run`, which adds one"
+                    );
+                } else {
+                    log::debug!("nsh: the desktop portal did not register the app: {e}");
+                }
             }
             BUS.with(|b| *b.borrow_mut() = Some(registered.clone()));
             done(Some(registered));
@@ -285,7 +317,6 @@ fn create_session(bus: &gio::DBusConnection, generation: u64) {
                 log::warn!("nsh: the desktop portal has no global shortcuts session");
                 return answer(|_| false);
             };
-            STATE.with(|s| s.borrow_mut().session = Some(session.clone()));
             bind_shortcuts(bus, &session, generation);
         },
     );
@@ -330,6 +361,7 @@ fn bind_shortcuts(bus: &gio::DBusConnection, session: &str, generation: u64) {
             })
             .collect()
     });
+    let handle = session.to_owned();
     let Ok(session) = glib::variant::ObjectPath::try_from(session.to_owned()) else {
         return answer(|_| false);
     };
@@ -350,19 +382,17 @@ fn bind_shortcuts(bus: &gio::DBusConnection, session: &str, generation: u64) {
             ])
         },
         glib::VariantDict::new(None),
-        move |_, results| {
-            if !current(generation) {
-                return;
-            }
-            let bound: Vec<String> = results
-                .and_then(|r| r.lookup_value("shortcuts", None))
-                .map(|list| {
-                    list.iter()
-                        .filter_map(|s| s.child_value(0).str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            answer(|id| bound.iter().any(|b| b == id));
+        move |bus, results| {
+            let ids = results.map(|r| {
+                r.lookup_value("shortcuts", None)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|s| s.child_value(0).str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            bound(bus, &handle, generation, ids);
         },
     );
 }
@@ -394,7 +424,9 @@ fn subscribe(bus: &gio::DBusConnection) {
     STATE.with(|s| s.borrow_mut().activated = Some(subscription));
 }
 
-/// The shortcut called `id` of `session` was pressed.
+/// The shortcut called `id` of `session` was pressed. Only the bound
+/// session counts: while a new one binds, the last one serves the presses,
+/// and a shortcut removed since is not in `globals` any more.
 fn pressed(session: &str, id: &str) {
     let found = STATE.with(|s| {
         let s = s.borrow();
@@ -677,6 +709,188 @@ mod tests {
             assert_eq!(&*methods.borrow(), &["CreateSession", "BindShortcuts"]);
             reset();
             bus.unregister_object(registration).unwrap();
+        });
+    }
+
+    /// A private bus with a fake portal: sessions `/session/<n>`,
+    /// `BindShortcuts` refused while `refuse` holds, `Close` calls recorded.
+    struct FakePortal {
+        _daemon: std::process::Child,
+        refuse: std::rc::Rc<Cell<bool>>,
+        closed: std::rc::Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Drop for FakePortal {
+        fn drop(&mut self) {
+            let _ = self._daemon.kill();
+            let _ = self._daemon.wait();
+        }
+    }
+
+    fn fake_portal() -> FakePortal {
+        use std::io::BufRead;
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args([
+                "--session",
+                "--nofork",
+                "--print-address=1",
+                &format!(
+                    "--address=unix:abstract=nsh-shortcut-swap-{}",
+                    std::process::id()
+                ),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("private D-Bus daemon");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let bus = gio::DBusConnection::for_address_sync(
+            address.trim(),
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None,
+            gio::Cancellable::NONE,
+        )
+        .unwrap();
+        bus.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName",
+            Some(&(PORTAL, 0u32).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            5000,
+            gio::Cancellable::NONE,
+        )
+        .unwrap();
+        let info = gio::DBusNodeInfo::for_xml(r#"<node>
+            <interface name="org.freedesktop.portal.GlobalShortcuts">
+            <method name="CreateSession"><arg type="a{sv}" direction="in"/><arg type="o" direction="out"/></method>
+            <method name="BindShortcuts"><arg type="o" direction="in"/><arg type="a(sa{sv})" direction="in"/><arg type="s" direction="in"/><arg type="a{sv}" direction="in"/><arg type="o" direction="out"/></method>
+            </interface>
+            <interface name="org.freedesktop.portal.Session"><method name="Close"/></interface>
+            </node>"#).unwrap();
+        let refuse = std::rc::Rc::new(Cell::new(false));
+        let closed = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let sessions = std::rc::Rc::new(Cell::new(0u32));
+        let session_iface = info.lookup_interface(SESSION).unwrap();
+        let refusing = refuse.clone();
+        let closing = closed.clone();
+        let registration = bus
+            .register_object(PORTAL_PATH, &info.lookup_interface(INTERFACE).unwrap())
+            .method_call(move |bus, sender, _, _, method, params, invocation| {
+                let options = glib::VariantDict::new(Some(
+                    &params.child_value(if method == "CreateSession" { 0 } else { 3 }),
+                ));
+                let handle = options.lookup::<String>("handle_token").unwrap().unwrap();
+                let sender = sender.unwrap();
+                let path = format!(
+                    "{PORTAL_PATH}/request/{}/{}",
+                    sender.trim_start_matches(':').replace('.', "_"),
+                    handle
+                );
+                let result = glib::VariantDict::new(None);
+                let mut code = 0u32;
+                if method == "CreateSession" {
+                    sessions.set(sessions.get() + 1);
+                    let session = format!("/session/{}", sessions.get());
+                    let closing = closing.clone();
+                    let reg = bus
+                        .register_object(&session, &session_iface)
+                        .method_call(move |_, _, path, _, _, _, invocation| {
+                            closing.borrow_mut().push(path.to_owned());
+                            invocation.return_value(None);
+                        })
+                        .build()
+                        .unwrap();
+                    let _ = reg;
+                    result.insert(
+                        "session_handle",
+                        glib::variant::ObjectPath::try_from(session).unwrap(),
+                    );
+                } else if refusing.get() {
+                    code = 1;
+                } else {
+                    result.insert_value("shortcuts", &params.child_value(1));
+                }
+                invocation.return_value(Some(
+                    &(glib::variant::ObjectPath::try_from(path.clone()).unwrap(),).to_variant(),
+                ));
+                let response = glib::Variant::tuple_from_iter([code.to_variant(), result.end()]);
+                bus.emit_signal(Some(sender), &path, REQUEST, "Response", Some(&response))
+                    .unwrap();
+            })
+            .build()
+            .unwrap();
+        let _ = registration;
+        BUS.with(|b| *b.borrow_mut() = Some(bus.clone()));
+        FakePortal {
+            _daemon: daemon,
+            refuse,
+            closed,
+        }
+    }
+
+    fn answered(surface: &std::rc::Rc<Surface>, id: u32) -> bool {
+        STATE.with(|s| {
+            s.borrow().globals.iter().any(|g| {
+                g.id == id && g.answered && std::ptr::eq(g.surface.as_ptr(), surface.as_ref())
+            })
+        })
+    }
+
+    fn session() -> Option<String> {
+        STATE.with(|s| s.borrow().session.clone())
+    }
+
+    #[test]
+    fn the_last_session_serves_until_a_new_one_is_bound() {
+        crate::gtk_test::run(|| {
+            reset();
+            let portal = fake_portal();
+            let surface = crate::gtk_test::surface();
+            register(&surface, 1, Shortcut::parse("ctrl+alt+a", false).unwrap());
+            assert!(crate::gtk_test::wait_until(|| answered(&surface, 1)));
+            assert_eq!(session().as_deref(), Some("/session/1"));
+
+            // B is refused: its session closes, A's stays and keeps serving.
+            portal.refuse.set(true);
+            register(&surface, 2, Shortcut::parse("ctrl+alt+b", false).unwrap());
+            assert_eq!(
+                session().as_deref(),
+                Some("/session/1"),
+                "A's session stays while B binds"
+            );
+            assert!(crate::gtk_test::wait_until(|| {
+                STATE.with(|s| s.borrow().globals.len() == 1)
+            }));
+            assert!(crate::gtk_test::wait_until(|| {
+                portal.closed.borrow().as_slice() == ["/session/2"]
+            }));
+            assert_eq!(session().as_deref(), Some("/session/1"));
+            assert!(answered(&surface, 1));
+
+            // C is bound: its session replaces A's, which then closes.
+            portal.refuse.set(false);
+            register(&surface, 3, Shortcut::parse("ctrl+alt+c", false).unwrap());
+            assert!(crate::gtk_test::wait_until(|| answered(&surface, 3)));
+            assert_eq!(session().as_deref(), Some("/session/3"));
+            assert!(crate::gtk_test::wait_until(|| {
+                portal.closed.borrow().as_slice() == ["/session/2", "/session/1"]
+            }));
+
+            // Unregistering everything closes the bound session.
+            unregister(&surface, 1);
+            unregister(&surface, 3);
+            assert!(crate::gtk_test::wait_until(
+                || session().is_none() && portal.closed.borrow().len() == 3
+            ));
+            assert_eq!(portal.closed.borrow()[2], "/session/3");
+            BUS.with(|b| b.borrow_mut().take());
+            reset();
         });
     }
 

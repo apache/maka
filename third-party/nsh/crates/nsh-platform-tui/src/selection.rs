@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use nsh_core::{
     Bounds, EventKind, NodeId, Point, Points,
-    selection::{SelectionModel, SelectionTexts},
+    selection::{SelectionModel, SelectionTexts, marker_of},
 };
 use ratatui_core::{
     buffer::Buffer,
@@ -58,24 +58,45 @@ const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(50);
 struct Texts<'a> {
     tree: &'a Mounter,
     geometry: Vec<&'a Geometry>,
+    /// The list marker beside each text (`selection::marker_of`).
+    markers: Vec<Option<String>>,
 }
 
 impl<'a> Texts<'a> {
     fn new(tree: &'a Mounter, geometry: &'a [Geometry], root: NodeId) -> Self {
-        let geometry = geometry
-            .iter()
-            .filter(|g| {
-                crate::keyboard::contains(tree, root, g.id)
-                    && tree.get(g.id).is_some_and(|view| {
-                        view.text.is_some()
-                            && view
-                                .text_content
-                                .as_ref()
-                                .is_some_and(|text| text.selectable != Some(false))
-                    })
-            })
-            .collect();
-        Self { tree, geometry }
+        let mut texts = Vec::new();
+        let mut markers = Vec::new();
+        // The last text left out (`selectable={false}`): maybe the marker
+        // of the next.
+        let mut chrome: Option<(String, Bounds<Points>)> = None;
+        for g in geometry {
+            if !crate::keyboard::contains(tree, root, g.id) {
+                continue;
+            }
+            let Some(text) = tree
+                .get(g.id)
+                .filter(|view| view.text.is_some())
+                .and_then(|view| view.text_content.as_ref())
+            else {
+                continue;
+            };
+            if text.selectable == Some(false) {
+                if let Some(frame) = g.text_frame {
+                    chrome = Some((text.text.to_string(), frame));
+                }
+                continue;
+            }
+            markers.push(
+                g.text_frame
+                    .and_then(|frame| marker_of(chrome.take().as_ref(), frame)),
+            );
+            texts.push(g);
+        }
+        Self {
+            tree,
+            geometry: texts,
+            markers,
+        }
     }
 
     fn layout(&self, i: usize) -> &CellLayout {
@@ -119,6 +140,9 @@ impl SelectionTexts for Texts<'_> {
     }
     fn frame(&self, i: usize) -> Bounds<Points> {
         self.geometry[i].text_frame.expect("text geometry")
+    }
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.markers[i].as_deref()
     }
     fn continues(&self, i: usize) -> bool {
         self.tree

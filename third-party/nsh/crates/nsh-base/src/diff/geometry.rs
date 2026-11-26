@@ -6,8 +6,10 @@
 use std::ops::Range;
 
 use nsh_core::prelude::*;
+use unicode_segmentation::GraphemeCursor;
 
 use super::controller::{Span, char_columns};
+use crate::editor::line_break::text_break;
 
 /// The rows' tops and their texts' heights.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -82,34 +84,74 @@ impl Geometry {
 }
 
 /// Where each wrapped line of `text` (tabs expanded) starts, in bytes, at
-/// `columns` a line: after the last whitespace that fits, else at the
-/// edge; whitespace past the edge hangs there rather than starting a line.
-/// The first is 0.
+/// `columns` a line, as the editor wraps its rows: at the last break
+/// opportunity that fits ([`text_break`]: between ASCII chars after
+/// whitespace, elsewhere where Unicode's line breaking allows), else at the
+/// edge between graphemes; never inside a grapheme, nor after the
+/// indentation alone, and whitespace past the edge hangs there rather than
+/// starting a line. The first is 0.
 pub(crate) fn wrap_starts(text: &str, columns: usize) -> Vec<usize> {
     let columns = columns.max(1);
     let mut starts = vec![0];
+    let lead = text.len() - text.trim_start_matches([' ', '\t']).len();
+    let ascii = text.is_ascii();
+    let mut line_start = 0;
     let mut count = 0;
-    // Just after the last whitespace of the current line.
+    // An ASCII line's last break opportunity: just after the last
+    // whitespace past the indentation. Other lines look for theirs when a
+    // line overflows: most fit, and pay nothing for it.
     let mut break_at: Option<usize> = None;
+    // By char, not grapheme: segmenting every line that wraps costs more
+    // than the rest of wrapping it. Graphemes matter only where a line
+    // overflows.
     for (at, c) in text.char_indices() {
         let blank = c.is_whitespace();
         let width = char_columns(c);
-        if count > 0 && count + width > columns && !blank {
-            let line_start = *starts.last().unwrap_or(&0);
-            let start = match break_at {
-                Some(b) if b > line_start => b,
-                _ => at,
+        // A line may still overflow with what moved down: wrap again. A
+        // line of only zero-width chars is no use: they stay on.
+        while !blank && count > 0 && count + width > columns {
+            // The grapheme `c` is in overflows: the edge is before it.
+            let edge = if ascii {
+                at
+            } else {
+                grapheme_start(text, line_start, at)
             };
+            if edge <= line_start {
+                // One grapheme wider than the line: it stays whole.
+                break;
+            }
+            let found = if ascii {
+                break_at.filter(|b| *b > line_start)
+            } else {
+                text_break(text, line_start, 0, line_start.max(lead), edge, true)
+            };
+            let start = found.unwrap_or(edge);
             starts.push(start);
             count = text[start..at].chars().map(char_columns).sum();
+            line_start = start;
             break_at = None;
         }
         count += width;
-        if blank {
-            break_at = Some(at + c.len_utf8());
+        if ascii && blank && at + 1 > lead {
+            break_at = Some(at + 1);
         }
     }
     starts
+}
+
+/// The start of the grapheme `at` (a char's offset) is in, found from
+/// `line_start`, a grapheme's start: no further back than the line.
+fn grapheme_start(text: &str, line_start: usize, at: usize) -> usize {
+    let line = &text[line_start..];
+    let mut cursor = GraphemeCursor::new(at - line_start, line.len(), true);
+    if cursor.is_boundary(line, 0).unwrap_or(true) {
+        return at;
+    }
+    cursor
+        .prev_boundary(line, 0)
+        .ok()
+        .flatten()
+        .map_or(line_start, |offset| line_start + offset)
 }
 
 /// How many lines `text` (tabs expanded) wraps into at `columns`.
@@ -147,6 +189,8 @@ pub(crate) fn wrap_spans(spans: Vec<Span>, starts: &[usize]) -> Vec<Vec<Span>> {
 
 #[cfg(test)]
 mod tests {
+    use unicode_segmentation::UnicodeSegmentation;
+
     use super::*;
 
     fn pieces(text: &str, columns: usize) -> Vec<&str> {
@@ -194,6 +238,103 @@ mod tests {
         // One that would end past the edge starts the next line.
         assert_eq!(pieces("a中文", 4), vec!["a中", "文"]);
         assert_eq!(wrapped_lines("中文中文", 4), 2);
+    }
+
+    #[test]
+    fn mixed_cjk_and_latin_wraps_between_cjk_chars() {
+        // The CJK run fills the line instead of moving down whole after
+        // the space.
+        assert_eq!(pieces("ab 中文字符", 7), vec!["ab 中文", "字符"]);
+        // Latin text and CJK may break where they meet without a space.
+        assert_eq!(pieces("a Mac上没", 6), vec!["a Mac", "上没"]);
+        assert_eq!(wrapped_lines("ab 中文字符", 7), 2);
+    }
+
+    #[test]
+    fn punctuation_keeps_to_its_text() {
+        // Closing punctuation never starts a line, opening punctuation
+        // never ends one, small kana stay with the char before them.
+        assert_eq!(pieces("中文，字。", 5), vec!["中", "文，", "字。"]);
+        assert_eq!(pieces("说「你好」吧", 4), vec!["说", "「你", "好」", "吧"]);
+        assert_eq!(pieces("待ちっと", 4), vec!["待", "ちっ", "と"]);
+        // Spaces before closing punctuation hang together: no line starts
+        // with one of them, and none is a line of its own.
+        assert_eq!(pieces("中文中文  ，", 8), vec!["中文中", "文  ，"]);
+        assert_eq!(pieces("中  ，", 2), vec!["中  ", "，"]);
+        // A run without opportunities breaks between graphemes.
+        assert_eq!(pieces("，，，，", 5), vec!["，，", "，，"]);
+    }
+
+    #[test]
+    fn code_wraps_only_after_whitespace() {
+        // Operators, negations and hyphenated words stay whole, on ASCII
+        // lines and on lines with other text alike.
+        assert_eq!(pieces("fn f() -> T", 8), vec!["fn f() ", "-> T"]);
+        assert_eq!(pieces("well-known", 7), vec!["well-kn", "own"]);
+        assert_eq!(pieces("注 a != b", 5), vec!["注 a ", "!= b"]);
+        assert_eq!(pieces("注 well-known", 8), vec!["注 ", "well-kno", "wn"]);
+    }
+
+    #[test]
+    fn graphemes_stay_whole() {
+        // A thumbs up with a skin tone modifier is one grapheme (of the
+        // modifier's columns too): it wraps whole, even past the edge.
+        assert_eq!(pieces("a👍🏽b", 2), vec!["a", "👍🏽", "b"]);
+        // A combining mark stays on its letter.
+        assert_eq!(pieces("abce\u{301}f", 4), vec!["abce\u{301}", "f"]);
+        assert_eq!(pieces("中中中e\u{301}", 6), vec!["中中中", "e\u{301}"]);
+        // A zero-width char never makes a line of its own.
+        assert_eq!(pieces("\u{200B}中文", 1), vec!["\u{200B}中", "文"]);
+    }
+
+    #[test]
+    fn the_indentation_alone_is_no_line() {
+        assert_eq!(pieces("    abcdefgh", 8), vec!["    abcd", "efgh"]);
+        assert_eq!(pieces("    中文字符", 8), vec!["    中文", "字符"]);
+    }
+
+    #[test]
+    fn lines_fit_unless_one_grapheme_is_wider() {
+        // A small LCG: no random-number dependency.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((seed >> 33) % n) as usize
+        };
+        let alphabet = [
+            "a", "b", " ", "-", "中", "，", "「", "👍🏽", "e\u{301}", "🇨🇳", " \u{301}",
+        ];
+        for _ in 0..20_000 {
+            let text: String = (0..1 + next(30))
+                .map(|_| alphabet[next(alphabet.len() as u64)])
+                .collect();
+            let columns = 1 + next(12);
+            let starts = wrap_starts(&text, columns);
+            let all: Vec<usize> = text
+                .grapheme_indices(true)
+                .map(|(at, _)| at)
+                .chain([text.len()])
+                .collect();
+            for line in pieces(&text, columns) {
+                let start = line.as_ptr() as usize - text.as_ptr() as usize;
+                assert!(all.contains(&start), "{text:?} at {columns}: {starts:?}");
+                // Whitespace hangs: only the first line starts with it (a
+                // space with a combining mark on it is no whitespace).
+                let first = line.graphemes(true).next().unwrap_or("");
+                assert!(
+                    start == 0 || !first.chars().all(char::is_whitespace),
+                    "{text:?} at {columns}: {line:?} starts with whitespace"
+                );
+                let shown = line.trim_end_matches(char::is_whitespace);
+                let width: usize = shown.chars().map(char_columns).sum();
+                assert!(
+                    width <= columns || shown.graphemes(true).count() == 1,
+                    "{text:?} at {columns}: {line:?} overflows"
+                );
+            }
+        }
     }
 
     #[test]

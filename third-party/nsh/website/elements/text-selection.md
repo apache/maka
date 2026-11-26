@@ -11,8 +11,9 @@ demo: el-text-selection
 A [`View`](./view.md) with `selectable` makes the texts inside it select together, as a web page's do: one selection
 runs from a place in one text to a place in another, across views, [`Text`](./text.md) elements and
 [`TextView`](./text-view.md)s, in reading order. Make a chat transcript selectable and a selection can start in one
-message and end in the next; Copy puts the selected text on the clipboard, with texts side by side joined by a tab and
-the others by a line break. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
+message and end in the next; Copy puts the selected text on the clipboard as a browser does: texts side by side
+joined by a tab, texts on the next line by a line break, and separate blocks (paragraphs, messages) by a blank line. A
+list item copied from its start keeps its marker (`•`, `2.`), although the marker itself is never highlighted. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
 text can be selected is its `userSelect` style.
 
 ```tsx tabs
@@ -170,10 +171,11 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
 It reads the selection the view holds: in a `selectable` view inside another, the outer view holds it, and the inner
 `TextView`'s ref gives `""`.
 
-On Windows, a right click on a selectable view's text opens the menu of the view's `onContextMenu` when it listens (or a view
-inside it around the text does), with the selection kept: the app shows its own menu with `Menu.popup`, where the
-`copy` and `selectAll` roles act on the selection, beside its own items for what is selected. Without a listener,
-Windows shows Copy and Select All.
+On macOS, Windows and Linux, a right click on a selectable view's text opens the menu of the view's `onContextMenu`
+when it listens (or a view inside it around the text does), with the selection kept, even where the text itself is
+selectable: the app shows its own menu with `Menu.popup`. On Windows, that menu's `copy` and `selectAll` roles act on
+the selection, beside the app's own items for what is selected. Without a listener, the platform's edit menu opens
+(Copy and Select All).
 
 An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selection in its text (`{ start, end }`).
 
@@ -181,7 +183,7 @@ An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selecti
 
 | Platform | How a selection is made |
 |---|---|
-| macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the view, Ctrl / Cmd+C copies, Escape or a press outside clears. |
+| macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the view, Ctrl / Cmd+C copies, Escape or a press outside clears. On macOS, Shift with the arrow keys extends a selectable view's selection from where it was pressed, as in a text view: by a character or a line, with Option by a word or a paragraph, with Cmd to the line's or the view's ends (Shift+Home / End too). |
 | iOS, Android | A long press selects a word; the platform's handles extend it, and its edit menu has Copy and Select All. |
 | Web | The browser's own selection, with its gestures, menu and shortcuts. |
 

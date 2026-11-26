@@ -9,8 +9,8 @@
 //! The logic is [`nsh_core::selection::SelectionModel`]'s; this module
 //! lists an area's texts for it ([`Texts`]: content, content boxes in the
 //! area's coordinates, CoreText hit tests), feeds it the mouse ([`down`],
-//! [`drag`], [`up`] from [`crate::input`]; Cmd+A, Cmd+C and Escape through
-//! [`crate::text`]) and sets each text's part of it, which
+//! [`drag`], [`up`] from [`crate::input`]; Cmd+A, Cmd+C, Escape and the
+//! keys that extend it ([`extend_by_key`]) through [`crate::text`]) and sets each text's part of it, which
 //! [`crate::text::draw`] highlights as a single text's selection. The
 //! surface keeps the selection of the area last pressed
 //! ([`AreaSelection`], in [`crate::text::Selected`]); a press anywhere else
@@ -28,10 +28,11 @@ use nsh_core::{
     AttributedText, Bounds, EventKind, EventPayload, NodeId, PayloadValue, Point, Points, ViewKind,
     geometry::{bounds, point, size},
     selection::{
-        KeptRows, SelectionModel, SelectionTexts, TextPosition, autoscroll_step, reading_order,
-        reorder,
+        Direction, KeptRows, Movement, SelectionModel, SelectionTexts, TextPosition,
+        autoscroll_step, marker_of, reading_order, reorder,
     },
 };
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use rustc_hash::FxHashSet;
 
 use crate::{
@@ -55,6 +56,11 @@ struct Texts {
     origins: Vec<((f32, f32), f32)>,
     /// Each text's content box in the area's coordinates.
     frames: Vec<Bounds<Points>>,
+    /// The list marker beside each text (`selection::marker_of`).
+    markers: Vec<Option<String>>,
+    /// The last text left out (`selectable={false}`) while listing, its
+    /// content and frame: maybe the marker of the next.
+    chrome: Option<(String, Bounds<Points>)>,
 }
 
 impl SelectionTexts for Texts {
@@ -68,6 +74,10 @@ impl SelectionTexts for Texts {
 
     fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
         self.contents[i].copied_text(range)
+    }
+
+    fn attributed(&self, i: usize) -> Option<&AttributedText> {
+        Some(&self.contents[i])
     }
 
     fn frame(&self, i: usize) -> Bounds<Points> {
@@ -85,6 +95,10 @@ impl SelectionTexts for Texts {
 
     fn continues(&self, i: usize) -> bool {
         self.views[i].state().props.continues_text
+    }
+
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.markers[i].as_deref()
     }
 
     fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
@@ -122,20 +136,26 @@ fn walk(view: &NshView, origin: (f32, f32), zoom: f32, out: &mut Texts) {
     }
     {
         let state = view.state();
-        if let Some(drawn) = &state.text
-            && drawn.text.selectable != Some(false)
-        {
+        if let Some(drawn) = &state.text {
             let content = drawn.content;
-            out.views.push(view.clone());
-            out.contents.push(drawn.text.clone());
-            out.origins.push((origin, zoom));
-            out.frames.push(bounds(
+            let frame = bounds(
                 point(
                     Points(origin.0 + content.origin.x.0 * zoom),
                     Points(origin.1 + content.origin.y.0 * zoom),
                 ),
                 content.size * zoom,
-            ));
+            );
+            if drawn.text.selectable == Some(false) {
+                // A list marker, maybe: the next text's copy starts with it.
+                out.chrome = Some((drawn.text.text.to_string(), frame));
+            } else {
+                out.views.push(view.clone());
+                out.contents.push(drawn.text.clone());
+                out.origins.push((origin, zoom));
+                out.frames.push(frame);
+                out.markers
+                    .push(marker_of(out.chrome.take().as_ref(), frame));
+            }
         }
     }
     // Children sit in the container's bounds, which scroll views move: by
@@ -171,6 +191,7 @@ fn walk(view: &NshView, origin: (f32, f32), zoom: f32, out: &mut Texts) {
         reorder(&mut out.contents, start, &order);
         reorder(&mut out.origins, start, &order);
         reorder(&mut out.frames, start, &order);
+        reorder(&mut out.markers, start, &order);
     }
 }
 
@@ -420,6 +441,17 @@ impl AreaSelection {
         Some(active.model.text(&texts)).filter(|t| !t.is_empty())
     }
 
+    /// The selected text and its HTML ([`SelectionModel::html`]: with
+    /// bold, italic or links), as a copy puts them on the pasteboard
+    /// (`None` as [`Self::text`]).
+    pub(crate) fn copy(&self) -> Option<(String, Option<String>)> {
+        let active = self.active.borrow();
+        let active = active.as_ref().filter(|a| !a.model.is_empty())?;
+        let texts = collect(&active.area()?);
+        let text = active.model.text(&texts);
+        (!text.is_empty()).then(|| (text, active.model.html(&texts)))
+    }
+
     /// Selects every text of the area last pressed (Cmd+A). False without
     /// one.
     pub(crate) fn select_all(&self, surface: &Surface) -> bool {
@@ -501,6 +533,57 @@ pub(crate) fn down(
     report(surface);
 }
 
+/// A key extends the selection of the area last pressed (Shift with an
+/// arrow key, Home or End): its focus moves by `movement` towards
+/// `direction`, and the scroll views around the area show where it went.
+/// False when nothing was pressed in an area: the key scrolls instead.
+pub(crate) fn extend_by_key(
+    surface: &Rc<Surface>,
+    movement: Movement,
+    direction: Direction,
+) -> bool {
+    let caret = {
+        let mut slot = surface.selection.area.active.borrow_mut();
+        let Some(active) = slot.as_mut() else {
+            return false;
+        };
+        let Some(area) = active.area() else {
+            return false;
+        };
+        let texts = collect(&area);
+        // Content may have changed since the last batch looked.
+        active.model.texts_changed(&texts);
+        if active.model.focus().is_none() {
+            return false;
+        }
+        if active.model.extend(&texts, movement, direction) {
+            active.show(surface, &texts);
+        }
+        // In the focus's text view: the scroll views around it reveal it.
+        let focus = active.model.focus().map(|f| f.text);
+        active
+            .model
+            .focus_caret(&texts)
+            .zip(focus)
+            .map(|(caret, i)| {
+                let ((x, y), z) = texts.origins[i];
+                let rect = CGRect::new(
+                    CGPoint::new(
+                        f64::from((caret.left().0 - x) / z),
+                        f64::from((caret.top().0 - y) / z),
+                    ),
+                    CGSize::new(0.0, f64::from(caret.size.height.0 / z)),
+                );
+                (texts.views[i].clone(), rect)
+            })
+    };
+    report(surface);
+    if let Some((view, rect)) = caret {
+        crate::scroll::reveal_rect(surface, &view, rect);
+    }
+    true
+}
+
 /// The primary button, pressed in `area`, moved by `(dx, dy)` from where it
 /// went down, to `(x, y)` (root coordinates). True while the drag selects
 /// (past a slop): presses must not fire then. Past the edge of a scroll
@@ -565,12 +648,13 @@ pub(crate) fn up(surface: &Surface) -> bool {
         })
 }
 
-/// The innermost scroll view around `area` (or `area` itself) that can
-/// still move toward where the pointer at `(x, y)` (root coordinates) is
-/// near or past its edge, and its step per 60 Hz frame
-/// ([`autoscroll_step`]).
+/// The innermost scroll view around the selection's focus that can still
+/// move toward where the pointer at `(x, y)` (root coordinates) is near or
+/// past its edge, and its step per 60 Hz frame ([`autoscroll_step`]): one
+/// inside `area` (a wide table's horizontal scroll, #2996), then those
+/// around it. Without a focus, from `area` out.
 fn past_edge(surface: &Surface, area: &NshView, x: f32, y: f32) -> Option<(NshView, f32, f32)> {
-    let mut current = Some(area.clone());
+    let mut current = Some(focus_view(surface, area).unwrap_or_else(|| area.clone()));
     while let Some(view) = current {
         if view.kind() == ViewKind::Scroll {
             let (lx, ly) = crate::input::local(surface, &view, x, y);
@@ -589,6 +673,19 @@ fn past_edge(surface: &Surface, area: &NshView, x: f32, y: f32) -> Option<(NshVi
         current = view.parent_view();
     }
     None
+}
+
+/// The text the selection's focus is in, in `area`.
+fn focus_view(surface: &Surface, area: &NshView) -> Option<NshView> {
+    let focus = surface
+        .selection
+        .area
+        .active
+        .borrow()
+        .as_ref()?
+        .model
+        .focus()?;
+    collect(area).views.get(focus.text).cloned()
 }
 
 /// Starts scrolling on every frame while the selecting pointer stays past

@@ -214,6 +214,9 @@ impl Drag {
                     pressure: nsh_core::TouchPoint::default_pressure(phase, true),
                     tilt_x: 0.0,
                     tilt_y: 0.0,
+                    coalesced: Vec::new(),
+                    eraser: false,
+                    barrel: false,
                 }],
             })),
         );

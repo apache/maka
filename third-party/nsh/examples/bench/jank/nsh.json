@@ -1,0 +1,13 @@
+{
+  "name": "Jank bench",
+  "id": "com.example.jank-bench",
+  "capabilities": {
+    "windows": true,
+    "application": true,
+    "process": {
+      "env": [
+        "JANK_SECONDS"
+      ]
+    }
+  }
+}

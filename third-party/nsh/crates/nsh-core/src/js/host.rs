@@ -121,7 +121,7 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::WebView => on::WEBVIEW,
             Tag::Video => on::VIDEO,
             Tag::InputAccessory => on::INPUT_ACCESSORY,
-            Tag::View => on::VIEW,
+            Tag::View | Tag::GpuView => on::VIEW,
             Tag::Shader => on::VIEW | on::SHADER,
             Tag::ShaderEffect => on::VIEW | on::SHADER | on::EFFECT,
             Tag::ShaderTransition => on::VIEW | on::SHADER | on::TRANSITION,
@@ -837,7 +837,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         EventKind::FileDrop,
         on::ALL,
         "(e: { uris: string[]; mimeTypes: string[]; pagePosition?: { x: number; y: number }; files: { file: File | null; name: string; type: string; size: number; status: \"read\" | \"tooLarge\" }[] }) => void",
-        "Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates, on backends that know it (Linux, iOS, Android, Web). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `\"tooLarge\"` past 512 MiB a drop; at most 100); elsewhere `files` is empty.",
+        "Local file URLs dropped on this destination (desktops, iOS, Android and the Web), with each one's MIME type by its name (`\"\"` when the name says none); `pagePosition`: where, in the window's coordinates as a mouse event's (macOS, Windows, Linux, iOS, Android and the Web; absent on the GPUI backend). On the Web `uris` is empty and `files` holds the dropped regular files with their contents (`status` `\"tooLarge\"` past 512 MiB a drop; at most 100); elsewhere `files` is empty.",
     ),
     (
         EventKind::Layout,

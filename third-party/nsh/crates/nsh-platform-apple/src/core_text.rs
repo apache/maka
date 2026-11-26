@@ -2,12 +2,13 @@ use std::{ptr::NonNull, sync::OnceLock};
 
 use nsh_core::TextAlign;
 use objc2_core_foundation::{
-    CFAttributedString, CFDictionary, CFMutableAttributedString, CFRange, CFRetained, CFString,
-    CFType, CGAffineTransform, CGFloat, CGPoint,
+    CFAttributedString, CFDictionary, CFIndex, CFMutableAttributedString, CFRange, CFRetained,
+    CFString, CFType, CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize,
 };
-use objc2_core_graphics::{CGColor, CGContext, CGLineCap};
+use objc2_core_graphics::{CGColor, CGContext, CGLineCap, CGPath};
 use objc2_core_text::{
-    CTFont, CTFontSymbolicTraits, CTLine, CTRun, kCTFontAttributeName, kCTRunDelegateAttributeName,
+    CTFont, CTFontSymbolicTraits, CTFramesetter, CTLine, CTRun, kCTFontAttributeName,
+    kCTRunDelegateAttributeName,
 };
 
 struct CFStringKey(CFRetained<CFString>);
@@ -416,6 +417,159 @@ pub unsafe fn truncated_line_x(
         if rtl_start { right_flush } else { 0.0 }
     } else {
         x
+    }
+}
+
+/// How much more room the truncated last line `shown` needs above and below
+/// its baseline than `set`, the line a frame typeset in its place (`(0, 0)`
+/// when it needs none). A head or middle ellipsis keeps the end of the
+/// text: a larger font or a taller attachment there is not on `set`.
+/// Measuring and laying out a text both ask this, so the box a text
+/// measures holds the line it draws.
+///
+/// # Safety
+///
+/// `set` and `shown` must be valid lines typeset from `source` (`shown`
+/// may hold an ellipsis token marked with [`ellipsis_key`]).
+pub unsafe fn truncated_line_growth(
+    source: &CFAttributedString,
+    set: &CTLine,
+    shown: &CTLine,
+) -> (CGFloat, CGFloat) {
+    // Most truncated lines keep only fonts the set line has.
+    // SAFETY: valid lines.
+    if !unsafe { reaches_past(shown, set) } {
+        return (0.0, 0.0);
+    }
+    // Compared where a frame places each, under the text's paragraph
+    // style: a fixed `lineHeight` keeps a larger font from growing a line
+    // (as on any other line), a taller attachment raises that bound.
+    // SAFETY: the caller's guarantees.
+    let (up, down) = unsafe { line_slot(source, set) };
+    // SAFETY: as above.
+    let (shown_up, shown_down) = unsafe { line_slot(source, shown) };
+    ((shown_up - up).max(0.0), (shown_down - down).max(0.0))
+}
+
+/// Whether `line` reaches further above or below its baseline than `than`
+/// (its ascent, descent or leading: the largest of its runs').
+///
+/// # Safety
+///
+/// Both must be valid lines.
+pub unsafe fn reaches_past(line: &CTLine, than: &CTLine) -> bool {
+    let bounds = |line: &CTLine| {
+        let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
+        // SAFETY: a valid line (the caller's guarantee) and out pointers.
+        unsafe { line.typographic_bounds(&mut ascent, &mut descent, &mut leading) };
+        (ascent, descent, leading)
+    };
+    const EPSILON: CGFloat = 1e-3;
+    let (a, d, l) = bounds(line);
+    let (ascent, descent, leading) = bounds(than);
+    a > ascent + EPSILON || d > descent + EPSILON || l > leading + EPSILON
+}
+
+/// How far above and below its baseline a frame sets a line holding the
+/// characters of `line` (the ellipsis token's included).
+///
+/// # Safety
+///
+/// As [`truncated_line_growth`].
+unsafe fn line_slot(source: &CFAttributedString, line: &CTLine) -> (CGFloat, CGFloat) {
+    let string = CFMutableAttributedString::new(None, 0).expect("CFAttributedStringCreateMutable");
+    let token: *const CFString = ellipsis_key();
+    // SAFETY: the line's own run array (of CTRuns); run ranges lie within
+    // `source` (the caller's guarantee) and appending is at the end.
+    unsafe {
+        let runs = line.glyph_runs();
+        for r in 0..runs.count() {
+            let run = &*runs.value_at_index(r).cast::<CTRun>();
+            let attributes = run.attributes();
+            // A token's run claims the characters it stands for.
+            let piece = if attributes.contains_ptr_key(token.cast()) {
+                CFAttributedString::new(
+                    None,
+                    Some(&CFString::from_static_str("\u{2026}")),
+                    Some(&attributes),
+                )
+            } else {
+                CFAttributedString::with_substring(None, Some(source), run.string_range())
+            };
+            if let Some(piece) = piece {
+                let end = CFAttributedString::length(&string);
+                CFMutableAttributedString::replace_attributed_string(
+                    Some(&string),
+                    CFRange {
+                        location: end,
+                        length: 0,
+                    },
+                    Some(&piece),
+                );
+            }
+        }
+    }
+    // On one line: the hard breaks it holds become spaces, keeping their
+    // attributes.
+    let length = CFAttributedString::length(&string);
+    let units = CFAttributedString::string(&string).map_or_else(Vec::new, |s| {
+        // SAFETY: indices below the string's length.
+        (0..length)
+            .map(|i| unsafe { s.character_at_index(i) })
+            .collect()
+    });
+    for (i, unit) in units.into_iter().enumerate() {
+        let breaks = matches!(unit, 0x0b | 0x0c | 0x2028)
+            || char::from_u32(unit.into())
+                .is_some_and(|c| unicode_bidi::bidi_class(c) == unicode_bidi::BidiClass::B);
+        if breaks {
+            // SAFETY: a one-unit range within the string.
+            unsafe {
+                CFMutableAttributedString::replace_string(
+                    Some(&string),
+                    CFRange {
+                        location: i as CFIndex,
+                        length: 1,
+                    },
+                    Some(&CFString::from_static_str(" ")),
+                );
+            }
+        }
+    }
+    let whole = CFRange {
+        location: 0,
+        length: 0,
+    };
+    let attributed: &CFAttributedString = &string;
+    // SAFETY: a valid attributed string, path and whole-string ranges; one
+    // origin read into a one-point buffer when the frame has a line.
+    unsafe {
+        let framesetter = CTFramesetter::with_attributed_string(attributed);
+        let size = framesetter.suggest_frame_size_with_constraints(
+            whole,
+            None,
+            CGSize::new(CGFloat::MAX, CGFloat::MAX),
+            std::ptr::null_mut(),
+        );
+        let rect = CGRect::new(
+            CGPoint::new(0.0, 0.0),
+            CGSize::new(size.width.ceil() + 1.0, size.height.ceil() + 1.0),
+        );
+        let path = CGPath::with_rect(rect, std::ptr::null());
+        let frame = framesetter.frame(whole, &path, None);
+        if frame.lines().count() == 0 {
+            return (0.0, 0.0);
+        }
+        let mut origin = CGPoint::new(0.0, 0.0);
+        frame.line_origins(
+            CFRange {
+                location: 0,
+                length: 1,
+            },
+            NonNull::from(&mut origin),
+        );
+        let up = rect.size.height - origin.y;
+        (up, size.height - up)
     }
 }
 

@@ -275,6 +275,7 @@ VoiceOver 和 UI 自动化工具将 `Table` 和 `Grid` 读取为 `AXTable`，将
 | Option+Left、Cmd+[、鼠标后退键 | 返回（输入框有焦点时不会：此时 Option+Left 移动光标） |
 | Option / Cmd + 方向键（可加 Shift）；Option+Delete、Cmd+Delete；Ctrl+A / E / K | 在输入框中按词和按行移动、选择和删除，与所有 Mac 应用一致 |
 | Cmd+Z、Shift+Cmd+Z、Cmd+X / C / V / A | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Cmd+A / Cmd+C 选择并复制 可选择的文本 |
+| Shift + 方向键（可加 Option 或 Cmd）；Shift+Home / End | 扩展最后按下的可选择视图的选区：按字符或按行，按词或按段落（Option），到行或视图的开头 / 结尾（Cmd、Home / End）；外围的滚动视图随之滚动 |
 | 方向键；Page Up / Down、Space、Shift+Space、Option+Up / Down；Home / End、Cmd+Up / Down | 滚动有焦点的视图所在或鼠标下方的滚动视图：一行、一页、到开头 / 结尾（输入框有焦点时不滚动） |
 | Cmd+W、Cmd+M、Ctrl+Cmd+F、Cmd+H、Option+Cmd+H、Cmd+Q | 关闭、最小化、全屏、隐藏、隐藏其他、退出（`nsh package` 和 `nsh run` 应用的菜单） |
 | Cmd+R | 重新加载最新的构建（`nsh run`） |

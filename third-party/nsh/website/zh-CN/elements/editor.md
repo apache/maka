@@ -49,7 +49,7 @@ fn code() -> impl IntoElement {
 }
 ```
 
-编辑器填满应用给它的盒子（`flex-1`、一个高度），在其中滚动文本：纵向总是可以滚动；行比盒子长时可以横向滚动；开启 `softWrap` 后长行在编辑器的宽度处换行，不再横向滚动。
+编辑器填满应用给它的盒子（`flex-1`、一个高度），在其中滚动文本：纵向总是可以滚动；行比盒子长时可以横向滚动；开启 `softWrap` 后长行在编辑器的宽度处换行，不再横向滚动。代码和拉丁文字在空格处换行，`->` 这样的运算符和路径不会被拆开；中日韩文字按 Unicode 的断行规则换行，与其他文本一致：可以在字与字之间换行，`，`、`）` 等收尾标点不会出现在行首，`「` 等开头标点不会留在行尾。
 
 <a id="the-text"></a>
 
@@ -260,7 +260,7 @@ async function lint(text: string) {
 
 ## 装饰
 
-`decorations` 为应用选择的范围设置样式：来自语言服务器的语义高亮、正在执行的语句、评审中改动的行。装饰的 `class` 和 `style` 设置其文本的样式；`lineClass` 和 `lineStyle` 设置其所在各行的样式，位于文本后面。与诊断一样，它们在编辑中留在自己的文本上，直到应用设置新的装饰。
+`decorations` 为应用选择的范围设置样式：来自语言服务器的语义高亮、正在执行的语句、评审中改动的行。装饰的 `class` 和 `style` 设置其文本的样式；`lineClass` 和 `lineStyle` 设置其所在各行的样式，位于文本后面；`label` 在其范围的位置显示一段文字（[标签](#labels)）。与诊断一样，它们在编辑中留在自己的文本上，直到应用设置新的装饰。输入法组字时，组字文本就地显示在该行中，该行保留其装饰：其后的文本连同自己的装饰一起后移，组字文本的样式与上屏后相同（光标两侧都被装饰覆盖时在装饰之内，装饰在光标处开始或结束时不在其内）。
 
 ```tsx
 const range = (line: number, start: number, end: number) => ({ start: { line, column: start }, end: { line, column: end } });
@@ -278,6 +278,25 @@ const range = (line: number, start: number, end: number) => ({ start: { line, co
 ```
 
 <a id="gutter-and-overview-ruler-marks"></a>
+
+### 字体
+
+装饰的 `fontFamily` 和 `fontSize` 设置其文本的字体，于是基于 `Editor` 的 Markdown 笔记应用可以让行内代码和代码块用等宽字体、让标题更大。编辑器用这个字体测量文本：光标、选区、点击和软换行都随之而定。一行的高度取其中最大的文本所需：编辑器的 `lineHeight` 按字号等比放大（13 点、行高 20 点的编辑器中，26 点的标题占 40 点的一行），且不低于 `lineHeight`。带字体的装饰重叠时，最内层装饰的字体族和字号胜出，两者各自取（内层的 `fontFamily` 保留外层的 `fontSize`）。字体请在这里设置，不要用 `class` 或 `style`，编辑器不会按它们测量。在终端中文本保持在其单元格中。
+
+```tsx
+<Editor
+  value={notes()}
+  onChange={({ value }) => notes.set(value)}
+  fontFamily="Inter"
+  fontSize={15}
+  lineHeight={24}
+  decorations={[
+    { range: range(0, 0, 14), fontSize: 22, class: "font-semibold" },
+    { range: range(2, 8, 20), fontFamily: "Menlo", class: "bg-zinc-500/10" },
+  ]}
+  class="flex-1"
+/>
+```
 
 ### 行号槽与概览标尺标记
 
@@ -316,6 +335,25 @@ const kinds: Record<string, EditorToken> = { keyword: "keyword", function: "titl
   language="ts"
   highlighting={false}
   decorations={semanticTokens().map((t) => ({ range: range(t.line, t.start, t.end), token: kinds[t.type] }))}
+  class="flex-1"
+/>
+```
+
+<a id="labels"></a>
+
+### 标签
+
+装饰的 `label` 在其范围的位置显示一段文字：写成 `⏰ 2026-11-25 09:00` 的日期显示为「明天 09:00」标签，链接的源文本显示为它的标题。`labelClass` 和 `labelStyle` 设置标签框的样式（背景、圆角、内边距），标签框位于行内、与文本居中对齐，宽度按它排版的结果。标签文字使用其所在位置由装饰的 `fontFamily` / `fontSize` 设置的字体（标题中的日期与标题同样大小），除非 `labelClass` 另行设置。当编辑器有焦点、且有光标或选区接触到这个范围（在范围内或在它的任一端）时，改为显示范围的原文，光标像在其他文本中一样在其中移动和编辑；光标离开后，标签重新出现。文本仍属于文档：复制、撤销、搜索和屏幕阅读器读到的都是原文。标签只显示在同一行内、不为空的范围上；与前面一个带标签的范围重叠的范围显示原文。
+
+```tsx
+<Editor
+  value={note()}
+  onChange={({ value }) => note.set(value)}
+  decorations={reminders(note()).map((r) => ({
+    range: r.range,
+    label: r.relative, // "明天 09:00"
+    labelClass: "px-1.5 rounded-md bg-amber-500/15 text-amber-700",
+  }))}
   class="flex-1"
 />
 ```
@@ -478,6 +516,14 @@ let editor!: EditorRef;
 
 设置 `minRows` 和 / 或 `maxRows` 时，编辑器随文本增高：它和文本的行一样高，至少 `minRows` 行，到 `maxRows` 行起文本滚动，就像消息输入框或笔记本的单元格。否则由应用决定它的尺寸，`scrollBeyondLastLine` 让文本滚动到最后一行之后：最多一屏（`true`，默认）、完全不（`false`）或若干行。光标移动时，它上下各保留 `cursorSurroundingLines` 行在视野内。拖动选择越过编辑器的边缘时会继续滚动，指针越远滚得越快。
 
+编辑器放在圆角容器里，或上面浮着栏时，`scrollbarInset` 让滚动条与编辑器各边保持这段距离，和[滚动视图](./scroll.md)的一样；文本仍从下面滚过。竖向滚动条和概览标尺按它的上、下、右边让开，横向滚动条（未开 `softWrap` 时）按它的左、右、下边让开。
+
+```tsx
+<View class="flex-1 overflow-hidden rounded-xl border border-border">
+  <Editor defaultValue={source()} language="rust" scrollbarInset={{ top: 8, bottom: 8 }} class="flex-1" />
+</View>
+```
+
 `showWhitespaces` 把每个空格显示为 `·`、每个制表符显示为 `→`（`whitespace` 部件），`rulers` 在它的每一列画一条线（`ruler` 部件），作为行长度的参考线。
 
 ```tsx
@@ -489,6 +535,23 @@ let editor!: EditorRef;
   rulers={[72]}
   showWhitespaces
 />
+```
+
+`onScroll({ offset, contentSize, size })` 报告文本滚动到的位置，键与 [`Scroll`](./scroll.md) 的相同：`offset` 即 `scrollOffset()`，`contentSize` 是文本滚动经过的内容的尺寸，`size` 是视口的尺寸。不设 `softWrap` 时，内容的宽度是视口的宽度加上文本能横向滚动的距离；自动换行时，内容与视口同宽，`offset.x` 为 0。编辑器完成布局时触发一次，之后其中任何一项变化时再触发：滚动、改变大小，以及改变了内容尺寸的编辑或折叠。放在标题下面的编辑器可以在文本滚到顶边下面时，在顶边画一条线或做渐隐：
+
+```tsx
+const scrolled = signal(false);
+
+<View style={{ flex: 1 }}>
+  <View class={scrolled() ? "h-px bg-border" : "h-px"} />
+  <Editor
+    defaultValue={notes()}
+    language="markdown"
+    softWrap
+    onScroll={({ offset }) => scrolled.set(offset.y > 0)}
+    style={{ flex: 1 }}
+  />
+</View>
 ```
 
 <a id="methods"></a>
@@ -666,12 +729,13 @@ let editor!: EditorRef;
 | `activeLine` | `.active_line(..)` | `boolean` | `true` | 高亮有光标的行。 |
 | `indentGuides` | `.indent_guides(..)` | `boolean` | `true` | 缩进参考线。 |
 | `scrollBeyondLastLine` | `.scroll_beyond_last_line(..)` | `boolean \| number` | `true` | 文本可以滚动到最后一行之后：最多一屏（`true`）、完全不（`false`）或若干行。 |
+| `scrollbarInset` | `.scrollbar_inset(EdgeInsets { .. })` | `Partial<Edges>` | | 滚动条与编辑器各边保持的距离（[尺寸与滚动](#尺寸与滚动)）。 |
 | `fontFamily` | `.font_family(..)` | `string` | 主题的 `font-mono` | 绘制和测量文本所用的字体。 |
 | `fontSize` | `.font_size(..)` | `number` | `13` | 字号，单位为点。 |
 | `lineHeight` | `.line_height(..)` | `number` | `20` | 一行的高度，单位为点；在终端里一行就是一个 Cell。 |
 | `search` | `.search(..)` | `EditorSearch` | | 要查找的内容（[查找与替换](#find-and-replace)）。 |
 | `diagnostics` | `.diagnostics(..)` | `EditorDiagnostic[]` | `[]` | 要标记的问题（[诊断](#diagnostics)）。 |
-| `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | 应用设置样式的范围（[装饰](#decorations)）。 |
+| `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | 应用设置样式或显示为标签的范围（[装饰](#decorations)）。 |
 | `gutterDecorationsWidth` | `.gutter_decorations_width(..)` | `number` | `3` | 行号槽中装饰标记条的宽度，单位为点。 |
 | `classes` | `.classes(..)` | `EditorClasses` | `{}` | 按部件的 Tailwind 类。 |
 | `styles` | `.styles(..)` | `EditorStyles` | `{}` | 按部件的内联样式，优先于类。 |
@@ -708,6 +772,7 @@ let editor!: EditorRef;
 | `onInlineCompletionRequest` | `.on_inline_completion_request(\|event: &EditorInlineCompletionRequest\| ..)` | 输入停顿了：`{ id, offset, position }`，用于行内补全。 |
 | `onDefinitionRequest` | `.on_definition_request(\|event: &EditorDefinitionRequest\| ..)` | 编辑器请求一个定义：`{ id, position, offset, range, trigger }`（[跳转到定义](#跳转到定义与代码操作)）。 |
 | `onCodeActionRequest` | `.on_code_action_request(\|event: &EditorCodeActionRequest\| ..)` | 用户请求代码操作：`{ range, position, bounds? }`。 |
+| `onScroll` | `.on_scroll(\|e: &EditorEvent\| ..)` | 文本滚动了，或者内容或视口的尺寸变了：`{ offset, contentSize, size }`，与 `Scroll` 的相同（Rust 中为 `EditorEvent::Scroll(offset, content_size, size)`）。编辑器完成布局时触发一次，之后其中任何一项变化时再触发（[尺寸与滚动](#size-and-scrolling)）。 |
 
 <a id="accessibility"></a>
 

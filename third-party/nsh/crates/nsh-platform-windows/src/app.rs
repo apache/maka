@@ -327,6 +327,9 @@ impl AppView {
         let hwnd = crate::window::create(&surface, &options.title, options.size, parent, composed)?;
         if parent.is_none() {
             crate::window::set_icon(hwnd, options.icon.as_deref());
+            // The app's own windows ([`crate::app_window`]) show it too: the
+            // visible window of a `mount(App)` or `<Window>` app is one.
+            surface.icon.replace(options.icon.clone());
             // The main window's attributes: a normal window's, with the
             // options'.
             if let Some(shell) = crate::window::shell(hwnd) {

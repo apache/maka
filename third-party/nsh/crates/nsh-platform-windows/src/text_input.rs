@@ -22,10 +22,15 @@
 //! frame ticker, so a focused field costs no frames.
 //!
 //! RichEdit's coordinates are the window's client pixels: its client
-//! rectangle is the content box mapped to the window (moved again whenever
-//! the field is pressed, focused or typed in), so the IME it places and the
-//! pointer it is sent agree with the screen; drawing maps them back to the
-//! view's coordinates through the current transform.
+//! rectangle is the content box mapped to the window (followed as the field
+//! is drawn, pressed, focused or typed in), so the IME it places and the
+//! pointer it is sent agree with the screen. A new size is a new extent
+//! too: RichEdit wraps its lines again only for that, so keys and presses
+//! between a layout and the next frame find the lines where they show.
+//! Drawing maps them back to the view's coordinates through the current
+//! transform. A multiline field's lines are exactly the line pitch the
+//! core measures it with apart (the font's natural one without a line
+//! height), never RichEdit's own, which grows with fallback fonts.
 //!
 //! Every user edit increments the input's edit count and reports
 //! `onChangeText` with it (always, as the engine keeps the text); a value
@@ -117,9 +122,9 @@ use windows::{
                 PFM_ALIGNMENT, PFM_LINESPACING, PFM_RTLPARA, SES_USECTF, TM_MULTICODEPAGE,
                 TM_MULTILEVELUNDO, TM_RICHTEXT, TO_ADVANCEDTYPOGRAPHY, TXTBIT_AUTOWORDSEL,
                 TXTBIT_CHARFORMATCHANGE, TXTBIT_CLIENTRECTCHANGE, TXTBIT_D2DDWRITE,
-                TXTBIT_DISABLEDRAG, TXTBIT_HIDESELECTION, TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE,
-                TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY, TXTBIT_RICHTEXT, TXTBIT_SCROLLBARCHANGE,
-                TXTBIT_USEPASSWORD, TXTBIT_WORDWRAP,
+                TXTBIT_DISABLEDRAG, TXTBIT_EXTENTCHANGE, TXTBIT_HIDESELECTION,
+                TXTBIT_MAXLENGTHCHANGE, TXTBIT_MULTILINE, TXTBIT_PARAFORMATCHANGE, TXTBIT_READONLY,
+                TXTBIT_RICHTEXT, TXTBIT_SCROLLBARCHANGE, TXTBIT_USEPASSWORD, TXTBIT_WORDWRAP,
             },
             Input::{
                 Ime::{
@@ -683,14 +688,11 @@ impl InputState {
     /// farthest it goes (the last line at the content box's bottom).
     /// Clamp the wheel to the text's height rather than scrolling past its end.
     fn text_scroll(&self) -> Option<(i32, i32)> {
-        let client = self.client();
         self.with_editor(|e| {
             let mut at = windows::Win32::Foundation::POINT::default();
             e.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
-            let height = e.text_height(client.right - client.left)?;
-            Some((at.y, (height - (client.bottom - client.top)).max(0)))
+            (at.y, e.scroll_limit())
         })
-        .flatten()
     }
 
     /// RichEdit's client rectangle: the content box in the window's client
@@ -742,8 +744,19 @@ impl InputState {
 
     fn update_client_on(&self, e: &Editor) {
         let client = self.client();
-        if e.props().client != client {
-            e.update(|p| p.client = client, TXTBIT_CLIENTRECTCHANGE);
+        let old = e.props().client;
+        if old != client {
+            // A new size is a new extent too: RichEdit lays its lines out
+            // again only for that, never for a client rectangle that only
+            // changed (its lines kept the width they were first laid out
+            // at until it next drew).
+            let size = |r: RECT| (r.right - r.left, r.bottom - r.top);
+            let resized = if size(old) != size(client) {
+                TXTBIT_EXTENTCHANGE
+            } else {
+                0
+            };
+            e.update(|p| p.client = client, TXTBIT_CLIENTRECTCHANGE | resized);
         }
         let bits = self.bits();
         if e.props().bits != bits {
@@ -856,6 +869,7 @@ impl InputState {
         let config = self.config.borrow();
         let style = &config.style;
         let color = self.anim_color.get().unwrap_or(style.color);
+        let pitch = line_pitch(style);
         let bits = self.bits();
         let limit = self.limit_of(e);
         e.update(
@@ -889,10 +903,14 @@ impl InputState {
                     },
                 };
                 pf.Base.Anonymous.wEffects = if config.rtl { 0x0001 } else { 0 };
-                if config.multiline && style.line_height.0 > 0.0 {
-                    // Exactly the line height.
+                if config.multiline {
+                    // Exactly the line height the core measures the field
+                    // with ([`line_pitch`]): RichEdit would make a line as
+                    // tall as the tallest font in it (a fallback for Chinese
+                    // is taller than the UI font), and the text would no
+                    // longer fit the height the field was measured at.
                     pf.bLineSpacingRule = 4;
-                    pf.dyLineSpacing = (style.line_height.0 * s * twips).round() as i32;
+                    pf.dyLineSpacing = (pitch * s * twips).round() as i32;
                 } else {
                     pf.bLineSpacingRule = 0;
                     pf.dyLineSpacing = 0;
@@ -1114,6 +1132,15 @@ impl InputState {
 
 impl Hosted for InputState {
     fn draw(&self, cx: &mut DrawCx<'_>, size: (f32, f32)) {
+        // The views around may have moved the field since it last followed
+        // its view (laid out again: a composer growing upwards, a list
+        // scrolled): RichEdit's client rectangle goes where the field is
+        // drawn now, so that what the input method asks between frames
+        // (where to open its candidates) and the next press find the text
+        // where it shows.
+        if let Some(view) = self.view.upgrade() {
+            self.follow(&view);
+        }
         self.set_size(size);
         let fonts_changed = self.font_generation.get() != crate::text::font_generation();
         let scale_changed = self.scale.get() != cx.scale;
@@ -1356,6 +1383,19 @@ fn indicator_thumb(
         thick,
         thumb,
     ))
+}
+
+/// The distance between lines of several lines in `style`, as the core
+/// measures the field ([`crate::text::DWriteTextEngine`]): its line height,
+/// else its font's natural one.
+fn line_pitch(style: &nsh_core::ResolvedTextStyle) -> f32 {
+    thread_local! {
+        static ENGINE: crate::text::DWriteTextEngine = crate::text::DWriteTextEngine::default();
+    }
+    if style.line_height.0 > 0.0 {
+        return style.line_height.0;
+    }
+    ENGINE.with(|e| e.natural_line_height(style))
 }
 
 fn scroll_flags(config: &InputConfig) -> u32 {
@@ -3127,12 +3167,28 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
 /// paste.
 fn paste(surface: &Surface, view: &NshView, input: &InputState) {
     let text = crate::system::clipboard_text();
+    let mut paste = nsh_core::PasteEvent::new(text.unwrap_or_default());
     if view.state().events.contains(EventKind::Paste) {
-        let mut paste = nsh_core::PasteEvent::new(text.clone().unwrap_or_default());
+        paste.html = crate::system::clipboard_html().unwrap_or_default();
         if let Some(image) = crate::system::clipboard_image() {
             paste.files.push(nsh_core::PastedFile::image(image));
         }
         paste.uris = crate::system::clipboard_files();
+    }
+    paste_content(surface, view, input, paste);
+}
+
+/// Pastes `paste` into `view` as the user's paste of it does: reports it
+/// (`onPaste`) if the app listens, then inserts its text as
+/// `pasteBehavior` says.
+fn paste_content(
+    surface: &Surface,
+    view: &NshView,
+    input: &InputState,
+    paste: nsh_core::PasteEvent,
+) {
+    let text = paste.text.clone();
+    if view.state().events.contains(EventKind::Paste) {
         surface.event(
             view.id(),
             EventKind::Paste,
@@ -3142,14 +3198,27 @@ fn paste(surface: &Surface, view: &NshView, input: &InputState) {
     if input.config.borrow().paste_behavior != nsh_core::PasteBehavior::Insert {
         return;
     }
-    let Some(text) = text else {
-        return;
-    };
     let text = pasted(&text, input.multiline());
     if !text.is_empty() {
         replace_selection(input, &text.replace('\n', "\r"));
         process(surface, view, input);
     }
+}
+
+/// The test agent's paste of `content` into the focused input, without
+/// the system's clipboard.
+#[cfg(feature = "dev")]
+pub(crate) fn paste_focused(
+    surface: &Surface,
+    content: nsh_core::PasteEvent,
+) -> Result<(), String> {
+    let view = focused(surface).ok_or("no focused input to paste into")?;
+    let input = input_of(&view).ok_or("the focused view is no input")?;
+    if !input.config.borrow().editable {
+        return Err("the focused input is read-only".into());
+    }
+    paste_content(surface, &view, &input, content);
+    Ok(())
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -3515,6 +3584,52 @@ mod tests {
             let (min, max, _, _) = editor.vscroll();
             assert!(max - min > 80, "vertical overflow missing: {min}..{max}");
         }
+    }
+
+    /// The wheel's limit reaches the last line: scrolled there, the text's
+    /// end sits inside the client rectangle and no further scroll moves it
+    /// (#3200: the limit stopped about halfway at HiDPI).
+    #[test]
+    fn wheel_limit_reaches_the_last_line() {
+        let config = InputConfig {
+            multiline: true,
+            ..Default::default()
+        };
+        let client = RECT {
+            right: 420,
+            bottom: 160,
+            ..Default::default()
+        };
+        let editor = Editor::new(
+            HWND::default(),
+            Props {
+                client,
+                bits: base_bits(&config),
+                scroll: scroll_flags(&config),
+                ..Default::default()
+            },
+            Box::new(|| {}),
+            Box::new(|| {}),
+        )
+        .expect("RichEdit");
+        let text: Vec<String> = (1..=40)
+            .map(|i| format!("line {i:02}  abcdefghij"))
+            .collect();
+        editor.set_text(&text.join("\r\n"));
+        editor.send(0x00BA, 0, 0); // EM_GETLINECOUNT forces text layout.
+        let limit = editor.scroll_limit();
+        assert!(limit > client.bottom, "no overflow: {limit}");
+        let mut at = windows::Win32::Foundation::POINT { x: 0, y: limit };
+        editor.send(EM_SETSCROLLPOS, 0, &mut at as *mut _ as isize);
+        let mut now = windows::Win32::Foundation::POINT::default();
+        editor.send(EM_GETSCROLLPOS, 0, &mut now as *mut _ as isize);
+        assert_eq!(now.y, limit, "RichEdit clamped short of the limit");
+        let len = editor.text_units().len() as u32;
+        let last = editor.position(len);
+        assert!(
+            last.y >= client.top && last.y < client.bottom,
+            "the last line is not in view at the limit: {last:?}"
+        );
     }
 
     /// Several lines are as far apart as the line height says, the same
@@ -4095,6 +4210,267 @@ mod tests {
         assert!(input.composing.get().is_none());
         assert!(input.composed.borrow().is_none());
         assert_eq!(input.text(), "from-js");
+    }
+
+    /// Text that wraps into a few lines of a field 300 points wide.
+    const WRAPPING: &str = "你好世界 hello world 你好世界 hello world 你好世界 hello world";
+
+    /// A multiline field in a 16-point font, `line_height` apart (0: the
+    /// font's), whose content box is `width` × `height` points, inside the
+    /// surface's root at (20, 30).
+    fn multiline(
+        surface: &Rc<Surface>,
+        line_height: f32,
+        (width, height): (f32, f32),
+    ) -> (NshView, Rc<InputState>) {
+        surface.resized((800, 600), 1.0);
+        let view = NshView::new(5, nsh_core::ViewKind::Input);
+        view.state_mut().frame = Bounds::new(
+            Point::new(Points(20.0), Points(30.0)),
+            Size::new(Points(width), Points(height)),
+        );
+        view.insert_before(&surface.root, None);
+        create(surface, &view);
+        let mut config = InputConfig {
+            multiline: true,
+            ..Default::default()
+        };
+        config.style.font_size = Points(16.0);
+        config.style.line_height = Points(line_height);
+        super::config(surface, &view, &config);
+        resize(&view, (width, height));
+        let input = input_of(&view).expect("input");
+        (view, input)
+    }
+
+    /// The core lays the field out again at `width` × `height` points.
+    fn resize(view: &NshView, (width, height): (f32, f32)) {
+        view.state_mut().frame.size = Size::new(Points(width), Points(height));
+        content(
+            view,
+            Bounds::new(Point::default(), Size::new(Points(width), Points(height))),
+        );
+    }
+
+    /// How far the field's text is scrolled down (pixels).
+    fn scrolled(input: &InputState) -> i32 {
+        let mut at = windows::Win32::Foundation::POINT::default();
+        input.send(EM_GETSCROLLPOS, 0, &mut at as *mut _ as isize);
+        at.y
+    }
+
+    /// The lines RichEdit has laid the text out in.
+    fn line_count(input: &InputState) -> isize {
+        input.send(0x00BA, 0, 0).0.0 // EM_GETLINECOUNT
+    }
+
+    /// The field's RichEdit.
+    fn editor(input: &InputState) -> std::cell::Ref<'_, Editor> {
+        std::cell::Ref::map(input.editor.borrow(), |e| e.as_ref().expect("RichEdit"))
+    }
+
+    /// The field as the user types in it: focused, its window active.
+    fn focus_editor(input: &InputState) {
+        input.focused.set(true);
+        editor(input).set_focus(true);
+    }
+
+    /// A field the core lays out again (wider, narrower) wraps its lines at
+    /// its new width before it is drawn: the keys and presses that come
+    /// first find the lines where they will show.
+    #[test]
+    fn a_resized_field_wraps_its_lines_at_its_new_width() {
+        let surface = Surface::new(Default::default());
+        let (view, input) = multiline(&surface, 20.0, (300.0, 100.0));
+        value(&view, WRAPPING, 1);
+        let e = editor(&input);
+        let inside = |input: &InputState| {
+            let client = input.client();
+            (0..input.units().len() as u32)
+                .map(|i| e.position(i))
+                .all(|p| p.x >= client.left && p.x < client.right)
+        };
+        let wide = line_count(&input);
+        assert!(wide >= 2, "{WRAPPING:?} fits one line of 300 points");
+        assert!(inside(&input));
+        resize(&view, (120.0, 100.0));
+        let narrow = line_count(&input);
+        assert!(narrow > wide, "{narrow} lines at 120 points, {wide} at 300");
+        assert!(inside(&input), "characters past the field's right edge");
+        resize(&view, (300.0, 100.0));
+        assert_eq!(line_count(&input), wide);
+    }
+
+    /// A composer that grows a line as its text wraps: RichEdit scrolled its
+    /// one line to the caret on the second, and once the field is two lines
+    /// tall it shows both, from the first, with nothing blank below.
+    #[test]
+    fn a_field_grown_to_its_text_shows_it_from_its_first_line() {
+        let surface = Surface::new(Default::default());
+        let (view, input) = multiline(&surface, 20.0, (300.0, 20.0));
+        focus_editor(&input);
+        replace_selection(&input, WRAPPING);
+        process(&surface, &view, &input);
+        let lines = line_count(&input) as f32;
+        assert!(scrolled(&input) > 0, "the caret's line is not in view");
+        resize(&view, (300.0, 20.0 * lines));
+        assert_eq!(scrolled(&input), 0, "the first line stays scrolled away");
+        let e = editor(&input);
+        assert_eq!(e.position(0).y, input.client().top);
+        assert_eq!(input.text_scroll(), Some((0, 0)));
+        destroyed(&surface);
+    }
+
+    /// A press on the second of the lines the field shows puts the caret
+    /// where it landed, after the field was laid out again (narrower, then
+    /// as wide as it is drawn): where a press in a field laid out at that
+    /// width from the start puts it.
+    #[test]
+    fn a_press_on_a_wrapped_line_puts_the_caret_where_it_lands() {
+        let pressed = |first: (f32, f32)| {
+            let surface = Surface::new(Default::default());
+            let (view, input) = multiline(&surface, 20.0, first);
+            value(&view, WRAPPING, 1);
+            resize(&view, (300.0, 60.0));
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                let event = ItemPointer {
+                    kind,
+                    x: 180.0,
+                    y: 30.0,
+                    clicks: 1,
+                    modifiers: Modifiers::default(),
+                    button: 0,
+                    pointer: 1,
+                    touch: false,
+                    pen: false,
+                };
+                assert!(pointer(&surface, &view, &event));
+            }
+            let at = input.selection();
+            let e = editor(&input);
+            let y = e.position(at.0).y - input.client().top;
+            destroyed(&surface);
+            (at, y)
+        };
+        let (at, y) = pressed((300.0, 60.0));
+        assert_eq!(at.0, at.1);
+        assert_eq!(y, 20, "the caret is not on the second line");
+        assert_eq!(pressed((120.0, 140.0)), (at, y));
+    }
+
+    /// End goes to the end of the caret's line as it shows, and Ctrl+End
+    /// to the last line, after the field was laid out again.
+    #[test]
+    fn end_goes_to_the_end_of_the_line_shown() {
+        let surface = Surface::new(Default::default());
+        let (view, input) = multiline(&surface, 20.0, (120.0, 140.0));
+        value(&view, WRAPPING, 1);
+        resize(&view, (300.0, 60.0));
+        focus_editor(&input);
+        input.send(EM_SETSEL, 0, 0);
+        send_key(&input, VK_END.0, Modifiers::default());
+        let e = editor(&input);
+        let client = input.client();
+        // The caret RichEdit places (at the line's end, which is also where
+        // the next line starts in the text).
+        let caret = e.caret();
+        assert_eq!(caret.y, client.top, "End left the first line");
+        assert!(
+            caret.x - client.left > 200,
+            "End stopped at {} of a line 300 wide",
+            caret.x - client.left
+        );
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        send_key(&input, VK_END.0, ctrl);
+        let len = input.units().len() as u32;
+        assert_eq!(input.selection(), (len, len));
+        let last = (line_count(&input) - 1) as i32;
+        assert_eq!(e.caret().y - client.top + scrolled(&input), 20 * last);
+        destroyed(&surface);
+    }
+
+    /// Lines are as far apart as the core measures them, whatever fonts the
+    /// characters fall back to: the field's height holds its text exactly.
+    #[test]
+    fn lines_are_as_tall_as_the_core_measures_them() {
+        use nsh_core::{AttributedText, ResolvedTextStyle, TextEngine};
+        let engine = crate::text::DWriteTextEngine::default();
+        for line_height in [0.0, 22.0] {
+            let surface = Surface::new(Default::default());
+            let (view, input) = multiline(&surface, line_height, (300.0, 400.0));
+            let lines = ["你好世界", "hello", "你好 world", "世界"].join("\n");
+            value(&view, &lines, 1);
+            let mut text = AttributedText::default();
+            text.push(
+                &lines,
+                ResolvedTextStyle {
+                    font_size: Points(16.0),
+                    line_height: Points(line_height),
+                    ..Default::default()
+                },
+            );
+            let measured = engine.measure(&engine.prepare(&text), Some(Points(300.0)));
+            // From the first line to the fourth, three lines down.
+            let e = editor(&input);
+            let last = lines.rfind('\n').expect("lines") as u32 + 1;
+            let height = (e.position(last).y - e.position(0).y) as f32 * 4.0 / 3.0;
+            assert!(
+                (height - measured.height.0).abs() <= 1.5,
+                "line height {line_height}: RichEdit's four lines are {height} px, the core's {:?}",
+                measured.height
+            );
+        }
+    }
+
+    /// The field follows where it is drawn: once the views around it moved
+    /// it, RichEdit's client rectangle (where an input method opens its
+    /// candidates, where presses land) is where it shows after the next
+    /// frame, with no key or press in between.
+    #[test]
+    fn a_moved_field_takes_its_place_in_the_window_as_it_is_drawn() {
+        use windows::Win32::Graphics::{
+            Direct2D::{
+                Common::{D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT},
+                D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+            },
+            Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+        };
+        let Ok(gfx) = crate::gfx::get() else {
+            // No Direct3D device, not even WARP.
+            return;
+        };
+        let surface = Surface::new(Default::default());
+        let (view, input) = multiline(&surface, 20.0, (300.0, 40.0));
+        value(&view, "你好世界", 1);
+        assert_eq!((input.client().left, input.client().top), (20, 30));
+        // A composer laid out 50 points higher (the list above it shrank).
+        view.state_mut().frame.origin.y = Points(-20.0);
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+            colorContext: std::mem::ManuallyDrop::new(None),
+        };
+        let size = D2D_SIZE_U {
+            width: 800,
+            height: 600,
+        };
+        // SAFETY: a COM call making a bitmap of this thread's device.
+        let target = unsafe { gfx.dc.CreateBitmap(size, None, 0, &props) }.expect("target");
+        crate::render::draw_into(&surface, &gfx, &target, 1.0, false, None, None, None)
+            .expect("drawn");
+        let client = input.client();
+        assert_eq!((client.left, client.top), (20, -20));
+        let e = editor(&input);
+        assert_eq!(e.props().client, client);
+        assert_eq!(e.position(0).y, client.top);
     }
 
     #[test]

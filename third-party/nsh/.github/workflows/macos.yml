@@ -1,0 +1,87 @@
+name: macOS
+
+# The smoke set (`examples/gallery/tests/smoke.test.tsx`: typing, the focus a
+# press gives, the keymap's shortcuts) in AppKit windows with the platform's
+# own input (`nsh test --target macos`, docs/dev/macos.md). The other jobs
+# build and unit-test the macOS backend but drive no window, so regressions
+# only that platform has (#3244, #3245) reached a release. macOS runners are
+# scarce: pull requests run it only when they touch nsh-core, the macOS
+# backend, the code it shares with iOS, the test runner or the smoke set; main runs it
+# every three hours when it moved.
+
+on:
+  merge_group:
+    types: [checks_requested]
+  pull_request:
+    # `closed` runs nothing, but it takes the pull request's concurrency group
+    # and so cancels its runs still queued or running once it merges or closes.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+    paths:
+      - "crates/nsh-core/**"
+      - "crates/nsh-platform-apple/**"
+      - "crates/nsh-platform-macos/**"
+      - "crates/nsh-macos-app/**"
+      - "crates/nsh-macos-host/**"
+      - "crates/nsh-testing/**"
+      - "examples/gallery/tests/smoke.test.tsx"
+      - "examples/gallery/tests/fixtures/smoke-*.tsx"
+      - ".github/workflows/macos.yml"
+  schedule:
+    - cron: "30 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  # Scheduled runs: only when main moved since the last one.
+  changed:
+    if: github.event_name == 'schedule'
+    permissions:
+      actions: read
+    uses: ./.github/workflows/changed.yml
+
+  smoke:
+    needs: changed
+    # Nothing for drafts or a pull request being closed, nor for a scheduled
+    # run when main has not changed since the last one.
+    if: ${{ !cancelled() && needs.changed.outputs.run != 'false' && (github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft)) }}
+    # Debounce (AGENTS.md "CI"): waits without a runner, so a newer
+    # push cancels this run before it takes one.
+    environment:
+      name: ci-debounce
+      deployment: false
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up temporary files
+        run: |
+          mkdir -p "$RUNNER_TEMP/nsh-test-tmp"
+          echo "TMPDIR=$RUNNER_TEMP/nsh-test-tmp" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      # huacnlee/cargo, and the dependencies' builds: main's runs save
+      # them, pull requests restore them.
+      - name: Cargo
+        uses: ./.github/actions/cargo
+        with:
+          cache: macos-smoke
+      # `nsh test --target macos` builds the development host
+      # (`nsh-macos-host`) in a checkout; its input is posted to the
+      # application's queue, so it needs no accessibility permission.
+      - name: Build the command line
+        run: cargo build -p nsh-cli --locked
+      - name: Run the smoke set in AppKit windows
+        run: ./target/debug/nsh test examples/gallery/tests/smoke.test.tsx --target macos

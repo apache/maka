@@ -175,9 +175,11 @@ test("a list item's menu turns it into another block and + adds an item of the s
   // The new line is an item of the list: its checkbox shows with the others.
   expect(app.count("role:checkbox")).toBe(5);
   await app.keyboard.press("escape");
-  await app.type("label:Document", "Ship it");
+  // Longer than the last 8 bytes the editor's input holds before the caret
+  // on macOS, so the line is the only view with this text.
+  await app.type("label:Document", "Ship it today");
   await app.wait(300);
-  await app.hover("text:/Ship it");
+  await app.hover("text:/Ship it today");
   await app.waitFor(handle);
   await app.press(handle);
   await app.press("role:menuitem[Delete]");

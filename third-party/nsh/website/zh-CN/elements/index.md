@@ -97,7 +97,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<Accordion>` 及其部件 | `nsh_base::accordion()`、`accordion_item()` 等 | 在各自标题下展开和收起的一组分区，一次一个或同时多个 | [Accordion](./accordion.md) |
 | `<Avatar>`、`<AvatarGroup>` | `nsh_base::avatar()`、`avatar_group()` | 一个人的头像，加载中或失败时显示后备内容；以及只显示前几个的一排头像 | [Avatar](./avatar.md) |
 | `<Button>` | `nsh_base::button()` | 带有状态和角色的可按压控件 | [Button](./button.md) |
-| `<Carousel>` 及其部件 | `nsh_base::carousel()`、`carousel_content()` 等 | 一次显示一个位置的幻灯片，原生滑动，带上一张 / 下一张、分页、按键和无缝循环 | [Carousel](./carousel.md) |
+| `<Carousel>` 及其部件 | `nsh_base::carousel()`、`carousel_content()` 等 | 一次显示一个位置的幻灯片，原生滑动，带上一张 / 下一张按钮、分页、键盘操作和无缝循环 | [Carousel](./carousel.md) |
 | `<Checkbox>` | `nsh_base::checkbox()` | 带指示器的勾选 / 未勾选 / 半选控件 | [Checkbox](./checkbox.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Command>` | `nsh_base::command()` | 命令面板：在原生过滤的命令之上放一个搜索框，虚拟化列表，Cmd+K 面板的按键 | [Command](./command.md) |

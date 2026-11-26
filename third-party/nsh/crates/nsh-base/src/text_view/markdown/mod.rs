@@ -50,7 +50,7 @@ use super::{
         Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Footnote, Image, Inline,
         ListItem, Table, TableCell, inline_text,
     },
-    extension::{ParseContext, ReadChildren},
+    extension::{ConversionId, ParseContext, ReadChildren},
     html,
 };
 use crate::mdast_tree::{Mdast, plain_text};
@@ -94,11 +94,19 @@ pub(crate) fn parse(parser: &Parser, source: &str) -> Document {
 }
 
 /// Markdown `source` read in one parse.
-fn parse_whole(parser: &Parser, source: &str) -> Document {
-    project(parser, source, false).document
+pub(crate) fn parse_whole(parser: &Parser, source: &str) -> Document {
+    parse_whole_in(parser, source, ConversionId::next())
+}
+
+fn parse_whole_in(parser: &Parser, source: &str, conversion: ConversionId) -> Document {
+    project_in(parser, source, false, conversion).document
 }
 
 pub(super) fn project(parser: &Parser, source: &str, mapped: bool) -> Projection {
+    project_in(parser, source, mapped, ConversionId::next())
+}
+
+fn project_in(parser: &Parser, source: &str, mapped: bool, conversion: ConversionId) -> Projection {
     let raw_len = source.len() as u64;
     let source = prepare(parser, Source::original(source).normalize());
 
@@ -132,7 +140,7 @@ pub(super) fn project(parser: &Parser, source: &str, mapped: bool) -> Projection
     if trees.is_empty() {
         trees.push(tree(parser, Source::default(), true));
     }
-    let mut converter = Converter::new(parser, &source, &trees, mapped);
+    let mut converter = Converter::new(parser, &source, &trees, mapped, conversion);
     let mut blocks = Vec::new();
     let mut rows = Vec::new();
     let mut next = 0;
@@ -404,6 +412,8 @@ fn is_prose(source: &str, tex: &str, start: usize, end: usize) -> bool {
 /// Reads the trees into the document.
 struct Converter<'a> {
     parser: &'a Parser,
+    /// The conversion it reads for (`ParseContext::conversion_id`).
+    conversion: ConversionId,
     /// The source of the tree being read.
     source: &'a Source,
     /// The complete rewritten source, before container slices and appended definitions.
@@ -430,10 +440,12 @@ impl<'a> Converter<'a> {
         document_source: &'a Source,
         trees: &'a [Tree],
         mapped: bool,
+        conversion: ConversionId,
     ) -> Self {
         let anchors = anchors::Anchors::new(&parser.extensions);
         let mut converter = Self {
             parser,
+            conversion,
             source: document_source,
             document_source,
             mapped: mapped || !anchors.is_empty(),
@@ -556,10 +568,11 @@ impl<'a> Converter<'a> {
         if parser.plugins.is_empty() {
             return None;
         }
-        let source = self.source;
+        let (source, conversion) = (self.source, self.conversion);
         let mut cx = ParseContext {
             source,
             reader: self,
+            conversion,
         };
         parser.plugins.0.iter().find_map(|p| p.block(node, &mut cx))
     }
@@ -569,10 +582,11 @@ impl<'a> Converter<'a> {
         if parser.plugins.is_empty() {
             return None;
         }
-        let source = self.source;
+        let (source, conversion) = (self.source, self.conversion);
         let mut cx = ParseContext {
             source,
             reader: self,
+            conversion,
         };
         parser
             .plugins
@@ -906,7 +920,7 @@ impl<'a> Converter<'a> {
         let Node::Html(open) = &nodes[at] else {
             return None;
         };
-        let name = unclosed_element(&open.value).filter(|name| self.is_element(name))?;
+        let name = unclosed_element(&open.value).filter(|name| is_element(self.parser, name))?;
         let close = matching_close(nodes, at, name)?;
         let Node::Html(close_node) = &nodes[close] else {
             return None;
@@ -1152,7 +1166,7 @@ impl<'a> Converter<'a> {
         if !self.parser.options.html {
             return None;
         }
-        let name = unclosed_element(&open.value).filter(|name| self.is_element(name))?;
+        let name = unclosed_element(&open.value).filter(|name| is_element(self.parser, name))?;
         let close = matching_close(nodes, at, name)?;
         let start = nodes[at].position()?.start.offset;
         let end = nodes[close].position()?.end.offset;
@@ -1374,19 +1388,8 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Whether `name` is an element of HTML or of a `tag` extension: a tag
-    /// of another name (`<US tech>`, `</Foo>`) is text.
-    fn is_element(&self, name: &str) -> bool {
-        html::is_element(name)
-            || self.parser.extensions.iter().any(|ext| {
-                ext.tag
-                    .as_deref()
-                    .is_some_and(|tag| tag.eq_ignore_ascii_case(name))
-            })
-    }
-
     /// Whether HTML `html` is markup: it starts with a tag of an element
-    /// ([`Self::is_element`]), a comment, a declaration or an instruction.
+    /// ([`is_element`]), a comment, a declaration or an instruction.
     fn is_tag(&self, html: &str) -> bool {
         let inner = html.trim_start().strip_prefix('<').unwrap_or_default();
         let name = inner.strip_prefix('/').unwrap_or(inner);
@@ -1394,7 +1397,7 @@ impl<'a> Converter<'a> {
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-')
             .count();
-        len == 0 || self.is_element(&name[..len])
+        len == 0 || is_element(self.parser, &name[..len])
     }
 
     /// Node `node` as the text it was written as.
@@ -1430,6 +1433,17 @@ impl<'a> Converter<'a> {
         }
         node
     }
+}
+
+/// Whether `name` is an element of HTML or of one of `parser`'s `tag`
+/// extensions: a tag of another name (`<US tech>`, `</Foo>`) is text.
+fn is_element(parser: &Parser, name: &str) -> bool {
+    html::is_element(name)
+        || parser.extensions.iter().any(|ext| {
+            ext.tag
+                .as_deref()
+                .is_some_and(|tag| tag.eq_ignore_ascii_case(name))
+        })
 }
 
 impl ReadChildren for Converter<'_> {

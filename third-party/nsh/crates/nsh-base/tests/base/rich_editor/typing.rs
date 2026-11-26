@@ -29,6 +29,14 @@ fn focus(app: &mut Headless) {
     app.type_text("id:editor", "").unwrap();
 }
 
+/// What the editor's sink holds.
+fn sink(app: &Headless) -> Option<String> {
+    app.screen()
+        .input_text("id:editor")
+        .unwrap()
+        .map(str::to_owned)
+}
+
 // Inserting.
 
 #[test]
@@ -373,6 +381,41 @@ fn composition_shows_its_text_without_changing_the_document() {
     see(&mut app, "Sel 3-3");
 }
 
+/// The drawn caret's left edge, once `done` holds for it.
+fn caret_x(app: &mut Headless, what: &str, done: impl Fn(Points) -> bool) -> Points {
+    let x = |s: &nsh_testing::Screen| {
+        s.layout("id:rich-editor-caret")
+            .ok()
+            .flatten()
+            .map(|l| l.bounds.origin.x)
+    };
+    app.wait_until(what, Duration::from_secs(5), |s| x(s).is_some_and(&done))
+        .unwrap();
+    x(app.screen()).unwrap()
+}
+
+#[test]
+fn the_caret_shows_after_the_composition() {
+    // As a native text view draws it after its marked text, where the
+    // committed text leaves it.
+    let mut app = start(paragraphs(&["ab"]));
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    see(&mut app, "Sel 3-3");
+    let before = caret_x(&mut app, "the caret after ab", |_| true);
+    compose(&mut app, true, "にほ");
+    see(&mut app, "abにほ");
+    let composing = caret_x(&mut app, "the caret after にほ", |x| x > before);
+    see(&mut app, "Sel 3-3");
+    app.type_text("id:editor", "にほ").unwrap();
+    compose(&mut app, false, "");
+    see(&mut app, &tree(r#"doc(paragraph("abにほ"))"#));
+    see(&mut app, "Sel 5-5");
+    caret_x(&mut app, "the caret after the committed text", |x| {
+        (x - composing).0.abs() < 0.5
+    });
+}
+
 #[test]
 fn committing_a_composition_inserts_its_text_as_one_undo_step() {
     let mut app = start(paragraphs(&["ab"]));
@@ -450,6 +493,130 @@ fn a_cancelled_composition_in_the_sink_leaves_the_document() {
     see(&mut app, "Sel 3-3");
 }
 
+/// On iOS the sink holds the text before the caret, as UIKit's keyboard
+/// repeats a held Delete only over text it sees there: each deletion it
+/// makes there, a character or a word, is replayed as Backspaces, and the
+/// sink keeps what the platform holds.
+#[test]
+fn on_ios_the_sink_holds_the_text_before_the_caret() {
+    let mut app = start_on(paragraphs(&["one", "hi you"]), Os::Ios, true);
+    focus(&mut app);
+    keys(&mut app, &["right", "right", "right"]);
+    see(&mut app, "Sel 4-4");
+    assert_eq!(sink(&app).as_deref(), Some("one"));
+    // At a block's start there is nothing before the caret.
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 6-6");
+    assert_eq!(sink(&app).as_deref(), Some(""));
+    keys(&mut app, &["right"; 6]);
+    see(&mut app, "Sel 12-12");
+    assert_eq!(sink(&app).as_deref(), Some("hi you"));
+    // A held Delete: a character, then a word at a time. The sink is not
+    // set meanwhile (setting its text would end the repeat): it keeps what
+    // the platform holds, while the screen still shows what the editor
+    // last set.
+    sink_text(&mut app, "hi yo");
+    see(&mut app, &doc("one|hi yo"));
+    see(&mut app, "Sel 11-11");
+    assert_eq!(sink(&app).as_deref(), Some("hi you"));
+    sink_text(&mut app, "hi ");
+    see(&mut app, &doc("one|hi "));
+    assert_eq!(sink(&app).as_deref(), Some("hi you"));
+    sink_text(&mut app, "");
+    see(&mut app, &doc("one|"));
+    assert_eq!(sink(&app).as_deref(), Some("hi you"));
+    // Backspace at the block's start joins the blocks: the sink holds the
+    // text before the caret there.
+    keys(&mut app, &["backspace"]);
+    see(&mut app, &doc("one"));
+    see(&mut app, "Sel 4-4");
+    assert_eq!(sink(&app).as_deref(), Some("one"));
+}
+
+/// A deletion the platform makes in the sink is replayed as one Backspace
+/// per grapheme it took, as each deletes one: on iOS the sink holds the
+/// text before the caret, where UIKit deletes a skin-toned emoji or a
+/// letter with its combining mark whole.
+#[test]
+fn on_ios_a_deletion_in_the_sink_takes_whole_graphemes() {
+    let mut app = start_on(paragraphs(&["ae\u{301}👍🏽"]), Os::Ios, true);
+    focus(&mut app);
+    keys(&mut app, &["right", "right", "right"]);
+    see(&mut app, "Sel 8-8");
+    assert_eq!(sink(&app).as_deref(), Some("ae\u{301}👍🏽"));
+    sink_text(&mut app, "ae\u{301}");
+    see(&mut app, &doc("ae\u{301}"));
+    see(&mut app, "Sel 4-4");
+    sink_text(&mut app, "a");
+    see(&mut app, &doc("a"));
+    see(&mut app, "Sel 2-2");
+}
+
+/// On iOS each caret move sets the sink to the text before the caret. A
+/// commit after two of them goes in whole: had the platform dropped the
+/// second value, it would hold the text it last reported, not the first
+/// value set.
+#[test]
+fn on_ios_a_commit_after_two_caret_moves_goes_in_whole() {
+    let mut app = start_on(paragraphs(&["你"]), Os::Ios, true);
+    focus(&mut app);
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 2-2");
+    assert_eq!(sink(&app).as_deref(), Some("你"));
+    keys(&mut app, &["left"]);
+    see(&mut app, "Sel 1-1");
+    assert_eq!(sink(&app).as_deref(), Some(""));
+    compose(&mut app, true, "ni");
+    sink_text(&mut app, "ni");
+    compose(&mut app, true, "nihao");
+    sink_text(&mut app, "nihao");
+    sink_text(&mut app, "你好");
+    compose(&mut app, false, "");
+    see(&mut app, &doc("你好你"));
+    see(&mut app, "Sel 3-3");
+}
+
+/// On macOS the sink holds the end of the text before the caret, 8 bytes
+/// at most and whole characters: what an input method reads to put a space
+/// between Chinese and Latin text, and no more (the sink is a point wide,
+/// so each character of it is a line, and the candidates open where its
+/// text ends). What the input method then commits or deletes there goes
+/// into the document at the caret.
+#[test]
+fn on_macos_the_sink_holds_the_characters_before_the_caret() {
+    let mut app = start_on(paragraphs(&["one", "hello 你好"]), Os::MacOs, true);
+    focus(&mut app);
+    keys(&mut app, &["right", "right", "right"]);
+    see(&mut app, "Sel 4-4");
+    assert_eq!(sink(&app).as_deref(), Some("one"));
+    // At a block's start there is nothing before the caret.
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 6-6");
+    assert_eq!(sink(&app).as_deref(), Some(""));
+    // "hello 你好" is 12 bytes: the last 8.
+    keys(&mut app, &["end"]);
+    see(&mut app, "Sel 14-14");
+    assert_eq!(sink(&app).as_deref(), Some("o 你好"));
+    // An input method that saw "好" before the caret commits " a".
+    sink_text(&mut app, "o 你好 a");
+    see(&mut app, &doc("one|hello 你好 a"));
+    see(&mut app, "Sel 16-16");
+    sink_text(&mut app, "o 你好 ");
+    see(&mut app, &doc("one|hello 你好 "));
+    see(&mut app, "Sel 15-15");
+}
+
+/// The 8 bytes the macOS sink holds end at the caret and start at a
+/// character's boundary: never half a character.
+#[test]
+fn on_macos_the_sink_holds_whole_characters() {
+    let mut app = start_on(paragraphs(&["一二三四"]), Os::MacOs, true);
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    see(&mut app, "Sel 5-5");
+    assert_eq!(sink(&app).as_deref(), Some("三四"));
+}
+
 // Placeholder and read-only.
 
 #[test]
@@ -505,13 +672,56 @@ fn the_placeholder_hides_while_an_input_method_composes() {
 #[test]
 fn a_read_only_editor_ignores_typing_and_deleting() {
     let mut app = start_configured(paragraphs(&["ab"]), None, false);
-    assert!(app.type_text("id:editor", "xyz").is_err());
+    app.type_text("id:editor", "xyz").unwrap();
     app.press_at("text:ab", point(px(1.0), px(1.0))).unwrap();
     keys(&mut app, &["end", "backspace", "enter"]);
-    assert!(app.type_text("id:editor", "q").is_err());
+    app.type_text("id:editor", "q").unwrap();
     app.wait(Duration::from_millis(200)).unwrap();
     see(&mut app, &doc("ab"));
     see(&mut app, "Types paragraph");
+}
+
+#[test]
+fn a_read_only_editor_reports_typed_text_once_without_changing_it() {
+    let mut app = start_configured(paragraphs(&["ab"]), None, false);
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, "Heard 1");
+    app.wait(Duration::from_millis(200)).unwrap();
+    see(&mut app, "Heard 1");
+    see(&mut app, &doc("ab"));
+}
+
+#[test]
+fn a_read_only_editor_reports_no_deleting() {
+    let mut app = start_configured(paragraphs(&["ab"]), None, false);
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, "Heard 1");
+    sink_text(&mut app, "");
+    app.wait(Duration::from_millis(200)).unwrap();
+    see(&mut app, "Heard 1");
+    see(&mut app, &doc("ab"));
+}
+
+#[test]
+fn a_read_only_editor_reports_an_input_methods_commit_once() {
+    let mut app = start_configured(paragraphs(&["ab"]), None, false);
+    app.type_text("id:editor", "").unwrap();
+    compose(&mut app, true, "ni");
+    sink_text(&mut app, "ni");
+    see(&mut app, "Heard 0");
+    sink_text(&mut app, "你");
+    compose(&mut app, false, "");
+    see(&mut app, "Heard 1");
+    see(&mut app, &doc("ab"));
+}
+
+#[test]
+fn an_editable_editor_reports_no_readonly_input() {
+    let mut app = start_configured(paragraphs(&[""]), None, true);
+    app.type_text("id:editor", "x").unwrap();
+    see(&mut app, &doc("x"));
+    app.wait(Duration::from_millis(200)).unwrap();
+    see(&mut app, "Heard 0");
 }
 
 #[test]
@@ -524,7 +734,7 @@ fn a_read_only_editor_still_moves_the_caret() {
 }
 
 #[test]
-fn reactive_editable_updates_sink_input_config() {
+fn typing_changes_the_document_only_after_enabling_editing() {
     #[derive(Clone, PartialEq, Props)]
     struct ReactiveEditableProps {
         session: Option<EditorSession>,
@@ -574,7 +784,7 @@ fn reactive_editable_updates_sink_input_config() {
     let mut app = Headless::start(config).expect("the engine starts");
     app.wait_for(&format!("text:{}", doc("ab"))).unwrap();
 
-    assert!(app.type_text("id:editor", "x").is_err());
+    app.type_text("id:editor", "z").unwrap();
     see(&mut app, &doc("ab"));
 
     app.press("id:enable").unwrap();
@@ -651,13 +861,15 @@ fn Configured(props: ConfiguredProps) -> impl IntoElement {
         }
     };
     let shown = signal(read());
+    let heard = signal(0usize);
     let (on_change, on_select) = (read.clone(), read);
     let mut editor = rich_editor()
         .editor(session)
         .editable(props.editable)
         .size_full()
         .on_change(move |_: &_| shown.set(on_change()))
-        .on_selection_change(move |_: &_| shown.set(on_select()));
+        .on_selection_change(move |_: &_| shown.set(on_select()))
+        .on_readonly_input(move || heard.update(|n| *n += 1));
     if let Some(p) = props.placeholder.clone() {
         editor = editor.placeholder(SharedString::from(p));
     }
@@ -672,6 +884,7 @@ fn Configured(props: ConfiguredProps) -> impl IntoElement {
         .child(text(move || format!("Doc {:?}", shown.get().0)))
         .child(text(move || format!("Types {}", shown.get().1)))
         .child(text(move || format!("Sel {}", shown.get().2)))
+        .child(text(move || format!("Heard {}", heard.get())))
 }
 
 fn start_configured(doc: Value, placeholder: Option<&str>, editable: bool) -> Headless {

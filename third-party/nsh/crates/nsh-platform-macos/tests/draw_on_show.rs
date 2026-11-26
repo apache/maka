@@ -2,9 +2,10 @@
 //! while it could not (out of any window, or hidden) is put off, and drawn
 //! when it enters a window or shows again, with nothing else to come (no
 //! batch, input or animation). A host app makes the view and puts it in a
-//! window itself. AppKit views live on the main thread, so this test runs
-//! without libtest's harness, on the process's own. Its arguments pick the
-//! cases to run (`window`, `unhide`, `scaled`, `animated`, `sharp`,
+//! window itself; an app hides a view of its own with `visibility: hidden`.
+//! AppKit views live on the main thread, so this test runs without
+//! libtest's harness, on the process's own. Its arguments pick the cases to
+//! run (`window`, `unhide`, `invisible`, `scaled`, `animated`, `sharp`,
 //! `nested`, `canvas`); none runs all.
 
 #[cfg(target_os = "macos")]
@@ -36,6 +37,9 @@ mod macos {
     /// The test sets it to change the text.
     static CHANGED: AtomicBool = AtomicBool::new(false);
 
+    /// The test sets it to hide [`Hiding`]'s view, and clears it to show it.
+    static INVISIBLE: AtomicBool = AtomicBool::new(false);
+
     /// Starts the native transform after the test checks deferred text.
     static REVEAL: AtomicBool = AtomicBool::new(false);
 
@@ -64,6 +68,31 @@ mod macos {
         view().test_id("label").child(text(
             move || if changed.get() { "Trades" } else { "Orders" },
         ))
+    }
+
+    /// A text the test changes, in a view the test hides with
+    /// `visibility: hidden`, and the same text beside it, always shown:
+    /// its drawing says when the change was mounted.
+    #[component]
+    fn Hiding() -> impl IntoElement {
+        let (changed, invisible) = (signal(false), signal(false));
+        set_interval(Duration::from_millis(20), move || {
+            if CHANGED.load(Ordering::SeqCst) != changed.get_untracked() {
+                changed.set(CHANGED.load(Ordering::SeqCst));
+            }
+            if INVISIBLE.load(Ordering::SeqCst) != invisible.get_untracked() {
+                invisible.set(INVISIBLE.load(Ordering::SeqCst));
+            }
+        });
+        let words = move || if changed.get() { "Trades" } else { "Orders" };
+        view()
+            .child(
+                view()
+                    .test_id("page")
+                    .style_when(move || invisible.get(), |s| s.invisible())
+                    .child(view().test_id("label").child(text(words))),
+            )
+            .child(view().test_id("beside").child(text(words)))
     }
 
     #[component]
@@ -244,16 +273,26 @@ mod macos {
         {
             return Some(view.retain());
         }
-        view.subviews().iter().find_map(|c| find(&c, id))
+        view.subviews()
+            .iter()
+            .find_map(|c| find(&c, id))
+            // A layer-backed leaf is accessible without being a native subview.
+            .or_else(|| ax_views(view).find_map(|child| find(&child, id)))
+    }
+
+    fn ax_views(view: &NSView) -> impl Iterator<Item = Retained<NSView>> {
+        view.accessibilityChildren()
+            .into_iter()
+            .flat_map(|children| children.to_vec())
+            .filter_map(|child| child.downcast::<NSView>().ok())
     }
 
     /// What clients read of the text in `view`: its value.
     fn value(view: &NSView) -> Option<String> {
-        view.subviews()
-            .firstObject()?
-            .accessibilityValue()
+        view.accessibilityValue()
             .and_then(|o: Retained<AnyObject>| o.downcast::<NSString>().ok())
             .map(|s| s.to_string())
+            .or_else(|| ax_views(view).find_map(|child| value(&child)))
     }
 
     /// The pixels Core Animation holds for `view`: its layer tree's
@@ -367,6 +406,50 @@ mod macos {
         app.stop();
         window.close();
         println!("draw_on_show: unhide: ok");
+    }
+
+    /// The app hides a view with `visibility: hidden`: its `NSView` is
+    /// hidden with its frame kept, a text changed under it is not drawn,
+    /// and it is drawn once the view shows again.
+    fn invisible(mtm: MainThreadMarker) {
+        CHANGED.store(false, Ordering::SeqCst);
+        INVISIBLE.store(false, Ordering::SeqCst);
+        let window = window(mtm);
+        let app = app_view(mtm);
+        let root = app.view();
+        window.setContentView(Some(&root));
+        window.orderFrontRegardless();
+        app.load(Root::of::<Hiding>().into());
+        until("the first mount", || {
+            find(&root, "label").is_some() && find(&root, "beside").is_some()
+        });
+        let (page, label, beside) = (
+            find(&root, "page").expect("the page"),
+            find(&root, "label").expect("the label"),
+            find(&root, "beside").expect("the text beside"),
+        );
+        until("the first texts' drawing", || {
+            drawn(&label) && drawn(&beside)
+        });
+        spin(0.2);
+        let (before, beside_before, frame) = (picture(&label), picture(&beside), page.frame());
+
+        INVISIBLE.store(true, Ordering::SeqCst);
+        until("the view hidden", || page.isHidden());
+        assert_eq!(page.frame(), frame, "the hidden view lost its frame");
+        CHANGED.store(true, Ordering::SeqCst);
+        // The text beside, always shown, draws the change once it is mounted.
+        until("the change", || picture(&beside) != beside_before);
+        spin(0.2);
+        assert_eq!(picture(&label), before, "the text was drawn while hidden");
+
+        INVISIBLE.store(false, Ordering::SeqCst);
+        until("the view shown", || !page.isHidden());
+        until("the new text's drawing", || picture(&label) != before);
+
+        app.stop();
+        window.close();
+        println!("draw_on_show: invisible: ok");
     }
 
     /// Ordinary window composition, not cacheDisplayInRect (which forces
@@ -521,6 +604,9 @@ mod macos {
         }
         if runs("unhide") {
             unhide(mtm);
+        }
+        if runs("invisible") {
+            invisible(mtm);
         }
         if runs("scaled") {
             scaled_window(mtm);

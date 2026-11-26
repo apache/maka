@@ -36,7 +36,7 @@ use objc2::{
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
-use objc2_quartz_core::{CAMediaTiming, CATransition};
+use objc2_quartz_core::{CAMediaTiming, CATransaction, CATransform3D, CATransition};
 use objc2_ui_kit::{
     NSDirectionalRectEdge, NSForegroundColorAttributeName, UIAction,
     UIAdaptivePresentationControllerDelegate, UIBarButtonItem, UIBarButtonItemStyle,
@@ -1132,6 +1132,61 @@ fn hold_safe_area(nav: &UINavigationController) {
         return;
     }
     nav.setAdditionalSafeAreaInsets(wanted);
+}
+
+/// Lays `nav` and its bar out for the stack's untransformed place.
+///
+/// UIKit lays a stack out through the transforms around it, so a pass while
+/// a container shows the stack moved or scaled (a push drawer) places the
+/// bar for that picture: a bar the device keeps along one side of the screen
+/// (the iPhone Duo's vertical bar) goes to the side the picture is nearest,
+/// over the page. A transform changing starts no pass, so the bar would stay
+/// there after the transform goes. Here the transforms on the way to the
+/// window are lifted for the pass, in a transaction that draws nothing in
+/// between, and put back: the bar is placed where the stack really is, and
+/// stays there while the transform moves the picture. The safe area
+/// compensation ([`clip_side_safe_area`], [`hold_safe_area`]) is worked out
+/// again in the same pass.
+pub(crate) fn lay_out_in_place(nav: &UINavigationController) {
+    let Some(view) = nav.viewIfLoaded() else {
+        return;
+    };
+    if view.window().is_none() {
+        return;
+    }
+    let mut lifted = Vec::new();
+    let mut v = Some(view.retain());
+    while let Some(view) = v {
+        let layer = view.layer();
+        let transform = layer.transform();
+        if !transform.is_identity() {
+            lifted.push((layer, transform));
+        }
+        v = view.superview();
+    }
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    for (layer, _) in &lifted {
+        layer.setTransform(CATransform3D::new_translation(0.0, 0.0, 0.0));
+    }
+    view.setNeedsLayout();
+    nav.navigationBar().setNeedsLayout();
+    view.layoutIfNeeded();
+    for (layer, transform) in &lifted {
+        layer.setTransform(*transform);
+    }
+    CATransaction::commit();
+}
+
+/// [`lay_out_in_place`] for a stack under a transform, after its header
+/// changed there; without one, UIKit's own pass places the bar right.
+pub(crate) fn lay_out_header_in_place(nav: &UINavigationController) {
+    if nav
+        .viewIfLoaded()
+        .is_some_and(|v| untransformed_place(&v).is_some())
+    {
+        lay_out_in_place(nav);
+    }
 }
 
 /// Gives the bar of `nav` the height of the large title its top screen asks

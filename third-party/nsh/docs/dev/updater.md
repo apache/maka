@@ -77,7 +77,17 @@ packages' are removed at launch). `runningPackage()` is `Bundle::package`. `shel
   manifest at run time, which the user chooses in its settings. `"channels"` keeps the choice of *where* in the
   package: the code passes a name, `Config::channel` looks it up, and every channel needs HTTPS and `publicKey` as
   `url` does. Only the source changes, so the id, the signature and the newer-version check hold on every channel,
-  and leaving one never downgrades. `checkForPackage` reads only the default source.
+  and leaving one never downgrades. `checkForPackage` reads only the default source, unless the app opts in to
+  runtime feeds (below).
+- **Runtime package feeds are an opt-in exception** (#3298). One build serving several self-hosted servers learns the
+  feed only when the user signs in. `"packages": { "source": "runtime" }` lets `checkForPackage({ url })` name the
+  manifest (`Config::package_feed`); `publicKey` is then required and the roots stay the shipped app's, so the URL
+  changes where bytes come from, not what is trusted. `"allowHttp": true` allows a plain-HTTP feed for private
+  networks. It cannot widen what HTTPS already allowed: the signature, notes and package must be on the feed's origin
+  (`Config::check_package_url`), redirects from a plain-HTTP hop stay on that origin or go to HTTPS
+  (`updater_redirect_allowed` in `nsh-engine`), and a replayed older manifest offers nothing (a package's build must be
+  newer than the running one, and `verify_package` refuses builds below the trust store's floor). URLs with user info
+  are refused. App updates (`github`, `url`, `channels`) stay HTTPS.
 - **A plugin cannot replace its host.** `Installation::current` needs the executable beside an `app.json` of the id and
   a `nsh-updater.json` with the same bytes the module read. A plugin has other assets, and if it had the same bytes it
   would only update from the host's own source.

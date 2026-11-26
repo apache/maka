@@ -541,6 +541,10 @@ impl ImageStore {
                 .is_some_and(|entry| entry.picture.is_some())
     }
 
+    pub(crate) fn needs_stand_in(&self, image: &ImageMount) -> bool {
+        self.protocol.is_none() && image.source.is_some()
+    }
+
     pub(crate) fn finish(&mut self, buffer: &mut Buffer) {
         for (index, color) in self.kitty_placeholders.drain(..) {
             if let Some(cell) = buffer.content.get_mut(index)

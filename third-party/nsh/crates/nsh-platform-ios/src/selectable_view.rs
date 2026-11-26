@@ -12,7 +12,9 @@
 //! tap clears (a finger that scrolls a scroll view is no tap), and the edit menu (`UIEditMenuInteraction` from iOS 16,
 //! `UIMenuController` before) offers Copy and Select All, which the
 //! responder answers as the first responder (so do ⌘C and ⌘A on hardware
-//! keyboards). As in UIKit's text views, the long press plays an impact
+//! keyboards); the other hardware keys go through the area's raw key path
+//! (`KeyDown` / `KeyUp`, capture rules, bubbling to listening ancestors)
+//! while it holds the selection, as on the other backends. As in UIKit's text views, the long press plays an impact
 //! (the weight of a long press opening a menu) when it selects, and each
 //! time a drag moves an end a selection tick.
 //! Pointers (Mac Catalyst's mouse, iPad trackpads) select as on the
@@ -38,7 +40,8 @@ use nsh_core::{
     AttributedText, Bounds, Color, EventKind, EventPayload, NodeId, PayloadValue, Point, Points,
     geometry::{bounds, point, px, size},
     selection::{
-        Handle, KeptRows, SelectionModel, SelectionTexts, TextPosition, reading_order, reorder,
+        Handle, KeptRows, SelectionModel, SelectionTexts, TextPosition, autoscroll_step, marker_of,
+        reading_order, reorder,
     },
 };
 use nsh_engine::EngineControl;
@@ -49,12 +52,15 @@ use objc2::{
     sel,
 };
 use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSNumber, NSObject, NSString};
+use objc2_foundation::{
+    NSArray, NSNumber, NSObject, NSRunLoop, NSRunLoopCommonModes, NSSet, NSString,
+};
+use objc2_quartz_core::CADisplayLink;
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
     UIImpactFeedbackGenerator, UIImpactFeedbackStyle, UILongPressGestureRecognizer, UIMenu,
-    UIMenuElement, UIPanGestureRecognizer, UIResponder, UIScrollView, UISelectionFeedbackGenerator,
-    UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
+    UIMenuElement, UIPanGestureRecognizer, UIPress, UIPressesEvent, UIResponder, UIScrollView,
+    UISelectionFeedbackGenerator, UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
 };
 
 use crate::{native_view::NshView, text_view::TextView};
@@ -84,6 +90,8 @@ struct Entry {
     frame: Bounds<Points>,
     /// It continues the text before it (`ViewProps::continues_text`).
     continues: bool,
+    /// The list marker beside it (`selection::marker_of`).
+    marker: Option<String>,
 }
 
 /// The texts of an area as the model sees them.
@@ -112,6 +120,10 @@ impl SelectionTexts for AreaTexts {
 
     fn copied(&self, i: usize, range: std::ops::Range<u32>) -> String {
         self.entries[i].text.copied_text(range)
+    }
+
+    fn attributed(&self, i: usize) -> Option<&AttributedText> {
+        Some(&self.entries[i].text)
     }
 
     fn frame(&self, i: usize) -> Bounds<Points> {
@@ -151,12 +163,17 @@ impl SelectionTexts for AreaTexts {
     fn continues(&self, i: usize) -> bool {
         self.entries[i].continues
     }
+
+    fn marker(&self, i: usize) -> Option<&str> {
+        self.entries[i].marker.as_deref()
+    }
 }
 
 impl AreaTexts {
     /// The texts of `area`'s subtree, in document order.
     fn list(area: &UIView) -> Self {
-        fn walk(view: &UIView, area: &UIView, out: &mut Vec<Entry>) {
+        type Chrome = Option<(String, Bounds<Points>)>;
+        fn walk(view: &UIView, area: &UIView, out: &mut Vec<Entry>, chrome: &mut Chrome) {
             // In reading order: a virtual list's recycled cells are mounted
             // in no particular order.
             let start = out.len();
@@ -177,24 +194,29 @@ impl AreaTexts {
                     let Some(content) = text.attributed() else {
                         continue;
                     };
-                    if content.selectable == Some(false) {
-                        continue;
-                    }
                     let Some(rect) = text.content_box() else {
                         continue;
                     };
                     let r = text.convertRect_toView(rect, Some(area));
+                    let frame = bounds(
+                        pt(r.origin),
+                        size(px(r.size.width as f32), px(r.size.height as f32)),
+                    );
+                    if content.selectable == Some(false) {
+                        // A list marker, maybe: the next text's copy starts
+                        // with it.
+                        *chrome = Some((content.text.to_string(), frame));
+                        continue;
+                    }
                     out.push(Entry {
                         continues: text.continues_text(),
                         view: text.retain(),
+                        marker: marker_of(chrome.take().as_ref(), frame),
                         text: content,
-                        frame: bounds(
-                            pt(r.origin),
-                            size(px(r.size.width as f32), px(r.size.height as f32)),
-                        ),
+                        frame,
                     });
                 } else {
-                    walk(&child, area, out);
+                    walk(&child, area, out, chrome);
                 }
                 runs.push((frame, from..out.len()));
             }
@@ -203,7 +225,7 @@ impl AreaTexts {
             }
         }
         let mut entries = Vec::new();
-        walk(area, area, &mut entries);
+        walk(area, area, &mut entries, &mut None);
         Self {
             area: Some(area.retain()),
             entries,
@@ -264,6 +286,27 @@ impl AreaTexts {
     }
 }
 
+/// The least and the greatest content offset of `scroll`.
+fn offset_limits(scroll: &UIScrollView) -> (CGPoint, CGPoint) {
+    let (b, content) = (scroll.bounds(), scroll.contentSize());
+    let inset = scroll.adjustedContentInset();
+    let min = CGPoint::new(-inset.left, -inset.top);
+    let max = CGPoint::new(
+        (content.width + inset.right - b.size.width).max(min.x),
+        (content.height + inset.bottom - b.size.height).max(min.y),
+    );
+    (min, max)
+}
+
+/// `scroll`'s content offset moved by `d`, within its limits.
+fn scrolled_to(scroll: &UIScrollView, d: CGPoint) -> CGPoint {
+    let (b, (min, max)) = (scroll.bounds(), offset_limits(scroll));
+    CGPoint::new(
+        (b.origin.x + d.x).clamp(min.x, max.x),
+        (b.origin.y + d.y).clamp(min.y, max.y),
+    )
+}
+
 /// `color` at `alpha` of its opacity.
 fn faded(color: Color, alpha: f64) -> Color {
     let a = (color.0 & 0xff) as f64 * alpha;
@@ -315,6 +358,13 @@ pub(crate) struct AreaIvars {
     listens: Cell<bool>,
     /// The selection last reported to `onSelectionChange`.
     reported: RefCell<Selected>,
+    /// Where a selecting pointer drag is (window coordinates), while its
+    /// button is down.
+    pointer: Cell<Option<CGPoint>>,
+    /// The autoscroll's display link while it runs ([`AreaResponder::autoscroll`]),
+    /// and when its last frame was.
+    autoscroll: RefCell<Option<Retained<CADisplayLink>>>,
+    last_frame: Cell<Option<f64>>,
 }
 
 define_class!(
@@ -341,6 +391,36 @@ define_class!(
             resigned
         }
 
+        /// Hardware keys: Copy and Select All come as key commands
+        /// (`canPerformAction:withSender:`); the presses left go through
+        /// the area's raw key path ([`crate::keyboard::area_began`]), so
+        /// the area and its ancestors hear them while it holds the
+        /// selection, as a focused view's would.
+        #[unsafe(method(pressesBegan:withEvent:))]
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !self.area_presses(presses, crate::keyboard::area_began) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesEnded:withEvent:))]
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !self.area_presses(presses, crate::keyboard::area_ended) {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesCancelled:withEvent:))]
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if !self.area_presses(presses, crate::keyboard::area_cancelled) {
+                // SAFETY: calling the superclass implementation.
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            }
+        }
+
         #[unsafe(method(canPerformAction:withSender:))]
         fn can_perform_action(&self, action: Sel, _sender: Option<&AnyObject>) -> bool {
             if action == sel!(copy:) {
@@ -355,12 +435,16 @@ define_class!(
 
         #[unsafe(method(copy:))]
         fn copy(&self, _sender: Option<&AnyObject>) {
-            let text = {
+            let (text, html) = {
                 let texts = self.ivars().texts.borrow();
-                self.ivars().model.borrow().text(&*texts)
+                let model = self.ivars().model.borrow();
+                (model.text(&*texts), model.html(&*texts))
             };
-            if !text.is_empty() {
-                crate::system::set_clipboard(&text);
+            // Bold, italic and links go as HTML too, for rich text editors.
+            match html {
+                _ if text.is_empty() => {}
+                Some(html) => crate::system::set_clipboard_html(&text, &html),
+                None => crate::system::set_clipboard(&text),
             }
         }
 
@@ -467,6 +551,31 @@ define_class!(
                 if changed {
                     self.redraw();
                 }
+                // A drag held near or past the edge of a scroll view around
+                // its focus scrolls it (#2996).
+                let window_at = recognizer.locationInView(None);
+                self.ivars().pointer.set(Some(window_at));
+                if self.past_edge(window_at).is_some() {
+                    self.autoscroll();
+                }
+            } else {
+                self.ivars().pointer.set(None);
+                self.stop_autoscroll();
+            }
+        }
+
+        #[unsafe(method(autoscrollFrame:))]
+        fn autoscroll_frame(&self, link: &CADisplayLink) {
+            // Frames as long as at 60 Hz move as far whatever the display's
+            // rate.
+            let now = link.timestamp();
+            let scale = self
+                .ivars()
+                .last_frame
+                .replace(Some(now))
+                .map_or(1.0, |l| ((now - l) * 60.0).clamp(0.25, 4.0));
+            if !self.autoscroll_step(scale) {
+                self.stop_autoscroll();
             }
         }
 
@@ -712,6 +821,17 @@ impl AreaResponder {
         this
     }
 
+    /// Runs `path` (one of [`crate::keyboard`]'s area entries) for presses
+    /// delivered to the responder as the first responder: whether they
+    /// were consumed.
+    fn area_presses(
+        &self,
+        presses: &NSSet<UIPress>,
+        path: fn(&UIView, &NSSet<UIPress>) -> bool,
+    ) -> bool {
+        self.isFirstResponder() && self.superview().is_some_and(|area| path(&area, presses))
+    }
+
     /// Whether JS listens to the area's `onSelectionChange`.
     pub(crate) fn set_listens(&self, listens: bool) {
         self.ivars().listens.set(listens);
@@ -726,6 +846,8 @@ impl AreaResponder {
 
     /// The area is no longer one: its gestures, handles and highlight go.
     pub(crate) fn detach(&self) {
+        self.ivars().pointer.set(None);
+        self.stop_autoscroll();
         self.clear_selection();
         if self.isFirstResponder() {
             self.resignFirstResponder();
@@ -774,6 +896,104 @@ impl AreaResponder {
             self.place_handles();
             self.report();
         }
+    }
+
+    /// The innermost scroll view around the selection's focus (inside the
+    /// area or around it) that can still move toward where the pointer at
+    /// `at` (window coordinates) is near or past its edge, and its new
+    /// content offset after one 60 Hz frame ([`autoscroll_step`]).
+    fn past_edge(&self, at: CGPoint) -> Option<(Retained<UIScrollView>, CGPoint)> {
+        let start: Retained<UIView> = {
+            let focus = self.ivars().model.borrow().focus();
+            let texts = self.ivars().texts.borrow();
+            match focus.and_then(|f| texts.entries.get(f.text)) {
+                Some(e) => Retained::into_super(Retained::into_super(e.view.clone())),
+                None => self.superview()?,
+            }
+        };
+        let mut view = Some(start);
+        while let Some(v) = view {
+            if let Some(scroll) = v.downcast_ref::<UIScrollView>()
+                && scroll.isScrollEnabled()
+            {
+                let b = scroll.bounds();
+                let (min, max) = offset_limits(scroll);
+                let p = scroll.convertPoint_fromView(at, None);
+                let step = |at: CGFloat, origin: CGFloat, extent: CGFloat| {
+                    autoscroll_step(Points((at - origin) as f32), Points(extent as f32)).0
+                        as CGFloat
+                };
+                // Along the axes it scrolls only.
+                let dx = if max.x > min.x {
+                    step(p.x, b.origin.x, b.size.width)
+                } else {
+                    0.0
+                };
+                let dy = if max.y > min.y {
+                    step(p.y, b.origin.y, b.size.height)
+                } else {
+                    0.0
+                };
+                let to = scrolled_to(scroll, CGPoint::new(dx, dy));
+                if (to.x - b.origin.x).abs() > 0.5 || (to.y - b.origin.y).abs() > 0.5 {
+                    return Some((scroll.retain(), CGPoint::new(dx, dy)));
+                }
+            }
+            view = v.superview();
+        }
+        None
+    }
+
+    /// Scrolls on every frame while the selecting pointer stays near or
+    /// past the edge of a scroll view around the focus, held still too:
+    /// faster the further past, the selection extended each frame. It
+    /// stops when the button goes up, the pointer comes back inside or the
+    /// content ends.
+    fn autoscroll(&self) {
+        if self.ivars().autoscroll.borrow().is_some() {
+            return;
+        }
+        // SAFETY: `autoscrollFrame:` is implemented by the responder; the
+        // link retains it until `stop_autoscroll` invalidates the link (the
+        // drag ends or the area is detached).
+        let link =
+            unsafe { CADisplayLink::displayLinkWithTarget_selector(self, sel!(autoscrollFrame:)) };
+        crate::animation::full_rate(&link);
+        // SAFETY: the main run loop; common modes keep it running while a
+        // scroll view tracks.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        self.ivars().last_frame.set(None);
+        *self.ivars().autoscroll.borrow_mut() = Some(link);
+    }
+
+    fn stop_autoscroll(&self) {
+        if let Some(link) = self.ivars().autoscroll.take() {
+            link.invalidate();
+        }
+    }
+
+    /// One frame of the autoscroll, `scale` frames at 60 Hz long; false
+    /// when it is over.
+    fn autoscroll_step(&self, scale: f64) -> bool {
+        let (Some(at), Some(area)) = (self.ivars().pointer.get(), self.superview()) else {
+            return false;
+        };
+        let Some((scroll, d)) = self.past_edge(at) else {
+            return false;
+        };
+        let to = scrolled_to(&scroll, CGPoint::new(d.x * scale, d.y * scale));
+        scroll.setContentOffset_animated(to, false);
+        // The texts moved: the focus follows the pointer over them.
+        self.refresh_texts();
+        let local = area.convertPoint_fromView(at, None);
+        let changed = {
+            let texts = self.ivars().texts.borrow();
+            self.ivars().model.borrow_mut().drag(&*texts, pt(local))
+        };
+        if changed {
+            self.redraw();
+        }
+        true
     }
 
     /// Lists the texts again; the model hears of new ones.

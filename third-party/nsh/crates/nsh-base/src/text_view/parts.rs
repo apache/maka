@@ -285,3 +285,72 @@ impl JsValue for PartStyle {
         self.0.to_js(host)
     }
 }
+
+/// `styles` merged in order, as a component merges the styles of an
+/// element's parts: their declarations and their typed styles
+/// ([`Style::then`]). Later ones win among declarations and among typed
+/// styles of one kind; an element still applies declarations after typed
+/// styles, and bound typed styles after static ones. Without typed styles
+/// (a TSX app's) the declarations
+/// are gathered in one pass, as [`Style::from_decls`] does, since `then`
+/// would copy those gathered so far at each step; one style is kept as it is.
+pub(crate) fn merge_styles<'a, I>(styles: I) -> Style
+where
+    I: IntoIterator<Item = &'a Style>,
+    I::IntoIter: Clone,
+{
+    let styles = styles.into_iter();
+    let mut first_two = styles.clone();
+    match (first_two.next(), first_two.next()) {
+        (None, _) => return Style::default(),
+        (Some(style), None) => return style.clone(),
+        _ => {}
+    }
+    if styles.clone().any(Style::is_typed) {
+        return styles.fold(Style::default(), |all, s| all.then(s));
+    }
+    let mut decls = styles.flat_map(Style::decls).peekable();
+    if decls.peek().is_none() {
+        return Style::default();
+    }
+    Style::from_decls(decls.cloned())
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use nsh_core::{PropertyValue, StyleKey};
+
+    use super::*;
+
+    fn color(c: u32) -> PropertyValue {
+        PropertyValue::Color(Some(rgb(c).into()))
+    }
+
+    #[test]
+    fn declarations_merge_in_one_patch_in_order() {
+        let a = Style::default()
+            .with(StyleKey::Color, color(0xff0000))
+            .with(StyleKey::Opacity, PropertyValue::Number(0.5.into()));
+        let b = Style::default().with(StyleKey::Color, color(0x0000ff));
+        let merged = merge_styles([&a, &b]);
+        assert!(!merged.is_typed());
+        assert_eq!(merged.decls(), [a.decls(), b.decls()].concat());
+        assert_eq!(merge_styles([&a]), a);
+        assert_eq!(merge_styles(std::iter::empty()), Style::default());
+        assert_eq!(
+            merge_styles([&Style::default(), &Style::default()]),
+            Style::default()
+        );
+    }
+
+    #[test]
+    fn typed_styles_merge_with_then() {
+        let a = Style::default().with(StyleKey::Color, color(0xff0000));
+        let b = Style::from(StyleRefinement::default().text_color(rgb(0x0000ff)));
+        let c = Style::default().with(StyleKey::Opacity, PropertyValue::Number(0.5.into()));
+        let merged = merge_styles([&a, &b, &c]);
+        assert_eq!(merged, a.then(&b).then(&c));
+        assert!(merged.is_typed());
+        assert_eq!(merged.decls(), [a.decls(), c.decls()].concat());
+    }
+}

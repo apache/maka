@@ -16,6 +16,7 @@ on:
       - "crates/nsh-core/**"
       - "crates/nsh-dev/**"
       - "crates/nsh-engine/**"
+      - "crates/nsh-gpu/**"
       - "crates/nsh-i18n/**"
       - "crates/nsh-js/**"
       - "crates/nsh-macros/**"
@@ -105,13 +106,13 @@ jobs:
         run: echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
       - name: Install GTK 4 and GStreamer
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
       - name: Setup Rust
         if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      # The self-hosted runner is shared: install the toolchain without
+      # The self-hosted runners are shared: install the toolchain without
       # making it the machine's default (RUSTUP_TOOLCHAIN picks it).
       - name: Setup Rust (self-hosted)
         if: runner.environment == 'self-hosted'
@@ -174,7 +175,7 @@ jobs:
       # C code (zstd) clang and llvm-ar. The describe program links the gallery's crate,
       # whose native entry (`cargo run`) uses GTK 4 on Linux.
       - name: Install clang, LLVM, GTK 4, WebKitGTK and GStreamer
-        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -240,6 +241,23 @@ jobs:
       # checking them (`skipLibCheck`), which would hide a broken one.
       - name: Type-check the generated declarations
         run: ./target/debug/nsh check examples/counter -- --skipLibCheck false
+      # The smoke set (`examples/gallery/tests/smoke.test.tsx`: typing, the
+      # focus a press gives, the keymap's shortcuts) in Chrome on pull
+      # requests that touch the web backend, the components or the test
+      # runner; the full set below runs on main.
+      - name: Check whether the web smoke set applies
+        if: github.event_name == 'pull_request'
+        id: web-smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh pr diff ${{ github.event.pull_request.number }} -R "$GITHUB_REPOSITORY" --name-only \
+            | grep -qE '^(crates/nsh-platform-web/|crates/nsh-base/|crates/nsh-testing/|examples/gallery/tests/(smoke\.test|fixtures/smoke-)|\.github/workflows/rust-app\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run the smoke set in Chrome
+        if: github.event_name != 'pull_request' || steps.web-smoke.outputs.run == 'true'
+        run: ./target/debug/nsh test examples/gallery/tests/smoke.test.tsx --target web
       # The same tests in the runner's Chrome, headless, with the browser's
       # trusted input (`nsh test --target web`): those a real platform runs
       # (real time). The slowest part of the job: main's scheduled runs only.

@@ -302,3 +302,51 @@ fn each_engine_s_functions_read_the_context_its_host_gave_it() {
     assert_eq!(shown(&b, "done"), "done B B B");
     assert_eq!(shown(&none, "done"), "done none none none");
 }
+
+/// What [`Held::load`] waits for: the test releases it.
+static RELEASE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// A function whose answer comes from elsewhere (a request made in Rust).
+#[module]
+pub(crate) struct Waits;
+
+#[module]
+impl Waits {
+    /// "loaded", once the test releases it.
+    pub(crate) async fn load() -> String {
+        RELEASE.notified().await;
+        "loaded".to_owned()
+    }
+}
+
+const WAITS: &str = r#"import { mount, signal, Text } from "nsh";
+import { nativeModule } from "nsh";
+
+const { Waits } = nativeModule<{ Waits: { load(): Promise<string> } }>("host/waits");
+
+const shown = signal("started");
+Waits.load().then((value) => shown.set(`done ${value}`));
+
+mount(() => <Text>{shown()}</Text>);
+"#;
+
+/// Runs what was sent to `engine` and is due now: whether it is idle.
+fn flush(engine: &Engine) -> bool {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    engine.control().flush(move |idle| {
+        let _ = tx.send(idle);
+    });
+    rx.recv_timeout(Duration::from_secs(10)).unwrap()
+}
+
+#[test]
+fn an_engine_waiting_on_an_async_call_into_rust_is_not_idle() {
+    let mut r = Registry::ui_set("host/waits");
+    r.module::<Waits>();
+    let (engine, rx) = start(WAITS, vec![r], EngineContext::default());
+    assert_eq!(shown(&rx, "started"), "started");
+    assert!(!flush(&engine), "idle while the call waits for its answer");
+    RELEASE.notify_one();
+    assert_eq!(shown(&rx, "done"), "done loaded");
+    assert!(flush(&engine), "idle once it answered");
+}
