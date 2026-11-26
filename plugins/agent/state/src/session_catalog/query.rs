@@ -91,7 +91,17 @@ const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
    AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))";
 const FILTER: &str =
     "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
-const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
+// A child is delegated when its first local message was dispatched by its creator.
+// Resolve just that indexed message and its immutable queue source, not the history.
+const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room,
+ CASE WHEN is_room=0 AND json_extract(configuration,'$.parentSessionId') IS NOT NULL THEN (
+   SELECT json_extract(CAST(c.payload AS TEXT),'$.origin.execution.sessionId')
+   FROM agent_queue_items q JOIN contents c ON c.content_sha256=json_extract(q.entry_json,'$.request.source.digest')
+   WHERE q.session=selected.id AND q.owner=?1 AND q.state='delivered'
+     AND q.message=(SELECT m.message FROM agent_catalog_messages m
+                    WHERE m.owner=?1 AND m.session=selected.id ORDER BY m.sequence LIMIT 1)
+     AND json_extract(CAST(c.payload AS TEXT),'$.origin.kind')='session'
+ ) END";
 const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
@@ -463,6 +473,7 @@ struct Raw {
     source_run: Option<String>,
     source_unread: bool,
     is_room: bool,
+    first_sender: Option<String>,
 }
 impl Raw {
     fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -503,6 +514,7 @@ impl Raw {
             source_run: r.get(33)?,
             source_unread: r.get(34)?,
             is_room: r.get(35)?,
+            first_sender: r.get(36)?,
         })
     }
     fn decode(self) -> Result<Record, StoreError> {
@@ -599,6 +611,7 @@ impl Raw {
         };
         Ok(Record {
             is_room: self.is_room,
+            first_sender: self.first_sender,
             metadata: SessionRecord {
                 id: self.id,
                 revision,

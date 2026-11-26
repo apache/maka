@@ -170,6 +170,7 @@ import {
   browserOrder,
   groupConversations,
   groupConversationsByTime,
+  type FamilyFoldOverrides,
 } from '../../../../products/maka/workbench/app/conversationGroups';
 import { workspaceSessions } from '../../../../products/maka/workbench/app/sessionNesting';
 import { sidebarPreferences } from '../../../../products/maka/workbench/app/sidebarPreferences';
@@ -2174,7 +2175,7 @@ export function createConversationUi(
   // and stepping between conversations skips them as the browser does.
   const collapsedGroups = signal<ReadonlySet<string>>(new Set());
   const expandedProjects = signal<ReadonlySet<string>>(new Set());
-  const familyFoldOverrides = signal<ReadonlySet<string>>(new Set());
+  const familyFoldOverrides = signal<FamilyFoldOverrides>(new Map());
   const stepSession = (step: 1 | -1) => {
     const current = overlay();
     if (switching() || busy() || (current && current.kind !== 'sessions')) return;
@@ -3116,9 +3117,6 @@ export function createConversationUi(
                     resources.selectWorktree({ sessionId: id(), worktreePath })
                   }
                   sources={() => resources.sources(id())}
-                  childSessions={() =>
-                    browsing.sessions().filter((s) => s.parentSessionId === id())
-                  }
                   openChangesWithWorktree={
                     workspace()
                       ? (worktreePath) => resources.openChanges({ sessionId: id(), worktreePath })

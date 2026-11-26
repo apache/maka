@@ -54,6 +54,7 @@ import {
   isDark,
   menuDetailTextStyle,
   quietFocusStyle,
+  SubagentBadge,
 } from './ui';
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
@@ -64,7 +65,6 @@ import {
   groupWorkspace,
   groupConversations,
   groupConversationsByTime,
-  familyFoldKey,
   familyIsFolded,
   foldableFamilies,
   projectSessionLimit,
@@ -72,6 +72,7 @@ import {
   withinLimit,
   unfoldedSessions,
   type ConversationGroup,
+  type FamilyFoldOverrides,
 } from './conversationGroups';
 import {
   sidebarPreferences,
@@ -135,8 +136,8 @@ export type WorkspaceBrowserProps = {
    */
   collapsedGroups?: Signal<ReadonlySet<string>>;
   expandedProjects?: Signal<ReadonlySet<string>>;
-  /** The conversations whose created ones are folded behind one row, kept by the owner. */
-  familyFoldOverrides?: Signal<ReadonlySet<string>>;
+  /** Explicit family disclosure choices, kept by the owner. */
+  familyFoldOverrides?: Signal<FamilyFoldOverrides>;
 };
 
 type WorkspaceGroup = ConversationGroup<BrowserProject> & { name: string };
@@ -410,7 +411,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     return last;
   });
   const groupsById = computed(() => new Map(groups().map((group) => [group.key, group])));
-  const familyFoldOverrides = props.familyFoldOverrides ?? signal<ReadonlySet<string>>(new Set());
+  const familyFoldOverrides = props.familyFoldOverrides ?? signal<FamilyFoldOverrides>(new Map());
   const canFoldFamilies = () => browser.filter() === 'all';
   const families = computed(() => {
     const result = new Map<string, { members: string[]; pinned: boolean }>();
@@ -422,31 +423,43 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   });
   const familyOf = computed(() => {
     const parents = new Map<string, string>();
-    for (const [parent, { members }] of families())
-      for (const id of members) parents.set(id, parent);
+    for (const group of groups()) {
+      let parent: string | undefined;
+      for (const id of group.sessions) {
+        if (!group.nested.has(id)) parent = id;
+        else if (parent !== undefined) parents.set(id, parent);
+      }
+    }
     return parents;
   });
   const shownSessions = (group: WorkspaceGroup) =>
-    canFoldFamilies() ? unfoldedSessions(group, familyFoldOverrides()) : group.sessions;
+    canFoldFamilies()
+      ? unfoldedSessions(group, familyFoldOverrides(), props.selected())
+      : group.sessions;
   const toggleFamily = (parent: string) => {
     const family = families().get(parent);
     if (!family) return;
-    const key = familyFoldKey(parent, family.pinned);
-    const next = new Set(familyFoldOverrides());
-    if (!next.delete(key)) next.add(key);
+    const overrides = familyFoldOverrides();
+    const next = new Map(overrides);
+    if (familyIsFolded(parent, family.pinned, overrides) === family.pinned) {
+      next.set(parent, family.pinned ? 'open' : 'folded');
+    } else {
+      next.delete(parent);
+    }
     familyFoldOverrides.set(next);
   };
-  // Opening a folded conversation, from search or a notice, unfolds its
-  // family once; folding it again afterwards is the user's call.
-  let unfoldedFor: string | null = null;
   effect(() => {
-    const id = props.selected();
-    const parent = id ? familyOf().get(id) : undefined;
-    if (!id || !parent || id === unfoldedFor) return;
-    unfoldedFor = id;
+    const rows = sessionsById();
     untracked(() => {
-      const { pinned } = families().get(parent)!;
-      if (familyIsFolded(parent, pinned, familyFoldOverrides())) toggleFamily(parent);
+      const overrides = familyFoldOverrides();
+      let next: Map<string, 'open' | 'folded'> | undefined;
+      for (const [id, state] of overrides) {
+        if (state === 'open' && rows.get(id)?.pinned === false) {
+          next ??= new Map(overrides);
+          next.delete(id);
+        }
+      }
+      if (next) familyFoldOverrides.set(next);
     });
   });
   const rowIds = computed(() =>
@@ -462,9 +475,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           const more = topLevelCount(group) > limit;
           const sessions =
             !more || expanded().has(group.key) ? all : withinLimit(group, all, limit);
-          // A folding family's row sits right under its creator, open or not.
-          const rows = sessions.flatMap((id) => (families().has(id) ? [id, `family:${id}`] : [id]));
-          return [heading, ...rows, ...(more ? [`show-more:${group.key}`] : [])];
+          return [heading, ...sessions, ...(more ? [`show-more:${group.key}`] : [])];
         }),
   );
   const toggleGroup = (key: string) => {
@@ -1357,95 +1368,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   </View>
                 );
               }
-              if (key().startsWith('family:')) {
-                const parent = key().slice('family:'.length);
-                const family = () => families().get(parent);
-                const members = () =>
-                  (family()?.members ?? []).flatMap((id) => sessionsById().get(id) ?? []);
-                const open = () =>
-                  !familyIsFolded(parent, family()?.pinned ?? false, familyFoldOverrides());
-                const activityKnown = () => !props.connectionLost() && !browser.error();
-                // While folded the row stands in for its members' activity.
-                const waiting = () =>
-                  !open() &&
-                  activityKnown() &&
-                  members().some((member) => member.activity === 'waiting');
-                const lane = () =>
-                  open()
-                    ? null
-                    : activityKnown() && members().some((member) => member.activity === 'working')
-                      ? 'working'
-                      : members().some((member) => member.hasUnread)
-                        ? 'unread'
-                        : null;
-                const title = () =>
-                  sessionsById().get(parent)?.title || tr('Untitled conversation');
-                return (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      height: rowHeight(),
-                      paddingVertical: compact() ? 0 : 2,
-                      paddingLeft: nestInset,
-                    }}
-                  >
-                    <GuideLine last={() => !open()} height={rowHeight} />
-                    <Button
-                      accessibilityLabel={tr(
-                        open()
-                          ? 'Fold the conversations {title} created'
-                          : 'Show the conversations {title} created',
-                        { title: title() },
-                      )}
-                      onPress={inputAction(toggleFamily, parent)}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 4,
-                        paddingHorizontal: 8,
-                        borderRadius: radius(8),
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      focusStyle={controlFocusStyle()}
-                    >
-                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
-                        {tr('{count} created conversations', { count: members().length })}
-                      </Text>
-                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
-                      <Text
-                        style={[
-                          { ...captionTextStyle, color: C.accentText, flex: 1, minWidth: 0 },
-                          { numberOfLines: 1 },
-                        ]}
-                      >
-                        {waiting() ? sessionStatusCaption.waiting : ''}
-                      </Text>
-                      <View
-                        style={[
-                          { width: 16, alignItems: 'center', justifyContent: 'center' },
-                          { pointerEvents: 'none' },
-                        ]}
-                      >
-                        <If when={lane() === 'working'}>
-                          <LoadingIndicator size={12} label={sessionStatusCaption.working} />
-                        </If>
-                        <If when={lane() === 'unread'}>
-                          <View
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: 3,
-                              backgroundColor: C.accent,
-                            }}
-                          />
-                        </If>
-                      </View>
-                    </Button>
-                  </View>
-                );
-              }
               const groupKey = key().startsWith('group:') ? key().slice('group:'.length) : '';
               const initialGroup = groupsById().get(groupKey);
               if (initialGroup) {
@@ -1569,7 +1491,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               // elsewhere rather than just above (the row has no room to say).
               const creator = () => {
                 const parent = session()?.parentSessionId;
-                return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+                return parent && (!nestedRows().has(key()) || session()?.delegatedBy)
+                  ? sessionsById().get(parent)
+                  : undefined;
               };
               // The Bot is not in this list, so its workers cannot nest under it; mark them
               // with the Bot's own icon (a text caption would shorten the title).
@@ -1578,16 +1502,37 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 return parent != null && parent === props.botSession?.();
               };
               const activityKnown = () => !props.connectionLost() && !browser.error();
+              const family = () => families().get(key());
+              const folded = () =>
+                familyIsFolded(key(), family()?.pinned ?? false, familyFoldOverrides());
+              const childActivity = () => {
+                if (!folded() || !activityKnown()) return null;
+                let working = false;
+                for (const id of family()?.members ?? []) {
+                  if (id === props.selected()) continue;
+                  const activity = sessionsById().get(id)?.activity;
+                  if (activity === 'waiting') return 'waiting';
+                  if (activity === 'working') working = true;
+                }
+                return working ? 'working' : null;
+              };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
                 const current = session();
                 if (!current) return '';
+                const root = familyOf().get(current.id);
+                const rootWorkspace = root ? sessionsById().get(root)?.workspace : undefined;
+                const different = rootWorkspace && current.workspace.path !== rootWorkspace.path;
                 return [
                   activityKnown() && current.activity === 'waiting'
                     ? sessionStatusCaption.waiting
                     : '',
                   branchCaption(current),
-                  current.pinned || sortByTime() ? workspaceLabel(current.workspace) : '',
+                  different
+                    ? current.workspace.path.split(/[\\/]/).filter(Boolean).at(-1)
+                    : current.pinned || sortByTime()
+                      ? workspaceLabel(current.workspace)
+                      : '',
                 ]
                   .filter(Boolean)
                   .join(' · ');
@@ -1667,6 +1612,44 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                 }),
                           }}
                         >
+                          <If when={platform.idiom !== 'terminal' && family()}>
+                            <Button
+                              accessibilityLabel={tr(
+                                folded()
+                                  ? 'Show the conversations {title} created'
+                                  : 'Fold the conversations {title} created',
+                                { title: session()?.title || tr('Untitled conversation') },
+                              )}
+                              tooltip={textTooltip(() =>
+                                childActivity() === 'waiting'
+                                  ? sessionStatusCaption.waiting
+                                  : childActivity() === 'working'
+                                    ? sessionStatusCaption.working
+                                    : undefined,
+                              )}
+                              onPress={() => toggleFamily(key())}
+                              style={{
+                                width: 28,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: radius(8),
+                              }}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
+                            >
+                              <If
+                                when={childActivity() === 'working'}
+                                else={
+                                  <Icon
+                                    name={folded() ? 'right' : 'down'}
+                                    color={childActivity() === 'waiting' ? C.accent : C.muted}
+                                  />
+                                }
+                              >
+                                <LoadingIndicator size={12} label={sessionStatusCaption.working} />
+                              </If>
+                            </Button>
+                          </If>
                           <Button
                             accessibilityLabel={tr('Open conversation {title}', {
                               title: session()?.title || tr('Untitled conversation'),
@@ -1729,6 +1712,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               >
                                 {session()?.title || tr('Untitled conversation')}
                               </Text>
+                              <If
+                                when={
+                                  platform.idiom !== 'terminal' && Boolean(session()?.delegatedBy)
+                                }
+                              >
+                                <SubagentBadge preset={session()?.appliedPreset} />
+                              </If>
                               <If when={platform.idiom !== 'terminal' && desktopCaption()}>
                                 <Text
                                   style={[
@@ -1936,7 +1926,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   message: renderText(msg),
                 })
               }
-              change={(action) => props.changeSession(action, target.origin)}
+              change={async (action) => {
+                await props.changeSession(action, target.origin);
+                if (action.kind === 'unpin') {
+                  const next = new Map(familyFoldOverrides());
+                  if (next.delete(action.session.id)) familyFoldOverrides.set(next);
+                }
+              }}
               openSession={(id) => {
                 void select({ id, origin: target.origin });
               }}

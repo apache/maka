@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   browserOrder,
-  familyFoldKey,
   foldableFamilies,
   groupConversations,
   groupConversationsByTime,
@@ -77,8 +76,8 @@ test('pinning the parent moves its whole family into Pinned in both sidebar view
       [['pinned', ['parent', 'grandchild', 'child']]],
     );
     assert.deepEqual([...groups[0].nested], ['grandchild', 'child']);
-    assert.deepEqual(unfoldedSessions(groups[0], new Set()), ['parent']);
-    assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set()), ['parent']);
+    assert.deepEqual(unfoldedSessions(groups[0], new Map()), ['parent']);
+    assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Map()), ['parent']);
   }
 });
 
@@ -88,14 +87,14 @@ test('one pinned child is enough to fold, and expanding the family reveals it', 
     [],
     false,
   );
-  const overrides = new Set();
+  const overrides = new Map();
   const [group] = groups;
   assert.deepEqual(unfoldedSessions(group, overrides), ['parent']);
   assert.deepEqual(browserOrder(groups, new Set(), 'child', undefined, overrides), [
     'parent',
     'child',
   ]);
-  overrides.add(familyFoldKey('parent', true));
+  overrides.set('parent', 'open');
   assert.deepEqual(unfoldedSessions(group, overrides), ['parent', 'child']);
 });
 
@@ -141,6 +140,23 @@ test('a child pinned on its own can still appear in Pinned', () => {
       ['path:/a', ['parent']],
     ],
   );
+});
+
+test('explicitly pinning a child keeps it visible when its parent is pinned too', () => {
+  const rows = [
+    session('child', '/p', { pinned: true, parent: 'parent' }),
+    session('parent', '/p', { pinned: true }),
+    session('grandchild', '/p', { parent: 'child' }),
+    session('sibling', '/p', { parent: 'parent' }),
+  ];
+  for (const groups of [groupConversations(rows, [], false), groupConversationsByTime(rows)]) {
+    assert.deepEqual(unfoldedSessions(groups[0], new Map()), ['child', 'parent']);
+    assert.deepEqual(unfoldedSessions(groups[0], new Map([['child', 'open']])), [
+      'child',
+      'grandchild',
+      'parent',
+    ]);
+  }
 });
 
 test('project order is independent of conversation recency and stepping follows the preview', () => {
@@ -224,7 +240,7 @@ test('mixed pinned groups have no creation workspace; missing projects reuse an 
   assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'missing' });
 });
 
-test('a conversation that created three or more can fold them', () => {
+test('each visible family can fold and keep its currently selected child', () => {
   const [group] = groupConversations(
     [
       session('big', '/a'),
@@ -238,28 +254,29 @@ test('a conversation that created three or more can fold them', () => {
     [],
     false,
   );
-  assert.deepEqual([...foldableFamilies(group)], [['big', ['b1', 'b2', 'b3']]]);
-  assert.deepEqual(unfoldedSessions(group, new Set()), group.sessions);
-  assert.deepEqual(unfoldedSessions(group, new Set(['big', 'small'])), [
+  assert.deepEqual(
+    [...foldableFamilies(group)],
+    [
+      ['big', ['b1', 'b2', 'b3']],
+      ['small', ['s1', 's2']],
+    ],
+  );
+  assert.deepEqual(unfoldedSessions(group, new Map()), group.sessions);
+  assert.deepEqual(unfoldedSessions(group, new Map([['big', 'folded']])), [
     'big',
     'small',
     's1',
     's2',
   ]);
   // Stepping skips a folded family but starts from a folded current row.
-  assert.deepEqual(browserOrder([group], new Set(), null, undefined, new Set(['big'])), [
-    'big',
-    'small',
-    's1',
-    's2',
-  ]);
-  assert.deepEqual(browserOrder([group], new Set(), 'b2', undefined, new Set(['big'])), [
-    'big',
-    'b2',
-    'small',
-    's1',
-    's2',
-  ]);
+  assert.deepEqual(
+    browserOrder([group], new Set(), null, undefined, new Map([['big', 'folded']])),
+    ['big', 'small', 's1', 's2'],
+  );
+  assert.deepEqual(
+    browserOrder([group], new Set(), 'b2', undefined, new Map([['big', 'folded']])),
+    ['big', 'b2', 'small', 's1', 's2'],
+  );
   // Without fold state, as in the terminal, nothing folds.
   assert.deepEqual(browserOrder([group], new Set(), null), group.sessions);
 });
@@ -276,7 +293,10 @@ test('a folded family stays hidden within a project limit', () => {
     [project('x')],
     false,
   );
-  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set(['p'])), ['p', 'q']);
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Map([['p', 'folded']])), [
+    'p',
+    'q',
+  ]);
 });
 
 test('an open family does not use up its project limit', () => {
@@ -291,7 +311,7 @@ test('an open family does not use up its project limit', () => {
     false,
   );
   // Six top-level conversations show, each with what it created.
-  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Set()), [
+  assert.deepEqual(browserOrder(groups, new Set(), null, new Set(), new Map()), [
     't0',
     'c1',
     'c2',

@@ -40,9 +40,10 @@ import {
   controlDisabledStyle,
   textTooltip,
   floatingStyle,
+  SubagentBadge,
 } from './ui';
 
-type TreeSession = SessionActionTarget & Partial<Pick<AgentSession, 'activity'>>;
+type TreeSession = SessionActionTarget & Partial<Pick<AgentSession, 'activity' | 'delegatedBy'>>;
 export type TreeActions = {
   session: SessionActionTarget;
   action: SessionMenuAction;
@@ -211,7 +212,7 @@ export function SessionTree(props: {
         <List
           each={tree().keys}
           keyExtractor={(key) => key}
-          estimatedItemSize={48}
+          estimatedItemSize={40}
           role="tree"
           accessibilityLabel={tr('Child conversations')}
           style={{ width: contentWidth(), height: '100%', flex: 1, minHeight: 0 }}
@@ -232,7 +233,7 @@ export function SessionTree(props: {
                   return (
                     <View
                       style={{
-                        minHeight: 48,
+                        minHeight: 40,
                         paddingLeft: initial.depth * 16 + 32,
                         paddingRight: 8,
                         flexDirection: 'row',
@@ -342,7 +343,9 @@ export function SessionTree(props: {
                       : current.activity && current.activity !== 'idle'
                         ? sessionStatusCaption[current.activity]
                         : '',
-                    current.workspace?.path ?? '',
+                    current.workspace.path !== props.session.workspace.path
+                      ? current.workspace.path
+                      : '',
                   ]
                     .filter(Boolean)
                     .join(' · ');
@@ -362,7 +365,7 @@ export function SessionTree(props: {
                           expanded: leaf() ? undefined : expanded().has(session().id),
                         }}
                         style={{
-                          height: 48,
+                          height: 40,
                           paddingLeft: initial.depth * 16,
                           flexDirection: 'row',
                           alignItems: 'center',
@@ -395,14 +398,14 @@ export function SessionTree(props: {
                         <Button
                           role="link"
                           accessibilityLabel={tr('Open {name}', { name: session().title })}
-                          tooltip={textTooltip(() => session().title)}
+                          tooltip={textTooltip(() => session().workspace.path)}
                           disabled={!interactive() || !present()}
                           onPress={inputAction(open, session().id)}
                           style={{
                             ...controlStyle(),
                             flex: 1,
                             minWidth: 0,
-                            height: 48,
+                            height: 40,
                             paddingHorizontal: 8,
                             justifyContent: 'center',
                           }}
@@ -410,9 +413,19 @@ export function SessionTree(props: {
                           focusStyle={controlFocusStyle()}
                           disabledStyle={controlDisabledStyle}
                         >
-                          <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-                            {session().title}
-                          </Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text
+                              style={[
+                                { ...bodyTextStyle, color: C.text, flexShrink: 1 },
+                                { numberOfLines: 1 },
+                              ]}
+                            >
+                              {session().title}
+                            </Text>
+                            <If when={Boolean(session().delegatedBy)}>
+                              <SubagentBadge preset={session().appliedPreset} />
+                            </If>
+                          </View>
                           <If when={caption()}>
                             <Text
                               style={[

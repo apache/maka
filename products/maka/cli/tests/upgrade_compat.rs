@@ -1787,6 +1787,14 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
 
         let destination = dirs.workspace.join("post-upgrade-workspace");
         fs::create_dir_all(&destination).unwrap();
+        let original_room = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.room_id}),
+            Attachments::new(),
+        )
+        .await;
         let observed = call(
             &client,
             "agent",
@@ -1825,6 +1833,24 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             Attachments::new(),
         )
         .await;
+        assert_ne!(
+            rebound_observed["session"]["binding"]["id"],
+            original_room["session"]["binding"]["id"],
+            "rebinding the conversation should not overwrite the shared binding"
+        );
+        let unchanged_room = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.room_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(
+            unchanged_room["session"]["workspace"],
+            original_room["session"]["workspace"],
+            "an unrelated Room stays in its original workspace"
+        );
         let project_view = call(
             &client,
             "agent",

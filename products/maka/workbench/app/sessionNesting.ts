@@ -58,11 +58,14 @@ export function creationRoots<T extends Nestable>(
  * the group created moved under the first of its line there, one level in,
  * in their own order. The browser shows creation one level deep, not a tree.
  */
-export function nestCreated(sessions: readonly Nestable[]): {
+export function nestCreated<T extends Nestable>(
+  sessions: readonly T[],
+  parentOf?: (session: T) => string | null,
+): {
   order: string[];
   nested: ReadonlySet<string>;
 } {
-  const roots = creationRoots(sessions);
+  const roots = creationRoots(sessions, parentOf);
   const children = new Map<string, string[]>();
   const nested = new Set<string>();
   for (const { id } of sessions) {

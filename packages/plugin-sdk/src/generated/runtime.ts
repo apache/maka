@@ -7826,6 +7826,10 @@ export interface AgentSession {
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
   parentSessionId: string | null;
+  /**
+   * Creator that dispatched this child's first local message.
+   */
+  delegatedBy?: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
   tools?: string[] | null;

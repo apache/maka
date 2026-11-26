@@ -87,6 +87,34 @@ export function textTooltip(text: () => string | undefined): JSX.Element {
   );
 }
 
+const SUBAGENT_COLORS = ['#53376c', '#234d61', '#6a4129', '#355439', '#673749', '#484570'];
+
+export function SubagentBadge(props: { preset?: { id: string; name: string } | null }) {
+  const color = () => {
+    let hash = 0;
+    for (const char of props.preset?.id ?? '') hash = Math.imul(hash, 31) + char.charCodeAt(0);
+    return SUBAGENT_COLORS[(hash >>> 0) % SUBAGENT_COLORS.length];
+  };
+  return (
+    <If when={props.preset} else={<Icon name="bot" color={C.muted} size={13} />}>
+      <Text
+        style={{
+          fontSize: 11,
+          lineHeight: 16,
+          numberOfLines: 1,
+          maxWidth: 72,
+          paddingHorizontal: 4,
+          borderRadius: radius(4),
+          color: '#ffffff',
+          backgroundColor: color(),
+        }}
+      >
+        {props.preset?.name}
+      </Text>
+    </If>
+  );
+}
+
 const DARK = {
   background: '#161719',
   surface: '#202123',

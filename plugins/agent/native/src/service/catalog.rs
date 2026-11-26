@@ -186,6 +186,9 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
             SessionKind::Agent
         },
         incognito: session.configuration.incognito,
+        delegated_by: record
+            .first_sender
+            .filter(|sender| Some(sender) == session.configuration.parent_session_id.as_ref()),
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,

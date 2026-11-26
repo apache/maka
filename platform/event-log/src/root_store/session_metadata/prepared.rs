@@ -138,10 +138,31 @@ impl<T: Send + 'static, S: Statement> Statement for SessionMetadataChange<T, S> 
 }
 
 impl RootStore {
-    pub async fn prepare_session_workspace_change<S, G>(
+    pub async fn workspace_change_family(
         &self,
         id: &str,
+        owner_prefix: &str,
+    ) -> Result<WorkspaceChangeFamily, StoreError> {
+        self.require_open()?;
+        let id = id.to_owned();
+        let owner_prefix = owner_prefix.to_owned();
+        self.log
+            .connection
+            .read(move |connection| {
+                let members = workspace_change_family(connection, &id, &owner_prefix)?;
+                Ok(WorkspaceChangeFamily {
+                    id,
+                    owner_prefix,
+                    members,
+                })
+            })
+            .await
+    }
+
+    pub async fn prepare_session_workspace_change<S, G>(
+        &self,
         expected: u64,
+        family: WorkspaceChangeFamily,
         workspace: S,
         guard: G,
         writer: &DataWriter,
@@ -151,15 +172,20 @@ impl RootStore {
         G: Statement,
     {
         self.validate_data_writer(writer)?;
-        let revision = self.session(id).await?.revision_guard(writer, expected)?;
+        let revision = self
+            .session(&family.id)
+            .await?
+            .revision_guard(writer, expected)?;
         // Shared Session pins protect the attachment until a reader has pinned
         // its binding. Changing the reference needs both exclusive gates.
         let pins = self
             .gates
-            .try_write([
-                gates::Key::Session(id.to_owned()),
-                gates::Key::Work(id.to_owned()),
-            ])?
+            .try_write(family.members.iter().flat_map(|member| {
+                [
+                    gates::Key::Session(member.clone()),
+                    gates::Key::Work(member.clone()),
+                ]
+            }))?
             .ok_or(StoreError::SessionBusy)?;
         let custody = Arc::new(self.log.scoped(Arc::new(pins)));
         let revision = custody
@@ -172,17 +198,176 @@ impl RootStore {
         Ok(SessionWorkspaceChange {
             custody,
             revision,
+            family,
             workspace,
             guard,
         })
     }
 }
 
+pub struct WorkspaceChangeFamily {
+    id: String,
+    owner_prefix: String,
+    members: Vec<String>,
+}
+
+impl WorkspaceChangeFamily {
+    pub fn members(&self) -> &[String] {
+        &self.members
+    }
+}
+
+fn workspace_change_family(
+    connection: &SqliteConnection,
+    id: &str,
+    owner_prefix: &str,
+) -> Result<Vec<String>, StoreError> {
+    // Strip the CTE column's TEXT affinity so SQLite can seek the JSON expression index.
+    let mut query = connection.prepare_cached(
+        "WITH RECURSIVE family(id, binding) AS (
+           SELECT id, json_extract(configuration, '$.workspace.id') FROM session_control WHERE id=?1
+           UNION
+           SELECT s.id, f.binding FROM family f
+           CROSS JOIN session_control s INDEXED BY session_catalog_children
+             ON json_extract(s.configuration, '$.parentSessionId')=+f.id
+           JOIN session_creations r ON r.session_id=s.id AND r.ready=1 AND r.visible=1
+           WHERE json_extract(s.configuration, '$.workspace.id')=f.binding AND s.archived=0
+             AND substr(s.id,1,length(?2))=?2
+             AND NOT EXISTS(SELECT 1 FROM session_retirements d WHERE d.session_id=s.id AND d.remove_session=1)
+         ) SELECT id FROM family ORDER BY id",
+    )?;
+    Ok(query
+        .query_map(rusqlite::params![id, owner_prefix], |row| row.get(0))?
+        .collect::<Result<_, _>>()?)
+}
+
 struct SessionWorkspaceChange<S, G> {
     custody: Arc<EventLog>,
     revision: SessionRevisionGuard,
+    family: WorkspaceChangeFamily,
     workspace: S,
     guard: G,
+}
+
+#[cfg(test)]
+mod workspace_change_tests {
+    use super::*;
+    use crate::{
+        ROOT_MIGRATIONS,
+        root::{RootNamespaces, RootOwner},
+    };
+    use serde_json::{Value, json};
+
+    struct CheckIdle(bool);
+
+    impl Statement for CheckIdle {
+        type Value = ();
+        type Output = ();
+
+        fn execute(self, _: &SqliteConnection) -> Result<Prepared<()>, StoreError> {
+            if self.0 {
+                return Err(StoreError::SessionBusy);
+            }
+            Ok(Prepared {
+                value: (),
+                changed: false,
+                notification: Notification::NONE,
+            })
+        }
+
+        fn committed(_: ()) {}
+
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_change_moves_only_the_shared_descendant_branch() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+        let namespaces = RootNamespaces {
+            ownership: base.join("owners"),
+            control: base.join("control"),
+        };
+        let root = RootOwner::create(&base.join("root"), &namespaces).unwrap();
+        let store = RootStore::open(Arc::new(root), ROOT_MIGRATIONS)
+            .await
+            .unwrap();
+        let shared = store
+            .attach_workspace("agent-", &json!({"path": "/before"}))
+            .await
+            .unwrap();
+        let independent = store
+            .attach_workspace("agent-", &json!({"path": "/worktree"}))
+            .await
+            .unwrap();
+        let moving = [
+            ("agent-parent", None, shared),
+            ("agent-child", Some("agent-parent"), shared),
+            ("agent-grandchild", Some("agent-child"), shared),
+        ];
+        let retained = [
+            ("agent-worktree", Some("agent-parent"), independent),
+            ("agent-under-worktree", Some("agent-worktree"), shared),
+            ("agent-unrelated", None, shared),
+        ];
+        for (id, parent, binding) in moving.iter().chain(&retained) {
+            store.create_session(
+                id,
+                "create",
+                &json!({"title":id, "parentSessionId":parent, "workspace":binding, "boundary_revision":0}),
+                1,
+            ).await.unwrap();
+        }
+        let writer = store.data_writer().unwrap();
+        let revision = store
+            .get_session::<Value>("agent-parent")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        for busy in [true, false] {
+            let family = store
+                .workspace_change_family("agent-parent", "agent-")
+                .await
+                .unwrap();
+            let (destination, workspace) = store
+                .prepare_creation_workspace("agent-", |_| json!({"path":"/after"}), None, &writer)
+                .await
+                .unwrap();
+            let change = store
+                .prepare_session_workspace_change(
+                    revision,
+                    family,
+                    workspace,
+                    CheckIdle(busy),
+                    &writer,
+                )
+                .await
+                .unwrap();
+            let result = writer.write(change).await;
+            if busy {
+                assert!(matches!(result, Err(StoreError::SessionBusy)), "{result:?}");
+            } else {
+                result.unwrap();
+            }
+            for (id, _, before) in moving.iter().chain(&retained) {
+                let session = store.get_session::<Value>(id).await.unwrap().unwrap();
+                let moved = !busy && moving.iter().any(|(member, _, _)| member == id);
+                assert_eq!(
+                    session.workspace_binding.unwrap().id,
+                    if moved { destination.id } else { before.id },
+                    "{id}"
+                );
+                assert_eq!(
+                    session.configuration["boundary_revision"],
+                    u64::from(moved),
+                    "{id}"
+                );
+            }
+        }
+    }
 }
 
 impl<S, G> Statement for SessionWorkspaceChange<S, G>
@@ -209,35 +394,52 @@ where
 
     fn execute(self, connection: &SqliteConnection) -> Result<Prepared<Self::Value>, StoreError> {
         self.revision.validate(connection)?;
+        let id = self.revision.session_id();
+        if workspace_change_family(connection, id, &self.family.owner_prefix)?
+            != self.family.members
+        {
+            return Err(StoreError::SessionBusy);
+        }
         let guard = self.guard.execute(connection)?;
         let workspace = self.workspace.execute(connection)?;
-        let id = self.revision.session_id();
-        let change = crate::sessions::metadata::preview_metadata(
-            connection,
-            id,
-            self.revision.expected,
-            false,
-            |configuration: &mut serde_json::Value| {
-                let binding = serde_json::to_value(workspace.value)?;
-                if configuration["workspace"] != binding {
-                    let boundary = configuration["boundary_revision"]
-                        .as_u64()
-                        .and_then(|revision| revision.checked_add(1))
-                        .filter(|revision| *revision <= crate::sessions::MAX_SAFE_INTEGER)
-                        .ok_or_else(|| {
-                            StoreError::InvalidTransition(
-                                "invalid permission boundary revision".into(),
-                            )
-                        })?;
-                    configuration["workspace"] = binding;
-                    configuration["boundary_revision"] = boundary.into();
-                }
-                Ok(())
-            },
-        )?;
-        let (_, changed) = change.apply(connection)?;
+        let mut changed_sessions = Vec::new();
+        for member in self.family.members {
+            let revision = if member == id {
+                self.revision.expected
+            } else {
+                crate::workspace_bindings::current_session_revision(connection, &member)?
+                    .ok_or(StoreError::SessionNotFound)?
+            };
+            let change = crate::sessions::metadata::preview_metadata(
+                connection,
+                &member,
+                revision,
+                false,
+                |configuration: &mut serde_json::Value| {
+                    let binding = serde_json::to_value(workspace.value)?;
+                    if configuration["workspace"] != binding {
+                        let boundary = configuration["boundary_revision"]
+                            .as_u64()
+                            .and_then(|revision| revision.checked_add(1))
+                            .filter(|revision| *revision <= crate::sessions::MAX_SAFE_INTEGER)
+                            .ok_or_else(|| {
+                                StoreError::InvalidTransition(
+                                    "invalid permission boundary revision".into(),
+                                )
+                            })?;
+                        configuration["workspace"] = binding;
+                        configuration["boundary_revision"] = boundary.into();
+                    }
+                    Ok(())
+                },
+            )?;
+            if change.apply(connection)?.1 {
+                changed_sessions.push(member);
+            }
+        }
+        let changed = !changed_sessions.is_empty();
         let notification = if changed {
-            Notification::METADATA.with_sessions([id.to_owned()])
+            Notification::METADATA.with_sessions(changed_sessions)
         } else {
             Notification::NONE
         };

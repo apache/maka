@@ -46,9 +46,8 @@ export type ConversationGroup<Project> = {
 
 const PROJECT_SESSION_LIMIT = 6;
 
-// An explicit pin still lifts a child out of an unpinned family.
-const groupingRoots = (sessions: readonly Groupable[]) =>
-  creationRoots(sessions, (session) => (session.pinned ? null : session.parentSessionId));
+// An explicit pin makes the conversation a separate root, even if its creator is pinned.
+const groupingParent = (session: Groupable) => (session.pinned ? null : session.parentSessionId);
 
 /** Pinned conversations, registered projects in catalog order, then other workspaces. */
 export function groupConversations<Project extends Listable>(
@@ -71,7 +70,7 @@ export function groupConversations<Project extends Listable>(
     groups.set(key, group);
     return group;
   };
-  const roots = groupingRoots(sessions);
+  const roots = creationRoots(sessions, groupingParent);
   for (const session of sessions) {
     const { pinned, workspace } = roots.get(session.id) ?? session;
     const projectId = workspace.projectId;
@@ -96,7 +95,7 @@ export function groupConversations<Project extends Listable>(
     if (!group.pinned && !group.project) ordered.push(group);
   }
   return ordered.map(({ members, ...group }) => {
-    const { order, nested } = nestCreated(members);
+    const { order, nested } = nestCreated(members, groupingParent);
     return { ...group, sessions: order, nested };
   });
 }
@@ -124,13 +123,7 @@ export function withinLimit(
   });
 }
 
-// A family this large folds behind one row; folding a smaller one would save
-// at most a row.
-const FOLDED_FAMILY_SIZE = 3;
-
-/**
- * Pinned families can fold even one child. Elsewhere, only larger families fold.
- */
+/** Each flattened family under its visible root. */
 export function foldableFamilies(group: ConversationGroup<unknown>): Map<string, string[]> {
   const families = new Map<string, string[]>();
   let parent: string | null = null;
@@ -142,28 +135,24 @@ export function foldableFamilies(group: ConversationGroup<unknown>): Map<string,
       else families.set(parent, [id]);
     }
   }
-  if (!group.pinned)
-    for (const [id, members] of families)
-      if (members.length < FOLDED_FAMILY_SIZE) families.delete(id);
   return families;
 }
 
-export function familyFoldKey(parent: string, pinned: boolean): string {
-  return pinned ? `pinned:${parent}` : parent;
-}
+export type FamilyFoldOverrides = ReadonlyMap<string, 'open' | 'folded'>;
 
 export function familyIsFolded(
   parent: string,
   pinned: boolean,
-  overrides: ReadonlySet<string>,
+  overrides: FamilyFoldOverrides,
 ): boolean {
-  return pinned !== overrides.has(familyFoldKey(parent, pinned));
+  const override = overrides.get(parent);
+  return pinned ? override !== 'open' : override === 'folded';
 }
 
 /** The group's conversations without those folded under their creator. */
 export function unfoldedSessions(
   group: ConversationGroup<unknown>,
-  overrides: ReadonlySet<string>,
+  overrides: FamilyFoldOverrides,
   current: string | null = null,
 ): string[] {
   const hidden = new Set<string>();
@@ -182,7 +171,7 @@ export function browserOrder(
   collapsed: ReadonlySet<string>,
   current: string | null,
   expandedProjects?: ReadonlySet<string>,
-  familyFoldOverrides?: ReadonlySet<string>,
+  familyFoldOverrides?: FamilyFoldOverrides,
 ): string[] {
   return groups.flatMap((group) => {
     const sessions = familyFoldOverrides
@@ -203,69 +192,44 @@ export function groupConversationsByTime<Project>(
   sessions: readonly Groupable[],
   now = Date.now(),
 ): ConversationGroup<Project>[] {
-  const roots = groupingRoots(sessions);
-  const pinned: Groupable[] = [];
-  const unpinned: Groupable[] = [];
-  for (const session of sessions) {
-    if ((roots.get(session.id) ?? session).pinned) pinned.push(session);
-    else unpinned.push(session);
-  }
-
+  const roots = creationRoots(sessions, groupingParent);
   const ref = new Date(now);
   const todayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()).getTime();
   const yesterdayMs = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - 1).getTime();
 
-  const today: string[] = [];
-  const yesterday: string[] = [];
-  const earlier: string[] = [];
-  for (const session of unpinned) {
-    const ts = session.updatedAt ?? 0;
-    if (ts >= todayMs) today.push(session.id);
-    else if (ts >= yesterdayMs) yesterday.push(session.id);
-    else earlier.push(session.id);
+  const buckets = {
+    pinned: [] as Groupable[],
+    'time:today': [] as Groupable[],
+    'time:yesterday': [] as Groupable[],
+    'time:earlier': [] as Groupable[],
+  };
+  for (const session of sessions) {
+    const root = roots.get(session.id) ?? session;
+    const ts = root.updatedAt ?? 0;
+    const key = root.pinned
+      ? 'pinned'
+      : ts >= todayMs
+        ? 'time:today'
+        : ts >= yesterdayMs
+          ? 'time:yesterday'
+          : 'time:earlier';
+    buckets[key].push(session);
   }
 
-  const empty = new Set<string>();
-  const groups: ConversationGroup<Project>[] = [];
-  if (pinned.length) {
-    const { order, nested } = nestCreated(pinned);
-    groups.push({
-      key: 'pinned',
-      pinned: true,
-      project: null,
-      path: null,
-      sessions: order,
-      nested,
-    });
-  }
-  if (today.length)
-    groups.push({
-      key: 'time:today',
-      pinned: false,
-      project: null,
-      path: null,
-      sessions: today,
-      nested: empty,
-    });
-  if (yesterday.length)
-    groups.push({
-      key: 'time:yesterday',
-      pinned: false,
-      project: null,
-      path: null,
-      sessions: yesterday,
-      nested: empty,
-    });
-  if (earlier.length)
-    groups.push({
-      key: 'time:earlier',
-      pinned: false,
-      project: null,
-      path: null,
-      sessions: earlier,
-      nested: empty,
-    });
-  return groups;
+  return Object.entries(buckets).flatMap(([key, members]) => {
+    if (!members.length) return [];
+    const { order, nested } = nestCreated(members, groupingParent);
+    return [
+      {
+        key,
+        pinned: key === 'pinned',
+        project: null,
+        path: null,
+        sessions: order,
+        nested,
+      },
+    ];
+  });
 }
 
 /** Resolve creation through an owned workspace, never a display path. */

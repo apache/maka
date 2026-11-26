@@ -64,7 +64,7 @@ pub use operations::{OperationStore, OperationWork, ProviderJournal, RecoveredOp
 mod projects;
 pub use projects::ProjectWorkspacePlan;
 mod session_metadata;
-pub use session_metadata::SessionRevisionGuard;
+pub use session_metadata::{SessionRevisionGuard, WorkspaceChangeFamily};
 mod session_store;
 pub use creation::{CreationRejection, SessionCreationRequest};
 

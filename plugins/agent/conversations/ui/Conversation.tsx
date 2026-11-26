@@ -422,7 +422,6 @@ type ConversationProps = {
   activeWorktree?(): string | null;
   selectWorktree?(worktreePath: string | null): void;
   sources?(): readonly WorkspaceSourceItem[];
-  childSessions?(): readonly AgentSession[];
   openChangesWithWorktree?(worktreePath?: string | null): void;
   openLaunchpad?(): void;
   openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
@@ -6145,7 +6144,6 @@ export function Conversation(props: ConversationProps) {
                 sources={props.sources}
                 answerSources={inspectorSources}
                 openLink={openLink}
-                childSessions={() => props.childSessions?.() ?? []}
                 openChanges={
                   props.openChangesWithWorktree ??
                   (props.changes ? () => props.changes!() : undefined)

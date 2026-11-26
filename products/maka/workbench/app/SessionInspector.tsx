@@ -20,7 +20,7 @@
 import { formatCount } from './numberFormat';
 import { cleanup, effect, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
-import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
+import type { AgentSession, AgentSessionPage } from '../../../../packages/plugin-sdk/src/index.js';
 import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
@@ -29,7 +29,7 @@ import { type AnswerSource, AnswerSourceList } from './AnswerSources';
 import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { createText, errorText } from './text';
+import { createText, errorMessage, errorText } from './text';
 import {
   basenameLabel,
   type GitHubPullSummary,
@@ -51,6 +51,7 @@ import {
   quietHoverStyle,
   radius,
   textTooltip,
+  SubagentBadge,
 } from './ui';
 import { compactHomePath, WorktreePicker } from './WorktreePicker';
 
@@ -83,7 +84,6 @@ export function SessionInspector(props: {
   sources?(): readonly WorkspaceSourceItem[];
   answerSources(): readonly AnswerSource[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
-  childSessions(): readonly AgentSession[];
   openChanges?(worktreePath?: string | null): void;
   openFiles?(): void;
   openLaunchpad?(): void;
@@ -98,7 +98,6 @@ export function SessionInspector(props: {
   const pulls = signal<GitHubPullSummary[]>([]);
   const githubRepo = signal<GitHubRepoRef | null>(null);
   const repoMenuOpen = signal(false);
-  const subagentsExpanded = signal(false);
   const scrollY = signal(0);
   const viewportHeight = signal(0);
   const contentHeight = signal(0);
@@ -221,17 +220,126 @@ export function SessionInspector(props: {
     if (mainWt) return mainWt.name;
     return basenameLabel(effectivePath()) || tr('Files');
   };
+  const childScope = { kind: 'children', sessionId: props.sessionId } as const;
+  const childPage = signal<AgentSessionPage | null>(null);
+  const childError = signal('');
+  const childLoading = signal(false);
+  let closeChildren: (() => Promise<void>) | undefined;
+  cleanup(() => {
+    if (closeChildren) void closeChildren().catch((reason) => console.warn(reason));
+  });
+  void (async () => {
+    const catalog = await host.subscribe('agent', 'catalog', {
+      scope: childScope,
+      filter: 'all',
+      position: { kind: 'start' },
+    });
+    if (!alive) {
+      await catalog.close();
+      return;
+    }
+    closeChildren = () => catalog.close();
+    while (alive) {
+      const page = await catalog.next();
+      if (!alive || !page) return;
+      if (page.revision !== childPage()?.revision) childPage.set(page);
+    }
+  })().catch((reason) => {
+    if (alive) childError.set(errorMessage(reason));
+  });
+  const loadChildren = async () => {
+    const page = childPage();
+    if (childLoading() || !page?.after) return;
+    childLoading.set(true);
+    childError.set('');
+    try {
+      const next = await host.query('agent', 'list', {
+        scope: childScope,
+        filter: 'all',
+        position: { kind: 'after', revision: page.revision, cursor: page.after },
+      });
+      if (alive && childPage() === page)
+        childPage.set({ ...next, sessions: [...page.sessions, ...next.sessions] });
+    } catch (reason) {
+      if (alive && childPage() === page) childError.set(errorMessage(reason));
+    } finally {
+      if (alive) childLoading.set(false);
+    }
+  };
   const children = () => {
-    const raw = props.childSessions();
+    const raw = childPage()?.sessions ?? [];
     return [...raw].sort((a, b) => {
       const aRun = a.activity !== 'idle' ? 0 : 1;
       const bRun = b.activity !== 'idle' ? 0 : 1;
       return aRun - bRun;
     });
   };
-  const visibleChildren = () => (subagentsExpanded() ? children() : children().slice(0, 6));
-  const runningChildren = () => children().filter((item) => item.activity !== 'idle').length;
+  const subagents = () => children().filter((child) => child.delegatedBy === props.sessionId);
+  const conversations = () => children().filter((child) => child.delegatedBy !== props.sessionId);
   const openSources = () => props.sources?.() ?? [];
+
+  const childSection = (title: string, empty: string, items: () => AgentSession[]) => {
+    const expanded = signal(false);
+    return (
+      <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
+        <Text style={sectionTitleStyle}>{title}</Text>
+        <If when={childPage() && items().length === 0}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{empty}</Text>
+        </If>
+        <Each of={expanded() ? items() : items().slice(0, 6)} key={(item) => item.id}>
+          {(item) => (
+            <Button
+              accessibilityLabel={item().title || tr('Untitled conversation')}
+              onPress={() => props.openChildSession?.(item().id)}
+              style={{
+                minHeight: 32,
+                paddingHorizontal: 8,
+                marginHorizontal: -8,
+                flexDirection: 'row',
+                alignItems: 'center',
+                borderRadius: radius(8),
+                gap: 8,
+              }}
+              hoverStyle={{ backgroundColor: C.cardRaised }}
+              activeStyle={quietActiveStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Icon
+                name={item().activity === 'idle' ? 'statusSuccess' : 'statusRecorded'}
+                size={14}
+                color={item().activity === 'idle' ? C.muted : C.accentText}
+              />
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {item().title || tr('Untitled conversation')}
+              </Text>
+              <If when={Boolean(item().delegatedBy)}>
+                <SubagentBadge preset={item().appliedPreset} />
+              </If>
+            </Button>
+          )}
+        </Each>
+        <If when={items().length > 6}>
+          <Button
+            onPress={() => expanded.set(!expanded())}
+            style={{ ...controlStyle, justifyContent: 'flex-start' }}
+            hoverStyle={quietHoverStyle()}
+            focusStyle={quietFocusStyle()}
+          >
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {expanded()
+                ? tr('Show fewer project conversations')
+                : tr('Show all ({count})', { count: items().length })}
+            </Text>
+          </Button>
+        </If>
+      </View>
+    );
+  };
 
   const showScrollbar = () => viewportHeight() > 48 && contentHeight() > viewportHeight() + 2;
   const thumbMetrics = () => {
@@ -566,124 +674,18 @@ export function SessionInspector(props: {
             {divider()}
           </If>
 
-          {/* 4. Subagents */}
-          <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 4,
-              }}
-            >
-              <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Subagents')}</Text>
-              <If when={children().length > 6 && subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show fewer project conversations')}
-                  onPress={() => subagentsExpanded.set(false)}
-                  style={{
-                    minHeight: 20,
-                    height: 20,
-                    paddingHorizontal: 6,
-                    borderRadius: radius(4),
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 2,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted }}>
-                    {tr('Show fewer project conversations')}
-                  </Text>
-                  <Icon name="up" size={11} color={C.muted} />
-                </Button>
-              </If>
-              <If when={children().length > 0}>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 16,
-                    color: runningChildren() > 0 ? C.accentText : C.muted,
-                  }}
-                >
-                  {runningChildren() > 0
-                    ? tr('{count} running', { count: runningChildren() })
-                    : tr('{count} completed', { count: children().length })}
-                </Text>
-              </If>
-            </View>
-            <If
-              when={children().length > 0}
-              else={
-                <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                  {tr('No subagents')}
-                </Text>
-              }
-            >
-              <Each of={visibleChildren()} key={(child) => child.id}>
-                {(child) => (
-                  <Button
-                    accessibilityLabel={child().title || tr('Untitled conversation')}
-                    onPress={() => props.openChildSession?.(child().id)}
-                    style={{
-                      minHeight: 32,
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      marginHorizontal: -8,
-                      borderRadius: radius(8),
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    activeStyle={quietActiveStyle()}
-                    focusStyle={quietFocusStyle()}
-                  >
-                    <Icon
-                      name={child().activity !== 'idle' ? 'statusRecorded' : 'statusSuccess'}
-                      size={14}
-                      color={child().activity !== 'idle' ? C.accentText : C.success}
-                    />
-                    <Text
-                      style={[
-                        { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {child().title || tr('Untitled conversation')}
-                    </Text>
-                  </Button>
-                )}
-              </Each>
-              <If when={children().length > 6 && !subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show all ({count})', { count: children().length })}
-                  onPress={() => subagentsExpanded.set(true)}
-                  style={{
-                    minHeight: 28,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    marginHorizontal: -8,
-                    borderRadius: radius(8),
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {subagentsExpanded()
-                      ? tr('Show fewer project conversations')
-                      : tr('Show all ({count})', { count: children().length })}
-                  </Text>
-                  <Icon name={subagentsExpanded() ? 'up' : 'down'} size={12} color={C.muted} />
-                </Button>
-              </If>
-            </If>
-          </View>
-
+          {childSection(tr('Child conversations'), tr('No child conversations.'), conversations)}
+          {childSection(tr('Subagents'), tr('No subagents'), subagents)}
+          <If when={childError()}>
+            <Text style={{ ...captionTextStyle, color: C.danger }}>{childError()}</Text>
+          </If>
+          <If when={childPage()?.after}>
+            <Button disabled={childLoading()} onPress={loadChildren} style={controlStyle}>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {tr('Load older conversations')}
+              </Text>
+            </Button>
+          </If>
           {divider()}
 
           {/* Open workspace tabs */}

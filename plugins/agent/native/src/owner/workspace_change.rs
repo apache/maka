@@ -68,13 +68,31 @@ impl Owner {
         if !self.owns(&id) {
             return Ok(rejected(Rejection::SessionUnavailable));
         }
-        let ordered = Arc::new(self.runs.ordered(&id).await);
+        let family = self
+            .store
+            .workspace_change_family(&id, &self.prefix)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut ordered = Vec::with_capacity(family.members().len());
+        for member in family.members() {
+            if !self.owns(member) {
+                return Ok(rejected(Rejection::SessionUnavailable));
+            }
+            let Ok(gate) = self.runs.try_ordered(member) else {
+                return Ok(rejected(Rejection::Busy));
+            };
+            ordered.push(Arc::new(gate));
+        }
         {
             let runs = self.runs.state().await;
             if runs.closing || self.stop.is_cancelled() {
                 return Ok(rejected(Rejection::Closed));
             }
-            if runs.busy(&id) || self.mcp_projects.has_any_client(&id) {
+            if family
+                .members()
+                .iter()
+                .any(|member| runs.busy(member) || self.mcp_projects.has_any_client(member))
+            {
                 return Ok(rejected(Rejection::Busy));
             }
         }
@@ -97,19 +115,35 @@ impl Owner {
                 },
             ));
         }
-        let guard = self
-            .durable
-            .quiescence_guard(self.run_owner(), id.clone())
-            .map_err(|error| error.to_string())?;
-        if !guard
-            .observe()
-            .await
-            .map_err(|error| error.to_string())?
-            .is_quiescent()
-        {
-            return Ok(rejected(Rejection::Busy));
+        let mut guards = Vec::with_capacity(family.members().len());
+        let rooms = self.rooms()?;
+        for member in family.members() {
+            if member != &id
+                && rooms
+                    .exists(member)
+                    .await
+                    .map_err(|error| error.to_string())?
+            {
+                return Ok(rejected(Rejection::SessionUnavailable));
+            }
+            let guard = self
+                .durable
+                .quiescence_guard(self.run_owner(), member.clone())
+                .map_err(|error| error.to_string())?;
+            if !guard
+                .observe()
+                .await
+                .map_err(|error| error.to_string())?
+                .is_quiescent()
+            {
+                return Ok(rejected(Rejection::Busy));
+            }
+            guards.push(guard);
         }
-        let writer = guard.data_writer().clone();
+        let writer = self
+            .store
+            .data_writer()
+            .map_err(|error| error.to_string())?;
         let Some((projects::PreparedProjectWorkspace { workspace, project }, target)) =
             self.prepare_project_workspace(&input.path, &writer).await?
         else {
@@ -138,12 +172,12 @@ impl Owner {
         match self
             .store
             .prepare_session_workspace_change(
-                &id,
                 input.expected_revision,
+                family,
                 workspace,
                 WorkspaceChange {
                     ordered,
-                    guard,
+                    guards,
                     root,
                     target,
                 },
@@ -175,8 +209,8 @@ fn rejected(reason: Rejection) -> NativeMutation<SessionWorkspaceChanged> {
 }
 
 struct WorkspaceChange {
-    ordered: Arc<runs::Ordered>,
-    guard: SessionQuiescenceGuard,
+    ordered: Vec<Arc<runs::Ordered>>,
+    guards: Vec<SessionQuiescenceGuard>,
     root: Arc<maka_event_log::root::RootOwner>,
     target: ResolvedProject,
 }
@@ -204,14 +238,20 @@ impl Statement for WorkspaceChange {
     }
 
     fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
-        vec![self.ordered.clone()]
+        self.ordered
+            .iter()
+            .cloned()
+            .map(|gate| gate as Arc<dyn std::marker::Send + Sync>)
+            .collect()
     }
 
     fn execute(
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
-        self.guard.validate(connection)?;
+        for guard in self.guards {
+            guard.validate(connection)?;
+        }
         Ok(Prepared {
             value: self.root,
             changed: false,

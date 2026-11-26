@@ -153,6 +153,7 @@ impl PlannedCatalog {
         let mut record = Record {
             metadata,
             is_room: false,
+            first_sender: None,
             control_revision,
             status: Status {
                 latest: None,

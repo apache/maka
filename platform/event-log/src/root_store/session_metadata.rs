@@ -22,6 +22,7 @@ use crate::sessions::SessionMutation;
 use serde::Serialize;
 
 mod prepared;
+pub use prepared::WorkspaceChangeFamily;
 
 /// A delayed metadata CAS on one original Root/Session, not authorization to
 /// read history or admit work. Execute it in the bound writer's transaction.

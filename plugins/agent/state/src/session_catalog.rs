@@ -115,6 +115,7 @@ pub struct Status {
 pub struct Record {
     pub metadata: SessionRecord,
     pub is_room: bool,
+    pub first_sender: Option<String>,
     pub control_revision: u64,
     pub status: Status,
     pub read_state: ReadState,
