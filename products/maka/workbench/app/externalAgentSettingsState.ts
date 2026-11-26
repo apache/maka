@@ -156,7 +156,6 @@ export function createExternalAgentSettings(
       if (alive && active() && generation === read) {
         if (error instanceof BasisMismatchError) clearView();
         failure.set(errorMessage(error));
-        operations.report(new UiError('Could not check external agents. Open details or refresh.'));
       }
     } finally {
       if (alive && generation === read) {
@@ -184,12 +183,7 @@ export function createExternalAgentSettings(
   const run = (operation: () => Promise<void>) =>
     operations.run(async () => {
       failure.set(null);
-      try {
-        await operation();
-      } catch (error) {
-        failure.set(errorMessage(error));
-        throw new UiError('Could not update external agents. Open details or refresh.');
-      }
+      await operation();
     });
   const save = (request: ExternalAgentAction, runtime: string, enabled: boolean) => {
     if (!current(request) || disabled()) return;
@@ -263,7 +257,6 @@ export function createExternalAgentSettings(
   };
   const reload = (request: ExternalAgentAction) => {
     if (!current(request) || busy()) return;
-    operations.error.set('');
     for (const runtime of runtimes()) {
       if (runtime.enabled && runtime.usageLimits && isExternalUsageRuntime(runtime.id)) {
         invalidateUsageLimits(host, { kind: 'external', runtime: runtime.id });

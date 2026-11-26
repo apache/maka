@@ -66,10 +66,8 @@ export function ProviderPicker(props: { owner: ModelSettingsOwner }) {
   let list: ListRef | undefined;
   let input: InputRef | undefined;
   let removeKeys = () => {};
-  const releaseInlineError = owner.claimInlineError();
   cleanup(() => {
     removeKeys();
-    releaseInlineError();
   });
   const retryProviders = async () => {
     const failed = owner.failedProvider();

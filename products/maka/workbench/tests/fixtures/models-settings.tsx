@@ -65,6 +65,8 @@ function Fixture() {
     },
   ];
   let holdExternal = true;
+  let failExternal = false;
+  let failProviders = false;
   let releaseExternal: (() => void) | null = null;
 
   const application = {
@@ -80,6 +82,7 @@ function Fixture() {
             releaseExternal = resolve;
           });
         }
+        if (failExternal) throw new Error('External runtime probe failed');
         return {
           target: {
             source: { stateDomain: 'profile', deployment: 'root', namespace: ['agent'] },
@@ -125,6 +128,10 @@ function Fixture() {
           next: null,
           choices: modelIds.map(choice),
         };
+      }
+      if (method === 'providers') {
+        if (failProviders) throw new Error('Provider registry unavailable');
+        return { providers: [], next: null };
       }
       if (method === 'provider') return definition;
       if (method === 'connection')
@@ -267,6 +274,12 @@ function Fixture() {
           opened.set(false);
           targetPage = 'external-agents';
           opened.set(true);
+        },
+        f9: () => {
+          failExternal = !failExternal;
+        },
+        f10: () => {
+          failProviders = !failProviders;
         },
       },
       { when: 'always' },

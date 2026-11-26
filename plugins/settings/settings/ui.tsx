@@ -393,7 +393,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
                   when={form.editor() !== null}
                   else={
                     <If when={!!operations.error()} else={<SettingsSkeleton rows={3} />}>
-                      <SettingsProblem message={operations.error()} retry={() => void open()} />
+                      <SettingsProblem retry={() => void open()} />
                     </If>
                   }
                 >
@@ -456,6 +456,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               },
               backLabel: () => tr('Back from connection settings'),
               busy: operations.navigationBusy,
+              ownsError: () => connections.page() === 'providers',
             },
             () => <ConnectionSettings owner={connections} externalAgents={externalAgents} />,
           ),

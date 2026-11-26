@@ -23,6 +23,7 @@ import { createPendingRecovery } from './pendingRecovery';
 import { cleanup, signal } from 'nsh';
 import { findUpload, recoverUpload, watchUploads, type ScopedHost } from './host';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/index.js';
+import type { ComposerSendBlock } from '../../../../packages/plugin-sdk/src/composer-view.js';
 
 export type DraftAttachment = ClientDraftAttachment;
 type AttachmentStatus = {
@@ -399,15 +400,21 @@ export function createAttachmentDraft(options: {
         options.changed();
       }
     },
-    blocked() {
-      if (restoring()) return tr('Restoring attachment drafts…');
-      if (error()) return tr('Attachment state needs attention. Your draft is kept.');
-      if (intakes().size) return tr('Preparing attachments… You can keep typing.');
-      if (rows().some((row) => row.kind === 'unknown')) return tr('Checking upload status…');
+    blocked(): ComposerSendBlock | null {
+      if (restoring()) return { kind: 'draft', message: tr('Restoring attachment drafts…') };
+      if (error()) return { kind: 'attachments', message: error() };
+      if (intakes().size)
+        return { kind: 'draft', message: tr('Preparing attachments… You can keep typing.') };
+      if (rows().some((row) => row.kind === 'unknown'))
+        return { kind: 'attachments', message: tr('Checking upload status…') };
       if (rows().some((row) => row.kind === 'reading' || row.kind === 'uploading'))
-        return tr('Uploading attachments… Your typing is kept.');
-      if (rows().length) return tr('Remove the failed attachment or choose it again.');
-      return '';
+        return { kind: 'attachments', message: tr('Uploading attachments… Your typing is kept.') };
+      if (rows().length)
+        return {
+          kind: 'attachments',
+          message: tr('Remove the failed attachment or choose it again.'),
+        };
+      return null;
     },
   };
 }

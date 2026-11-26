@@ -2298,7 +2298,58 @@ mod tests {
         app.wait_for("label:Edit connection OpenAI").unwrap();
         app.wait_for("label:Disable Codex").unwrap();
     }
+
+    #[test]
+    fn models_settings_renders_each_error_once_without_cross_section_retry() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Checking external agents…").unwrap();
+
+        // Fail externalAgents read: error and Retry must appear once, scoped to external agents.
+        app.press_key("f9").unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        assert!(
+            !app.screen()
+                .matches("text:Could not check external agents")
+                .unwrap()
+        );
+
+        // Clicking Retry must reload externalAgents rather than connections.
+        app.press_key("f9").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            0
+        );
+
+        // Fail providers read: ProviderPicker owns the error, not the Settings header.
+        app.press_key("f10").unwrap();
+        app.press("label:Add connection").unwrap();
+        app.wait_for("text:/Provider registry unavailable/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Provider registry unavailable/")
+                .unwrap(),
+            1
+        );
+    }
 }
+
+#[cfg(test)]
+mod composer_notices_tests;
 
 #[cfg(test)]
 mod desktop_residency_tests;

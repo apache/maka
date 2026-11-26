@@ -328,7 +328,7 @@ export function RoomComposer(props: {
     if (!ready() || busy() || pending() || (!text().trim() && !attachments.ids().length)) return;
     const blocked = attachments.blocked();
     if (blocked) {
-      error.set(blocked);
+      error.set(blocked.message);
       return;
     }
     busy.set(true);

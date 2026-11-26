@@ -69,12 +69,7 @@ export function PluginSettings(props: { owner: PluginSettingsOwner; quickTool: Q
           <SettingsBody>
             <If
               when={owner.loading()}
-              else={
-                <SettingsProblem
-                  message={tr('Plugin settings are unavailable on this connection.')}
-                  retry={inputAction(owner.reload, owner.action())}
-                />
-              }
+              else={<SettingsProblem retry={inputAction(owner.reload, owner.action())} />}
             >
               <SettingsSkeleton
                 padded={false}

@@ -176,6 +176,7 @@ import type {
   ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
+  ComposerSendBlock,
   ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -3466,7 +3467,7 @@ export function Conversation(props: ConversationProps) {
       draft().trim() ||
       attachments.files().length ||
       quotes().length ||
-      sendBlockedReason() ||
+      sendBlock() !== null ||
       observed === null ||
       observed.source.sessionId !== source.sessionId ||
       observed.source.runId !== source.runId ||
@@ -3592,38 +3593,52 @@ export function Conversation(props: ConversationProps) {
     };
   };
 
-  const sendBlockedReasonFor = (includeAutoSend: boolean) => {
-    if (transcriptStatus() === 'closing')
-      return tr('Closing disconnected updates… Your draft is kept.');
-    if (transcriptStatus() === 'failed')
-      return ready()
-        ? tr('Updates disconnected. Reconnecting automatically; your draft is kept.')
-        : tr('History unavailable. Retrying automatically; your draft is kept.');
-    if (ready() && transcriptStatus() !== 'live')
-      return tr('Reconnecting updates… Your draft is kept.');
+  const sendBlockFor = (includeAutoSend: boolean): ComposerSendBlock | null => {
+    if (
+      transcriptStatus() === 'closing' ||
+      transcriptStatus() === 'failed' ||
+      (ready() && transcriptStatus() !== 'live')
+    )
+      return { kind: 'transcript', message: tr('Reconnecting updates… Your draft is kept.') };
     if (!ready() || (runId() !== null && runBackend() === null))
-      return tr('Loading session history… Your draft is kept.');
+      return { kind: 'draft', message: tr('Loading session history… Your draft is kept.') };
     if (archived() && formerBot())
-      return tr(
-        'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
-      );
+      return {
+        kind: 'draft',
+        message: tr(
+          'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
+        ),
+      };
     if (archived())
-      return tr(
-        'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
-      );
-    if (workspaceUnavailable()) return tr('The workspace for this task is unavailable.');
-    if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
-    if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
-    if (attachments.blocked()) return attachments.blocked();
-    if (confirmingContinuation()) return tr('Confirming continuation…');
+      return {
+        kind: 'draft',
+        message: tr(
+          'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
+        ),
+      };
+    if (workspaceUnavailable())
+      return { kind: 'workspace', message: tr('The workspace for this task is unavailable.') };
+    if (!draftReady() || restoringSends().size > 0)
+      return { kind: 'draft', message: tr('Loading the saved draft…') };
+    if (savingFailed())
+      return {
+        kind: 'draft',
+        message: tr('The draft could not be saved. Sending is unavailable.'),
+      };
+    const attachmentBlock = attachments.blocked();
+    if (attachmentBlock) return attachmentBlock;
+    if (confirmingContinuation()) return { kind: 'draft', message: tr('Confirming continuation…') };
     if (sending() || (includeAutoSend && autoSending()))
-      return tr('Saving message… New typing is kept.');
+      return { kind: 'draft', message: tr('Saving message… New typing is kept.') };
     if (freezeState().kind === 'failed')
-      return tr('Retry or remove the unsaved message before sending another.');
-    if (!receiptsKnown()) return tr('Checking send status…');
-    return '';
+      return {
+        kind: 'draft',
+        message: tr('Retry or remove the unsaved message before sending another.'),
+      };
+    if (!receiptsKnown()) return { kind: 'draft', message: tr('Checking send status…') };
+    return null;
   };
-  const sendBlockedReason = () => sendBlockedReasonFor(true);
+  const sendBlock = () => sendBlockFor(true);
 
   const refreshSends = async () => {
     const operations = await pendingSends(client);
@@ -3669,7 +3684,7 @@ export function Conversation(props: ConversationProps) {
         });
     } catch (reason) {
       if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
-        sendError(id, new UiError('The workspace for this task is unavailable.'));
+        sendError(id, new UiError('Not sent. Choose a workspace, then retry.'));
         void refreshWorkspace().catch(report);
       } else {
         sendError(id, reason);
@@ -3741,7 +3756,7 @@ export function Conversation(props: ConversationProps) {
     if (!hasComposerContent(text.trim(), attachments.files(), quotes())) {
       return;
     }
-    if (sendBlockedReason()) {
+    if (sendBlock()) {
       notice.set(
         uiMessage(
           'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -3762,7 +3777,7 @@ export function Conversation(props: ConversationProps) {
           if (alive) checkingModel.set(false);
         }
         if (!alive) return;
-        if (sendBlockedReason()) {
+        if (sendBlock()) {
           notice.set(
             uiMessage(
               'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -4258,7 +4273,7 @@ export function Conversation(props: ConversationProps) {
   };
   const sendExternalPrompt = (text: string): boolean => {
     if (!alive || !text.trim()) return false;
-    if (sendBlockedReason()) {
+    if (sendBlock()) {
       notice.set(
         uiMessage(
           'This message was not sent. Your draft is kept; check the status below before trying again.',
@@ -4334,7 +4349,8 @@ export function Conversation(props: ConversationProps) {
     const composer =
       !draftReady() || attachments.restoring()
         ? 'restoring'
-        : hasComposerContent(draft(), attachments.files(), quotes()) || attachments.blocked() !== ''
+        : hasComposerContent(draft(), attachments.files(), quotes()) ||
+            attachments.blocked() !== null
           ? 'occupied'
           : 'empty';
     untracked(() => messagePrediction.eligible(eligible, composer));
@@ -4451,7 +4467,7 @@ export function Conversation(props: ConversationProps) {
     previewImage: props.previewImage,
     editable: () => draftReady() && !savingFailed(),
     loading: () => !ready() || !draftReady(),
-    blockedReason: sendBlockedReason,
+    sendBlock,
     backend,
     modelDetails,
     refreshModel,
@@ -4810,7 +4826,7 @@ export function Conversation(props: ConversationProps) {
   });
   effect(() => {
     const pending = autoSend();
-    if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
+    if (pending === null || sendBlockFor(false) || modelLoading()) return;
     untracked(() => {
       batch(() => {
         autoSend.set(null);
@@ -5489,7 +5505,7 @@ export function Conversation(props: ConversationProps) {
                           blocked={() =>
                             hasComposerContent(draft().trim(), attachments.files(), quotes())
                               ? tr('Send or clear the draft first.')
-                              : sendBlockedReason()
+                              : (sendBlock()?.message ?? '')
                           }
                           send={send}
                         />

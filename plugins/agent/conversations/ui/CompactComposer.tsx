@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { signal, Text, View, type InputRef, type JSX } from 'nsh';
+import { Text, View, type InputRef, type JSX } from 'nsh';
 import type { ClientDraftAttachment } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/workbench-views.js';
 import { hasComposerContent } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -35,17 +35,22 @@ export function CompactComposer(props: {
   chooseModel(): void;
   attach(node: InputRef): void;
 }) {
-  const refused = signal('');
   const running = () => (props.session()?.run() ?? null) !== null;
   const unavailable = () => props.session()?.modelDetails().kind === 'unavailable';
+  const confirming = () => {
+    const session = props.session();
+    return !!session?.loading() || !!session?.recovering() || !!session?.continuing();
+  };
   const failure = () => {
     const session = props.session();
     if (!session) return '';
-    return (
-      session.error() ||
-      session.sends().find((send) => send.state === 'failed')?.detail ||
-      refused()
-    );
+    return session.error() || session.sends().find((send) => send.state === 'failed')?.detail || '';
+  };
+  const blockWarning = () => {
+    const session = props.session();
+    if (!session || confirming()) return '';
+    const block = session.sendBlock();
+    return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
   };
   const send = () => {
     const session = props.session();
@@ -57,9 +62,8 @@ export function CompactComposer(props: {
       props.expand();
       return;
     }
-    const reason = session.blockedReason();
-    refused.set(reason);
-    if (!reason) session.submit({ text });
+    if (session.sendBlock()) return;
+    session.submit({ text });
   };
   return (
     <View>
@@ -69,10 +73,7 @@ export function CompactComposer(props: {
         placeholder={props.session()?.empty() === false ? tr('Ask a follow-up') : tr('Ask Maka')}
         value={props.session()?.draft() ?? ''}
         readonly={!(props.session()?.editable() ?? false)}
-        change={(value) => {
-          refused.set('');
-          props.session()?.changeDraft(value);
-        }}
+        change={(value) => props.session()?.changeDraft(value)}
         submit={send}
         extra={
           <>
@@ -123,28 +124,31 @@ export function CompactComposer(props: {
           </>
         }
       />
-      <If when={unavailable() || failure() !== ''}>
+      <If when={unavailable() || failure() !== '' || blockWarning() !== ''}>
         <View style={{ paddingHorizontal: 12, paddingVertical: 8 }}>
           <If
             when={unavailable()}
             else={
-              <InlineCallout
-                tone="danger"
-                message={failure()}
-                onDismiss={() => {
-                  const session = props.session();
-                  if (session?.error()) {
-                    session.dismissError();
-                    return;
-                  }
-                  const failedSend = session?.sends().find((item) => item.state === 'failed');
-                  if (session && failedSend) {
-                    void session.dismissSend(failedSend.id);
-                    return;
-                  }
-                  refused.set('');
-                }}
-              />
+              <If
+                when={failure() !== ''}
+                else={<InlineCallout tone="warning" message={blockWarning()} />}
+              >
+                <InlineCallout
+                  tone="danger"
+                  message={failure()}
+                  onDismiss={() => {
+                    const session = props.session();
+                    if (session?.error()) {
+                      session.dismissError();
+                      return;
+                    }
+                    const failedSend = session?.sends().find((item) => item.state === 'failed');
+                    if (session && failedSend) {
+                      void session.dismissSend(failedSend.id);
+                    }
+                  }}
+                />
+              </If>
             }
           >
             <InlineCallout

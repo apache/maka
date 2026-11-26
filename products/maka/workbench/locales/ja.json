@@ -1480,6 +1480,7 @@
   "Not completed": "未完了",
   "Not installed": "未インストール",
   "Not loaded": "未読み込み",
+  "Not sent. Choose a workspace, then retry.": "送信されませんでした。ワークスペースを選択してから再試行してください。",
   "Not set": "未設定",
   "Not signed in": "未サインイン",
   "Not supported on this device": "このデバイスでは対応していません",

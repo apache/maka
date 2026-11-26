@@ -475,25 +475,29 @@ export function SideComposer(props: {
   stop(): void;
   attach(node: InputRef): void;
 }) {
-  const refused = signal('');
   const running = () => (props.session()?.run() ?? null) !== null;
+  const confirming = () => {
+    const session = props.session();
+    return !!session?.loading() || !!session?.recovering() || !!session?.continuing();
+  };
   const failure = () => {
     const session = props.session();
     if (!session) return '';
-    return (
-      session.error() ||
-      session.sends().find((send) => send.state === 'failed')?.detail ||
-      refused()
-    );
+    return session.error() || session.sends().find((send) => send.state === 'failed')?.detail || '';
   };
+  const blockWarning = () => {
+    const session = props.session();
+    if (!session || confirming()) return '';
+    const block = session.sendBlock();
+    return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
+  };
+  const notice = () => failure() || blockWarning();
   const send = () => {
     const session = props.session();
     if (!session) return;
     const text = session.draft();
-    if (text.trim() === '') return;
-    const reason = session.blockedReason();
-    refused.set(reason);
-    if (!reason) session.submit({ text });
+    if (text.trim() === '' || session.sendBlock()) return;
+    session.submit({ text });
   };
   return (
     <View style={{ borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.panel }}>
@@ -503,10 +507,7 @@ export function SideComposer(props: {
         placeholder={tr('Ask a follow-up')}
         value={props.session()?.draft() ?? ''}
         readonly={!(props.session()?.editable() ?? false)}
-        change={(value) => {
-          refused.set('');
-          props.session()?.changeDraft(value);
-        }}
+        change={(value) => props.session()?.changeDraft(value)}
         submit={send}
         action={
           <If
@@ -515,7 +516,10 @@ export function SideComposer(props: {
               <IconButton
                 label={tr('Send message')}
                 icon="send"
-                disabled={(props.session()?.draft() ?? '').trim() === ''}
+                disabled={
+                  (props.session()?.draft() ?? '').trim() === '' ||
+                  props.session()?.sendBlock() !== null
+                }
                 onPress={send}
               />
             }
@@ -524,14 +528,19 @@ export function SideComposer(props: {
           </If>
         }
       />
-      <If when={failure() !== ''}>
+      <If when={notice() !== ''}>
         <Text
           style={[
-            { ...captionTextStyle, color: C.danger, paddingHorizontal: INSET, paddingBottom: 12 },
+            {
+              ...captionTextStyle,
+              color: failure() ? C.danger : C.warning,
+              paddingHorizontal: INSET,
+              paddingBottom: 12,
+            },
             { userSelect: 'text' },
           ]}
         >
-          {failure()}
+          {notice()}
         </Text>
       </If>
     </View>
