@@ -547,6 +547,56 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  build-ios:
+    needs: prepare
+    runs-on: macos-latest
+    environment: nightly
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Install Rust and iOS target
+        run: |
+          rustup update stable --no-self-update
+          rustup target add aarch64-apple-ios
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ios-ipa-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ios-ipa-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build and verify nightly IPA
+        run: |
+          node scripts/rust/package-ios.mjs --target ios --profile release --build-number "${{ github.run_number }}" --out dist/ios
+          cd dist/ios
+          shasum -a 256 -c Maka-ios-arm64.ipa.sha256
+          unzip -Z1 Maka-ios-arm64.ipa > "$RUNNER_TEMP/maka-ios-entries"
+          grep -Fx 'Payload/Maka.app/maka-ios-shell' "$RUNNER_TEMP/maka-ios-entries"
+          grep -Fx 'Payload/Maka.app/Info.plist' "$RUNNER_TEMP/maka-ios-entries"
+          mkdir -p "$GITHUB_WORKSPACE/nightly-out"
+          cp Maka-ios-arm64.ipa "$GITHUB_WORKSPACE/nightly-out/Maka-nightly-ios-arm64.ipa"
+
+      - name: Upload nightly iOS IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-pkg-ios-arm64
+          path: nightly-out/*
+          if-no-files-found: error
+          compression-level: 0
+
   compat-gate:
     needs: [prepare, build]
     runs-on: ubuntu-latest
@@ -616,13 +666,14 @@ jobs:
           compression-level: 0
 
   publish-npm:
-    needs: [prepare, build, build-linux-arm64, compat-gate]
+    needs: [prepare, build, build-linux-arm64, build-ios, compat-gate]
     if: >-
       inputs.publish_npm &&
       !cancelled() &&
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build-linux-arm64.result == 'success' &&
+      needs.build-ios.result == 'success' &&
       needs.compat-gate.result == 'success'
     runs-on: ubuntu-latest
     environment: nightly
@@ -662,13 +713,14 @@ jobs:
             --provenance
 
   release:
-    needs: [prepare, build, build-linux-arm64, compat-gate, publish-npm]
+    needs: [prepare, build, build-linux-arm64, build-ios, compat-gate, publish-npm]
     if: >-
       inputs.publish_release &&
       !cancelled() &&
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build-linux-arm64.result == 'success' &&
+      needs.build-ios.result == 'success' &&
       needs.compat-gate.result == 'success' &&
       (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped')
     runs-on: ubuntu-latest
