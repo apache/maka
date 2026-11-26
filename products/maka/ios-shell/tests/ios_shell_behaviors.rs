@@ -2602,8 +2602,14 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     });
     let generation = Arc::new(AtomicU64::new(1));
     let subscription_generation = generation.clone();
+    let (watch_tx, mut watches) = mpsc::unbounded_channel();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
+        if data["method"] == "watch" {
+            watch_tx
+                .send(data["subscriptionId"].as_str().unwrap().to_owned())
+                .unwrap();
+        }
         let generation = subscription_generation.load(Ordering::SeqCst);
         call.resolve(json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}));
     });
@@ -2736,4 +2742,49 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     assert_eq!(backend["connectionId"], "second");
     assert_eq!(backend["serviceTier"], "fast");
     app.wait_for("text:Second connector").unwrap();
+
+    // An ended watch event arriving while a stale running observe is in flight
+    // must schedule a catch-up observe rather than sticking in the running state.
+    let watch_id = std::iter::from_fn(|| watches.try_recv().ok())
+        .last()
+        .unwrap();
+    hold_observe.store(true, Ordering::SeqCst);
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "rootId": "root",
+            "subscriptionId": watch_id,
+            "item": { "kind": "events", "through": 2, "events": [{ "runId": "r1", "fact": { "kind": "opened" } }] }
+        }),
+    )
+    .unwrap();
+    let (stale_observe, _) = observations.try_recv().unwrap();
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "rootId": "root",
+            "subscriptionId": watch_id,
+            "item": { "kind": "events", "through": 3, "events": [{ "runId": "r1", "fact": { "kind": "ended" } }] }
+        }),
+    )
+    .unwrap();
+    hold_observe.store(true, Ordering::SeqCst);
+    let running_row = session.lock().unwrap().clone();
+    stale_observe.resolve(json!({
+        "value": {
+            "session": running_row,
+            "through": 2,
+            "run": { "backend": "model", "runId": "r1", "turnId": "t1", "state": "running" }
+        }
+    }));
+    app.wait_for("label:Stop Run").unwrap();
+    let (catch_up_observe, idle_snapshot) = observations
+        .try_recv()
+        .expect("ended event during an in-flight observe must schedule a catch-up observe");
+    catch_up_observe.resolve(json!({ "value": idle_snapshot }));
+    assert!(app.settle());
+    assert!(
+        !app.shows("label:Stop Run"),
+        "catch-up observe after ended must clear the running state"
+    );
 }

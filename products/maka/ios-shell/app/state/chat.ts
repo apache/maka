@@ -387,38 +387,45 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  let observeFlight: { generation: number; promise: Promise<void> } | undefined;
-  const loadObserve = () => {
+  let observeFlight: { generation: number; dirty: boolean; promise: Promise<void> } | undefined;
+  const loadObserve = (fresh = true) => {
     const generation = activeHostInfo(rootId)?.generation;
-    if (generation === undefined) return;
-    if (observeFlight?.generation === generation) return observeFlight.promise;
-    const promise = (async () => {
+    if (generation === undefined || disposed) return Promise.resolve();
+    if (observeFlight?.generation === generation) {
+      if (fresh) observeFlight.dirty = true;
+      return observeFlight.promise;
+    }
+    const flight = { generation, dirty: true, promise: Promise.resolve() };
+    flight.promise = (async () => {
       try {
-        const obs = await hostQuery<AgentObservation>(
-          'agent',
-          'observe',
-          { sessionId },
-          undefined,
-          rootId,
-        );
-        if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
-        const current = observation();
-        if (current && obs.session.revision < current.session.revision) return;
-        observed.set({ generation, value: obs });
-        if (obs.session?.kind === 'room') isRoom.set(true);
-        if (typeof obs.through === 'number') {
-          lastThrough = Math.max(lastThrough ?? 0, obs.through);
+        while (flight.dirty && !disposed && activeHostInfo(rootId)?.generation === generation) {
+          flight.dirty = false;
+          const obs = await hostQuery<AgentObservation>(
+            'agent',
+            'observe',
+            { sessionId },
+            undefined,
+            rootId,
+          );
+          if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
+          const current = observation();
+          if (current && obs.session.revision < current.session.revision) continue;
+          observed.set({ generation, value: obs });
+          if (obs.session?.kind === 'room') isRoom.set(true);
+          if (typeof obs.through === 'number') {
+            lastThrough = Math.max(lastThrough ?? 0, obs.through);
+          }
         }
       } catch (cause) {
         if (!disposed && activeHostInfo(rootId)?.generation === generation) {
           error.set(cause instanceof Error ? cause.message : String(cause));
         }
       } finally {
-        if (observeFlight?.generation === generation) observeFlight = undefined;
+        if (observeFlight === flight) observeFlight = undefined;
       }
     })();
-    observeFlight = { generation, promise };
-    return promise;
+    observeFlight = flight;
+    return flight.promise;
   };
 
   const startWatch = (gen: number) => {
@@ -507,7 +514,7 @@ export function createConversationController(rootId: string, initialSession: Age
         const pending = selectingModel();
         if (pending && !(await pending.done)) return false;
         if (!observation() && activeHostInfo(rootId)?.generation === generation)
-          await loadObserve();
+          await loadObserve(false);
         if (disposed) return false;
         if (activeHostInfo(rootId)?.generation !== generation)
           throw new Error(tr('Computer is offline'));
@@ -515,6 +522,9 @@ export function createConversationController(rootId: string, initialSession: Age
         backend = selectedBackend();
         if (!backend && connection.endpoints.includes('settings')) {
           const choice = await readDefaultModel(settingsRpc(rootId));
+          if (disposed) return false;
+          if (activeHostInfo(rootId)?.generation !== generation)
+            throw new Error(tr('Computer is offline'));
           backend = selectedBackend() ?? (choice ? modelBackend(choice) : null);
         }
         if (!backend) throw new Error(tr('Select model'));
@@ -574,7 +584,7 @@ export function createConversationController(rootId: string, initialSession: Age
     if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
     const done = (async () => {
       try {
-        if (!observation()) await loadObserve();
+        if (!observation()) await loadObserve(false);
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (!observation()) throw new Error(error() ?? tr('Select model'));
         const result = await hostMutate<
