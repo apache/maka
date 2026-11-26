@@ -9623,34 +9623,6 @@ mod replaced_antigravity_cell_recovery {
                 BlockerKind::CodeCellRecoveryUnavailable { cell } if cell == &seed.cell.to_string()
             )));
 
-            // Verify preflight RunCells::original_cleanup_signals only arms once.
-            let scope = seed
-                .owner
-                .current_work_scope(
-                    &seed.session,
-                    &seed
-                        .owner
-                        .mutable_session(&seed.session)
-                        .await?
-                        .configuration,
-                )
-                .await?;
-            let (lease, effects) = scope.accept(CancellationToken::new());
-            let claim = seed.owner.durable.claim(seed.run).await?;
-            let access = seed.owner.run_access(Arc::new(seed.spec), claim, &lease)?;
-            let run_cells = crate::owner::driver_cells::RunCells::new(
-                seed.owner.clone(),
-                access,
-                seed.owner.code_executor.clone(),
-                TaskTracker::new(),
-                Evidence::default(),
-            )?;
-            assert_eq!(run_cells.original_cleanup_signals().len(), 1);
-            assert!(run_cells.original_cleanup_signals().is_empty());
-            drop(run_cells);
-            effects.settle().await?;
-            lease.finish();
-
             let _ = release.take().unwrap().send(());
             let _ = vm_task.await?;
             Ok::<_, Box<dyn Error + Send + Sync>>(())
@@ -10034,8 +10006,45 @@ mod replaced_antigravity_cell_recovery {
             assert!(before_cell.children[&child_op].known());
             assert!(before_cell.has_unsettled_effects());
 
-            // Production queue selects the Interrupted Cell via has_unsettled_effects(),
-            // reads the Confirmed receipt from the Files service journal, and retires the Run.
+            // Phase 1: Leave the Files journal in its legal intermediate state
+            // (outcome recorded, cleanup ACK not yet committed). Normal Stop must keep
+            // the Run non-terminal and blocked rather than cancelling past unconfirmed cleanup.
+            let op_id = confirmed_obs.reference.operation.to_string();
+            let runtime_db = rig.directory.path().join("root").join("runtime-rust.sqlite");
+            {
+                let conn = rusqlite::Connection::open(&runtime_db)?;
+                let updated = conn.execute(
+                    r#"UPDATE application_operations SET cleanup_json = '{"kind":"unconfirmed"}' WHERE operation = ?1"#,
+                    [&op_id],
+                )?;
+                assert_eq!(updated, 1);
+            }
+            drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
+            let while_unconfirmed = seed.owner.durable.frontier(seed.run).await?;
+            assert!(
+                while_unconfirmed.terminal.is_none(),
+                "unconfirmed child cleanup must block retirement under normal Stop: {:?}",
+                while_unconfirmed.terminal
+            );
+            assert!(while_unconfirmed.blockers.values().any(|blocker| {
+                blocker.resolved_by.is_none()
+                    && matches!(
+                        &blocker.reason,
+                        BlockerKind::CodeCellRecoveryUnavailable { cell }
+                            if cell == &seed.cell.to_string()
+                    )
+            }));
+
+            // Phase 2: Once the original Files operation commits its Confirmed cleanup ACK,
+            // recovery reads it via has_unsettled_effects(), resolves the blocker, and retires the Run.
+            {
+                let conn = rusqlite::Connection::open(&runtime_db)?;
+                let updated = conn.execute(
+                    r#"UPDATE application_operations SET cleanup_json = '{"kind":"confirmed"}' WHERE operation = ?1"#,
+                    [&op_id],
+                )?;
+                assert_eq!(updated, 1);
+            }
             drive_via_queue(&seed.owner, &seed.session, seed.run).await?;
             let after = seed.owner.durable.frontier(seed.run).await?;
             assert_eq!(after.terminal, Some(Terminal::Cancelled));
