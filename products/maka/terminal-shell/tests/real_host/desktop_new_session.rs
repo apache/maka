@@ -1581,9 +1581,20 @@ async fn desktop_asks_a_side_question_beside_a_reply() {
 
     // The card opens at once; nothing is created until the question is sent.
     let original = desktop.platform.text_input_target();
-    desktop.press("Ask beside").await;
-    desktop.target_after(original).await;
+    // Reply actions have accessible bounds even before hover reveals them.
+    let ask = desktop.control("Ask beside").await;
+    desktop.hover_at(point(ask.center().x, ask.top() - px(12.)));
+    let ask = desktop
+        .until("Ask beside did not appear on the reply", || {
+            let [ask] = desktop.controls("Ask beside")[..] else {
+                return None;
+            };
+            desktop.draws_in(ask).then_some(ask)
+        })
+        .await;
+    desktop.press_at(ask.center());
     desktop.control("Close side question").await;
+    desktop.target_after(original).await;
     desktop.artifact("side-1-ask");
     assert_eq!(desktop.sessions().await.len(), listed);
     desktop.type_text("Why invalidate before the update?").await;
@@ -3231,7 +3242,7 @@ async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
     let mut reply3 = desktop.request(&mut fixture).await;
     reply3
         .delta(&format!(
-            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n<details><summary>Verify Marker</summary>Verify details.</details>\n\n{}",
+            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n{}\n\n<details><summary>Verify Marker</summary>Verify details.</details>",
             long_block("rollout", 10),
             long_block("verify", 10),
         ))
@@ -3433,7 +3444,11 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
             desktop.controls("Stop response").is_empty().then_some(())
         })
         .await;
-    desktop.control("▸ End 07").await;
+    // End 07 is already visible in the streaming overlay. Wait for its persisted
+    // row (with message actions) before navigating across the finalized rows.
+    let end07 = desktop.control("▸ End 07").await;
+    desktop.hover_at(end07.center());
+    desktop.control("Show message source").await;
 
     // All 7 chapters appear in the TOC even though Chapters 01..03 are virtualized off-screen.
     for chapter in 1..=7 {
@@ -3523,8 +3538,10 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     desktop.hover_at(point(px(900.), px(260.)));
     send_turn("Forty eight sections").await;
     let mut reply2 = desktop.request(&mut fixture).await;
-    let mut body48 = String::new();
-    for section in 1..=48 {
+    let mut body48 = String::from(
+        "## Section 01\n\n<details><summary>Section 01 Start</summary>Top of first long turn.</details>\n\n",
+    );
+    for section in 2..=48 {
         body48.push_str(&format!(
             "## Section {section:02}\n\nSection {section:02} body paragraph one explaining the architecture.\n\nSection {section:02} body paragraph two with concrete details.\n\n"
         ));
@@ -3606,6 +3623,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     // pause follow while viewing Section 48, add a second 48-section turn, then scroll into
     // Second 01: the reused TOC List must scroll back to Second 01 instead of staying at 34..48.
     desktop.press("Jump to section: Section 01").await;
+    desktop.control("▸ Section 01 Start").await;
     desktop.hover_at(point(px(900.), px(260.)));
     desktop.press("Return to latest").await;
     desktop.control("▸ Section 48 End").await;
@@ -3676,7 +3694,8 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     // (folded sourceCitation rows are not standalone unmounted output rows).
     desktop.press("Return to latest").await;
     desktop.control("▸ Second 48 End").await;
-    send_turn("Short cited answer").await;
+    desktop.type_text("Short cited answer").await;
+    desktop.submit().await;
     let mut reply4 = desktop.request(&mut fixture).await;
     let cite_marker = "\u{E200}cite\u{E202}turn4search0\u{E201}";
     let cited_prefix = "# Quick Answer\n\nThe result is 42. ";
@@ -3722,10 +3741,10 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     desktop.control("example.com").await;
     desktop
         .until("short cited reply must keep TOC hidden", || {
-            desktop
-                .controls("Table of contents")
-                .is_empty()
-                .then_some(())
+            (desktop.controls("Table of contents").is_empty()
+                && desktop.controls("Jump to section: Quick Answer").is_empty()
+                && desktop.controls("Jump to section: Second 48").is_empty())
+            .then_some(())
         })
         .await;
 
@@ -3745,7 +3764,9 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
     // provisional raw-markdown height far exceeds its parsed height, causing a
     // large positive then negative ScrollBy pair when it enters overscan above
     // the viewport while scrolling upward.
-    let mut tall_markdown = String::from("## Detailed review findings\n\n");
+    let mut tall_markdown = String::from(
+        "## Detailed review findings\n\n<details><summary>Review start</summary>First turn.</details>\n\n",
+    );
     for i in 0..55 {
         tall_markdown.push_str(&format!(
             "- **Finding {i}**: inspect [scroll_anchor_module_{i}.rs](file:///Users/example/workspace/products/maka/crates/scroll-engine/src/internal/layout/scroll_anchor_module_{i}.rs#L120-L245) and [history_viewport_{i}.tsx](file:///Users/example/workspace/plugins/agent/conversations/ui/components/history_viewport_{i}.tsx#L410-L520) for anchor drift during async markdown hydration.\n",
@@ -3765,7 +3786,13 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
         ("Check the first follow-up", filler_reply("Follow-up 1", 6)),
         ("Check the second follow-up", filler_reply("Follow-up 2", 6)),
         ("Check the third follow-up", filler_reply("Follow-up 3", 10)),
-        ("Summarize final checks", filler_reply("Final summary", 6)),
+        (
+            "Summarize final checks",
+            format!(
+                "{}\n<details><summary>Final reply end</summary>Last turn.</details>",
+                filler_reply("Final summary", 6)
+            ),
+        ),
     ];
 
     for (idx, (prompt, body)) in turns.iter().enumerate() {
@@ -3802,29 +3829,8 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
         nsh_core::platform::Appearance::Dark,
     )
     .await;
-    desktop
-        .until("latest reply did not render", || {
-            (!desktop.controls("Copy user message").is_empty()
-                && desktop.controls("Return to latest").is_empty())
-            .then_some(())
-        })
-        .await;
-    let top_visible_prompt = |desktop: &Desktop| {
-        desktop
-            .controls("Copy user message")
-            .into_iter()
-            .filter(|b| b.origin.y >= px(48.) && b.origin.y + b.size.height <= px(960.))
-            .min_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap())
-    };
-    let initial_copy = desktop
-        .until("initial user message copy button not visible", || {
-            top_visible_prompt(&desktop)
-        })
-        .await;
-    let initial_prompt = desktop
-        .copy_at("could not copy initial prompt", initial_copy.center())
-        .await;
-    assert_eq!(initial_prompt, "Summarize final checks");
+    desktop.control("▸ Final reply end").await;
+    assert!(desktop.controls("Return to latest").is_empty());
 
     use nsh_terminal::{ScrollDelta, ScrollWheelEvent, TouchPhase};
     let center = point(px(950.), px(500.));
@@ -3873,12 +3879,8 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
             "upward flick #{flick} jumped back to the bottom"
         );
         if flick >= 10
-            && let Some(copy) = top_visible_prompt(&desktop)
-            && copy.origin.y < px(260.)
-            && desktop
-                .copy_at("could not copy top prompt", copy.center())
-                .await
-                == "Review the full diff"
+            && let [start] = desktop.controls("▸ Review start")[..]
+            && start.origin.y < px(260.)
         {
             reached_first_turn = true;
             break;
@@ -3905,17 +3907,7 @@ async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()
             },
         )
         .await;
-    let tail_copy = desktop
-        .until("tail user message copy button did not return", || {
-            top_visible_prompt(&desktop)
-        })
-        .await;
-    assert_eq!(
-        desktop
-            .copy_at("could not copy tail prompt", tail_copy.center())
-            .await,
-        "Summarize final checks"
-    );
+    desktop.control("▸ Final reply end").await;
 
     desktop.close().await;
     fixture.finish().await;
