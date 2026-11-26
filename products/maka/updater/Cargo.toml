@@ -37,6 +37,9 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+reqwest = { workspace = true, features = ["system-proxy"] }
+
 [dev-dependencies]
 flate2 = "1"
 serde_json.workspace = true
