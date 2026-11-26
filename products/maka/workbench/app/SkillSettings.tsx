@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SettingsSkeleton } from './Loading';
 import { platform, Text, View } from 'nsh';
 import type { SkillSettingsOwner } from './skillSettingsState';
 import { ConfigurationScope, LocationChoices } from './ConfigurationScope';
@@ -109,8 +109,8 @@ function Library(props: { owner: SkillSettingsOwner }) {
           </If>
         </SettingsSection>
       </If>
-      <If when={owner.loading()}>
-        <LoadingIndicator />
+      <If when={owner.loading() && !owner.page()}>
+        <SettingsSkeleton padded={false} rows={3} />
       </If>
       <If when={!owner.loading() && !owner.page()}>
         <SettingsProblem retry={owner.refresh} />
@@ -127,7 +127,7 @@ function Detail(props: { owner: SkillSettingsOwner }) {
       when={owner.document()}
       else={
         <SettingsBody>
-          <LoadingIndicator />
+          <SettingsSkeleton padded={false} rows={3} />
         </SettingsBody>
       }
     >

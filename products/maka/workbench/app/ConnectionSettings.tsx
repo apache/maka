@@ -24,7 +24,7 @@ import { ConnectionAdvanced, ConnectionForm } from './ConnectionForm';
 import { ExternalAgentConfirmation, ExternalAgentSection } from './ExternalAgentSettings';
 import { ProviderPicker } from './ProviderPicker';
 import { ConnectionModel } from './ConnectionModel';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import { UsageLimits } from './UsageLimits';
 import {
@@ -193,8 +193,8 @@ function ConnectionList(props: {
 export function Status(props: { owner: ModelSettingsOwner; retry(): void }) {
   return (
     <>
-      <If when={props.owner.loading()}>
-        <LoadingIndicator label={tr('Loading settings…')} />
+      <If when={props.owner.loading() && !props.owner.connections().length}>
+        <SettingsSkeleton padded={false} rows={3} label={tr('Loading settings…')} />
       </If>
       <If when={!props.owner.loading() && props.owner.error()}>
         <SettingsProblem retry={props.retry} />

@@ -20,7 +20,7 @@
 import { inputAction } from 'nsh';
 import type { AgentExternalRuntime } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { ExternalAgentSettingsOwner } from './externalAgentSettingsState';
-import { LoadingIndicator } from './Loading';
+import { InlineSkeletonLine, SettingsSkeleton } from './Loading';
 import { tr } from './locale';
 import { UsageLimits } from './UsageLimits';
 import {
@@ -114,9 +114,14 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
                     : undefined
                 }
                 detail={
-                  <If when={runtime().enabled && runtime().usageLimits}>
-                    <UsageLimits target={() => ({ kind: 'external', runtime: runtime().id })} />
-                  </If>
+                  <>
+                    <If when={runtime().enabled && owner.checking() && !owner.status(runtime().id)}>
+                      <InlineSkeletonLine width={148} label={tr('Checking external agents…')} />
+                    </If>
+                    <If when={runtime().enabled && runtime().usageLimits}>
+                      <UsageLimits target={() => ({ kind: 'external', runtime: runtime().id })} />
+                    </If>
+                  </>
                 }
                 accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
                   name: runtime().name,
@@ -137,7 +142,7 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
         </SettingsSection>
       </If>
       <If when={owner.loading() && !owner.basis()}>
-        <LoadingIndicator label={tr('Checking external agents…')} />
+        <SettingsSkeleton padded={false} rows={2} label={tr('Checking external agents…')} />
       </If>
       <If when={unavailable()}>
         <SettingsProblem

@@ -38,7 +38,7 @@ import {
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
-import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { ConversationSkeleton } from '../../../../products/maka/workbench/app/Loading';
 import type { RecallAnchor } from '../../../../products/maka/workbench/app/RecallSearch';
 import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
 import type {
@@ -5895,7 +5895,7 @@ export function Conversation(props: ConversationProps) {
                     </If>
                   }
                 >
-                  <LoadingState label={tr('Loading session history…')} />
+                  <ConversationSkeleton delay={0} label={tr('Loading session history…')} />
                 </If>
               }
             >

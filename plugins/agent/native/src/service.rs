@@ -584,7 +584,7 @@ impl Handler for Agent {
                 let input: maka_agent_api::external::ExternalAgentsRead = decode(input)?;
                 encode(
                     owner
-                        .external_agents(input.inspect, context.scope())
+                        .external_agents(input.inspect, input.refresh, context.scope())
                         .await?,
                 )
             }),

@@ -27,7 +27,7 @@ import { errorText, renderText, UiError, type UiText } from './text';
 import { DialogFooter, DialogHeader, ModalDialog } from './ModalDialog';
 import { SettingsButton } from './SettingsPage';
 import { Icon } from './Icon';
-import { LoadingIndicator } from './Loading';
+import { InlineSkeletonLine } from './Loading';
 import { sessionStatusCaption } from './sessionStatus';
 import type { SessionActionTarget } from './sessionLifecycle';
 import {
@@ -241,10 +241,7 @@ export function SessionTree(props: {
                       }}
                     >
                       <If when={branch().loading}>
-                        <LoadingIndicator />
-                        <Text style={{ ...captionTextStyle, color: C.muted }}>
-                          {tr('Loading…')}
-                        </Text>
+                        <InlineSkeletonLine width={132} label={tr('Loading…')} />
                       </If>
                       <If when={!branch().loading && renderText(branch().error)}>
                         <Text style={{ ...captionTextStyle, flex: 1, color: C.danger }}>

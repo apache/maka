@@ -93,6 +93,7 @@ impl Owner {
     pub(crate) async fn external_agents(
         &self,
         inspect: bool,
+        refresh: bool,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<maka_agent_api::external::ExternalAgents, String> {
         use maka_agent_api::external::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
@@ -110,7 +111,11 @@ impl Owner {
                 Err(message) => ExternalAgentsState::Unavailable { message },
                 Ok(Some(cwd)) => {
                     let result = self
-                        .inspect_external(cwd, serde_json::json!({"kind":"status"}), scope)
+                        .inspect_external(
+                            cwd,
+                            serde_json::json!({"kind":"status", "refresh":refresh}),
+                            scope,
+                        )
                         .await;
                     match result {
                         Ok(Some(value)) => match serde_json::from_value(value) {

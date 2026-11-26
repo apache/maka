@@ -32,6 +32,7 @@ import {
   type UsageTarget,
 } from './usageLimitsReading';
 import { C, captionTextStyle } from './ui';
+import { UsageLimitsSkeleton } from './Loading';
 import { TokenCount } from './TokenCount';
 
 function usageWindow(seconds: number) {
@@ -155,12 +156,14 @@ export function UsageLimits(props: { target: () => UsageTarget }) {
   };
   const terminal = platform.idiom === 'terminal';
   return (
-    <View style={{ gap: terminal ? 0 : 6, marginTop: terminal ? 0 : 4 }}>
-      <If when={message()}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
-      </If>
-      <UsageLimitsList limits={limits} />
-    </View>
+    <If when={usage() !== null} else={<UsageLimitsSkeleton label={tr('Loading usage limits…')} />}>
+      <View style={{ gap: terminal ? 0 : 6, marginTop: terminal ? 0 : 4 }}>
+        <If when={message()}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{message()}</Text>
+        </If>
+        <UsageLimitsList limits={limits} />
+      </View>
+    </If>
   );
 }
 

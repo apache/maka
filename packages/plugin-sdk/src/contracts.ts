@@ -10892,6 +10892,10 @@ export const contracts: {
                 type: 'boolean',
                 default: false,
               },
+              refresh: {
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
           },

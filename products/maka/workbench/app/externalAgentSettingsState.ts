@@ -54,6 +54,7 @@ export function createExternalAgentSettings(
   } | null>(null);
   const failure = signal<string | null>(null);
   const loading = signal(false);
+  const checking = signal(false);
   let alive = true;
   const view = signal(0);
   let read = 0;
@@ -63,8 +64,9 @@ export function createExternalAgentSettings(
   });
   const action = (): ExternalAgentAction => ({ view: view() });
   const current = (request: ExternalAgentAction) => alive && active() && request.view === view();
-  const disabled = () =>
-    loading() || operations.busy() || !operations.pendingKnown() || operations.pending().length > 0;
+  const busy = () =>
+    operations.busy() || !operations.pendingKnown() || operations.pending().length > 0;
+  const disabled = () => (loading() && !basis()) || busy();
   const source = async () => (await host.query('management', 'read', {})).source.reference;
   const observeBasis = async (): Promise<Basis> => {
     const before = await source();
@@ -98,37 +100,49 @@ export function createExternalAgentSettings(
     confirmation.set(null);
     catalog.set(null);
   };
-  const load = async () => {
-    if (!alive || !active() || loading()) return;
+  const load = async (forceRefresh = false) => {
+    if (!alive || !active()) return;
+    if (!forceRefresh && (loading() || checking())) return;
     const generation = ++read;
-    loading.set(true);
+    const hasBasis = basis() !== null;
+    if (!hasBasis) {
+      loading.set(true);
+      view.set(view() + 1);
+    }
     failure.set(null);
-    view.set(view() + 1);
     confirmation.set(null);
     try {
       const next = await observeBasis();
       if (!alive || !active() || generation !== read) return;
-      const status = next.target.runtimes.some((runtime) => runtime.enabled)
-        ? await host.query('agent', 'externalAgents', {})
-        : null;
-      if (!alive || !active() || generation !== read) return;
-      const latest = await source();
-      if (!alive || !active() || generation !== read) return;
-      if (!sameValue(next.source, latest)) {
-        invalidate();
-        throw new UiError('These settings changed elsewhere. Reload before saving again.');
-      }
+      const hasEnabled = next.target.runtimes.some((runtime) => runtime.enabled);
       batch(() => {
         basis.set(next);
-        catalog.set(status);
+        loading.set(false);
+        if (!hasEnabled) {
+          catalog.set(null);
+          checking.set(false);
+        } else {
+          checking.set(true);
+        }
       });
+      if (!hasEnabled) return;
+      const status = await host.query(
+        'agent',
+        'externalAgents',
+        forceRefresh ? { refresh: true } : {},
+      );
+      if (!alive || !active() || generation !== read) return;
+      catalog.set(status);
     } catch (error) {
       if (alive && active() && generation === read) {
         failure.set(errorMessage(error));
         operations.report(new UiError('Could not check external agents. Open details or refresh.'));
       }
     } finally {
-      if (alive && generation === read) loading.set(false);
+      if (alive && generation === read) {
+        loading.set(false);
+        checking.set(false);
+      }
     }
   };
   const verify = async (original: Basis, request: ExternalAgentAction) => {
@@ -221,18 +235,28 @@ export function createExternalAgentSettings(
     return state?.kind === 'ready' ? state.runtimes : [];
   };
   const reload = (request: ExternalAgentAction) => {
-    if (!current(request) || disabled()) return;
+    if (!current(request) || busy()) return;
     operations.error.set('');
-    void load();
+    for (const runtime of runtimes()) {
+      if (runtime.enabled && runtime.usageLimits && isExternalUsageRuntime(runtime.id)) {
+        invalidateUsageLimits(host, { kind: 'external', runtime: runtime.id });
+      }
+    }
+    void load(true);
   };
   const deactivate = () => {
     read += 1;
     loading.set(false);
-    invalidate();
+    checking.set(false);
+    confirmation.set(null);
+    view.set(view() + 1);
   };
   const reset = () => {
-    deactivate();
-    if (active()) void load();
+    read += 1;
+    loading.set(false);
+    checking.set(false);
+    invalidate();
+    if (active()) void load(false);
   };
   return {
     basis,
@@ -241,6 +265,7 @@ export function createExternalAgentSettings(
     status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,
     loading,
+    checking,
     disabled,
     action,
     runtimes,
@@ -249,13 +274,13 @@ export function createExternalAgentSettings(
     cancel,
     reload,
     refresh() {
-      if (!confirmation() && !disabled()) void load();
+      if (!confirmation() && !busy()) void load(false);
     },
     enable: (request: ExternalAgentAction) => save(request, confirmation()?.runtime ?? '', true),
     disable: (request: ExternalAgentAction & { runtime: string }) =>
       save(request, request.runtime, false),
     activate: () => {
-      if (!basis()) void load();
+      void load(false);
     },
     deactivate,
     reset,
