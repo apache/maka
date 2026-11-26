@@ -268,10 +268,18 @@ export type LookTokens = {
   onAccent: string;
 };
 
+// A look's colors are never changed in place, so each set is derived once however many views
+// read it: the window, the theme preview and the editor's rows during a drag.
+const derived = new WeakMap<LookColors, LookTokens>();
 /** The tokens of one appearance's colors. Regions follow whether its background is dark: the
  * content sits on `background` in a light window, on `surface` in a dark one. The sidebar is
  * the picked `card`, else the step below the content. */
 export function lookTokens(colors: LookColors): LookTokens {
+  let tokens = derived.get(colors);
+  if (!tokens) derived.set(colors, (tokens = deriveTokens(colors)));
+  return tokens;
+}
+function deriveTokens(colors: LookColors): LookTokens {
   const { background: content, foreground: text, primary: accent } = colors;
   const dark = darkBackground(content);
   const muted =
