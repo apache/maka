@@ -34,7 +34,7 @@ use uuid::Uuid;
 pub(super) enum Policy {
     #[default]
     Manual,
-    RustPreview,
+    Nightly,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,9 +53,9 @@ pub(crate) struct Configure {
     /// Omit to observe the saved policy without mutation.
     #[arg(long, value_enum)]
     policy: Option<Policy>,
-    #[arg(long, requires = "policy", required_if_eq_any([("policy", "manual"), ("policy", "rust-preview")]))]
+    #[arg(long, requires = "policy", required_if_eq_any([("policy", "manual"), ("policy", "nightly")]))]
     expected_policy_revision: Option<u64>,
-    #[arg(long, requires = "policy", required_if_eq_any([("policy", "manual"), ("policy", "rust-preview")]))]
+    #[arg(long, requires = "policy", required_if_eq_any([("policy", "manual"), ("policy", "nightly")]))]
     expected_deployment_id: Option<Uuid>,
 }
 

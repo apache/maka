@@ -46,6 +46,24 @@ export const UPDATER_ARCHIVE_MAP = {
   'windows-x86_64': 'Maka-nightly-windows-x64.zip',
 };
 
+const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+
+export function updaterArchiveMap(channel = 'nightly', version = null) {
+  if (channel !== 'nightly' && channel !== 'release') {
+    throw new Error('Unsupported distribution channel: ' + channel);
+  }
+  if (channel === 'nightly') return UPDATER_ARCHIVE_MAP;
+  if (!STABLE_SEMVER.test(version ?? '')) {
+    throw new Error('Release channel requires a stable X.Y.Z SemVer version; got ' + version);
+  }
+  return Object.fromEntries(
+    Object.entries(UPDATER_ARCHIVE_MAP).map(([platform, name]) => [
+      platform,
+      name.replace(/^Maka-nightly-/, 'Maka-' + version + '-'),
+    ]),
+  );
+}
+
 const METADATA_FILES = new Set([
   'SHA256SUMS.txt',
   'latest.json',
@@ -117,28 +135,47 @@ export function renderReleaseNotes({
   commit,
   buildDate,
   repo = 'apache/maka',
+  channel = 'nightly',
+  releaseTag = null,
   disclaimer,
   extraNotes = '',
   assets = [],
   previous = null,
   npmPublished = false,
 }) {
+  const isRelease = channel === 'release';
+  const tag = releaseTag ?? (isRelease ? 'v' + version + '-incubating' : 'nightly');
+  const prefix = isRelease ? 'Maka-' + version + '-' : 'Maka-nightly-';
   const shortSha = commit.slice(0, 12);
-  const baseUrl = 'https://github.com/' + repo + '/releases/download/nightly';
-  const out = [
-    '> [!WARNING]',
-    '> **UNOFFICIAL DEVELOPER NIGHTLY BUILD — NOT AN APACHE SOFTWARE FOUNDATION RELEASE**',
-    '>',
-    '> This pre-release provides automated pre-built binaries strictly for **developer testing and evaluation**.',
-    '> It is **NOT** an official Apache Software Foundation (ASF) release, has **NOT** been approved by an ASF release vote, and may be unstable.',
-    '',
-    '## Build Info',
-    '',
-    '- **Version**: `' + version + '`',
-    '- **Commit**: [' + shortSha + '](https://github.com/' + repo + '/commit/' + commit + ')',
-    '- **Built (UTC)**: ' + buildDate,
-    '- **Update Channel**: `nightly` (auto-updates only follow `nightly`, never stable releases)',
-  ];
+  const baseUrl = 'https://github.com/' + repo + '/releases/download/' + tag;
+  const out = isRelease
+    ? [
+        'Convenience binaries built from the approved Apache Maka `' +
+          version +
+          '` (incubating) release commit. The official Apache Software Foundation release is the signed source archive at [maka.apache.org/en/downloads](https://maka.apache.org/en/downloads/).',
+        '',
+        '## Release Info',
+        '',
+        '- **Version**: `' + version + '`',
+        '- **Tag**: `' + tag + '`',
+        '- **Commit**: [' + shortSha + '](https://github.com/' + repo + '/commit/' + commit + ')',
+        '- **Built (UTC)**: ' + buildDate,
+        '- **Update Channel**: `release` (auto-updates only follow stable releases, never nightly builds)',
+      ]
+    : [
+        '> [!WARNING]',
+        '> **UNOFFICIAL DEVELOPER NIGHTLY BUILD — NOT AN APACHE SOFTWARE FOUNDATION RELEASE**',
+        '>',
+        '> This pre-release provides automated pre-built binaries strictly for **developer testing and evaluation**.',
+        '> It is **NOT** an official Apache Software Foundation (ASF) release, has **NOT** been approved by an ASF release vote, and may be unstable.',
+        '',
+        '## Build Info',
+        '',
+        '- **Version**: `' + version + '`',
+        '- **Commit**: [' + shortSha + '](https://github.com/' + repo + '/commit/' + commit + ')',
+        '- **Built (UTC)**: ' + buildDate,
+        '- **Update Channel**: `nightly` (auto-updates only follow `nightly`, never stable releases)',
+      ];
 
   if (extraNotes && extraNotes.trim()) {
     out.push('', '## Notes', '', extraNotes.trim());
@@ -146,45 +183,65 @@ export function renderReleaseNotes({
 
   out.push(
     '',
-    '## Install (Current Nightly)',
+    isRelease ? '## Downloads' : '## Install (Current Nightly)',
     '',
     '| Platform | Installer / Package | Notes |',
     '| --- | --- | --- |',
   );
 
   const assetSet = new Set(assets);
-  if (assetSet.has('Maka-nightly-macos-arm64.dmg')) {
+  const dmg = prefix + 'macos-arm64.dmg';
+  const setupExe = prefix + 'windows-x64-setup.exe';
+  const winZip = prefix + 'windows-x64.zip';
+  const linuxX64 = prefix + 'linux-x64.tar.gz';
+  const linuxArm64 = prefix + 'linux-arm64.tar.gz';
+
+  if (assetSet.has(dmg)) {
     out.push(
-      '| macOS (Apple Silicon) | [Maka-nightly-macos-arm64.dmg](' +
+      '| macOS (Apple Silicon) | [' +
+        dmg +
+        '](' +
         baseUrl +
-        '/Maka-nightly-macos-arm64.dmg) | Drag `Maka.app` to Applications (self-contained desktop + CLI) |',
+        '/' +
+        dmg +
+        ') | Drag `Maka.app` to Applications (self-contained desktop + CLI) |',
     );
   }
-  if (assetSet.has('Maka-nightly-windows-x64-setup.exe')) {
+  if (assetSet.has(setupExe)) {
     out.push(
-      '| Windows (x64) | [Maka-nightly-windows-x64-setup.exe](' +
+      '| Windows (x64) | [' +
+        setupExe +
+        '](' +
         baseUrl +
-        '/Maka-nightly-windows-x64-setup.exe) | Per-user installer (no admin required, adds `maka` to user PATH) |',
+        '/' +
+        setupExe +
+        ') | Per-user installer (no admin required, adds `maka` to user PATH) |',
     );
-  } else if (assetSet.has('Maka-nightly-windows-x64.zip')) {
+  } else if (assetSet.has(winZip)) {
     out.push(
-      '| Windows (x64) | [Maka-nightly-windows-x64.zip](' +
-        baseUrl +
-        '/Maka-nightly-windows-x64.zip) | Portable archive |',
-    );
-  }
-  if (assetSet.has('Maka-nightly-linux-x64.tar.gz')) {
-    out.push(
-      '| Linux (x64) | [Maka-nightly-linux-x64.tar.gz](' +
-        baseUrl +
-        '/Maka-nightly-linux-x64.tar.gz) | glibc 2.28+ archive; run `./maka/install.sh` after extracting |',
+      '| Windows (x64) | [' + winZip + '](' + baseUrl + '/' + winZip + ') | Portable archive |',
     );
   }
-  if (assetSet.has('Maka-nightly-linux-arm64.tar.gz')) {
+  if (assetSet.has(linuxX64)) {
     out.push(
-      '| Linux (arm64) | [Maka-nightly-linux-arm64.tar.gz](' +
+      '| Linux (x64) | [' +
+        linuxX64 +
+        '](' +
         baseUrl +
-        '/Maka-nightly-linux-arm64.tar.gz) | glibc 2.28+ archive; run `./maka/install.sh` after extracting |',
+        '/' +
+        linuxX64 +
+        ') | glibc 2.28+ archive; run `./maka/install.sh` after extracting |',
+    );
+  }
+  if (assetSet.has(linuxArm64)) {
+    out.push(
+      '| Linux (arm64) | [' +
+        linuxArm64 +
+        '](' +
+        baseUrl +
+        '/' +
+        linuxArm64 +
+        ') | glibc 2.28+ archive; run `./maka/install.sh` after extracting |',
     );
   }
   if (assetSet.has('Maka-nightly-ios-arm64.ipa')) {
@@ -209,7 +266,9 @@ export function renderReleaseNotes({
   if (npmPublished) {
     out.push(
       '',
-      'Install via npm (unofficial `@nightly` tag — published with this build):',
+      isRelease
+        ? 'Install via npm (`@latest`):'
+        : 'Install via npm (unofficial `@nightly` tag — published with this build):',
       '',
       '```sh',
       'npm install --global @maka-agent/cli@' + version,
@@ -267,6 +326,8 @@ export async function generateNightlyMetadata({
   commit,
   buildDate = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   repo = 'apache/maka',
+  channel = 'nightly',
+  releaseTag = null,
   secretKey = process.env.MAKA_UPDATE_SIGNING_KEY,
   expectedPublicKey = process.env.MAKA_UPDATE_PUBLIC_KEY,
   requireSignature = false,
@@ -276,6 +337,7 @@ export async function generateNightlyMetadata({
   notesOutput = null,
   repositoryRoot = root,
 }) {
+  const archiveMap = updaterArchiveMap(channel, version);
   const dir = resolve(directory);
   const entries = (await readdir(dir)).filter((name) => !METADATA_FILES.has(name)).sort();
 
@@ -293,7 +355,7 @@ export async function generateNightlyMetadata({
   await writeFile(join(dir, 'SHA256SUMS.txt'), checksumLines.join('\n') + '\n', 'utf8');
 
   const platforms = {};
-  for (const [platformKey, fileName] of Object.entries(UPDATER_ARCHIVE_MAP)) {
+  for (const [platformKey, fileName] of Object.entries(archiveMap)) {
     if (!digests.has(fileName)) continue;
     platforms[platformKey] = {
       url: fileName,
@@ -306,11 +368,13 @@ export async function generateNightlyMetadata({
     id: 'org.apache.maka.desktop',
     version,
     notes:
-      'Unofficial developer nightly build ' +
-      version +
-      ' (' +
-      commit.slice(0, 12) +
-      '). Not an official Apache Software Foundation release.',
+      channel === 'release'
+        ? 'Apache Maka ' + version + ' (incubating) (' + commit.slice(0, 12) + ')'
+        : 'Unofficial developer nightly build ' +
+          version +
+          ' (' +
+          commit.slice(0, 12) +
+          '). Not an official Apache Software Foundation release.',
     platforms,
   };
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8');
@@ -348,10 +412,12 @@ export async function generateNightlyMetadata({
     commit,
     buildDate,
     repo,
+    channel,
+    releaseTag,
     disclaimer,
     extraNotes,
     assets: [...digests.keys()],
-    previous,
+    previous: channel === 'nightly' ? previous : null,
     npmPublished,
   });
   await writeFile(resolve(notesOutput ?? join(dir, 'RELEASE_NOTES.md')), notes, 'utf8');
@@ -362,13 +428,15 @@ export async function generateNightlyMetadata({
     'latest.json',
     ...(signed ? ['latest.json.sig'] : []),
   ].sort();
-  const meta = {
-    version,
-    commit,
-    buildDate,
-    assets: publishedAssets,
-  };
-  await writeFile(join(dir, 'nightly-meta.json'), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  if (channel === 'nightly') {
+    const meta = {
+      version,
+      commit,
+      buildDate,
+      assets: publishedAssets,
+    };
+    await writeFile(join(dir, 'nightly-meta.json'), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  }
 
   return { manifest, signed, assets: publishedAssets };
 }
@@ -386,6 +454,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         commit: { type: 'string' },
         'build-date': { type: 'string' },
         repo: { type: 'string' },
+        channel: { type: 'string' },
+        tag: { type: 'string' },
         notes: { type: 'string' },
         'notes-out': { type: 'string' },
         'previous-meta': { type: 'string' },
@@ -413,6 +483,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       commit: values.commit,
       buildDate: values['build-date'],
       repo: values.repo ?? 'apache/maka',
+      channel: values.channel ?? 'nightly',
+      releaseTag: values.tag ?? null,
       extraNotes: values.notes ?? '',
       notesOutput: values['notes-out'] ?? null,
       expectedPublicKey: values['expected-public-key'] ?? process.env.MAKA_UPDATE_PUBLIC_KEY,

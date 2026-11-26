@@ -1,7 +1,7 @@
 {
   "name": "@maka-agent/cli",
   "version": "0.3.0",
-  "description": "Unofficial experimental Maka Rust preview; not an ASF release or endorsement",
+  "description": "Platform launcher for Apache Maka (incubating) CLI",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -21,6 +21,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/M4n5ter/maka-agent.git"
+    "url": "https://github.com/apache/maka.git"
   }
 }

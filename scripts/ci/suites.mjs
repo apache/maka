@@ -422,8 +422,6 @@ export const suites = {
       ...distributionInputs,
       'scripts/rust/build-cli.mjs',
       'scripts/rust/build-cli.test.mjs',
-      'scripts/rust/pack-cli.mjs',
-      'scripts/rust/pack-cli.test.mjs',
       'scripts/rust/run-cli.mjs',
       'scripts/rust/run-cli.test.mjs',
     ],
