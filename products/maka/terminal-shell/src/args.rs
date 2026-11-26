@@ -22,6 +22,8 @@ use std::{
     path::PathBuf,
 };
 
+const NO_PIXELS_ENV: &str = "MAKA_TERMINAL_NO_PIXELS";
+
 /// Options for the default `maka` entry and the `maka terminal-shell` command.
 #[derive(clap::Parser, Default)]
 #[command(version, about = "Maka terminal application using NSH")]
@@ -32,6 +34,10 @@ pub struct Args {
     /// Existing Agent session to display initially; otherwise open the session picker.
     #[arg(long)]
     pub session: Option<String>,
+    /// Disable terminal pixel rendering and use the Unicode cell TUI
+    /// (also configurable via MAKA_TERMINAL_NO_PIXELS=1).
+    #[arg(long)]
+    pub no_pixels: bool,
 }
 
 impl Args {
@@ -42,7 +48,38 @@ impl Args {
         if self.session.as_ref().is_some_and(String::is_empty) {
             return Err("session must not be empty".into());
         }
+        let _ = self.pixels_enabled()?;
         Ok(())
+    }
+
+    pub fn pixels_enabled(&self) -> Result<bool, String> {
+        if self.no_pixels {
+            return Ok(false);
+        }
+        let Some(value) = std::env::var_os(NO_PIXELS_ENV) else {
+            return Ok(true);
+        };
+        let value = value.to_str().map(str::trim).ok_or_else(|| {
+            format!("{NO_PIXELS_ENV} must be valid UTF-8 (one of 1/0, true/false, yes/no, on/off)")
+        })?;
+        if value.is_empty()
+            || value.eq_ignore_ascii_case("0")
+            || value.eq_ignore_ascii_case("false")
+            || value.eq_ignore_ascii_case("no")
+            || value.eq_ignore_ascii_case("off")
+        {
+            Ok(true)
+        } else if value.eq_ignore_ascii_case("1")
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("yes")
+            || value.eq_ignore_ascii_case("on")
+        {
+            Ok(false)
+        } else {
+            Err(format!(
+                "{NO_PIXELS_ENV} must be one of 1/0, true/false, yes/no, on/off (got {value:?})"
+            ))
+        }
     }
 }
 

@@ -333,6 +333,7 @@ impl crate::terminal_args::Args {
                     self.session.as_deref().map(std::ffi::OsStr::new),
                 ),
             ],
+            &[("--no-pixels", self.no_pixels)],
         )
         .map_err(|error| error.to_string())
     }

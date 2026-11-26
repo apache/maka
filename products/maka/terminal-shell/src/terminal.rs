@@ -216,6 +216,7 @@ pub(crate) fn run(
     mut config: EngineConfig,
     stop: Arc<AtomicBool>,
     _native_jobs: tokio::sync::mpsc::UnboundedSender<NativeJob>,
+    pixels: bool,
 ) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("the terminal shell requires a terminal on stdin and stdout".into());
@@ -256,32 +257,33 @@ pub(crate) fn run(
     config.context = config.context.with(maka_workbench::Foreground(
         presentation.activation.subscribe(),
     ));
-    let setup = [SETUP, graphics::QUERY].concat();
     let setup = {
-        let mut setup = setup;
+        let mut setup = [SETUP, graphics::QUERY].concat();
         let mut state = presentation.state.lock().unwrap();
         state.trace = frame_trace::Trace::from_env();
-        let tracing = state.trace.is_some();
-        state.pixels = Some(pixels::Inbox::new(
-            pixels::Capabilities {
-                size,
-                mouse: pixels::MouseCoordinates::Cells,
-                protocol: None,
-                synchronized: false,
-                sixel_geometry: Default::default(),
-                ui_scale: 1.0,
-            },
-            tracing,
-        ));
-        setup.extend(state.pixel_probe.query()?);
-        setup.extend(pixels::text_input::query());
+        if pixels {
+            let tracing = state.trace.is_some();
+            state.pixels = Some(pixels::Inbox::new(
+                pixels::Capabilities {
+                    size,
+                    mouse: pixels::MouseCoordinates::Cells,
+                    protocol: None,
+                    synchronized: false,
+                    sixel_geometry: Default::default(),
+                    ui_scale: 1.0,
+                },
+                tracing,
+            ));
+            setup.extend(state.pixel_probe.query()?);
+            setup.extend(pixels::text_input::query());
+        }
         setup
     };
     output.submit([setup])?;
     let mut input = None;
     let result = (|| {
         input = Some(start_reader(presentation.clone(), reader)?);
-        {
+        if pixels {
             let capabilities = pixels::select(&mut output, &presentation, size)?;
             if presentation.stop.load(Ordering::Acquire) || presentation.state.lock().unwrap().quit
             {
