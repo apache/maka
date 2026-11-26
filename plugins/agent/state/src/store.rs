@@ -955,10 +955,30 @@ impl Store {
         changes: Vec<Change>,
         contents: Vec<ContentBlob>,
     ) -> Result<Commit, StoreError> {
+        self.observe_with_head(run, None, changes, contents).await
+    }
+    /// Publish late facts derived from the given Run head, without a driver claim.
+    pub async fn observe_at_head(
+        &self,
+        run: RunId,
+        head: Head,
+        changes: Vec<Change>,
+        contents: Vec<ContentBlob>,
+    ) -> Result<Commit, StoreError> {
+        self.observe_with_head(run, Some(head), changes, contents)
+            .await
+    }
+    async fn observe_with_head(
+        &self,
+        run: RunId,
+        expected: Option<Head>,
+        changes: Vec<Change>,
+        contents: Vec<ContentBlob>,
+    ) -> Result<Commit, StoreError> {
         self.data
             .write(Append {
                 run,
-                expected: None,
+                expected,
                 changes,
                 contents,
                 steering: None,

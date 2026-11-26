@@ -33,8 +33,8 @@ use maka_agent_engine::{
 use maka_agent_facts::{
     artifact::{PublishedArtifact, ToolReturn},
     cells::{
-        CellChild, CellEvent, CellId, CellInterruption, CellOwner, CellReturnedResult, CellStatus,
-        CellView, CellVmBinding, StoredCellReturn,
+        CellChild, CellEvent, CellId, CellInterruption, CellOwner, CellRejection,
+        CellReturnedResult, CellStatus, CellView, CellVmBinding, StoredCellReturn,
     },
     durable::{
         BlockerId, BlockerKind, ContentRef, ExecutionIdentity, Fact, FactId, SCHEMA_VERSION,
@@ -75,6 +75,8 @@ pub(super) struct RunCells {
     pub(super) coordinator: CodeCells,
     executor: CodeExecutor,
     closures: Arc<Mutex<BTreeMap<CellId, PendingVmPublication>>>,
+    #[cfg(test)]
+    before_vm_publication: Arc<Mutex<Option<CellFuture<'static, ()>>>>,
     publications: Arc<Mutex<BTreeMap<FactId, Arc<OriginalPublication>>>>,
     owned: Arc<Mutex<BTreeSet<CellId>>>,
     effects: Arc<Mutex<BTreeMap<(CellId, Uuid), EffectCustody>>>,
@@ -123,7 +125,7 @@ struct VmPublication {
     proof: maka_code_runtime::RuntimeVmGoneProof,
     id: FactId,
     at: UnixMillis,
-    batch: Mutex<Option<(Change, ContentBlob)>>,
+    batch: Mutex<Option<(Vec<Change>, ContentBlob)>>,
 }
 impl RunCells {
     #[cfg(test)]
@@ -170,6 +172,8 @@ impl RunCells {
             coordinator,
             executor,
             closures: Arc::default(),
+            #[cfg(test)]
+            before_vm_publication: Arc::default(),
             publications: Arc::default(),
             owned: Arc::default(),
             effects: Arc::default(),
@@ -1133,35 +1137,31 @@ impl RunCells {
             .clone()
     }
     async fn publish_vm_gone(&self, original: &VmPublication) -> Result<(), ToolError> {
-        let current = self
-            .cells
-            .read(&self.access.execution().session_id, original.cell)
-            .await
-            .map_err(persistence)?
-            .ok_or_else(|| persistence("Original Cell disappeared"))?;
-        if current.owner != original.owner || current.vm != original.vm {
-            return Err(persistence(
-                "Original VM descriptor changed before closure publication",
-            ));
-        }
         let retained = original.batch.lock().map_err(persistence)?.clone();
-        if let Some((change, blob)) = retained {
-            if self
-                .observe_original(std::slice::from_ref(&change))
-                .await?
-                .is_none()
-            {
-                self.publish(vec![change], vec![blob], vec![]).await?;
+        let replay = if let Some((changes, _)) = retained {
+            if self.observe_original(&changes).await?.is_some() {
+                return Ok(());
             }
-            return Ok(());
-        }
-        let mut snapshot: Option<CellView> = None;
+            // After the original writer proves no commit, resample the children
+            // before late publication. The retained snapshot may have lost a head race.
+            true
+        } else {
+            false
+        };
+        let run = self.access.execution().run_id;
+        let mut snapshot = None;
         loop {
-            let current = self
-                .state
-                .original_driver_frontier(self.access.claim())
-                .await
-                .map_err(persistence)?;
+            // Read the head first: any write between this read and the Cell
+            // snapshot (or publication) must invalidate the batch.
+            let current = if replay {
+                self.state.frontier(run).await
+            } else {
+                self.state
+                    .original_driver_frontier(self.access.claim())
+                    .await
+            }
+            .map_err(persistence)?;
+            let head = Head::from(&current);
             let cell = self
                 .cells
                 .read(&self.access.execution().session_id, original.cell)
@@ -1178,8 +1178,30 @@ impl RunCells {
             }
             if snapshot
                 .as_ref()
-                .is_none_or(|prior| prior.children != cell.children)
+                .is_none_or(|prior| prior != &cell.children)
             {
+                let mut changes = Vec::new();
+                let mut settled = cell.children.clone();
+                for (&operation, child) in &mut settled {
+                    if !child.admitted && child.rejected.is_none() {
+                        let rejection = CellRejection {
+                            reason: RejectionKind::Cancelled,
+                            diagnostic: "Original VM exited before child admission".into(),
+                        };
+                        changes.push(Change::new(
+                            Fact::Cell {
+                                event: CellEvent::ChildRejected {
+                                    cell: cell.id,
+                                    operation,
+                                    reason: rejection.reason,
+                                    diagnostic: rejection.diagnostic.clone(),
+                                },
+                            },
+                            original.at,
+                        ));
+                        child.rejected = Some(rejection);
+                    }
+                }
                 let witness = match original.proof.process() {
                     Some(process) => format!("process is confirmed gone: {:?}", process.identity()),
                     None => "original VM was dropped and its actual worker thread joined".into(),
@@ -1191,14 +1213,14 @@ impl RunCells {
                         original.proof.binding().runtime,
                         original.proof.binding().version
                     ),
-                    children: cell.children.clone(),
+                    children: settled,
                     prior_output: None,
                 };
                 let blob = tokio::task::spawn_blocking(move || ContentBlob::json(&report))
                     .await
                     .map_err(persistence)?
                     .map_err(persistence)?;
-                let change = Change {
+                changes.push(Change {
                     id: original.id,
                     at: original.at,
                     fact: Fact::Cell {
@@ -1207,30 +1229,37 @@ impl RunCells {
                             report: blob.reference().clone(),
                         },
                     },
-                };
-                *original.batch.lock().map_err(persistence)? = Some((change, blob));
-                snapshot = Some(cell);
+                });
+                *original.batch.lock().map_err(persistence)? = Some((changes, blob));
+                snapshot = Some(cell.children);
             }
-            let (change, blob) = original
+            let (changes, blob) = original
                 .batch
                 .lock()
                 .map_err(persistence)?
                 .as_ref()
                 .ok_or_else(|| persistence("Original VM publication was not prepared"))?
                 .clone();
-            match self
-                .state
-                .append(
-                    self.access.claim(),
-                    Head::from(&current),
-                    vec![change.clone()],
-                    vec![blob],
-                )
-                .await
+            #[cfg(test)]
             {
+                let before = self.before_vm_publication.lock().unwrap().take();
+                if let Some(before) = before {
+                    before.await?;
+                }
+            }
+            let committed = if replay {
+                self.state
+                    .observe_at_head(run, head, changes.clone(), vec![blob])
+                    .await
+            } else {
+                self.state
+                    .append(self.access.claim(), head, changes.clone(), vec![blob])
+                    .await
+            };
+            match committed {
                 Ok(_) => return Ok(()),
-                // This rejection proves no write. Only its not-yet-admitted
-                // child snapshot may advance; the original identity/time stay.
+                // This rejection proves no write. A changed child snapshot can
+                // replace the batch while keeping the interruption identity/time.
                 Err(error)
                     if matches!(
                         error.underlying(),
@@ -1246,7 +1275,7 @@ impl RunCells {
                             | maka_event_log::StoreError::OperationUnknown
                     ) =>
                 {
-                    match self.observe_original(std::slice::from_ref(&change)).await? {
+                    match self.observe_original(&changes).await? {
                         Some(_) => return Ok(()),
                         None => continue,
                     }
@@ -1446,6 +1475,16 @@ impl OwnedCellWait {
 }
 #[cfg(test)]
 impl RunCells {
+    pub(super) fn before_vm_publication_for_test(&self, before: CellFuture<'static, ()>) {
+        assert!(
+            self.before_vm_publication
+                .lock()
+                .unwrap()
+                .replace(before)
+                .is_none()
+        );
+    }
+
     pub(super) async fn prepare_wait_read_failure(
         self: &Arc<Self>,
         parent: ToolCallContext,

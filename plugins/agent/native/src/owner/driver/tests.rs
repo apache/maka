@@ -1667,13 +1667,19 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 mod bounded_risk {
     use super::*;
+    use maka_agent_engine::ports::{CellObservation, CellPorts};
     use maka_agent_facts::{
         artifact::ToolReturn,
-        cells::{CellEvent, CellId, CellOwner, CellReply, CellReplyState, CellStatus},
+        cells::{
+            CellEvent, CellId, CellInterruption, CellOwner, CellReply, CellReplyState, CellStatus,
+            CellVmBinding,
+        },
         tool_output::{AcceptedToolResult, DurableToolProjection, ReturnedToolResult, ToolOutput},
+        tools::{ToolExecutor, ToolFuture},
     };
 
-    // Typed State fixture only. No interpreter, process identity or physical cleanup ACK.
+    const ORIGINAL_CELL_SOURCE: &str = "// logical bounded Cell source";
+
     async fn start_original_cell(
         rig: &Rig,
         attempt: ModelAttemptId,
@@ -1683,7 +1689,7 @@ mod bounded_risk {
                 attempt,
                 "exec",
                 "bounded-cell-parent",
-                json!({"code":"logical bounded Cell source"}),
+                json!({"code":ORIGINAL_CELL_SOURCE}),
             )
             .await?;
         let driver = rig.driver.as_ref().ok_or("fixture driver missing")?;
@@ -1697,7 +1703,7 @@ mod bounded_risk {
             attempt,
         };
         let cell = CellId::for_agent(link, &parent.call);
-        let source = ContentBlob::new(b"logical bounded Cell source".to_vec());
+        let source = ContentBlob::new(ORIGINAL_CELL_SOURCE.as_bytes().to_vec());
         driver
             .state
             .append(
@@ -1721,6 +1727,216 @@ mod bounded_risk {
             )
             .await?;
         Ok((cell, parent))
+    }
+
+    struct NoTools;
+    impl ToolExecutor for NoTools {
+        fn names(&self) -> Vec<String> {
+            vec![]
+        }
+
+        fn invoke(&self, name: String, _: Value, _: CancellationToken) -> ToolFuture {
+            panic!("unexpected VM tool invocation: {name}");
+        }
+    }
+
+    async fn prepare_cell_with_shell(
+        rig: &mut Rig,
+    ) -> TestResult<(CellId, ToolKey, Uuid, maka_code_runtime::PreparedCell)> {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (cell, parent) = start_original_cell(rig, attempt).await?;
+        rig.finish_model_request(attempt, None).await?;
+        let operation = Uuid::new_v4();
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
+        let context =
+            maka_code_runtime::CellContext::new(store, vec![]).map_err(|error| error.message)?;
+        let vm = owner
+            .code_executor
+            .prepare_module(
+                ORIGINAL_CELL_SOURCE.into(),
+                Arc::new(NoTools),
+                CancellationToken::new(),
+                context,
+            )
+            .await?;
+        let binding = vm.binding().clone();
+        let descriptor = ContentBlob::json(&binding.descriptor)?;
+        let input = ContentBlob::json(&json!({"command": "echo must-not-run"}))?;
+        rig.append(
+            vec![
+                Fact::Cell {
+                    event: CellEvent::VmBound {
+                        cell,
+                        binding: CellVmBinding {
+                            runtime: binding.runtime,
+                            version: binding.version,
+                            descriptor: descriptor.reference().clone(),
+                        },
+                    },
+                },
+                Fact::Cell {
+                    event: CellEvent::ChildPrepared {
+                        cell,
+                        operation,
+                        name: "Shell".into(),
+                        semantics: ToolSemantics::Parallel,
+                        input: input.reference().clone(),
+                        resources: vec![],
+                    },
+                },
+            ],
+            vec![descriptor, input],
+        )
+        .await?;
+        Ok((cell, parent, operation, vm))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dead_cell_never_admits_its_prepared_shell() {
+        let mut rig = Rig::new().unwrap();
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let (cell, parent, operation, vm) = prepare_cell_with_shell(&mut rig).await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let original = &view.cells[&cell];
+            let child = &original.children[&operation];
+            assert!(matches!(original.status, CellStatus::Running));
+            assert!(original.vm.is_some() && !child.admitted && child.rejected.is_none());
+
+            vm.abort().await?;
+            assert!(matches!(
+                rig.cells
+                    .as_ref()
+                    .unwrap()
+                    .observe_original_cell(&view, original)
+                    .await?,
+                CellObservation::Recorded
+            ));
+
+            let view = driver.state.frontier(run).await?;
+            let CellStatus::Interrupted { report } = &view.cells[&cell].status else {
+                return Err("original VM exit did not interrupt the Cell".into());
+            };
+            let report: CellInterruption =
+                serde_json::from_slice(&driver.state.content(run, report.clone()).await?)?;
+            let child = &report.children[&operation];
+            assert!(
+                !child.admitted && child.rejected.is_some() && child.local_result.is_none(),
+                "original VM exit did not reject its unadmitted child: {child:?}"
+            );
+            assert!(!view.has_unsettled_recovery());
+            assert!(
+                view.tools[&maka_agent_state::fold::tool_key(&parent)]
+                    .local_returned
+                    .is_none()
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match result {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retained_dead_cell_retries_after_child_admission() {
+        use maka_agent_facts::cells::CellReturnedResult;
+
+        let mut rig = Rig::new().unwrap();
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let (cell, _, operation, vm) = prepare_cell_with_shell(&mut rig).await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let cells = rig.cells.as_ref().unwrap();
+            cells.retain_vm_for_test(cell);
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            vm.abort().await?;
+
+            // Leave the original batch retained without accepting a store write.
+            cells.before_vm_publication_for_test(Box::pin(async {
+                Err(ToolError::Persistence(
+                    "test: original VM write not sent".into(),
+                ))
+            }));
+            assert!(matches!(
+                cells.observe_original_cell(&view, &view.cells[&cell]).await,
+                Err(RunError::Tool(ToolError::Persistence(message)))
+                    if message == "test: original VM write not sent"
+            ));
+            driver.workers.close();
+            driver.workers.wait().await;
+
+            // Commit admission after cleanup has sampled the prepared child,
+            // but before the cleanup batch reaches the writer.
+            let (sampled, after_sample) = oneshot::channel();
+            let (resume, after_admission) = oneshot::channel();
+            cells.before_vm_publication_for_test(Box::pin(async move {
+                sampled.send(()).expect("cleanup sample observer");
+                after_admission.await.expect("cleanup publication gate");
+                Ok(())
+            }));
+            let (cleanup, admission) = tokio::join!(cells.original_cleanup_confirmed(), async {
+                after_sample.await?;
+                let returned = ContentBlob::json(&ToolReturn {
+                    schema_version: SCHEMA_VERSION,
+                    artifacts: vec![],
+                    body: CellReturnedResult {
+                        output: ToolOutput::Text("original Shell returned".into()),
+                        projection: None,
+                        is_error: false,
+                    },
+                })?;
+                rig.append(
+                    vec![
+                        Fact::Cell {
+                            event: CellEvent::ChildAdmitted { cell, operation },
+                        },
+                        Fact::Cell {
+                            event: CellEvent::LocalChildReturned {
+                                cell,
+                                operation,
+                                result: returned.reference().clone(),
+                                is_error: false,
+                                settlement: ToolSettlement::Returned,
+                            },
+                        },
+                    ],
+                    vec![returned],
+                )
+                .await?;
+                resume.send(()).expect("cleanup publication observer");
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            });
+            admission?;
+            assert!(cleanup?, "retained VM closure must settle after the race");
+            let view = driver.state.frontier(run).await?;
+            let CellStatus::Interrupted { report } = &view.cells[&cell].status else {
+                return Err("retained VM closure did not interrupt the Cell".into());
+            };
+            let report: CellInterruption =
+                serde_json::from_slice(&driver.state.content(run, report.clone()).await?)?;
+            let child = &report.children[&operation];
+            assert!(child.admitted && child.rejected.is_none() && child.local_result.is_some());
+            assert!(!view.has_unsettled_recovery());
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await;
+        match result {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+        let cleanup = cleanup.expect("retained VM fixture cleanup timed out");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
