@@ -231,7 +231,7 @@ export function ComposerDetails(props: {
         backgroundColor: 'transparent',
       }}
       hoverStyle={{ backgroundColor: C.cardRaised }}
-      focusStyle={{ backgroundColor: C.line }}
+      focusStyle={{ backgroundColor: C.pressed }}
     >
       <Icon name="close" color={C.muted} />
     </Button>
@@ -267,7 +267,7 @@ export function ComposerDetails(props: {
               backgroundColor: single() && selected() === key ? C.cardRaised : 'transparent',
             }}
             hoverStyle={{ backgroundColor: C.cardRaised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             {panels[key].mark()}
             <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
@@ -313,7 +313,7 @@ export function ComposerDetails(props: {
             backgroundColor: 'transparent',
           }}
           hoverStyle={{ backgroundColor: C.cardRaised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           {panels[key].mark()}
           {key === 'todo' ? (

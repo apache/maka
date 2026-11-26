@@ -73,7 +73,7 @@ export function createChecklist(
         }
       >
         {platform.idiom === 'terminal' ? (
-          <Icon name="activity" color={C.accent} />
+          <Icon name="activity" color={C.accentText} />
         ) : (
           <ChecklistProgress
             share={() => (snapshot()?.total ? snapshot()!.completed / snapshot()!.total : 0)}
@@ -159,7 +159,7 @@ export function createChecklist(
                         <ChoiceIndicator kind="checkbox" checked={item().status === 'completed'} />
                       }
                     >
-                      <Icon name="activity" color={C.accent} />
+                      <Icon name="activity" color={C.accentText} />
                     </If>
                   </View>
                   <Text
@@ -169,7 +169,7 @@ export function createChecklist(
                         flex: 1,
                         color:
                           item().status === 'in_progress'
-                            ? C.accent
+                            ? C.accentText
                             : item().status === 'completed'
                               ? C.muted
                               : C.secondary,

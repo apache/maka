@@ -63,6 +63,7 @@ mount(() => {
     sidebarShown: () => false,
     toggleSidebar: noop,
     textSize: noop,
+    resetTheme: noop,
   });
   return (
     <View>

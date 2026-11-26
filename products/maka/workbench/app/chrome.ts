@@ -71,6 +71,8 @@ export interface MenuActions {
   toggleSidebar(): void;
   /** One text size up (1), down (-1), or the default (0). */
   textSize(step: number): void;
+  /** Back to the default theme, from a menu a theme cannot make unreadable. */
+  resetTheme(): void;
 }
 
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
@@ -210,6 +212,7 @@ export function applicationMenu(actions: MenuActions) {
             shortcut: 'mod+0',
             onSelect: () => actions.textSize(0),
           },
+          { label: tr('Reset theme'), shortcut: 'mod+shift+0', onSelect: actions.resetTheme },
           { type: 'separator' },
           { role: 'toggleFullScreen' },
         ],

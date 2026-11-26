@@ -191,7 +191,7 @@ export function SkillInput(props: Props) {
         openSessionReferences={props.onOpenSessionReference !== undefined}
         onOpenSessionReference={props.onOpenSessionReference}
         placeholder={props.placeholder}
-        tokenColor={C.accent}
+        tokenColor={C.accentText}
         tokenBackgroundColor={`${C.accent}20`}
         tokenIcon={lucide.book[0].d}
         captureKeys={captureKeys()}

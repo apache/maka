@@ -83,7 +83,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 gap: 6,
                 alignItems: 'center',
               }}
-              hoverStyle={{ backgroundColor: C.line }}
+              hoverStyle={{ backgroundColor: C.pressed }}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >

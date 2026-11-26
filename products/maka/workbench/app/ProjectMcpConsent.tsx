@@ -124,7 +124,7 @@ export function ProjectMcp(props: { owner: Owner }) {
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Text style={{ ...captionTextStyle, fontWeight: '500', color: C.accent }}>
+              <Text style={{ ...captionTextStyle, fontWeight: '500', color: C.accentText }}>
                 {owner.pending() ? tr('Saving trust…') : tr('Trust configuration')}
               </Text>
             </Button>

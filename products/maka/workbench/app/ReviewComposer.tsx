@@ -90,7 +90,7 @@ export function AddLineNoteButton(props: { onPress(): void }) {
       hoverStyle={{ opacity: 0.9 }}
       focusStyle={controlFocusStyle()}
     >
-      <Icon name="plus" size={12} color={C.chrome} />
+      <Icon name="plus" size={12} color={C.onAccent} />
     </Button>
   );
 }
@@ -159,7 +159,7 @@ export function InlineReviewComposer(props: {
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="conversation" size={14} color={C.accent} />
+        <Icon name="conversation" size={14} color={C.accentText} />
         <Text
           style={{
             ...captionTextStyle,
@@ -291,11 +291,11 @@ export function InlineReviewComposer(props: {
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Icon name="send" size={12} color={props.onAddPrComment ? C.text : C.chrome} />
+              <Icon name="send" size={12} color={props.onAddPrComment ? C.text : C.onAccent} />
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: props.onAddPrComment ? C.text : C.chrome,
+                  color: props.onAddPrComment ? C.text : C.onAccent,
                   fontWeight: '500',
                 }}
               >
@@ -325,11 +325,11 @@ export function InlineReviewComposer(props: {
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Icon name="plus" size={12} color={C.chrome} />
+            <Icon name="plus" size={12} color={C.onAccent} />
             <Text
               style={{
                 ...captionTextStyle,
-                color: C.chrome,
+                color: C.onAccent,
                 fontWeight: '500',
               }}
             >
@@ -371,7 +371,7 @@ export function InlineReviewNoteCard(props: {
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="note" size={14} color={C.accent} />
+        <Icon name="note" size={14} color={C.accentText} />
         <Text
           style={{
             ...captionTextStyle,
@@ -397,7 +397,7 @@ export function InlineReviewNoteCard(props: {
             hoverStyle={quietHoverStyle()}
             focusStyle={quietFocusStyle()}
           >
-            <Icon name="send" size={12} color={C.accent} />
+            <Icon name="send" size={12} color={C.accentText} />
           </Button>
         </If>
         <Button
@@ -462,8 +462,8 @@ export function PendingPrCommentCard(props: {
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="conversation" size={14} color={C.accent} />
-        <Text style={{ ...captionTextStyle, color: C.accent, fontWeight: '500' }}>
+        <Icon name="conversation" size={14} color={C.accentText} />
+        <Text style={{ ...captionTextStyle, color: C.accentText, fontWeight: '500' }}>
           {tr('Pending PR comment')}
         </Text>
         <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>{rangeLabel()}</Text>
@@ -707,7 +707,7 @@ export function GitHubThreadCard(props: {
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: C.chrome,
+                  color: C.onAccent,
                   fontWeight: '500',
                 }}
               >
@@ -897,11 +897,11 @@ export function ReviewBatchBar(props: {
               hoverStyle={{ opacity: 0.9 }}
               focusStyle={controlFocusStyle()}
             >
-              <Icon name="send" size={12} color={C.chrome} />
+              <Icon name="send" size={12} color={C.onAccent} />
               <Text
                 style={{
                   ...captionTextStyle,
-                  color: C.chrome,
+                  color: C.onAccent,
                   fontWeight: '500',
                 }}
               >
@@ -949,7 +949,7 @@ export function SymbolLocationsDrawer(props: {
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="symbol" size={14} color={C.accent} />
+        <Icon name="symbol" size={14} color={C.accentText} />
         <Text
           style={[
             { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },

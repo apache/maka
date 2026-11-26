@@ -511,7 +511,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
   return (
     <View style={{ gap: 6 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Icon name="check" color={C.accent} />
+        <Icon name="check" color={C.accentText} />
         <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
           {summary().filter(Boolean).join(' · ')}
         </Text>
@@ -640,7 +640,7 @@ function Sections(props: {
                       backgroundColor: C.cardRaised,
                       marginTop: 8,
                     }}
-                    hoverStyle={isDark() ? { opacity: 0.82 } : { backgroundColor: C.line }}
+                    hoverStyle={isDark() ? { opacity: 0.82 } : { backgroundColor: C.pressed }}
                     activeStyle={{ opacity: 0.68 }}
                     focusStyle={quietFocusStyle()}
                   >

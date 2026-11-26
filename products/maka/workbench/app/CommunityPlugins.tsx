@@ -44,7 +44,7 @@ type Repo = {
   title: string;
 };
 function SearchPlaceholder() {
-  const bar = { height: 9, borderRadius: 5, backgroundColor: C.line };
+  const bar = { height: 9, borderRadius: 5, backgroundColor: C.pressed };
   return (
     <View role="progressbar" accessibilityLabel={tr('Reading plugins…')}>
       <If

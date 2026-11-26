@@ -236,7 +236,7 @@ export function UsageLimitsList(props: { limits: () => UsageLimit[] }) {
                   style={{
                     height: 3,
                     borderRadius: 2,
-                    backgroundColor: C.line,
+                    backgroundColor: C.pressed,
                     overflow: 'hidden',
                   }}
                 >

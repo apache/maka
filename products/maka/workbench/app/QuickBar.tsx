@@ -114,7 +114,7 @@ export function QuickRow(props: {
           minWidth: 0,
           maxWidth: props.pluginName ? '50%' : props.previewRow ? '86%' : '60%',
           fontWeight: '500',
-          color: props.previewRow && props.selected ? C.accent : C.text,
+          color: props.previewRow && props.selected ? C.accentText : C.text,
           numberOfLines: 1,
           textOverflow: 'ellipsis',
         }}

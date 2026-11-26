@@ -267,7 +267,7 @@ export function SettingsRow(props: SettingsRowProps) {
       onPress={props.onPress}
       style={{ ...rowStyle, justifyContent: 'flex-start' }}
       hoverStyle={{ backgroundColor: C.raised }}
-      activeStyle={{ backgroundColor: C.line }}
+      activeStyle={{ backgroundColor: C.pressed }}
       focusStyle={{ backgroundColor: C.raised }}
       disabledStyle={controlDisabledStyle}
     >
@@ -433,7 +433,7 @@ export function SettingsSelect(props: {
               gap: 6,
               minWidth: 0,
             }}
-            hoverStyle={{ backgroundColor: C.line }}
+            hoverStyle={{ backgroundColor: C.pressed }}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
@@ -481,7 +481,7 @@ export function SettingsSelect(props: {
             </View>
             <View style={{ width: 16 }}>
               <If when={item.value === props.value}>
-                <Icon name="check" color={C.accent} />
+                <Icon name="check" color={C.accentText} />
               </If>
             </View>
           </View>
@@ -611,6 +611,8 @@ export function SettingsInput(props: {
   stacked?: boolean;
   value: string;
   change(value: string): void;
+  /** The value typed is done: Return, or the focus left the field. */
+  commit?(): void;
   placeholder?: string;
   masked?: boolean;
   readonly?: boolean;
@@ -645,6 +647,8 @@ export function SettingsInput(props: {
           value={props.value}
           placeholder={props.placeholder}
           onChange={({ value }) => props.change(value)}
+          onSubmit={props.commit && (() => props.commit?.())}
+          onBlur={props.commit && (() => props.commit?.())}
           masked={props.masked}
           readonly={props.readonly || props.disabled}
           autoCapitalize="none"
@@ -797,14 +801,14 @@ export function SettingsButton(props: {
         backgroundColor: primaryFill() ? C.accent : quiet() ? undefined : C.raised,
       }}
       hoverStyle={primary() ? { backgroundColor: C.accentHover } : controlHoverStyle()}
-      activeStyle={primary() ? { backgroundColor: C.accentHover } : { backgroundColor: C.line }}
+      activeStyle={primary() ? { backgroundColor: C.accentHover } : { backgroundColor: C.pressed }}
       focusStyle={primary() ? { backgroundColor: C.accentHover } : controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.icon}>
         <Icon
           name={props.icon!}
-          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
+          color={primaryFill() ? C.onAccent : terminalDisabled() ? C.muted : C.secondary}
           size={14}
         />
       </If>
@@ -815,7 +819,7 @@ export function SettingsButton(props: {
             lineHeight: terminal ? 16 : 20,
             fontWeight: primary() ? '500' : undefined,
             color: primaryFill()
-              ? C.background
+              ? C.onAccent
               : terminalDisabled()
                 ? C.muted
                 : props.tone === 'danger'

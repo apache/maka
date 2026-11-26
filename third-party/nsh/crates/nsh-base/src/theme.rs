@@ -393,21 +393,17 @@ fn length(value: &str) -> Option<f32> {
         .map(|n| n * scale)
 }
 
-/// The family of a CSS `font-family` list that the platform draws with:
-/// its first, unquoted (`None`: a generic family, the system's font).
+/// A CSS `font-family` list as written: the platform draws with the first
+/// family it has and takes the characters it lacks from the others
+/// (`None`: a list led by the system's font).
 fn font_family(value: &str) -> Option<&str> {
+    let value = value.trim();
     let first = value.split(',').next()?.trim().trim_matches(['"', '\'']);
-    let generic = matches!(
+    let system = matches!(
         first,
-        "" | "sans-serif"
-            | "serif"
-            | "system-ui"
-            | "ui-sans-serif"
-            | "ui-serif"
-            | "-apple-system"
-            | "BlinkMacSystemFont"
+        "" | "sans-serif" | "system-ui" | "ui-sans-serif" | "-apple-system" | "BlinkMacSystemFont"
     );
-    (!generic).then_some(first)
+    (!system).then_some(value)
 }
 
 /// The tokens theme file `json` sets, and only those: an embedding app's
@@ -693,8 +689,11 @@ mod tests {
         assert_eq!(hex(theme.sidebar_ring.light), 0x7c3aed);
         assert_eq!(theme.radius, px(8.0));
         assert_eq!(theme.number("radius-card"), Some(14.0));
-        assert_eq!(theme.font_sans.as_deref(), Some("Inter"));
-        assert_eq!(theme.font_mono.as_deref(), Some("JetBrains Mono"));
+        assert_eq!(theme.font_sans.as_deref(), Some("Inter, sans-serif"));
+        assert_eq!(
+            theme.font_mono.as_deref(),
+            Some("'JetBrains Mono', monospace")
+        );
         // Of no kind a token has.
         assert_eq!(theme.tokens().get("shadow-sm"), None);
         // Keys left out keep the default.

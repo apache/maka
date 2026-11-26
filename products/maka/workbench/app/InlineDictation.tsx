@@ -270,7 +270,7 @@ export function DictationBar(props: { state: ReturnType<typeof attachDictation> 
       style={{
         ...composerIconSlot,
         borderRadius: composerIconSlot.height / 2,
-        backgroundColor: name === 'close' ? undefined : name === 'send' ? C.text : C.line,
+        backgroundColor: name === 'close' ? undefined : name === 'send' ? C.text : C.pressed,
       }}
     >
       <Icon name={name} color={name === 'send' ? C.surface : C.secondary} size={15} />

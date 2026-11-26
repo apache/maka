@@ -170,7 +170,7 @@ function SidebarRoomGlyph(props: { members: readonly AgentRoomMember[]; pinned: 
         <Icon
           name={props.pinned ? 'pin' : 'rooms'}
           size={14}
-          color={props.pinned ? C.accent : C.muted}
+          color={props.pinned ? C.accentText : C.muted}
         />
       }
     >
@@ -198,7 +198,7 @@ function SidebarRoomGlyph(props: { members: readonly AgentRoomMember[]; pinned: 
         </Each>
         <If when={props.pinned}>
           <View style={{ marginLeft: 3 }}>
-            <Icon name="pin" size={10} color={C.accent} />
+            <Icon name="pin" size={10} color={C.accentText} />
           </View>
         </If>
       </View>
@@ -835,7 +835,7 @@ export function createRoomWorkspace(options: {
                 style={controlStyle}
                 hoverStyle={{ backgroundColor: C.surface }}
               >
-                <Text style={{ ...captionTextStyle, color: C.accent }}>
+                <Text style={{ ...captionTextStyle, color: C.accentText }}>
                   {createWorkspace() ? tr('Change workspace') : tr('Choose workspace')}
                 </Text>
               </Button>
@@ -859,7 +859,7 @@ export function createRoomWorkspace(options: {
               disabled={createBusy() || !createTitle().trim()}
               style={controlStyle}
             >
-              <Text style={{ color: C.accent }}>{tr('New room')}</Text>
+              <Text style={{ color: C.accentText }}>{tr('New room')}</Text>
             </Button>
           </DialogFooter>
         </ModalDialog>
@@ -928,7 +928,7 @@ export function createRoomWorkspace(options: {
               disabled={createBusy() || !renameTitle().trim()}
               style={controlStyle}
             >
-              <Text style={{ color: C.accent }}>{tr('Save')}</Text>
+              <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
             </Button>
           </DialogFooter>
         </ModalDialog>
@@ -1752,9 +1752,9 @@ export function RoomTimeline(props: {
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={controlFocusStyle()}
           >
-            <Icon name="latest" size={14} color={unseenCount() > 0 ? C.accent : C.secondary} />
+            <Icon name="latest" size={14} color={unseenCount() > 0 ? C.accentText : C.secondary} />
             <If when={unseenCount() > 0}>
-              <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.accent }}>
+              <Text style={{ fontSize: 11.5, fontWeight: '600', color: C.accentText }}>
                 {String(unseenCount())}
               </Text>
             </If>
@@ -1836,7 +1836,7 @@ export function RoomTimeline(props: {
               onPress={() => void saveTopic()}
               style={controlStyle}
             >
-              <Text style={{ color: C.accent }}>{tr('Save')}</Text>
+              <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
             </Button>
           </DialogFooter>
         </ModalDialog>

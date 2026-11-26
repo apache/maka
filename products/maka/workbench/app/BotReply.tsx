@@ -198,8 +198,8 @@ export function BotReply(props: {
                       alignItems: 'center',
                     }}
                   >
-                    <Icon name="split" color={C.accent} />
-                    <Text style={{ ...captionTextStyle, color: C.accent }}>
+                    <Icon name="split" color={C.accentText} />
+                    <Text style={{ ...captionTextStyle, color: C.accentText }}>
                       {tr('Open investigation')}
                     </Text>
                   </Button>
@@ -233,9 +233,12 @@ export function BotReply(props: {
           }}
           onPress={() => props.worker?.open()}
         >
-          <Icon name="split" color={C.accent} />
+          <Icon name="split" color={C.accentText} />
           <Text
-            style={[{ ...captionTextStyle, color: C.accent, flexShrink: 1 }, { numberOfLines: 1 }]}
+            style={[
+              { ...captionTextStyle, color: C.accentText, flexShrink: 1 },
+              { numberOfLines: 1 },
+            ]}
           >
             {recordLabel()}
           </Text>
@@ -273,7 +276,7 @@ export function BotWaiting(props: {
             >
               <Icon
                 name="activity"
-                color={worker().activity === 'waiting' ? C.warning : C.accent}
+                color={worker().activity === 'waiting' ? C.warning : C.accentText}
               />
               <Text
                 style={[
@@ -305,7 +308,7 @@ export function BotWorking(props: { detail: () => string }) {
           </>
         }
       >
-        <Icon name="activity" color={C.accent} />
+        <Icon name="activity" color={C.accentText} />
         <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
           {text()}
         </Text>

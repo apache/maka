@@ -105,8 +105,8 @@ export function RecentWorkspaces(props: {
                   flexShrink: 1,
                 }
           }
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           <Icon name="folder" size={composerToolbarIconSize} color={C.muted} />
           <If when={!iconOnly()}>
@@ -158,7 +158,7 @@ export function RecentWorkspaces(props: {
           </View>
           <View style={{ width: 16 }}>
             <If when={item.value === props.path()}>
-              <Icon name="check" color={C.accent} />
+              <Icon name="check" color={C.accentText} />
             </If>
           </View>
         </View>

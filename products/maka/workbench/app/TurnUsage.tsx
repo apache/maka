@@ -291,7 +291,7 @@ export function TurnUsage(props: {
                 through,
               })}
             >
-              <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
+              <Text style={{ color: C.accentText }}>{tr('Retry')}</Text>
             </Button>
           </If>
           <If when={reading().kind === 'ready' && attempts().length === 0}>
