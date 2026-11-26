@@ -27,7 +27,7 @@ impl Driver<'_> {
         deadline: Option<tokio::time::Instant>,
     ) -> Result<(), Error> {
         if !event.is_callback() {
-            return self.observe(event).await;
+            return self.observe(connection, event).await;
         }
         let Some(session) = self.session().map(str::to_owned) else {
             event.reject()?;
@@ -54,7 +54,7 @@ impl Driver<'_> {
                 event = connection.events.recv() => {
                     let result = match event {
                         Some(event) if event.is_callback() => event.reject_busy().map_err(Error::from),
-                        Some(event) => self.observe(event).await,
+                        Some(event) => self.observe(connection, event).await,
                         None => Err(Error::Invalid("ACP event stream ended")),
                     };
                     if let Err(error) = result {
@@ -74,7 +74,7 @@ impl Driver<'_> {
         }
     }
 
-    async fn observe(&mut self, event: Event) -> Result<(), Error> {
+    async fn observe(&mut self, connection: &mut Connection, event: Event) -> Result<(), Error> {
         match event {
             Event::Stderr(_) => {}
             Event::Initialized(_) => return Err(Error::Invalid("duplicate ACP initialization")),
@@ -94,18 +94,38 @@ impl Driver<'_> {
                 }
             }
             Event::V2Update(update) => {
-                self.v2
-                    .as_mut()
-                    .ok_or(Error::Invalid(
-                        "session update before session establishment",
-                    ))?
-                    .update(*update, self.context.output.as_ref(), self.replay)
-                    .await?;
+                let projection = self.v2.as_mut().ok_or(Error::Invalid(
+                    "session update before session establishment",
+                ))?;
+                if root_update(&projection.session_id, &mut connection.children, &update)? {
+                    projection
+                        .update(*update, self.context.output.as_ref(), self.replay)
+                        .await?;
+                }
             }
             _ => return Err(Error::Invalid("unexpected callback in ACP observation")),
         }
         Ok(())
     }
+}
+
+use sdk::v2::schema::{SessionId, SessionUpdate, UpdateSessionNotification};
+use std::collections::HashSet;
+
+// Child updates arrive on the same connection but do not drive the root turn.
+fn root_update(
+    root: &str,
+    children: &mut HashSet<SessionId>,
+    event: &UpdateSessionNotification,
+) -> Result<bool, Error> {
+    let is_root = event.session_id.0.as_ref() == root;
+    if !is_root && !children.contains(&event.session_id) {
+        return Err(Error::Invalid("ACP update belongs to another session"));
+    }
+    if let SessionUpdate::SubagentUpdate(child) = &event.update {
+        children.insert(child.session_id.clone());
+    }
+    Ok(is_root)
 }
 
 async fn callback(
@@ -170,5 +190,30 @@ async fn permission<T>(
         biased;
         _ = cancellation.cancelled() => { context.cancellation.cancel(); work.await }
         result = &mut work => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sdk::v2::schema::{IdleStateUpdate, StateUpdate, SubagentUpdate};
+
+    #[test]
+    fn only_announced_descendants_may_send_updates_outside_the_root_turn() {
+        let mut children = HashSet::new();
+        let mut route = |session, update| {
+            root_update(
+                "root",
+                &mut children,
+                &UpdateSessionNotification::new(session, update),
+            )
+        };
+        let announce = |child| SessionUpdate::SubagentUpdate(SubagentUpdate::new(child));
+        let idle = || SessionUpdate::StateUpdate(StateUpdate::Idle(IdleStateUpdate::new()));
+        assert!(route("root", announce("child")).unwrap());
+        assert!(!route("child", announce("grandchild")).unwrap());
+        assert!(!route("grandchild", idle()).unwrap());
+        assert!(route("stranger", idle()).is_err());
+        assert!(route("root", idle()).unwrap());
     }
 }

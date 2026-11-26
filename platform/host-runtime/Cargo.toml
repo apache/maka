@@ -48,7 +48,7 @@ schemars.workspace = true
 sha2.workspace = true
 base64 = "0.23.1"
 getrandom = "0.4.3"
-hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper = { version = "1.13.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 tokio-tungstenite.workspace = true

@@ -101,7 +101,7 @@ pub(super) fn ollama(data: Ollama) -> Vec<UsageLimit> {
                 .unwrap_or_default();
             let period = from.zip(until).and_then(|(from, until)| {
                 let next_month = from
-                    .to_zoned(jiff::tz::TimeZone::UTC)
+                    .to_zoned_datetime(jiff::tz::TimeZone::UTC)
                     .checked_add(jiff::Span::new().months(1))
                     .ok()
                     .map(|boundary| boundary.timestamp());

@@ -41,4 +41,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
-url = "2.5.8"
+url = "2.5.9"

@@ -135,3 +135,23 @@ fn render(url: Url, text: String, media: Media) -> Result<Page, Error> {
         format,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_article_preserves_relative_links_in_markdown() {
+        let page = render(
+            Url::parse("https://example.org/docs/").unwrap(),
+            r#"<title>Release notes</title><article><p>For a full description of these changes, see the <a href="guide">migration guide</a>.</p></article>"#.into(),
+            Media::Html,
+        )
+        .unwrap();
+        assert!(matches!(page.format, Format::Markdown));
+        assert!(
+            page.content
+                .contains("[migration guide](https://example.org/docs/guide)")
+        );
+    }
+}

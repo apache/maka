@@ -137,6 +137,11 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                         _cx: v2::ConnectionTo<AcpClient>| {
                 let app = resume.clone();
                 resume.dispatch(responder, async move {
+                    let replay = match request.replay_from {
+                        None => false,
+                        Some(acp::ReplayFrom::Start(_)) => true,
+                        Some(_) => return Err("Unsupported ACP replay cursor".into()),
+                    };
                     let servers = crate::mcp::v2(request.mcp_servers, request.cwd.as_ref())?;
                     let setup = app
                         .sessions
@@ -145,7 +150,7 @@ pub(super) fn agent(app: Arc<App>) -> impl ConnectTo<AcpClient> {
                             &app.initialized()?.peer,
                             &request.session_id.to_string(),
                             request.cwd.as_ref(),
-                            request.replay_from.is_some(),
+                            replay,
                             servers,
                         )
                         .await?;

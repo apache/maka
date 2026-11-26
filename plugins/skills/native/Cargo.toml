@@ -47,7 +47,7 @@ tokio-util.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
-url = "2.5.8"
+url = "2.5.9"
 percent-encoding = "2.3.2"
 which = "8.0.6"
 

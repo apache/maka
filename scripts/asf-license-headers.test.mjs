@@ -96,8 +96,8 @@ test('an extracted tree audits every file and repairs leave a clean result', (t)
     'noncanonical.py': renderHeader('hash').replace('http://', 'https://') + '\npass\n',
     'duplicated.rs': block + '\n' + block,
     'adapted.rs': block + '\n// Adapted from an upstream project.\n',
-    'third-party/sqlx-sqlite/src/new.rs': 'fn added_by_maka() {}\n',
-    'third-party/sqlx-sqlite/src/connection/mod.rs': 'upstream source\n',
+    'third-party/deno-node-sqlite/new.rs': 'fn added_by_maka() {}\n',
+    'third-party/deno-node-sqlite/database.rs': 'upstream source\n',
     'dist/unexpected.kt': 'fun main() {}\n',
     'package.json': '{}\n',
   });
@@ -107,7 +107,7 @@ test('an extracted tree audits every file and repairs leave a clean result', (t)
   const sql = readFileSync(join(root, 'migrations/current.sql'), 'utf8');
   assert.equal(applyHeader(sql, commentStylesFor('migrations/current.sql')), sql);
   assert.equal(report.covered, 7);
-  assert.deepEqual(report.missing.sort(), ['missing.ts', 'third-party/sqlx-sqlite/src/new.rs']);
+  assert.deepEqual(report.missing.sort(), ['missing.ts', 'third-party/deno-node-sqlite/new.rs']);
   assert.deepEqual(report.unrecognized, ['noncanonical.py']);
   assert.deepEqual(report.duplicated, ['duplicated.rs']);
   assert.deepEqual(report.unreviewedProvenance, ['adapted.rs']);
@@ -117,7 +117,7 @@ test('an extracted tree audits every file and repairs leave a clean result', (t)
     'missing.ts',
     'duplicated.rs',
     'adapted.rs',
-    'third-party/sqlx-sqlite/src/new.rs',
+    'third-party/deno-node-sqlite/new.rs',
   ]) {
     writeFileSync(join(root, path), block + '\nconst value = 1;\n');
   }

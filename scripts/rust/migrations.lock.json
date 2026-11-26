@@ -217,6 +217,10 @@
       "plugins/agent/state/migrations/0055_external_effect_ended_unknown.sql": {
         "version": 55,
         "sha384": "cbbfb24d0a608a0b4ad1175bc65b44e9cc1f3d7033104d43476abc9dc717be00323c7f45ef63848d96c3223c6de6de81"
+      },
+      "plugins/agent/state/migrations/0056_message_submissions.sql": {
+        "version": 56,
+        "sha384": "9f59f9989f0a121ae89b078ccbdd24f79e44ad2c87b819df38a4b8e7060bcfbf7cfb98fee878cac6b8e8efdb6b67ed59"
       }
     },
     "checkpoint-repository": {

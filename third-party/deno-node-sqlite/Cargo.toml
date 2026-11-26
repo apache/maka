@@ -16,5 +16,5 @@ path = "lib.rs"
 deno_core = "0.413.0"
 deno_error = "0.7.1"
 deno_permissions = "0.119.0"
-rusqlite = { version = "0.41.0", features = ["unlock_notify", "bundled", "session", "modern_sqlite", "limits", "backup", "fallible_uint"] }
+rusqlite = { version = "0.43.0", features = ["unlock_notify", "bundled", "session", "modern_sqlite", "limits", "backup", "fallible_uint"] }
 thiserror = "2"

@@ -165,8 +165,15 @@ impl Peer {
     pub async fn synchronize(
         &self,
         session: &maka_agent_api::contract::Session,
+        replayed: bool,
     ) -> Result<(), Error> {
         if let Connection::V2(client) = &self.connection {
+            if replayed {
+                client.send_notification(acp::UpdateSessionNotification::new(
+                    session.id.clone(),
+                    acp::SessionUpdate::ReplayComplete(acp::ReplayComplete::new()),
+                ))?;
+            }
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.id.clone(),
                 acp::SessionUpdate::StateUpdate(

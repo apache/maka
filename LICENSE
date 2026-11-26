@@ -374,14 +374,6 @@ fe7ed012d92c642fd8e5607ac5a45d517538b5c5. Its manifest uses the workspace
 rusqlite version. The original MIT license and finite file provenance are
 recorded in third-party/deno-node-sqlite/{LICENSE.md,upstream.json}.
 
-SQLx SQLite dependency alignment (adapted, Apache License 2.0 OR MIT)
-
-third-party/sqlx-sqlite contains sqlx-sqlite 0.9.0 from
-https://github.com/launchbadge/sqlx at revision
-003b698e99e024f3621b8043a2426fde5b741171. Original license texts,
-finite source hashes and the SQLite dependency/plan configuration changes are in
-third-party/sqlx-sqlite/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
-
 Termina terminal input source (adapted, MIT OR MPL-2.0)
 
 third-party/termina contains Termina 0.4.0 from
@@ -393,17 +385,17 @@ third-party/termina/{LICENSE-MIT,LICENSE-MPL,README.md,upstream.json,SOURCE.md}.
 
 gix-index long-path source (adapted, Apache License 2.0 OR MIT)
 
-third-party/gix-index contains gix-index 0.58.0 from
+third-party/gix-index contains gix-index 0.59.0 from
 https://github.com/GitoxideLabs/gitoxide at revision
-dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
+541b4db0a59644b617a8b706b83af23e0b17f7f3. Original license texts,
 finite source hashes and the version 2/3 pathname-padding correction are in
 third-party/gix-index/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 
 gix-discover repository discovery source (adapted, Apache License 2.0 OR MIT)
 
-third-party/gix-discover contains gix-discover 0.57.1 from
+third-party/gix-discover contains gix-discover 0.58.0 from
 https://github.com/GitoxideLabs/gitoxide at revision
-dd39fb66e3b1551c9fe849043e39b357a9799ca1. Original license texts,
+541b4db0a59644b617a8b706b83af23e0b17f7f3. Original license texts,
 finite source hashes and the repository I/O error preservation are in
 third-party/gix-discover/{LICENSE-APACHE,LICENSE-MIT,upstream.json,SOURCE.md}.
 

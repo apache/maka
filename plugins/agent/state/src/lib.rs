@@ -397,6 +397,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: Some(recall::migrate_external_effect_observations),
     },
+    maka_event_log::migration::Migration {
+        version: 56,
+        description: "session-scoped message submission keys",
+        sql: include_str!("../migrations/0056_message_submissions.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]

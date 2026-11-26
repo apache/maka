@@ -140,7 +140,8 @@ impl Driver<'_> {
             let accepted = self
                 .rpc(
                     &mut live.connection,
-                    acp::PromptRequest::new(live.session_id.clone(), content),
+                    acp::PromptRequest::new(live.session_id.clone(), content)
+                        .idempotency_key(acp::IdempotencyKey::from(self.request.task_id.as_uuid())),
                     None,
                 )
                 .await?;

@@ -29,4 +29,4 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "sync"] }
 tokio-util = { workspace = true, features = ["compat"] }
 uuid.workspace = true
-yamux = "0.13.10"
+yamux = "0.14.1"

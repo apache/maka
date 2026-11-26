@@ -122,6 +122,8 @@ struct CapsuleManifest {
     connection_id: String,
     connection_slug: String,
     primary_session_id: String,
+    #[serde(default)]
+    keyed_message_id: Option<String>,
     forked_session_id: String,
     /// Capsules sealed before side questions existed have none.
     #[serde(default)]
@@ -995,12 +997,12 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         let sent = call(
             &client,
             "agent",
-            "send",
+            "submitMessage",
             json!({
                 "sessionId": primary_session_id,
                 "message": format!("Run pre-upgrade verification {nonce}."),
                 "attachments": [attachment_id],
-                "delivery": "queue"
+                "idempotencyKey": nonce
             }),
             Attachments::new(),
         )
@@ -1242,6 +1244,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             connection_id,
             connection_slug: "compat-loopback".into(),
             primary_session_id,
+            keyed_message_id: Some(sent["messageId"].as_str().unwrap().to_owned()),
             forked_session_id,
             side_session_id: Some(side_session_id),
             room_id,
@@ -1327,6 +1330,21 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         let (mut client, _) = host.ready().await.expect("Host ready");
 
         verify_queued_after_upgrade(&queued_before);
+        let found = call(
+            &client, "agent", "lookupSubmission",
+            json!({"sessionId":manifest.primary_session_id, "idempotencyKey":manifest.nonce}),
+            Attachments::new(),
+        ).await;
+        assert_eq!(found, json!(manifest.keyed_message_id));
+        if let Some(original) = &manifest.keyed_message_id {
+            let retried = call(
+                &client, "agent", "submitMessage",
+                json!({"sessionId":manifest.primary_session_id, "idempotencyKey":manifest.nonce,
+                    "message":"Must not be inserted after upgrade."}),
+                Attachments::new(),
+            ).await;
+            assert_eq!(retried, json!({"kind":"duplicate","messageId":original}));
+        }
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
         if let Some(id) = &manifest.script_task_id {
@@ -1569,11 +1587,11 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         let followup = call(
             &client,
             "agent",
-            "send",
+            "submitMessage",
             json!({
                 "sessionId": manifest.primary_session_id,
                 "message": format!("Continue upgraded session {post_nonce}."),
-                "delivery": "queue"
+                "idempotencyKey": post_nonce
             }),
             Attachments::new(),
         )

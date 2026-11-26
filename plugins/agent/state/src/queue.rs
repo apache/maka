@@ -32,10 +32,12 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
 mod sql;
+mod submission;
 pub(crate) use sql::{
     DeliveryTarget, Event, consume, consume_external_steering, consume_steering, deliver_held,
     rebuild_queue_projections, release_steering, stop_completions, stop_queue,
 };
+pub use submission::{SubmissionKey, WithdrawMessage};
 
 pub const GOAL_CONTROL_STOP: &str = "goal_control";
 pub const USER_STOP: &str = "user_requested_stop";
@@ -261,6 +263,9 @@ impl QueueStore {
             })
             .await
     }
+    pub async fn revision(&self, session: String) -> Result<u64, StoreError> {
+        self.data.query(ReadRevision(session)).await
+    }
     pub async fn read(&self, session: String) -> Result<Queue, StoreError> {
         self.data.query(Read(session)).await
     }
@@ -432,6 +437,13 @@ pub struct PreparedEnqueue {
     pub work_fence: Option<Arc<SessionWorkFence>>,
 }
 impl PreparedEnqueue {
+    /// An independent append has no client-observed queue revision. Use the
+    /// committed head without relaxing the captured original Run/Stop fence.
+    pub fn use_current_revision(&mut self, c: &Connection) -> Result<(), StoreError> {
+        self.command.expected_revision = sql::revision(c, &self.session)?;
+        Ok(())
+    }
+
     /// Execute a Room delivery inside the RoomPost transaction, refreshing target queue/Run
     /// heads (or falling back to Followup if the target Run just completed) so concurrent
     /// Room steering never drops deliveries due to a sub-millisecond Run step advancement.
@@ -513,6 +525,13 @@ impl Statement for Rebuild {
     }
     fn isolated_rejection(error: &StoreError) -> bool {
         PreparedEnqueue::isolated_rejection(error)
+    }
+}
+struct ReadRevision(String);
+impl Query for ReadRevision {
+    type Output = u64;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::revision(c, &self.0)
     }
 }
 struct Read(String);

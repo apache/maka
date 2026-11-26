@@ -112,9 +112,6 @@ impl Projection {
         sink: &dyn OutputSink,
         replay: bool,
     ) -> Result<(), Error> {
-        if notification.session_id.to_string() != self.session_id {
-            return Err(Error::Invalid("ACP update belongs to another session"));
-        }
         if replay {
             return Ok(());
         }

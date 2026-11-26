@@ -171,7 +171,6 @@ const upstreamFiles = new Set(
     'deno-node-sqlite',
     'gix-index',
     'gix-discover',
-    'sqlx-sqlite',
     'reqwest',
     'image-webp',
     'termina',

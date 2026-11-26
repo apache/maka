@@ -44,9 +44,7 @@ use std::{
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 mod admission;
-pub(crate) struct Prompt {
-    pub content: Vec<crate::content::Input>,
-}
+pub(crate) use admission::Admission;
 pub(crate) struct Foreground {
     client: Client,
     peer: Peer,
@@ -60,7 +58,7 @@ pub(crate) struct Foreground {
     history_through: u64,
     parts: HashMap<(StepId, ModelAttemptId, String), (String, ContentKind)>,
     message_starts: HashMap<String, u64>,
-    user: Vec<HistoryChunk>,
+    started: Option<RunId>,
 }
 
 #[expect(
@@ -140,9 +138,23 @@ impl Foreground {
         &mut self,
         subscription: &mut Subscription,
     ) -> Result<Completion, Error> {
-        for chunk in std::mem::take(&mut self.user) {
-            let updates = self.projection.chunk(&chunk)?;
-            self.publish(updates).await?;
+        if let Some(run) = self.started {
+            let mut found = false;
+            for chunk in
+                history::read(&self.client, &self.session.id, None, Some(self.after)).await?
+            {
+                if chunk.role == maka_agent_ports::session::history::Role::User
+                    && chunk.message_id.as_deref() == Some(&self.message_id)
+                    && chunk.run_id == Some(run)
+                {
+                    found = true;
+                    let updates = self.projection.chunk(&chunk)?;
+                    self.publish(updates).await?;
+                }
+            }
+            if !found {
+                return Err("Accepted Run has no durable user message".into());
+            }
         }
         self.refresh().await?;
         self.state(State::Running).await?;

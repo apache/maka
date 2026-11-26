@@ -17,6 +17,7 @@
  * under the License.
  */
 pub(crate) mod list;
+pub(crate) mod prompt;
 use crate::client::Client;
 use crate::{Error, configuration, history, projection::Projection, transport::Peer};
 
@@ -49,11 +50,10 @@ pub(crate) struct Session {
     pub gate: Arc<AsyncMutex<()>>,
     pub preferences: AsyncMutex<configuration::Preferences>,
     mcp: AsyncMutex<Option<crate::client::Subscription>>,
-    active: Mutex<Option<CancellationToken>>,
+    prompts: Mutex<prompt::Pending>,
     closed: AtomicBool,
 }
 pub(crate) struct Active {
-    session: Arc<Session>,
     pub cancel: CancellationToken,
     _guard: OwnedMutexGuard<()>,
 }
@@ -64,37 +64,27 @@ impl Session {
             gate: Arc::default(),
             preferences: AsyncMutex::default(),
             mcp: AsyncMutex::default(),
-            active: Mutex::default(),
+            prompts: Mutex::default(),
             closed: AtomicBool::new(false),
         })
     }
-    pub fn enter(self: &Arc<Self>, parent: &CancellationToken) -> Result<Active, Error> {
+    pub fn enter(&self, parent: &CancellationToken) -> Result<Active, Error> {
         let guard = self
             .gate
             .clone()
             .try_lock_owned()
             .map_err(|_| "ACP session is busy")?;
-        let mut active = self.active.lock().unwrap();
+        let mut prompts = self.prompts.lock().unwrap();
         if self.closed.load(Ordering::SeqCst) || parent.is_cancelled() {
             return Err("ACP session is closed".into());
         }
-        let cancel = parent.child_token();
-        *active = Some(cancel.clone());
         Ok(Active {
-            session: self.clone(),
-            cancel,
+            cancel: prompts.child_token(parent),
             _guard: guard,
         })
     }
     pub fn cancel(&self) {
-        if let Some(cancel) = self.active.lock().unwrap().as_ref() {
-            cancel.cancel();
-        }
-    }
-}
-impl Drop for Active {
-    fn drop(&mut self) {
-        self.session.active.lock().unwrap().take();
+        self.prompts.lock().unwrap().cancel();
     }
 }
 impl Registry {
@@ -201,7 +191,7 @@ impl Registry {
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        peer.synchronize(&session).await?;
+        peer.synchronize(&session, replay_history).await?;
         peer.reset(&id);
         self.sessions
             .lock()

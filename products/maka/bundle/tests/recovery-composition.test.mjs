@@ -78,7 +78,7 @@ const source = composition({
 });
 const { instances } = source.host;
 
-test('built installation binds continuation, Goal and Scheduler to the original Agent export', () => {
+test('built installation publishes the session methods on the original Agent export', () => {
   assert.deepEqual(new Set(names), new Set(packageNames));
   const target = [{ kind: 'instance', path: ['agent'], export: 'agent' }];
   assert.deepEqual(instances.gateway.bindings.agent, target);
@@ -111,6 +111,9 @@ test('built installation binds continuation, Goal and Scheduler to the original 
   assert.equal(source.endpoints.agent.import, 'agent');
   assert.equal(source.endpoints.agent.grant.recovery, true);
   const methods = [
+    ['lookupSubmission', 'query'],
+    ['submitMessage', 'mutation'],
+    ['withdrawSubmission', 'mutation'],
     ['continuationAvailability', 'query'],
     ['continueRun', 'mutation'],
     ['goal', 'query'],

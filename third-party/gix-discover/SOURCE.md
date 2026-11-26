@@ -19,7 +19,7 @@
 
 # Preserve repository discovery I/O failures
 
-Sources and licenses are copied from the published `gix-discover` 0.57.1 crate. `upstream.json` records the registry checksum, source revision and original file hashes. Registry installation metadata and the upstream lockfile are omitted.
+Sources and licenses are copied from the published `gix-discover` 0.58.0 crate. `upstream.json` records the registry checksum, source revision and original file hashes. Registry installation metadata and the upstream lockfile are omitted.
 
 Repository layout checks in `src/is.rs` preserve metadata and linked-worktree path read errors instead of treating them as missing layout entries. Missing HEAD, objects or refs still mean an invalid repository. Maka uses Gix’s classified errors and their original I/O causes; it no longer probes sentinels by matching removed error variants. The existing workspace identity permission fixtures cover HEAD, objects, refs and linked metadata.
 

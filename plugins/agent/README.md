@@ -42,6 +42,16 @@ Workbench clients consume granular RPC methods on [`maka-agent-api`](api/src/con
 - **`SessionSend`** — Posts to a Room (with atomic `@mentions` and `replyTo`) or sends/steers a message to an Agent session. Agent-to-worker sends default to `onComplete: "notify_caller"`, waking the caller with an inline `<worker_result>` summary when the worker finishes.
 - **`SessionRespond` / `SessionStop` / `SessionManage`** — Answer worker questions/approvals, stop active runs, edit queued messages, continue terminal runs, or update/archive/restore/remove sessions.
 
+### Retrying a message submission
+
+Use `agent.submitMessage` to queue a message without steering the active turn. A `queued` result means the Host accepted the message, not that the agent delivered or answered it. Omitting `idempotencyKey` or passing `null` makes each call independent.
+
+To retry after a disconnect, reuse the key in the same session. If the original message is pending or has been delivered, the Host returns `duplicate` with its message ID and does not enqueue the retry. If the queued message was cancelled before delivery, retrying the key queues a new message with a fresh ID. `agent.lookupSubmission` requires a key and returns the pending or delivered message ID, or `null` if there is none.
+
+To withdraw a queued message, call `agent.withdrawSubmission` with its `sessionId` and `messageId`. A `cancelled` result means the message was cancelled before delivery. A `delivered` result means it was already delivered and cannot be recalled. An unknown message ID in that session is an error, not a successful cancellation.
+
+These are public Agent service methods, not an ACP-only privilege. The key is shared within the target session; it is not a secret or proof of caller identity. The Host checks method grants and session control and execution authority independently of the key. Custom Host publications with explicit method lists must grant each method they need.
+
 ## Memory records
 
 User-controlled memory endpoints (`memories`, `memory`, `memoryHistory`, `changeMemory`, `memorySource`, and `memoryEvidence` in [`api/src/contract/memory.rs`](api/src/contract/memory.rs)) manage personal and project-scoped memory records on the State Root. Edits use revision CAS; suppressing a record hides matching content from ordinary reads and history while retaining the underlying audit record. Model reads require live execution authority plus both `memory.enabled` and `memory.agentReadEnabled` in settings preferences (disabling model reads leaves user management available). Assertions can bind verified conversation spans via `changeMemory.add_evidence`, and `create.incognito` marks an immutable memory-privacy boundary inherited by derived sessions.

@@ -28,11 +28,11 @@ ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 getrandom = "0.4.3"
 hex.workspace = true
 hmac = "0.13.0"
-rustls-pki-types = "1.15.1"
+rustls-pki-types = "1.16.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-url = "2.5.8"
-zeroize = "1.8.2"
+url = "2.5.9"
+zeroize = "1.9.2"

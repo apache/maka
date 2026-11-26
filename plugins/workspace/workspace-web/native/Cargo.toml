@@ -44,6 +44,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-dom_smoothie = { version = "0.18.2", default-features = false }
+dom_smoothie = { version = "0.20.0", default-features = false }
 encoding_rs = "0.8.35"
-url = "2.5.8"
+url = "2.5.9"

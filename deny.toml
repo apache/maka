@@ -26,7 +26,7 @@ targets = [
 
 # Follow Apache OpenDAL's cargo-deny policy, with Maka's own dependency exceptions.
 # https://github.com/apache/opendal/blob/main/deny.toml
-# Blue Oak and Unicode data-file licenses are ASF Category A.
+# Blue Oak, Python Software Foundation and Unicode data-file licenses are ASF Category A.
 # https://www.apache.org/legal/resolved.html#category-a
 [licenses]
 allow = [
@@ -42,6 +42,7 @@ allow = [
   "ISC",
   "MIT",
   "MIT-0",
+  "Python-2.0.1",
   "Unicode-3.0",
   "Unicode-DFS-2016",
   "Unlicense",
@@ -55,11 +56,11 @@ exceptions = [
   # Native/platform dependencies; no MPL source is vendored.
   { crate = "cooked-waker@5.0.0", allow = ["MPL-2.0"] },
   { crate = "cssparser@0.36.0", allow = ["MPL-2.0"] },
-  { crate = "cssparser@0.37.0", allow = ["MPL-2.0"] },
+  { crate = "cssparser@0.38.0", allow = ["MPL-2.0"] },
   { crate = "cssparser-macros@0.6.1", allow = ["MPL-2.0"] },
   { crate = "cssparser-macros@0.7.1", allow = ["MPL-2.0"] },
   { crate = "dtoa-short@0.3.5", allow = ["MPL-2.0"] },
-  { crate = "selectors@0.38.0", allow = ["MPL-2.0"] },
+  { crate = "selectors@0.41.0", allow = ["MPL-2.0"] },
   { crate = "smartstring@1.0.1", allow = ["MPL-2.0"] },
   { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
   { crate = "uniffi@0.31.0", allow = ["MPL-2.0"] },

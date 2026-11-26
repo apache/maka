@@ -25,7 +25,7 @@ autotests = false
 
 [dependencies]
 base64 = "0.23.1"
-notify = "8.2.1"
+notify = "9.0.0"
 maka-agent-facts.workspace = true
 maka-plugin-core.workspace = true
 maka-sandbox.workspace = true
@@ -33,9 +33,9 @@ apply-patch.workspace = true
 cap-std.workspace = true
 cap-fs-ext.workspace = true
 dunce = "1.0.5"
-flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 gix = { workspace = true, features = ["status", "worktree-mutation"] }
-ignore = "0.4.33"
+ignore = "0.4.35"
 imagesize.workspace = true
 serde.workspace = true
 schemars.workspace = true
@@ -47,7 +47,7 @@ uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true
