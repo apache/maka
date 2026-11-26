@@ -463,7 +463,7 @@ function WorkspacePages(props: { busy: boolean }) {
         attach={() => {}}
         close={() => {}}
         collapse={() => {}}
-        selectSession={async () => {}}
+        selectSession={async () => false}
         create={async () => {}}
         newConversation={() => {}}
         settings={() => {}}

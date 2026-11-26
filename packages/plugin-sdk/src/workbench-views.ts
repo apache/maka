@@ -54,8 +54,11 @@ export interface ConversationShell {
   closePane?(): void;
   /** Opens the card where a side question is asked, beside this conversation. */
   askBeside?(request: SideQuestionRequest): void;
-  /** Opens the card of a side question that was asked before. */
-  openSideQuestion?(sessionId: string): void;
+  /**
+   * Opens the card of a side question that was asked before, beside `parent` (by default
+   * this conversation), which is selected first. Resolves whether the card opened.
+   */
+  openSideQuestion?(sessionId: string, parent?: string): Promise<boolean>;
   /** The side question whose card is open beside this conversation. */
   sideQuestionId?(): string | null;
 }

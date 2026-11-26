@@ -2197,21 +2197,62 @@ export function createConversationUi(
         ? undefined
         : foldedFamilies(),
     );
+    // A side question opens beside its conversation, so stepping onto one would step back.
+    const sides = new Set(visible.filter((session) => session.branch?.side).map(({ id }) => id));
     const index = rows.indexOf(selected() ?? '');
-    const next = rows[index === -1 ? 0 : index + step];
+    const direction = index === -1 ? 1 : step;
+    let at = index === -1 ? 0 : index + step;
+    while (at >= 0 && at < rows.length && sides.has(rows[at])) at += direction;
+    const next = rows[at];
     if (next && next !== selected()) void selectBrowsed(next, selected());
+  };
+  // A listed side question opens as its card beside the conversation it was asked from, so
+  // the user stays there. One whose conversation was removed opens as a conversation: null.
+  const openBrowsedSide = async (
+    id: string,
+    source: ActionContext,
+  ): Promise<'opened' | 'blocked' | null> => {
+    const branch = browsing.sessions().find((session) => session.id === id)?.branch;
+    const open = shell()?.openSideQuestion;
+    if (!branch?.side || !open) return null;
+    const parent = branch.sessionId;
+    const current = () =>
+      alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
+    if (!current() || switching() || reloading()) return 'blocked';
+    const sourceOverlay = overlay();
+    switching.set(true);
+    try {
+      if (parent !== selected() && !browsing.sessions().some((session) => session.id === parent)) {
+        try {
+          await host.query('agent', 'observe', { sessionId: parent });
+        } catch (reason) {
+          if (unavailableSession(reason)) return null;
+          throw reason;
+        }
+        if (!current()) return 'blocked';
+      }
+      if (!(await open(id, parent)) || !alive || selected() !== parent) return 'blocked';
+      if (overlay() === sourceOverlay) overlay.set(null);
+      status.set('');
+      return 'opened';
+    } catch (reason) {
+      if (current()) report(reason);
+      return 'blocked';
+    } finally {
+      if (alive) switching.set(false);
+    }
   };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
-    const opened = await switchSession(id, {
-      sessionId: origin,
-      instance: current?.instance ?? null,
-    });
-    if (!opened || !alive || selected() !== id) return false;
+    const source = { sessionId: origin, instance: current?.instance ?? null };
+    const side = await openBrowsedSide(id, source);
+    if (side === 'blocked') return false;
+    if (side === null && (!(await switchSession(id, source)) || !alive || selected() !== id))
+      return false;
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
-    handle()?.focus();
+    if (side === null) handle()?.focus();
     return true;
   };
   const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
@@ -2242,9 +2283,7 @@ export function createConversationUi(
     },
     close: closeSidebar,
     collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
-    selectSession: async (id, origin) => {
-      await selectBrowsed(id, origin);
-    },
+    selectSession: selectBrowsed,
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
     },
