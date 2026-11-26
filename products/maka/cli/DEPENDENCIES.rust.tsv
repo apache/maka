@@ -1301,6 +1301,7 @@ sys_traits@0.1.29												X
 sys-locale@0.3.2		X										X							
 sysinfo@0.31.4												X							
 system-configuration-sys@0.6.0		X										X							
+system-configuration@0.7.0		X										X							
 system-configuration@0.8.0		X										X							
 system-deps@9.0.1		X										X							
 taffy@0.16.0												X							
