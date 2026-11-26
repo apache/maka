@@ -1362,6 +1362,39 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     manifest
 }
 
+fn verify_saved_host_upgrade(dir: &Path) {
+    use maka_remote_client::SavedHosts;
+
+    // Host profiles live on the mobile client, not in the historical Host root.
+    let path = dir.join("hosts.json");
+    let old = json!([{
+        "rootId": "compat-root",
+        "hostName": "Compat Mac",
+        "hostPeerId": "compat-peer",
+        "relays": [{"url":"https://relay.example.com","quicPort":null,"certSha256":null}],
+        "directEndpoints": ["hostLogs"],
+    }]);
+    fs::write(&path, old.to_string()).unwrap();
+    let mut saved = SavedHosts::load(&path).unwrap();
+    let mut host = saved.get("compat-root").unwrap().clone();
+    assert!(!host.reconnect_paused());
+    host.set_reconnect_paused(true);
+    saved.save(host).unwrap();
+    drop(saved);
+
+    let upgraded: Value = serde_json::from_reader(fs::File::open(&path).unwrap()).unwrap();
+    let mut expected = old;
+    expected[0]["reconnectPaused"] = json!(true);
+    assert_eq!(upgraded, expected);
+    assert!(
+        SavedHosts::load(path)
+            .unwrap()
+            .get("compat-root")
+            .unwrap()
+            .reconnect_paused()
+    );
+}
+
 async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     let manifest_raw = fs::read_to_string(capsule_dir.join("capsule-manifest.json"))
         .unwrap_or_else(|e| {
@@ -1377,6 +1410,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     // tarball extract a fresh copy at manifest.base_dir before calling verify,
     // matching a real user upgrading Maka at the same HOME and State Root path).
     let work_tmp = tempfile::tempdir().unwrap();
+    verify_saved_host_upgrade(work_tmp.path());
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();

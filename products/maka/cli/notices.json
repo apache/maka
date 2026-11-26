@@ -613,6 +613,7 @@
     "cargo:idna_adapter@1.2.2 registry+https://github.com/rust-lang/crates.io-index": "e51c5a8d27390fa74f0e9fd8200419f19e564d579ae1b9f73dd800edd81744ca",
     "cargo:idna@1.1.0 registry+https://github.com/rust-lang/crates.io-index": "751bcd1ba082968a5c6b25867d234743fdb7489b6f89150fecf48f5d3e4b4bfd",
     "cargo:if_chain@1.0.3 registry+https://github.com/rust-lang/crates.io-index": "701352df47b5e4819d2c90b33f8ae90ca6828972359549a245c5bca94d394231",
+    "cargo:igd-next@0.18.0 registry+https://github.com/rust-lang/crates.io-index": "5220aa6c6aba2d7cbce98281ce466f1cf5daedc9b2bc15be4fcd88b8a78b7365",
     "cargo:ignore@0.4.35 registry+https://github.com/rust-lang/crates.io-index": "1c5cd27c21f81f2b9ce22ec4b4c6730b55f6ec8ddc44df2c947111dbbecdd63c",
     "cargo:image-webp@0.2.4 https://github.com/image-rs/image-webp#08b57d473c90148dd4b37a075df365afc3dfcc2b (adapted; third-party/image-webp)": "0b871a8dc01dc775432e931c0fba636104e4be4454cc599040b3402c3ab984bf",
     "cargo:image@0.25.10 registry+https://github.com/rust-lang/crates.io-index": "fd9d0a86c37c85b3e0f52dc60e9370cbec9cfacd02ce906dcf85c0fbda5f0e81",
@@ -991,6 +992,7 @@
     "cargo:polyval@0.6.2 registry+https://github.com/rust-lang/crates.io-index": "0b695014e349c4f9b44db8c9fe6bda2fe81b0380c2ee911a6f3c5569e731e360",
     "cargo:polyval@0.7.3 registry+https://github.com/rust-lang/crates.io-index": "e505d462963b5e69db7373c17f47edf6ab37bff6aa05c005c2b94fee5dbc52f2",
     "cargo:portable-atomic@1.15.0 registry+https://github.com/rust-lang/crates.io-index": "b5b6000ee2d359226d454fb5897011a5306d1832d459bb25ba79cba6e75e61b2",
+    "cargo:portmapper@0.20.2 registry+https://github.com/rust-lang/crates.io-index": "5c7f5bb453daf8e70909a86a6ad2893a8eca103d43b9692816ebb12de28b56d5",
     "cargo:postcard-derive@0.2.3 registry+https://github.com/rust-lang/crates.io-index": "1b00f56882e798eaa1e1207a941d981c4b9850225ebd313afe920005eab23803",
     "cargo:postcard@1.1.3 registry+https://github.com/rust-lang/crates.io-index": "936dd72d14c000d820013d674e446e3e0f02f180e00e7d4f907dc0e29c8f4bd3",
     "cargo:potential_utf@0.1.6 registry+https://github.com/rust-lang/crates.io-index": "bced23930cfd198f1536c2012147ea8e2b1d9446108460e0337f47bd600728e9",
@@ -1537,7 +1539,9 @@
     "cargo:xattr@1.6.1 registry+https://github.com/rust-lang/crates.io-index": "f74e9a3efbbc912a182842c367e6e38c2c9df78b562e228f746951b89c49f87e",
     "cargo:xkbcommon@0.9.0 registry+https://github.com/rust-lang/crates.io-index": "c8448cf12d276b38a8884ade45a3f9a1aa3a94bdac60d22dfad34cc709f0d88c",
     "cargo:xkeysym@0.2.1 registry+https://github.com/rust-lang/crates.io-index": "11381b90437b1eeadc3fafdf19906a683f9d65906f4c26e8d33414192be6f9b8",
+    "cargo:xml-rs@0.8.29 registry+https://github.com/rust-lang/crates.io-index": "8938cf8441a6232350c5d0e0937fa4b0da92dc2b450c7116ead9de1ab7704425",
     "cargo:xml5ever@0.18.1 registry+https://github.com/rust-lang/crates.io-index": "74599c6e66bc3576cbecbc63ff7b4774fce9850c9fc8b2bd13c7d6d85008e750",
+    "cargo:xmltree@0.10.3 registry+https://github.com/rust-lang/crates.io-index": "d67dd3a0e9f505c63ad80ed13ea8d89506d03c24acb7a850e3e1f6ae71e52191",
     "cargo:xmlwriter@0.1.0 registry+https://github.com/rust-lang/crates.io-index": "b0521dc15d4310f556a62bcc2c69017e89ead161148d3bb5ddbb9eb696d9ccb3",
     "cargo:xxhash-rust@0.8.19 registry+https://github.com/rust-lang/crates.io-index": "045e6ce69e89fb2ebec7b323ac78c94d327819527c3222c2d61cac1c48e21c5f",
     "cargo:yaml_parser@0.2.1 registry+https://github.com/rust-lang/crates.io-index": "c10dad560f3eecbbbf4fdaed8d9bc42c770bd5b764cb70956d1e381c55ec76d2",
@@ -1593,5 +1597,5 @@
     "npm:preact@11.0.0-beta.0 https://registry.npmjs.org/preact/-/preact-11.0.0-beta.0.tgz sha512-IcODoASASYwJ9kxz7+MJeiJhvLriwSb4y4mHIyxdgaRZp6kPUud7xytrk/6GZw8U3y6EFJaRb5wi9SrEK+8+lg==": "da4f7ecf86f57891c776c0bef60deac13ff94c989832f12b1b5df88826fdf5eb",
     "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff"
   },
-  "sha256": "026e963ef7e721bf55af63d2ab991b8687b4bb33ded1b9a667b0f0c6cee9fd14"
+  "sha256": "0c42ab70716c9139e1fa05abce375e1cb57e4ee8fff21924acd8339188385f60"
 }

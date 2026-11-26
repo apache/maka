@@ -36,7 +36,7 @@ export interface SavedHostItem {
   endpoints: string[];
   ephemeral?: boolean;
   status?: HostConnectionState['status'];
-  relayUrls?: string[];
+  relays?: { url: string; quicPort: number | null }[];
 }
 
 export interface ActiveHostInfo {
@@ -67,9 +67,10 @@ export function pathLabel(
 }
 
 export type HostConnectionState =
-  | { status: 'offline' | 'connecting' }
+  | { status: 'offline'; autoReconnect?: boolean }
+  | { status: 'connecting' }
   | { status: 'connected'; connection: ActiveHostInfo }
-  | { status: 'error'; error: string };
+  | { status: 'error'; error: string; autoReconnect?: boolean };
 
 export interface HostStateSnapshot {
   revision: number;
@@ -188,8 +189,10 @@ export function connectHost(
   rootId: string,
   relayUrl?: string,
   relayToken?: string,
+  automatic?: boolean,
 ): Promise<HostStateSnapshot> {
   return host.call('ios.connectHost', {
+    automatic,
     rootId,
     relayUrl,
     relayToken,
@@ -202,6 +205,10 @@ export function disconnectHost(rootId?: string): Promise<HostStateSnapshot> {
 
 export function removeHost(rootId: string): Promise<HostStateSnapshot> {
   return host.call('ios.removeHost', { rootId }) as Promise<HostStateSnapshot>;
+}
+
+export function networkChange(): Promise<unknown> {
+  return host.call('ios.networkChange', {});
 }
 
 export function setFilter(filter: HostViewFilter): Promise<HostStateSnapshot> {

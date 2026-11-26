@@ -63,7 +63,7 @@ interface SessionSnapshot {
 type SessionWindow =
   | { kind: 'ready'; snapshot: SessionSnapshot }
   | { kind: 'reading'; snapshot?: SessionSnapshot; revision: string; limit: number }
-  | { kind: 'failed'; snapshot?: SessionSnapshot; limit: number };
+  | { kind: 'failed' | 'interrupted'; snapshot?: SessionSnapshot; limit: number };
 
 const sessionsByHost = signal<Record<string, SessionWindow>>({});
 type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
@@ -253,12 +253,21 @@ function applySessionPage(rootId: string, hostName: string, page: AgentSessionPa
 
 function scopedWindows() {
   const scope = selectedScopeRootId();
-  return Object.entries(sessionsByHost()).filter(([rootId]) => scope === 'all' || scope === rootId);
+  const byHost = sessionsByHost();
+  return connectedHosts().flatMap(({ host: { rootId }, connection }) => {
+    const window = byHost[rootId];
+    return window && (scope === 'all' || scope === rootId) && hasAgentEndpoint(connection)
+      ? [[rootId, window] as const]
+      : [];
+  });
 }
 
 export const hasMoreSessions = () =>
   scopedWindows().some(
-    ([, window]) => window.kind === 'failed' || window.snapshot?.catalog.after != null,
+    ([, window]) =>
+      window.kind === 'failed' ||
+      window.kind === 'interrupted' ||
+      window.snapshot?.catalog.after != null,
   );
 export const loadingMoreSessions = () =>
   scopedWindows().some(([, window]) => window.kind === 'reading');
@@ -269,7 +278,8 @@ export async function loadMoreSessions() {
     scopedWindows().map(([rootId, window]) => {
       const host = hostById(rootId);
       if (!host) return;
-      if (window.kind === 'failed') return refreshHostSessions(rootId, host.hostName);
+      if (window.kind === 'failed' || window.kind === 'interrupted')
+        return refreshHostSessions(rootId, host.hostName);
       if (window.kind === 'ready' && window.snapshot.catalog.after)
         return readSessionWindow(rootId, host.hostName, window.snapshot.catalog.pages + 1, {
           kind: 'extend',
@@ -532,6 +542,19 @@ export async function createHostSession(params: {
   };
 }
 
+function pruneForgottenHosts<T>(
+  cache: { update: (update: (previous: Record<string, T>) => Record<string, T>) => void },
+  saved: Set<string>,
+) {
+  cache.update((previous) => {
+    const removed = Object.keys(previous).filter((rootId) => !saved.has(rootId));
+    if (removed.length === 0) return previous;
+    const next = { ...previous };
+    for (const rootId of removed) delete next[rootId];
+    return next;
+  });
+}
+
 export function startSessionsStore() {
   if (initialized) return;
   initialized = true;
@@ -544,18 +567,20 @@ export function startSessionsStore() {
     for (const [rootId, sub] of activeSubscriptions) {
       if (roots.has(rootId) && roots.get(rootId) === sub.connectionGeneration) continue;
       activeSubscriptions.delete(rootId);
-      sessionsByHost.update((prev) => {
-        const next = { ...prev };
-        delete next[rootId];
-        return next;
-      });
-      botsByHost.update((prev) => {
-        const next = { ...prev };
-        delete next[rootId];
-        return next;
-      });
       for (const stop of sub.stop) stop();
+      const window = untracked(() => sessionsByHost()[rootId]);
+      if (window?.kind === 'reading') {
+        setWindow(rootId, {
+          kind: 'interrupted',
+          snapshot: window.snapshot,
+          limit: window.limit,
+        });
+      }
     }
+    // Keep the last catalog visible across transport loss; only unpairing forgets it.
+    const saved = new Set(savedHosts().map(({ rootId }) => rootId));
+    pruneForgottenHosts(sessionsByHost, saved);
+    pruneForgottenHosts(botsByHost, saved);
     for (const {
       host: { rootId, hostName },
       connection: { generation },

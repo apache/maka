@@ -34,13 +34,18 @@ pub(crate) enum Link {
 
 pub(crate) struct PeerLink {
     // The endpoint must remain alive for the lifetime of its connection.
-    _endpoint: PeerEndpoint,
+    endpoint: PeerEndpoint,
     connection: PeerConnection,
 }
 
 impl PeerLink {
     pub(crate) async fn wait_for_disconnect(&self) -> RemoteClientError {
-        RemoteClientError::Transport(Box::new(self.connection.closed().await))
+        let cause = self.connection.closed().await;
+        if self.connection.access_revoked() {
+            RemoteClientError::PeerAccessRevoked
+        } else {
+            RemoteClientError::Transport(Box::new(cause))
+        }
     }
 }
 
@@ -58,7 +63,7 @@ pub(crate) struct WebSocketLink {
 impl Link {
     pub(crate) fn peer(endpoint: PeerEndpoint, connection: PeerConnection) -> Self {
         Self::Peer(Arc::new(PeerLink {
-            _endpoint: endpoint,
+            endpoint,
             connection,
         }))
     }
@@ -80,6 +85,16 @@ impl Link {
                 Box::new(WsByteChannel::new(socket))
             }
         })
+    }
+
+    pub(crate) fn access_revoked(&self) -> bool {
+        matches!(self, Self::Peer(peer) if peer.connection.access_revoked())
+    }
+
+    pub(crate) async fn network_change(&self) {
+        if let Self::Peer(peer) = self {
+            peer.endpoint.network_change().await;
+        }
     }
 
     pub(crate) fn path_summary(&self) -> Option<PathSummary> {

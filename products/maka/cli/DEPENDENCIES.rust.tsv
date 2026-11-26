@@ -588,6 +588,7 @@ identity-hash@0.1.0		X										X
 idna_adapter@1.2.2		X										X								
 idna@1.1.0		X										X								
 if_chain@1.0.3		X										X								
+igd-next@0.18.0												X								
 ignore@0.4.35												X							X	
 image-webp@0.2.4		X										X								
 image@0.25.10		X										X								
@@ -1021,6 +1022,7 @@ polycool@0.4.0		X										X
 polyval@0.6.2		X										X								
 polyval@0.7.3		X										X								
 portable-atomic@1.15.0		X										X								
+portmapper@0.20.2		X										X								
 postcard-derive@0.2.3		X										X								
 postcard@1.1.3		X										X								
 potential_utf@0.1.6																	X			
@@ -1552,7 +1554,9 @@ x509-parser@0.18.1		X										X
 xattr@1.6.1		X										X								
 xkbcommon@0.9.0												X								
 xkeysym@0.2.1		X										X								X
+xml-rs@0.8.29												X								
 xml5ever@0.18.1		X										X								
+xmltree@0.10.3												X								
 xmlwriter@0.1.0												X								
 xxhash-rust@0.8.19						X														
 yaml_parser@0.2.1												X								

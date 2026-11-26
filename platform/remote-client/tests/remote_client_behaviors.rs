@@ -396,17 +396,20 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
         read_logs(&reconnected).await;
         assert!(host.revoke_peer_access(peer_id).await.unwrap());
         let reason = reconnected.disconnected().await.unwrap_err();
-        assert!(
-            reason.to_string().contains("peer access revoked"),
-            "{reason}"
-        );
+        assert!(matches!(
+            reason,
+            maka_remote_client::RemoteClientError::PeerAccessRevoked
+        ));
         assert!(
             reconnected
                 .query("hostLogs", "read", json!({"position":{"kind":"tail"}}))
                 .await
                 .is_err()
         );
-        assert!(profile.reconnect(&identity, auth()).await.is_err());
+        assert!(matches!(
+            profile.reconnect(&identity, auth()).await,
+            Err(maka_remote_client::RemoteClientError::PeerAccessRevoked)
+        ));
 
         cancel.cancel();
         peer_server.await.unwrap().unwrap();

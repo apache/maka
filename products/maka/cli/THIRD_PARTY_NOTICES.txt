@@ -24232,6 +24232,34 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
+igd-next@0.18.0 (MIT); authors declared by package: Darius C, Simon Bernier St-Pierre <sbernierstpierre@gmail.com>
+
+https://crates.io/api/v1/crates/igd-next/0.18.0/download :: LICENSE
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Simon Bernier St-Pierre
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
 imagesize@0.15.0 (MIT); authors declared by package: Maid Dog <maiddogsrl@gmail.com>
 
 https://crates.io/api/v1/crates/imagesize/0.15.0/download :: LICENSE
@@ -29634,6 +29662,7 @@ MIT License
 
 n0-future@0.3.2 (MIT OR Apache-2.0); authors declared by package: Philipp Krüger <philipp@n0.computer>, n0 team
 netwatch@0.20.2 (MIT OR Apache-2.0); authors declared by package: n0 team
+portmapper@0.20.2 (MIT OR Apache-2.0); authors declared by package: n0 team
 
 https://crates.io/api/v1/crates/n0-future/0.3.2/download :: LICENSE-APACHE
 https://raw.githubusercontent.com/n0-computer/net-tools/334793cfdaf3487db0c721b9312179a8ae3b0dcb/LICENSE-APACHE
@@ -29844,6 +29873,7 @@ limitations under the License.
 
 n0-future@0.3.2 (MIT OR Apache-2.0); authors declared by package: Philipp Krüger <philipp@n0.computer>, n0 team
 netwatch@0.20.2 (MIT OR Apache-2.0); authors declared by package: n0 team
+portmapper@0.20.2 (MIT OR Apache-2.0); authors declared by package: n0 team
 
 https://crates.io/api/v1/crates/n0-future/0.3.2/download :: LICENSE-MIT
 https://raw.githubusercontent.com/n0-computer/net-tools/334793cfdaf3487db0c721b9312179a8ae3b0dcb/LICENSE-MIT
@@ -54736,6 +54766,49 @@ Permission is granted to anyone to use this software for any purpose, including 
 2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+
+================================================================================
+
+xml-rs@0.8.29 (MIT); authors declared by package: Vladimir Matveev <vmatveev@citrine.cc>
+
+https://crates.io/api/v1/crates/xml-rs/0.8.29/download :: LICENSE
+
+The MIT License (MIT)
+
+Copyright (c) 2014 Vladimir Matveev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+xmltree@0.10.3 (MIT); authors declared by package: Andrew Chin <achin@eminence32.net>
+
+https://crates.io/api/v1/crates/xmltree/0.10.3/download :: LICENSE
+
+MIT License
+Copyright (c) 2015 Andrew Chin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
