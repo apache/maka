@@ -3538,8 +3538,10 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     desktop.hover_at(point(px(900.), px(260.)));
     send_turn("Forty eight sections").await;
     let mut reply2 = desktop.request(&mut fixture).await;
-    let mut body48 = String::new();
-    for section in 1..=48 {
+    let mut body48 = String::from(
+        "## Section 01\n\n<details><summary>Section 01 Start</summary>Top of first long turn.</details>\n\n",
+    );
+    for section in 2..=48 {
         body48.push_str(&format!(
             "## Section {section:02}\n\nSection {section:02} body paragraph one explaining the architecture.\n\nSection {section:02} body paragraph two with concrete details.\n\n"
         ));
@@ -3621,6 +3623,7 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
     // pause follow while viewing Section 48, add a second 48-section turn, then scroll into
     // Second 01: the reused TOC List must scroll back to Second 01 instead of staying at 34..48.
     desktop.press("Jump to section: Section 01").await;
+    desktop.control("▸ Section 01 Start").await;
     desktop.hover_at(point(px(900.), px(260.)));
     desktop.press("Return to latest").await;
     desktop.control("▸ Section 48 End").await;
