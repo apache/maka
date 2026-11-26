@@ -2300,6 +2300,77 @@ mod tests {
     }
 
     #[test]
+    fn settings_switches_confine_press_targets_to_the_switch_control() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("role:switch[Disable Codex]").unwrap();
+        app.wait_for("role:switch[Enable Claude Code]").unwrap();
+        app.wait_for("text:0.42.0 · 5 models available").unwrap();
+
+        let bounds_of = |app: &nsh_testing::Headless, selector: &str| {
+            let id = app.screen().id(selector).unwrap();
+            app.screen()
+                .layout_nodes()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .bounds
+        };
+
+        // External agent rows keep their label and description non-interactive; only the switch
+        // control on the right toggles the agent.
+        let claude_label = bounds_of(&app, "text:Claude Code");
+        let claude_switch = bounds_of(&app, "role:switch[Enable Claude Code]");
+        assert!(claude_switch.size.width <= px(48.0));
+        assert!(claude_label.origin.x + claude_label.size.width < claude_switch.origin.x);
+        assert_eq!(app.screen().press_target("text:Claude Code").unwrap(), None);
+        assert_eq!(
+            app.screen()
+                .press_target("text:0.42.0 · 5 models available")
+                .unwrap(),
+            None
+        );
+
+        app.press("role:switch[Enable Claude Code]").unwrap();
+        app.wait_for("text:Confirm permissions and enable").unwrap();
+        assert_eq!(
+            app.screen()
+                .press_target("text:I understand and accept these permissions")
+                .unwrap(),
+            None
+        );
+        assert!(
+            app.screen()
+                .matches("role:switch[I understand and accept the external agent permissions]")
+                .unwrap()
+        );
+        app.press("label:Cancel enabling external agents").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        // Standard settings switches (outside External agents) follow the same rule.
+        app.press("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Edit model gpt-4.1").unwrap();
+        app.press("label:Edit model gpt-4.1").unwrap();
+        app.wait_for("role:switch[Use provider reasoning efforts: On]")
+            .unwrap();
+        let reasoning_label = bounds_of(&app, "text:Use provider reasoning efforts");
+        let reasoning_switch = bounds_of(&app, "role:switch[Use provider reasoning efforts: On]");
+        assert!(reasoning_switch.size.width <= px(48.0));
+        assert!(reasoning_label.origin.x + reasoning_label.size.width < reasoning_switch.origin.x);
+        assert_eq!(
+            app.screen()
+                .press_target("text:Use provider reasoning efforts")
+                .unwrap(),
+            None
+        );
+        app.press("role:switch[Use provider reasoning efforts: On]")
+            .unwrap();
+        app.wait_for("role:switch[Use provider reasoning efforts: Off]")
+            .unwrap();
+    }
+
+    #[test]
     fn models_settings_renders_each_error_once_without_cross_section_retry() {
         let mut app = fixture("models-settings.tsx");
         app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();

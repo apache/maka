@@ -19,8 +19,7 @@
 
 import { Canvas, platform, Scroll, signal, Text, View, windowSize, type JSX } from 'nsh';
 import type { InputRef, ScrollRef } from 'nsh';
-import { Button, Input, Select } from 'nsh/base';
-import { ChoiceIndicator } from './ChoiceIndicator';
+import { Button, Input, Select, Switch } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -231,10 +230,11 @@ export type SettingsRowProps = {
 };
 
 export function SettingsRow(props: SettingsRowProps) {
+  const passThrough = () => (props.onPress ? ({ pointerEvents: 'none' } as const) : undefined);
   const content = () => (
     <>
       {props.leading}
-      <View style={[{ flex: 1, minWidth: 0, gap: textGap }, { pointerEvents: 'none' }]}>
+      <View style={[{ flex: 1, minWidth: 0, gap: textGap }, passThrough()]}>
         <Text
           style={[
             {
@@ -252,7 +252,7 @@ export function SettingsRow(props: SettingsRowProps) {
         {props.detail}
       </View>
       <If when={props.status}>
-        <Text style={[{ ...captionTextStyle, color: C.warning }, { pointerEvents: 'none' }]}>
+        <Text style={[{ ...captionTextStyle, color: C.warning }, passThrough()]}>
           {props.status}
         </Text>
       </If>
@@ -285,7 +285,6 @@ export function SettingsRow(props: SettingsRowProps) {
   );
 }
 
-/** An immediate on/off setting: the whole row toggles it. */
 export function SettingsMonogram(props: { name: string; muted: boolean }) {
   return (
     <If when={!terminal}>
@@ -317,6 +316,54 @@ export function SettingsMonogram(props: { name: string; muted: boolean }) {
   );
 }
 
+/** A standalone on/off switch control; only the switch itself is interactive. */
+export function SettingsSwitchControl(props: {
+  accessibilityLabel: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange(): void;
+}) {
+  return (
+    <Switch
+      accessibilityLabel={props.accessibilityLabel}
+      checked={props.checked}
+      disabled={props.disabled}
+      onChange={props.onChange}
+      hitSlop={terminal ? undefined : 6}
+      style={{
+        flexShrink: 0,
+        borderRadius: terminal ? 0 : 9999,
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: props.disabled || terminal ? undefined : 'pointer',
+      }}
+      trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
+      trackStyle={{
+        backgroundColor: props.checked && !props.disabled ? C.accent : C.line,
+      }}
+      thumbClass="size-[10px] rounded-full"
+      thumbStyle={{
+        backgroundColor:
+          props.checked && !props.disabled ? C.onAccent : isDark() ? C.secondary : C.background,
+      }}
+      hoverStyle={terminal || props.disabled ? undefined : { opacity: 0.85 }}
+      activeStyle={terminal || props.disabled ? undefined : { opacity: 0.72 }}
+      focusStyle={
+        terminal
+          ? { backgroundColor: C.raised }
+          : {
+              outlineStyle: 'solid' as const,
+              outlineWidth: 2,
+              outlineColor: C.accent,
+              outlineOffset: 2,
+            }
+      }
+      disabledStyle={controlDisabledStyle}
+    />
+  );
+}
+
+/** An immediate on/off setting: the label and detail stay static while the switch toggles it. */
 export function SettingsSwitch(props: {
   label: string;
   description?: string;
@@ -339,20 +386,21 @@ export function SettingsSwitch(props: {
       leading={props.leading}
       tone={props.tone}
       status={props.status}
-      accessibilityLabel={
-        props.accessibilityLabel ??
-        tr('{label}: {state}', {
-          label: props.label,
-          state: props.checked ? tr('On') : tr('Off'),
-        })
-      }
-      selected={props.checked}
-      disabled={props.disabled}
-      onPress={props.onPress}
       trailing={
         <>
           {props.trailing}
-          <ChoiceIndicator kind="switch" checked={props.checked} disabled={props.disabled} />
+          <SettingsSwitchControl
+            accessibilityLabel={
+              props.accessibilityLabel ??
+              tr('{label}: {state}', {
+                label: props.label,
+                state: props.checked ? tr('On') : tr('Off'),
+              })
+            }
+            checked={props.checked}
+            disabled={props.disabled}
+            onChange={props.onPress}
+          />
         </>
       }
     />

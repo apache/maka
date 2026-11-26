@@ -183,7 +183,6 @@ export function SettingSwitch(props: {
       title={props.title}
       disabled={props.disabled}
       divider={props.divider}
-      onPress={() => props.change(!props.checked)}
       trailing={
         <Switch
           accessibilityLabel={props.title}
