@@ -28,6 +28,8 @@ import {
   disconnectHost,
   hostQuery,
   onHostState,
+  onHostPath,
+  type PathSummary,
   onOperationRecovery,
   removeHost,
   setFilter,
@@ -78,6 +80,7 @@ const deepLinkRequest = signal<{ seq: number; target: DeepLinkTarget } | null>(n
 let deepLinkSeq = 0;
 
 export const currentDeepLink = () => deepLinkRequest();
+export const clearDeepLink = () => deepLinkRequest.set(null);
 
 // Inline notices & transient feedback toast.
 const recoveryNotice = signal<RecoveryNotice | null>(null);
@@ -124,6 +127,15 @@ export function hostConnectionState(rootId: string): HostConnectionState {
 export function activeHostInfo(rootId: string): ActiveHostInfo | null {
   const state = hostConnectionState(rootId);
   return state.status === 'connected' ? state.connection : null;
+}
+
+const paths = signal<Record<string, { generation: number; pathSummary: PathSummary | null }>>({});
+export function hostPath(rootId: string) {
+  const connection = activeHostInfo(rootId);
+  const current = paths()[rootId];
+  return current?.generation === connection?.generation && current
+    ? current.pathSummary
+    : connection?.pathSummary;
 }
 
 export function isHostConnected(rootId: string): boolean {
@@ -240,11 +252,19 @@ function applySnapshot(next: HostStateSnapshot) {
   if (prev && next.revision < prev.revision) return;
   setHostSnapshot(next);
   snapshot.set(next);
+  paths.update((previous) =>
+    Object.fromEntries(
+      Object.entries(previous).filter(
+        ([rootId, path]) => activeHostInfo(rootId)?.generation === path.generation,
+      ),
+    ),
+  );
 
-  if (next.filter?.kind === 'single_computer') {
-    const exists = next.hosts.some((h) => h.rootId === next.filter.root_id);
+  const filter = next.filter;
+  if (filter?.kind === 'single_computer') {
+    const exists = next.hosts.some((h) => h.rootId === filter.root_id);
     if (exists) {
-      selectedScope.set(next.filter.root_id);
+      selectedScope.set(filter.root_id);
     } else {
       selectedScope.set('all');
     }
@@ -260,7 +280,7 @@ function applySnapshot(next: HostStateSnapshot) {
   } else if (
     disconnectNotice() &&
     disconnectNotice()!.rootId &&
-    isHostConnected(disconnectNotice()!.rootId!)
+    (isHostConnected(disconnectNotice()!.rootId!) || !hostById(disconnectNotice()!.rootId!))
   ) {
     disconnectNotice.set(null);
   }
@@ -339,12 +359,12 @@ export async function startPairingFromUri(
 
 export async function confirmPendingPairing(): Promise<boolean> {
   const ticket = pendingTicket();
-  if (!ticket) return false;
+  if (!ticket || pairingBusy()) return false;
   const gen = ++pairingGeneration;
   pairingBusy.set(true);
   pairingError.set(null);
   try {
-    const next = await confirmPairing(ticket.pairingId, ticket.sasCode);
+    const next = await confirmPairing(ticket.pairingId, ticket.sasCode, pendingDeviceLabel());
     if (gen !== pairingGeneration) {
       // Cancelled while confirming: ignore late admission snapshot.
       return false;
@@ -359,6 +379,7 @@ export async function confirmPendingPairing(): Promise<boolean> {
     return true;
   } catch (cause) {
     if (gen === pairingGeneration) {
+      pendingTicket.set(null);
       hapticNotification('error');
       pairingError.set(cause instanceof Error ? cause.message : String(cause));
     }
@@ -507,6 +528,11 @@ export function startHostPool() {
 
   onHostState((next) => {
     applySnapshot(next);
+  });
+
+  onHostPath(({ rootId, generation, pathSummary }) => {
+    if (activeHostInfo(rootId)?.generation === generation)
+      paths.update((previous) => ({ ...previous, [rootId]: { generation, pathSummary } }));
   });
 
   onOperationRecovery((status) => {

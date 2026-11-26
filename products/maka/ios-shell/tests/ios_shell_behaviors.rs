@@ -401,7 +401,7 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         let state = driver.call("ios.bootstrap", json!({})).await;
         let b_session = state["connections"][&b_id]["connection"]["session"].clone();
         assert_eq!(state["connections"][&a_id]["status"], "connected");
-        assert_eq!(state["activeRootId"], b_id);
+        assert_eq!(state["active"]["rootId"], b_id);
 
         let save = |root: &str| json!({
             "rootId":root, "endpoint":"web", "method":"save",
@@ -434,7 +434,7 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         assert_eq!(a_handle["rootId"], a_id);
         assert_eq!(replies[3]["ok"]["rootId"], b_id);
         assert_ne!(b_watch, replies[2]["ok"]["generation"]);
-        let mut watched_roots = vec![items.recv().await.unwrap(), items.recv().await.unwrap()];
+        let mut watched_roots = [items.recv().await.unwrap(), items.recv().await.unwrap()];
         watched_roots.sort_by(|a, b| a["rootId"].as_str().cmp(&b["rootId"].as_str()));
         let mut expected = [a_id.as_str(), b_id.as_str()];
         expected.sort();
@@ -528,7 +528,7 @@ async fn pairing_uses_simplified_and_traditional_device_locale() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn close_during_pairing_admission_cancels_and_ignores_late_admission() {
+async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         call.reply(Ok(json!({
@@ -551,8 +551,10 @@ async fn close_during_pairing_admission_cancels_and_ignores_late_admission() {
         })));
     });
     let (confirm_tx, mut confirming) = mpsc::unbounded_channel();
-    channel.handle("ios.confirmPairing", move |call| {
-        confirm_tx.send(call.into_reply().unwrap()).unwrap()
+    channel.handle("ios.confirmPairing", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["deviceLabel"], "Field iPhone");
+        confirm_tx.send(call.into_reply().unwrap()).unwrap();
     });
     let (cancel_tx, mut cancelled) = mpsc::unbounded_channel();
     channel.handle("ios.cancelPairing", move |call| {
@@ -568,26 +570,34 @@ async fn close_during_pairing_admission_cancels_and_ignores_late_admission() {
     };
     let mut app = Headless::start_with_link(config, "maka://pair/v1?payload=fixture").unwrap();
     app.wait_for("label:Connect and compare").unwrap();
+    app.set_clipboard(Some("maka://pair/v1?payload=from-clipboard".into()));
+    app.press("label:Paste from Clipboard").unwrap();
+    app.wait_for("text:maka://pair/v1?payload=from-clipboard")
+        .unwrap();
     app.press("label:Connect and compare").unwrap();
     app.wait_for("text:123456").unwrap();
+    app.press("label:Verification code").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("123456"));
+    app.clear("label:Device name").unwrap();
+    app.type_text("label:Device name", "Field iPhone").unwrap();
     app.press("label:Confirm & Connect").unwrap();
     let confirm = confirming.try_recv().unwrap();
-    app.press("label:Cancel").unwrap();
-    cancelled.try_recv().unwrap();
+    assert!(app.press("label:Cancel").is_err());
+    assert!(cancelled.try_recv().is_err());
     confirm.resolve(json!({
         "revision": 2,
         "devicePeerId": "fixture",
         "filter": { "kind": "all_computers" },
         "hosts": [{
             "rootId": "late-root",
-            "hostName": "Unexpected late Host",
+            "hostName": "Newly paired Host",
             "peerId": "late-peer",
             "connected": true,
             "endpoints": []
         }],
         "active": {
             "rootId": "late-root",
-            "hostName": "Unexpected late Host",
+            "hostName": "Newly paired Host",
             "epoch": "e1",
             "session": "late",
             "generation": 1,
@@ -598,8 +608,9 @@ async fn close_during_pairing_admission_cancels_and_ignores_late_admission() {
     }));
     app.wait_for_gone("text:123456", Duration::from_secs(1))
         .unwrap();
-    app.wait_for_gone("text:Unexpected late Host", Duration::from_secs(1))
-        .unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.wait_for("label:Computer: Newly paired Host").unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -623,8 +634,12 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
             }
         })));
     });
-    channel.handle("ios.setFilter", |call| {
-        call.reply(Ok(json!({ "revision": 1, "devicePeerId": "ios-device", "filter": { "kind": "all_computers" }, "hosts": [], "active": null })));
+    channel.handle("ios.setFilter", |mut call| {
+        assert_eq!(
+            call.take_data(),
+            json!({"kind":"single_computer","root_id":"root-a"})
+        );
+        call.resolve(Value::Null);
     });
     channel.handle("ios.ackMutationProgress", |_| {});
     let approved = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -732,13 +747,23 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         }
         mutate_tx.send(data).unwrap();
     });
-    channel.handle("ios.subscribe", |mut call| {
+    let (catalog_tx, mut catalog_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        call.reply(Ok(json!({
-            "subscriptionId": data["subscriptionId"],
-            "rootId": data["rootId"],
-            "generation": 1
-        })));
+        let root = data["rootId"].as_str().unwrap();
+        assert_eq!(data["endpoint"], "agent");
+        let generation = if root == "root-a" { 1 } else { 2 };
+        match data["method"].as_str().unwrap() {
+            "catalog" => {
+                assert_eq!(data["input"], json!({"kind":null,"filter":"all","includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""}));
+                if root == "root-a" {
+                    catalog_tx.send(data["subscriptionId"].clone()).unwrap();
+                }
+            }
+            "watchBotOutbox" => assert_eq!(data["input"], json!({"limit":0})),
+            method => panic!("unexpected subscription {method}"),
+        }
+        call.resolve(json!({"subscriptionId":data["subscriptionId"],"rootId":root,"generation":generation}));
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -756,6 +781,17 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     // Both computers' conversations appear simultaneously even with colliding session IDs.
     app.wait_for("text:Auth refactor").unwrap();
     app.wait_for("text:Deploy migration").unwrap();
+
+    let id = catalog_rx.recv().await.unwrap();
+    app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":id,"rootId":"root-a","generation":1,
+        "item":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[{
+          "id":"shared-id","title":"Catalog live update","kind":"agent","parentSessionId":null,
+          "workspace":{"name":"maka-agent","path":"/src/maka-agent"},"labels":[],
+          "updatedAt":1700000002000u64,"archived":false,"pinned":false,"hasUnread":false,"activity":"working"
+        }]}
+    })).unwrap();
+    app.wait_for("text:Catalog live update").unwrap();
 
     app.press("label:New Chat").unwrap();
     app.wait_for("text:Apple workspace").unwrap();
@@ -781,7 +817,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     app.press("label:MacBook Pro").unwrap();
     app.wait_for_gone("text:Deploy migration", Duration::from_secs(2))
         .unwrap();
-    app.wait_for("text:Auth refactor").unwrap();
+    app.wait_for("text:Catalog live update").unwrap();
 
     // Pending stays aggregated even while Chats is scoped to the other computer.
     app.press("label:Pending").unwrap();
@@ -1135,7 +1171,7 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.wait_for("text:Allow service call ReleaseTool?")
         .unwrap();
     app.press("text:Allow service call ReleaseTool?").unwrap();
-    app.wait_for("label:Allow once").unwrap();
+    app.wait_for("label:Allow").unwrap();
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1146,13 +1182,13 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
             "subscriptionId": sub_id,
             "rootId": "root-a",
             "generation": 1,
-            "item": { "kind": "changed" }
+            "item": {"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}
         }),
     )
     .unwrap();
 
     app.wait_for("text:Approved on another device").unwrap();
-    app.wait_for_gone("label:Allow once", Duration::from_secs(2))
+    app.wait_for_gone("label:Allow", Duration::from_secs(2))
         .unwrap();
     app.wait_for("label:Open Conversation").unwrap();
 }
@@ -1415,6 +1451,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
         call.resolve(json!({"value":value}));
     });
     let (tx, mut writes) = mpsc::unbounded_channel();
+    let (delayed_tx, mut delayed) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         assert_eq!(data["rootId"], "root-m5");
@@ -1426,8 +1463,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "setPreference" | "delete" => json!({"kind":"applied"}),
             method => panic!("unexpected mutation {method}"),
         };
+        let hold = data["input"]["url"] == "https://example.com/delayed.maka-plugin";
         tx.send(data).unwrap();
-        call.resolve(json!({"value":value}));
+        if hold {
+            delayed_tx.send((call.into_reply().unwrap(), value)).unwrap();
+        } else {
+            call.resolve(json!({"value":value}));
+        }
     });
     let mut config = engine_config(channel, tokio::runtime::Handle::current());
     config.viewport = Size::new(px(390.), px(844.));
@@ -1540,4 +1582,174 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "delete");
     assert_eq!(write["input"]["reference"], "skill-ref");
+
+    app.press("label:Settings").unwrap();
+    app.press("label:Plugins").unwrap();
+    app.type_text("label:URL", "https://example.com/delayed.maka-plugin")
+        .unwrap();
+    app.press("label:Install").unwrap();
+    assert_eq!(writes.try_recv().unwrap()["method"], "installUrl");
+    let (reply, value) = delayed.try_recv().unwrap();
+    app.send_url_scheme("maka://chats");
+    app.wait_for("text:Chats").unwrap();
+    reply.resolve(json!({"value":value}));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), writes.recv())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grants() {
+    let permissions = json!({"filesystem":[{"path":"/fixture/report","scope":"exact","access":"read"}],"network":"denied"});
+    let known = |tool| {
+        json!({"kind":"permissions","toolUseId":tool,
+        "request":{"reason":"Report access","command":{"command":"read-report"},"permissions":permissions}})
+    };
+    let cases = [
+        (
+            json!({"kind":"permissions","toolUseId":"tool","request":{"reason":"Future wire permission",
+                "command":{"command":"read-report"},"permissions":{"filesystem":[],"network":"denied","future":true}}}),
+            "Review on Desktop",
+            "Deny",
+            json!({"kind":"permissions","decision":{"decision":"deny"}}),
+        ),
+        (
+            known(Value::String("tool".into())),
+            "/fixture/report",
+            "Allow once",
+            json!({"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}),
+        ),
+        (
+            known(Value::Null),
+            "/fixture/report",
+            "This session",
+            json!({"kind":"permissions","decision":{"decision":"allow","scope":"session","permissions":permissions}}),
+        ),
+        (
+            json!({"kind":"session_approval","toolUseId":"tool","sessionId":"child","requestId":"delegate",
+                "answer":{"kind":"computer_app","decision":"always"}}),
+            "Always",
+            "Always",
+            json!({"kind":"session_approval","decision":"allow"}),
+        ),
+    ];
+
+    for (request, detail, button, expected) in cases {
+        let channel = HostChannel::new();
+        channel.handle("ios.bootstrap", |call| {
+            let active = json!({"rootId":"root","hostName":"Fixture","generation":1,"transport":"quic","session":"anchor","endpoints":["agent"]});
+            call.resolve(json!({"revision":1,"devicePeerId":"phone","active":active,
+                "hosts":[{"rootId":"root","hostName":"Fixture","peerId":"fixture","endpoints":["agent"]}],
+                "connections":{"root":{"status":"connected","connection":active}}}));
+        });
+        channel.handle("ios.subscribe", |mut call| {
+            let data = call.take_data();
+            call.resolve(
+                json!({"rootId":"root","generation":1,"subscriptionId":data["subscriptionId"]}),
+            );
+        });
+        let settled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let settled_q = settled.clone();
+        channel.handle("ios.hostQuery", move |mut call| {
+            let data = call.take_data();
+            let value = match data["method"].as_str().unwrap() {
+                "list" => json!({"revision":"1","needsYouCount":1,"sessions":[{"id":"s","title":"Review report","kind":"agent",
+                    "workspace":{"path":"/fixture","name":"Fixture"},"updatedAt":1700000000000u64,"activity":"waiting"}]}),
+                "botOutbox" => json!({"isBot":false,"through":0,"readThrough":0}),
+                "pendingInteractions" => json!({"entries": if settled_q.load(std::sync::atomic::Ordering::SeqCst) {json!([])} else {
+                    json!([{"requestId":"request","kind":request["kind"],"toolUseId":request["toolUseId"]}])
+                }}),
+                "interaction" => json!({"requestId":"request","request":request,"outcome":null}),
+                method => panic!("unexpected query {method}"),
+            };
+            call.resolve(json!({"value":value}));
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        channel.handle("ios.hostMutate", move |mut call| {
+            let data = call.take_data();
+            assert_eq!(data["method"], "respond");
+            tx.send(data["input"]["answer"].clone()).unwrap();
+            settled.store(true, std::sync::atomic::Ordering::SeqCst);
+            call.resolve(json!({"value":{"kind":"recorded"}}));
+        });
+        let mut config = engine_config(channel, tokio::runtime::Handle::current());
+        config.viewport = Size::new(px(390.), px(844.));
+        config.environment = Environment {
+            os: Os::MacOs,
+            reduce_motion: true,
+            ..Environment::default()
+        };
+        let mut app = Headless::start(config).unwrap();
+        app.wait_for("label:Pending").unwrap();
+        app.press("label:Pending").unwrap();
+        app.wait_for(&format!("text:/{}/", detail.replace('/', "\\/")))
+            .unwrap();
+        if button == "Deny" || button == "Always" || button == "This session" {
+            assert!(!app.shows("label:Allow once"));
+            assert!(!app.shows("label:Allow"));
+        }
+        app.press(&format!("label:{button}")).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), expected);
+        app.wait_for(if button == "Deny" {
+            "text:Denied"
+        } else {
+            "text:Allowed"
+        })
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_websocket_is_visible_until_disconnected() {
+    let channel = HostChannel::new();
+    let empty =
+        |revision| json!({"revision":revision,"devicePeerId":"phone","hosts":[],"connections":{}});
+    channel.handle("ios.bootstrap", move |call| call.resolve(empty(1)));
+    channel.handle("ios.connectWebSocket", move |mut call| {
+        assert_eq!(call.take_data(), json!({"endpoint":"wss://host.example/runtime-host","rootId":"manual",
+            "bearer":"fixture-bearer","clientInstance":"fixture-client"}));
+        let connection = json!({"rootId":"manual","hostName":"WebSocket","generation":2,"session":"anchor",
+            "endpoints":[],"transport":"websocket"});
+        call.resolve(json!({"revision":2,"devicePeerId":"phone","hosts":[
+            {"rootId":"manual","hostName":"WebSocket","peerId":"","ephemeral":true,"endpoints":[]}
+        ],"active":connection,"connections":{"manual":{"status":"connected","connection":connection}}}));
+    });
+    channel.handle("ios.disconnectHost", move |mut call| {
+        assert_eq!(call.take_data(), json!({"rootId":"manual"}));
+        call.resolve(empty(3));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Scan QR code on computer").unwrap();
+    app.press("label:Scan QR code on computer").unwrap();
+    app.wait_for("text:Scan QR Code").unwrap();
+    app.press("label:Back").unwrap();
+    app.press("label:Paste pairing link or connect manually")
+        .unwrap();
+    app.press("label:Custom relay or WebSocket").unwrap();
+    app.type_text(
+        "label:WebSocket endpoint",
+        "wss://host.example/runtime-host",
+    )
+    .unwrap();
+    app.type_text("label:Root ID", "manual").unwrap();
+    app.type_text("label:Bearer token", "fixture-bearer")
+        .unwrap();
+    app.type_text("label:Client instance", "fixture-client")
+        .unwrap();
+    app.press("label:Connect via WebSocket").unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Computer: WebSocket").unwrap();
+    app.wait_for("label:Disconnect").unwrap();
+    app.press("label:Disconnect").unwrap();
+    app.wait_for("label:Scan QR code on computer").unwrap();
 }

@@ -33,7 +33,13 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { command } from './command.mjs';
-import { manifests, suites, taskHelperBinaries, taskHelperConsumers } from './suites.mjs';
+import {
+  iosValidation,
+  manifests,
+  suites,
+  taskHelperBinaries,
+  taskHelperConsumers,
+} from './suites.mjs';
 
 export async function runSuites(ids, execute) {
   const failures = [];
@@ -259,7 +265,7 @@ export function executor(
   const programFiles = baseEnv.ProgramFiles ?? baseEnv.PROGRAMFILES;
   const run = (exe, args, options = {}) => runCommand(exe, args, { cwd: root, env, ...options });
   const node = (args) => run(process.execPath, args);
-  const cargo = (args, options) => run('cargo', args, options);
+  const cargo = (args, options) => run(env.CARGO || 'cargo', args, options);
   const suiteEnv = (id) => ({
     ...env,
     ...(id === 'windows-shell'
@@ -373,7 +379,15 @@ export function executor(
   }
 
   async function check(id) {
-    if (id === 'format') {
+    if (id === 'ios') {
+      const packages = iosValidation.packages.flatMap((name) => ['-p', name]);
+      await check('i18n');
+      await node(['--test', iosValidation.scriptTest]);
+      await cargo(['test', '--locked', ...packages]);
+      await cargo(['check', '--locked', ...packages, '--target', iosValidation.simulator]);
+    } else if (id === 'contracts') {
+      await verify('contracts');
+    } else if (id === 'format') {
       await checkRustFormat();
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
     } else if (id === 'pr') {

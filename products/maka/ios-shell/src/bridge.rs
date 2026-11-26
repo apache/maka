@@ -73,6 +73,7 @@ struct Begin {
 struct Confirm {
     pairing_id: u64,
     sas: String,
+    device_label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -197,7 +198,6 @@ struct State {
     mutation_progress: BTreeMap<u64, ProgressWindow>,
     // The legacy pairing screen also uses cancelPairing for manual WebSocket admission.
     manual: Option<RootId>,
-    active_root: Option<RootId>,
     connections: BTreeMap<RootId, ActiveHost>,
     admissions: BTreeMap<RootId, Admission>,
     profiles: BTreeMap<RootId, HostProfile>,
@@ -242,9 +242,10 @@ impl State {
 
     fn remove_connection(&mut self, root: &str) {
         self.connections.remove(root);
-        if self.active_root.as_deref() == Some(root) {
-            self.active_root = None;
-        }
+    }
+
+    fn latest_connection(&self) -> Option<(&RootId, &ActiveHost)> {
+        self.connections.iter().max_by_key(|(_, active)| active.id)
     }
 
     fn current(&self, root: &str, id: u64) -> Option<&ActiveHost> {
@@ -459,7 +460,7 @@ impl Bridge {
                 json!({"status": "connected", "connection": active.info}),
             );
         }
-        let hosts: Vec<_> = state
+        let mut hosts: Vec<_> = state
             .profiles
             .values()
             .map(|host| {
@@ -473,18 +474,31 @@ impl Bridge {
                     "peerId": host.host_peer_id(),
                     "endpoints": host.direct_endpoints(),
                     "relayUrls": host.relays().iter().map(|relay| &relay.url).collect::<Vec<_>>(),
-                    // The existing drawer only renders the selected Host as live.
-                    "connected": state.active_root.as_deref() == Some(root),
                     "status": status["status"],
                 })
             })
             .collect();
+        hosts.extend(
+            state
+                .connections
+                .iter()
+                .filter(|(root, _)| !state.profiles.contains_key(*root))
+                .map(|(root, active)| {
+                    json!({
+                        "rootId": root,
+                        "hostName": active.info["hostName"],
+                        "peerId": "",
+                        "endpoints": [],
+                        "ephemeral": true,
+                        "status": "connected",
+                    })
+                }),
+        );
         json!({
             "revision": self.snapshot_revision.fetch_add(1, Ordering::Relaxed) + 1,
             "devicePeerId": self.peer_id,
             "hosts": hosts,
-            "activeRootId": state.active_root,
-            "active": state.active_root.as_ref().and_then(|root| state.connections.get(root)).map(|active| &active.info),
+            "active": state.latest_connection().map(|(_, active)| &active.info),
             "connections": connections,
             "filter": match &state.filter {
                 Some(root) => json!({"kind": "single_computer", "root_id": root}),
@@ -512,7 +526,9 @@ impl Bridge {
                         self.emit("ios.hostState", self.snapshot(&state));
                     }
                 } else if state.pairing.is_some() {
-                    state.cancel_pairing();
+                    if state.redeeming.is_empty() {
+                        state.cancel_pairing();
+                    }
                 } else if let Some(root) = state.manual.take() {
                     state.clear_admission(&root);
                     self.emit("ios.hostState", self.snapshot(&state));
@@ -525,12 +541,13 @@ impl Bridge {
                 let mut state = self.state.lock().await;
                 if let Some(root) = optional_root(&data)?
                     .map(str::to_owned)
-                    .or_else(|| state.active_root.clone())
+                    .or_else(|| state.latest_connection().map(|(root, _)| root.clone()))
+                    && (state.connections.contains_key(&root)
+                        || state.admissions.contains_key(&root))
                 {
-                    if state.connections.contains_key(&root) || state.admissions.contains_key(&root)
-                    {
-                        state.clear_admission(&root);
-                        state.remove_connection(&root);
+                    state.clear_admission(&root);
+                    state.remove_connection(&root);
+                    if state.profiles.contains_key(&root) {
                         state.admissions.insert(root, Admission::Offline);
                     }
                 }
@@ -678,8 +695,18 @@ impl Bridge {
         {
             self.register_uncertain(id, scope, reference.clone()).await;
         }
-        let value = result.map_err(error)?;
-        self.check_active(&root, id).await?;
+        let value = match result {
+            Err(RemoteClientError::MutationCleanup {
+                reference, result, ..
+            }) => {
+                log::warn!(
+                    "remote Host mutation cleanup failed (operation {})",
+                    reference["operation"]
+                );
+                result.map_err(error)?
+            }
+            result => result.map_err(error)?,
+        };
         Ok(json!({"value": value}))
     }
 
@@ -791,9 +818,7 @@ impl Bridge {
             (pending, root, id, cancel)
         };
         let pairing_id = pending.id;
-        let result = self
-            .confirm_pairing(pending, id, &cancel, &confirm.sas)
-            .await;
+        let result = self.confirm_pairing(pending, id, &cancel, confirm).await;
         self.state.lock().await.redeeming.remove(&id);
         self.finish_admission(&root, id, &cancel, &result).await;
         self.finish_pairing(pairing_id).await;
@@ -805,12 +830,18 @@ impl Bridge {
         pending: Pending,
         id: u64,
         cancel: &CancellationToken,
-        sas: &str,
+        confirm: Confirm,
     ) -> Result<Value, String> {
-        let redeemed = cancel
-            .run_until_cancelled(pending.pairing.redeem(sas, Some("Maka for iOS".into())))
+        let label = confirm
+            .device_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Maka for iOS");
+        let redeemed = pending
+            .pairing
+            .redeem(&confirm.sas, Some(label.to_owned()))
             .await
-            .ok_or("pairing cancelled")?
             .map_err(error)?;
         let profile = redeemed.profile().clone();
         let name = profile.host_name().to_owned();
@@ -855,7 +886,6 @@ impl Bridge {
                     state.credentials.remove(&root);
                 }
             }
-            self.emit("ios.hostState", self.snapshot(&state));
         }
         Ok(())
     }
@@ -1031,7 +1061,6 @@ impl Bridge {
                     connection.call_handle(),
                 ))
             });
-            state.active_root = Some(root.into());
             state.connections.insert(root.into(), ActiveHost {
                 id,
                 calls: connection.call_handle(),
@@ -1142,47 +1171,53 @@ impl Bridge {
     ) {
         let root = connection.root_id().to_owned();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            let path = path_summary(connection.path_summary());
-            tokio::select! {
-                biased;
-                _ = retired.cancelled() => {
-                    match tokio::time::timeout(Duration::from_secs(3), connection.close()).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => log::warn!("close remote Host: {err}"),
-                        Err(err) => log::warn!("close remote Host timed out: {err}"),
+        {
+            let calls = connection.call_handle();
+            let disconnected = connection.disconnected();
+            tokio::pin!(disconnected);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = retired.cancelled() => {
+                        break;
                     }
-                    return;
-                }
-                disconnected = connection.disconnected() => {
-                    let mut state = self.state.lock().await;
-                    if state.current(&root, id).is_some() {
-                        let selected = state.active_root.as_ref() == Some(&root);
-                        state.remove_connection(&root);
-                        let error = disconnected.err().map(|err| err.to_string());
-                        state.admissions.entry(root.clone()).or_insert_with(|| match &error {
-                            Some(reason) => Admission::Error(reason.clone()),
-                            None => Admission::Offline,
-                        });
-                        let mut snapshot = self.snapshot(&state);
-                        if selected {
-                            snapshot["disconnectedRootId"] = json!(root);
-                            snapshot["disconnectReason"] = json!(error.as_deref().unwrap_or("Host closed the connection"));
+                    disconnected = &mut disconnected => {
+                        let mut state = self.state.lock().await;
+                        if state.current(&root, id).is_some() {
+                            state.remove_connection(&root);
+                            let error = disconnected.err().map(|err| err.to_string());
+                            state.admissions.entry(root.clone()).or_insert_with(|| match &error {
+                                Some(reason) => Admission::Error(reason.clone()),
+                                None => Admission::Offline,
+                            });
+                            let mut snapshot = self.snapshot(&state);
+                            if let Some(error) = error
+                                && state.profiles.contains_key(&root)
+                            {
+                                snapshot["disconnectedRootId"] = json!(root);
+                                snapshot["disconnectReason"] = json!(error);
+                            }
+                            self.emit("ios.hostState", snapshot);
                         }
-                        self.emit("ios.hostState", snapshot);
+                        return;
                     }
-                    return;
-                }
-                _ = interval.tick() => {
-                    let mut state = self.state.lock().await;
-                    if let Some(active) = state.connections.get_mut(&root).filter(|active| active.id == id)
-                        && active.info["pathSummary"] != path
-                    {
-                        active.info["pathSummary"] = path;
-                        self.emit("ios.hostState", self.snapshot(&state));
+                    _ = interval.tick() => {
+                        let path = path_summary(calls.path_summary());
+                        let mut state = self.state.lock().await;
+                        if let Some(active) = state.connections.get_mut(&root).filter(|active| active.id == id)
+                            && active.info["pathSummary"] != path
+                        {
+                            active.info["pathSummary"] = path.clone();
+                            self.emit("ios.hostPath", json!({ "rootId": root, "generation": id, "pathSummary": path }));
+                        }
                     }
                 }
             }
+        }
+        match tokio::time::timeout(Duration::from_secs(3), connection.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => log::warn!("close remote Host: {err}"),
+            Err(err) => log::warn!("close remote Host timed out: {err}"),
         }
     }
 
@@ -1197,15 +1232,11 @@ impl Bridge {
         // Explicit-root callers can independently pin a connection generation.
         let target = match &rpc.root_id {
             Some(root) => state.connections.get_key_value(root),
-            None => state
-                .active_root
-                .as_ref()
-                .and_then(|root| state.connections.get_key_value(root))
-                .filter(|(_, active)| {
-                    rpc.anchor_session
-                        .as_ref()
-                        .is_some_and(|session| active.info["session"] == *session)
-                }),
+            None => state.latest_connection().filter(|(_, active)| {
+                rpc.anchor_session
+                    .as_ref()
+                    .is_some_and(|session| active.info["session"] == *session)
+            }),
         };
         target
             .filter(|(_, active)| {
@@ -1403,12 +1434,20 @@ mod tests {
         listener: &TcpListener,
     ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
         let (socket, _) = listener.accept().await.unwrap();
+        let mut finalizing = accept_async(socket).await.unwrap();
+        let finalize = read_frame(&mut finalizing).await;
+        assert_eq!(finalize["request"]["kind"], "finalize_access");
+        send_frame(
+            &mut finalizing,
+            json!({"kind":"finalized","value":{"Ok":null}}),
+        )
+        .await;
+
+        let (socket, _) = listener.accept().await.unwrap();
         let mut ws = accept_async(socket).await.unwrap();
-        // The opener sends the length prefix and payload as separate binary messages.
-        let _prefix = ws.next().await.unwrap().unwrap();
-        let open: Value =
-            serde_json::from_slice(&ws.next().await.unwrap().unwrap().into_data()).unwrap();
+        let open = read_frame(&mut ws).await;
         assert_eq!(open["request"]["kind"], "connect");
+        assert_eq!(open["client_instance"], finalize["client_instance"]);
         ws
     }
 

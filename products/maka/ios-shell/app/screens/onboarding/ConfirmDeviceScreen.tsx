@@ -41,6 +41,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
   const ticket = () => currentPendingTicket();
 
   const handleCancel = async () => {
+    if (isPairingBusy()) return;
     await cancelActivePairing();
     props.onCancelled();
   };
@@ -61,6 +62,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
           <View
             role="button"
             accessibilityLabel={tr('Close')}
+            disabled={isPairingBusy()}
             onPress={() => void handleCancel()}
             class="active:opacity-60"
             style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}
@@ -77,6 +79,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
               <View
                 role="button"
                 accessibilityLabel={tr('Close')}
+                disabled={isPairingBusy()}
                 onPress={() => void handleCancel()}
                 style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}
               >
@@ -151,7 +154,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
                   const code = ticket()?.sasCode;
                   if (!code) return;
                   hapticSelection();
-                  void Clipboard.setString(code);
+                  void Clipboard.writeText(code);
                   showToast(tr('Verification code copied'));
                 }}
                 class="active:bg-row-pressed"
@@ -166,6 +169,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
                 <Text
                   style={{
                     ...type.sasCode,
+                    fontVariant: ['tabular-nums'],
                     color: token('foreground'),
                     textAlign: 'center',
                   }}
@@ -230,6 +234,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
               />
               <ActionButton
                 title={tr('Cancel')}
+                disabled={isPairingBusy()}
                 variant="quiet"
                 onPress={() => void handleCancel()}
               />

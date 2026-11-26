@@ -32,7 +32,7 @@ import {
 } from 'nsh';
 import { Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
 import { InputAccessoryView, isAvailable } from 'nsh/mobile';
-import { describeChildDecision, describePermissions } from '../../approval';
+import { approvalControls, approvalDetail } from '../../approval';
 import type {
   AgentHistoryChunk,
   AgentInteractionRecord,
@@ -407,40 +407,8 @@ function InlineInteractionCard(props: {
     return tr('Allow client capability?');
   };
 
-  const detail = (): { text?: string; mono?: boolean } => {
-    const r = req();
-    if (r.kind === 'permissions') {
-      if (r.request.command?.command) return { text: r.request.command.command, mono: true };
-      const desc = describePermissions(r.request.permissions);
-      return desc ? { text: desc, mono: false } : {};
-    }
-    if (r.kind === 'service_approval') return { text: r.service + '.' + r.method, mono: true };
-    if (r.kind === 'session_approval') {
-      const desc = describeChildDecision(r.answer);
-      return desc ? { text: desc, mono: false } : {};
-    }
-    return {};
-  };
-
-  const allowAnswer = (scope: 'once' | 'session'): Record<string, unknown> => {
-    const r = req();
-    if (r.kind === 'permissions') {
-      return {
-        kind: 'permissions',
-        decision: { decision: 'allow', scope, permissions: r.request.permissions },
-      };
-    }
-    if (r.kind === 'service_approval') return { kind: 'service_approval', decision: 'allow' };
-    if (r.kind === 'computer_app') return { kind: 'computer_app', decision: scope };
-    if (r.kind === 'session_approval') return { kind: 'session_approval', decision: 'approve' };
-    return { kind: 'client_capability', decision: 'allow' };
-  };
-
-  const denyAnswer = (): Record<string, unknown> => {
-    const r = req();
-    if (r.kind === 'permissions') return { kind: 'permissions', decision: { decision: 'deny' } };
-    return { kind: r.kind, decision: 'deny' };
-  };
+  const detail = () => approvalDetail(req());
+  const controls = () => approvalControls(req());
 
   return (
     <View
@@ -458,17 +426,19 @@ function InlineInteractionCard(props: {
         accepted={props.accepted}
         sourceLine={savedHosts().length > 1 ? props.hostName + ' · ' + props.sessionTitle : ''}
         title={title()}
-        detail={detail().text}
-        monospaceDetail={detail().mono}
+        detail={[detail().command, detail().permissions].filter(Boolean).join('\n')}
+        monospaceDetail={!detail().permissions}
         busy={props.busy}
-        allowLabel={tr('Allow once')}
+        allowLabel={controls().primary?.label}
         denyLabel={tr('Deny')}
-        onAllow={() => props.onRespond(allowAnswer('once'), 'success')}
-        onDeny={() => props.onRespond(denyAnswer(), 'warning')}
-        onAllowSession={
-          req().kind === 'permissions' || req().kind === 'computer_app'
-            ? () => props.onRespond(allowAnswer('session'), 'success')
+        onAllow={
+          controls().primary
+            ? () => props.onRespond(controls().primary!.answer, 'success')
             : undefined
+        }
+        onDeny={controls().deny ? () => props.onRespond(controls().deny!, 'warning') : undefined}
+        onAllowSession={
+          controls().session ? () => props.onRespond(controls().session!, 'success') : undefined
         }
       />
     </View>
@@ -539,7 +509,7 @@ export function ChatScreen(props: {
       const id =
         m.selection.kind === 'model'
           ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.executorId + ':' + String(idx);
+          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
       const checked =
         chosen !== null &&
         chosen.kind === m.selection.kind &&
@@ -560,7 +530,7 @@ export function ChatScreen(props: {
       const key =
         m.selection.kind === 'model'
           ? 'model:' + m.selection.modelId + ':' + (m.selection.thinkingLevel ?? '')
-          : 'exec:' + m.selection.executorId + ':' + String(idx);
+          : 'exec:' + m.selection.selection.executor + ':' + String(idx);
       return key === id;
     });
     if (match) void ctrl.selectModel(match.selection);
@@ -732,7 +702,6 @@ export function ChatScreen(props: {
         <Scroll
           ref={(r) => (scrollRef = r)}
           style={{ flex: 1 }}
-          keyboardDismissMode="interactive"
           onScroll={(e) => {
             lastContentHeight = e.contentSize.height;
             saveScrollOffset(rootId, sessionId, e.offset.y);
@@ -799,7 +768,13 @@ export function ChatScreen(props: {
                           <TextView
                             markdown={msg().content.text}
                             selectable
-                            style={{ color: token('foreground'), fontSize: 16, lineHeight: 24 }}
+                            styles={{
+                              paragraph: {
+                                color: token('foreground'),
+                                fontSize: 16,
+                                lineHeight: 24,
+                              },
+                            }}
                             onLinkPress={({ url }) => void openUrl(url)}
                           />
                         }
@@ -833,7 +808,9 @@ export function ChatScreen(props: {
                           classes={{ codeBlockHeader: 'px-3 text-foreground' }}
                           codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
                           selectable
-                          style={{ color: token('foreground'), fontSize: 16, lineHeight: 24 }}
+                          styles={{
+                            paragraph: { color: token('foreground'), fontSize: 16, lineHeight: 24 },
+                          }}
                           onLinkPress={({ url }) => void openUrl(url)}
                         />
                         <View
@@ -849,7 +826,7 @@ export function ChatScreen(props: {
                             accessibilityLabel={tr('Copy reply')}
                             onPress={() => {
                               hapticSelection();
-                              void Clipboard.setString(turn().body);
+                              void Clipboard.writeText(turn().body);
                               showToast(tr('Copied'));
                             }}
                             class="active:opacity-60"
@@ -909,7 +886,9 @@ export function ChatScreen(props: {
                   classes={{ codeBlockHeader: 'px-3 text-foreground' }}
                   codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
                   selectable
-                  style={{ color: token('foreground'), fontSize: 16, lineHeight: 24 }}
+                  styles={{
+                    paragraph: { color: token('foreground'), fontSize: 16, lineHeight: 24 },
+                  }}
                   onLinkPress={({ url }) => void openUrl(url)}
                 />
               </If>

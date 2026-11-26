@@ -56,7 +56,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
   const handlePaste = async () => {
     hapticSelection();
     try {
-      const text = await Clipboard.getString();
+      const text = await Clipboard.readText();
       if (text) uri.set(text.trim());
     } catch {
       // Clipboard empty or denied.
@@ -135,11 +135,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
         </View>
       </View>
 
-      <Scroll
-        style={{ flex: 1 }}
-        keyboardDismissMode="interactive"
-        contentStyle={{ paddingBottom: 36 }}
-      >
+      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 36 }}>
         <If when={currentPairingError()}>
           <BannerNotice tone="destructive" title={currentPairingError()!} />
         </If>
@@ -255,7 +251,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 accessibilityLabel={tr('Relay Bearer token')}
                 value={relayToken()}
                 placeholder={tr('Optional token')}
-                secureTextEntry
+                masked
                 onChange={({ value }) => relayToken.set(value)}
                 style={{
                   minHeight: 38,
@@ -318,7 +314,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 accessibilityLabel={tr('Bearer token')}
                 value={wsBearer()}
                 placeholder={tr('Required token')}
-                secureTextEntry
+                masked
                 onChange={({ value }) => wsBearer.set(value)}
                 style={{
                   minHeight: 38,

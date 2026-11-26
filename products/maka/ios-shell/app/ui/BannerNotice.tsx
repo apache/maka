@@ -122,7 +122,7 @@ export function BannerNotice(props: {
           </Text>
         </View>
       </If>
-      <If when={props.onDismiss && !props.actionLabel}>
+      <If when={props.onDismiss}>
         <View
           role="button"
           accessibilityLabel="Dismiss"

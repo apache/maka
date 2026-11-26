@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { safeAreaInsets, signal, Text, View, token } from 'nsh';
+import { effect, lifecycle, safeAreaInsets, signal, Text, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { AppSettings } from 'nsh/mobile';
 import { CodeScanner } from '../../CodeScanner';
@@ -25,6 +25,7 @@ import { tr } from '../../locale';
 import {
   currentPairingError,
   isPairingBusy,
+  isAdvancedSheetOpen,
   isValidPairUri,
   openAdvancedConnectSheet,
   startPairingFromUri,
@@ -94,9 +95,21 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
     }
   };
 
+  const restart = () => {
+    status.set('initializing');
+    scanError.set(null);
+    paused.set(false);
+  };
+  let resumed = lifecycle() === 'active';
+  effect(() => {
+    const foreground = lifecycle() === 'active';
+    if (foreground && !resumed) restart();
+    resumed = foreground;
+  });
   const isUnavailable = () => status() === 'unavailable';
   const isDenied = () => status() === 'denied' || status() === 'restricted';
   const showCamera = () => !isUnavailable() && !isDenied();
+  const cameraMounted = () => showCamera() && status() !== 'error';
 
   return (
     <NavPage
@@ -118,9 +131,9 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
           backgroundColor: showCamera() ? token('scanner-bg') : token('grouped-bg'),
         }}
       >
-        <If when={showCamera()}>
+        <If when={cameraMounted()}>
           <CodeScanner
-            active={true}
+            active={!isAdvancedSheetOpen() && lifecycle() === 'active'}
             torch={torch()}
             paused={paused()}
             onScan={({ value }) => {
@@ -133,7 +146,10 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
               if (code === 'unavailable') status.set('unavailable');
               else if (code === 'denied') status.set('denied');
               else if (code === 'restricted') status.set('restricted');
-              else scanError.set(message || tr('Camera could not start.'));
+              else {
+                status.set('error');
+                scanError.set(message || tr('Camera could not start.'));
+              }
             }}
             style={{
               position: 'absolute',
@@ -375,10 +391,7 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                       title={tr('Scan again')}
                       variant="primary"
                       compact
-                      onPress={() => {
-                        scanError.set(null);
-                        paused.set(false);
-                      }}
+                      onPress={restart}
                     />
                   </View>
                 </If>

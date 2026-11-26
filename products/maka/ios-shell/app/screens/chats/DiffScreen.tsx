@@ -155,7 +155,7 @@ export function DiffScreen(props: {
           layout="unified"
           softWrap
           inline="wordAlt"
-          indicators="sign"
+          indicators="classic"
           fontSize={12.5}
           lineHeight={20}
           contextLines={3}

@@ -24,6 +24,7 @@ import { pathLabel } from '../../bridge';
 import { languagePreferenceBusy, languagePreferenceError, tr } from '../../locale';
 import {
   activeHostInfo,
+  hostPath,
   hostStatusKind,
   hostStatusText,
   openAddComputerFlow,
@@ -66,7 +67,7 @@ function appearanceLabel(pref: AppearancePreference): string {
   }
 }
 
-const DOMAIN_ORDER: { domain: HostSettingDomain; badgeToken: string }[] = [
+const DOMAIN_ORDER = [
   { domain: 'general', badgeToken: 'offline' },
   { domain: 'models', badgeToken: 'primary' },
   { domain: 'subagents', badgeToken: 'indigo' },
@@ -75,7 +76,7 @@ const DOMAIN_ORDER: { domain: HostSettingDomain; badgeToken: string }[] = [
   { domain: 'skills', badgeToken: 'success' },
   { domain: 'web_search', badgeToken: 'primary' },
   { domain: 'network', badgeToken: 'warning' },
-];
+] as const;
 
 export function SettingsRootScreen(props: {
   onOpenComputer: (rootId: string) => void;
@@ -121,7 +122,7 @@ export function SettingsRootScreen(props: {
     const model = defaultModels()[rootId];
     if (info && model) return tr('Connected') + ' · ' + model;
     if (info && savedHosts().length > 1)
-      return tr('Connected') + ' · ' + pathLabel(info.pathSummary, info.transport);
+      return tr('Connected') + ' · ' + pathLabel(hostPath(info.rootId), info.transport);
     return hostStatusText(rootId);
   };
 

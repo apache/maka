@@ -53,17 +53,20 @@ on:
       - "scripts/rust/package-ios.test.mjs"
       - ".github/workflows/ios-ipa.yml"
   push:
+    branches: [main]
     paths: *ios-paths
 
 permissions:
   contents: read
 
 concurrency:
-  group: ios-ipa-${{ github.event.pull_request.number || github.ref }}
+  group: ios-ipa-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   ipa:
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -105,8 +108,9 @@ jobs:
           grep -Fx 'Payload/Maka.app/Info.plist' "$RUNNER_TEMP/maka-ios-entries"
 
       - uses: actions/upload-artifact@v7
+        id: upload
         with:
-          name: Maka-ios-arm64
+          name: Maka-ios-arm64-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
             dist/ios/Maka-ios-arm64.ipa
@@ -127,7 +131,7 @@ jobs:
           package-manager-cache: false
       - uses: actions/download-artifact@v8
         with:
-          name: Maka-ios-arm64
+          artifact-ids: ${{ needs.ipa.outputs.artifact-id }}
           path: unsigned
       - name: Verify and extract the unsigned build
         shell: bash
@@ -195,7 +199,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Maka-ios-arm64-signed
+          name: Maka-ios-arm64-signed-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
             dist/signed-ios/Maka-ios-arm64.ipa

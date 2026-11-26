@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { Clipboard, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { Clipboard, safeAreaInsets, Scroll, signal, Text, View, token, type JSX } from 'nsh';
 import { AlertDialog, Input, NavPage } from 'nsh/base';
 import { pathLabel } from '../../bridge';
 import { tr } from '../../locale';
 import {
   activeHostInfo,
+  hostPath,
   checkHostConnection,
   connectSavedHost,
   devicePeerId,
@@ -69,7 +70,7 @@ export function DeviceDetailScreen(props: {
 
   const subtitle = () => {
     const info = conn();
-    if (info) return tr('Connected') + ' · ' + pathLabel(info.pathSummary, info.transport);
+    if (info) return tr('Connected') + ' · ' + pathLabel(hostPath(info.rootId), info.transport);
     return hostStatusText(props.rootId);
   };
 
@@ -82,7 +83,7 @@ export function DeviceDetailScreen(props: {
   const copyText = (value: string, label: string) => {
     if (!value) return;
     hapticSelection();
-    void Clipboard.setString(value);
+    void Clipboard.writeText(value);
     showToast(tr('{label} copied', { label }));
   };
 
@@ -107,7 +108,8 @@ export function DeviceDetailScreen(props: {
   const handleDisconnect = async () => {
     busy.set(true);
     try {
-      await disconnectSavedHost(props.rootId);
+      const ephemeral = host()?.ephemeral;
+      if ((await disconnectSavedHost(props.rootId)) && ephemeral) props.onBack();
     } finally {
       busy.set(false);
     }
@@ -153,7 +155,6 @@ export function DeviceDetailScreen(props: {
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          keyboardDismissMode="interactive"
           contentStyle={{
             paddingTop: 20,
             paddingBottom: Math.max(insets().bottom, 20) + 28,
@@ -271,7 +272,7 @@ export function DeviceDetailScreen(props: {
                             accessibilityLabel={tr('Saved Host relay Bearer token')}
                             value={relayToken()}
                             placeholder={tr('Paste relay token')}
-                            secureTextEntry
+                            masked
                             onChange={({ value }) => relayToken.set(value)}
                             style={{
                               minHeight: 38,

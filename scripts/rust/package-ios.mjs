@@ -212,6 +212,7 @@ export function appEntitlements(profile, bundleId) {
     'application-identifier': appId,
     'com.apple.developer.team-identifier': team,
     'get-task-allow': allowed['get-task-allow'] === true,
+    ...(allowed['beta-reports-active'] === true ? { 'beta-reports-active': true } : {}),
   };
 }
 
@@ -500,9 +501,9 @@ function launch(settings, app) {
   if (settings.pairUri) {
     try {
       simctl(['openurl', udid, settings.pairUri], { stdio: 'ignore' });
-    } catch (cause) {
+    } catch {
       // Both the command arguments and simctl diagnostics may contain the invitation.
-      throw new Error('Simulator could not open the pairing link', { cause });
+      throw new Error('Simulator could not open the pairing link');
     }
   }
 }

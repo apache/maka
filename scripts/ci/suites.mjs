@@ -148,7 +148,10 @@ export const suites = {
         ],
       },
       { inputs: uiProductInputs, packages: productConsumers },
-      { inputs: ['packages/plugin-sdk'], packages: ['maka-ios-shell'] },
+      {
+        inputs: ['packages/plugin-sdk', 'scripts/rust/package-ios.mjs'],
+        packages: ['maka-ios-shell'],
+      },
       { inputs: skillInputs, packages: skillConsumers },
       { inputs: distributionInputs, packages: distributionConsumers },
       {

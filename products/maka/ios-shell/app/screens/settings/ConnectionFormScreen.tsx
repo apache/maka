@@ -392,7 +392,7 @@ export function ConnectionFormScreen(
               title={tr('Copy code')}
               tone="primary"
               divider
-              onPress={() => void Clipboard.setString(login()!.userCode)}
+              onPress={() => void Clipboard.writeText(login()!.userCode)}
             />
             <GroupRow
               title={tr('Open sign-in page')}

@@ -420,13 +420,7 @@ async fn confirmed_sas_redeems_once_and_admits_concurrent_calls_until_revoked() 
 #[tokio::test]
 async fn cancelling_mid_upload_releases_host_attachment_budget() {
     use futures_util::{SinkExt, StreamExt};
-    use maka_host_runtime::{
-        application::host::{
-            Channel, Client,
-            websocket::{WebSocketListener, channel_opener},
-        },
-        ipc::LocalListener,
-    };
+    use maka_host_runtime::{application::host::websocket::WebSocketListener, ipc::LocalListener};
     use maka_remote_transport::{TlsTrust, websocket::WebSocketEndpoint};
     use tokio::{
         io::{AsyncWriteExt, copy_bidirectional},
@@ -454,27 +448,17 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
         });
         let bearer: Arc<str> = pairing.credential.into();
         let instance: Arc<str> = Uuid::new_v4().to_string().into();
-        Client::finalize_access(
-            channel_opener(
-                Arc::new(move || {
-                    Box::pin(
-                        async move { Ok(Box::new(TcpStream::connect(addr).await?) as Channel) },
-                    )
-                }),
-                bearer.clone(),
-            ),
-            instance.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-
         let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}/runtime-host", proxy.local_addr().unwrap());
         let (forwarded, first_chunk) = oneshot::channel();
         let proxy_task = tokio::spawn({
             let bearer = bearer.clone();
             async move {
+                let (mut finalize, _) = proxy.accept().await.unwrap();
+                let finalize_proxy = tokio::spawn(async move {
+                    let mut host = TcpStream::connect(addr).await.unwrap();
+                    let _ = copy_bidirectional(&mut finalize, &mut host).await;
+                });
                 let (mut anchor, _) = proxy.accept().await.unwrap();
                 let anchor_proxy = tokio::spawn(async move {
                     let mut host = TcpStream::connect(addr).await.unwrap();
@@ -531,6 +515,7 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
                         std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
                     ));
                 }
+                finalize_proxy.abort();
                 anchor_proxy.abort();
             }
         });
@@ -578,13 +563,7 @@ async fn cancelling_mid_upload_releases_host_attachment_budget() {
 
 #[tokio::test]
 async fn websocket_bearer_admission_uses_tls_and_the_endpoint_server_name() {
-    use maka_host_runtime::{
-        application::host::{
-            Channel, Client,
-            websocket::{WebSocketListener, channel_opener},
-        },
-        ipc::LocalListener,
-    };
+    use maka_host_runtime::{application::host::websocket::WebSocketListener, ipc::LocalListener};
     use maka_remote_client::TlsTrust;
     use rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer};
     use tokio::{
@@ -627,22 +606,6 @@ async fn websocket_bearer_admission_uses_tls_and_the_endpoint_server_name() {
         });
         let bearer: Arc<str> = pairing.credential.into();
         let instance: Arc<str> = Uuid::new_v4().to_string().into();
-        // Fixture activation of a legacy Bearer, not signed ticket redemption.
-        Client::finalize_access(
-            channel_opener(
-                Arc::new(move || {
-                    Box::pin(
-                        async move { Ok(Box::new(TcpStream::connect(addr).await?) as Channel) },
-                    )
-                }),
-                bearer.clone(),
-            ),
-            instance.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
         let der = cert.cert.der().clone();
         let config = ServerConfig::builder_with_provider(Arc::new(
@@ -667,8 +630,8 @@ async fn websocket_bearer_admission_uses_tls_and_the_endpoint_server_name() {
             // Reject the untrusted connection before opening the upstream.
             let (stream, _) = listener.accept().await.unwrap();
             assert!(acceptor.accept(stream).await.is_err());
-            for _ in 0..2 {
-                // anchor and one RPC
+            for _ in 0..3 {
+                // finalization, anchor, and one RPC
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut stream = acceptor.accept(stream).await.unwrap();
                 assert_eq!(stream.get_ref().1.server_name(), Some("localhost"));

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { platform, safeAreaInsets, Scroll, Text, View, token } from 'nsh';
+import { platform, safeAreaInsets, Scroll, Text, View, token, type JSX } from 'nsh';
 import { AlertDialog, Input, MenuButton, NavPage } from 'nsh/base';
 import { Switch } from 'nsh/mobile';
 import { tr } from '../../locale';
@@ -86,7 +86,6 @@ export function SettingsForm(
     >
       <Scroll
         style={{ flex: 1, backgroundColor: token('grouped-bg') }}
-        keyboardDismissMode="interactive"
         contentStyle={{ paddingTop: 16, paddingBottom: Math.max(insets().bottom, 20) + 24 }}
       >
         <If when={props.work.error()}>
@@ -111,7 +110,7 @@ export function SettingsForm(
               <ActionButton
                 title={tr('Save')}
                 disabled={props.work.busy() || props.dirty === false}
-                onPress={props.save}
+                onPress={() => props.save?.()}
               />
             </View>
           </If>

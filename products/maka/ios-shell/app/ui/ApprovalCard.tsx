@@ -300,8 +300,6 @@ export function ApprovalCard(props: {
                 style={{
                   ...(props.monospaceDetail ? type.mono : type.subheadline),
                   color: token('foreground'),
-                  numberOfLines: 3,
-                  textOverflow: 'ellipsis',
                 }}
               >
                 {props.detail}

@@ -70,8 +70,13 @@ pub enum RemoteClientError {
     UnknownEndpoint(String),
     #[error("serialization error: {0}")]
     Codec(#[from] serde_json::Error),
-    #[error("Host mutation completed with cleanup error: {0}")]
-    MutationCleanup(String),
+    #[error("Host mutation completed with cleanup error: {diagnostic}")]
+    MutationCleanup {
+        diagnostic: String,
+        reference: Value,
+        /// A recorded result, independent of post-mutation cleanup.
+        result: Box<Result<Value, RemoteClientError>>,
+    },
     #[error("Host mutation result was not acknowledged: {cause}")]
     MutationUncertain {
         reference: Value,
@@ -104,6 +109,7 @@ struct Opening {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WireRequest {
     Connect,
+    FinalizeAccess,
     Call {
         session: Uuid,
     },
@@ -123,6 +129,7 @@ enum SessionControl {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum WireResponse {
     Connected(WireConnected),
+    Finalized(Result<(), String>),
     Accepted,
     Closed,
     PeerPairingReceipt(Result<PeerPairingReceipt, String>),
@@ -376,6 +383,29 @@ pub(crate) async fn redeem_pairing_invite(
     }
 }
 
+pub(crate) async fn finalize_websocket_access(
+    link: &Link,
+    client_instance: &str,
+) -> Result<(), RemoteClientError> {
+    let mut channel = link.open().await?;
+    write_frame(
+        &mut channel,
+        &Opening {
+            version: HOST_PROTOCOL_VERSION,
+            epoch: None,
+            client_instance: Some(client_instance.to_owned()),
+            request: WireRequest::FinalizeAccess,
+        },
+    )
+    .await?;
+    match read_frame::<_, WireResponse>(&mut BufReader::new(channel)).await? {
+        WireResponse::Finalized(result) => result.map_err(RemoteClientError::HostRejected),
+        _ => Err(RemoteClientError::Protocol(
+            "Host did not return Finalized".into(),
+        )),
+    }
+}
+
 /// Connect and admit a remote Maka Host, enforcing that the advertised
 /// state_domain matches expected_root_id fail-closed.
 impl RemoteHostConnection {
@@ -550,6 +580,10 @@ impl RemoteCallHandle {
     }
 
     /// Invoke a query and return its terminal result without retaining progress frames.
+    pub fn path_summary(&self) -> Option<maka_remote_transport::PathSummary> {
+        self.link.path_summary()
+    }
+
     pub async fn query(
         &self,
         endpoint: &str,
@@ -751,7 +785,23 @@ async fn confirm_mutation<S: AsyncRead + AsyncWrite + Unpin, F: Future<Output = 
             ))),
         });
     }
-    cleanup.map_err(RemoteClientError::MutationCleanup)?;
+    let cleanup = cleanup.err().or_else(|| {
+        let receipt_cleanup = &receipt["cleanup"];
+        (receipt_cleanup["kind"] == "failed").then(|| {
+            receipt_cleanup["diagnostic"]
+                .as_str()
+                .unwrap_or("mutation cleanup failed")
+                .to_owned()
+        })
+    });
+    if let Some(diagnostic) = cleanup {
+        let reference = reply["reference"].clone();
+        return Err(RemoteClientError::MutationCleanup {
+            diagnostic,
+            reference,
+            result: Box::new(extract_mutation_value(reply)),
+        });
+    }
     extract_mutation_value(reply)
 }
 
@@ -761,15 +811,6 @@ fn extract_mutation_value(reply: Value) -> Result<Value, RemoteClientError> {
     })?;
     match receipt.get("kind").and_then(Value::as_str) {
         Some("recorded") => {
-            if let Some(cleanup) = receipt.get("cleanup")
-                && cleanup.get("kind").and_then(Value::as_str) == Some("failed")
-            {
-                let diagnostic = cleanup
-                    .get("diagnostic")
-                    .and_then(Value::as_str)
-                    .unwrap_or("mutation cleanup failed");
-                return Err(RemoteClientError::MutationCleanup(diagnostic.to_owned()));
-            }
             let outcome = receipt.get("outcome").ok_or_else(|| {
                 RemoteClientError::Protocol("recorded mutation receipt missing outcome".into())
             })?;
@@ -795,31 +836,11 @@ fn extract_mutation_value(reply: Value) -> Result<Value, RemoteClientError> {
                 Some("not_executed") => Err(RemoteClientError::HostRejected(
                     "remote mutation was prevented before start".into(),
                 )),
-                Some("unknown") => {
-                    let diagnostic = outcome
-                        .get("diagnostic")
-                        .and_then(Value::as_str)
-                        .unwrap_or("remote mutation outcome unknown");
-                    Err(RemoteClientError::HostRejected(diagnostic.to_owned()))
-                }
-                Some("unresolved") => Err(RemoteClientError::HostRejected(
-                    "remote mutation outcome remains unresolved".into(),
-                )),
                 other => Err(RemoteClientError::Protocol(format!(
                     "unexpected mutation outcome kind: {other:?}"
                 ))),
             }
         }
-        Some("unavailable") => {
-            let diagnostic = receipt
-                .get("diagnostic")
-                .and_then(Value::as_str)
-                .unwrap_or("remote mutation unavailable");
-            Err(RemoteClientError::HostRejected(diagnostic.to_owned()))
-        }
-        Some("not_recorded") => Err(RemoteClientError::HostRejected(
-            "remote mutation was not recorded".into(),
-        )),
         other => Err(RemoteClientError::Protocol(format!(
             "unexpected mutation receipt kind: {other:?}"
         ))),
@@ -976,10 +997,18 @@ impl RemoteHostConnection {
 
     /// Wait for anchor disconnection, including Host-side grant revocation.
     pub async fn disconnected(&mut self) -> Result<(), RemoteClientError> {
-        if let Link::Peer(peer) = &self.handle.link {
-            return Err(peer.wait_for_disconnect().await);
-        }
-        match read_frame::<_, WireResponse>(&mut self.anchor).await {
+        // Both transports must observe the session anchor: QUIC can close one
+        // session without closing its shared peer connection.
+        let reply = read_frame::<_, WireResponse>(&mut self.anchor);
+        let result = match &self.handle.link {
+            Link::Peer(peer) => tokio::select! {
+                biased;
+                error = peer.wait_for_disconnect() => return Err(error),
+                result = reply => result,
+            },
+            Link::WebSocket(_) => reply.await,
+        };
+        match result {
             Err(RemoteClientError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
                 Ok(())
             }
@@ -1076,7 +1105,7 @@ mod tests {
             );
         assert_eq!(progress, [json!({"step":"discovering"})]);
         assert!(
-            matches!(result, Err(RemoteClientError::MutationCleanup(error)) if error == "fixture cleanup failed")
+            matches!(result, Err(RemoteClientError::MutationCleanup { diagnostic, reference: received, result }) if diagnostic == "fixture cleanup failed" && received == reference && matches!(result.as_ref(), Ok(value) if value == &json!({})))
         );
     }
 

@@ -20,7 +20,7 @@
 import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
-import { describeChildDecision, describePermissions } from '../../approval';
+import { approvalControls, approvalDetail } from '../../approval';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
 import { savedHosts } from '../../state/hostPool';
@@ -85,74 +85,6 @@ function interactionTitle(item: InboxItem): string {
   }
 }
 
-function interactionDetail(item: InboxItem): { text?: string; mono?: boolean } {
-  const req = item.record?.request;
-  if (!req) return {};
-  if (req.kind === 'permissions') {
-    if (req.request.command?.command) {
-      return { text: req.request.command.command, mono: true };
-    }
-    const summary = describePermissions(req.request.permissions);
-    return summary ? { text: summary, mono: false } : {};
-  }
-  if (req.kind === 'session_approval') {
-    const desc = describeChildDecision(req.answer);
-    return desc ? { text: desc, mono: false } : {};
-  }
-  if (req.kind === 'service_approval') {
-    return { text: req.service + '.' + req.method, mono: true };
-  }
-  return {};
-}
-
-function buildAllowAnswer(
-  item: InboxItem,
-  scope: 'once' | 'session' = 'once',
-): Record<string, unknown> | null {
-  const req = item.record?.request;
-  if (!req) return null;
-  switch (req.kind) {
-    case 'permissions':
-      return {
-        kind: 'permissions',
-        decision: {
-          decision: 'allow',
-          scope,
-          permissions: req.request.permissions,
-        },
-      };
-    case 'service_approval':
-      return { kind: 'service_approval', decision: 'allow' };
-    case 'client_capability':
-      return { kind: 'client_capability', decision: 'allow' };
-    case 'computer_app':
-      return { kind: 'computer_app', decision: scope };
-    case 'session_approval':
-      return { kind: 'session_approval', decision: 'approve' };
-    default:
-      return null;
-  }
-}
-
-function buildDenyAnswer(item: InboxItem): Record<string, unknown> | null {
-  const req = item.record?.request;
-  if (!req) return null;
-  switch (req.kind) {
-    case 'permissions':
-      return { kind: 'permissions', decision: { decision: 'deny' } };
-    case 'service_approval':
-      return { kind: 'service_approval', decision: 'deny' };
-    case 'client_capability':
-      return { kind: 'client_capability', decision: 'deny' };
-    case 'computer_app':
-      return { kind: 'computer_app', decision: 'deny' };
-    case 'session_approval':
-      return { kind: 'session_approval', decision: 'deny' };
-    default:
-      return null;
-  }
-}
-
 export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
   const category = signal<CategoryFilter>('all');
@@ -206,8 +138,6 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
           style={{ flex: 1 }}
-          refreshing={inboxLoading()}
-          onRefresh={() => void refreshAllInbox()}
           contentStyle={{
             flexGrow: 1,
             paddingTop: 8,
@@ -258,15 +188,12 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
             <InsetGroup header={tr('Waiting for your response')}>
               <Each of={visibleItems()} key={(item) => item.key}>
                 {(item, index) => {
-                  const detail = () => interactionDetail(item());
-                  const allow = () => buildAllowAnswer(item());
-                  const allowSession = () => {
-                    const kind = item().record?.request.kind;
-                    return kind === 'permissions' || kind === 'computer_app'
-                      ? buildAllowAnswer(item(), 'session')
-                      : null;
-                  };
-                  const deny = () => buildDenyAnswer(item());
+                  const detail = () =>
+                    item().record ? approvalDetail(item().record!.request) : {};
+                  const controls = () => approvalControls(item().record?.request);
+                  const allow = () => controls().primary;
+                  const allowSession = () => controls().session;
+                  const deny = () => controls().deny;
                   const source = () =>
                     [
                       savedHosts().length > 1 ? item().hostName : '',
@@ -279,12 +206,10 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                       badge={interactionBadge(item().summary.kind)}
                       sourceLine={source()}
                       title={interactionTitle(item())}
-                      detail={detail().text}
-                      monospaceDetail={detail().mono}
+                      detail={[detail().command, detail().permissions].filter(Boolean).join('\n')}
+                      monospaceDetail={!detail().permissions}
                       busy={isInboxItemBusy(item().key)}
-                      allowLabel={
-                        allow() ? (allowSession() ? tr('Allow once') : tr('Allow')) : undefined
-                      }
+                      allowLabel={allow()?.label}
                       accepted={
                         feedback.outcome()?.item.key === item().key
                           ? feedback.outcome()?.accepted
@@ -297,7 +222,7 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                       }
                       denyLabel={deny() ? tr('Deny') : undefined}
                       onAllow={
-                        allow() ? () => void respond(item(), allow()!, 'success') : undefined
+                        allow() ? () => void respond(item(), allow()!.answer, 'success') : undefined
                       }
                       onDeny={deny() ? () => void respond(item(), deny()!, 'warning') : undefined}
                       onPress={

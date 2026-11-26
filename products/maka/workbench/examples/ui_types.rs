@@ -32,6 +32,7 @@ use std::{
 const USAGE: &str = "usage: cargo run -p maka-workbench --example ui_types -- OUTPUT_DIR\n\
 OUTPUT_DIR must not exist; choose a task-private directory outside the checkout";
 const SOURCES: &[&str] = &[
+    "products/maka/ios-shell/app/Entry.tsx",
     "products/maka/workbench/app/Bootstrap.tsx",
     "products/maka/workbench/app/ComputerPermissionSetupEntry.tsx",
     "products/maka/workbench/app/App.tsx",

@@ -22,7 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
 import { command } from './ci/command.mjs';
 import { checkResults, createPlan, documentation, sharedInput } from './ci/plan.mjs';
-import { iosValidation, manifests, suites, workers } from './ci/suites.mjs';
+import { manifests, suites, workers } from './ci/suites.mjs';
 import { executor, runSuites } from './ci/run.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -117,22 +117,6 @@ async function main(args) {
     return;
   }
   if (action === 'check') {
-    if (rest[0] === 'ios') {
-      if (rest.length !== 1) throw new Error('Usage: ci.mjs check ios');
-      const packages = iosValidation.packages.flatMap((name) => ['-p', name]);
-      const cargo = process.env.CARGO || 'cargo';
-      await command(process.execPath, ['scripts/i18n/check.mjs'], { cwd: root });
-      await command(process.execPath, ['--test', iosValidation.scriptTest], { cwd: root });
-      await command(cargo, ['test', '--locked', ...packages], { cwd: root });
-      await command(
-        cargo,
-        ['check', '--locked', ...packages, '--target', iosValidation.simulator],
-        {
-          cwd: root,
-        },
-      );
-      return;
-    }
     await executor(root).check(rest[0]);
     return;
   }

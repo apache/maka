@@ -66,6 +66,7 @@ import type { ParsedDiffFile } from './state/chat';
 import {
   closeAddComputerFlow,
   currentDeepLink,
+  clearDeepLink,
   currentPendingTicket,
   currentToastMessage,
   dismissToast,
@@ -130,6 +131,7 @@ function OnboardingFlow(props: { isModal: boolean }) {
   effect(() => {
     const link = currentDeepLink();
     if (link?.target === 'scan') {
+      clearDeepLink();
       const routes = nav.routes();
       if (routes[routes.length - 1]?.name !== 'scan') {
         nav.push({ name: 'scan' });
@@ -194,7 +196,8 @@ function MainTabShell() {
 
   effect(() => {
     const link = currentDeepLink();
-    if (!link) return;
+    if (!link || link.target === 'scan') return;
+    clearDeepLink();
     if (link.target === 'chats') activeTab.set(0);
     else if (link.target === 'pending') activeTab.set(1);
     else if (link.target === 'settings') activeTab.set(2);
@@ -352,7 +355,8 @@ function MainTabShell() {
             if (route.name === 'device') {
               return <DeviceDetailScreen rootId={route.rootId} onBack={() => settingsNav.pop()} />;
             }
-            const active = () => activeTab() === 2 && settingsNav.routes().at(-1) === route;
+            const active = () =>
+              !isPairingModalOpen() && activeTab() === 2 && settingsNav.routes().at(-1) === route;
             const back = () => settingsNav.pop();
             if (route.name === 'providers') {
               return (
@@ -653,8 +657,6 @@ export function App() {
   startSessionsStore();
   startInboxStore();
 
-  const showOnboarding = () => !hasPairedHosts() || isPairingModalOpen();
-
   return (
     <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
       <If
@@ -667,8 +669,15 @@ export function App() {
               <BannerNotice tone="destructive" title={hostBootstrapError()!} />
             </View>
           </If>
-          <If when={showOnboarding()} else={<MainTabShell />}>
-            <OnboardingFlow isModal={hasPairedHosts() && isPairingModalOpen()} />
+          <If when={hasPairedHosts()}>
+            <View style={{ flex: 1 }}>
+              <MainTabShell />
+            </View>
+          </If>
+          <If when={!hasPairedHosts() || isPairingModalOpen()}>
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+              <OnboardingFlow isModal={hasPairedHosts()} />
+            </View>
           </If>
         </View>
       </If>

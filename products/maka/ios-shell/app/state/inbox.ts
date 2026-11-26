@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { computed, effect, signal } from 'nsh';
 import {
   hasAgentEndpoint,
@@ -26,7 +27,7 @@ import {
   type AgentInteractionSummary,
   type AgentSessionPage,
 } from '../bridge';
-import { connectedHosts, showToast } from './hostPool';
+import { activeHostInfo, connectedHosts, showToast } from './hostPool';
 import { hapticNotification } from './preferences';
 import { allSessions, refreshAllSessions } from './sessions';
 
@@ -69,7 +70,16 @@ export function isInboxItemBusy(key: string): boolean {
   return !!busyKeys()[key];
 }
 
+const inboxRequests = new Map<string, number>();
+let inboxSequence = 0;
+
 export async function refreshHostInbox(rootId: string, hostName: string) {
+  const generation = activeHostInfo(rootId)?.generation;
+  if (generation === undefined) return;
+  const request = ++inboxSequence;
+  inboxRequests.set(rootId, request);
+  const current = () =>
+    activeHostInfo(rootId)?.generation === generation && inboxRequests.get(rootId) === request;
   try {
     const page = await hostQuery<AgentSessionPage>(
       'agent',
@@ -86,15 +96,15 @@ export async function refreshHostInbox(rootId: string, hostName: string) {
       undefined,
       rootId,
     );
+    if (!current()) return;
     const sessions = page?.sessions ?? [];
     const results: InboxItem[] = [];
     for (const session of sessions) {
       const pending = await hostQuery<{
         revision: number;
         entries: AgentInteractionSummary[];
-      }>('agent', 'pendingInteractions', { sessionId: session.id }, undefined, rootId).catch(
-        () => null,
-      );
+      }>('agent', 'pendingInteractions', { sessionId: session.id }, undefined, rootId);
+      if (!current()) return;
       if (!pending?.entries?.length) continue;
       for (const summary of pending.entries) {
         const record = await hostQuery<AgentInteractionRecord | null>(
@@ -103,8 +113,10 @@ export async function refreshHostInbox(rootId: string, hostName: string) {
           { sessionId: session.id, requestId: summary.requestId },
           undefined,
           rootId,
-        ).catch(() => null);
-        if (record && record.outcome !== null && record.outcome !== undefined) {
+        );
+        if (!current()) return;
+        if (!record) continue;
+        if (record.outcome !== null && record.outcome !== undefined) {
           continue;
         }
         const workspaceName =
@@ -125,8 +137,8 @@ export async function refreshHostInbox(rootId: string, hostName: string) {
       }
     }
     itemsByHost.update((prev) => ({ ...prev, [rootId]: results }));
-  } catch {
-    // Keep prior inbox items on transient query error.
+  } catch (cause) {
+    if (current()) console.warn('Could not refresh Pending', cause);
   }
 }
 
@@ -151,9 +163,10 @@ export async function respondInboxItem(
   answer: Record<string, unknown>,
   successKind: 'success' | 'warning' = 'success',
 ): Promise<boolean> {
+  if (isInboxItemBusy(item.key)) return false;
   busyKeys.update((prev) => ({ ...prev, [item.key]: true }));
   try {
-    const result = await hostMutate<{ kind: 'recorded' } | { kind: 'rejected'; reason: unknown }>(
+    const result = await hostMutate<AgentInteractionResult>(
       'agent',
       'respond',
       {
@@ -163,7 +176,17 @@ export async function respondInboxItem(
       },
       { rootId: item.rootId },
     );
-    if (result.kind === 'rejected') throw new Error(String(result.reason));
+    if (result.kind === 'recorded' || result.reason === 'closed') {
+      inboxRequests.delete(item.rootId);
+      itemsByHost.update((previous) => ({
+        ...previous,
+        [item.rootId]: (previous[item.rootId] ?? []).filter((entry) => entry.key !== item.key),
+      }));
+    }
+    if (result.kind === 'rejected') {
+      void refreshHostInbox(item.rootId, item.hostName);
+      throw new Error(result.reason);
+    }
     hapticNotification(successKind);
     await Promise.all([refreshHostInbox(item.rootId, item.hostName), refreshAllSessions()]);
     return true;
@@ -189,6 +212,8 @@ export function startInboxStore() {
     const hosts = connectedHosts().filter((entry) => hasAgentEndpoint(entry.connection));
     void allSessions();
     const activeRoots = new Set(hosts.map((h) => h.host.rootId));
+    for (const rootId of inboxRequests.keys())
+      if (!activeRoots.has(rootId)) inboxRequests.delete(rootId);
     itemsByHost.update((prev) => {
       let changed = false;
       const next: Record<string, InboxItem[]> = {};
