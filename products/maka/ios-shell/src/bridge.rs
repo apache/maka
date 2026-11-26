@@ -1451,7 +1451,7 @@ mod tests {
         let (socket, _) = listener.accept().await.unwrap();
         let mut finalizing = accept_async(socket).await.unwrap();
         let finalize = read_frame(&mut finalizing).await;
-        assert_eq!(finalize["request"]["kind"], "finalize_access");
+        assert_eq!(finalize["request"]["kind"], "finalize_access_for_root");
         send_frame(
             &mut finalizing,
             json!({"kind":"finalized","value":{"Ok":null}}),

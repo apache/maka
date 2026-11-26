@@ -109,7 +109,7 @@ struct Opening {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum WireRequest {
     Connect,
-    FinalizeAccess {
+    FinalizeAccessForRoot {
         expected_root_id: String,
     },
     Call {
@@ -134,6 +134,7 @@ enum WireResponse {
     Finalized(Result<(), String>),
     Accepted,
     Closed,
+    PeerAccessRevoked,
     PeerPairingReceipt(Result<PeerPairingReceipt, String>),
     #[serde(other)]
     Other,
@@ -397,7 +398,7 @@ pub(crate) async fn finalize_websocket_access(
             version: HOST_PROTOCOL_VERSION,
             epoch: None,
             client_instance: Some(client_instance.to_owned()),
-            request: WireRequest::FinalizeAccess {
+            request: WireRequest::FinalizeAccessForRoot {
                 expected_root_id: expected_root_id.to_owned(),
             },
         },
@@ -1006,24 +1007,11 @@ impl RemoteHostConnection {
         // session without closing its shared peer connection.
         let reply = read_frame::<_, WireResponse>(&mut self.anchor);
         let result = match &self.handle.link {
-            Link::Peer(peer) => {
-                let anchor = tokio::select! {
-                    biased;
-                    error = peer.wait_for_disconnect() => return Err(error),
-                    result = reply => result,
-                };
-                // Host revocation fences session anchors before closing the
-                // QUIC connection with an application reason ("peer access
-                // revoked"). Give a companion connection close a brief window
-                // so revocation is not masked as an ordinary clean disconnect.
-                if let Ok(error) =
-                    tokio::time::timeout(Duration::from_millis(500), peer.wait_for_disconnect())
-                        .await
-                {
-                    return Err(error);
-                }
-                anchor
-            }
+            Link::Peer(peer) => tokio::select! {
+                biased;
+                error = peer.wait_for_disconnect() => return Err(error),
+                result = reply => result,
+            },
             Link::WebSocket(_) => reply.await,
         };
         match result {
@@ -1032,6 +1020,9 @@ impl RemoteHostConnection {
             }
             Err(error) => Err(error),
             Ok(WireResponse::Closed) => Ok(()),
+            Ok(WireResponse::PeerAccessRevoked) => Err(RemoteClientError::HostRejected(
+                "peer access revoked".into(),
+            )),
             Ok(_) => Err(RemoteClientError::Protocol(
                 "unexpected anchor response".into(),
             )),
@@ -1060,6 +1051,32 @@ impl RemoteHostConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_hosts_cannot_dispatch_root_bound_finalization() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum LegacyRequest {
+            FinalizeAccess,
+        }
+
+        // The old tagged unit variant accepted extra fields.
+        let old = json!({"kind":"finalize_access", "expected_root_id":"root"});
+        assert!(matches!(
+            serde_json::from_value(old),
+            Ok(LegacyRequest::FinalizeAccess)
+        ));
+        let request = serde_json::to_value(WireRequest::FinalizeAccessForRoot {
+            expected_root_id: "root".into(),
+        })
+        .unwrap();
+        let error = serde_json::from_value::<LegacyRequest>(request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown variant `finalize_access_for_root`")
+        );
+    }
 
     #[tokio::test]
     async fn lost_mutation_reply_preserves_the_reference_instead_of_asserting_failure() {

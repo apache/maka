@@ -171,7 +171,7 @@ async fn host_opens_independent_supplied_channels() {
             .is_err()
     );
     let opener = websocket::channel_opener(transport.clone(), bearer.clone());
-    Client::finalize_access(opener, client_id.clone(), None)
+    Client::finalize_access(opener, client_id.clone(), &pairing.root_id, None)
         .await
         .unwrap();
     assert!(
@@ -450,6 +450,10 @@ async fn native_peers_can_call_but_cannot_control_the_host_and_are_revocable() {
             .is_err()
     );
     assert_peer_closed(call).await;
+    assert!(matches!(
+        raw_anchor.read::<Response>().await.unwrap(),
+        Response::PeerAccessRevoked
+    ));
     assert_peer_closed(raw_anchor.inner).await;
     assert!(client.refresh().await.is_err());
     cancel.cancel();
@@ -661,7 +665,7 @@ async fn websocket_and_native_principals_are_isolated_and_ingress_eof_keeps_othe
     let claimed = Some(peer.as_str().to_owned());
 
     assert_rejected(opening(&ws, Request::Connect, claimed.clone()).await).await;
-    Client::finalize_access(ws.clone(), peer.as_str().into(), None)
+    Client::finalize_access(ws.clone(), peer.as_str().into(), &pairing.root_id, None)
         .await
         .unwrap();
     let mut ws_anchor = opening(&ws, Request::Connect, claimed.clone()).await;

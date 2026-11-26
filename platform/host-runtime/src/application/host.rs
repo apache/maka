@@ -45,7 +45,10 @@ use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
@@ -101,6 +104,7 @@ pub struct Host {
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
+    revoked: AtomicBool,
     principal: Principal,
     peer: Arc<Peers>,
     transport: Arc<Server>,
@@ -675,14 +679,14 @@ impl Host {
                     .await;
                 wire::write(&mut output, &Response::PeerPairingReceipt(result)).await
             }
-            Request::FinalizeAccess { expected_root_id } => {
+            Request::FinalizeAccessForRoot { expected_root_id } => {
                 wire::write(
                     &mut output,
                     &Response::Finalized(
                         self.finalize_access(
                             &authority,
                             opening.client_instance,
-                            expected_root_id.as_deref(),
+                            &expected_root_id,
                         )
                         .await,
                     ),
@@ -869,6 +873,7 @@ impl Host {
                 };
                 let id = Uuid::new_v4();
                 let session = Arc::new(Session {
+                    revoked: AtomicBool::new(false),
                     principal,
                     peer: Peers::new(peer),
                     transport: Server::new(
@@ -1026,10 +1031,18 @@ impl Host {
                 // drains all original calls before releasing the session.
                 session.peer.replace(vec![])?;
                 session.transport.request_close();
-                // Native streams close on revocation without waiting for a
-                // terminal-ack reader. Only an explicit Close requests an ack.
+                // A revoked native anchor must carry the reason before it
+                // closes, even if the QUIC connection close hasn't arrived yet.
                 let mut output = Some(output);
+                let mut revoked_notice = Ok(());
                 if matches!(authority, Authority::AuthenticatedPeer { .. }) && result != Ok(true) {
+                    if session.revoked.load(Ordering::Acquire) {
+                        revoked_notice = wire::write(
+                            output.as_mut().expect("live anchor"),
+                            &Response::PeerAccessRevoked,
+                        )
+                        .await;
+                    }
                     drop(input);
                     drop(output.take());
                 }
@@ -1045,7 +1058,7 @@ impl Host {
                 if let Some(mut output) = output {
                     wire::write(&mut output, &Response::Closed).await?;
                 }
-                result.map(|_| ())
+                result.and(revoked_notice).map(|_| ())
             }
             Request::Call { session } => {
                 let gate = self.access_gate.lock().await;
