@@ -20,27 +20,6 @@ hears of a new row, nothing more. The look is the app's: marks paint with CSS's 
 `bg-linear-*`) inside its shape, and the hover's parts (each mark's dot among them) and the axes' labels, tick marks and
 lines are the app's to style and fill.
 
-```rust tabs
-use nsh_base::{
-    plot::{area, grid, line, plot},
-    theme,
-};
-use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
-
-fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
-    let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
-    plot()
-        .data(rows)
-        .y(RowAccessor::key("visitors"))
-        .accessibility_label("Visitors per day")
-        .h(px(160.0))
-        .on_hover_change(move |index: &Option<u32>| hovered.set(*index))
-        .child(grid().y(vec![0.0, 1500.0, 3000.0]).stroke_color(move || theme().border))
-        .child(area().fill_color(move || theme().chart_1.opacity(0.2)))
-        .child(line().stroke_color(move || theme().chart_1).stroke_width(px(2.0)))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Area, Grid, Line, Plot } from "nsh/base/plot";
@@ -84,6 +63,27 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{
+    plot::{area, grid, line, plot},
+    theme,
+};
+use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
+
+fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
+    let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
+    plot()
+        .data(rows)
+        .y(RowAccessor::key("visitors"))
+        .accessibility_label("Visitors per day")
+        .h(px(160.0))
+        .on_hover_change(move |index: &Option<u32>| hovered.set(*index))
+        .child(grid().y(vec![0.0, 1500.0, 3000.0]).stroke_color(move || theme().border))
+        .child(area().fill_color(move || theme().chart_1.opacity(0.2)))
+        .child(line().stroke_color(move || theme().chart_1).stroke_width(px(2.0)))
+}
 ```
 
 `Plot`, `Line`, `Area`, `Bar`, `Rule`, `Dot`, `Cell`, `Grid`, `Pie`, `Arc`, `RadialLine`, `RadialGrid`, `Sankey`, `Treemap`, `PlotAxis` and `PlotLabel` come from `nsh/base/plot`, a module of [`nsh/base`](../modules/nsh-base.md) of their

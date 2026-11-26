@@ -21,6 +21,7 @@ import { computed, keymap, mount, Scroll, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { markdownExtensions, SpecView } from '../../app/SpecView';
 import { splitSpecMarkdown } from '../../app/spec/session.ts';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const block1BaseLines = [
   '{"op":"add","path":"/root","value":"main"}',
@@ -114,6 +115,7 @@ const streaming = signal(true);
 const openedLinks = signal<string[]>([]);
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   // Fires mid-stream markdown growth without pointer clicks so active Input focus stays untouched.
   keymap.bind(
     'mod+n',

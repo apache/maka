@@ -89,7 +89,7 @@ impl DerefMut for Transaction {
 }
 
 impl Transaction {
-    pub(super) fn new(
+    pub(crate) fn new(
         doc: Node,
         schema: Schema,
         selection: Selection,

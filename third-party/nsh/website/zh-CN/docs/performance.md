@@ -8,7 +8,7 @@ group: tools
 # 性能
 
 性能是 NSH 的第一优先级，而其中大部分由框架而非你的应用决定：运行时是原生的，每次更新只跨一次线程，动画和列表虚拟化
-都无需 JS 参与，用 Rust 编写的应用则完全不运行 JS。本页介绍 NSH 遵循的规则、它们对你用 Rust 和 TSX 所写代码的意义，以及如何测量。
+都无需 JS 参与，用 Rust 编写的应用则完全不运行 JS。本页介绍 NSH 遵循的规则、它们对你用 TSX 和 Rust 所写代码的意义，以及如何测量。
 
 ## 规则
 
@@ -49,13 +49,29 @@ QuickJS 中的代价，比你在带 JIT 的 V8 或 JavaScriptCore 中习惯的�
 **一次 commit**：运行时渲染组件、布局、diff，并生成一批原生视图操作，以**一次跳转**送达主线程。不存在每个视图一条的
 bridge 消息，也没有每个 prop 一次的序列化。
 
-**对你的代码而言：** 无需为了性能合并写入；一个处理函数里调用十次 `set` 仍然只产生一次 commit，Rust 和 TSX 都是如此。如果你希望 effect 和
+**对你的代码而言：** 无需为了性能合并写入；一个处理函数里调用十次 `set` 仍然只产生一次 commit，TSX 和 Rust 都是如此。如果你希望 effect 和
 computed 值一次性看到所有写入，而不是每次写入后都运行一遍，请使用 `batch`。
 
 ### 3. 细粒度更新
 
-组件只运行**一次**，Rust 和 TSX 都一样。之后，当某个 signal 变化时，只有读取它的绑定会重新运行：一段文本、一个样式属性、
+组件只运行**一次**，TSX 和 Rust 都一样。之后，当某个 signal 变化时，只有读取它的绑定会重新运行：一段文本、一个样式属性、
 `when`（`<If>`）的一个分支、`each`（`<Each>`）的各行。不会为了找出变化而重新渲染整棵子树。
+
+```tsx tabs
+import type { Accessor } from "nsh";
+import { Text } from "nsh";
+
+type Quote = { price: number; change: number };
+
+function Price(props: { quote: Accessor<Quote> }) {
+  // Runs once. When quote() changes, only the text and the color update.
+  return (
+    <Text style={{ color: props.quote().change < 0 ? "#cf222e" : "#1a7f37" }}>
+      {props.quote().price.toFixed(2)}
+    </Text>
+  );
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -74,22 +90,6 @@ fn price(quote: Signal<Quote>) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import type { Accessor } from "nsh";
-import { Text } from "nsh";
-
-type Quote = { price: number; change: number };
-
-function Price(props: { quote: Accessor<Quote> }) {
-  // Runs once. When quote() changes, only the text and the color update.
-  return (
-    <Text style={{ color: props.quote().change < 0 ? "#cf222e" : "#1a7f37" }}>
-      {props.quote().price.toFixed(2)}
-    </Text>
-  );
-}
-```
-
 **对你的代码而言：**
 
 - 在使用 signal 的地方读取它（绑定内部：Rust 中的 `move ||` 闭包、TSX 中的 JSX 表达式，以及 `computed`、`effect` 内部），
@@ -100,16 +100,16 @@ function Price(props: { quote: Accessor<Quote> }) {
 
 向一个三项列表追加第四项，`nsh test --trace` 显示的结果如下：
 
+```tsx tabs
+{items().map((n) => <Text>{`row ${n}`}</Text>)}                   // 22 mount items: 3 views removed, 4 created
+<Each of={items()}>{(n) => <Text>{`row ${n()}`}</Text>}</Each>      // 4 mount items: 1 view created
+```
+
 ```rust tabs
 // 22 mount items: 3 views removed, 4 created
 dynamic(move || items.get().into_iter().map(|n| text(format!("row {n}"))).collect::<Vec<_>>())
 // 4 mount items: 1 view created
 each(move || items.get(), |n: &u32| *n, |n, _| text(move || format!("row {}", n.get())))
-```
-
-```tsx tabs
-{items().map((n) => <Text>{`row ${n}`}</Text>)}                   // 22 mount items: 3 views removed, 4 created
-<Each of={items()}>{(n) => <Text>{`row ${n()}`}</Text>}</Each>      // 4 mount items: 1 view created
 ```
 
 参见[响应式](./reactivity.md)。
@@ -123,20 +123,6 @@ core 只发送变化的部分：新视图不带默认样式，也不带空的事
 
 由引擎线程驱动的动画（每帧写入 signal）每帧都要付出一次 commit 的代价（TSX 中还有一次 JS 调用），而且引擎线程繁忙时会卡顿。
 动画值（[动画](./animation.md)：Rust 中的 `animated_value`，TSX 中的 [`nsh` 的动画 API](../modules/nsh.md#animation)）则以原生方式运行动画：
-
-```rust tabs
-use nsh_core::prelude::*;
-
-let scroll_y = animated_value(0.0);
-
-view()
-    .bind_opacity(&scroll_y.interpolate(&[0.0, 120.0], &[1.0, 0.35]))
-    .bind_translate_y(&scroll_y.interpolate(&[0.0, 120.0], &[0.0, -6.0]));
-virtual_list(move || photos.with(Vec::len), move |at| photo_row(photos, at))
-    .scroll_value(&scroll_y)
-    .estimated_item_size(px(64.0))
-    .flex_1();
-```
 
 ```tsx tabs
 import { List, View } from "nsh";
@@ -153,6 +139,20 @@ const scrollY = createAnimatedValue(0);
 <List each={photos()} scrollValue={scrollY} estimatedItemSize={64} style={{ flex: 1 }}>
   {(photo) => <Row photo={photo()} />}
 </List>;
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let scroll_y = animated_value(0.0);
+
+view()
+    .bind_opacity(&scroll_y.interpolate(&[0.0, 120.0], &[1.0, 0.35]))
+    .bind_translate_y(&scroll_y.interpolate(&[0.0, 120.0], &[0.0, -6.0]));
+virtual_list(move || photos.with(Vec::len), move |at| photo_row(photos, at))
+    .scroll_value(&scroll_y)
+    .estimated_item_size(px(64.0))
+    .flex_1();
 ```
 
 - `timing`、`spring` 和 `decay` 在平台的 UI 线程上逐帧运行，每帧不需要引擎线程做任何事。

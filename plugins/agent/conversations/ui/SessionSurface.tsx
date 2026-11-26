@@ -39,6 +39,16 @@ import {
 import { Button, Dialog, TextView } from 'nsh/base';
 import { CompactComposer } from './CompactComposer';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
+import {
+  SideComposer,
+  SideHeader,
+  SideReactions,
+} from '../../../../products/maka/workbench/app/SideQuestionCard';
+import {
+  sessionInvocation,
+  stripSessionReference,
+} from '../../composer/ui/composerCompletionSyntax';
+import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
 import type { ComputerFrameSource } from './computerFrames';
@@ -50,6 +60,10 @@ import type { WorkspacePullRequestTarget } from '../../../../packages/plugin-sdk
 import {
   backendName,
   nativeModelSelection,
+  sameBackend,
+  sameRoute,
+  selectionForChoice,
+  unsupportedThinkingLevel,
 } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
@@ -74,6 +88,7 @@ import {
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
+  type ConversationCompact,
   type ConversationSessionHandle,
   type ComposerSession,
   type ComposerCompletionSource,
@@ -92,13 +107,13 @@ import {
   errorMessage,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
+import { displayText, tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
 import {
-  currentLocale,
-  displayText,
-  tr,
-  type MessageKey,
-} from '../../../../products/maka/workbench/app/locale';
-import { loadDraft, searchSessions, type Host } from '../../../../products/maka/workbench/app/host';
+  loadDraft,
+  searchSessions,
+  type Host,
+  type RecentModel,
+} from '../../../../products/maka/workbench/app/host';
 import { settingsValue } from '../../../../products/maka/workbench/app/settingsOperations';
 import {
   bodyTextStyle,
@@ -182,6 +197,7 @@ type OverlayTarget = {
   sessionId: string | null;
 } & (
   | { kind: 'commands' | 'workspaces' | 'sessions' }
+  | { kind: 'change-workspace'; sessionId: string; revision: number }
   // `within`: the search starts in the open conversation only.
   | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
@@ -234,6 +250,8 @@ type PendingDraft = {
   workspaceLabel: string;
   text: string;
   backend: ModelBackend | null;
+  backendLabel: string | null;
+  rememberedModel: boolean;
   access: AgentWorkspaceAccess | null;
   requests: boolean | null;
   modelChosen: boolean;
@@ -270,7 +288,6 @@ export function createConversationUi(
   side?: { browsing: Browsing },
 ) {
   const runtime = context.runtime;
-  effect(() => currentLocale.set(context.locale()));
   const shell = signal<ConversationShell | null>(null);
   const bind = (next: ConversationShell) => {
     if (shell() !== next) shell.set(next);
@@ -330,6 +347,21 @@ export function createConversationUi(
     title: string;
   } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  const selectedCatalogRevision = computed(
+    () => browsing.sessions().find((session) => session.id === selected())?.revision,
+  );
+  effect(() => {
+    const owner = handle();
+    const revision = selectedCatalogRevision();
+    if (
+      owner &&
+      owner.sessionId === selected() &&
+      revision !== undefined &&
+      owner.sessionRevision() > 0 &&
+      revision > owner.sessionRevision()
+    )
+      untracked(() => void owner.refresh().catch(report));
+  });
   const pending = signal<PendingDraft | null>(null);
   const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
     const current = pending();
@@ -361,6 +393,27 @@ export function createConversationUi(
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.idiom === 'terminal' || side || !path || workspace.kind === 'session') return;
     void setRecentWorkspace(path).catch(report);
+  };
+  let recentModelWrite = Promise.resolve();
+  const rememberModel = (backend: ModelBackend, label: string | null) => {
+    if (platform.idiom === 'terminal') return;
+    const model: RecentModel = label ? { backend, label } : { backend };
+    const write = recentModelWrite.then(async () => {
+      await host.setRecentModel(model);
+    });
+    recentModelWrite = write.catch(() => {});
+    void write.catch(report);
+  };
+  const readRecentModel = async (): Promise<
+    { kind: 'ready'; model: RecentModel | null } | { kind: 'error' }
+  > => {
+    await recentModelWrite;
+    try {
+      return { kind: 'ready', model: await host.recentModel() };
+    } catch (reason) {
+      report(reason);
+      return { kind: 'error' };
+    }
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -424,6 +477,7 @@ export function createConversationUi(
   };
   const pendingRequests = computed(() => pending()?.requests ?? null);
   const pendingBackend = computed(() => pending()?.backend ?? null);
+  const pendingBackendLabel = computed(() => pending()?.backendLabel ?? null);
   const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
   const pendingModelDetails = signal<ModelDetails>({
     kind: 'unavailable',
@@ -459,6 +513,14 @@ export function createConversationUi(
   const pendingDraftGeneration = signal(0);
   let pendingDefaultEpoch = 0;
   let pendingDefaultRead: Promise<void> | null = null;
+  effect(() => {
+    if (selected() !== null) {
+      pendingDefaultEpoch += 1;
+      untracked(() => {
+        if (pending()?.rememberedModel) updatePending({ rememberedModel: false });
+      });
+    }
+  });
   const pendingModel = {
     sessionId: 'pending',
     backend: pendingBackend,
@@ -473,26 +535,47 @@ export function createConversationUi(
         });
         return;
       }
-      pendingModelDetails.set({ kind: 'loading' });
+      pendingModelDetails.set({ kind: 'loading', label: pendingBackendLabel() });
       try {
         const result = await host.query('agent', 'model', { backend });
         if (!alive || generation !== pendingModelGeneration) return;
-        pendingModelDetails.set(
-          result.kind === 'ready'
-            ? { kind: 'ready', choice: result.choice }
-            : {
-                kind: 'unavailable',
-                message: uiMessage('Model unavailable: {model}.', {
-                  model: backendName(backend),
-                }),
-              },
-        );
-      } catch (reason) {
-        if (alive && generation === pendingModelGeneration)
+        if (result.kind === 'ready') {
+          pendingModelDetails.set({ kind: 'ready', choice: result.choice });
+          const normalized = selectionForChoice(backend, result.choice);
+          if (normalized && sameBackend(pendingBackend(), backend)) {
+            const patch: Partial<Omit<PendingDraft, 'revision'>> = {};
+            if (!sameBackend(backend, normalized)) patch.backend = normalized;
+            if (pendingBackendLabel() !== result.choice.label)
+              patch.backendLabel = result.choice.label;
+            if (Object.keys(patch).length > 0) updatePending(patch);
+          }
+          return;
+        }
+        if (
+          pending()?.rememberedModel &&
+          selected() === null &&
+          !pendingSending() &&
+          sameBackend(pendingBackend(), backend)
+        ) {
+          updatePending({ backend: null, backendLabel: null, rememberedModel: false });
           pendingModelDetails.set({
             kind: 'unavailable',
-            message: errorText(reason, 'Could not load models.'),
+            message: uiMessage('Choose a model.'),
           });
+          return;
+        }
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Model unavailable: {model}.', {
+            model: backendName(backend),
+          }),
+        });
+      } catch (reason) {
+        if (!alive || generation !== pendingModelGeneration) return;
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: errorText(reason, 'Could not load models.'),
+        });
       }
     },
   };
@@ -680,6 +763,7 @@ export function createConversationUi(
   const controlLabels: Readonly<Partial<Record<string, MessageKey>>> = {
     changeGoal: 'Update goal',
     changeSession: 'Update conversation',
+    changeSessionWorkspace: 'Choose workspace',
     compact: 'Compact conversation',
     continueRun: 'Continue response',
     create: 'New conversation',
@@ -695,6 +779,7 @@ export function createConversationUi(
     stop: 'Stop response',
     stopComputerApp: 'Stop computer access',
     trustProjectMcp: 'Update project MCP access',
+    declineProjectMcp: 'Update project MCP access',
   };
   const notExecuted = (method: string) => {
     const label = controlLabels[method];
@@ -721,6 +806,13 @@ export function createConversationUi(
     if (result.kind === 'failure') throw new Error(result.diagnostic);
     return result.value;
   };
+  const revisionControls = [
+    'metadata',
+    'changeSession',
+    'changeSessionWorkspace',
+    'fork',
+    'setCompactionPrompt',
+  ];
   const control: Control = async (method, input) => {
     const urgent = method === 'stop' || method === 'stopComputerApp';
     if (!urgent && !controlsKnown()) throw new ActionPending();
@@ -728,10 +820,7 @@ export function createConversationUi(
     const unresolved = originals.find(
       (original) =>
         (original.method === method ||
-          (['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(method) &&
-            ['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(
-              original.method,
-            ))) &&
+          (revisionControls.includes(method) && revisionControls.includes(original.method))) &&
         original.sessionId === (input.sessionId ?? null) &&
         (method !== 'stop' || original.correlation.runId === input.runId) &&
         (method !== 'continueRun' ||
@@ -948,6 +1037,8 @@ export function createConversationUi(
         workspaceLabel: label,
         text: '',
         backend: null,
+        backendLabel: null,
+        rememberedModel: false,
         access: null,
         requests: null,
         modelChosen: false,
@@ -966,24 +1057,34 @@ export function createConversationUi(
       });
       pendingModelInstance.set(null);
       refreshDefaultAccess();
-      pendingDefaultRead = host
-        .query('settings', 'connections', { kind: 'start' })
-        .then((page) => {
-          if (
-            !alive ||
-            pendingDefaultEpoch !== generation ||
-            pendingWorkspace() === null ||
-            pendingBackend() ||
-            page.kind !== 'ready' ||
-            !page.defaultTarget
-          )
-            return;
+      const canApplyDefault = () =>
+        alive &&
+        selected() === null &&
+        pendingDefaultEpoch === generation &&
+        pendingWorkspace() !== null &&
+        !pendingBackend() &&
+        !pendingModelChosen();
+      pendingDefaultRead = (async () => {
+        const saved = await readRecentModel();
+        if (!canApplyDefault() || saved.kind !== 'ready') return;
+        if (saved.model) {
           updatePending({
-            backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+            backend: saved.model.backend,
+            backendLabel: saved.model.label ?? null,
+            rememberedModel: true,
           });
-          return pendingModel.refreshModel();
-        })
-        .catch(report);
+          void pendingModel.refreshModel();
+          return;
+        }
+        const page = await host.query('settings', 'connections', { kind: 'start' });
+        if (!canApplyDefault() || page.kind !== 'ready' || !page.defaultTarget) return;
+        updatePending({
+          backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
+          backendLabel: null,
+          rememberedModel: false,
+        });
+        await pendingModel.refreshModel();
+      })().catch(report);
       overlay.set(null);
       focusComposer();
       return;
@@ -1017,6 +1118,64 @@ export function createConversationUi(
       report(reason);
     }
   };
+  const chooseSessionWorkspace = async (owner: ConversationHandle) => {
+    try {
+      const { session } = await owner.refresh();
+      if (handle() === owner && !session.archived)
+        open({ kind: 'change-workspace', sessionId: owner.sessionId, revision: session.revision });
+    } catch (reason) {
+      report(reason);
+    }
+  };
+  const busyWorkspaceMessage =
+    'Stop the current run and clear any queued messages before changing workspaces.';
+  const changeSessionWorkspace = async (
+    target: Extract<Overlay, { kind: 'change-workspace' }>,
+    path: string,
+  ) => {
+    const owner = handle();
+    if (!alive || !owner || owner.sessionId !== target.sessionId || selected() !== target.sessionId)
+      return;
+    try {
+      error.set('');
+      const result: import('../../../../packages/plugin-sdk/src/index.js').ServiceMethods['agent']['changeSessionWorkspace']['output'] =
+        await control('changeSessionWorkspace', {
+          sessionId: target.sessionId,
+          expectedRevision: target.revision,
+          path,
+        });
+      if (result.kind === 'revision_conflict')
+        throw new UiError('This conversation changed. Open the workspace picker again.');
+      if (result.kind === 'rejected') {
+        switch (result.reason) {
+          case 'busy':
+            throw new UiError(busyWorkspaceMessage);
+          case 'workspace_unavailable':
+            throw new UiError('The selected workspace is unavailable. Choose another folder.');
+          default:
+            throw new UiError(
+              'Could not change the workspace. Reopen the conversation and try again.',
+            );
+        }
+      }
+      if (alive && handle() === owner) {
+        await owner.refresh();
+        await owner.refreshWorkspace();
+        owner.focus();
+      }
+      if (alive) await browsing.refresh();
+    } catch (reason) {
+      if (handle() === owner) {
+        if (reason instanceof UiError || reason instanceof ActionPending) report(reason);
+        else {
+          console.warn('Could not change workspace:', reason);
+          report(
+            new UiError('Could not change the workspace. Reopen the conversation and try again.'),
+          );
+        }
+      }
+    }
+  };
   const newConversation = (sessionId: string | null) => {
     if (!alive || selected() !== sessionId) return;
     if (sessionId) void create({ kind: 'session', sessionId }, sessionId);
@@ -1041,7 +1200,13 @@ export function createConversationUi(
   // taken once by its Conversation.
   const prefills = new Map<
     string,
-    { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
+    {
+      text: string;
+      send: boolean;
+      files?: StagedFile[];
+      first?: boolean;
+      quotes?: readonly QuoteRef[];
+    }
   >();
   const abandonHandoff = (attempt: SubmissionAttempt, sessionId: string) => {
     const current = currentSubmission(attempt);
@@ -1188,17 +1353,30 @@ export function createConversationUi(
             await pendingDefaultRead;
             if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
             requireUnchangedDraft();
-            const backend = pendingBackend();
-            if (!backend) {
+            const initialBackend = pendingBackend();
+            if (!initialBackend) {
               pendingModelInstance.set(++overlayInstance);
               return;
             }
             await pendingModel.refreshModel();
             if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
             requireUnchangedDraft();
-            if (pendingBackend() !== backend || pendingModelDetails().kind !== 'ready')
+            const details = pendingModelDetails();
+            const backend =
+              details.kind === 'ready'
+                ? (selectionForChoice(initialBackend, details.choice) ?? initialBackend)
+                : initialBackend;
+            const blockedEffort =
+              details.kind === 'ready' ? unsupportedThinkingLevel(backend, details.choice) : null;
+            if (
+              !sameBackend(pendingBackend(), backend) ||
+              details.kind !== 'ready' ||
+              blockedEffort
+            )
               throw new UiError('Model unavailable: {model}. Choose another model.', {
-                model: backendName(backend),
+                model: blockedEffort
+                  ? `${details.kind === 'ready' ? details.choice.label : backendName(initialBackend)} · ${blockedEffort}`
+                  : backendName(initialBackend),
               });
             let id = pendingCreated();
             let sendFirst = true;
@@ -1574,12 +1752,20 @@ export function createConversationUi(
       try {
         await pendingDefaultRead;
         requireOwner();
-        const backend = pendingBackend();
-        if (!backend) throw new UiError('Choose a model.');
+        const initialBackend = pendingBackend();
+        if (!initialBackend) throw new UiError('Choose a model.');
         await pendingModel.refreshModel();
         requireOwner();
         const model = pendingModelDetails();
-        if (pendingBackend() !== backend || model.kind !== 'ready')
+        const backend =
+          model.kind === 'ready'
+            ? (selectionForChoice(initialBackend, model.choice) ?? initialBackend)
+            : initialBackend;
+        if (
+          !sameBackend(pendingBackend(), backend) ||
+          model.kind !== 'ready' ||
+          unsupportedThinkingLevel(backend, model.choice)
+        )
           throw new UiError('Choose a model.');
         let id = pendingCreated();
         const reusingSession = id !== null;
@@ -2012,21 +2198,62 @@ export function createConversationUi(
         ? undefined
         : foldedFamilies(),
     );
+    // A side question opens beside its conversation, so stepping onto one would step back.
+    const sides = new Set(visible.filter((session) => session.branch?.side).map(({ id }) => id));
     const index = rows.indexOf(selected() ?? '');
-    const next = rows[index === -1 ? 0 : index + step];
+    const direction = index === -1 ? 1 : step;
+    let at = index === -1 ? 0 : index + step;
+    while (at >= 0 && at < rows.length && sides.has(rows[at])) at += direction;
+    const next = rows[at];
     if (next && next !== selected()) void selectBrowsed(next, selected());
+  };
+  // A listed side question opens as its card beside the conversation it was asked from, so
+  // the user stays there. One whose conversation was removed opens as a conversation: null.
+  const openBrowsedSide = async (
+    id: string,
+    source: ActionContext,
+  ): Promise<'opened' | 'blocked' | null> => {
+    const branch = browsing.sessions().find((session) => session.id === id)?.branch;
+    const open = shell()?.openSideQuestion;
+    if (!branch?.side || !open) return null;
+    const parent = branch.sessionId;
+    const current = () =>
+      alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
+    if (!current() || switching() || reloading()) return 'blocked';
+    const sourceOverlay = overlay();
+    switching.set(true);
+    try {
+      if (parent !== selected() && !browsing.sessions().some((session) => session.id === parent)) {
+        try {
+          await host.query('agent', 'observe', { sessionId: parent });
+        } catch (reason) {
+          if (unavailableSession(reason)) return null;
+          throw reason;
+        }
+        if (!current()) return 'blocked';
+      }
+      if (!(await open(id, parent)) || !alive || selected() !== parent) return 'blocked';
+      if (overlay() === sourceOverlay) overlay.set(null);
+      status.set('');
+      return 'opened';
+    } catch (reason) {
+      if (current()) report(reason);
+      return 'blocked';
+    } finally {
+      if (alive) switching.set(false);
+    }
   };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
-    const opened = await switchSession(id, {
-      sessionId: origin,
-      instance: current?.instance ?? null,
-    });
-    if (!opened || !alive || selected() !== id) return false;
+    const source = { sessionId: origin, instance: current?.instance ?? null };
+    const side = await openBrowsedSide(id, source);
+    if (side === 'blocked') return false;
+    if (side === null && (!(await switchSession(id, source)) || !alive || selected() !== id))
+      return false;
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
-    handle()?.focus();
+    if (side === null) handle()?.focus();
     return true;
   };
   const openRecalled = async (instance: number, origin: string | null, target: RecallTarget) => {
@@ -2057,9 +2284,7 @@ export function createConversationUi(
     },
     close: closeSidebar,
     collapse: (sessionId) => toggleSidebar({ sessionId, expanded: true }),
-    selectSession: async (id, origin) => {
-      await selectBrowsed(id, origin);
-    },
+    selectSession: selectBrowsed,
     changeSession: async (action, origin) => {
       await changeBrowsedSession(action, origin);
     },
@@ -2119,20 +2344,28 @@ export function createConversationUi(
     blocked: () => recovering() || busy(),
     recover: recoverControls,
   });
-  // Whether the Host has no model connection, read each time the composer is
-  // shown again (back from Settings, too): the start pane then asks for one.
+  // Whether the Host has no model connection or enabled external agent, read
+  // each time the composer is shown again (back from Settings, too) or the
+  // deployment catalog changes: the start pane then asks for one.
   const noConnections = signal(false);
   let connectionRead = 0;
   effect(() => {
-    if (overlay() !== null || !(shell()?.visible() ?? false)) return;
+    if (overlay() !== null || reloading() || !(shell()?.visible() ?? false)) return;
+    runtime.source();
     const read = ++connectionRead;
-    void host
-      .query('settings', 'connections', { kind: 'start' })
-      .then((result) => {
-        if (!alive || read !== connectionRead || result.kind === 'changed') return;
-        noConnections.set(result.connections.length === 0 && result.next === null);
-      })
-      .catch(() => undefined);
+    void (async () => {
+      const result = await host.query('settings', 'connections', { kind: 'start' });
+      if (!alive || read !== connectionRead || result.kind === 'changed') return;
+      if (result.connections.length > 0 || result.next !== null) {
+        noConnections.set(false);
+        return;
+      }
+      const external = await host.query('agent', 'externalAgents', { inspect: true });
+      if (!alive || read !== connectionRead) return;
+      noConnections.set(
+        external.state.kind === 'disabled' || !external.runtimes.some((item) => item.enabled),
+      );
+    })().catch(() => undefined);
   });
   const composerTarget = context.configuration.composer as UiTarget;
   const ComposerView = (input: ComposerViewInput<JSX.Element>) =>
@@ -2209,12 +2442,60 @@ export function createConversationUi(
         command.trigger !== undefined && command.id !== ownedContributions().get('queue')?.key,
     ),
   );
+  // A side question's card offers its reactions once its answer stands and
+  // nothing is being typed or sent.
+  const sideAttached = signal(false);
+  effect(() => {
+    if (composerSession()?.run() !== null) sideAttached.set(false);
+  });
+  const sideSettled = () => {
+    const session = composerSession();
+    return (
+      session !== null &&
+      !session.empty() &&
+      session.run() === null &&
+      !session.recovering() &&
+      session.draft().trim() === ''
+    );
+  };
+  const discardSide = async (card: ConversationCompact) => {
+    const id = selected();
+    if (id === null) return;
+    const observed = await host.query('agent', 'observe', { sessionId: id });
+    const removed = await control('changeSession', {
+      sessionId: id,
+      expectedRevision: observed.session.revision,
+      action: 'remove',
+    });
+    if (removed.kind !== 'removed')
+      throw new UiError('The side question could not be discarded: {reason}', {
+        reason: removed.reason ?? removed.kind,
+      });
+    // A reference to it in the main draft would lead nowhere now.
+    card.side?.detach(id);
+    if (alive && selected() === id) card.close();
+  };
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
+    appendToDraft(text) {
+      const owner = handle();
+      if (!owner?.editable()) return false;
+      const draft = owner.draft();
+      owner.changeDraft(draft === '' || /\s$/.test(draft) ? draft + text : `${draft} ${text}`);
+      owner.focus();
+      return true;
+    },
+    removeSessionReference(sessionId) {
+      const owner = handle();
+      if (!owner?.editable()) return;
+      const draft = owner.draft();
+      const stripped = stripSessionReference(draft, sessionId);
+      if (stripped !== draft) owner.changeDraft(stripped);
+    },
     floatingComposer: () =>
       selected() === null ? null : (
         <StageFloatingComposer
-          title={() => handle()?.title() ?? tr('Untitled conversation')}
+          title={() => handle()?.title() ?? tr('New conversation')}
           session={composerSession}
           stop={() => stopAction()()}
           exitFullscreen={() => resources.setFullscreen(false)}
@@ -2402,7 +2683,11 @@ export function createConversationUi(
     },
     session(input: ConversationSessionInput) {
       if (input.firstMessage !== undefined)
-        prefills.set(input.shell.sessionId()!, { text: input.firstMessage, send: true });
+        prefills.set(input.shell.sessionId()!, {
+          text: input.firstMessage,
+          send: true,
+          quotes: input.firstQuotes,
+        });
       bind(input.shell);
       input.attach(sessionHandle);
       // Route transient action feedback, fork banner, and recovered-fork CTA to Mode A Toasts.
@@ -2551,6 +2836,21 @@ export function createConversationUi(
 
       const request = (
         <View style={{ minHeight: 0, flexShrink: 1 }}>
+          <If when={handle()?.workspaceUnavailable()}>
+            <InlineCallout
+              tone="warning"
+              message={tr('The workspace for this task is unavailable.')}
+              action={{
+                label: tr('Choose workspace'),
+                primary: true,
+                onPress: () => {
+                  const owner = handle();
+                  if (owner) void chooseSessionWorkspace(owner);
+                },
+              }}
+              style={{ marginBottom: 8 }}
+            />
+          </If>
           <If when={selected() === null && Boolean(workspaceError())}>
             <InlineCallout
               tone="warning"
@@ -2669,7 +2969,17 @@ export function createConversationUi(
                 />
               </View>
             </If>
-            <If when={input.compact !== undefined}>
+            <If when={input.compact?.side !== undefined}>
+              <SideHeader
+                title={() => {
+                  const title = handle()?.title() ?? '';
+                  return title === selected() ? '' : title;
+                }}
+                expand={input.compact!.expand}
+                close={input.compact!.close}
+              />
+            </If>
+            <If when={input.compact !== undefined && input.compact.side === undefined}>
               <CompactComposer
                 session={composerSession}
                 stop={() => stopAction()()}
@@ -2697,6 +3007,10 @@ export function createConversationUi(
                 <Conversation
                   chooseModel={() => open({ kind: 'models', sessionId: id() })}
                   compact={input.compact !== undefined}
+                  side={input.compact?.side !== undefined}
+                  askBeside={shell()?.askBeside}
+                  openSideQuestion={shell()?.openSideQuestion}
+                  sideQuestionId={shell()?.sideQuestionId}
                   client={host.session(id())}
                   connectionLost={connectionLost}
                   botSession={botSession}
@@ -2715,7 +3029,29 @@ export function createConversationUi(
                   fork={async (action) => {
                     await changeBrowsedSession(action, id());
                   }}
-                  edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
+                  // A fork made to edit or regenerate opens in the window: a side
+                  // question's card would lose it, so it offers neither.
+                  edit={
+                    input.compact?.side !== undefined
+                      ? undefined
+                      : (action, text, send) => changeBrowsedSession(action, id(), { text, send })
+                  }
+                  firstMessage={() => {
+                    const prefill = prefills.get(id());
+                    if (!prefill?.send) return null;
+                    return {
+                      text: prefill.text,
+                      quotes: prefill.quotes,
+                      files: prefill.files?.map((file) => {
+                        const meta = file.metadata() as { name: string; bytes: number };
+                        return {
+                          name: meta.name,
+                          bytes: meta.bytes,
+                          image: Boolean(file.imageUri()),
+                        };
+                      }),
+                    };
+                  }}
                   takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
@@ -2837,6 +3173,36 @@ export function createConversationUi(
               )}
             </Each>
             <If when={input.compact !== undefined}>{request}</If>
+            <If when={input.compact?.side !== undefined}>
+              <If when={sideSettled()}>
+                <SideReactions
+                  followUp={(item) => {
+                    const session = composerSession();
+                    if (session && !session.blockedReason()) session.submit({ text: item.message });
+                  }}
+                  attached={sideAttached}
+                  attach={() => {
+                    const id = selected();
+                    if (id === null) return;
+                    if (
+                      input.compact!.side!.attach(
+                        `${sessionInvocation({ id, title: handle()?.title() ?? '', kind: 'agent' })} `,
+                      )
+                    )
+                      sideAttached.set(true);
+                  }}
+                  resolve={input.compact!.close}
+                  archive={() => void discardSide(input.compact!).catch(report)}
+                />
+              </If>
+              <SideComposer
+                session={composerSession}
+                stop={() => stopAction()()}
+                attach={(node) => {
+                  compactInput = node;
+                }}
+              />
+            </If>
             <If when={input.compact === undefined}>
               <ComposerView
                 dropFiles={(drop) => {
@@ -2881,9 +3247,18 @@ export function createConversationUi(
                           pendingModelInstance.set(null);
                           shell()?.openSettings();
                         }}
-                        select={async (_instance, backend) => {
+                        select={async (_instance, backend, label) => {
                           if (pendingSending()) return;
-                          updatePending({ backend, modelChosen: true });
+                          const nextLabel =
+                            label ??
+                            (sameRoute(pendingBackend(), backend) ? pendingBackendLabel() : null);
+                          updatePending({
+                            backend,
+                            backendLabel: nextLabel,
+                            modelChosen: true,
+                            rememberedModel: false,
+                          });
+                          rememberModel(backend, nextLabel);
                           await pendingModel.refreshModel();
                         }}
                       />
@@ -3044,7 +3419,7 @@ export function createConversationUi(
                       </View>
                     </Dialog>
                   );
-                if (current.kind === 'workspaces')
+                if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (
                     <WorkspacePicker
                       instance={current.instance}
@@ -3058,11 +3433,19 @@ export function createConversationUi(
                           alive &&
                           selected() === current.sessionId &&
                           owner?.sessionId === current.sessionId
-                        )
+                        ) {
                           void owner.refresh().catch(report);
+                          void owner.refreshWorkspace().catch(report);
+                        }
                         if (alive) void browsing.refresh().catch(report);
                       }}
-                      create={(workspace, label) => create(workspace, current.sessionId, label)}
+                      create={(workspace, label) => {
+                        if (current.kind !== 'change-workspace')
+                          return create(workspace, current.sessionId, label);
+                        if (workspace.kind !== 'directory')
+                          throw new Error('Workspace picker must return a directory');
+                        return changeSessionWorkspace(current, workspace.path);
+                      }}
                     />
                   );
                 return (
@@ -3164,6 +3547,7 @@ export function createConversationUi(
       if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
         throw new UiError('Finish or recover the pending action before reloading.');
       await pendingIntake();
+      await Promise.all([recentWrite, recentModelWrite]);
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(
@@ -3251,6 +3635,7 @@ function projectComposerSession(
       error: owner.projectMcp.error,
       notice: owner.projectMcp.notice,
       trust: owner.projectMcp.trust,
+      decline: owner.projectMcp.decline,
       dismiss: owner.projectMcp.dismiss,
     },
     draft: owner.draft,

@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use nsh_platform_tui::{AppOptions, AppView, Bundle, ColorDepth, Input, MouseButton, MouseKind};
+use nsh_platform_tui::{
+    AppOptions, AppView, Bundle, ColorDepth, Handled, Input, MouseButton, MouseKind,
+};
 use ratatui_core::{
     backend::TestBackend,
     buffer::Buffer,
@@ -12,7 +14,10 @@ use ratatui_core::{
     terminal::Terminal,
 };
 
-use super::app::{draw_until, mouse};
+use super::{
+    ACCENT,
+    app::{draw_until, draw_until_still, mouse},
+};
 
 /// A surface on a terminal that shows `depth`.
 fn surface_at(depth: ColorDepth) -> (AppView, crossbeam_channel::Receiver<()>) {
@@ -147,6 +152,244 @@ fn at_sixteen_colors_focus_is_reversed_in_the_accent_and_a_hover_is_gray() {
         Color::Blue,
         "a selection is plain reverse video"
     );
+}
+
+/// Three filled buttons (the standard colors' gray, the fallback for a box
+/// the layout makes a surface) and a search field whose arrows move the
+/// choice, as the workspace picker's do.
+const FILLED: &str = r##"
+    import { keymap, mount, signal, View, Text } from "nsh";
+    import { Button, Input } from "nsh/base";
+    const index = signal(0);
+    const row = (name, i) => (
+        <Button accessibilityLabel={name} selected={index() === i} onPress={() => {}}
+            style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}>
+            <Text>{name}</Text></Button>
+    );
+    mount(() => <View style={{ gap: 16 }}>
+        <Input value="" autoFocus style={{ width: 160, height: 16 }}
+            ref={(node) => keymap.bind("down", () => index.update((i) => Math.min(2, i + 1)), {
+                when: "always", repeat: true, within: node,
+            })} />
+        <View style={{ flexDirection: "row", gap: 16 }}>
+            {[row("First", 0), row("Second", 1), row("Third", 2)]}
+        </View>
+        <Text>ready</Text>
+    </View>);
+"##;
+
+#[test]
+fn without_the_terminals_colors_the_state_marks_are_not_bands() {
+    for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
+        let code = nsh_bundler::compile_module("App.tsx", FILLED, &[]).unwrap();
+        let (mut view, rx) = surface_at(depth);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        view.load(Bundle::source(code)).unwrap();
+        draw_until(&mut view, &mut terminal, &rx, "ready");
+        // What the app declares: one chosen button, by name.
+        let chosen = |view: &AppView| {
+            let chosen: Vec<_> = view
+                .accessibility_snapshot()
+                .into_iter()
+                .filter(|node| node.state.selected)
+                .collect();
+            assert_eq!(chosen.len(), 1, "{depth:?}: one chosen button");
+            chosen[0].label.clone()
+        };
+        // The chosen button is reverse video on the terminal's own ground:
+        // its fallback fill would be a band its label fades into.
+        let buffer = terminal.backend().buffer();
+        let first = at(buffer, "First");
+        let second = at(buffer, "Second");
+        let third = at(buffer, "Third");
+        for at in [(first.0 - 1, first.1), first] {
+            let cell = &buffer[at];
+            assert_eq!(cell.bg, Color::Reset, "{depth:?}: the chosen row at {at:?}");
+            assert!(
+                cell.modifier.contains(Modifier::REVERSED),
+                "{depth:?}: reversed at {at:?}"
+            );
+            assert!(
+                !cell.modifier.contains(Modifier::DIM),
+                "{depth:?}: its label reads at {at:?}"
+            );
+        }
+        assert_eq!(chosen(&view), "First", "{depth:?}: the app's choice");
+        // The others keep their fill at rest.
+        for at in [second, third] {
+            assert_eq!(buffer[(at.0 - 1, at.1)].bg, Color::DarkGray, "{depth:?}");
+            assert!(!buffer[at].modifier.contains(Modifier::REVERSED));
+        }
+        // The keys move the choice, and the mark and the state with it.
+        view.handle(Input::Key {
+            key: "down".into(),
+            modifiers: Default::default(),
+            release: false,
+        });
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[second].modifier.contains(Modifier::REVERSED)
+        });
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(second.0 - 1, second.1)].bg,
+            Color::Reset,
+            "{depth:?}"
+        );
+        assert_eq!(
+            buffer[(first.0 - 1, first.1)].bg,
+            Color::DarkGray,
+            "{depth:?}"
+        );
+        assert!(!buffer[first].modifier.contains(Modifier::REVERSED));
+        assert_eq!(chosen(&view), "Second", "{depth:?}: moved");
+        // A hover paints nothing: the terminal gave no colors, so there is
+        // neither a band to mix nor an ink whose contrast against its page
+        // is known. The button keeps its look, and the move is still its.
+        let rest = (buffer[third].fg, buffer[third].bg, buffer[third].modifier);
+        let rest_fill = buffer[(third.0 - 1, third.1)].bg;
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, third.0, third.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            (buffer[third].fg, buffer[third].bg, buffer[third].modifier),
+            rest,
+            "{depth:?}: a hover leaves the label"
+        );
+        assert_eq!(
+            buffer[(third.0 - 1, third.1)].bg,
+            rest_fill,
+            "{depth:?}: and its fill"
+        );
+        // Off it again, before the keys take the focus.
+        view.handle(mouse(MouseKind::Move, 39, 7));
+        draw_until_still(&mut view, &mut terminal, &rx);
+        view.handle(tab());
+        view.handle(tab());
+        let accent = if depth == ColorDepth::TrueColor {
+            ACCENT
+        } else {
+            Color::Blue
+        };
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[second].fg == accent
+        });
+        let buffer = terminal.backend().buffer();
+        let focused = &buffer[second];
+        assert_eq!(focused.bg, Color::Reset, "{depth:?}: no band");
+        assert!(
+            focused.modifier.contains(Modifier::REVERSED),
+            "{depth:?}: reversed"
+        );
+        assert_eq!(
+            buffer[(second.0 - 1, second.1)].bg,
+            Color::Reset,
+            "{depth:?}"
+        );
+        // And the chosen button is still the app's choice.
+        assert_eq!(chosen(&view), "Second", "{depth:?}: still chosen");
+        assert_eq!(
+            buffer[(first.0 - 1, first.1)].bg,
+            Color::DarkGray,
+            "{depth:?}"
+        );
+    }
+}
+
+/// Buttons whose fill comes from a state of their own: a hover style with
+/// none at rest, a press style with none at rest, and one filled at rest
+/// whose hover style would step further.
+const STYLED: &str = r##"
+    import { mount, View, Text } from "nsh";
+    import { Button } from "nsh/base";
+    mount(() => <View style={{ gap: 16 }}>
+        <Button accessibilityLabel="Hover" onPress={() => {}}
+            style={{ paddingHorizontal: 8 }}
+            hoverStyle={{ backgroundColor: "#37393e" }}>
+            <Text style={{ color: "#f0f1f3" }}>Hover</Text></Button>
+        <Button accessibilityLabel="Press" onPress={() => {}}
+            style={{ paddingHorizontal: 8 }}
+            activeStyle={{ backgroundColor: "#3f3f46" }}>
+            <Text>Press</Text></Button>
+        <Button accessibilityLabel="Filled" onPress={() => {}}
+            style={{ backgroundColor: "#3f3f46", paddingHorizontal: 8 }}
+            hoverStyle={{ backgroundColor: "#52525b" }}>
+            <Text>Filled</Text></Button>
+        <Text>ready</Text>
+    </View>);
+"##;
+
+#[test]
+fn without_the_terminals_colors_a_state_fill_is_not_a_band() {
+    for depth in [ColorDepth::TrueColor, ColorDepth::Ansi256] {
+        let code = nsh_bundler::compile_module("App.tsx", STYLED, &[]).unwrap();
+        let (mut view, rx) = surface_at(depth);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        view.load(Bundle::source(code)).unwrap();
+        draw_until(&mut view, &mut terminal, &rx, "ready");
+        let buffer = terminal.backend().buffer();
+        let hover = at(buffer, "Hover");
+        let press = at(buffer, "Press");
+        let filled = at(buffer, "Filled");
+        // Unfilled at rest, unfilled on screen.
+        for at in [hover, press] {
+            assert_eq!(buffer[at].bg, Color::Reset, "{depth:?}: at rest at {at:?}");
+        }
+        assert_eq!(
+            buffer[filled].bg,
+            Color::DarkGray,
+            "{depth:?}: filled at rest"
+        );
+        // A neutral hover style is no band: the button keeps its resting
+        // look, as the terminal gave no colors for a hover mark.
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, hover.0, hover.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[hover].bg,
+            Color::Reset,
+            "{depth:?}: hovered, no band"
+        );
+        assert_eq!(buffer[(hover.0 - 1, hover.1)].bg, Color::Reset, "{depth:?}");
+        assert_eq!(buffer[hover].fg, Color::Reset, "{depth:?}: its own ink");
+        assert!(
+            !buffer[hover].modifier.contains(Modifier::DIM),
+            "{depth:?}: hover fill must not dim its label"
+        );
+        assert!(!buffer[hover].modifier.contains(Modifier::REVERSED));
+        // A button filled at rest keeps that fill on hover.
+        assert_eq!(
+            view.handle(mouse(MouseKind::Move, filled.0, filled.1)),
+            Handled::Yes
+        );
+        draw_until_still(&mut view, &mut terminal, &rx);
+        assert_eq!(
+            terminal.backend().buffer()[filled].bg,
+            Color::DarkGray,
+            "{depth:?}: keeps its fill"
+        );
+        // Pressed, it is reverse video: the fill of its press style drops
+        // and its label keeps no dim.
+        view.handle(mouse(MouseKind::Down(MouseButton::Left), press.0, press.1));
+        draw_while(&mut view, &mut terminal, &rx, |buffer| {
+            buffer[press].modifier.contains(Modifier::REVERSED)
+        });
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[press].bg, Color::Reset, "{depth:?}: no band");
+        assert_eq!(buffer[(press.0 - 1, press.1)].bg, Color::Reset, "{depth:?}");
+        assert_eq!(buffer[press].fg, Color::Reset, "{depth:?}: reversed");
+        assert!(
+            !buffer[press].modifier.contains(Modifier::DIM),
+            "{depth:?}: its label reads"
+        );
+        view.handle(mouse(MouseKind::Up(MouseButton::Left), press.0, press.1));
+        draw_until_still(&mut view, &mut terminal, &rx);
+    }
 }
 
 #[test]

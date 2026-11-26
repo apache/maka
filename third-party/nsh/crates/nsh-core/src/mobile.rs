@@ -123,6 +123,12 @@ pub fn TabBar(props: TabBarProps, cx: Scope<TabBarEvent>) -> impl IntoElement {
     }
     let items = props.items;
     native(TAB_BAR_COMPONENT)
+        // The bar's own view fills the element and takes every press it
+        // wants; the element must not take the strip it leaves once it is
+        // out of sight (`hidden`, or the navigation stack's
+        // `hidesBottomBarWhenPushed`), where an app draws controls of its
+        // own.
+        .pointer_events(PointerEvents::BoxNone)
         .prop("items", move || items.with(|items| tabs_json(items)))
         .prop("selectedIndex", move || {
             JsonValue::from(props.selected_index.get())

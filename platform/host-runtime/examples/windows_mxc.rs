@@ -359,7 +359,7 @@ mod native {
         run_case!(hardlink_conflict);
         run_case!(protected_ancestor);
         run_case!(guard_registry);
-        run_case!(unsupported_reopening);
+        run_case!(reopened_descendants);
         run_case!(arguments_and_environment);
         run_case!(pipe_input);
         run_case!(cancel_hung_admission);
@@ -729,41 +729,47 @@ mod native {
         Ok(())
     }
 
-    async fn unsupported_reopening(fixture: &Fixture) -> Result<()> {
-        let reopened = fixture.work.join("private/reopened");
-        std::fs::create_dir(&reopened)?;
+    async fn reopened_descendants(fixture: &Fixture) -> Result<()> {
+        let private = fixture.work.join("private");
+        let workspace = private.join("workspace");
+        let inputs = private.join("inputs");
+        let hidden = private.join("existing");
+        for path in [&workspace, &inputs, &hidden] {
+            std::fs::create_dir_all(path)?;
+        }
+        std::fs::write(inputs.join("input"), b"input")?;
+        std::fs::write(hidden.join("secret"), b"existing")?;
         let filesystem = Policy {
             default: Access::Read,
             rules: vec![
-                Rule::subtree(&fixture.work, Access::Write),
-                Rule::subtree(fixture.work.join("private"), Access::Deny),
-                Rule::subtree(&reopened, Access::Write),
+                Rule::subtree(&private, Access::Deny),
+                Rule::subtree(&workspace, Access::Write),
+                Rule::subtree(&inputs, Access::Read),
             ],
-            deny_globs: vec![],
+            deny_globs: Vec::new(),
         };
-        assert!(matches!(
-            maka_sandbox::windows::mxc::PreparedPolicy::new(&filesystem, &Network::Denied, &fixture.work),
-            Err(maka_sandbox::Error::Unsupported(reason)) if reason == "native MXC cannot reopen a descendant of a denied path"
-        ));
-        let command =
-            fixture
-                .command("must-not-run", Network::Denied)?
-                .sandbox(&Sandbox::Managed {
-                    filesystem,
-                    network: Network::Denied,
-                })?;
-        let failure = match pipe::spawn(command).await {
-            Err(failure) => failure,
-            Ok(_) => return Err("unsupported denial reopening executed a command".into()),
-        };
-        assert!(
-            failure
-                .to_string()
-                .contains("native MXC cannot reopen a descendant of a denied path"),
-            "{failure}"
-        );
-        assert!(!fixture.work.join("unexpected-execution").exists());
-        println!("PASS unrepresentable Deny→Write policy rejects before execution");
+        let mut command = Command::new(&fixture.executable, &workspace)
+            .with_backend(fixture.backend.clone())
+            .sandbox(&Sandbox::Managed {
+                filesystem,
+                network: Network::Denied,
+            })?;
+        command.args(["__fixture", "reopened"]);
+        let mut spawned = pipe::spawn(command).await?;
+        let mut output = tokio::io::BufReader::new(spawned.stdout);
+        let mut line = String::new();
+        output.read_line(&mut line).await?;
+        assert_eq!(line.trim(), "ready");
+        std::fs::create_dir(private.join("future"))?;
+        std::fs::write(private.join("future/secret"), b"future")?;
+        spawned.stdin.write_all(b"go").await?;
+        drop(spawned.stdin);
+        let mut errors = Vec::new();
+        let (status, _) = tokio::try_join!(
+            spawned.child.wait(),
+            spawned.stderr.read_to_end(&mut errors)
+        )?;
+        assert!(status.success(), "{}", String::from_utf8_lossy(&errors));
         Ok(())
     }
 
@@ -1187,6 +1193,24 @@ mod native {
 
     fn worker(args: Vec<String>) -> Result<()> {
         match args.first().map(String::as_str) {
+            Some("reopened") => {
+                std::fs::write("probe", b"write")?;
+                assert_eq!(std::fs::read("probe")?, b"write");
+                assert_eq!(std::fs::read("../inputs/input")?, b"input");
+                assert_eq!(
+                    std::fs::write("../inputs/input", b"x")
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(5)
+                );
+                println!("ready");
+                std::io::stdout().flush()?;
+                let mut go = [0; 2];
+                std::io::stdin().read_exact(&mut go)?;
+                for name in ["../existing/secret", "../future/secret"] {
+                    assert_eq!(std::fs::read(name).unwrap_err().raw_os_error(), Some(5));
+                }
+            }
             Some("filesystem") => {
                 std::fs::write("文件 with spaces.txt", "写入 😀")?;
                 denied_write(Path::new(&args[1]));

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
+const pointer = (pressure) => ({ pointerType: 'mouse', pressure, tiltX: 0, tiltY: 0 });
+
 const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
 const { Player } = await import('data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64'));
 
@@ -18,7 +20,7 @@ test('mouse motion visits nested listeners inside out, including with buttons do
   player.event = (...args) => sent.push(args);
   player.point = (e) => [e.clientX, e.clientY];
   const modifiers = { control: false, alt: false, shift: true, platform: false };
-  const mouse = (x, y, pressedButton) => ({ position: { x, y }, pagePosition: { x: 45, y: 75 }, modifiers, pressedButton });
+  const mouse = (x, y, pressedButton) => ({ position: { x, y }, pagePosition: { x: 45, y: 75 }, modifiers, pressedButton, ...pointer(pressedButton ? 0.5 : 0) });
   const event = { pointerType: 'mouse', clientX: 45, clientY: 75, buttons: 1, shiftKey: true, target: outer };
   player.mouseMoved(event);
   assert.deepEqual(sent, [[3, 'onMouseMove', mouse(15, 25, 'left')], [2, 'onMouseMove', mouse(35, 55, 'left')]]);
@@ -64,7 +66,7 @@ test('entering and leaving carry the mouse where it is, and a modifier key moves
   player.point = (e) => [e.clientX, e.clientY];
   const none = { control: false, alt: false, shift: false, platform: false };
   const mouse = (x, y, modifiers = none, pressedButton = null) =>
-    ({ position: { x: x - 10, y: y - 20 }, pagePosition: { x, y }, modifiers, pressedButton });
+    ({ position: { x: x - 10, y: y - 20 }, pagePosition: { x, y }, modifiers, pressedButton, ...pointer(pressedButton ? 0.5 : 0) });
   player.installMouse(view);
   // Touches neither enter nor leave.
   listeners.pointerenter({ pointerType: 'touch', clientX: 15, clientY: 25, buttons: 1 });
@@ -108,7 +110,7 @@ test('mouse up names the released button, and a number no button has reports not
   player.event = (...args) => sent.push(args);
   player.point = (e) => [e.clientX, e.clientY];
   const modifiers = { control: false, alt: false, shift: false, platform: false };
-  const mouse = (x, y, button) => ({ position: { x, y }, pagePosition: { x: 45, y: 75 }, modifiers, pressedButton: null, button });
+  const mouse = (x, y, button) => ({ position: { x, y }, pagePosition: { x: 45, y: 75 }, modifiers, pressedButton: null, button, ...pointer(0) });
   const event = { pointerType: 'mouse', clientX: 45, clientY: 75, buttons: 0, button: 2 };
   // Both listeners around the hit, inside out, hear the right button's release.
   player.mouseUp(event);

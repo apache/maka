@@ -185,6 +185,9 @@ impl Owner {
             }
             for candidate in page {
                 after = Some(candidate.admission_sequence);
+                if !self.execution_contains_session(&candidate.session_id) {
+                    continue;
+                }
                 {
                     let runs = self.runs.state().await;
                     if runs.closing || runs.busy(&candidate.session_id) {
@@ -228,6 +231,7 @@ impl Owner {
                 if self.stop.is_cancelled() {
                     return Ok(());
                 }
+                self.require_execution(&candidate.session_id).await?;
                 let Some(claim) = self
                     .durable
                     .reserve_driver(candidate.run, DriverPurpose::Business, self.stop.clone())

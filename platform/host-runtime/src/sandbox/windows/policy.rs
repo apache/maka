@@ -19,14 +19,24 @@
 
 use super::{WriteAccess, WriteRule};
 use maka_sandbox::filesystem::{Access, Policy, Rule, Scope};
-use std::{collections::BTreeMap, io, os::windows::fs::MetadataExt, path::Path};
-use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+use std::{
+    collections::BTreeMap,
+    fs::OpenOptions,
+    io,
+    os::windows::fs::{MetadataExt, OpenOptionsExt},
+    path::Path,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+};
 
 // Native targets include deny descendants, not just caller-supplied rules.
 
 pub(super) struct Plan {
     pub reads: Vec<Rule>,
     pub writes: Vec<WriteRule>,
+    pub disable_read_group: bool,
 }
 impl Plan {
     pub fn compile(
@@ -56,6 +66,10 @@ impl Plan {
         // default reads are prepared independently for the installation group.
         reads.insert(cwd.to_owned(), (Scope::Subtree, compiled.access(cwd)));
         let owner = maka_event_log::root::windows::account_sid()?;
+        let account_home = maka_sandbox::account_home()
+            .and_then(|home| maka_sandbox::canonical_policy_path(home).map_err(io::Error::other))?;
+        let mut disable_read_group = false;
+        let mut directories = Vec::new();
         if let Ok((_, file)) = maka_sandbox::windows::acl::Target::capture(executable)
             && maka_sandbox::windows::acl::manageable_by(&file, &owner)?
         {
@@ -77,23 +91,69 @@ impl Plan {
                     "exact directory policy needs a distinct descendant boundary",
                 ));
             }
+            // Account-backed sandboxes only reach the Host user's profile via
+            // ReadGroup grants prepared by `reads.rs` (plus any explicitly
+            // shared public entries). When the policy denies the entire user
+            // profile, disable ReadGroup in the restricted token instead of
+            // walking the whole profile tree and tripping Windows Profile
+            // Service compatibility junctions (My Documents, Application Data).
+            let token_denied_home = rule.access == Access::Deny
+                && rule.scope == Scope::Subtree
+                && same_path(&rule.path, &account_home)
+                && !publicly_readable(&rule.path)?;
+            let effective_scope = if token_denied_home {
+                disable_read_group = true;
+                Scope::Exact
+            } else {
+                rule.scope
+            };
             if reads
-                .insert(rule.path.clone(), (rule.scope, rule.access))
-                .is_some_and(|(scope, _)| scope != rule.scope)
+                .insert(rule.path.clone(), (effective_scope, rule.access))
+                .is_some_and(|(scope, _)| scope != effective_scope)
             {
                 return Err(unsupported("conflicting Windows ACL scopes"));
+            }
+            if token_denied_home {
+                let entries = match std::fs::read_dir(&rule.path) {
+                    Ok(entries) => entries,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                for entry in entries {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if compiled.access(&path) != Access::Deny {
+                        continue;
+                    }
+                    let metadata = match entry.metadata() {
+                        Ok(metadata) => metadata,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    };
+                    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        continue;
+                    }
+                    if !publicly_readable(&path)? {
+                        continue;
+                    }
+                    let scope = if metadata.is_dir() {
+                        Scope::Subtree
+                    } else {
+                        Scope::Exact
+                    };
+                    reads.entry(path.clone()).or_insert((scope, Access::Deny));
+                    if metadata.is_dir() {
+                        directories.push(path);
+                    }
+                }
+            } else if rule.access == Access::Deny && rule.scope == Scope::Subtree {
+                directories.push(rule.path.clone());
             }
         }
         // Inherited denies do not override a child's explicit allow and never
         // reach protected DACLs. Pin direct denies for the existing subtree;
         // inherited entries still protect ordinary future children. A command
         // cannot create or change a DACL inside its denied surface.
-        let mut directories = policy
-            .rules
-            .iter()
-            .filter(|rule| rule.access == Access::Deny && rule.scope == Scope::Subtree)
-            .map(|rule| rule.path.clone())
-            .collect::<Vec<_>>();
         let mut visited = std::collections::BTreeSet::new();
         while let Some(directory) = directories.pop() {
             if !visited.insert(directory.clone()) {
@@ -167,7 +227,16 @@ impl Plan {
             } else {
                 WriteAccess::Denied
             };
-            writes.insert(rule.path.clone(), (rule.scope, access));
+            let scope = if disable_read_group
+                && rule.access == Access::Deny
+                && rule.scope == Scope::Subtree
+                && same_path(&rule.path, &account_home)
+            {
+                Scope::Exact
+            } else {
+                rule.scope
+            };
+            writes.insert(rule.path.clone(), (scope, access));
         }
         // A guard is useless if a writable intermediate directory can move
         // away with it. Protect every writable ancestor, not just rule roots.
@@ -210,8 +279,30 @@ impl Plan {
                     access,
                 })
                 .collect(),
+            disable_read_group,
         })
     }
+}
+fn publicly_readable(path: &Path) -> io::Result<bool> {
+    let file = match OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for identity in ["S-1-5-32-545", "S-1-5-11", "S-1-1-0"] {
+        if maka_sandbox::windows::acl::allows_any_read(&file, identity)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.as_os_str().eq_ignore_ascii_case(right.as_os_str())
 }
 fn unsupported(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, message.into())
@@ -251,5 +342,36 @@ mod tests {
         assert!(matches!(parent_write.access, WriteAccess::Preserve));
         let parent_read = plan.reads.iter().find(|rule| rule.path == parent).unwrap();
         assert_eq!(parent_read.scope, Scope::Exact);
+    }
+
+    #[test]
+    fn denying_account_home_disables_read_group_without_walking_profile_junctions() {
+        let home =
+            maka_sandbox::canonical_policy_path(maka_sandbox::account_home().unwrap()).unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let source_path = maka_sandbox::canonical_policy_path(source.path()).unwrap();
+        let executable =
+            maka_sandbox::canonical_policy_path(std::env::current_exe().unwrap()).unwrap();
+        let plan = Plan::compile(
+            &Policy {
+                default: Access::Read,
+                rules: vec![
+                    Rule::subtree(&home, Access::Deny),
+                    Rule::subtree(&source_path, Access::Read),
+                    Rule::exact(&executable, Access::Read),
+                ],
+                deny_globs: Vec::new(),
+            },
+            &executable,
+            &executable,
+            &source_path,
+        )
+        .unwrap();
+        assert!(plan.disable_read_group);
+        assert!(
+            plan.reads
+                .iter()
+                .any(|rule| same_path(&rule.path, &home) && rule.access == Access::Deny)
+        );
     }
 }

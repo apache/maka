@@ -131,7 +131,7 @@ impl bootstrap::Backend for Backend {
             let root = backend.state_root.clone();
             let helper = backend.helper.clone();
             let account_network = network.clone();
-            let (execution, guards) = tokio::task::spawn_blocking(move || {
+            let (execution, disable_read_group, guards) = tokio::task::spawn_blocking(move || {
                 let installation = Installation::new(&root);
                 let _lease = store::shared_lease(&installation.root.join("lifecycle.lock"))
                     .map_err(|error| {
@@ -154,10 +154,12 @@ impl bootstrap::Backend for Backend {
                         .execution(account_network, &plan.reads, &plan.writes)
                         .map_err(|error| context("prepare execution account", error))?;
                     guards.bind(execution.id)?;
-                    Ok::<_, io::Error>(execution)
+                    Ok::<_, io::Error>((execution, plan.disable_read_group))
                 })();
                 match result {
-                    Ok(execution) => Ok((execution, guards)),
+                    Ok((execution, disable_read_group)) => {
+                        Ok((execution, disable_read_group, guards))
+                    }
                     Err(error) => match guards.finish() {
                         Ok(()) => Err(error),
                         Err(cleanup) => Err(cleanup_error(cleanup)),
@@ -176,6 +178,11 @@ impl bootstrap::Backend for Backend {
             })?;
             let id = execution.id;
             let capability = execution.capability;
+            let disabled_sids = if disable_read_group {
+                vec![execution.read_group_sid]
+            } else {
+                Vec::new()
+            };
             let mut guards = Some(guards);
             let mut proxy = None;
             let result = async {
@@ -223,6 +230,7 @@ impl bootstrap::Backend for Backend {
                     }),
                     endpoint,
                     capabilities: vec![capability],
+                    disabled_sids,
                     proxy_address,
                 })
             }

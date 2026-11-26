@@ -39,11 +39,8 @@ pub fn resolve(mode: Mode, cwd: &Path) -> Result<(Sandbox, Sandbox), Error> {
         ];
         for path in temporary {
             let path = path.canonicalize()?;
-            let path = PathBuf::from(
-                super::project::host_path(&path)
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-            );
-            let rule = Rule::subtree(path, Access::Write);
+            let path = maka_sandbox::policy_path_from_resolved(&path)?;
+            let rule = Rule::subtree(path.as_ref(), Access::Write);
             if !filesystem.rules.contains(&rule) {
                 filesystem.rules.push(rule);
             }

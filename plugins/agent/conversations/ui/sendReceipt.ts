@@ -25,6 +25,26 @@ import type {
 import { sameValue } from '../../../shared/value.ts';
 import { message, type UiText } from '../../../../products/maka/workbench/app/text-value.ts';
 
+/** A failed preflight still owns an undispatched reservation, not an unknown send. */
+export async function confirmAfterProjectMcp<T>(
+  check: () => Promise<boolean>,
+  abandon: () => Promise<void>,
+  confirm: () => Promise<T>,
+): Promise<{ kind: 'approval_required' } | { kind: 'confirmed'; value: T }> {
+  let approved: boolean;
+  try {
+    approved = await check();
+  } catch (reason) {
+    await abandon();
+    throw reason;
+  }
+  if (!approved) {
+    await abandon();
+    return { kind: 'approval_required' };
+  }
+  return { kind: 'confirmed', value: await confirm() };
+}
+
 export function sendReceiptFailure(
   receipt: Receipt | null | undefined,
 ): { detail: UiText; retryable: boolean } | null {
@@ -53,6 +73,8 @@ export function sendReceiptFailure(
   switch (value.reason) {
     case 'turn_stopped':
       return { detail: message('Stopped before delivery. Your message is kept.'), retryable: true };
+    case 'workspace_unavailable':
+      return { detail: message('The workspace for this task is unavailable.'), retryable: true };
     case 'model_unavailable':
       return {
         detail: message('The selected model is unavailable. Try again or choose another model.'),
@@ -162,4 +184,26 @@ export function unsettledSends<Send>(
     ...(saving === undefined ? [] : [saving]),
     ...[...inFlight].filter(([operation]) => !settled.has(operation)).map(([, send]) => send),
   ];
+}
+
+/**
+ * Whether the conversation's working row should stand in place: either a run is
+ * admitted/running/quietly waiting, or a local send that starts a run is still
+ * in flight or accepted while waiting for the run to open.
+ */
+export function workingRowActive(state: {
+  run: string;
+  quietWait: boolean;
+  waitingForUser?: boolean;
+  pendingCount: number;
+  outgoingCount: number;
+}): boolean {
+  return (
+    (!state.waitingForUser &&
+      (state.run === 'admitted' ||
+        state.run === 'running' ||
+        (state.run === 'waiting' && state.quietWait))) ||
+    state.pendingCount > 0 ||
+    state.outgoingCount > 0
+  );
 }

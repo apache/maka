@@ -1,6 +1,6 @@
 ---
 title: GPUI
-description: Embed Rust and TSX NSH apps in a GPUI or GPUI Kit app with AppView, drawn by GPUI on macOS, Windows and Linux, try TSX apps in the GPUI development host, and what the GPUI backend does differently.
+description: Embed TSX and Rust NSH apps in a GPUI or GPUI Kit app with AppView, drawn by GPUI on macOS, Windows and Linux, try TSX apps in the GPUI development host, and what the GPUI backend does differently.
 order: 15.5
 group: platforms
 ---
@@ -115,14 +115,21 @@ gpui_platform::application().run(|cx| {
 ```
 
 `Root::tokens` gives the root its [theme](./rust.md#theme) (`nsh_base::Theme::from_json(json)?.into_tokens()`,
-`Theme` is re-exported here) and `Root::app_id` the id its data is kept under. A TSX bundle that `nsh build` wrote
-loads into the same view:
+`Theme` is re-exported here) and `Root::app_id` the id its data is kept under. To load a TSX bundle from `nsh build`
+with a plain JS root (`mount(App)`), run the host from the NSH project directory and create an inline view inside
+the window's build closure:
 
 ```rust
-use nsh_platform_gpui::{App, Bundle};
+use gpui::AppContext;
+use nsh_platform_gpui::{App, AppOptions, AppView, Bundle};
 
-let code = std::fs::read_to_string("app/bundle.js").expect("bundle");
-view.load(App::Js(Bundle::source(code)));
+let options = AppOptions {
+    inline_root: true,
+    ..AppOptions::default()
+};
+let view = cx.new(|cx| AppView::new(options, window, cx));
+let code = std::fs::read_to_string(".nsh/out/bundle.js").expect("bundle");
+view.read(cx).load(App::Js(Bundle::source(code)));
 ```
 
 Put the entity in your element tree like any other view (a GPUI Kit `Root`, a panel, a dock). `AppView::load`
@@ -131,14 +138,18 @@ URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`b
 `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input,
 so only load it from your own app's files.
 
+Set `AppOptions::inline_root` to `true` to render the plain root inside the view, as in `examples/embed-gpui`.
+When it is `false` (the default), the root opens in an implicit first window. The app still sees the same desktop platform, and
+explicit `<Window>` and `Window.open` windows are still separate GPUI windows. Inline rendering works whether or not
+the view owns its host window (`AppView::own_window`), regardless of whether you call `own_window` before or after
+`load`. `open_app_window` and `run_app` ignore `inline_root`.
+
 - `open_app_window(source, options, cx)` opens a host window with one `AppView` in a running GPUI app, with the app's
-  nsh.json `window` settings applied before its first frame. The app must declare at least one top-level `<Window>`
-  (the shared v2 mount check rejects a plain root); its windows are native GPUI windows
-  ([The app host and the first window](../modules/nsh-desktop.md#the-app-host-and-the-first-window)). GPUI's host
-  window still follows the old main-window model: it is not a v2 hidden host (on Linux it still shows as it opens),
-  and the legacy `"defaultVisible"` key no longer affects it, since the shared launch policy reports the host hidden;
-  the app's `<Window>` windows are the ones it shows. The AppView embedding example is not migrated and does not run
-  as written. The backend is 待平台验证.
+  nsh.json `window` settings applied before its first frame. A plain JS root opens in an
+  implicit first window ([The app host and the first window](../modules/nsh-desktop.md#the-app-host-and-the-first-window)).
+  GPUI's host window still follows the old main-window model: it is not a v2 hidden host. On Linux the empty host
+  shows as it opens, before the app's windows. The legacy `"defaultVisible"` key no longer controls host visibility.
+  The backend is 待平台验证.
 - `run_app(source, options)` starts GPUI and runs one app in a window until it closes (what the development host does).
 - `AppView::register_component(name, factory)` registers a native component of yours before loading
   ([Native components](./native-components.md)).

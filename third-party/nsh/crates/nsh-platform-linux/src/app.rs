@@ -383,7 +383,6 @@ impl AppView {
             clipboard: None,
             host: options.host.clone(),
             picker: None,
-            speech: None,
             audio: None,
             // Windows of the app's own are this backend's (`crate::window`).
             windows: None,

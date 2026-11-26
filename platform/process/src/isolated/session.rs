@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{Closure, Descriptor, FileIdentity, Started, evidence, publish_proof, write_json_new};
+use super::{Closure, Descriptor, FileIdentity, Started, evidence, publish_proof};
 use std::{io, path::PathBuf};
 
 /// The shared provider owner records the Run-local wire before forwarding it.
@@ -29,39 +29,50 @@ pub struct SessionSpool {
 }
 impl SessionSpool {
     pub async fn open(resource: Descriptor) -> io::Result<Self> {
-        let path = resource.resource_ref;
-        let (resource, snapshot) = tokio::task::spawn_blocking(move || {
+        let path = resource.resource_ref.clone();
+        let (snapshot, input, output) = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
             let pinned = evidence::pin(&path)?;
-            Ok::<_, io::Error>((path, evidence::snapshot_identity(&pinned.owner)?))
+            let snapshot = evidence::snapshot_identity(&pinned.owner)?;
+            let file = |name: &str| -> io::Result<std::fs::File> {
+                #[cfg(unix)]
+                {
+                    use rustix::fs::{Mode, OFlags, openat};
+                    Ok(openat(
+                        &pinned.owner,
+                        name,
+                        OFlags::WRONLY
+                            | OFlags::CREATE
+                            | OFlags::EXCL
+                            | OFlags::NOFOLLOW
+                            | OFlags::CLOEXEC,
+                        Mode::RUSR | Mode::WUSR,
+                    )?
+                    .into())
+                }
+                #[cfg(windows)]
+                super::fs::create(&pinned.owner, name.as_ref())
+            };
+            let mut started = file("started.json")?;
+            started.write_all(
+                &serde_json::to_vec(&Started {
+                    helper_pid: std::process::id(),
+                })
+                .map_err(io::Error::other)?,
+            )?;
+            started.sync_all()?;
+            let input = file("stdin.bin")?;
+            let output = file("stdout.bin")?;
+            file("stderr.bin")?;
+            Ok::<_, io::Error>((snapshot, input, output))
         })
         .await
         .map_err(io::Error::other)??;
-        let dir = resource.join("owner");
-        write_json_new(
-            &dir.join("started.json"),
-            &Started {
-                helper_pid: std::process::id(),
-            },
-        )
-        .await?;
-        let file = |name| {
-            let path = dir.join(name);
-            async move {
-                tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(path)
-                    .await
-            }
-        };
-        let (input, output, _) =
-            tokio::try_join!(file("stdin.bin"), file("stdout.bin"), file("stderr.bin"))?;
         Ok(Self {
-            resource,
+            resource: resource.resource_ref,
             snapshot,
-            input,
-            output,
+            input: tokio::fs::File::from_std(input),
+            output: tokio::fs::File::from_std(output),
         })
     }
 

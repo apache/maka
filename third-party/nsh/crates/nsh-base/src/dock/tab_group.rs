@@ -3,6 +3,10 @@
 //! where every panel of the group is placed and the displayed one shown;
 //! the drop indicator; and the drag of a tab, which runs in the core.
 //!
+//! For assistive technologies the bar is a tab list and the content frame
+//! the tab panel, which every tab of the bar names as the element it
+//! controls: the frame shows the selected tab's panel, the others hidden.
+//!
 //! # A drag
 //!
 //! A tab claims the touches of a gesture with the core's responder
@@ -153,13 +157,14 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                             let id = id.clone();
                             computed(move || tab_value(a, &id))
                         };
-                        tab(a, id, Some(node), value, tab_refs.clone())
+                        tab(a, id, Some(node), value, content, tab_refs.clone())
                     },
                 )))
                 .child(toolbar(a, group)),
         )
         .child(
             view()
+                .role(AccessibilityRole::TabPanel)
                 .relative()
                 .flex_1()
                 .min_h(px(0.0))
@@ -321,13 +326,15 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
 
 /// The tab of panel `panel` (in group `source`; `None`: the compact
 /// strip): the app's `renderTab` inside, the tab role and its selected
-/// state, a press that selects it and a drag that moves it. It registers
-/// its view in `tabs` for the drags to measure.
+/// state, the tab panel `content` as what it controls, a press that
+/// selects it and a drag that moves it. It registers its view in `tabs`
+/// for the drags to measure.
 pub(crate) fn tab(
     a: AreaCx,
     panel: PanelId,
     source: Option<NodeId>,
     value: Memo<Option<DockTab>>,
+    content: ElementRef,
     tabs: Rc<RefCell<Vec<(PanelId, ElementRef)>>>,
 ) -> View {
     let me = element_ref();
@@ -370,6 +377,7 @@ pub(crate) fn tab(
             selected: selected(),
             ..AccessibilityState::default()
         })
+        .accessibility_controls(Some(content))
         .app_class(a.props.tab_class)
         .inline_style(a.props.tab_style)
         .element_ref(&me)

@@ -19,18 +19,6 @@ NSH 用原生视图渲染，所以平台的辅助技术（iOS 和 Mac Catalyst �
 
 ## 标签、提示与角色
 
-```rust tabs
-view()
-    .on_press(play)
-    .role(AccessibilityRole::Button)
-    .label("Play")
-    .hint("Starts the song")
-    .size(px(44.0))
-    .items_center()
-    .justify_center()
-    .child(text("▶"))
-```
-
 ```tsx tabs
 <View
   onPress={play}
@@ -41,6 +29,18 @@ view()
 >
   <Text>▶</Text>
 </View>
+```
+
+```rust tabs
+view()
+    .on_press(play)
+    .role(AccessibilityRole::Button)
+    .label("Play")
+    .hint("Starts the song")
+    .size(px(44.0))
+    .items_center()
+    .justify_center()
+    .child(text("▶"))
 ```
 
 | Rust | TSX | 类型 | 说明 |
@@ -67,7 +67,7 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选），`"dialog"` 和 `"alertdialog"`（位于应用其余内容之上、以 `accessibilityLabel` 命名的对话框，以及请用户确认某件事的对话框；[`Dialog`](../elements/dialog.md) 默认是 `"dialog"`，除非它的 `role` 另有指定）。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"textbox"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出），`"group"`（一组相关的元素），`"region"`（值得单独到达的一块区域，例如折叠面板的内容），`"navigation"`（在应用内跳转的一组链接，例如分页），`"tree"` 和 `"treeitem"`（可展开、收起的节点，各在自己的 `accessibilityLevel`），`"menuitemcheckbox"` 和 `"menuitemradio"`（可勾选的菜单项，单独勾选或在一组中单选），`"dialog"` 和 `"alertdialog"`（位于应用其余内容之上、以 `accessibilityLabel` 命名的对话框，以及请用户确认某件事的对话框；[`Dialog`](../elements/dialog.md) 默认是 `"dialog"`，除非它的 `role` 另有指定），`"tabpanel"`（标签列表中选中的标签页所显示的内容，标签页用 `accessibilityControls` 指向它；[`DockArea`](../elements/dock.md) 的每个组都是一个）。
 
 最常用的几个：
 
@@ -75,10 +75,15 @@ view()
 - `"header"` 用于分区标题：屏幕阅读器用户会在标题之间跳转来快速浏览页面。平台能读出级别时，`accessibilityLevel` 给出它的级别（1 为最高）。
 - `"button"` 配合 `accessibilityState.pressed` 用于切换按钮，即保持开或关的按钮（工具栏里的加粗）。
 - `"navigation"` 包住在页面之间跳转的链接，当前页的链接带 `accessibilityState.current: "page"`。
+- `"textbox"` 用于用户输入文本的输入框，当它是应用自己的视图而不是 [`Input`](../elements/input.md) 时（后者的原生输入框本身就有这个角色）。
 - `"switch"`、`"checkbox"`、`"radio"` 配合 `accessibilityState.checked`。
 - `"adjustable"` 用于滑块和步进器，配合 `accessibilityValue` 以及 `increment` / `decrement` 操作（[`Slider`](../elements/slider.md) 的每个滑块都是）。
 - `"spinbutton"` 用于存放一个数字、也能步进的输入框，配合同样的值和操作（[`NumberInput`](../elements/number-input.md) 的输入框）。
 - `"image"` 用于有意义的图片，并加上标签；装饰性图片应当隐藏。
+
+```tsx tabs
+<Text role="header" style={{ fontSize: 22, fontWeight: "700" }}>Settings</Text>
+```
 
 ```rust tabs
 text("Settings")
@@ -87,13 +92,24 @@ text("Settings")
     .font_weight(FontWeight::BOLD)
 ```
 
-```tsx tabs
-<Text role="header" style={{ fontSize: 22, fontWeight: "700" }}>Settings</Text>
-```
-
 ### 状态与值
 
 应用里的开关用 `nsh/base` 的 [`Switch`](../elements/switch.md)，角色和状态由它自己设置。下面的例子展示在视图上设置角色和状态的效果。
+
+```tsx tabs
+// 用视图画出来的开关。
+<View
+  onPress={() => on.set(!on())}
+  role="switch"
+  accessibilityLabel="Wi-Fi"
+  accessibilityState={{ checked: on() }}
+  hitSlop={8}
+  class="h-[31px] w-[51px] rounded-full p-0.5 transition-colors"
+  classList={{ "bg-green-500": on(), "bg-zinc-300": !on() }}
+>
+  <View class="size-[27px] rounded-full bg-white transition-transform" classList={{ "translate-x-5": on() }} />
+</View>
+```
 
 ```rust tabs
 use nsh_core::{Checked, prelude::*};
@@ -122,21 +138,6 @@ view()
     )
 ```
 
-```tsx tabs
-// 用视图画出来的开关。
-<View
-  onPress={() => on.set(!on())}
-  role="switch"
-  accessibilityLabel="Wi-Fi"
-  accessibilityState={{ checked: on() }}
-  hitSlop={8}
-  class="h-[31px] w-[51px] rounded-full p-0.5 transition-colors"
-  classList={{ "bg-green-500": on(), "bg-zinc-300": !on() }}
->
-  <View class="size-[27px] rounded-full bg-white transition-transform" classList={{ "translate-x-5": on() }} />
-</View>
-```
-
 状态在 Rust 中是 `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent>, has_popup, invalid }`，在 TSX 中是 `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time", hasPopup?, invalid? }`。`pressed` 让按钮成为切换按钮（ARIA 的 `aria-pressed`）；`current` 标出一组中的当前项（ARIA 的 `aria-current`）：分页的当前页、向导的当前步骤；`hasPopup` 标出打开弹出层、菜单或列表的触发器（ARIA 的 `aria-haspopup`），它的 `expanded` 表示弹出层是否打开，没有 `hasPopup` 的 `expanded` 元素是就地展开内容的折叠项（`Popover`、`Menu`、`HoverCard`、`Select`、`Combobox` 和 `DatePicker` 会在各自的触发器上设置它）；`invalid` 标出没有通过应用校验的内容（ARIA 的 `aria-invalid`）：文字被拒绝的输入框、必选却留空的下拉选择。读屏随元素一起读出它，`aria-invalid:` 类可以为它设置样式。禁用视图（`.disabled(..)`、`disabled`）也意味着禁用状态。带 `min`、`max` 和 `now` 的 `accessibilityValue` 以百分比朗读；带 `text` 时按原文朗读（"3 of 10"、"Medium"）。
 
 在 iOS 和 Android 上，系统自己没有朗读词的状态（选中、部分选中、展开、收起、当前、无效）由 NSH 提供朗读词。它们使用应用文字显示的语言（[国际化](./i18n.md)），包括 `setLocale` 选择的语言，并随它改变：英文、中文（简体和繁体）、日文或韩文。其他平台用读屏自己的词朗读这些状态。
@@ -144,27 +145,6 @@ view()
 ### 获得焦点的元素里的活动项
 
 有的控件在用户浏览其中各项时一直保有键盘焦点：方向键走过组合框的列表时，焦点仍在它的输入框里；列表移动的是一行光标。`accessibilityActiveDescendant` 指出当前活动的那一项，`accessibilityControls` 指出控件所控制的元素，这样焦点留在用户打字的地方，屏幕阅读器也会在每一项变为活动时读出它。两者都接受被指元素的 ref（TSX 中是 `ViewRef`，Rust 中是 `ElementRef`），被指的元素可以比控件晚渲染，例如虚拟化列表的行；被指的元素不在屏幕上时，这个关系不指向任何元素。
-
-```rust tabs
-// 一直保有焦点、移动光标行的列表。
-let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
-let named = rows.clone();
-view()
-    .role(AccessibilityRole::Listbox)
-    .label("Results")
-    .focusable(true)
-    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
-    .children(results.iter().enumerate().map(|(i, result)| {
-        view()
-            .role(AccessibilityRole::Option)
-            .element_ref(&rows[i])
-            .accessibility_state(move || AccessibilityState {
-                selected: cursor.get() == i,
-                ..AccessibilityState::default()
-            })
-            .child(text(result.title.clone()))
-    }))
-```
 
 ```tsx tabs
 // 一直保有焦点、移动光标行的列表。
@@ -196,11 +176,47 @@ const rows = signal<ViewRef[]>([]);
 </View>
 ```
 
+```rust tabs
+// 一直保有焦点、移动光标行的列表。
+let rows: Rc<Vec<ElementRef>> = Rc::new(results.iter().map(|_| element_ref()).collect());
+let named = rows.clone();
+view()
+    .role(AccessibilityRole::Listbox)
+    .label("Results")
+    .focusable(true)
+    .accessibility_active_descendant(move || named.get(cursor.get()).copied())
+    .children(results.iter().enumerate().map(|(i, result)| {
+        view()
+            .role(AccessibilityRole::Option)
+            .element_ref(&rows[i])
+            .accessibility_state(move || AccessibilityState {
+                selected: cursor.get() == i,
+                ..AccessibilityState::default()
+            })
+            .child(text(result.title.clone()))
+    }))
+```
+
 在 Web 上它们是 `aria-activedescendant` 和 `aria-controls`；在 macOS 上 VoiceOver 把活动项当作控件的选中子元素读出。`Select`、`Combobox` 和 `Command` 用这种方式指出高亮的项和它们的列表，在其他平台上它们自己把高亮的项读给屏幕阅读器。
 
 ### 说明另一个元素的元素
 
 表单把输入框的错误或帮助写在单独的一行里，与输入框分开。在输入框上用 `accessibilityDescribedBy` 指出这一行，屏幕阅读器每次焦点来到输入框时都会在它的名称之后读出这行文字，这行文字变了也会读新的。它和 `accessibilityControls` 一样接受被指出元素的 ref；那个元素里的标签和文字就是输入框的说明，代替输入框自己的 `accessibilityDescription`，被指出的元素不在屏幕上时，输入框自己的说明又回来。这一行可以设 `accessibilityHidden`，让它只随输入框读一次：被指出的元素照样读出它的文字。每个平台都在读说明的地方读它；在 Web 上它是 `aria-describedby`。
+
+```tsx tabs
+// 输入框和它下面的错误行。
+const error = signal<ViewRef>();
+<View>
+  <Input
+    accessibilityLabel="Name"
+    accessibilityState={{ invalid: message() != null }}
+    accessibilityDescribedBy={message() != null ? error() ?? null : null}
+  />
+  <If when={message()}>
+    <Text ref={error}>{message()}</Text>
+  </If>
+</View>
+```
 
 ```rust tabs
 // 输入框和它下面的错误行。
@@ -219,21 +235,6 @@ view()
         move || message.get().is_some(),
         move || text(move || message.get().unwrap_or_default()).element_ref(&error),
     ))
-```
-
-```tsx tabs
-// 输入框和它下面的错误行。
-const error = signal<ViewRef>();
-<View>
-  <Input
-    accessibilityLabel="Name"
-    accessibilityState={{ invalid: message() != null }}
-    accessibilityDescribedBy={message() != null ? error() ?? null : null}
-  />
-  <If when={message()}>
-    <Text ref={error}>{message()}</Text>
-  </If>
-</View>
 ```
 
 ## 操作
@@ -290,6 +291,15 @@ function Quantity() {
 
 读取 signal 或[翻译](i18n.md)的标签会在已挂载的元素上跟着更新：应用切换语言时，操作换上新标签，元素本身、`onAccessibilityAction` 收到的名称和读屏焦点都保持不变。在 Rust 中给 `.accessibility_actions(..)` 传一个闭包：
 
+```tsx tabs
+<View
+  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
+  onAccessibilityAction={() => remove(mail.id)}
+>
+  …
+</View>
+```
+
 ```rust tabs
 view()
     .accessibility_actions(|| {
@@ -305,18 +315,17 @@ view()
     })
 ```
 
-```tsx tabs
-<View
-  accessibilityActions={[{ name: "delete", label: t("mail.delete") }]}
-  onAccessibilityAction={() => remove(mail.id)}
->
-  …
-</View>
-```
-
 ## 分组与隐藏
 
 让视图成为无障碍元素（`.accessible(true)`、`accessible`）会让一个视图成为一个整体元素：带标题、副标题和价格的卡片会一次读完，而不需要用户在三段文字之间来回轻扫。
+
+```tsx tabs
+<View accessible onPress={open} role="button" style={{ padding: 16 }}>
+  <Text>Blue jacket</Text>
+  <Text>Size M</Text>
+  <Text>$120</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -327,14 +336,6 @@ view()
     .child(text("Blue jacket"))
     .child(text("Size M"))
     .child(text("$120"))
-```
-
-```tsx tabs
-<View accessible onPress={open} role="button" style={{ padding: 16 }}>
-  <Text>Blue jacket</Text>
-  <Text>Size M</Text>
-  <Text>$120</Text>
-</View>
 ```
 
 带标签的容器仍是容器：`"list"`、`"listbox"`、`"group"`、`"toolbar"`、`"radiogroup"`、`"tablist"`、`"navigation"`、`"region"` 或 `"dialog"` 的标签是读屏进入时念出的名字，里面的元素仍然一个个读到。VoiceOver 还会告诉用户列表从哪里开始、到哪里结束。只有要整体朗读时，才把容器设为无障碍元素。
@@ -360,28 +361,6 @@ view()
 
 这些设置是访问器：在绑定或 effect 中读取它们，用户更改设置时读取它们的地方随之更新，而且不需要清理。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn upload() -> impl IntoElement {
-    let done = signal(false);
-    let result = element_ref();
-    let finish = move || {
-        done.set(true);
-        announce_for_accessibility("Upload complete");
-        result.set_accessibility_focus();
-    };
-    view()
-        .gap(px(12.0))
-        // 自动轮播在屏幕阅读器下很难使用：改为显示列表。
-        .child(when(move || !screen_reader(), photo_carousel).otherwise(photo_list))
-        .child(
-            text(move || if done.get() { "Uploaded 3 photos" } else { "Uploading…" })
-                .element_ref(&result),
-        )
-}
-```
-
 ```tsx tabs
 import { signal, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
@@ -406,9 +385,31 @@ function Upload() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn upload() -> impl IntoElement {
+    let done = signal(false);
+    let result = element_ref();
+    let finish = move || {
+        done.set(true);
+        announce_for_accessibility("Upload complete");
+        result.set_accessibility_focus();
+    };
+    view()
+        .gap(px(12.0))
+        // 自动轮播在屏幕阅读器下很难使用：改为显示列表。
+        .child(when(move || !screen_reader(), photo_carousel).otherwise(photo_list))
+        .child(
+            text(move || if done.get() { "Uploaded 3 photos" } else { "Uploading…" })
+                .element_ref(&result),
+        )
+}
+```
+
 播报那些用户否则会错过的变化：后台保存完成、在焦点之外出现的错误、计时结束。给视图设置 `accessibilityLiveRegion: "polite"`，屏幕阅读器就会自动播报它的变化——Android 上的 TalkBack、macOS 上的 VoiceOver、web 上的 `aria-live`、Windows 上的实时区域（`"assertive"` 不等用户空闲，立即朗读）。
 
-在 macOS 和 Web 上，警告（`.role(AccessibilityRole::Alert)`、`role="alert"`）会自己被读出：出现时、以及内容变化时，读它的标签，没有标签就读其中的文字，并打断屏幕阅读器正在读的内容。带这个角色显示的错误在这两个平台上不必再自己播报；在 macOS 上，同一次更新里播报的相同文字只读一次。在其他平台上，仍要自己播报。
+在 macOS 和 Web 上，警告（`.role(AccessibilityRole::Alert)`、`role="alert"`）会自己被读出：出现时、以及内容变化时，读它的标签，没有标签就读其中的文字，并打断屏幕阅读器正在读的内容。带这个角色显示的错误在这两个平台上不必再自己播报；在 macOS 上，同一次更新里播报的相同文字只读一次，同一次更新里拿掉又以相同文字重建的警告（移到另一个父节点下）也不会再读。在其他平台上，仍要自己播报。
 
 ## 文字大小
 
@@ -424,6 +425,20 @@ function Upload() {
 
 当用户打开 iOS 的"减弱动态效果"或 Android 的"移除动画"时，`reduce_motion()`（Rust）和 `reduceMotion()`（TSX）为 `true`。你的动画按你编写的方式运行，所以用它，或 Tailwind 的 `motion-reduce:` 和 `motion-safe:` 变体，把大幅度的运动替换为淡入淡出或直接切换：
 
+```tsx tabs
+import { View } from "nsh";
+import { reduceMotion } from "nsh";
+import { LayoutAnimation } from "nsh";
+
+const toggle = () => {
+  if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
+  expanded.set(!expanded());
+};
+
+<View onPress={open} class="transition active:scale-95 motion-reduce:transition-none" />
+<View class="motion-safe:animate-bounce" />
+```
+
 ```rust tabs
 use nsh_core::{element::LayoutAnimation, prelude::*};
 
@@ -437,20 +452,6 @@ let toggle = move || {
 view()
     .on_press(toggle)
     .when(!reduce_motion(), |v| v.active(|s| s.scale(0.95)))
-```
-
-```tsx tabs
-import { View } from "nsh";
-import { reduceMotion } from "nsh";
-import { LayoutAnimation } from "nsh";
-
-const toggle = () => {
-  if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
-  expanded.set(!expanded());
-};
-
-<View onPress={open} class="transition active:scale-95 motion-reduce:transition-none" />
-<View class="motion-safe:animate-bounce" />
 ```
 
 ## 触摸目标

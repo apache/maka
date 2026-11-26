@@ -12,6 +12,12 @@ demo: el-text
 paragraph is typeset natively (CoreText on iOS and Mac Catalyst, `StaticLayout` on Android) and measured on the engine
 thread, so the main thread only draws it. Rust makes one with `text(content)`, TSX with `<Text>` from `nsh`.
 
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
+  Read the <Text style={{ fontWeight: "700" }}>terms</Text> before you continue.
+</Text>
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -23,12 +29,6 @@ text("Read the ")
     .child(" before you continue.")
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 24, color: "#1f2328" }}>
-  Read the <Text style={{ fontWeight: "700" }}>terms</Text> before you continue.
-</Text>
-```
-
 `text(..)` takes a string, a `SharedString`, a signal or a closure (`text(move || format!("{} items", count.get()))`):
 a closure or a signal updates the text in place when what it reads changes.
 
@@ -38,20 +38,20 @@ A text inside a text is a span of the same paragraph, not a separate view. Spans
 paragraph (`color`, `fontSize`, `fontWeight`, …) and override what they set. The whole block is one native view. In
 Rust, `text(..)` shows its content and then its children: `.child(text(..))` adds a span, `.child("…")` a plain run.
 
-```rust tabs
-text("")
-    .text_size(px(17.0))
-    .child(text("Light ").font_weight(FontWeight::LIGHT))
-    .child(text("Bold ").font_weight(FontWeight::BOLD))
-    .child(text("Italic").italic().text_color(rgb(0x8250df)))
-```
-
 ```tsx tabs
 <Text style={{ fontSize: 17 }}>
   <Text style={{ fontWeight: "300" }}>Light </Text>
   <Text style={{ fontWeight: "bold" }}>Bold </Text>
   <Text style={{ fontStyle: "italic", color: "#8250df" }}>Italic</Text>
 </Text>
+```
+
+```rust tabs
+text("")
+    .text_size(px(17.0))
+    .child(text("Light ").font_weight(FontWeight::LIGHT))
+    .child(text("Bold ").font_weight(FontWeight::BOLD))
+    .child(text("Italic").italic().text_color(rgb(0x8250df)))
 ```
 
 ### Span backgrounds
@@ -61,6 +61,16 @@ baseline and the descent below it, whatever the line height), and on every line 
 its own with the span's corner radius. Spans inside it share its background unless they set their own. It is drawing
 only: the text lays out as without it, and a selectable text copies the span's characters with the rest. Inline code
 is a span:
+
+```tsx tabs
+<Text style={{ userSelect: "text", fontSize: 15, lineHeight: 22 }}>
+  {"Run "}
+  <Text style={{ fontFamily: "ui-monospace", fontSize: 13, backgroundColor: "#eff1f3", borderRadius: 4 }}>
+    {" cargo test "}
+  </Text>
+  {" before you commit."}
+</Text>
+```
 
 ```rust tabs
 text("Run ")
@@ -77,16 +87,6 @@ text("Run ")
     .child(" before you commit.")
 ```
 
-```tsx tabs
-<Text style={{ userSelect: "text", fontSize: 15, lineHeight: 22 }}>
-  {"Run "}
-  <Text style={{ fontFamily: "ui-monospace", fontSize: 13, backgroundColor: "#eff1f3", borderRadius: 4 }}>
-    {" cargo test "}
-  </Text>
-  {" before you commit."}
-</Text>
-```
-
 The Tailwind classes work the same way: `<Text class="bg-gray-100 rounded px-1">`. Horizontal padding takes room in the
 line at the span's two ends and its background covers it, as a CSS inline box's does; vertical padding grows the
 background above and below the text without changing the line's height, and borders leave spans as they are.
@@ -101,17 +101,17 @@ it: they keep their place, are not drawn and take no presses. Showing it again (
 characters where they already stand, without measuring the text again or moving anything, which suits revealing words
 one by one at the end of a streamed paragraph:
 
+```tsx tabs
+<Text style={{ userSelect: "text" }}>
+  The answer is <Text style={{ visibility: "hidden" }}>forty-two</Text>.
+</Text>
+```
+
 ```rust tabs
 text("The answer is ")
     .select_text()
     .child(text("forty-two").invisible())
     .child(".")
-```
-
-```tsx tabs
-<Text style={{ userSelect: "text" }}>
-  The answer is <Text style={{ visibility: "hidden" }}>forty-two</Text>.
-</Text>
 ```
 
 Here the paragraph is as wide as "The answer is forty-two.", shows "The answer is", and copies as "The answer is .".
@@ -124,19 +124,6 @@ link its press styles (`activeStyle`, `active:`, `.active(..)`) while a press on
 paragraph keep their look. Over a span inside a link, the link is the one hovered: style the link.
 In a terminal each link is also a stop of the keyboard focus: Tab reaches the links of a paragraph in turn, and Return
 presses the focused one.
-
-```rust tabs
-text("By continuing you agree to the ")
-    .text_size(px(15.0))
-    .on_press(move || log("the sentence"))
-    .child(
-        text("Terms of service")
-            .text_color(rgb(0x0969da))
-            .hover(|s| s.underline())
-            .on_press(move || open("terms")),
-    )
-    .child(".")
-```
 
 ```tsx tabs
 <Text style={{ fontSize: 15 }} onPress={() => log("the sentence")}>
@@ -152,12 +139,36 @@ text("By continuing you agree to the ")
 </Text>
 ```
 
+```rust tabs
+text("By continuing you agree to the ")
+    .text_size(px(15.0))
+    .on_press(move || log("the sentence"))
+    .child(
+        text("Terms of service")
+            .text_color(rgb(0x0969da))
+            .hover(|s| s.underline())
+            .on_press(move || open("terms")),
+    )
+    .child(".")
+```
+
 ### Inline views and images
 
 Any other element inside a text (a view, an image, even inside spans) is an inline attachment: it is laid out at its
 own size, sits on the baseline (or where its `verticalAlign` style puts it: `"text-top"`, `"text-bottom"`,
 `"middle"`, as in CSS; the line grows to hold it; on the baseline, a view that holds text stands by the baseline of
 its first line of text, as an `inline-flex` box) and wraps with the words. It takes presses of its own.
+
+```tsx tabs
+<Text style={{ fontSize: 16, lineHeight: 26 }}>
+  {"Made with "}
+  <Image src={logo} style={{ width: 18, height: 18, borderRadius: 4 }} />
+  {" NSH. Status "}
+  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
+    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
+  </View>
+</Text>
+```
 
 ```rust tabs
 text("Made with ")
@@ -176,26 +187,9 @@ text("Made with ")
     )
 ```
 
-```tsx tabs
-<Text style={{ fontSize: 16, lineHeight: 26 }}>
-  {"Made with "}
-  <Image src={logo} style={{ width: 18, height: 18, borderRadius: 4 }} />
-  {" NSH. Status "}
-  <View style={{ backgroundColor: "#1a7f37", borderRadius: 9, paddingHorizontal: 7, height: 18, justifyContent: "center" }}>
-    <Text style={{ color: "#ffffff", fontSize: 11, fontWeight: "700" }}>LIVE</Text>
-  </View>
-</Text>
-```
-
 Attachments cut off by `numberOfLines` or an ellipsis are hidden. Copying a selectable text leaves an attachment out
 unless it has a `copyText` (`.copy_text(..)`): then the copy gives that text in its place, as a browser copies an
 inline image's `alt`. An inline formula copies as its source this way:
-
-```rust tabs
-text("Area is ")
-    .child(view().copy_text("$x^2$").label("x squared").child(formula))
-    .child(" here.")
-```
 
 ```tsx tabs
 <Text>
@@ -205,6 +199,12 @@ text("Area is ")
   </View>{" "}
   here.
 </Text>
+```
+
+```rust tabs
+text("Area is ")
+    .child(view().copy_text("$x^2$").label("x squared").child(formula))
+    .child(" here.")
 ```
 
 Copying the whole line gives `Area is $x^2$ here.`. Screen readers keep reading the view by its label. `copyText` is
@@ -249,18 +249,18 @@ The Tailwind classes `select-text`, `select-none` and `select-auto` set `userSel
 
 The font family is a system family or a font file of the app:
 
-```rust tabs
-// assets/fonts/Inter-Regular.ttf, shipped by the registry (`registry.assets(assets!())`).
-const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
-
-text("Inter").font_family(INTER.family).text_size(px(17.0))
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import Inter from "./fonts/Inter-Regular.ttf";
 
 <Text style={{ fontFamily: Inter, fontSize: 17 }}>Inter</Text>;
+```
+
+```rust tabs
+// assets/fonts/Inter-Regular.ttf, shipped by the registry (`registry.assets(assets!())`).
+const INTER: FontAsset = asset!("fonts/Inter-Regular.ttf");
+
+text("Inter").font_family(INTER.family).text_size(px(17.0))
 ```
 
 The font is registered before the first frame. See [fonts](../docs/fonts.md).

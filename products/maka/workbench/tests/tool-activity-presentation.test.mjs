@@ -44,7 +44,7 @@ const hooks = registerHooks({
 const { activityFailure, activityPresentation, activityProjection, activityTitle } = await import(
   new URL('toolActivityPresentation.ts', app)
 );
-const { toolResult } = await import(new URL('toolCards.ts', app));
+const { toolArguments, toolResult } = await import(new URL('toolCards.ts', app));
 const { providerSearch } = await import(new URL('providerSearch.ts', app));
 hooks.deregister();
 
@@ -170,6 +170,28 @@ test('a freeform patch shows an added file and a deletion without fabricating th
       },
       { path: 'old.md', operation: 'delete', hunks: [] },
     ],
+  );
+  assert.deepEqual(textToolPatch('*** Begin Patch\n*** Add File: __init__.py\n*** End Patch'), [
+    { path: '__init__.py', operation: 'create', hunks: [] },
+  ]);
+  assert.deepEqual(
+    toolArguments('patch', {
+      patch: '*** Begin Patch\n*** Add File: notes.md\n+hello\n*** End Patch',
+    }),
+    {
+      kind: 'change',
+      value: {
+        phase: 'requested',
+        operation: 'patch',
+        files: [
+          {
+            path: 'notes.md',
+            operation: 'create',
+            hunks: [{ context: '', before: '', after: 'hello' }],
+          },
+        ],
+      },
+    },
   );
 });
 
@@ -479,4 +501,20 @@ test('gateway search envelopes accept query batches, text blocks and titled resu
       error: null,
     });
   }
+});
+
+test('ScheduledTask test_script mode renders its script condition', () => {
+  const scheduled = activityPresentation('maka.agent.Builtin@1/ScheduledTask');
+  assert.deepEqual(
+    activityProjection(
+      scheduled,
+      'arguments',
+      { request: { mode: 'test_script', source: 'console.log(true)' } },
+      {},
+    ),
+    {
+      kind: 'sections',
+      sections: [{ label: 'Script condition', text: 'console.log(true)' }],
+    },
+  );
 });

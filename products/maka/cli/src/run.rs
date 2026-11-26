@@ -17,21 +17,26 @@
  * under the License.
  */
 
-//! Headless single-shot Agent prompt execution over the public Host client.
+//! Headless Agent prompt execution and Session follow-up over the public Host client.
 
 use std::{
     borrow::Cow,
     io::{IsTerminal, Read, Write},
     path::PathBuf,
+    process::ExitCode,
     time::Duration,
 };
 
 use maka_agent_api::contract::{
-    BackendPreference, Created, DeliveryFact, DeliveryPage, ExecutionState, HistoryPage,
-    HistoryPosition, HistoryRowAddress, InteractionKind, Queue, QueueAction, QueueMutationResult,
+    AnswerCursor, BackendPreference, Created, DeliveryFact, DeliveryPage, ExecutionState,
+    HistoryPage, HistoryPosition, InteractionKind, InteractionRejection, InteractionResult,
+    Observation, PendingInteractions, Queue, QueueAction, QueueKind, QueueMutationResult,
     QueueRejection, Rejection, SendRejection, SendResult, Stopped, Work, WorkReadiness, WorkTarget,
 };
-use maka_agent_facts::durable::BlockerKind;
+use maka_agent_facts::{
+    durable::{BlockerKind, RunId},
+    interaction::{InteractionAnswer, InteractionQuestion, InteractionRecord, InteractionRequest},
+};
 use maka_agent_ports::session::history::Role;
 use maka_host_runtime::{
     HostError,
@@ -42,7 +47,7 @@ use maka_host_runtime::{
 };
 use maka_plugin_core::operation::{OperationCleanup, OperationOutcome, OperationResult, Receipt};
 use maka_settings_native::contract::{DefaultModel, ModelsPage};
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -51,18 +56,146 @@ pub(super) struct Args {
     /// Business Host Root (default: ~/.maka/application/host).
     #[arg(long, value_name = "DIRECTORY")]
     root: Option<PathBuf>,
-    /// Workspace directory for the session (default: current directory).
-    #[arg(long, value_name = "DIRECTORY")]
+    /// Workspace directory for a new session (default: current directory).
+    #[arg(long, value_name = "DIRECTORY", conflicts_with = "session")]
     workspace: Option<PathBuf>,
+    /// Continue this session instead of creating one; exits 3 when it then waits for a decision.
+    #[arg(long, value_name = "ID")]
+    session: Option<String>,
+    /// Wait for the session's current work and print its result without sending a prompt.
+    #[arg(long, requires = "session", conflicts_with_all = ["prompt", "answer", "no_wait"])]
+    wait: bool,
+    /// Answer the session's pending question with a JSON array holding a string or null per question.
+    #[arg(
+        long,
+        value_name = "JSON",
+        requires = "session",
+        conflicts_with = "prompt",
+        value_parser = parse_answers
+    )]
+    answer: Option<Answers>,
+    /// Print a JSON receipt once the prompt or answer is accepted instead of waiting for the result.
+    #[arg(long)]
+    no_wait: bool,
+    /// Stop the session's active run and wait until it settles.
+    #[arg(
+        long = "stop",
+        requires = "session",
+        conflicts_with_all = ["prompt", "answer", "wait", "no_wait"]
+    )]
+    stop_run: bool,
     /// Prompt text; reads UTF-8 text from stdin when omitted.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
 }
 
-enum WatchOutcome {
-    Ended { sequence: u64 },
-    CancelledExternally,
-    Interrupted(String),
+#[derive(Clone)]
+struct Answers(Vec<Option<String>>);
+
+fn parse_answers(value: &str) -> Result<Answers, String> {
+    serde_json::from_str(value)
+        .map(Answers)
+        .map_err(|error| format!("expected a JSON array of strings or nulls: {error}"))
+}
+
+enum Action {
+    Start {
+        workspace: String,
+        prompt: String,
+    },
+    Send {
+        session_id: String,
+        prompt: String,
+    },
+    Answer {
+        session_id: String,
+        answers: Vec<Option<String>>,
+    },
+    Wait {
+        session_id: String,
+    },
+    Stop {
+        session_id: String,
+    },
+}
+
+enum Target {
+    /// A message this invocation queued; interrupting the wait withdraws it.
+    Submitted {
+        message_id: String,
+        revision: u64,
+    },
+    /// Work queued or started elsewhere; interrupting only stops observing it.
+    Message(String),
+    Run(RunId),
+}
+
+/// What a wait does when the Session stops on a pending interaction.
+#[derive(Clone, Copy)]
+enum OnPending {
+    /// A single-shot run cancels its work and fails, as scripts and CI expect.
+    Fail,
+    /// A Session follow-up leaves the Run waiting and reports what it needs.
+    Report,
+}
+
+/// What a `--wait` finds in the Session.
+enum Current {
+    Unfinished { target: Target, through: u64 },
+    Ended(RunId),
+}
+
+enum Followed {
+    Finished {
+        run_id: RunId,
+        ended: Option<u64>,
+        delivered: Option<Box<Work>>,
+    },
+    Waiting(Vec<Pending>),
+    Blocked(String),
+    Cancelled,
+    Interrupted,
+}
+
+enum Outcome {
+    Answer(Option<String>),
+    Report(Report),
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+enum Report {
+    Submitted {
+        session_id: String,
+    },
+    Waiting {
+        session_id: String,
+        interactions: Vec<Pending>,
+    },
+    Stopped {
+        session_id: String,
+    },
+}
+
+impl Report {
+    /// Waiting exits with 3 so scripts need not parse stdout; clap uses 2 for usage errors.
+    fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::Waiting { .. } => ExitCode::from(3),
+            Self::Submitted { .. } | Self::Stopped { .. } => ExitCode::SUCCESS,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct Pending {
+    kind: InteractionKind,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    questions: Vec<InteractionQuestion>,
 }
 
 enum MutationError {
@@ -84,12 +217,27 @@ fn other_mutation_error<E: Into<HostError>>(error: E) -> MutationError {
 }
 
 impl Args {
-    pub(super) async fn run(self) -> Result<(), HostError> {
+    pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
 
-        let workspace_path = resolve_workspace(self.workspace).await?;
-        let prompt = read_prompt(self.prompt, &stop).await?;
+        let wait = !self.no_wait;
+        let action = match (self.session, self.answer) {
+            (None, _) => Action::Start {
+                workspace: resolve_workspace(self.workspace).await?,
+                prompt: read_prompt(self.prompt, &stop).await?,
+            },
+            (Some(session_id), Some(Answers(answers))) => Action::Answer {
+                session_id,
+                answers,
+            },
+            (Some(session_id), None) if self.wait => Action::Wait { session_id },
+            (Some(session_id), None) if self.stop_run => Action::Stop { session_id },
+            (Some(session_id), None) => Action::Send {
+                session_id,
+                prompt: read_prompt(self.prompt, &stop).await?,
+            },
+        };
         let root = crate::application::root_path(self.root)?;
 
         let mut host_client = tokio::select! {
@@ -98,32 +246,102 @@ impl Args {
             result = crate::deployment::connect_local(root) => result?,
         };
 
-        let turn_result = async {
+        let outcome = async {
             if let Some(error) = host_client.catalogue().startup_error() {
                 return Err(format!("Host startup failed: {error}").into());
             }
-            let backend = default_backend(&host_client).await?;
-            execute_turn(&host_client, &workspace_path, backend, prompt, &stop).await
+            execute(&host_client, action, wait, &stop).await
         }
         .await;
 
         // Both paths detach with `close()` so an ephemeral Host retires after
         // idle grace when no background services remain active, without killing
         // background services left running by other or prior runs on the Root.
-        match (turn_result, host_client.close().await) {
-            (Ok(answer), Ok(())) => {
-                if let Some(answer) = answer
-                    && !answer.is_empty()
-                {
-                    write_answer(answer, &stop).await?;
+        match (outcome, host_client.close().await) {
+            (Ok(outcome), Ok(())) => match outcome {
+                Outcome::Answer(Some(answer)) if !answer.is_empty() => {
+                    write_stdout(answer, &stop).await?;
+                    Ok(ExitCode::SUCCESS)
                 }
-                Ok(())
-            }
+                Outcome::Answer(_) => Ok(ExitCode::SUCCESS),
+                Outcome::Report(report) => {
+                    write_stdout(serde_json::to_string(&report)?, &stop).await?;
+                    Ok(report.exit_code())
+                }
+            },
             (Ok(_), Err(cleanup_err)) => Err(cleanup_err.into()),
             (Err(err), Ok(())) => Err(err),
             (Err(err), Err(cleanup_err)) => {
                 Err(format!("{err}; Host cleanup failed: {cleanup_err}").into())
             }
+        }
+    }
+}
+
+async fn execute(
+    host: &HostClient,
+    action: Action,
+    wait: bool,
+    stop: &CancellationToken,
+) -> Result<Outcome, HostError> {
+    match action {
+        Action::Start { workspace, prompt } => {
+            let backend = default_backend(host).await?;
+            let session_id = create_session(host, &workspace, backend).await?;
+            // A new Session has no earlier history to skip.
+            let after = wait.then_some(0);
+            submit(host, session_id, prompt, after, OnPending::Fail, stop).await
+        }
+        Action::Send { session_id, prompt } => {
+            let after = if wait {
+                Some(observe(host, &session_id).await?.through)
+            } else {
+                None
+            };
+            submit(host, session_id, prompt, after, OnPending::Report, stop).await
+        }
+        Action::Answer {
+            session_id,
+            answers,
+        } => {
+            let run_id = answer_question(host, &session_id, answers).await?;
+            if !wait {
+                return Ok(Outcome::Report(Report::Submitted { session_id }));
+            }
+            let through = observe(host, &session_id).await?.through;
+            let target = Target::Run(run_id);
+            follow_target(host, &session_id, target, through, OnPending::Report, stop).await
+        }
+        Action::Wait { session_id } => match current_work(host, &session_id).await? {
+            Current::Unfinished { target, through } => {
+                follow_target(host, &session_id, target, through, OnPending::Report, stop).await
+            }
+            Current::Ended(run_id) => {
+                report_result(host, &session_id, run_id, None, None, stop).await
+            }
+        },
+        Action::Stop { session_id } => {
+            let run = observe(host, &session_id)
+                .await?
+                .run
+                .ok_or("session has no active run")?;
+            let stopped: Stopped = mutate(
+                host,
+                "agent",
+                "stop",
+                json!({ "sessionId": session_id, "runId": run.run_id }),
+            )
+            .await?;
+            // The Run ended before the stop reached it.
+            if !stopped.requested {
+                return Err("session has no active run".into());
+            }
+            tokio::select! {
+                biased;
+                _ = stop.cancelled() => return Err("interrupted by signal".into()),
+                res = settle(host, &session_id, run.run_id) => res?,
+            }
+            Ok(Outcome::Report(Report::Stopped { session_id }))
         }
     }
 }
@@ -201,13 +419,11 @@ async fn default_backend(host: &HostClient) -> Result<BackendPreference, HostErr
     }
 }
 
-async fn execute_turn(
+async fn create_session(
     host: &HostClient,
     workspace_path: &str,
     backend: BackendPreference,
-    prompt: String,
-    stop: &CancellationToken,
-) -> Result<Option<String>, HostError> {
+) -> Result<String, HostError> {
     let created: Created = mutate(
         host,
         "agent",
@@ -220,14 +436,27 @@ async fn execute_turn(
         }),
     )
     .await?;
-
-    let session_id = match created {
-        Created::Created { session } => session.id,
+    match created {
+        Created::Created { session } => Ok(session.id),
         Created::Rejected { reason } => {
-            return Err(format!("session creation rejected: {}", format_rejection(&reason)).into());
+            Err(format!("session creation rejected: {}", format_rejection(&reason)).into())
         }
-    };
+    }
+}
 
+async fn observe(host: &HostClient, session_id: &str) -> Result<Observation, HostError> {
+    query(host, "agent", "observe", json!({ "sessionId": session_id })).await
+}
+
+/// Queues `prompt`; with `after`, follows it from that history cut.
+async fn submit(
+    host: &HostClient,
+    session_id: String,
+    prompt: String,
+    after: Option<u64>,
+    on_pending: OnPending,
+    stop: &CancellationToken,
+) -> Result<Outcome, HostError> {
     if stop.is_cancelled() {
         return Err("interrupted by signal".into());
     }
@@ -260,6 +489,9 @@ async fn execute_turn(
         }
     };
 
+    let Some(after) = after else {
+        return Ok(Outcome::Report(Report::Submitted { session_id }));
+    };
     if stop.is_cancelled() {
         return Err(cancel_with_reason(
             host,
@@ -270,53 +502,151 @@ async fn execute_turn(
         )
         .await);
     }
+    follow_target(
+        host,
+        &session_id,
+        Target::Submitted {
+            message_id,
+            revision,
+        },
+        after,
+        on_pending,
+        stop,
+    )
+    .await
+}
 
+async fn answer_question(
+    host: &HostClient,
+    session_id: &str,
+    answers: Vec<Option<String>>,
+) -> Result<RunId, HostError> {
+    let pending: PendingInteractions = query(
+        host,
+        "agent",
+        "pendingInteractions",
+        json!({ "sessionId": session_id }),
+    )
+    .await?;
+    let questions: Vec<_> = pending
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, InteractionKind::Question))
+        .collect();
+    let request_id = match questions.as_slice() {
+        [entry] => &entry.request_id,
+        [] => return Err("session has no pending question".into()),
+        _ => return Err("session has more than one pending question".into()),
+    };
+    let answer = InteractionAnswer::Question { answers };
+    let result: InteractionResult = mutate(
+        host,
+        "agent",
+        "respond",
+        json!({
+            "sessionId": session_id,
+            "requestId": request_id,
+            "answer": answer,
+        }),
+    )
+    .await?;
+    match result {
+        InteractionResult::Recorded { record } => match &record.outcome {
+            Some(outcome) if answer.matches_outcome(outcome) => Ok(record.execution.run_id),
+            _ => Err("question was already answered or closed".into()),
+        },
+        InteractionResult::Rejected { reason } => {
+            Err(format!("answer rejected: {}", format_interaction_rejection(&reason)).into())
+        }
+    }
+}
+
+/// The latest unfinished work: the last runnable queued message or the active
+/// Run. An idle Session reports its most recent Run.
+async fn current_work(host: &HostClient, session_id: &str) -> Result<Current, HostError> {
+    // Read the queue first: a message admitted between the two reads is then
+    // visible as the observed Run instead of being skipped.
+    let queue: Queue = query(host, "agent", "queue", json!({ "sessionId": session_id })).await?;
+    let observation = observe(host, session_id).await?;
+    let unfinished = queue
+        .entries
+        .into_iter()
+        .rev()
+        .find(|entry| !matches!(entry.kind, QueueKind::Held))
+        .map(|entry| Target::Message(entry.message_id))
+        .or_else(|| observation.run.map(|run| Target::Run(run.run_id)));
+    match (unfinished, observation.latest_run_id) {
+        (Some(target), _) => Ok(Current::Unfinished {
+            target,
+            through: observation.through,
+        }),
+        (None, Some(run_id)) => Ok(Current::Ended(run_id)),
+        (None, None) => Err("session has no work to wait for".into()),
+    }
+}
+
+async fn follow_target(
+    host: &HostClient,
+    session_id: &str,
+    target: Target,
+    after: u64,
+    on_pending: OnPending,
+    stop: &CancellationToken,
+) -> Result<Outcome, HostError> {
     let mut watch = match subscribe(
         host,
         "agent",
         "watch",
-        json!({ "sessionId": session_id, "after": 0 }),
+        json!({ "sessionId": session_id, "after": after }),
     )
     .await
     {
         Ok(watch) => watch,
-        Err(err) => {
-            return Err(cancel_with_reason(
-                host,
-                &session_id,
-                &message_id,
-                revision,
-                &err.to_string(),
-            )
-            .await);
-        }
+        Err(err) => return Err(withdraw(host, session_id, &target, err.to_string()).await),
     };
 
-    let outcome = match observe_run(host, &session_id, &message_id, &mut watch, stop).await {
-        Ok(WatchOutcome::Ended { sequence }) => tokio::select! {
-            biased;
-            _ = stop.cancelled() => Err("interrupted by signal".into()),
-            res = read_completed_answer(host, &session_id, &message_id, sequence) => res,
-        },
-        Ok(WatchOutcome::CancelledExternally) => {
-            Err("queued message was cancelled before execution".into())
+    if std::env::var_os("MAKA_RUN_TRACE_WATCH").is_some() {
+        eprintln!("session watch attached: {session_id}");
+    }
+
+    let outcome = match follow(host, session_id, &target, &mut watch, on_pending, stop).await {
+        Ok(Followed::Finished {
+            run_id,
+            ended,
+            delivered,
+        }) => report_result(host, session_id, run_id, ended, delivered, stop).await,
+        Ok(Followed::Waiting(interactions)) => Ok(Outcome::Report(Report::Waiting {
+            session_id: session_id.to_owned(),
+            interactions,
+        })),
+        Ok(Followed::Blocked(reason)) => Err(withdraw(host, session_id, &target, reason).await),
+        Ok(Followed::Cancelled) => Err("queued message was cancelled before execution".into()),
+        Ok(Followed::Interrupted) => {
+            Err(withdraw(host, session_id, &target, "interrupted by signal".into()).await)
         }
-        Ok(WatchOutcome::Interrupted(reason)) => {
-            Err(cancel_with_reason(host, &session_id, &message_id, revision, &reason).await)
-        }
-        Err(err) => {
-            Err(
-                cancel_with_reason(host, &session_id, &message_id, revision, &err.to_string())
-                    .await,
-            )
-        }
+        Err(err) => Err(withdraw(host, session_id, &target, err.to_string()).await),
     };
 
     let close_watch = watch.close().await;
     match (outcome, close_watch) {
-        (Ok(answer), Ok(())) => Ok(answer),
+        (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(err), _) => Err(err),
         (Ok(_), Err(close_err)) => Err(format!("watch close failed: {close_err}").into()),
+    }
+}
+
+async fn withdraw(
+    host: &HostClient,
+    session_id: &str,
+    target: &Target,
+    reason: String,
+) -> HostError {
+    match target {
+        Target::Submitted {
+            message_id,
+            revision,
+        } => cancel_with_reason(host, session_id, message_id, *revision, &reason).await,
+        Target::Message(_) | Target::Run(_) => reason.into(),
     }
 }
 
@@ -334,12 +664,12 @@ async fn cancel_with_reason(
     }
 }
 
-async fn write_answer(mut answer: String, stop: &CancellationToken) -> Result<(), HostError> {
+async fn write_stdout(mut text: String, stop: &CancellationToken) -> Result<(), HostError> {
     if stop.is_cancelled() {
         return Err("interrupted by signal".into());
     }
-    if !answer.ends_with('\n') {
-        answer.push('\n');
+    if !text.ends_with('\n') {
+        text.push('\n');
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     // Dedicated OS thread so a signal exits promptly even when stdout's pipe is full,
@@ -349,7 +679,7 @@ async fn write_answer(mut answer: String, stop: &CancellationToken) -> Result<()
         .spawn(move || {
             let mut stdout = std::io::stdout().lock();
             let res = stdout
-                .write_all(answer.as_bytes())
+                .write_all(text.as_bytes())
                 .and_then(|()| stdout.flush());
             let _ = tx.send(res);
         })?;
@@ -363,104 +693,193 @@ async fn write_answer(mut answer: String, stop: &CancellationToken) -> Result<()
     }
 }
 
-async fn observe_run(
+/// Follows `target` until its Run ends or the Session needs a decision.
+async fn follow(
     host: &HostClient,
     session_id: &str,
-    message_id: &str,
+    target: &Target,
     watch: &mut Subscription,
+    on_pending: OnPending,
     stop: &CancellationToken,
-) -> Result<WatchOutcome, HostError> {
-    let mut delivered = false;
+) -> Result<Followed, HostError> {
+    let (message_id, mut run_id) = match target {
+        Target::Submitted { message_id, .. } | Target::Message(message_id) => {
+            (Some(message_id.as_str()), None)
+        }
+        Target::Run(run_id) => (None, Some(*run_id)),
+    };
+    // Checked after subscribing: a Run that ends later still delivers Ended.
+    if let Some(run_id) = run_id {
+        let delivered = work(host, session_id, WorkTarget::Run { run_id }, None).await?;
+        let Work::Delivered { execution, .. } = &delivered else {
+            return Err("agent.work did not return delivered execution".into());
+        };
+        if is_terminal(&execution.state) {
+            return Ok(Followed::Finished {
+                run_id,
+                ended: None,
+                delivered: Some(Box::new(delivered)),
+            });
+        }
+    }
+    let mut queued = true;
     loop {
-        tokio::select! {
+        let page = tokio::select! {
             biased;
-            _ = stop.cancelled() => return Ok(WatchOutcome::Interrupted("interrupted by signal".into())),
-            page = watch.next::<DeliveryPage>() => match page? {
-                DeliveryPage::Queue { queue }
-                    if !delivered
-                        && !queue.entries.iter().any(|entry| entry.message_id == message_id) =>
-                {
-                    match query::<Work>(
-                        host,
-                        "agent",
-                        "work",
-                        json!({
-                            "sessionId": session_id,
-                            "target": WorkTarget::Message { message_id: message_id.to_owned() },
-                            "cursor": Value::Null,
-                        }),
-                    )
-                    .await?
-                    {
-                        Work::Cancelled | Work::Missing => {
-                            return Ok(WatchOutcome::CancelledExternally);
-                        }
-                        Work::Delivered { .. } => {
-                            delivered = true;
-                        }
-                        Work::Pending | Work::Changed => {}
-                    }
-                }
-                DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
-                    let items: Vec<String> = pending
+            _ = stop.cancelled() => return Ok(Followed::Interrupted),
+            page = watch.next::<DeliveryPage>() => page?,
+        };
+        match page {
+            DeliveryPage::Queue { queue } => {
+                if let Some(message_id) = message_id {
+                    queued = queue
                         .entries
                         .iter()
-                        .map(|entry| {
-                            format!(
-                                "{}({})",
-                                format_interaction_kind(&entry.kind),
-                                entry.request_id
-                            )
-                        })
-                        .collect();
-                    return Ok(WatchOutcome::Interrupted(format!(
-                        "execution blocked by pending interaction(s): {}",
-                        items.join(", ")
-                    )));
+                        .any(|entry| entry.message_id == message_id);
                 }
-                DeliveryPage::Events { events, .. } => {
-                    if let Some(ended) = events
-                        .iter()
-                        .find(|ev| matches!(ev.fact, DeliveryFact::Ended { .. }))
-                    {
-                        return Ok(WatchOutcome::Ended {
-                            sequence: ended.sequence,
-                        });
-                    }
+            }
+            DeliveryPage::Interactions { pending } if !pending.entries.is_empty() => {
+                if let OnPending::Fail = on_pending {
+                    return Ok(Followed::Blocked(blocked_by(&pending)));
                 }
-                _ => {}
+                let interactions = tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => return Ok(Followed::Interrupted),
+                    interactions = describe_interactions(host, session_id, pending) => interactions?,
+                };
+                // Empty when every question was answered or closed since this page.
+                if !interactions.is_empty() {
+                    return Ok(Followed::Waiting(interactions));
+                }
+            }
+            DeliveryPage::Events { events, .. } => {
+                if let Some(run_id) = run_id
+                    && let Some(ended) = events.iter().find(|event| {
+                        event.run_id == run_id && matches!(event.fact, DeliveryFact::Ended { .. })
+                    })
+                {
+                    return Ok(Followed::Finished {
+                        run_id,
+                        ended: Some(ended.sequence),
+                        delivered: None,
+                    });
+                }
+            }
+            _ => {}
+        }
+        if run_id.is_none()
+            && !queued
+            && let Some(message_id) = message_id
+        {
+            let target = WorkTarget::Message {
+                message_id: message_id.to_owned(),
+            };
+            let delivered = work(host, session_id, target, None).await?;
+            match &delivered {
+                Work::Cancelled | Work::Missing => return Ok(Followed::Cancelled),
+                Work::Delivered { execution, .. } if is_terminal(&execution.state) => {
+                    return Ok(Followed::Finished {
+                        run_id: execution.run_id,
+                        ended: None,
+                        delivered: Some(Box::new(delivered)),
+                    });
+                }
+                Work::Delivered { execution, .. } => run_id = Some(execution.run_id),
+                Work::Pending | Work::Changed => {}
             }
         }
     }
 }
 
-async fn read_completed_answer(
+fn blocked_by(pending: &PendingInteractions) -> String {
+    let items: Vec<String> = pending
+        .entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}({})",
+                format_interaction_kind(&entry.kind),
+                entry.request_id
+            )
+        })
+        .collect();
+    format!(
+        "execution blocked by pending interaction(s): {}",
+        items.join(", ")
+    )
+}
+
+/// Pending interactions with their question text, skipping questions already closed.
+async fn describe_interactions(
     host: &HostClient,
     session_id: &str,
-    message_id: &str,
-    ended_sequence: u64,
+    pending: PendingInteractions,
+) -> Result<Vec<Pending>, HostError> {
+    let mut interactions = Vec::with_capacity(pending.entries.len());
+    for entry in pending.entries {
+        let questions = if matches!(entry.kind, InteractionKind::Question) {
+            let record: InteractionRecord = query(
+                host,
+                "agent",
+                "interaction",
+                json!({ "sessionId": session_id, "requestId": entry.request_id }),
+            )
+            .await?;
+            if record.outcome.is_some() {
+                continue;
+            }
+            let InteractionRequest::Question { questions, .. } = record.request else {
+                return Err("pending question has a non-question request".into());
+            };
+            questions
+        } else {
+            Vec::new()
+        };
+        interactions.push(Pending {
+            kind: entry.kind,
+            questions,
+        });
+    }
+    Ok(interactions)
+}
+
+async fn report_result(
+    host: &HostClient,
+    session_id: &str,
+    run_id: RunId,
+    ended: Option<u64>,
+    delivered: Option<Box<Work>>,
+    stop: &CancellationToken,
+) -> Result<Outcome, HostError> {
+    tokio::select! {
+        biased;
+        _ = stop.cancelled() => Err("interrupted by signal".into()),
+        res = read_result(host, session_id, run_id, ended, delivered) => res.map(Outcome::Answer),
+    }
+}
+
+/// Reads the ended Run's answer, starting from `delivered` when it was already fetched.
+async fn read_result(
+    host: &HostClient,
+    session_id: &str,
+    run_id: RunId,
+    ended: Option<u64>,
+    delivered: Option<Box<Work>>,
 ) -> Result<Option<String>, HostError> {
-    let work: Work = query(
-        host,
-        "agent",
-        "work",
-        json!({
-            "sessionId": session_id,
-            "target": WorkTarget::Message { message_id: message_id.to_owned() },
-            "cursor": Value::Null,
-        }),
-    )
-    .await?;
+    let delivered = match delivered {
+        Some(delivered) => *delivered,
+        None => work(host, session_id, WorkTarget::Run { run_id }, None).await?,
+    };
     let Work::Delivered {
         execution, answer, ..
-    } = work
+    } = delivered
     else {
         return Err("agent.work did not return delivered execution".into());
     };
     match &execution.state {
         ExecutionState::Completed => {}
         ExecutionState::Failed { reason } => {
-            if let Some(diag) = read_failure_diagnostic(host, session_id, ended_sequence).await {
+            if let Some(diag) = read_failure_diagnostic(host, session_id, run_id, ended).await {
                 return Err(format!("run failed: {diag}").into());
             }
             if let Some(blocker) = reason {
@@ -484,17 +903,7 @@ async fn read_completed_answer(
             return Err("agent.work answer pagination did not advance".into());
         }
         prev_offset = next.offset;
-        let next_page = match query::<Work>(
-            host,
-            "agent",
-            "work",
-            json!({
-                "sessionId": session_id,
-                "target": WorkTarget::Message { message_id: message_id.to_owned() },
-                "cursor": next,
-            }),
-        )
-        .await?
+        let next_page = match work(host, session_id, WorkTarget::Run { run_id }, Some(next)).await?
         {
             Work::Delivered {
                 answer: Some(next_page),
@@ -519,10 +928,12 @@ async fn read_completed_answer(
     Ok(Some(text))
 }
 
+/// The Run's failure row, read at its Ended sequence when known.
 async fn read_failure_diagnostic(
     host: &HostClient,
     session_id: &str,
-    ended_sequence: u64,
+    run_id: RunId,
+    ended: Option<u64>,
 ) -> Option<String> {
     let Ok(HistoryPage::Ready { chunks, .. }) = query::<HistoryPage>(
         host,
@@ -530,26 +941,42 @@ async fn read_failure_diagnostic(
         "history",
         json!({
             "sessionId": session_id,
-            "through": ended_sequence,
-            "position": HistoryPosition::Event {
-                sequence: ended_sequence,
-            },
+            "through": ended,
+            "position": HistoryPosition::Tail,
         }),
     )
     .await
     else {
         return None;
     };
-    chunks.into_iter().find_map(|chunk| {
-        (chunk.role == Role::Failure
-            && matches!(
-                chunk.position,
-                HistoryRowAddress::Live { sequence, .. } if sequence == ended_sequence
-            ))
-        .then_some(chunk.text)
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty())
+    chunks.into_iter().rev().find_map(|chunk| {
+        (chunk.role == Role::Failure && chunk.run_id == Some(run_id))
+            .then_some(chunk.text)
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
     })
+}
+
+async fn work(
+    host: &HostClient,
+    session_id: &str,
+    target: WorkTarget,
+    cursor: Option<AnswerCursor>,
+) -> Result<Work, HostError> {
+    query(
+        host,
+        "agent",
+        "work",
+        json!({ "sessionId": session_id, "target": target, "cursor": cursor }),
+    )
+    .await
+}
+
+fn is_terminal(state: &ExecutionState) -> bool {
+    matches!(
+        state,
+        ExecutionState::Completed | ExecutionState::Failed { .. } | ExecutionState::Cancelled
+    )
 }
 
 async fn cancel_work(
@@ -563,18 +990,10 @@ async fn cancel_work(
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let run_id = loop {
-        match query::<Work>(
-            host,
-            "agent",
-            "work",
-            json!({
-                "sessionId": session_id,
-                "target": WorkTarget::Message { message_id: message_id.to_owned() },
-                "cursor": Value::Null,
-            }),
-        )
-        .await?
-        {
+        let target = WorkTarget::Message {
+            message_id: message_id.to_owned(),
+        };
+        match work(host, session_id, target, None).await? {
             Work::Pending => {
                 match mutate_checked::<QueueMutationResult>(
                     host,
@@ -635,12 +1054,7 @@ async fn cancel_work(
                 }
             }
             Work::Delivered { execution, .. } => {
-                if !matches!(
-                    execution.state,
-                    ExecutionState::Completed
-                        | ExecutionState::Failed { .. }
-                        | ExecutionState::Cancelled
-                ) {
+                if !is_terminal(&execution.state) {
                     let _: Stopped = mutate(
                         host,
                         "agent",
@@ -661,7 +1075,22 @@ async fn cancel_work(
         }
         poll.tick().await;
     };
+    settle_until(host, session_id, run_id, deadline).await
+}
 
+async fn settle(host: &HostClient, session_id: &str, run_id: RunId) -> Result<(), HostError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    settle_until(host, session_id, run_id, deadline).await
+}
+
+async fn settle_until(
+    host: &HostClient,
+    session_id: &str,
+    run_id: RunId,
+    deadline: tokio::time::Instant,
+) -> Result<(), HostError> {
+    let mut poll = tokio::time::interval(Duration::from_millis(25));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         match query::<WorkReadiness>(
             host,
@@ -877,6 +1306,7 @@ fn format_rejection(reason: &Rejection) -> &'static str {
 fn format_send_rejection(reason: &SendRejection) -> &'static str {
     match reason {
         SendRejection::ModelUnavailable => "model unavailable",
+        SendRejection::WorkspaceUnavailable => "workspace unavailable",
         SendRejection::SkillsUnavailable => "skills unavailable",
         SendRejection::TurnStopped => "turn stopped",
         SendRejection::OriginalOperationUnsettled => "original operation unsettled",
@@ -892,6 +1322,19 @@ fn format_queue_rejection(reason: &QueueRejection) -> &'static str {
         QueueRejection::InvalidEdit => "invalid queue edit",
         QueueRejection::ExecutionChanged => "execution changed",
         QueueRejection::NotRunning => "execution is not running",
+    }
+}
+
+fn format_interaction_rejection(reason: &InteractionRejection) -> &'static str {
+    match reason {
+        InteractionRejection::NotYourChild => "not your child session",
+        InteractionRejection::HumanActionRequired => "human action required",
+        InteractionRejection::AuthorizationChanged => "authorization changed",
+        InteractionRejection::PermissionRequestsDisabled => "permission requests disabled",
+        InteractionRejection::Closed => "question is closed",
+        InteractionRejection::Unavailable => "question unavailable",
+        InteractionRejection::InvalidAnswer => "invalid answer",
+        InteractionRejection::Unsupported => "unsupported answer",
     }
 }
 

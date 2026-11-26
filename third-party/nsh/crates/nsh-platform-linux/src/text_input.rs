@@ -1170,6 +1170,9 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         gtk::TextDirection::Ltr
     };
     let xalign = xalign(config.align, config.rtl);
+    let pango_lang = config
+        .locale
+        .map(|locale| gtk::pango::Language::from_string(locale.as_str()));
     let (purpose, hints) = purpose(config);
     match &editor {
         Editor::Line(t) => {
@@ -1181,6 +1184,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             t.set_input_purpose(purpose);
             t.set_input_hints(hints);
             t.set_direction(direction);
+            t.pango_context().set_language(pango_lang.as_ref());
         }
         Editor::Area { scroller, view } => {
             // A built-in bar of the app's takes the indicator's place.
@@ -1201,6 +1205,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
             view.set_input_purpose(purpose);
             view.set_input_hints(hints);
             view.set_direction(direction);
+            view.pango_context().set_language(pango_lang.as_ref());
         }
     }
     if let Editor::Area { view, .. } = &editor {
@@ -1210,6 +1215,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     label.set_label(&config.placeholder);
     label.set_xalign(xalign);
     label.set_direction(direction);
+    label.pango_context().set_language(pango_lang.as_ref());
     if config.multiline {
         label.set_yalign(0.0);
         label.set_wrap(true);

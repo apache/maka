@@ -1100,7 +1100,7 @@ impl Interaction {
                 let cleanup = if matches!(observed, Ok(PreparationAuthority::VmRetired)) {
                     entry.retire_prepared_epoch(&owner, &epoch).await
                 } else {
-                    let result = entry.finish_turn(&receipt.cleanup, Language::En).await;
+                    let result = entry.finish_turn(&receipt.cleanup, Language::EN).await;
                     entry.release_turn(&receipt.cleanup, &result);
                     result
                 };

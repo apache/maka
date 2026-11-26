@@ -825,9 +825,30 @@ async fn pausing_a_goal_preserves_pending_steering_as_an_independent_turn() {
             .len(),
         1
     );
+    queue
+        .recover_undelivered_steering(
+            spec.owner.clone(),
+            Some("another-session".into()),
+            UnixMillis(4),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        queue
+            .steering(spec.session_id.clone(), goal.run())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
     for _ in 0..2 {
         queue
-            .recover_undelivered_steering(spec.owner.clone(), UnixMillis(4))
+            .recover_undelivered_steering(
+                spec.owner.clone(),
+                Some(spec.session_id.clone()),
+                UnixMillis(4),
+            )
             .await
             .unwrap();
         assert_eq!(queue.read(spec.session_id.clone()).await.unwrap(), pending);
@@ -1339,10 +1360,25 @@ async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
         )
         .await
         .unwrap();
+    let history = store.session_history(spec.owner.clone(), spec.session_id.clone());
+    assert_eq!(
+        store
+            .session_quiescence(spec.owner.clone(), spec.session_id.clone())
+            .await
+            .unwrap(),
+        SessionQuiescence::Busy(SessionObligation::ExternalTask)
+    );
+    assert!(matches!(
+        history
+            .fork_cut(maka_agent_facts::session::ForkPosition::End)
+            .await,
+        Err(StoreError::InvalidTransition(reason))
+            if reason == "fork source has unresolved original effects or cleanup"
+    ));
     let request = enqueue(&store, &spec, "followup-after-native-exit", None).await;
     let queue = store.queue().read(spec.session_id.clone()).await.unwrap();
     let successor = Admission::new(request.spec, UnixMillis(4), vec![]).with_queue(Consume {
-        session: spec.session_id,
+        session: spec.session_id.clone(),
         requests: vec![request.id],
         expected_revision: queue.revision,
     });
@@ -1364,6 +1400,15 @@ async fn confirmed_native_exit_unblocks_a_previously_failed_conversation() {
         )
         .await
         .unwrap();
+    history
+        .fork_cut(maka_agent_facts::session::ForkPosition::End)
+        .await
+        .expect("confirmed native exit with ExternalTaskUnobservable must allow fork");
+    let settled_view = store.frontier(run).await.unwrap();
+    assert!(
+        crate::session_catalog::run_status(&settled_view, 0).unknown_effects,
+        "catalog display must preserve unknown_effects for ExternalTaskUnobservable"
+    );
     store.admit(successor.clone()).await.unwrap();
     assert_eq!(
         resolution(&store, "followup-after-native-exit").await,

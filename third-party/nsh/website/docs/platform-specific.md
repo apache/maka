@@ -26,6 +26,26 @@ Every platform is desktop or mobile, by one rule. Desktop is macOS, Windows, Lin
 
 In Rust, a prop one platform has is a builder method like any other (`.ripple(..)`, `.elevation(..)` for Android, `.input_accessory(..)` for iOS, `.macos_backdrop(..)` for macOS, `.windows_backdrop(..)` for Windows, `.window_drag(..)` for the desktops); the other platforms leave it aside. In TSX, props that exist on one platform only are grouped in an object named after it. Each element accepts `ios`, `android`, `macos`, `windows`, `desktop` (macOS, Windows, Linux, and browsers in the desktop idiom) and `web` (browsers); on other platforms the object is ignored, and on its own platform only its keys are applied. macOS applies both `macos` and `desktop`, Windows both `windows` and `desktop`; a desktop browser applies both `desktop` and `web`.
 
+```tsx tabs
+<View
+  onPress={open}
+  activeStyle={{ opacity: 0.6 }}
+  android={{ ripple: { color: "rgba(0,0,0,0.12)" }, elevation: 4 }}
+  style={{ padding: 16, borderRadius: 12, backgroundColor: "#ffffff" }}
+>
+  <Text>Open</Text>
+</View>
+
+<Input
+  placeholder="Code"
+  ios={{ textContentType: "oneTimeCode" }}
+/>
+
+<Dialog open={open()} ios={{ supportedOrientations: ["portrait"] }} android={{ statusBarTranslucent: true }}>
+  …
+</Dialog>
+```
+
 ```rust tabs
 use nsh_base::dialog;
 use nsh_core::{
@@ -54,26 +74,6 @@ when(shown, || {
         .status_bar_translucent(true)
         .child(…)
 })
-```
-
-```tsx tabs
-<View
-  onPress={open}
-  activeStyle={{ opacity: 0.6 }}
-  android={{ ripple: { color: "rgba(0,0,0,0.12)" }, elevation: 4 }}
-  style={{ padding: 16, borderRadius: 12, backgroundColor: "#ffffff" }}
->
-  <Text>Open</Text>
-</View>
-
-<Input
-  placeholder="Code"
-  ios={{ textContentType: "oneTimeCode" }}
-/>
-
-<Dialog open={open()} ios={{ supportedOrientations: ["portrait"] }} android={{ statusBarTranslucent: true }}>
-  …
-</Dialog>
 ```
 
 The TSX objects are reactive like any prop; a key removed from the object is cleared.
@@ -124,6 +124,21 @@ In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`o
 | `on_back_progress(listener)` | `BackHandler.on("progress", listener)` | Follows the back gesture (Android 14 and later): `start`, `move`, then `end` (the press follows) or `cancel`, with the `progress` from 0 to 1 and the `edge` it started at. While one listens, the stacks do not preview their pop. |
 | | `BackHandler.exitApp()` | Leaves the app. |
 
+```tsx tabs
+import { BackHandler } from "nsh/mobile";
+
+function Player() {
+  // Back leaves full screen before it leaves the page. The listener goes
+  // with the component.
+  BackHandler.on("press", () => {
+    if (!fullScreen()) return false;
+    fullScreen.set(false);
+    return true;
+  });
+  // …
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -139,21 +154,6 @@ fn player() -> impl IntoElement {
         true
     });
     // …
-}
-```
-
-```tsx tabs
-import { BackHandler } from "nsh/mobile";
-
-function Player() {
-  // Back leaves full screen before it leaves the page. The listener goes
-  // with the component.
-  BackHandler.on("press", () => {
-    if (!fullScreen()) return false;
-    fullScreen.set(false);
-    return true;
-  });
-  // …
 }
 ```
 
@@ -201,18 +201,6 @@ metadata while it is mounted, for search engines and link previews. On the other
 
 On both platforms the status bar belongs to the page or dialog on top, as in UIKit, where the topmost view controller decides it: [`NavPage` and `Dialog` take `statusBar`](../modules/nsh-base.md#status-bar) (in Rust `.status_bar(StatusBarStyle::Light)`, or a `StatusBarSetting` for the other fields) with `foreground` (`"auto"`, `"light"` for dark backgrounds, `"dark"` for light ones), `hidden` and `animated`. The page or dialog shown most recently wins, field by field, and the one below it applies again when it goes away. `nsh.json`'s `"statusBar"` is the app's default under them.
 
-```rust tabs
-use nsh_base::nav_page;
-use nsh_core::prelude::*;
-
-fn photo_viewer() -> impl IntoElement {
-    nav_page()
-        .header_visible(false)
-        .status_bar(StatusBarStyle::Light)
-        .child(view().flex_1().bg(black()))
-}
-```
-
 ```tsx tabs
 import { View } from "nsh";
 import { NavPage } from "nsh/base";
@@ -226,19 +214,23 @@ function PhotoViewer() {
 }
 ```
 
+```rust tabs
+use nsh_base::nav_page;
+use nsh_core::prelude::*;
+
+fn photo_viewer() -> impl IntoElement {
+    nav_page()
+        .header_visible(false)
+        .status_bar(StatusBarStyle::Light)
+        .child(view().flex_1().bg(black()))
+}
+```
+
 In an app embedded in a native one, the host app's view controller decides the status bar on iOS. An app that declares `"capabilities"` in `nsh.json` needs `"statusBar": true` to change it.
 
 ## platform.os and platform.select
 
 `os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst` in either of its idioms; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when `platform.desktop` is `true`). `platform_name()` in Rust and `platform.name` in TSX name the platform itself: the OS's name on NSH's own platforms, and a [platform built outside NSH](./platform-extensions.md) its own (`"miniprogram"`), with `platform.os` the OS of the device it runs on. See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
-
-```rust tabs
-use nsh_core::{element::Os, prelude::*};
-
-if os() == Os::Android {
-    // …
-}
-```
 
 ```tsx tabs
 import { platform } from "nsh";
@@ -248,9 +240,32 @@ if (platform.os === "android") {
 }
 ```
 
+```rust tabs
+use nsh_core::{element::Os, prelude::*};
+
+if os() == Os::Android {
+    // …
+}
+```
+
 ### platform.select
 
 In Rust a `match os()` chooses the value, with `is_desktop()` for the desktops (and `platform_name()` for a platform built outside NSH). In TSX, `platform.select(spec)` returns the value for this platform. It looks for `platform.name` first (on a platform built outside NSH, such as `"miniprogram"`), then the OS's own key (`platform.os`), then `desktop` or `mobile` by [the rule above](#desktop-and-mobile) (`platform.desktop`), then `native` (every platform but the web), then `default`:
+
+```tsx tabs
+const styles = {
+  card: {
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    ...platform.select({
+      ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.12)" },
+      android: { borderWidth: 1, borderColor: "#e5e7eb" },
+    }),
+  },
+};
+
+const hint = platform.select({ ios: "Swipe down to close", android: "Press back to close", default: "Close" });
+```
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};
@@ -271,26 +286,15 @@ let hint = match os() {
 };
 ```
 
-```tsx tabs
-const styles = {
-  card: {
-    borderRadius: 12,
-    backgroundColor: "#ffffff",
-    ...platform.select({
-      ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.12)" },
-      android: { borderWidth: 1, borderColor: "#e5e7eb" },
-    }),
-  },
-};
-
-const hint = platform.select({ ios: "Swipe down to close", android: "Press back to close", default: "Close" });
-```
-
 It returns `undefined` when nothing matches and there is no `default`.
 
 ### Rendering different components
 
 Choose components the same way, at module level (TSX) when the choice never changes:
+
+```tsx tabs
+const Spinner = platform.select({ ios: IosSpinner, default: MaterialSpinner })!;
+```
 
 ```rust tabs
 fn spinner() -> AnyElement {
@@ -302,16 +306,7 @@ fn spinner() -> AnyElement {
 }
 ```
 
-```tsx tabs
-const Spinner = platform.select({ ios: IosSpinner, default: MaterialSpinner })!;
-```
-
 or inline with [`when` / `<If>`](../elements/control-flow.md):
-
-```rust tabs
-when(os() == Os::Ios, || input_accessory_view("bar").child(…))
-    .otherwise(|| text("Android has no input accessories."))
-```
 
 ```tsx tabs
 <If when={platform.os === "ios"} else={<Text>Android has no input accessories.</Text>}>
@@ -319,9 +314,19 @@ when(os() == Os::Ios, || input_accessory_view("bar").child(…))
 </If>
 ```
 
+```rust tabs
+when(os() == Os::Ios, || input_accessory_view("bar").child(…))
+    .otherwise(|| text("Android has no input accessories."))
+```
+
 ## Platform variants in Tailwind
 
 Rust styles per platform with `.when(os() == Os::Ios, |v| ..)`; in TSX, the `ios:`, `android:` and `web:` variants apply classes on one platform:
+
+```tsx tabs
+<View class="rounded-xl bg-white p-4 ios:shadow-md android:border android:border-zinc-200">…</View>
+<Text class="text-base android:font-medium">Title</Text>
+```
 
 ```rust tabs
 view()
@@ -330,11 +335,6 @@ view()
     .p_4()
     .when(os() == Os::Ios, |v| v.shadow_md())
     .when(os() == Os::Android, |v| v.border_1().border_color(rgb(0xe4e4e7)))
-```
-
-```tsx tabs
-<View class="rounded-xl bg-white p-4 ios:shadow-md android:border android:border-zinc-200">…</View>
-<Text class="text-base android:font-medium">Title</Text>
 ```
 
 ## Prefer shared behavior

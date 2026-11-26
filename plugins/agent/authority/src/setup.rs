@@ -37,7 +37,7 @@ pub trait SetupAccess: Send + Sync {
     fn prepare_private_process<'a>(
         &'a self,
         context: &'a Context,
-        selected: &'a maka_process::Command,
+        selected: &'a mut maka_process::Command,
     ) -> BoxFuture<'a, Result<maka_process::isolated::TaskOwner, Error>>;
 
     /// Retain a frozen HOME belonging to this source's original preparation.

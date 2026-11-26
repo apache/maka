@@ -943,6 +943,9 @@ fn input_json(c: &InputConfig) -> String {
     if c.paste_behavior != nsh_core::PasteBehavior::Insert {
         s.push_str(",\"pasteInserts\":false");
     }
+    if let Some(max) = c.paste_max_size {
+        let _ = write!(s, ",\"pasteMaxSize\":{max}");
+    }
     if !c.scrollbar_visible {
         s.push_str(",\"noIndicator\":true");
     }
@@ -1269,7 +1272,9 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                 out.s.push(']');
             }
             if !text.links.is_empty() || copies_sent {
-                // Links, as runs name them: `[node, events]`.
+                // Links, as runs name them: `[node, events]`, and its
+                // `href` after them when the link goes somewhere (drawn as
+                // an `<a href>`).
                 out.s.push_str(",[");
                 for (i, link) in text.links.iter().enumerate() {
                     if i > 0 {
@@ -1277,6 +1282,10 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                     }
                     let _ = write!(out.s, "[{},", link.node);
                     push_events(&mut out.s, link.events);
+                    if let Some(href) = text.link_href(i) {
+                        out.s.push(',');
+                        push_str(&mut out.s, href);
+                    }
                     out.s.push(']');
                 }
                 out.s.push(']');
@@ -1386,6 +1395,8 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
             out.item("shi").num(*id).end();
         }
         MountItem::NavShader { id, shader } => {
+            #[cfg(feature = "rust-parts")]
+            crate::shader::note(item);
             let layer = shader.as_ref().map(|s| &*s.layer);
             let ms = shader
                 .as_ref()
@@ -1397,6 +1408,8 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                 .end();
         }
         MountItem::Shader { id, layer } => {
+            #[cfg(feature = "rust-parts")]
+            crate::shader::note(item);
             out.item("sh")
                 .num(*id)
                 .raw(&crate::shader::encode_layer(layer.as_deref()))

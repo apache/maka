@@ -1762,7 +1762,7 @@ export function ChangesStudio(props: {
             popupStyle={{ ...floatingStyle(), width: 220 }}
             trigger={
               <Button
-                accessibilityLabel={tr('{count} review notes', { count: sessionNotes().length })}
+                accessibilityLabel={tr('review.notes_count', { count: sessionNotes().length })}
                 style={{
                   height: 28,
                   paddingHorizontal: 8,
@@ -1777,7 +1777,7 @@ export function ChangesStudio(props: {
               >
                 <Icon name="note" size={13} color={C.accent} />
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.accent, fontWeight: '500' }}>
-                  {String(sessionNotes().length)}
+                  {formatCount(sessionNotes().length)}
                 </Text>
               </Button>
             }
@@ -2164,7 +2164,7 @@ export function ChangesStudio(props: {
                       <Icon name="back" size={13} color={C.secondary} />
                     </Button>
                     <Text style={{ fontSize: 12, lineHeight: 16, color: C.secondary }}>
-                      {`${clampedFileIndex() + 1} / ${filteredFileRows().length}`}
+                      {`${formatCount(clampedFileIndex() + 1)} / ${formatCount(filteredFileRows().length)}`}
                     </Text>
                     <Button
                       accessibilityLabel={tr('Next file')}
@@ -2297,8 +2297,8 @@ export function ChangesStudio(props: {
                 </Text>
                 <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
                   {viewedCount() > 0
-                    ? `${viewedCount()}/${allFileRows().length}`
-                    : String(allFileRows().length)}
+                    ? `${formatCount(viewedCount())}/${formatCount(allFileRows().length)}`
+                    : formatCount(allFileRows().length)}
                 </Text>
               </View>
               <View
@@ -2381,12 +2381,14 @@ export function ChangesStudio(props: {
                         <Icon name="check" size={12} color={C.success} />
                       </If>
                       <If when={(row()?.added ?? 0) > 0}>
-                        <Text style={{ fontSize: 11, color: C.success }}>{`+${row()?.added}`}</Text>
+                        <Text style={{ fontSize: 11, color: C.success }}>
+                          {`+${formatCount(row()?.added ?? 0)}`}
+                        </Text>
                       </If>
                       <If when={(row()?.deleted ?? 0) > 0}>
-                        <Text
-                          style={{ fontSize: 11, color: C.danger }}
-                        >{`−${row()?.deleted}`}</Text>
+                        <Text style={{ fontSize: 11, color: C.danger }}>
+                          {`−${formatCount(row()?.deleted ?? 0)}`}
+                        </Text>
                       </If>
                       <Text style={{ fontSize: 11, color: row()?.statusColor }}>
                         {gitMark(row()?.status)}

@@ -84,7 +84,6 @@ fn start() -> (Engine, Receiver<MountBatch>) {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,
@@ -266,7 +265,6 @@ fn start_app_culling(
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,
@@ -961,6 +959,83 @@ fn an_if_hands_its_function_child_the_value() {
     );
     press(out);
     next(&rx, |b| texts(b).contains(&"signed out".to_owned()));
+}
+
+const IF_VALUE_CLEANUP: &str = r#"
+import { cleanup, mount, signal, Text, View } from "nsh";
+
+const user = signal<{ name: string } | null>(null);
+const log = signal<string[]>([]);
+const note = (line: string) => log.set([...log(), line]);
+
+function Greeting(props: { user: { name: string } }) {
+  cleanup(() => note(`child ${props.user.name}`));
+  return <Text>{`hello ${props.user.name}`}</Text>;
+}
+
+mount(() => (
+  <View>
+    <If when={user()} else={<Text>signed out</Text>}>
+      {(u) => {
+        cleanup(() => note(`branch ${u().name}`));
+        return <Greeting user={u()} />;
+      }}
+    </If>
+    <Text>{`log: ${log().join(", ")}`}</Text>
+    <Text onPress={() => user.set({ name: user()?.name === "Ada" ? "Grace" : "Ada" })}>next</Text>
+    <Text onPress={() => user.set(null)}>out</Text>
+  </View>
+));
+"#;
+
+/// While an `<If>`'s branch is disposed because `when` turned falsy, its
+/// `cleanup()`s and its children's prop getters still read the accessor
+/// as the branch's last truthy value (`NonNullable<T>`), and a branch made
+/// again starts from the new value, not the closed one's (#3131).
+#[test]
+fn an_if_branch_reads_its_last_value_while_it_is_cleaned_up() {
+    let (engine, rx) = start_app(IF_VALUE_CLEANUP);
+    let control = engine.control();
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    assert!(texts(&first).contains(&"signed out".to_owned()));
+    let (next_id, out) = (
+        text_id(&first, "next").expect("next"),
+        text_id(&first, "out").expect("out"),
+    );
+    let press = |id| control.dispatch_event(id, EventKind::Press, EventPayload::None);
+    press(next_id);
+    next(&rx, |b| texts(b).contains(&"hello Ada".to_owned()));
+    press(next_id);
+    next(&rx, |b| texts(b).contains(&"hello Grace".to_owned()));
+    press(out);
+    let batch = next(&rx, |b| {
+        texts(b)
+            .iter()
+            .any(|t| t.starts_with("log: b") || t.starts_with("log: c"))
+    });
+    let log = texts(&batch)
+        .into_iter()
+        .find(|t| t.starts_with("log: "))
+        .unwrap();
+    assert!(
+        log.contains("branch Grace") && log.contains("child Grace"),
+        "{log}"
+    );
+    // Shown and closed again: the new branch reads the new value, and its
+    // cleanups read that one, not the first branch's.
+    press(next_id);
+    next(&rx, |b| texts(b).contains(&"hello Ada".to_owned()));
+    press(out);
+    let batch = next(&rx, |b| texts(b).iter().any(|t| t.contains("branch Ada")));
+    let log = texts(&batch)
+        .into_iter()
+        .find(|t| t.starts_with("log: "))
+        .unwrap();
+    assert!(log.contains("child Ada"), "{log}");
+    assert_eq!(log.matches("Grace").count(), 2, "{log}");
+    assert!(!log.contains("null") && !log.contains("undefined"), "{log}");
 }
 
 const REFS: &str = r#"

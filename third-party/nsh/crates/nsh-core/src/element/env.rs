@@ -101,9 +101,6 @@ pub struct Environment {
     /// The platform shows file dialogs and opens, reveals and trashes local
     /// paths ([`crate::platform::Environment::file_requests`]).
     pub file_requests: bool,
-    /// The platform recognizes speech
-    /// ([`crate::platform::Environment::speech`]).
-    pub speech: bool,
     /// The platform shows notifications
     /// ([`crate::platform::Environment::notifications`]).
     pub notifications: bool,
@@ -180,7 +177,6 @@ impl Default for Environment {
             auth_session: false,
             scheme_links: true,
             file_requests: false,
-            speech: false,
             notifications: false,
             audio: false,
             tab_bar: true,

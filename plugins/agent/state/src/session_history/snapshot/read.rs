@@ -933,11 +933,19 @@ impl Query for ImportedItem {
 }
 pub(super) struct Terminated(pub Snapshot, pub RunId);
 impl Query for Terminated {
-    type Output = Option<(UnixMillis, Terminal)>;
+    type Output = IndexedRead<Option<(UnixMillis, Terminal)>>;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        authorize(c, &self.0)?;
+        match super::metrics_metadata::require_ready(c, &self.0) {
+            Ok(()) => {}
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+                return Ok(IndexedRead::NeedsRebuild(snapshots));
+            }
+            Err(IndexedReadError::Store(error)) => return Err(error),
+        }
         let raw: Option<String> = c.query_row("SELECT entry_json FROM agent_history_snapshot_entries INDEXED BY agent_history_snapshot_metrics_attempt WHERE snapshot=? AND kind='fact' AND run=? AND json_extract(entry_json,'$.attempt') IS NULL AND fact_kind='run_terminated'", params![self.0.id.to_string(), self.1.to_string()], |row| row.get(0)).optional()?;
-        let Some(raw) = raw else { return Ok(None) };
+        let Some(raw) = raw else {
+            return Ok(IndexedRead::Ready(None));
+        };
         let Entry::Fact { run, id, body, .. } = serde_json::from_str(&raw)? else {
             return Err(invalid("snapshot fact index kind corrupt"));
         };
@@ -946,7 +954,7 @@ impl Query for Terminated {
             Fact::RunTerminated { terminal, .. }
                 if record.run == run && run == self.1 && record.id == id =>
             {
-                Ok(Some((record.at, terminal)))
+                Ok(IndexedRead::Ready(Some((record.at, terminal))))
             }
             _ => Err(invalid("snapshot Run termination index names another fact")),
         }

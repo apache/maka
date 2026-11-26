@@ -9,27 +9,6 @@ demo: el-plot
 
 Plot 是图表的框架：它持有要显示的数据行、x 轴和 y 轴的比例尺、指针在它上面的位置以及动效。它的图形负责绘制这些内容：`Line` 是穿过一个系列的折线，`Area` 是系列与基线之间的区域，`Bar` 是 band 比例尺条带里每行一根的柱子，`Rule` 是每行一条从起点到终点的线段（K 线的影线），`Dot` 是每行在两个数值交汇处的一个圆点（散点图的点、气泡图的气泡），`Cell` 是每行在两个类别的条带里的一个格子，按数值上色（热力图），`Grid` 是横跨图表的网格线，`Pie` 是各行所占份额的饼图（中间留空即为环形图），`Arc` 是两个角度之间的一段扇形，`RadialLine` 是围绕中心的一条线，背后是 `RadialGrid` 的圆环和辐条（雷达图），`Sankey` 是各行之间的流向图，`Treemap` 是嵌套矩形，每个叶子的面积就是它的值（市场热力图）；`PlotAxis` 用比例尺的刻度为一条边加上标签，`PlotLabel` 在比例尺的点上写文字。每个图形都是一个铺满 plot 的画布，根据数据行原生绘制：应用设置数据行时只读取一次，之后在 Rust 中完成缩放、录制和绘制，所以一千个点的图表也不会为每个点运行 JS。指针同样在 Rust 中跟踪：悬停的十字线、圆点和提示框由平台的动画器移动和淡入淡出，应用只会在指针移到另一行时收到通知。外观由应用决定：图形使用 CSS 中 SVG 图形的绘制属性（`stroke-*`、`fill-*`），没有设置时使用 `currentColor`；area 和柱子可以在自己的形状内显示背景（渐变，`bg-linear-*`）；悬停部件（包括每个图形自己的圆点）以及坐标轴的标签、刻度线和轴线都由应用设置样式和内容。
 
-```rust tabs
-use nsh_base::{
-    plot::{area, grid, line, plot},
-    theme,
-};
-use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
-
-fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
-    let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
-    plot()
-        .data(rows)
-        .y(RowAccessor::key("visitors"))
-        .accessibility_label("每天的访客数")
-        .h(px(160.0))
-        .on_hover_change(move |index: &Option<u32>| hovered.set(*index))
-        .child(grid().y(vec![0.0, 1500.0, 3000.0]).stroke_color(move || theme().border))
-        .child(area().fill_color(move || theme().chart_1.opacity(0.2)))
-        .child(line().stroke_color(move || theme().chart_1).stroke_width(px(2.0)))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Area, Grid, Line, Plot } from "nsh/base/plot";
@@ -73,6 +52,27 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{
+    plot::{area, grid, line, plot},
+    theme,
+};
+use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
+
+fn week(visitors: Vec<f64>, hovered: Signal<Option<u32>>) -> impl IntoElement {
+    let rows = Rows::from_columns(visitors.len(), [("visitors".into(), visitors)]);
+    plot()
+        .data(rows)
+        .y(RowAccessor::key("visitors"))
+        .accessibility_label("每天的访客数")
+        .h(px(160.0))
+        .on_hover_change(move |index: &Option<u32>| hovered.set(*index))
+        .child(grid().y(vec![0.0, 1500.0, 3000.0]).stroke_color(move || theme().border))
+        .child(area().fill_color(move || theme().chart_1.opacity(0.2)))
+        .child(line().stroke_color(move || theme().chart_1).stroke_width(px(2.0)))
+}
 ```
 
 `Plot`、`Line`、`Area`、`Bar`、`Rule`、`Dot`、`Cell`、`Grid`、`Pie`、`Arc`、`RadialLine`、`RadialGrid`、`Sankey`、`Treemap`、`PlotAxis` 和 `PlotLabel` 来自 `nsh/base/plot`，这是 [`nsh/base`](../modules/nsh-base.md) 中单独的一个模块（Rust 中是 `nsh_base::plot`）。在 TypeScript 中，plot 的属性对数据行的类型是泛型的：字段名会按数据行做类型检查，行的函数会拿到行的类型。在 Rust 中，`plot()` 为每个属性提供一个 setter，数据行是 `Rows`（按键名存放的数字列），取值方式是 `RowAccessor`（键名，或以行序号为参数的函数），图形使用带类型的绘制方法（`.stroke_color(..)`、`.fill_color(..)`、`.stroke_width(..)`）。

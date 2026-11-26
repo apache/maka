@@ -1,6 +1,6 @@
 ---
 title: 平台概览
-description: "NSH 在哪些平台上运行：iOS、Android、macOS、Windows、Linux、GPUI、终端和 Web，每个平台都有自己的后端；在各平台上如何运行、打包和嵌入 Rust 或 TSX 应用，以及各自需要什么。"
+description: "NSH 在哪些平台上运行：iOS、Android、macOS、Windows、Linux、GPUI、终端和 Web，每个平台都有自己的后端；在各平台上如何运行、打包和嵌入 TSX 或 Rust 应用，以及各自需要什么。"
 order: 10
 group: platforms
 ---
@@ -113,6 +113,24 @@ extern "system" fn Java_com_example_app_RuntimeBridge_configure(
 
 应用的组件用 NSH 的基础元素绘制，所以在桌面上和在手机上一样运行，样子也相同。桌面布局用基础元素（`view`、`text`、`scroll`、`virtual_list` 等；TSX 里是 `View`、`Text`、`Scroll`、`List` 等）加上对桌面的判断搭建，示例应用 gallery 的桌面布局就是这样做的：
 
+```tsx tabs
+import { View } from "nsh";
+import { platform } from "nsh";
+
+export function Shell() {
+  // macOS、Windows、Linux 和桌面浏览器用侧边栏；手机用标签页。
+  return <View class="flex-1">{platform.desktop ? <SidebarLayout /> : <TabLayout />}</View>;
+}
+
+function SidebarLayout() {
+  return <View class="flex-1 flex-row" />;
+}
+
+function TabLayout() {
+  return <View class="flex-1 flex-col" />;
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -130,24 +148,6 @@ fn sidebar_layout() -> AnyElement {
 
 fn tab_layout() -> AnyElement {
     view().flex_1().flex_col().into_element()
-}
-```
-
-```tsx tabs
-import { View } from "nsh";
-import { platform } from "nsh";
-
-export function Shell() {
-  // macOS、Windows、Linux 和桌面浏览器用侧边栏；手机用标签页。
-  return <View class="flex-1">{platform.desktop ? <SidebarLayout /> : <TabLayout />}</View>;
-}
-
-function SidebarLayout() {
-  return <View class="flex-1 flex-row" />;
-}
-
-function TabLayout() {
-  return <View class="flex-1 flex-col" />;
 }
 ```
 

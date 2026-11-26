@@ -128,7 +128,7 @@ impl Query for ReadQuiescence {
     }
 }
 
-fn observe(
+pub(crate) fn observe(
     c: &Connection,
     owner: &RunOwner,
     session: &str,
@@ -163,11 +163,7 @@ fn observe(
         ),
         (
             SessionObligation::ExternalTask,
-            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE owner=?1 AND session=?2 AND local=1 AND json_extract(external,'$.admitted')=1 AND ((json_extract(external,'$.closed') IS NULL AND json_extract(terminal,'$') IS NOT 'cancelled') OR json_extract(external,'$.cleanup.kind') IS NOT 'confirmed'))",
-        ),
-        (
-            SessionObligation::ExternalEffect,
-            "SELECT EXISTS(SELECT 1 FROM agent_runs r WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND EXISTS(SELECT 1 FROM agent_external_effects e WHERE e.run=r.run AND e.pending=1))",
+            "SELECT EXISTS(SELECT 1 FROM agent_runs r LEFT JOIN agent_run_specs s ON s.run=r.run LEFT JOIN contents c ON c.id=s.spec_content_id WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND json_extract(r.external,'$.admitted')=1 AND (json_extract(r.external,'$.cleanup.kind') IS NOT 'confirmed' OR (json_extract(r.external,'$.closed') IS NULL AND json_extract(r.terminal,'$') IS NOT 'cancelled' AND NOT (r.terminal IS NOT NULL AND COALESCE(CAST(c.payload AS TEXT)->>'$.backend.kind'='executor' AND CAST(c.payload AS TEXT)->>'$.backend.selection.executor'='external',0)))))",
         ),
         (
             SessionObligation::ExternalSteering,
@@ -184,6 +180,17 @@ fn observe(
             .query_row(params![owner, session], |r| r.get(0))?;
         if busy {
             return Ok(SessionQuiescence::Busy(obligation));
+        }
+    }
+    let mut effects = c.prepare_cached(
+        "SELECT e.body FROM agent_runs r JOIN agent_external_effects e ON e.run=r.run WHERE r.owner=?1 AND r.session=?2 AND r.local=1 AND e.pending=1",
+    )?;
+    let mut effect_rows = effects.query(params![&owner, session])?;
+    while let Some(row) = effect_rows.next()? {
+        let effect: crate::external_effects::ExternalEffect =
+            serde_json::from_str(&row.get::<_, String>(0)?)?;
+        if effect.unsettled() {
+            return Ok(SessionQuiescence::Busy(SessionObligation::ExternalEffect));
         }
     }
     let mut publications=c.prepare_cached("SELECT r.run FROM agent_runs r JOIN agent_external_publications p ON p.run=r.run WHERE r.owner=?1 AND r.session=?2 AND r.local=1")?;

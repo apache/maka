@@ -1,8 +1,8 @@
 // A selectable view's and a selectable TextView's `onSelectionChange`: a
-// drag selects and reports the text, select all reports every text, and
-// clearing the selection reports nothing selected. A headless run selects
-// nothing (it draws no text): the real platforms run it (`nsh test
-// --target web`, `--target linux`).
+// drag selects and reports the text (on the web with the box around it),
+// select all reports every text, and clearing the selection reports nothing
+// selected. A headless run selects nothing (it draws no text): the real
+// platforms run it (`nsh test --target web`, `--target linux`).
 import { expect, open, test } from "nsh/test";
 
 const desktop = { width: 600, height: 500 } as const;
@@ -17,6 +17,15 @@ test("a selectable view reports its selected text", async () => {
   await app.drag("text:Alpha beta gamma", { x: 0, y: 40 });
   await app.waitUntil(() => app.texts().some((t) => t.startsWith("Area [") && t.includes("Delta") && t !== "Area [Alpha beta gamma\nDelta epsilon]"));
   if (web) {
+    // The box around it, in the view (320 wide, two lines of 18 points 8
+    // apart) down to the second line, and in the root view, where the view
+    // is 24 in from the left and below the lines above it.
+    const box = app.texts().find((t) => t.startsWith("Box ["))!;
+    const [x, y, width, height, pageX, pageY] = box.slice(5, -1).split(" ").map(Number);
+    expect(width > 0 && height > 0).toBe(true);
+    expect(x >= 0 && x + width <= 320 && y >= 0 && y + height > 30).toBe(true);
+    expect(pageX).toBe(x + 24);
+    expect(pageY - y > 24).toBe(true);
     // The test agent's Ctrl+A selects in focused fields only elsewhere.
     await app.keyboard.press("ctrl+a");
     await app.waitFor("text:Area [Alpha beta gamma\nDelta epsilon]");
@@ -43,6 +52,8 @@ test("a selectable TextView reports its selected text", async () => {
   expect(md.endsWith("part]") && (!md.includes("this") || md.includes("**"))).toBe(true);
   expect(html.startsWith("Html [<p>") && html.endsWith("part</p>]")).toBe(true);
   expect(!html.includes("this") || html.includes("<strong>")).toBe(true);
+  // The web places it, for what opens at it (a bar of actions).
+  if (web) expect(app.shows("text:Doc box [placed]")).toBe(true);
   if (web) {
     await app.keyboard.press("ctrl+a");
     await app.waitFor("text:Doc [Quote this part]");

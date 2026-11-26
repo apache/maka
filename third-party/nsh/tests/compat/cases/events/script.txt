@@ -116,6 +116,7 @@ prop id:paste pasteBehavior report
 expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello html 0 files 0 uris 0
+expect Too large: no files
 expect Inserted: none
 # The app inserts a paste it allowed (`insertText`): the call is made
 # without throwing; what it inserts is the platforms' (nsh-testing's paste
@@ -125,6 +126,10 @@ expect Pasted: insert:hi html 0 files 0 uris 0
 covers [events] onPaste
 prop id:paste pasteBehavior report
 covers [props] pasteBehavior
+# The largest pasted file the input reads; larger ones reach `onPaste` in
+# `tooLarge` (an empty list above).
+prop id:paste pasteMaxSize 1048576
+covers [props] pasteMaxSize
 covers [events] onContentSizeChange
 covers [props] selectedRange
 # events-layout

@@ -256,11 +256,8 @@ impl Owner {
         let quote = source.quote(&prepared).await.map_err(|e| e.to_string())?;
         let cancellation = scope.cancellation.child_token();
         let _cancel = cancellation.clone().drop_guard();
-        let output_instruction = match language {
-            Language::En => "Return only JSON matching this schema:",
-            Language::ZhCn => "仅返回符合以下 JSON Schema 的 JSON：",
-            Language::ZhTw => "只回傳符合下列 JSON Schema 的 JSON：",
-        };
+        let output_instruction =
+            maka_agent_facts::i18n::prediction::output_schema_instruction(language);
         let instruction = format!(
             "{}\n\n{output_instruction}\n{}",
             settings

@@ -464,7 +464,11 @@ pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, view: &NshView, state: &ViewSt
     // A knob with a thin border of the opposite tone, as UIKit's default
     // indicator style: the appearance says what the window is, not what
     // the content under the knob is, which may be light in a dark app.
-    let a = s.live.alpha;
+    draw_knob(cx, x, y, rw, rh, s.live.alpha);
+}
+
+/// Draws an indicator's knob at `(x, y, w, h)` with `alpha` (0..=1).
+pub(crate) fn draw_knob(cx: &DrawCx<'_>, x: f32, y: f32, rw: f32, rh: f32, a: f32) {
     let (knob, border) = if cx.dark {
         (
             Color::rgba(255, 255, 255, (140.0 * a) as u8),
@@ -490,7 +494,15 @@ pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, view: &NshView, state: &ViewSt
 }
 
 /// Fills a rounded rectangle with the pass's solid brush.
-fn fill_rounded(cx: &DrawCx<'_>, x: f32, y: f32, w: f32, h: f32, radius: f32, color: Color) {
+pub(crate) fn fill_rounded(
+    cx: &DrawCx<'_>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: Color,
+) {
     let rr = D2D1_ROUNDED_RECT {
         rect: rect_f(x, y, w, h),
         radiusX: radius,

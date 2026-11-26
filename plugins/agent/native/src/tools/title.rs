@@ -43,13 +43,23 @@ impl Kind {
     pub(super) fn render(self, input: &Value) -> Option<Text> {
         // ToolCatalog has validated this already parsed input against its schema.
         let target = match self {
-            Self::Read | Self::Write | Self::Edit | Self::List => &input["path"],
-            Self::Patch => &input["operation"]["path"],
-            Self::Glob => &input["pattern"],
-            Self::Fetch => &input["url"],
-            Self::CreateSession | Self::ForkSession => &input["title"],
-            Self::SendSession => &input["message"],
-            Self::Search => &input["query"],
+            Self::Read | Self::Write | Self::Edit | Self::List => input["path"].as_str(),
+            Self::Patch => {
+                let mut paths = maka_fs_tools::patch_paths(input["patch"].as_str()?)
+                    .ok()?
+                    .into_iter();
+                let first = paths.next()?;
+                let target = match paths.len() {
+                    0 => first,
+                    extra => format!("{first} (+{extra})"),
+                };
+                return self.render_target(&target, false);
+            }
+            Self::Glob => input["pattern"].as_str(),
+            Self::Fetch => input["url"].as_str(),
+            Self::CreateSession | Self::ForkSession => input["title"].as_str(),
+            Self::SendSession => input["message"].as_str(),
+            Self::Search => input["query"].as_str(),
         };
         let continuation = match self {
             Self::Read => ReadInput::deserialize(input)
@@ -61,12 +71,11 @@ impl Kind {
         if matches!(self, Self::CreateSession)
             && input.get("forkFrom").is_some_and(Value::is_object)
         {
-            let title = target.as_str()?;
-            return Self::ForkSession.render_target(title, false);
+            return Self::ForkSession.render_target(target?, false);
         }
         let target = continuation
             .as_ref()
-            .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
+            .map_or(target, |read| Some(read.path()))?;
         if matches!(self, Self::SendSession) {
             let line = target.lines().find(|line| !line.trim().is_empty())?.trim();
             let mut chars = line.chars();
@@ -82,31 +91,36 @@ impl Kind {
     pub(crate) fn render_target(self, target: &str, continuation: bool) -> Option<Text> {
         let is_session_uri = matches!(self, Self::Read)
             && (target.starts_with("maka://session/") || target.starts_with("session:"));
-        let (en, zh, tw) = match self {
-            Self::Read if is_session_uri => ("Read session", "读取会话", "讀取對話"),
-            Self::Read => ("Read file", "读取文件", "讀取檔案"),
-            Self::Write => ("Write file", "写入文件", "寫入檔案"),
-            Self::Edit => ("Edit file", "编辑文件", "編輯檔案"),
-            Self::Patch => ("Patch file", "修补文件", "修補檔案"),
-            Self::Glob => ("Find files", "查找文件", "尋找檔案"),
-            Self::List => ("List directory", "列出目录", "列出目錄"),
-            Self::Fetch => ("Read web page", "读取网页", "讀取網頁"),
-            Self::Search => ("Search the web", "搜索网络", "搜尋網路"),
-            Self::CreateSession => ("Create conversation", "创建会话", "建立對話"),
-            Self::ForkSession => ("Branch conversation", "从会话分支", "從對話建立分支"),
-            Self::SendSession => ("Send message to agent", "向协作者发消息", "傳訊息給協作者"),
-        };
         let target = Text::single_line(target)?.fallback;
-        let (en_more, zh_more, tw_more) = if continuation {
-            (" · continued", " · 续读", " · 續讀")
-        } else {
-            ("", "", "")
-        };
-        Some(Text::localized(
-            &format!("{en} · {target}{en_more}"),
-            &format!("{zh} · {target}{zh_more}"),
-            &format!("{tw} · {target}{tw_more}"),
-        ))
+        Some(Text::for_locales(|locale| {
+            let action = match self {
+                Self::Read if is_session_uri => {
+                    maka_agent_facts::i18n::tool_title::read_session(locale)
+                }
+                Self::Read => maka_agent_facts::i18n::tool_title::read_file(locale),
+                Self::Write => maka_agent_facts::i18n::tool_title::write_file(locale),
+                Self::Edit => maka_agent_facts::i18n::tool_title::edit_file(locale),
+                Self::Patch => maka_agent_facts::i18n::tool_title::patch_file(locale),
+                Self::Glob => maka_agent_facts::i18n::tool_title::find_files(locale),
+                Self::List => maka_agent_facts::i18n::tool_title::list_directory(locale),
+                Self::Fetch => maka_agent_facts::i18n::tool_title::read_web_page(locale),
+                Self::Search => maka_agent_facts::i18n::tool_title::search_web(locale),
+                Self::CreateSession => {
+                    maka_agent_facts::i18n::tool_title::create_conversation(locale)
+                }
+                Self::ForkSession => {
+                    maka_agent_facts::i18n::tool_title::branch_conversation(locale)
+                }
+                Self::SendSession => {
+                    maka_agent_facts::i18n::tool_title::send_message_to_agent(locale)
+                }
+            };
+            if continuation {
+                maka_agent_facts::i18n::tool_title::with_target_continued(locale, action, &target)
+            } else {
+                maka_agent_facts::i18n::tool_title::with_target(locale, action, &target)
+            }
+        }))
     }
 }
 
@@ -128,6 +142,32 @@ mod tests {
         assert_eq!(
             Kind::Read.render(&next).unwrap().fallback,
             "Read file · src/main.rs · continued"
+        );
+    }
+
+    #[test]
+    fn patch_title_covers_single_and_multi_file_envelopes() {
+        let single = json!({
+            "patch": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-old\n+new\n*** End Patch"
+        });
+        assert_eq!(
+            Kind::Patch.render(&single).unwrap().fallback,
+            "Patch file · src/main.rs"
+        );
+
+        let multi = json!({
+            "patch": "*** Begin Patch\n*** Add File: a.rs\n+1\n*** Update File: b.rs\n@@\n-1\n+2\n*** Update File: a.rs\n@@\n-1\n+3\n*** Delete File: c.rs\n*** End Patch"
+        });
+        assert_eq!(
+            Kind::Patch.render(&multi).unwrap().fallback,
+            "Patch file · a.rs (+2)"
+        );
+
+        assert!(Kind::Patch.render(&json!({"patch": "invalid"})).is_none());
+        assert!(
+            Kind::Patch
+                .render(&json!({"patch": "*** Add File: src/a.rs\n+hi"}))
+                .is_none()
         );
     }
 }

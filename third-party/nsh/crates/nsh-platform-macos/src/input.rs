@@ -353,6 +353,7 @@ pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u16) {
         // whatever is tracked, so it stays.
         s.states &= input::reported_states(states);
     }
+    view.settle_leaf();
     update_hover_tracking(surface, view);
 }
 
@@ -384,7 +385,7 @@ fn update_hover_tracking(surface: &Surface, view: &NshView) {
 /// handlers must not run.
 pub(crate) fn removed(surface: &Surface, view: &NshView) {
     let input = &surface.input;
-    let inside = |v: &NshView| v.ns().isDescendantOf(view.ns());
+    let inside = |v: &NshView| v.is_within(view.ns());
     if !input.hovered.borrow().is_empty() {
         let left: Vec<NshView> = input
             .hovered
@@ -426,6 +427,15 @@ pub(crate) fn removed(surface: &Surface, view: &NshView) {
         None => crate::text_input::taken_out(&window),
     }
     window.makeFirstResponder(None);
+    // Then the root, as when the view hides or is blurred (the page's body
+    // in a browser): left on the window, the focus reaches no responder of
+    // the root's keys and actions (Copy of a page selection, Escape,
+    // scrolling keys), and a press on a page text does not take it back.
+    // Not when the root leaves with the view (its window closes).
+    let root = root_in(surface, &window);
+    if !root.ns().isDescendantOf(view.ns()) {
+        window.makeFirstResponder(Some(root.ns()));
+    }
 }
 
 /// Sets or clears interaction state `bit` of `view` and reports the
@@ -1731,6 +1741,10 @@ fn pick_in(view: &NshView, p: (f32, f32)) -> Option<Hit> {
         return own();
     }
     if pe != PointerEvents::BoxOnly {
+        // Leaves (#2066) are its only children when it has them.
+        if !view.leaf_children().is_empty() {
+            return pick_children(view, p).or_else(own);
+        }
         // Hosted views and children in their AppKit order, topmost first:
         // hosted views are usually above the children, but not always (a
         // modal is above the image of one leaving, which the root hosts).
@@ -1757,8 +1771,15 @@ fn pick_in(view: &NshView, p: (f32, f32)) -> Option<Hit> {
 /// `view`'s container, and any native raised among them (a lifted input's
 /// pad, which stacks there rather than over the whole view).
 fn pick_children(view: &NshView, p: (f32, f32)) -> Option<Hit> {
-    let container = view.container();
     let cp = into_container(view, p);
+    let leaves = view.leaf_children();
+    if !leaves.is_empty() {
+        return leaves
+            .iter()
+            .rev()
+            .find_map(|child| into_child(child, cp).and_then(|c| pick_in(child, c)));
+    }
+    let container = view.container();
     let subviews: Vec<_> = container.subviews().iter().collect();
     subviews
         .into_iter()
@@ -2793,6 +2814,7 @@ pub(crate) fn modifiers(flags: NSEventModifierFlags) -> nsh_core::keymap::Modifi
         alt: flags.contains(NSEventModifierFlags::Option),
         shift: flags.contains(NSEventModifierFlags::Shift),
         cmd: flags.contains(NSEventModifierFlags::Command),
+        alt_graph: false,
     }
 }
 
@@ -3532,14 +3554,13 @@ fn scroll_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<
 }
 
 /// The scroll view a trackpad gesture by `(dx, dy)` at `(x, y)` moves:
-/// the one [`scroll_target`] picks, else, at the edges, the innermost one
-/// along the gesture that bounces, which stretches as on macOS.
+/// the one [`scroll_target`] picks, else, at the edges, the view
+/// [`crate::scroll::bounce_target`] picks, which stretches as on macOS.
 fn gesture_target(surface: &Surface, x: f32, y: f32, dx: f32, dy: f32) -> Option<NshView> {
     scroll_target(surface, x, y, dx, dy).or_else(|| {
         let hit = pick(&event_root(surface), x, y)?;
-        chain(&hit.view)
-            .into_iter()
-            .find(|v| crate::scroll::can_bounce(v, dx, dy))
+        let views = chain(&hit.view);
+        crate::scroll::bounce_target(&views, dx, dy)
     })
 }
 
@@ -3713,6 +3734,52 @@ fn embedded(root: &objc2_app_kit::NSView) -> bool {
         return false;
     };
     crate::view::superview(root).is_some_and(|app| window.contentView().as_ref() != Some(&app))
+}
+
+/// Whether a scroll of `surface` is under way at `event`: a trackpad
+/// gesture, its glide, or wheel steps latched to a view.
+pub(crate) fn scrolling(surface: &Surface, event: &NSEvent) -> bool {
+    let input = &surface.input;
+    let time = event.timestamp() * 1000.0;
+    let horizontal = event.scrollingDeltaX().abs() > event.scrollingDeltaY().abs();
+    input.wheel.borrow().is_some()
+        || (input.momentum.borrow().is_some() && time - input.momentum_last.get() < TOUCHPAD_IDLE)
+        || input
+            .latch
+            .borrow()
+            .as_ref()
+            .is_some_and(|(view, h, last)| {
+                latch_holds(*h, *last, horizontal, time) && view.ns().window().is_some()
+            })
+}
+
+/// Hands `ns_event`, which reached a hosted AppKit view, into the surface's
+/// input path as the root's `scrollWheel:` does (not by sending it to the
+/// root, which can no-op when re-entered from a nested AppKit handler).
+pub(crate) fn forward_scroll(surface: &Rc<Surface>, ns_event: &NSEvent) {
+    surface.measure(true, || {
+        event(surface, ns_event);
+        crate::surface::quiet(|| surface.revisit());
+    });
+}
+
+/// Begins a trackpad gesture on the surface at `ns_event` (a change of
+/// it), for a gesture that began on a hosted view which then passed it on:
+/// the surface sees a begin before the changes, as for its own gestures.
+pub(crate) fn begin_gesture(surface: &Rc<Surface>, ns_event: &NSEvent) {
+    let p = event_root(surface)
+        .ns()
+        .convertPoint_fromView(ns_event.locationInWindow(), None);
+    let time = ns_event.timestamp() * 1000.0;
+    gesture_event(
+        surface,
+        NSEventPhase::Began,
+        p.x as f32,
+        p.y as f32,
+        0.0,
+        0.0,
+        time,
+    );
 }
 
 /// A `scrollWheel:` event at `(x, y)`.

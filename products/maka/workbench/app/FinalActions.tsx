@@ -32,6 +32,7 @@ import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
+import { forgetPassage, selectedPassage } from './sideQuestions';
 import { ExecutorTokenCounts, TurnUsage } from './TurnUsage';
 import {
   C,
@@ -65,11 +66,18 @@ export function FinalActions(props: {
   ownerKey(): string;
   sessionId: string;
   through(): number;
-  fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
+  /** Absent in a side question's card: a fork made there would leave the card. */
+  fork?(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
   menu?: MessageMenu;
   compact?: boolean;
+  /** Asks a side question beside this reply. */
+  side?: {
+    ask(row: Row, passage: string | null): void;
+    /** Keeps a passage to ask about together with others. */
+    gather(row: Row, passage: string): void;
+  };
 }) {
   const host = useHost();
   const pending = signal(false);
@@ -98,7 +106,7 @@ export function FinalActions(props: {
   );
   const owns = (original: Target) => alive && sameTarget(target(), original);
   const fork = async (original: Target | null) => {
-    if (!original || !owns(original) || pending()) return;
+    if (!props.fork || !original || !owns(original) || pending()) return;
     pending.set(true);
     try {
       const observed = await host.query('agent', 'observe', {
@@ -132,12 +140,50 @@ export function FinalActions(props: {
       if (alive) pending.set(false);
     }
   };
-  props.menu?.add({
-    kind: 'fork',
-    label: () => tr('Fork from this turn'),
-    busy: pending,
-    action: () => (target() === null ? null : inputAction(fork, target())),
-  });
+  const askLabel = () =>
+    selectedPassage(props.sessionId, props.row().turnId)
+      ? tr('Ask about the selection beside')
+      : tr('Ask beside');
+  const askBeside = (passage: string | null) => {
+    if (target() === null) return;
+    props.side?.ask(props.row(), passage);
+    forgetPassage();
+  };
+  if (props.side)
+    props.menu?.add({
+      kind: 'ask',
+      label: askLabel,
+      busy: () => false,
+      // The menu holds the passage selected as it opened.
+      action: () => {
+        if (target() === null) return null;
+        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        return () => askBeside(passage);
+      },
+    });
+  if (props.side)
+    props.menu?.add({
+      kind: 'quote',
+      label: () => tr('Quote for a side question'),
+      busy: () => false,
+      action: () => {
+        if (target() === null) return null;
+        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        return passage
+          ? () => {
+              props.side?.gather(props.row(), passage);
+              forgetPassage();
+            }
+          : null;
+      },
+    });
+  if (props.fork)
+    props.menu?.add({
+      kind: 'fork',
+      label: () => tr('Fork from this turn'),
+      busy: pending,
+      action: () => (target() === null ? null : inputAction(fork, target())),
+    });
   const copy = () => (
     <MessageCopy
       compact={props.compact}
@@ -184,14 +230,23 @@ export function FinalActions(props: {
         }}
       >
         {copy()}
-        <IconButton
-          label={tr('Fork from this turn')}
-          tooltip={pending() ? tr('Creating fork…') : undefined}
-          icon="fork"
-          disabled={pending() || target() === null}
-          onPress={inputAction(fork, target())}
-        />
+        <If when={props.fork !== undefined}>
+          <IconButton
+            label={tr('Fork from this turn')}
+            tooltip={pending() ? tr('Creating fork…') : undefined}
+            icon="fork"
+            disabled={pending() || target() === null}
+            onPress={inputAction(fork, target())}
+          />
+        </If>
         {props.extra}
+        <If when={props.side !== undefined && target() !== null}>
+          <IconButton
+            label={askLabel()}
+            icon="ask"
+            onPress={() => askBeside(selectedPassage(props.sessionId, props.row().turnId))}
+          />
+        </If>
         <If
           when={target()?.position.kind === 'imported'}
           else={

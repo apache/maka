@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
+import { native, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.agent',
   displayName: 'Agent runtime',
   description: 'Run conversations, execute tasks, and manage agent state.',
-  localizations: {
-    'zh-CN': { displayName: '助手运行', description: '运行对话、执行任务和管理助手状态。' },
-  },
   application: {
     host: {
       ...native(sdk.nativeImplementations.agent),
@@ -55,4 +52,4 @@ export default {
       },
     },
   },
-};
+});

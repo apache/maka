@@ -368,6 +368,64 @@ export function replaceHistoryMetadata(
     : { ...row, ...next };
 }
 
+/** Apply a Host-bounded tailThought continuation update to the matching work summary row. */
+export function applyWorkTailThought(
+  row: Row,
+  update: NonNullable<ConversationHistoryPage['tailThought']>,
+): Row {
+  if (!row.work) return row;
+  const matchesEnd = sameHistoryRow(row.work.end.position, update.position);
+  const matchesLast =
+    row.work.lastThought != null && sameHistoryRow(row.work.lastThought.position, update.position);
+  if (!matchesEnd && !matchesLast) return row;
+  if (
+    matchesLast &&
+    row.work.lastThought!.offset >= update.offset &&
+    row.work.lastThought!.text === update.text &&
+    (!matchesEnd || row.work.end.offset >= update.offset)
+  )
+    return row;
+  return {
+    ...row,
+    work: {
+      ...row.work,
+      end: matchesEnd
+        ? { ...row.work.end, offset: Math.max(row.work.end.offset, update.offset) }
+        : row.work.end,
+      lastThought: {
+        position: update.position,
+        offset: Math.max(matchesLast ? row.work.lastThought!.offset : 0, update.offset),
+        text: update.text,
+      },
+    },
+  };
+}
+
+/** Return the next `after` cursor for an open steps window at tail, catching up stale thoughts before `window.last`. */
+export function groupStepsFollowCursor(
+  row: Pick<Row, 'work' | 'metadataThrough'>,
+  window: {
+    after: ConversationHistoryPage['after'];
+    last: ConversationHistoryPage['after'];
+    through: number;
+  },
+  through: number,
+  lookup: (key: string) => Pick<Row, 'fragments' | 'totalBytes'> | undefined,
+): NonNullable<ConversationHistoryPage['after']> | null {
+  if (window.after !== null) return null;
+  const thought = row.work?.lastThought;
+  if (thought && window.through < through) {
+    const loaded = lookup(historyRowKey(thought.position, 'thinking'));
+    if (loaded) {
+      const last = loaded.fragments?.at(-1);
+      const covered = last ? last.offset + messageBytes(last.text) : (loaded.totalBytes ?? 0);
+      if (covered < thought.offset)
+        return { position: thought.position, field: 'thinking', offset: covered };
+    }
+  }
+  return window.last && window.through < (row.metadataThrough ?? through) ? window.last : null;
+}
+
 // These are the Desktop transcript's position/fragment rules, independent of
 // either renderer. History cursors use byte offsets; JS never derives them
 // from UTF-16 string lengths.

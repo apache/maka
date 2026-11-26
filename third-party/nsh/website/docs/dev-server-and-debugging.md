@@ -1,6 +1,6 @@
 ---
 title: Dev Server and Debugging
-description: Run Rust and TSX apps with nsh run and nsh dev, connect simulators, emulators and devices, and use rebuilds, hot module replacement, logs, the error overlay and source-mapped stacks.
+description: Run TSX and Rust apps with nsh run and nsh dev, connect simulators, emulators and devices, and use rebuilds, hot module replacement, logs, the error overlay and source-mapped stacks.
 order: 60
 group: tools
 ---
@@ -85,11 +85,12 @@ nsh dev App.tsx --server-only
 | Flag | Description |
 |---|---|
 | `--port <port>` | Dev server port. As for `nsh run`; with `--server-only`, the default is 8790, replacing the previous NSH session on it. |
+| `--host <ipv4>` | IPv4 address to bind. Defaults to `0.0.0.0` for `--server-only` and `--target ios`, `android` or `web`, and `127.0.0.1` for local targets. With `--target android`, only `127.0.0.1` and `0.0.0.0` are supported (`adb reverse` forwards to this machine's `127.0.0.1`). |
 | `--release` | Serve release builds. |
 
-`nsh dev --server-only` listens on every address of this computer, so phones and other machines on the network can
-connect. `nsh run` and `nsh dev` with a host on this computer (a window, the terminal, Catalyst) listen on `127.0.0.1`;
-with `--target ios`, `android` or `web` they listen on every address, as `--server-only` does.
+By default, `nsh dev --server-only` listens on every address of this computer (`0.0.0.0`), so phones and other machines on the network can
+connect. `nsh run` and `nsh dev` with a host on this computer (a window, the terminal, Catalyst) default to `127.0.0.1`;
+with `--target ios`, `android` or `web` they default to every address, as `--server-only` does. Pass `--host <ipv4>` to override the bind address—for example, `nsh dev App.tsx --server-only --host 127.0.0.1` keeps a server-only session on loopback only.
 
 Connect hosts to the printed URL:
 
@@ -114,7 +115,7 @@ installs the app's host.
 Rust is compiled: a change to an app's crate, or to a crate it depends on by path, builds the app again, and `nsh run`
 restarts it with the new code. The app's state starts afresh; keep what must survive a restart in
 [storage](../modules/nsh.md#storage). A build error is printed in the terminal, and the next save that compiles runs
-again. In an app with Rust and TSX, TSX edits stay hot updates (below) and Rust edits restart the app.
+again. In an app with TSX and Rust, TSX edits stay hot updates (below) and Rust edits restart the app.
 
 ## Hot module replacement
 
@@ -235,7 +236,8 @@ DebugView and Visual Studio show) and Linux apps to their standard error.
 #### Log files and levels on the desktop
 
 A packaged macOS, Windows or Linux app also writes its log lines to a file in its data directory, `logs/app.log`,
-beside the platform's log:
+beside the platform's log. An app can choose another directory for the files with `nsh.json` `logDir`
+([Project structure](./project-structure.md)); the table is the default:
 
 | Platform | Log file |
 |---|---|
@@ -251,6 +253,12 @@ three files before it are kept (`app.1.log` to `app.3.log`). The app runs on as 
 report or offer to open its folder; it is `None` (`null`) where the lines go to the platform's log only (development
 hosts, embedding apps, mobile, the web).
 
+```tsx tabs
+import process from "process";
+
+const report = { logFile: process.logFile, version: "1.4.0" };
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -260,12 +268,6 @@ if let Some(file) = log_file() {
         let _ = reveal_path(file).await;
     });
 }
-```
-
-```tsx tabs
-import process from "process";
-
-const report = { logFile: process.logFile, version: "1.4.0" };
 ```
 
 By default a packaged app logs its warnings, errors and `js` lines (every line from info up under `nsh run`). The

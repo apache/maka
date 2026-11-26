@@ -34,7 +34,7 @@ const nonempty = (value: string | null): value is string => !!value;
 function list(label: string, rows: readonly string[], empty: string, hasMore = false): ToolSection {
   const visible = rows.slice(0, 8);
   if (rows.length > visible.length)
-    visible.push(tr('{count} more', { count: rows.length - visible.length }));
+    visible.push(tr('deployment.more_count', { count: rows.length - visible.length }));
   if (hasMore) visible.push(tr('More pages available'));
   return { label, text: visible.join('\n') || empty };
 }

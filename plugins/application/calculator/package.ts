@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.calculator',
   displayName: 'Calculator',
   description: 'Calculate and convert units in the quick launcher, then copy the result.',
-  localizations: {
-    'zh-CN': {
-      displayName: '计算器',
-      description: '在快捷启动器里计算和换算单位，并复制结果。',
-    },
-    'zh-TW': {
-      displayName: '計算機',
-      description: '在快速啟動器裡計算和換算單位，並複製結果。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -42,4 +32,4 @@ export default {
       contributions: { tool: { kind: 'view', contract: 'maka.quick-launcher.tool' } },
     },
   },
-};
+});

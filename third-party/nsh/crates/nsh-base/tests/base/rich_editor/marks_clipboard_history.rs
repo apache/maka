@@ -234,19 +234,34 @@ fn delimiters_typed_around_text_make_marks() {
 
 #[test]
 fn backspace_right_after_a_rule_restores_the_typed_text() {
+    // A paragraph follows, so no trailing paragraph is appended after the
+    // rule and it stays undoable.
+    let mut app = start(paragraphs(&["", "x"]));
+    typed(&mut app, "# ");
+    see(&mut app, "Types heading,paragraph");
+    keys(&mut app, &["backspace"]);
+    tree(&mut app, r##"doc(paragraph("# "), paragraph("x"))"##);
+    see(&mut app, "Sel 3-3");
+
+    let mut app = start(paragraphs(&["", "x"]));
+    typed(&mut app, "- ");
+    see(&mut app, "Types bulletList,paragraph");
+    keys(&mut app, &["backspace"]);
+    tree(&mut app, r##"doc(paragraph("- "), paragraph("x"))"##);
+    see(&mut app, "Sel 3-3");
+}
+
+#[test]
+fn a_trailing_paragraph_appended_after_a_rule_ends_its_undo() {
+    // As Tiptap's input rules plugin: any later change to the document,
+    // the trailing node's appended paragraph too, forgets the rule, and
+    // Backspace at the start of the heading turns it into a paragraph.
     let mut app = start(paragraphs(&[""]));
     typed(&mut app, "# ");
     see(&mut app, "Types heading,paragraph");
     keys(&mut app, &["backspace"]);
-    tree(&mut app, r##"doc(paragraph("# "), paragraph)"##);
-    see(&mut app, "Sel 3-3");
-
-    let mut app = start(paragraphs(&[""]));
-    typed(&mut app, "- ");
-    see(&mut app, "Types bulletList,paragraph");
-    keys(&mut app, &["backspace"]);
-    tree(&mut app, r##"doc(paragraph("- "), paragraph)"##);
-    see(&mut app, "Sel 3-3");
+    tree(&mut app, "doc(paragraph, paragraph)");
+    see(&mut app, "Sel 1-1");
 }
 
 // The clipboard.

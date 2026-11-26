@@ -2206,6 +2206,7 @@ pub(crate) fn modifiers(state: gdk::ModifierType) -> nsh_core::keymap::Modifiers
         alt: state.contains(gdk::ModifierType::ALT_MASK),
         shift: state.contains(gdk::ModifierType::SHIFT_MASK),
         cmd: state.contains(gdk::ModifierType::SUPER_MASK),
+        alt_graph: false,
     }
 }
 

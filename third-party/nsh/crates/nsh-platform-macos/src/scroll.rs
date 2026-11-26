@@ -31,7 +31,10 @@
 //! as on iOS. Snapping and paging use [`ScrollBehavior::snap_target`].
 //!
 //! Trackpads follow the system: a gesture (`phase`) rubber-bands past the
-//! edges when `bounces` and springs back when the fingers lift, and the
+//! edges when `bounces`, as AppKit's `.automatic` elasticity does (a
+//! horizontal view only while its content overflows, a vertical one whose
+//! content fits only when no outer vertical view takes the stretch; see
+//! [`bounce_target`]), and springs back when the fingers lift, and the
 //! momentum after it is the system's (`momentumPhase` events), not a glide
 //! of ours; snapping views snap from the release instead. Mouse wheels (no
 //! phases) stop at the edges and settle when the notches stop. Mouse drags
@@ -529,17 +532,100 @@ fn movable_in(s: &ScrollState, viewport: (f32, f32)) -> bool {
     s.behavior.enabled && (max.x > min.x || max.y > min.y)
 }
 
-/// Whether a trackpad gesture by `(dx, dy)` may stretch `view` past its
-/// edge: it is enabled, bounces and scrolls along the gesture's axis (a
-/// zoomable view along both). Input gives it gestures no scroll view can
-/// follow ([`can_scroll`]).
-pub(crate) fn can_bounce(view: &NshView, dx: f32, dy: f32) -> bool {
-    let state = view.state();
-    state.scroll.as_ref().is_some_and(|s| {
-        s.behavior.enabled
-            && s.behavior.bounces
-            && (s.behavior.zooms() || s.horizontal == (dx.abs() > dy.abs()))
-    })
+/// Which scroll view in `chain` (innermost first) a trackpad gesture by
+/// `(dx, dy)` stretches past its edge, when [`can_scroll`] found none that can
+/// move:
+///
+/// 1. The innermost bouncing scroll view along the gesture's axis whose
+///    content overflows, that zooms, or (vertically) that pulls to refresh.
+/// 2. Otherwise, for a vertical gesture only, the outermost enabled vertical
+///    scroll view in `chain`, if it bounces: on macOS, AppKit's `.automatic`
+///    elasticity still stretches a standalone short vertical scroll view while
+///    horizontal elasticity requires overflow, and a fitting inner vertical
+///    scroll view (an editor as tall as its document inside a list) hands the
+///    stretch to the list around it.
+pub(crate) fn bounce_target(chain: &[NshView], dx: f32, dy: f32) -> Option<NshView> {
+    let horizontal = dx.abs() > dy.abs();
+    let kind = |i: usize| {
+        let state = chain[i].state();
+        let refreshes = state.events.contains(EventKind::Refresh);
+        state.scroll.as_ref().map(|s| {
+            bounce_kind(
+                s,
+                (state.frame.size.width.0, state.frame.size.height.0),
+                horizontal,
+                refreshes,
+            )
+        })
+    };
+    let idx = bounce_index(chain.len(), kind, horizontal)?;
+    Some(chain[idx].clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bounce {
+    /// Does not participate along this gesture's axis.
+    None,
+    /// Stretches at its edge: zooms, overflows along the gesture's axis, or
+    /// pulls to refresh vertically.
+    Primary,
+    /// Enabled vertical scroll view whose content fits with `bounces: true`:
+    /// stretches only when it is the outermost enabled vertical scroll view.
+    VerticalFit,
+    /// Enabled vertical scroll view with `bounces: false`: never stretches,
+    /// and claims the outer vertical slot so a fitting inner view stays still.
+    VerticalRigid,
+}
+
+fn bounce_kind(s: &ScrollState, viewport: (f32, f32), horizontal: bool, refreshes: bool) -> Bounce {
+    if !s.behavior.enabled {
+        return Bounce::None;
+    }
+    if s.behavior.zooms() {
+        return if s.behavior.bounces {
+            Bounce::Primary
+        } else {
+            Bounce::None
+        };
+    }
+    if s.horizontal != horizontal {
+        return Bounce::None;
+    }
+    let (min, max) = range(s, viewport);
+    if horizontal {
+        return if s.behavior.bounces && max.x > min.x {
+            Bounce::Primary
+        } else {
+            Bounce::None
+        };
+    }
+    if !s.behavior.bounces {
+        return Bounce::VerticalRigid;
+    }
+    if max.y > min.y || refreshes {
+        Bounce::Primary
+    } else {
+        Bounce::VerticalFit
+    }
+}
+
+/// The index [`bounce_target`] picks among `len` views (innermost first)
+/// whose [`Bounce`] classification is `kind(i)`, without collecting them.
+fn bounce_index(
+    len: usize,
+    kind: impl Fn(usize) -> Option<Bounce>,
+    horizontal: bool,
+) -> Option<usize> {
+    if let Some(i) = (0..len).find(|&i| kind(i) == Some(Bounce::Primary)) {
+        return Some(i);
+    }
+    if horizontal {
+        return None;
+    }
+    let outermost = (0..len)
+        .rev()
+        .find(|&i| matches!(kind(i), Some(Bounce::VerticalFit | Bounce::VerticalRigid)))?;
+    (kind(outermost) == Some(Bounce::VerticalFit)).then_some(outermost)
 }
 
 /// Sends `kind` with the offset if JS listens to it.
@@ -2807,6 +2893,83 @@ mod tests {
     fn an_overflowing_scroll_view_moves() {
         assert!(movable_with((300.0, 800.0), false, true));
         assert!(movable_with((900.0, 200.0), true, true));
+    }
+
+    /// A scroll view's [`Bounce`] classification for `content` points in a
+    /// 300 x 200 viewport along `horizontal`.
+    /// [`bounce_index`] over already classified views.
+    fn bounce_in(kinds: &[Option<Bounce>], horizontal: bool) -> Option<usize> {
+        bounce_index(kinds.len(), |i| kinds[i], horizontal)
+    }
+
+    fn bounce_kind_with(
+        content: (f32, f32),
+        view_horizontal: bool,
+        horizontal: bool,
+        refreshes: bool,
+        bounces: bool,
+    ) -> Bounce {
+        let s = ScrollState {
+            content,
+            horizontal: view_horizontal,
+            behavior: nsh_core::ScrollBehavior {
+                enabled: true,
+                bounces,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        bounce_kind(&s, (300.0, 200.0), horizontal, refreshes)
+    }
+
+    /// A standalone short vertical scroll view still stretches (AppKit's
+    /// `.automatic` vertical elasticity), while a horizontal scroll view whose
+    /// content fits does not.
+    #[test]
+    fn standalone_bounce_matches_appkit_axes() {
+        let short_v = bounce_kind_with((300.0, 120.0), false, false, false, true);
+        let short_h = bounce_kind_with((300.0, 200.0), true, true, false, true);
+        assert_eq!(bounce_in(&[Some(short_v)], false), Some(0));
+        assert_eq!(bounce_in(&[Some(short_h)], true), None);
+    }
+
+    /// An inner vertical scroll view whose content fits (an editor as tall as
+    /// its document inside a list) hands the stretch to the outer list,
+    /// whether the outer list overflows or also fits; if the outer list
+    /// disables bounce, neither stretches.
+    #[test]
+    fn nested_fitting_vertical_scroll_view_hands_bounce_to_outer() {
+        let fit = bounce_kind_with((300.0, 120.0), false, false, false, true);
+        let overflow = bounce_kind_with((300.0, 800.0), false, false, false, true);
+        let no_bounce = bounce_kind_with((300.0, 800.0), false, false, false, false);
+        assert_eq!(bounce_in(&[Some(fit), Some(overflow)], false), Some(1));
+        assert_eq!(bounce_in(&[Some(fit), Some(fit)], false), Some(1));
+        assert_eq!(bounce_in(&[Some(fit), Some(no_bounce)], false), None);
+        // When the inner view itself overflows, it keeps its edge stretch.
+        assert_eq!(bounce_in(&[Some(overflow), Some(overflow)], false), Some(0));
+    }
+
+    #[test]
+    fn an_overflowing_scroll_view_bounces_along_its_axis() {
+        let tall_v = bounce_kind_with((300.0, 800.0), false, false, false, true);
+        let wide_h = bounce_kind_with((900.0, 200.0), true, true, false, true);
+        let wrong_axis = bounce_kind_with((300.0, 800.0), false, true, false, true);
+        assert_eq!(bounce_in(&[Some(tall_v)], false), Some(0));
+        assert_eq!(bounce_in(&[Some(wide_h)], true), Some(0));
+        assert_eq!(bounce_in(&[Some(wrong_axis)], true), None);
+    }
+
+    /// Pulling to refresh needs the stretch, however short the content, even
+    /// when nested inside another vertical scroll view.
+    #[test]
+    fn a_scroll_view_that_refreshes_bounces_when_its_content_fits() {
+        let refreshes = bounce_kind_with((300.0, 120.0), false, false, true, true);
+        let outer_fit = bounce_kind_with((300.0, 120.0), false, false, false, true);
+        assert_eq!(bounce_in(&[Some(refreshes)], false), Some(0));
+        assert_eq!(
+            bounce_in(&[Some(refreshes), Some(outer_fit)], false),
+            Some(0)
+        );
     }
 
     #[test]

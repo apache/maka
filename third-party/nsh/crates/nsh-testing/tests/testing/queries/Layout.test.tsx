@@ -16,6 +16,17 @@ test("layout and the accessibility tree read what is on screen", async () => {
 
   const tree = app.accessibility()!;
   expect(tree.role).toBeUndefined();
-  expect(tree.children.map((c) => c.role)).toEqual(["button", "checkbox"]);
+  expect(tree.name).toBe("");
+  expect(tree.children.map((c) => c.role)).toEqual(["button", "checkbox", "button", "button", "button", "button", "adjustable"]);
   expect(tree.children[1].checked).toBe("true");
+  expect(tree.children.map((c) => c.pressed)).toEqual([undefined, undefined, "true", "false", "mixed", undefined, undefined]);
+
+  // The name `role:` selectors match: the label, else the texts inside.
+  expect(tree.children.map((c) => c.name)).toEqual(["Send", "Agree", "Bold", "Italic", "Underline", "Upload", "Volume"]);
+  const upload = app.accessibility("role:button[Upload]")!;
+  expect(upload.label).toBeUndefined();
+  expect(upload.busy).toBe(true);
+  expect(send.busy).toBe(false);
+  expect(app.accessibility("role:adjustable[Volume]")!.value).toBe("40 percent");
+  expect(send.value).toBeUndefined();
 });

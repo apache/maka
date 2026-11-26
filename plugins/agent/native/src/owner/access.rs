@@ -205,7 +205,7 @@ impl RunAccess {
     pub(crate) fn claim(&self) -> &maka_agent_state::DriverClaim {
         &self.claim
     }
-    fn owner(&self) -> Result<Arc<Owner>, String> {
+    pub(in crate::owner) fn owner(&self) -> Result<Arc<Owner>, String> {
         self.owner
             .upgrade()
             .ok_or_else(|| "agent_run_owner_closed".into())
@@ -269,6 +269,12 @@ impl RunAccess {
         let mode = current.permissions.access;
         let root = self.state_root()?;
         let ceiling = self.spec.permission_ceiling.sandbox.clone();
+        let execution_ceiling = self
+            .owner()
+            .map_err(ToolError::Failed)?
+            .store
+            .checkpoint_execution()
+            .map(|execution| execution.grant().permissions.sandbox.clone());
         let approved = if file_approvals {
             self.spec.filesystem_approval_ceiling.clone()
         } else {
@@ -301,11 +307,29 @@ impl RunAccess {
                         .map_err(|error| error.to_string())?;
                 }
             }
+            if let Some(execution) = execution_ceiling {
+                base = base
+                    .intersect(&execution)
+                    .map_err(|error| error.to_string())?;
+                approval = approval
+                    .map(|sandbox| sandbox.intersect(&execution))
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+            }
             Ok((base, approval))
         })
         .await
         .map_err(|error| ToolError::Failed(error.to_string()))?
         .map_err(ToolError::Failed)
+    }
+
+    pub(crate) fn network_approval_ceiling(&self) -> Result<maka_sandbox::Network, ToolError> {
+        let ceiling = self.spec.network_approval_ceiling();
+        let owner = self.owner().map_err(ToolError::Failed)?;
+        Ok(match owner.store.checkpoint_execution() {
+            Some(execution) => ceiling.intersect(execution.grant().permissions.sandbox.network()),
+            None => ceiling.clone(),
+        })
     }
 
     pub(crate) fn spec(&self) -> &RunSpec {
@@ -333,6 +357,13 @@ impl RunAccess {
 
     async fn driver_view(&self, allow_stopped: bool) -> Result<RunView, String> {
         let owner = self.owner()?;
+        if owner
+            .store
+            .checkpoint_execution()
+            .is_some_and(|e| e.cancellation().is_cancelled())
+        {
+            return Err("Session execution is draining".into());
+        }
         if owner.stop.is_cancelled() {
             return Err("agent_run_owner_closed".into());
         }
@@ -402,6 +433,10 @@ impl RunAccess {
             .permission_ceiling
             .approval
             .allows(maka_sandbox::ApprovalKind::Permissions);
+        if let Some(execution) = owner.store.checkpoint_execution() {
+            current.tools =
+                intersect_tools(current.tools, execution.grant().permissions.tools.clone());
+        }
         Ok(current)
     }
 
@@ -441,6 +476,14 @@ impl RunAccess {
         }
         self.live_configuration().await?;
         Ok(())
+    }
+
+    pub(crate) async fn require_execution(&self) -> Result<(), ToolError> {
+        self.owner()
+            .map_err(ToolError::Failed)?
+            .require_execution(&self.execution.session_id)
+            .await
+            .map_err(ToolError::Failed)
     }
 
     pub(crate) async fn check_tool(
@@ -936,6 +979,14 @@ impl RunAccess {
                 ));
             }
         }
+        let owner = self.owner().map_err(ToolError::Failed)?;
+        let through = owner
+            .durable
+            .session_history(owner.run_owner(), self.execution.session_id.clone())
+            .capture()
+            .await
+            .map_err(|error| ToolError::Persistence(error.to_string()))?
+            .through_sequence;
         let mut record = InteractionRecord {
             execution: self.execution.clone(),
             request_id,
@@ -946,7 +997,7 @@ impl RunAccess {
                 service: service.into(),
                 method: method.into(),
                 binding: binding.into(),
-                through: view.revision,
+                through,
             },
             outcome: None,
         };

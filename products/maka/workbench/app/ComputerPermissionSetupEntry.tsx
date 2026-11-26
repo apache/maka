@@ -23,20 +23,30 @@ import { TITLE_BAR_HEIGHT } from './chrome';
 import { createHost, HostProvider, uiHost } from './host';
 import { initializeAppearance } from './appearance';
 import { applyLanguagePreference, tr } from './locale';
+import { installWorkbenchLocaleCatalog } from './localeCatalog';
 import { computerPermissionClient } from './computerPermissionClient';
 import { ComputerPermissionSetup } from './ComputerPermissionSetup';
 import type { SystemPermissionRequest } from './computerPermissionSetupState';
 import { C } from './ui';
 
 function ComputerPermissionSetupEntry() {
-  initializeAppearance();
-  const host = createHost(uiHost);
   const params = shell.params as {
     systemPermission?: { sessionId: string; requestId: string; request: SystemPermissionRequest };
     nativeApplicationDrag?: boolean;
-    languagePreference: { preference: LanguagePreference; revision: number };
+    languagePreference: {
+      preference: LanguagePreference;
+      revision: number;
+      resolvedLanguage?: string;
+    };
   };
-  applyLanguagePreference(params.languagePreference.preference, params.languagePreference.revision);
+  applyLanguagePreference(
+    params.languagePreference.preference,
+    params.languagePreference.revision,
+    params.languagePreference.resolvedLanguage,
+  );
+  installWorkbenchLocaleCatalog();
+  initializeAppearance();
+  const host = createHost(uiHost);
   const owner = params.systemPermission;
   if (!owner?.sessionId || !owner.requestId)
     throw new Error('Missing system permission request identity.');

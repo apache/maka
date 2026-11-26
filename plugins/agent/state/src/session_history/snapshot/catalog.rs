@@ -24,7 +24,7 @@ use crate::{
 };
 use maka_agent_facts::history_snapshot::ImportedMessage;
 
-const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,9 +38,8 @@ impl Snapshot {
     pub(crate) fn catalog_summary_in_snapshot(
         &self,
         c: &Connection,
-    ) -> Result<SourceSummary, StoreError> {
-        load(c, self)?
-            .ok_or_else(|| invalid("snapshot catalog index is unavailable; cold rebuild required"))
+    ) -> Result<SourceSummary, IndexedReadError> {
+        load(c, self)?.ok_or_else(|| IndexedReadError::needs_rebuild(self.clone()))
     }
 }
 
@@ -177,7 +176,9 @@ impl Query for Begin {
                     "snapshot catalog inherited an executable live source",
                 ));
             };
-            source.catalog_summary_in_snapshot(c)?
+            source.catalog_summary_in_snapshot(c).map_err(|error| {
+                error.into_store("snapshot catalog index is unavailable; cold rebuild required")
+            })?
         } else {
             SourceSummary {
                 latest: None,

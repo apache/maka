@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::windows::file_identity as identity;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
@@ -91,8 +92,9 @@ impl Target {
         reject_reparse(&file)?;
         let info = identity(&file)?;
         let opened = final_name(&file, VOLUME_NAME_DOS)?;
-        let opened = opened.strip_prefix(r"\\?\").unwrap_or(&opened);
-        if !crate::path::compare(path, Path::new(opened)).is_eq() {
+        let opened =
+            crate::path::policy_path_from_resolved(Path::new(&opened)).map_err(io::Error::other)?;
+        if !crate::path::compare(path, &opened).is_eq() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "ACL target changed or contains an unresolved alias",
@@ -272,21 +274,6 @@ fn reject_reparse(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
-fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
-    let mut identity = FILE_ID_INFO::default();
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut identity as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(identity)
-}
 
 fn final_name(file: &File, flags: GETFINALPATHNAMEBYHANDLE_FLAGS) -> io::Result<String> {
     let mut name = vec![0u16; 32768];
@@ -314,10 +301,10 @@ mod tests {
     #[test]
     fn target_identity_survives_rename_and_does_not_adopt_a_replacement_or_deleted_id() {
         let directory = tempfile::tempdir().unwrap();
+        let resolved = directory.path().canonicalize().unwrap();
+        let root = crate::path::policy_path_from_resolved(&resolved).unwrap();
         for is_directory in [false, true] {
-            let original = directory
-                .path()
-                .join(if is_directory { "directory" } else { "file" });
+            let original = root.join(if is_directory { "directory" } else { "file" });
             if is_directory {
                 std::fs::create_dir(&original).unwrap();
             } else {

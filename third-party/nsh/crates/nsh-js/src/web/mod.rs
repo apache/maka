@@ -93,9 +93,10 @@ pub(crate) enum Class {
     WebSocket,
     NumberFormat,
     DateTimeFormat,
+    PluralRules,
 }
 
-const CLASS_COUNT: usize = Class::DateTimeFormat as usize + 1;
+const CLASS_COUNT: usize = Class::PluralRules as usize + 1;
 
 /// A method key: a name or a well-known symbol.
 pub(crate) enum Key {
@@ -195,6 +196,13 @@ pub(crate) fn add_languages(
     format::add_languages(cx, languages);
 }
 
+/// Registers the named time zones the app ships (`nsh:rt`'s `i18n`:
+/// nsh.json `timeZones`): what `Intl.DateTimeFormat`'s `timeZone` takes
+/// besides the device's zone, UTC and offsets.
+pub(crate) fn add_zones(cx: *mut qjs::JSContext, zones: Vec<serde_json::Value>) {
+    format::add_zones(cx, zones);
+}
+
 /// Global functions (not classes).
 pub(crate) fn functions() -> impl Iterator<Item = &'static Function> {
     fetch::FUNCTIONS.iter()
@@ -250,6 +258,8 @@ pub(crate) struct Web {
     pub(crate) clock_origin: Option<nsh_core::time::Instant>,
     /// The language data `Intl` formats with: English and the app's.
     pub(crate) languages: format::Languages,
+    /// The named time zones `Intl` formats in: the app's.
+    pub(crate) zones: format::Zones,
 }
 
 impl Web {

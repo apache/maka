@@ -57,15 +57,21 @@ impl Snapshot {
         input: FindInput,
         stop: CancellationToken,
     ) -> Result<LocalFindPage, StoreError> {
-        self.data.query(FindQuery(self.clone(), input, stop)).await
+        run_with_snapshot_rebuild(Some(&stop), || {
+            self.data
+                .query(FindQuery(self.clone(), input.clone(), stop.clone()))
+        })
+        .await
     }
     pub(in crate::session_history) async fn navigation_landmark_count(
         &self,
         min_admission: u64,
+        stop: CancellationToken,
     ) -> Result<u64, StoreError> {
-        self.data
-            .query(LandmarkCount(self.clone(), min_admission))
-            .await
+        run_with_snapshot_rebuild(Some(&stop), || {
+            self.data.query(LandmarkCount(self.clone(), min_admission))
+        })
+        .await
     }
     pub(in crate::session_history) async fn navigation_landmarks(
         &self,
@@ -73,18 +79,30 @@ impl Snapshot {
         ranks: Vec<u64>,
         stop: CancellationToken,
     ) -> Result<Vec<LocalLandmark>, StoreError> {
-        self.data
-            .query(LandmarkQuery(self.clone(), min_admission, ranks, stop))
-            .await
+        run_with_snapshot_rebuild(Some(&stop), || {
+            self.data.query(LandmarkQuery(
+                self.clone(),
+                min_admission,
+                ranks.clone(),
+                stop.clone(),
+            ))
+        })
+        .await
     }
 }
 struct FindQuery(Snapshot, FindInput, CancellationToken);
 impl Query for FindQuery {
-    type Output = LocalFindPage;
-    fn execute(self, c: &Connection) -> Result<LocalFindPage, StoreError> {
+    type Output = IndexedRead<LocalFindPage>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(snapshot, input, stop) = self;
         check(&stop)?;
-        require_ready(c, &snapshot)?;
+        match require_ready(c, &snapshot) {
+            Ok(_) => {}
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+                return Ok(IndexedRead::NeedsRebuild(snapshots));
+            }
+            Err(IndexedReadError::Store(error)) => return Err(error),
+        }
         if input.query.is_empty() {
             return Err(invalid("invalid history search"));
         }
@@ -283,12 +301,12 @@ impl Query for FindQuery {
         } else {
             None
         };
-        Ok(LocalFindPage {
+        Ok(IndexedRead::Ready(LocalFindPage {
             matches,
             next_after,
             last_processed: last,
             work,
-        })
+        }))
     }
 }
 fn header(r: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, String, i64)> {
@@ -425,11 +443,17 @@ fn search_field(
 }
 struct LandmarkQuery(Snapshot, u64, Vec<u64>, CancellationToken);
 impl Query for LandmarkQuery {
-    type Output = Vec<LocalLandmark>;
-    fn execute(self, c: &Connection) -> Result<Vec<LocalLandmark>, StoreError> {
+    type Output = IndexedRead<Vec<LocalLandmark>>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let Self(snapshot, min_admission, ranks, stop) = self;
         check(&stop)?;
-        require_ready(c, &snapshot)?;
+        match require_ready(c, &snapshot) {
+            Ok(_) => {}
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+                return Ok(IndexedRead::NeedsRebuild(snapshots));
+            }
+            Err(IndexedReadError::Store(error)) => return Err(error),
+        }
         if ranks.is_empty() || ranks.len() > 64 {
             return Err(invalid("invalid landmarks limit"));
         }
@@ -474,17 +498,26 @@ impl Query for LandmarkQuery {
                     origin: origin.map(|v| serde_json::from_str(&v)).transpose()?,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
+            .map(IndexedRead::Ready)
     }
 }
 
 struct LandmarkCount(Snapshot, u64);
 impl Query for LandmarkCount {
-    type Output = u64;
-    fn execute(self, c: &Connection) -> Result<u64, StoreError> {
-        require_ready(c, &self.0)?;
+    type Output = IndexedRead<u64>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        match require_ready(c, &self.0) {
+            Ok(_) => {}
+            Err(IndexedReadError::NeedsRebuild(snapshots)) => {
+                return Ok(IndexedRead::NeedsRebuild(snapshots));
+            }
+            Err(IndexedReadError::Store(error)) => return Err(error),
+        }
         let count:i64=c.query_row("SELECT COUNT(*) FROM(SELECT d.kind,CASE WHEN d.kind='canonical' THEN d.turn ELSE NULL END,d.turn_ordinal FROM agent_history_snapshot_nav_documents d JOIN agent_history_snapshot_positions p ON p.snapshot=d.snapshot AND p.kind=d.kind AND p.major=d.major AND p.minor=d.minor WHERE d.snapshot=? AND p.internal=0 AND d.role='\"user\"' AND d.origin_json IS NULL AND (p.kind='imported' OR p.admission_sequence>?) GROUP BY d.kind,CASE WHEN d.kind='canonical' THEN d.turn ELSE NULL END,d.turn_ordinal)",params![self.0.id.to_string(),bind_u64(self.1)?],|r|r.get(0))?;
-        u64::try_from(count).map_err(|_| invalid("negative source turn count"))
+        u64::try_from(count)
+            .map(IndexedRead::Ready)
+            .map_err(|_| invalid("negative source turn count"))
     }
 }
 

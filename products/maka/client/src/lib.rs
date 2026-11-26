@@ -20,7 +20,7 @@
 //! View-independent Maka calls. The launcher retains this scope until `close` succeeds.
 mod journal;
 pub use journal::{
-    Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
+    Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation, RecentModel,
     RecentWorkspace, UploadReference,
 };
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
@@ -56,6 +56,7 @@ const CONTROL_METHODS: &[&str] = &[
     "create",
     "predictNextMessage",
     "trustProjectMcp",
+    "declineProjectMcp",
     "selectBackend",
     "compact",
     "continueRun",
@@ -70,6 +71,7 @@ const CONTROL_METHODS: &[&str] = &[
     "editQueue",
     "metadata",
     "changeSession",
+    "changeSessionWorkspace",
     "fork",
     "openBot",
     "changeGoal",
@@ -129,6 +131,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                 "updateGlobalInstructions"
                     | "selectWorkspace"
                     | "manageMcpServer"
+                    | "setProjectMcpDecision"
                     | "createPreset"
                     | "updatePreset"
                     | "deletePreset"
@@ -209,7 +212,7 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
     }
     if matches!(
         method,
-        "metadata" | "setCompactionPrompt" | "changeSession" | "fork"
+        "metadata" | "setCompactionPrompt" | "changeSession" | "changeSessionWorkspace" | "fork"
     ) {
         let revision = input
             .get("expectedRevision")
@@ -927,6 +930,20 @@ impl Client {
         self.0
             .journal
             .set_recent_workspace(self.workspace_owner().await?, path)
+            .await
+    }
+
+    pub async fn recent_model(&self) -> Result<Option<RecentModel>> {
+        self.0
+            .journal
+            .recent_model(&self.workspace_owner().await?)
+            .await
+    }
+
+    pub async fn set_recent_model(&self, model: RecentModel) -> Result<RecentModel> {
+        self.0
+            .journal
+            .set_recent_model(self.workspace_owner().await?, model)
             .await
     }
 
@@ -1971,6 +1988,8 @@ mod preset_settings_tests {
     #[tokio::test]
     async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
         for method in [
+            "manageMcpServer",
+            "setProjectMcpDecision",
             "createPreset",
             "updatePreset",
             "deletePreset",

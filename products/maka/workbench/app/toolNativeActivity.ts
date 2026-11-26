@@ -108,8 +108,6 @@ function goalState(state: unknown): string | null {
   }
 }
 
-const numberText = (value: number) => value.toLocaleString(currentLocale());
-
 function goalResult(value: unknown): ToolSection[] | null {
   const result = record(value);
   if (result?.current === null)
@@ -198,6 +196,8 @@ function scheduleArguments(value: unknown): ToolSection[] | null {
     case 'resume':
     case 'delete':
       return [];
+    case 'test_script':
+      return section(tr('Script condition'), request.source);
     case 'create': {
       const timezone = typeof request.timezone === 'string' ? request.timezone : undefined;
       const schedule = record(request.schedule);
@@ -315,9 +315,7 @@ function botResult(value: unknown): ToolSection[] | null {
       text:
         result.duplicate === true
           ? tr('Message already sent')
-          : result.count === 1
-            ? tr('Sent 1 message')
-            : tr('Sent {count} messages', { count: numberText(result.count) }),
+          : tr('tool.sent_messages_count', { count: result.count }),
     },
   ];
 }
@@ -440,11 +438,9 @@ export const nativeToolPresentations: Record<string, ActivityPresentation> = {
         {
           label: tr('Find tools'),
           text:
-            activated.length === 1
-              ? tr('1 tool made available')
-              : activated.length > 1
-                ? tr('{count} tools made available', { count: numberText(activated.length) })
-                : tr('No additional tools found'),
+            activated.length > 0
+              ? tr('tool.tools_made_available_count', { count: activated.length })
+              : tr('No additional tools found'),
         },
       ];
     },

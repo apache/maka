@@ -89,6 +89,7 @@ fn modifiers(key: &UIKey) -> Modifiers {
         alt: flags.contains(UIKeyModifierFlags::Alternate),
         shift: flags.contains(UIKeyModifierFlags::Shift),
         cmd: flags.contains(UIKeyModifierFlags::Command),
+        alt_graph: false,
     }
 }
 

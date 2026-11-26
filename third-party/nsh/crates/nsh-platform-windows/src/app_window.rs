@@ -144,8 +144,8 @@ pub(crate) fn hwnd_of(surface: &Surface, id: NodeId) -> Option<HWND> {
     get(surface, id).map(|w| w.hwnd)
 }
 
-/// Every native window the app has open on `surface`.
-pub(crate) fn all_hwnds(surface: &Surface) -> Vec<HWND> {
+/// Every native window the app currently has open on `surface`.
+pub(crate) fn hwnds(surface: &Surface) -> Vec<HWND> {
     surface.windows.borrow().iter().map(|w| w.hwnd).collect()
 }
 

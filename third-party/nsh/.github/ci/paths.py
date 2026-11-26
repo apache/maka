@@ -93,6 +93,7 @@ WORKFLOWS = {
         "files": [
             "examples/counter/**", "examples/gallery/**", "examples/gallery-rs/**",
             "examples/rust-exports/**", "examples/post-editor/**", "examples/tasks-rs/**",
+            "examples/extra/**",
         ],
     },
 }

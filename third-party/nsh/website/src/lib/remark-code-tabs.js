@@ -1,15 +1,15 @@
 // Code tabs: consecutive fenced code blocks whose meta holds the word `tabs`
 // become one tabbed block, a tab per block named after its language:
 //
-//   ```rust tabs
-//   view().child(text("Hi"))
-//   ```
-//
 //   ```tsx tabs
 //   <View><Text>Hi</Text></View>
 //   ```
 //
-// The first tab is selected; the others' panels are `hidden`. A small script
+//   ```rust tabs
+//   view().child(text("Hi"))
+//   ```
+//
+// The first tab is selected (the pages put the TSX tab before Rust); the others' panels are `hidden`. A small script
 // (`initCodeTabs` in `code-tabs-client.ts`, run by DocsLayout) switches them, by click and by the
 // arrow keys, and every group on the page follows the reader's choice. The
 // `.md` endpoints print the blocks plainly (`stripTabsMeta`).

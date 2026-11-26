@@ -4,7 +4,8 @@
 Linux and the web, built in Rust. It unifies components, state, logic and API, with app-owned visual design and
 platform rendering: native views on iOS, Android, macOS, Windows and Linux, HTML on the web, GPUI in GPUI apps,
 character Cells in a terminal, with the platform's own text, input and interaction (a menu is a popup on the desktop
-and a sheet on a phone). Write the whole app in Rust, its screens in TSX, or combine both with shared Rust components.
+and a sheet on a phone). Write the app in TSX and extend it with Rust components, modules and classes through nshm
+crates, or write the whole app in Rust.
 
 <img width="1200" alt="image" src="https://nsh.dev/versions/main/brand/nsh-banner-dark.png" />
 
@@ -26,8 +27,9 @@ Rust apps, TSX modules and AI-generated UI.
 
 ## Features
 
-- Write apps in Rust, TSX, or both, and render with each platform's own UI, sharing the same reactive engine,
-  flexbox and grid layout, system text, input and accessibility.
+- Write apps in TSX, extend them with Rust through nshm crates (the app's own in `ext/`, or published ones), or write
+  them entirely in Rust, and render with each platform's own UI, sharing the same reactive engine, flexbox and grid
+  layout, system text, input and accessibility.
 - Give your app its own look: NSH provides the primitives, Tailwind classes, a theme and an unstyled UI foundation
   (`nsh/base`: navigation, safe areas, dialogs, the keyboard, the status bar), and your app draws its components from
   them in TSX or Rust.
@@ -126,17 +128,20 @@ Re-run to update. The checkout stays in `~/.nsh/source` for runtime builds.
 
 Choose how to write your app:
 
-| | Rust | TSX |
-|---|---|---|
-| Create | `nsh init my-app --template rust` | `nsh init my-app --template ts` |
-| Write | Rust components, typed styles and signals | TSX components, Tailwind classes and signals |
-| Iterate | Rebuild and restart on Rust changes | Hot updates that preserve state |
-| Toolchain | `nsh` and [Rust](https://rustup.rs), built with [huacnlee/cargo](https://github.com/huacnlee/cargo) | `nsh` |
+| | TSX | TSX extended with Rust | Rust |
+|---|---|---|---|
+| Create | `nsh init my-app --template ts` | `nsh init my-app --template mixed` | `nsh init my-app --template rust` |
+| Write | TSX components, Tailwind classes and signals | TSX screens, importing components, modules and classes from the app's nshm crate in `ext/` | Rust components, typed styles and signals |
+| Iterate | Hot updates that preserve state | TSX hot; Rust changes restart | Rebuild and restart on Rust changes |
+| Toolchain | `nsh` | `nsh` and [Rust](https://rustup.rs) | `nsh` and [Rust](https://rustup.rs) |
 
-You can also combine them (`nsh init my-app --template mixed`): TSX screens import your Rust components and modules. See
-[Building with Rust](https://nsh.dev/docs/rust) for Rust apps and mixed projects.
+`nsh init` starts a TSX app by default. When the app needs Rust (a parser, a storage engine, a native view, heavy
+computation), add an nshm crate in `ext/` or a published one, and TSX imports it with types generated from the Rust
+signatures; see [nshm](https://nsh.dev/docs/nshm). A whole app in Rust ships with no JavaScript VM; see
+[Building with Rust](https://nsh.dev/docs/rust). Rust builds work with the standard Cargo or
+[huacnlee/cargo](https://github.com/huacnlee/cargo).
 
-Run either app on your chosen platform:
+Run the app on your chosen platform:
 
 <details>
 <summary>iOS</summary>
@@ -210,8 +215,9 @@ nsh run my-app --target web        # open in the browser
 
 </details>
 
-The Rust template includes a Cargo project with its root component in `src/lib.rs`. The TSX template includes
-`App.tsx`, `nsh.json` and `tsconfig.json`, with generated TypeScript declarations in `.nsh/types` for your editor.
+The TSX template includes `App.tsx`, `nsh.json` and `tsconfig.json`, with generated TypeScript declarations in
+`.nsh/types` for your editor. The mixed template adds an nshm crate in `ext/<name>-native`. The Rust template includes
+a Cargo project with its root component in `src/lib.rs`.
 Logs and errors show in the terminal. What each platform needs:
 [Installation](https://nsh.dev/docs/installation#platform-tools).
 
@@ -219,15 +225,15 @@ Logs and errors show in the terminal. What each platform needs:
 
 | Example | What it shows |
 |---|---|
-| [`examples/gallery-rs`](examples/gallery-rs) | The gallery written in Rust: an app with no TSX and no QuickJS |
-| [`examples/rust-exports`](examples/rust-exports) | A TSX app using a component, a module and a class of its own Rust crate |
 | [`examples/gallery`](examples/gallery) | A tour of what NSH supports: lists, navigation, forms, controls, gestures, animation, images, styles, text, web view and video, `fetch` |
 | [`examples/counter`](examples/counter) | The smallest app |
-| [`examples/tasks-rs`](examples/tasks-rs) | A small Rust app with a store, pages, a list, a system alert and tests, laid out as the Coding Guides say |
-| [`examples/tasks`](examples/tasks) | The same app in TSX |
+| [`examples/tasks`](examples/tasks) | A small app with a store, pages, a list, a system alert and tests, laid out as the Coding Guides say |
+| [`examples/rust-exports`](examples/rust-exports) | A TSX app using a component, a module and a class of its own Rust crate |
 | [`examples/hopper`](examples/hopper) | A dark, tabbed dashboard built only from primitives: interactive canvas charts, sliders, menus, animation |
 | [`examples/desktop`](examples/desktop) | A desktop app with a title bar and menus of its own (`nsh/desktop`) |
 | [`examples/embed-ios`](examples/embed-ios), [`examples/embed-android`](examples/embed-android) | NSH inside existing native apps, with a native component the app registers |
+| [`examples/tasks-rs`](examples/tasks-rs) | The same tasks app written only in Rust |
+| [`examples/gallery-rs`](examples/gallery-rs) | The gallery written in Rust: an app with no TSX and no QuickJS |
 | [`examples/bench`](examples/bench) | Rust components against the same components in TSX |
 
 ```sh
@@ -237,7 +243,7 @@ cargo run
 ## Skills for AI coding agents
 
 Install the NSH skills for your coding agent (Claude Code, Codex, Cursor, Gemini CLI and others), so it follows
-NSH's model in Rust, Rust with TSX, or TSX:
+NSH's model in TSX, TSX extended with Rust, or Rust:
 
 ```sh
 npx skills add longbridge/nsh
@@ -245,7 +251,7 @@ npx skills add longbridge/nsh
 
 | Skill | What it gives the agent |
 |---|---|
-| [`nsh`](skills/nsh/SKILL.md) | Building apps in Rust (preferred), Rust with TSX, or TSX: the Coding Guides, a page per mode, tooling, and a tested app in Rust and in TSX |
+| [`nsh`](skills/nsh/SKILL.md) | Building apps in TSX, TSX extended with Rust nshm crates, or Rust: the Coding Guides, a page per mode, tooling, and a tested app in TSX and in Rust |
 | [`nsh-design-guides`](skills/nsh-design-guides/SKILL.md) | The Design Guides, for any screen, interaction or interface copy |
 
 ## Acknowledgements

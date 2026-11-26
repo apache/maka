@@ -10,30 +10,6 @@ demo: el-list
 
 `List` 用来展示很长或无上限的数据。视口附近的行才真正存在：用户滚动时，离开视口的行会被回收，用来显示新进入的行。哪些行存在、它们的位置、多列布局、吸顶标题和可见性都在原生侧计算，所以滚动一个上千项的列表，开销和二十项的列表相当。Rust 用 `virtual_list(count, |at| row)` 创建，TSX 用从 `nsh` 导入的 `<List>`。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-#[derive(Clone, PartialEq)]
-struct Contact {
-    id: usize,
-    name: String,
-}
-
-fn app() -> impl IntoElement {
-    let contacts = signal(
-        (0..1000).map(|i| Contact { id: i, name: format!("联系人 {}", i + 1) }).collect::<Vec<_>>(),
-    );
-    virtual_list(move || contacts.with(|c| c.len()), move |at| {
-        view().h(px(56.0)).px_4().justify_center().child(
-            text(move || contacts.with(|c| format!("{}. {}", at.index() + 1, c[at.index()].name)))
-                .text_base(),
-        )
-    })
-    .estimated_item_size(px(56.0))
-    .flex_1()
-}
-```
-
 ```tsx tabs
 import { List, mount, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
@@ -61,6 +37,30 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+#[derive(Clone, PartialEq)]
+struct Contact {
+    id: usize,
+    name: String,
+}
+
+fn app() -> impl IntoElement {
+    let contacts = signal(
+        (0..1000).map(|i| Contact { id: i, name: format!("联系人 {}", i + 1) }).collect::<Vec<_>>(),
+    );
+    virtual_list(move || contacts.with(|c| c.len()), move |at| {
+        view().h(px(56.0)).px_4().justify_center().child(
+            text(move || contacts.with(|c| format!("{}. {}", at.index() + 1, c[at.index()].name)))
+                .text_base(),
+        )
+    })
+    .estimated_item_size(px(56.0))
+    .flex_1()
+}
+```
+
 在 TSX 中，`List` 是泛型组件：`List<T>` 会检查 `each` 与行函数的条目类型是否一致，TypeScript 会从 `each` 推断出条目类型（参见 [List API](../modules/nsh-list.md)）。在 Rust 中，`virtual_list` 接收行数（一个值、signal 或闭包：列表就地增减）和在某个 `Position` 构建行的函数；行通过 `at.index()` 读取组件的数据。
 
 如果列表很短、所有行都应该存在（设置页、表单），在[滚动视图](./scroll.md)里用 [`Each`](./control-flow.md) 更简单。分组表格样式的列表见[设置风格的列表](../docs/lists.md#a-settings-style-list)。[列表指南](../docs/lists.md) 介绍了常见模式：无限加载、聊天、分组。
@@ -69,16 +69,16 @@ mount(() => (
 
 行函数对每个单元格执行一次，而不是对每个条目执行一次。单元格被复用来显示另一个条目时，它的位置会变化（TSX 中为 `item()` 和 `index()` 访问器；Rust 中为 `at.index()`），读取它的地方随之更新：
 
-```rust tabs
-virtual_list(move || messages.with(|m| m.len()), move |at| {
-    text(move || messages.with(|m| m[at.index()].body.clone()))
-})
-```
-
 ```tsx tabs
 <List each={messages()}>
   {(message) => <Text>{message().body}</Text>}
 </List>
+```
+
+```rust tabs
+virtual_list(move || messages.with(|m| m.len()), move |at| {
+    text(move || messages.with(|m| m[at.index()].body.clone()))
+})
 ```
 
 因此，每个条目自己的状态要放在数据里（按 id 区分），不要放在行函数内部创建的 signal 里：那样的 signal 会跟着单元格走，出现在别的条目上。
@@ -165,6 +165,25 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 
 带标题和可见性回调的网格：
 
+```tsx tabs
+const visible = signal("");
+let list!: ListRef;
+
+<List
+  ref={list}
+  each={photos}
+  numColumns={3}
+  estimatedItemSize={120}
+  contentStyle={{ padding: 12, gap: 8 }}
+  viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
+  onViewableItemsChange={({ viewableItems }) => visible.set(`${viewableItems.length} 项可见`)}
+  header={<Text onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })}>跳到第 60 项</Text>}
+  style={{ flex: 1 }}
+>
+  {(photo) => <Image src={photo().url} style={{ height: 120, borderRadius: 8 }} />}
+</List>;
+```
+
 ```rust tabs
 let visible = signal(SharedString::default());
 let list = element_ref();
@@ -189,26 +208,13 @@ virtual_list(move || photos.with(|p| p.len()), move |at| {
 .flex_1()
 ```
 
-```tsx tabs
-const visible = signal("");
-let list!: ListRef;
-
-<List
-  ref={list}
-  each={photos}
-  numColumns={3}
-  estimatedItemSize={120}
-  contentStyle={{ padding: 12, gap: 8 }}
-  viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
-  onViewableItemsChange={({ viewableItems }) => visible.set(`${viewableItems.length} 项可见`)}
-  header={<Text onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })}>跳到第 60 项</Text>}
-  style={{ flex: 1 }}
->
-  {(photo) => <Image src={photo().url} style={{ height: 120, borderRadius: 8 }} />}
-</List>;
-```
-
 聊天：
+
+```tsx tabs
+<List each={messages()} inverted estimatedItemSize={64} keyboardDismissMode="interactive" style={{ flex: 1 }}>
+  {(m) => <Bubble message={m()} />}
+</List>
+```
 
 ```rust tabs
 virtual_list(move || messages.with(|m| m.len()), move |at| bubble(messages, at))
@@ -217,12 +223,6 @@ virtual_list(move || messages.with(|m| m.len()), move |at| bubble(messages, at))
     .estimated_item_size(px(64.0))
     .keyboard_dismiss_mode(KeyboardDismissMode::Interactive)
     .flex_1()
-```
-
-```tsx tabs
-<List each={messages()} inverted estimatedItemSize={64} keyboardDismissMode="interactive" style={{ flex: 1 }}>
-  {(m) => <Bubble message={m()} />}
-</List>
 ```
 
 第 0 项是最新的消息，画在最底部；新消息插到条目开头时，用户正在看的内容不会跳动。

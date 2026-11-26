@@ -14,7 +14,7 @@ use nsh_base::editor::{
     Editor, EditorApi, EditorCommand, EditorSearch, EditorSearchResult, EditorSelection, editor,
 };
 use nsh_core::{
-    MountItem, NodeId, PointerEvents, Size,
+    MountItem, NodeId, PayloadValue, PointerEvents, Size,
     platform::{Idiom, Os},
     prelude::*,
 };
@@ -350,6 +350,62 @@ fn typing_the_same_text_after_moving_the_caret_inserts_it() {
     see(&mut app, "Sel 0:0");
     app.type_text("id:editor", "a").unwrap();
     see(&mut app, &value("aa"));
+}
+
+/// The sink's text changed to `text`, as a platform reports it. The
+/// headless driver does not expose an input's node id, so the event goes to
+/// every node; only the sink listens to it.
+fn sink_text(app: &mut Headless, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::ChangeText,
+            EventPayload::Text {
+                text: text.to_owned(),
+                count: 0,
+            },
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+/// The platform moved the sink's own caret to UTF-16 offset `at` of its
+/// text, without a key (an input method that types a pair of brackets and
+/// puts its caret between them). Sent to every node, as [`sink_text`] is.
+fn sink_caret(app: &mut Headless, at: u32) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("start", PayloadValue::Number(f64::from(at))),
+                ("end", PayloadValue::Number(f64::from(at))),
+            ]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+#[test]
+fn the_caret_follows_an_input_method_that_moves_it_between_a_pair() {
+    let mut app = start(props("f"));
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    see(&mut app, "Sel 0:1");
+    // The input method types both halves, then puts its caret between them.
+    sink_text(&mut app, "()");
+    see(&mut app, &value("f()"));
+    see(&mut app, "Sel 0:3");
+    sink_caret(&mut app, 1);
+    see(&mut app, "Sel 0:2");
+    // What it types next goes in there, with the caret after it.
+    sink_text(&mut app, "(x)");
+    see(&mut app, &value("f(x)"));
+    see(&mut app, "Sel 0:3");
+    sink_caret(&mut app, 2);
+    sink_text(&mut app, "(xy)");
+    see(&mut app, &value("f(xy)"));
+    see(&mut app, "Sel 0:4");
 }
 
 #[test]

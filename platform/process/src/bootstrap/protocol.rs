@@ -43,6 +43,8 @@ impl Plan {
 pub(crate) struct Start {
     pub plan: Plan,
     pub capabilities: Vec<uuid::Uuid>,
+    #[serde(default)]
+    pub disabled_sids: Vec<String>,
     pub io: Transport,
 }
 

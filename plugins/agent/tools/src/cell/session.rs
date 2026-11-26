@@ -218,9 +218,12 @@ impl CodeCells {
             .definitions()
             .map(|d| d.name.as_str())
             .collect();
+        // Keep dynamic MCP server tool names out of exec's static description so
+        // installing or removing MCP servers preserves the prompt prefix cache;
+        // connected MCP tools remain callable via tools.mcp__* and inspectable in ALL_TOOLS.
         let deferred_nested: Vec<_> = all_nested
             .definitions()
-            .filter(|d| !visible_names.contains(d.name.as_str()))
+            .filter(|d| !visible_names.contains(d.name.as_str()) && !d.name.starts_with("mcp__"))
             .map(|d| d.name.as_str())
             .collect();
         let mut exec = super::definition(language);
@@ -229,16 +232,19 @@ impl CodeCells {
         }
         exec.description
             .push_str(&super::declarations(visible_nested.definitions(), language));
+        let prefix = match language {
+            maka_agent_facts::execution::CodeLanguage::JavaScript => "//",
+            maka_agent_facts::execution::CodeLanguage::Python => "#",
+        };
         if !deferred_nested.is_empty() {
-            let prefix = match language {
-                maka_agent_facts::execution::CodeLanguage::JavaScript => "//",
-                maka_agent_facts::execution::CodeLanguage::Python => "#",
-            };
             exec.description.push_str(&format!(
                 "{prefix} Deferred tools callable via tools.<name>(input) (inspect schemas in ALL_TOOLS): {}\n",
                 deferred_nested.join(", ")
             ));
         }
+        exec.description.push_str(&format!(
+            "{prefix} Connected MCP server tools (mcp__*) are also callable via tools.<name>(input) and listed in ALL_TOOLS.\n"
+        ));
         vec![exec, super::wait_definition()]
     }
     pub fn prepare(
@@ -266,27 +272,21 @@ impl CodeCells {
                             .await
                     })
                 })
-                .titled(maka_agent_facts::display::Text::localized(
-                    "Run script",
-                    "运行脚本",
-                    "執行腳本",
-                ))
+                .titled(maka_agent_facts::display::Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::run_script(locale).to_owned()
+                }))
                 .presented("maka.agent.Builtin@1/exec".into()))
             }
             "wait" => {
                 let input = super::wait_input(input)?;
                 let title = if input.terminate {
-                    maka_agent_facts::display::Text::localized(
-                        "Stop script",
-                        "停止脚本",
-                        "停止腳本",
-                    )
+                    maka_agent_facts::display::Text::for_locales(|locale| {
+                        maka_agent_facts::i18n::tool_title::stop_script(locale).to_owned()
+                    })
                 } else {
-                    maka_agent_facts::display::Text::localized(
-                        "Wait for script",
-                        "等待脚本",
-                        "等待腳本",
-                    )
+                    maka_agent_facts::display::Text::for_locales(|locale| {
+                        maka_agent_facts::i18n::tool_title::wait_script(locale).to_owned()
+                    })
                 };
                 Ok(PreparedEffect::new(move |effect_cancel| {
                     Box::pin(

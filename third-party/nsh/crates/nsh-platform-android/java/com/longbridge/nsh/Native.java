@@ -80,35 +80,34 @@ final class Native {
     static final int CLIPBOARD_WRITE = 68;
     static final int SCREEN_COLOR = 69;
     static final int FILE_REQUEST = 70;
-    static final int SPEECH = 71;
-    static final int DOWNLOAD = 72;
-    static final int NOTIFICATION = 73;
-    static final int URL_SCHEME = 74;
-    static final int SECOND_INSTANCE = 75;
-    static final int AUDIO = 76;
-    static final int WINDOW = 77;
-    static final int EDIT_ACTION = 78;
-    static final int WHEEL = 79;
-    static final int PINCH = 80;
-    static final int WEB_EVALUATION = 81;
-    static final int MOUSE_UP = 82;
-    static final int CANVAS_IMAGE = 83;
-    static final int KEY_DOWN = 84;
-    static final int KEY_UP = 85;
-    static final int WEB_VIEW_REPLY = 86;
-    static final int DOWNLOAD_PENDING = 87;
-    static final int DOWNLOAD_OFFER = 88;
-    static final int DOWNLOAD_PROGRESS = 89;
-    static final int DOWNLOAD_END = 90;
-    static final int SHARE = 91;
-    static final int DETENT_CHANGE = 92;
-    static final int AUTH_SESSION = 93;
-    static final int FOCUS_IN = 94;
-    static final int FOCUS_OUT = 95;
-    static final int TEXT_DROP = 96;
-    static final int OPEN_APP_SETTINGS = 97;
-    static final int BACK_PROGRESS = 98;
-    static final int SCROLL_INTENT = 99;
+    static final int DOWNLOAD = 71;
+    static final int NOTIFICATION = 72;
+    static final int URL_SCHEME = 73;
+    static final int SECOND_INSTANCE = 74;
+    static final int AUDIO = 75;
+    static final int WINDOW = 76;
+    static final int EDIT_ACTION = 77;
+    static final int WHEEL = 78;
+    static final int PINCH = 79;
+    static final int WEB_EVALUATION = 80;
+    static final int MOUSE_UP = 81;
+    static final int CANVAS_IMAGE = 82;
+    static final int KEY_DOWN = 83;
+    static final int KEY_UP = 84;
+    static final int WEB_VIEW_REPLY = 85;
+    static final int DOWNLOAD_PENDING = 86;
+    static final int DOWNLOAD_OFFER = 87;
+    static final int DOWNLOAD_PROGRESS = 88;
+    static final int DOWNLOAD_END = 89;
+    static final int SHARE = 90;
+    static final int DETENT_CHANGE = 91;
+    static final int AUTH_SESSION = 92;
+    static final int FOCUS_IN = 93;
+    static final int FOCUS_OUT = 94;
+    static final int TEXT_DROP = 95;
+    static final int OPEN_APP_SETTINGS = 96;
+    static final int BACK_PROGRESS = 97;
+    static final int SCROLL_INTENT = 98;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -172,8 +171,11 @@ final class Native {
     /** Registers a font file; returns an error, or null. */
     static native String registerFont(long handle, byte[] data);
 
-    /** Whether the running app's web views may navigate to {@code url}. */
-    static native boolean allowsWebview(long handle, String url);
+    /**
+     * Whether a web view of the running app may navigate to {@code url}, with
+     * its {@code allowOrigin} {@code origin} (null: none).
+     */
+    static native boolean allowsWebview(long handle, String url, String origin);
 
     /**
      * Whether the running app's web pages may capture {@code kind}
@@ -356,8 +358,12 @@ final class Native {
      */
     static native void eventMap(long handle, int id, int kind, String[] keys, Object[] values);
 
-    /** `onPaste`: the pasted text, the images' encoded bytes and local files' {@code file:} URLs. */
-    static native void paste(long handle, int id, String text, byte[][] images, String[] uris);
+    /**
+     * `onPaste`: the pasted text, the images' encoded bytes, local files' {@code file:} URLs and the names, types
+     * and sizes of the images too large to read (`tooLarge`).
+     */
+    static native void paste(long handle, int id, String text, byte[][] images, String[] uris, String[] largeNames,
+                             String[] largeTypes, long[] largeLengths);
 
     /**
      * A file drag for node {@code id}: {@link #FILE_DRAG_ENTER} with the files offered (none yet on Android, which

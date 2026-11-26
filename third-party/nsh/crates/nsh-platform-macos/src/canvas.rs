@@ -51,17 +51,14 @@ use nsh_core::{
     },
     geometry::{Corners, Points, Radians, size},
 };
-use objc2_core_foundation::{
-    CFAttributedString, CFMutableAttributedString, CFRange, CFRetained, CFString, CFType,
-    CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize,
-};
+use objc2_core_foundation::{CFRetained, CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBlendMode, CGContext, CGGradient, CGGradientDrawingOptions, CGImage, CGLayer, CGLineCap,
     CGLineJoin, CGMutablePath, CGPath, CGTextDrawingMode,
 };
-use objc2_core_text::{CTLine, kCTFontAttributeName, kCTForegroundColorFromContextAttributeName};
 use rustc_hash::FxHashMap;
 
+mod lines;
 mod offscreen;
 
 pub(crate) use offscreen::render as render_offscreen;
@@ -91,6 +88,8 @@ pub(crate) struct CanvasState {
     /// The images the drawing names, by URI: `None` while loading (or
     /// when they failed to load).
     images: FxHashMap<Arc<str>, Option<CanvasBitmap>>,
+    /// The lines of its texts ([`lines`]).
+    text: RefCell<lines::TextCache>,
     /// Finds what a change of slots redraws ([`set_args`]).
     scan: DamageScan,
     /// The slots that changed (scratch space of [`set_args`]).
@@ -223,6 +222,7 @@ pub(crate) fn set(surface: &Rc<Surface>, view: &NshView, drawing: Arc<Drawing>) 
                     .painted_after(&drawing.ops, 0, |_| 0.0),
             )
         });
+        c.text.get_mut().trim();
         c.redrawn.set(0);
         c.painted.set(None);
         c.drawing = Some(drawing);
@@ -838,6 +838,7 @@ struct Replay<'a> {
     c: &'a CGContext,
     args: &'a [Option<AnimationValue>],
     images: &'a FxHashMap<Arc<str>, Option<CanvasBitmap>>,
+    text: &'a RefCell<lines::TextCache>,
     state: State,
     stack: Vec<State>,
     /// The current path, in the view's space.
@@ -859,6 +860,7 @@ impl<'a> Replay<'a> {
             c,
             args: &canvas.args,
             images: &canvas.images,
+            text: &canvas.text,
             state: State::default(),
             stack: Vec::new(),
             path: CGMutablePath::new(),
@@ -1346,50 +1348,21 @@ impl<'a> Replay<'a> {
         }
     }
 
-    fn text(&self, text: &str, x: f64, y: f64, max_width: Option<f32>, stroke: bool) {
+    fn text(&self, text: &Arc<str>, x: f64, y: f64, max_width: Option<f32>, stroke: bool) {
         if text.is_empty() {
             return;
         }
         let c = self.cx();
         let s = &self.state;
-        let font = crate::text::make_font(&s.font.with_numeric(s.numeric).text_style());
-        let string =
-            CFMutableAttributedString::new(None, 0).expect("CFAttributedStringCreateMutable");
-        let whole = CFRange {
-            location: 0,
-            length: 0,
-        };
-        // SAFETY: a valid mutable string; attribute values have the types
-        // CoreText expects for their keys; the range covers the string.
-        unsafe {
-            CFMutableAttributedString::replace_string(
-                Some(&string),
-                whole,
-                Some(&CFString::from_str(text)),
-            );
-            let range = CFRange {
-                location: 0,
-                length: CFAttributedString::length(&string),
-            };
-            CFMutableAttributedString::set_attribute(
-                Some(&string),
-                range,
-                Some(kCTFontAttributeName),
-                Some(font.as_ref()),
-            );
-            let yes: &CFType = objc2_core_foundation::CFBoolean::new(true).as_ref();
-            CFMutableAttributedString::set_attribute(
-                Some(&string),
-                range,
-                Some(kCTForegroundColorFromContextAttributeName),
-                Some(yes),
-            );
-        }
-        // SAFETY: a valid attributed string.
-        let line = unsafe { CTLine::with_attributed_string(&string) };
-        let (mut ascent, mut descent, mut leading) = (0.0, 0.0, 0.0);
-        // SAFETY: valid out pointers.
-        let width = unsafe { line.typographic_bounds(&mut ascent, &mut descent, &mut leading) };
+        let lines::TextLine {
+            line,
+            width,
+            ascent,
+            descent,
+        } = self
+            .text
+            .borrow_mut()
+            .line(text, &s.font.with_numeric(s.numeric));
         let dx = match s.align {
             CanvasTextAlign::Start | CanvasTextAlign::Left => 0.0,
             CanvasTextAlign::Center => -width / 2.0,
@@ -2280,5 +2253,120 @@ mod tests {
                 "cropped tile matches full paint (flipped={flipped})"
             );
         }
+    }
+
+    /// A quote table: `rows` × 8 prices in tabular figures.
+    fn table(rows: usize, tick: usize, color: u32) -> Arc<Drawing> {
+        let c = Num::Const;
+        let mut ops = vec![
+            CanvasOp::Font(CanvasFont::parse("12px system-ui").unwrap()),
+            CanvasOp::FontVariantNumeric(FontVariant(FontVariant::TABULAR_NUMS)),
+            CanvasOp::TextAlign(CanvasTextAlign::Right),
+            CanvasOp::FillStyle(Paint::Color(Color(color))),
+        ];
+        for row in 0..rows {
+            for col in 0..8 {
+                ops.push(CanvasOp::FillText {
+                    text: format!("{}.{:02}", 100 + row * 8 + col + tick, (row + col) % 100).into(),
+                    x: c(90.0 + col as f32 * 90.0),
+                    y: c(16.0 + row as f32 * 20.0),
+                    max_width: None,
+                });
+            }
+        }
+        Arc::new(Drawing {
+            ops,
+            ..Drawing::default()
+        })
+    }
+
+    #[test]
+    fn a_text_drawn_in_another_color_reuses_its_line() {
+        let drawing = |color: u32| {
+            Arc::new(Drawing {
+                ops: vec![
+                    CanvasOp::Font(CanvasFont::parse("bold 36px system-ui").unwrap()),
+                    CanvasOp::FillStyle(Paint::Color(Color(color))),
+                    CanvasOp::FillText {
+                        text: "88".into(),
+                        x: Num::Const(4.0),
+                        y: Num::Const(36.0),
+                        max_width: None,
+                    },
+                ],
+                ..Drawing::default()
+            })
+        };
+        // BGRA rows, premultiplied.
+        let has = |bytes: &[u8], bgra: [u8; 4]| bytes.chunks(4).any(|p| p == bgra);
+        let mut canvas = CanvasState {
+            drawing: Some(drawing(0xff0000ff)),
+            ..CanvasState::default()
+        };
+        let red = pixels(&canvas);
+        assert!(has(&red, [0, 0, 255, 255]));
+        canvas.text.get_mut().trim();
+        canvas.drawing = Some(drawing(0x0000ffff));
+        let blue = pixels(&canvas);
+        assert!(has(&blue, [255, 0, 0, 255]));
+        assert!(!has(&blue, [0, 0, 255, 255]), "no red left");
+        assert_eq!(canvas.text.borrow().len(), 1);
+        // The same glyphs: only the color differs.
+        let coverage = |bytes: &[u8]| bytes.chunks(4).map(|p| p[3]).collect::<Vec<_>>();
+        assert_eq!(coverage(&red), coverage(&blue));
+    }
+
+    /// Paints of a 40 × 8 quote table into a 760 × 820 point bitmap at
+    /// scale 2: the same texts (a window being resized), and a new drawing
+    /// with every text changed before each paint (no line reused).
+    /// `cargo test --release -p nsh-platform-macos --lib bench_canvas_text -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_canvas_text() {
+        let (w, h, scale) = (760.0, 820.0, 2.0);
+        let (pw, ph) = (1520, 1640);
+        let space = CGColorSpace::new_device_rgb().unwrap();
+        // SAFETY: a context with pixels of its own.
+        let cx = unsafe {
+            CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                pw,
+                ph,
+                8,
+                pw * 4,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
+            )
+        }
+        .unwrap();
+        CGContext::translate_ctm(Some(&cx), 0.0, ph as CGFloat);
+        CGContext::scale_ctm(Some(&cx), scale, -scale);
+        let base = CGContext::ctm(Some(&cx));
+        let size = CGSize::new(w, h);
+        let rect = CGRect::new(CGPoint::ZERO, size);
+        let rounds = 200;
+        let mut canvas = CanvasState {
+            drawing: Some(table(40, 0, 0x202020ff)),
+            ..CanvasState::default()
+        };
+        canvas.paint(&cx, rect, size, scale, false, base);
+        let t = Instant::now();
+        for _ in 0..rounds {
+            canvas.paint(&cx, rect, size, scale, false, base);
+        }
+        let same = t.elapsed() / rounds;
+        let drawings: Vec<_> = (1..=rounds as usize)
+            .map(|tick| table(40, tick * 1000, 0x202020ff))
+            .collect();
+        let t = Instant::now();
+        for d in drawings {
+            canvas.text.get_mut().trim();
+            canvas.drawing = Some(d);
+            canvas.paint(&cx, rect, size, scale, false, base);
+        }
+        let changed = t.elapsed() / rounds;
+        println!(
+            "canvas text, 320 texts: same texts {same:?}/paint, all changed {changed:?}/paint"
+        );
     }
 }

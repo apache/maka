@@ -149,7 +149,11 @@ export function createRoomPeople(host: Host) {
       remember(found);
     },
     async searchSessions(query: string) {
-      const found = await searchSessions(host, 'agent', query);
+      const [rooms, conversations] = await Promise.all([
+        searchSessions(host, 'room', query),
+        searchSessions(host, 'agent', query),
+      ]);
+      const found = [...rooms, ...conversations];
       remember(found);
       return found;
     },

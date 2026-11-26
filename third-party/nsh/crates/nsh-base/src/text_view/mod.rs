@@ -9,6 +9,7 @@ mod formula;
 mod highlight;
 mod html;
 mod markdown;
+mod marks;
 #[cfg(feature = "math")]
 mod math;
 mod parse;
@@ -31,12 +32,15 @@ pub use self::{
         MarkdownExtension, MarkdownOptions, MarkdownPlugin, MarkdownPlugins, ParseContext, Parser,
         mdast,
     },
+    marks::{TextViewMark, TextViewMarkPressEvent, TextViewMarksMatchEvent},
     parts::{PartStyle, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles},
     selection::{TextSelectionFormat, TextSelectionOptions},
     view::{
         CodeHighlighter, TextView, TextViewApi, TextViewCodeAction, TextViewCodeActionEvent,
-        TextViewElement, TextViewEvent, TextViewImageContext, TextViewImageFlow, TextViewLabels,
-        TextViewLinkPressEvent, TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
-        TextViewSelectionEvent, TextViewTaskPressEvent, text_view,
+        TextViewElement, TextViewEvent, TextViewHeading, TextViewHeadingsEvent,
+        TextViewImageContext, TextViewImageFlow, TextViewLabels, TextViewLinkPressEvent,
+        TextViewLinkTarget, TextViewLinks, TextViewMath, TextViewProps,
+        TextViewScrollToBlockOptions, TextViewSelectionEvent, TextViewTaskPressEvent,
+        TextViewVisibleBlocksEvent, text_view,
     },
 };

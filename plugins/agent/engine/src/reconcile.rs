@@ -280,6 +280,17 @@ pub(crate) fn wait(
         Action::Wait(reason, due)
     }
 }
+
+fn wait_proactive_summary(view: &RunView, attempt: ModelAttemptId, now: UnixMillis) -> Action {
+    let summary = &view.attempts[&attempt];
+    if summary.admission.is_some()
+        && summary.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+    {
+        wait(view, WaitReason::Model { attempt }, None, now)
+    } else {
+        Action::Idle
+    }
+}
 fn recovered_cell(view: &RunView, tool: &maka_agent_state::fold::Tool) -> Option<CellId> {
     if tool.accepted.is_some()
         || tool.local_returned.as_ref().is_some_and(|result| {
@@ -790,9 +801,12 @@ pub(crate) fn next(
         return Action::Idle;
     }
     if let Some((attempt, original)) = view.attempts.iter().find(|(id, attempt)| {
-        Some(**id) != view.proactive_summary
-            && attempt.admission.is_some()
+        attempt.admission.is_some()
             && attempt.cleanup != maka_plugin_core::operation::OperationCleanup::Confirmed
+            && (Some(**id) != view.proactive_summary
+                || (matches!(action, Action::Terminate(Terminal::Completed))
+                    && (view.finish_requested() || complete_at_budget)
+                    && (attempt.closed.is_some() || attempt.interrupted.is_some())))
     }) {
         if original.closed.is_none() && original.interrupted.is_none() {
             return Action::Idle;
@@ -892,7 +906,8 @@ fn next_action(
             WaitReason::Blocker { blocker } => view.blockers.get(blocker).is_none_or(|blocker| !active(blocker)),
             WaitReason::Model { attempt } => view.attempts.get(attempt).is_some_and(|attempt| {
                 if pending.due_at.is_none() {
-                    attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
+                    (attempt.closed.is_some() || attempt.interrupted.is_some())
+                        && attempt.cleanup == maka_plugin_core::operation::OperationCleanup::Confirmed
                 } else {
                     attempt.closed.is_some() || attempt.interrupted.is_some()
                 }
@@ -1078,7 +1093,7 @@ fn next_action(
                     return Action::Idle;
                 }
                 if let Some((&operation, _)) =
-                    task.effects.iter().find(|(_, effect)| effect.pending())
+                    task.effects.iter().find(|(_, effect)| effect.unsettled())
                 {
                     return Action::Block(BlockerKind::ExternalEffectUnknown {
                         task: task.task,
@@ -1396,7 +1411,7 @@ fn next_action(
                 attempt,
                 adopt: true,
             }) => {
-                return wait(view, WaitReason::Model { attempt }, None, now);
+                return wait_proactive_summary(view, attempt, now);
             }
             Some(CompactionLevel::Candidate {
                 origin,
@@ -1610,7 +1625,7 @@ fn next_action(
                 && let Some(CompactionLevel::Pending { attempt, .. }) =
                     model.map(|model| model.compaction)
             {
-                return wait(view, WaitReason::Model { attempt }, None, now);
+                return wait_proactive_summary(view, attempt, now);
             }
             if compactable && live.work.contains(&WorkKey::PrepareProactiveSummary) {
                 return Action::Idle;

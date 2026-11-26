@@ -1,6 +1,6 @@
 ---
 title: 编码指南
-description: "构建可维护的 Native Shell 应用与组件库的架构、代码风格与命名规范，均附 Rust 与 TSX 示例。"
+description: "构建可维护的 Native Shell 应用与组件库的架构、代码风格与命名规范，均附 TSX 与 Rust 示例。"
 order: 29.5
 group: ui
 ---
@@ -93,6 +93,21 @@ store.ts
 App Shell 只组合页面，尽量不承载页面逻辑。页面读取 store 的 signal 并调用它的函数，从不写入另一个页面的状态。store 的 signal
 保持私有，只导出读取和修改它们的函数，让可变状态留在公开函数之后：
 
+```tsx tabs
+// store.ts
+import { signal } from "nsh";
+
+const name = signal("Untitled");
+
+/** The workspace's name (tracked where it is read). */
+export const workspaceName = () => name();
+
+/** Renames the workspace. */
+export function renameWorkspace(next: string) {
+  name.set(next);
+}
+```
+
 ```rust tabs
 /// The app's workspace: its state stays behind these functions.
 #[derive(Clone, Copy)]
@@ -118,21 +133,6 @@ impl Workspace {
 }
 ```
 
-```tsx tabs
-// store.ts
-import { signal } from "nsh";
-
-const name = signal("Untitled");
-
-/** The workspace's name (tracked where it is read). */
-export const workspaceName = () => name();
-
-/** Renames the workspace. */
-export function renameWorkspace(next: string) {
-  name.set(next);
-}
-```
-
 页面可以持有工作区并把它的 id 传给搜索；搜索无须拿到工作区的整个集合或它的私有 signal。一个简单的无环依赖关系是：
 
 ```text
@@ -149,6 +149,19 @@ App.tsx ──▶ pages/ ──▶ store.ts
 应用只挂载一次；它的根声明应用的顶层窗口，每个窗口用 `flex: 1` 的视图和来自主题的背景色填满。TSX 入口调用
 `mount(App)`，Rust 应用在 `nsh.json` 中指定根组件（`"root": "App"`）：
 
+```tsx tabs
+import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
+
+mount(() => (
+  <Window id="main">
+    <View class="flex-1 bg-background">
+      <App />
+    </View>
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_core::{element::desktop::window, prelude::*};
 
@@ -162,19 +175,6 @@ pub fn App() -> impl IntoElement {
             .child(inbox()),
     )
 }
-```
-
-```tsx tabs
-import { mount, View } from "nsh";
-import { Window } from "nsh/desktop";
-
-mount(() => (
-  <Window id="main">
-    <View class="flex-1 bg-background">
-      <App />
-    </View>
-  </Window>
-));
 ```
 
 应用根协调属于整个应用的东西：共享状态、设置和窗口注册表。每个窗口的内容协调属于该窗口的东西：它的导航栈，显示在它所有内容
@@ -214,15 +214,6 @@ NSH 使用持久状态与声明式构建，采用 Solid 的模型（[响应式](
 **默认优先用普通函数构造轻量、可复用的界面片段。** 调用者传入当前 props 和处理函数，函数返回元素，之后只剩下它建立的绑定。
 它的参数就是它的 props；显示的标签、值与回调来自调用者当前持有的状态。它和任何组件一样只运行一次：之后变化的是它的绑定。
 
-```rust tabs
-fn empty_state(title: impl Into<SharedString>) -> impl IntoElement {
-    view()
-        .gap_2()
-        .items_center()
-        .child(text(title.into()).text_color(move || theme().muted_foreground))
-}
-```
-
 ```tsx tabs
 function EmptyState(props: { title: string }) {
   return (
@@ -233,10 +224,26 @@ function EmptyState(props: { title: string }) {
 }
 ```
 
+```rust tabs
+fn empty_state(title: impl Into<SharedString>) -> impl IntoElement {
+    view()
+        .gap_2()
+        .items_center()
+        .child(text(title.into()).text_color(move || theme().muted_foreground))
+}
+```
+
 ### 持久行为使用组件
 
 当一块界面拥有持久状态或独立生命周期，例如 signal、effect、异步工作、定时器、按键绑定时，使用 `#[component]`（或创建
 signal 的 TSX 组件）。这些状态在组件函数体中创建一次，不能在绑定里创建。
+
+```tsx tabs
+function Search(props: { placeholder: string }) {
+  const query = signal("");
+  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
+}
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -252,13 +259,6 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
         .value(move || query.get())
         .on_change(move |text: &str| query.set(text.to_owned()))
         .placeholder(move || props.placeholder.get().to_string())
-}
-```
-
-```tsx tabs
-function Search(props: { placeholder: string }) {
-  const query = signal("");
-  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
 }
 ```
 
@@ -302,6 +302,12 @@ TSX 用 `new` 创建的持久状态（账本、解析器、会话）是 `#[class
 普通的选择和开关优先采用受控值：传入当前值，接收请求的变化，由归属者更新，绑定随之更新。回调表达意图，不能建立第二份隐藏
 真相。
 
+```tsx tabs
+<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
+  <Text>Show hidden files</Text>
+</Switch>
+```
+
 ```rust tabs
 switch()
     .checked(show_hidden)
@@ -309,17 +315,30 @@ switch()
     .child(text("Show hidden files"))
 ```
 
-```tsx tabs
-<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
-  <Text>Show hidden files</Text>
-</Switch>
-```
-
 不需要任何通知：写入 signal 会精确更新读取它的绑定。Rust 组件用 `cx.emit(..)` 发出归属者需要处理的语义事件；effect 在其
 归属者存活期间跟随 signal。形成同一不变量的多个字段在一个 [`batch`](./reactivity.md#batch) 中写入，effect 和 computed
 值会同时看到它们。
 
-应用自己的受控组件遵循同一份契约。下面是一个数量步进器，一个领域控件，用 Rust 编写一次，从 Rust 和 TSX 放置：
+应用自己的受控组件遵循同一份契约。下面是一个数量步进器，一个领域控件，用 Rust 编写一次，从 TSX 和 Rust 放置：
+
+```tsx tabs
+import { signal } from "nsh";
+import { QuantityStepper } from "my-app";   // Rust 组件：src/lib.rs 中有 #[native_module("my-app")]
+
+function CartRow() {
+  const quantity = signal(1);
+  return (
+    <QuantityStepper
+      value={quantity()}
+      min={1}
+      max={10}
+      decrementLabel="Fewer"
+      incrementLabel="More"
+      onChange={({ value }) => quantity.set(value)}
+    />
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{button, theme};
@@ -413,25 +432,6 @@ quantity_stepper()
     .on_change(move |next: &u32| quantity.set(*next))
 ```
 
-```tsx tabs
-import { signal } from "nsh";
-import { QuantityStepper } from "my-app";   // Rust 组件：src/lib.rs 中有 #[native_module("my-app")]
-
-function CartRow() {
-  const quantity = signal(1);
-  return (
-    <QuantityStepper
-      value={quantity()}
-      min={1}
-      max={10}
-      decrementLabel="Fewer"
-      incrementLabel="More"
-      onChange={({ value }) => quantity.set(value)}
-    />
-  );
-}
-```
-
 同一份契约的 TSX 写法，作为 `components/` 中的一个组件：
 
 ```tsx
@@ -506,15 +506,6 @@ key 是行为契约的一部分。它为行、页面或重复控件提供稳定�
 - 可插入或重排的数据不能使用翻译后的文案或可变索引作为标识；
 - 渲染时不能生成新的随机 key 或 id。
 
-```rust tabs
-each(projects, |p| p.id, move |project, _index| {
-    let id = project.get_untracked().id;
-    button()
-        .on_press(move || delete(id))
-        .child(text("Delete").test_id(&format!("delete-{id}")))
-})
-```
-
 ```tsx tabs
 <Each of={projects()} key={(p) => p.id}>
   {(project) => (
@@ -525,22 +516,21 @@ each(projects, |p| p.id, move |project, _index| {
 </Each>
 ```
 
+```rust tabs
+each(projects, |p| p.id, move |project, _index| {
+    let id = project.get_untracked().id;
+    button()
+        .on_press(move || delete(id))
+        .child(text("Delete").test_id(&format!("delete-{id}")))
+})
+```
+
 key 改变表示界面标识改变，其状态重置必须是有意行为。导航路由、列表 key、存储键和测试 id 也遵循相同规则：在 `setRoutes` 中
 保留下来的路由保留它的页面和状态；两个独立保存的行为共享一个 key 会相互覆盖，每次更新都换 key 则永远无法累积状态。
 
 ## 渲染与组合
 
 组件函数体保持声明式：读取当前状态、派生展示值、组合元素。领域操作、解析与复杂修改放入 store 或应用 crate 的具名函数。
-
-```rust tabs
-#[component]
-pub fn ProjectPage() -> impl IntoElement {
-    view()
-        .flex_1()
-        .child(toolbar())
-        .child(content())
-}
-```
 
 ```tsx tabs
 function ProjectPage() {
@@ -550,6 +540,16 @@ function ProjectPage() {
       <Content />
     </View>
   );
+}
+```
+
+```rust tabs
+#[component]
+pub fn ProjectPage() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(toolbar())
+        .child(content())
 }
 ```
 
@@ -586,6 +586,10 @@ Base 的长期规则是：
 从主题读取语义值，在 Rust 中用类型化的样式方法、在 TSX 中用 Tailwind 类名布局（[Tailwind](./tailwind.md)、
 [主题 token](./tailwind.md#主题-token)）：
 
+```tsx tabs
+<View class="rounded-(--radius) border border-border bg-background text-foreground" />
+```
+
 ```rust tabs
 view()
     .bg(move || theme().background)
@@ -593,10 +597,6 @@ view()
     .border_1()
     .border_color(move || theme().border)
     .rounded(move || theme().radius)
-```
-
-```tsx tabs
-<View class="rounded-(--radius) border border-border bg-background text-foreground" />
 ```
 
 规则：
@@ -654,17 +654,6 @@ view()
 同一个函数，不能复制五份修改。条件允许时，标签、图标、快捷键与禁用状态来自同一命令策略（`key_label("mod+s")` 按平台的方式
 写出快捷键），避免不同入口互相矛盾。菜单拥有导航与关闭；页面仍然拥有命令是否允许以及实际执行内容。
 
-```rust tabs
-on_key("mod+s", move |_| save());
-view()
-    .child(button().on_press(save).child(text("Save")))
-    .child(
-        menu()
-            .trigger(view().px_3().py_2().child(text("File")))
-            .child(menu_item().on_select(save).child(text(format!("Save  {}", key_label("mod+s"))))),
-    )
-```
-
 ```tsx tabs
 keymap.bind("mod+s", save);
 
@@ -674,6 +663,17 @@ keymap.bind("mod+s", save);
     <MenuItem onSelect={save}><Text>Save  {keymap.label("mod+s")}</Text></MenuItem>
   </Menu>
 </View>
+```
+
+```rust tabs
+on_key("mod+s", move |_| save());
+view()
+    .child(button().on_press(save).child(text("Save")))
+    .child(
+        menu()
+            .trigger(view().px_3().py_2().child(text("File")))
+            .child(menu_item().on_select(save).child(text(format!("Save  {}", key_label("mod+s"))))),
+    )
 ```
 
 控件选择必须符合语义。命令即使需要降低强调，也应使用 `Button` 并给它低调的样式，不能换成链接。NSH 应用约定：`link` 角色
@@ -714,6 +714,17 @@ keymap.bind("mod+s", save);
 用明确的状态表示异步操作：resource 的 `state()` 为 `unresolved`、`pending`、`ready`、`refreshing` 或 `errored`。刷新时
 保留可用的旧数据：resource 在重新加载时保留它的值。防止重复的破坏性提交；可恢复的错误要显示在界面中，而不是只写日志。
 
+```tsx tabs
+const results = resource(
+  () => query() || undefined,
+  async (q, { signal }) => {
+    const response = await fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`, { signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()) as SearchHit[];
+  },
+);
+```
+
 ```rust tabs
 let results = resource(
     move || {
@@ -730,17 +741,6 @@ let results = resource(
 );
 ```
 
-```tsx tabs
-const results = resource(
-  () => query() || undefined,
-  async (q, { signal }) => {
-    const response = await fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`, { signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as SearchHit[];
-  },
-);
-```
-
 把昂贵的解析或计算移出 TSX 的处理函数：放进 `computed`、移出交互路径，或改用 Rust。结果可能晚于查询、页面或选择的变化：
 resource 会丢弃被取代的加载，你自己的工作要附带版本号或标识，拒绝过期的结果，而不是把它应用到新状态上。
 
@@ -749,19 +749,19 @@ resource 会丢弃被取代的加载，你自己的工作要附带版本号或�
 视图把子元素排成一列，子元素默认在交叉轴上拉伸；`class="flex"`（`.flex_row()`）是一行，与 CSS 相同。一排控件需要居中
 （`items-center`），这要写出来。一排等高的列保持默认的拉伸，这样列会填满行的高度，它的标题也留在顶部：
 
+```tsx tabs
+<View class="flex flex-1">
+  <Sidebar />
+  <Content />
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
     .flex_1()
     .child(sidebar())
     .child(content())
-```
-
-```tsx tabs
-<View class="flex flex-1">
-  <Sidebar />
-  <Content />
-</View>
 ```
 
 大多数界面使用布局，不应自行测量（[布局](./layout.md)）。测量（`onLayout`、`measure()`）是浮层、虚拟化、编辑器、图表等
@@ -808,6 +808,19 @@ view()
   `estimatedItemSize`；
 - 即使多数行当前不存在，滚动到条目（`scrollToIndex`）仍在数据坐标上工作。
 
+```tsx tabs
+const liked = signal<Set<number>>(new Set());
+
+<List each={posts()} estimatedItemSize={64} class="flex-1">
+  {(post) => (
+    <View class="flex-row p-4">
+      <Text class="flex-1">{post().title}</Text>
+      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
+    </View>
+  )}
+</List>
+```
+
 ```rust tabs
 let liked = signal(HashSet::<u32>::new());
 
@@ -823,19 +836,6 @@ virtual_list(move || posts.with(Vec::len), move |at| {
         )
 })
 .estimated_item_size(px(64.0))
-```
-
-```tsx tabs
-const liked = signal<Set<number>>(new Set());
-
-<List each={posts()} estimatedItemSize={64} class="flex-1">
-  {(post) => (
-    <View class="flex-row p-4">
-      <Text class="flex-1">{post().title}</Text>
-      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
-    </View>
-  )}
-</List>
 ```
 
 ## 公共 API 设计
@@ -997,16 +997,6 @@ Rust 构建器消费并返回 `Self`，以它设置的 prop 命名，不加 `set
    在无界面环境和真实平台上（`nsh test --target macos`、`ios`、`android`、`web` 等）；
 4. 示例或应用的冒烟测试：完整流程；`nsh test --trace` 用于了解一次交互的开销。
 
-```rust tabs
-#[test]
-fn a_tap_counts() {
-    let mut app = Headless::start(EngineConfig::new(Root::of::<my_app::App>())).unwrap();
-    app.wait_for("Count: 0").unwrap();
-    app.press("Tap").unwrap();
-    app.wait_for("Count: 1").unwrap();
-}
-```
-
 ```tsx tabs
 import { expect, open, test } from "nsh/test";
 
@@ -1015,6 +1005,16 @@ test("a tap counts", async () => {
   await app.press("role:button[Tap]");
   expect(app.texts()).toContain("Count: 1");
 });
+```
+
+```rust tabs
+#[test]
+fn a_tap_counts() {
+    let mut app = Headless::start(EngineConfig::new(Root::of::<my_app::App>())).unwrap();
+    app.wait_for("Count: 0").unwrap();
+    app.press("Tap").unwrap();
+    app.wait_for("Count: 1").unwrap();
+}
 ```
 
 交互组件测试语义契约，而非实现细节：按压与键盘激活、受控值的变化、禁用、焦点移动、事件的数量和顺序、稳定标识、关键的空状态和

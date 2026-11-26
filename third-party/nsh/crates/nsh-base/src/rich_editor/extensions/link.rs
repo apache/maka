@@ -1359,4 +1359,76 @@ mod tests {
         assert!(!toggle_link(ty, attrs, vec![])(&plain, None));
         assert_eq!(link_options(&state).unwrap().protocols, ["web+app"]);
     }
+
+    #[test]
+    fn the_link_mark_drops_script_and_data_urls_in_html() {
+        use crate::rich_editor::formats::{DomParser, ParseOptions, doc_to_html};
+        let schema = starter::schema();
+        let parser = DomParser::from_schema(&schema);
+        let linked = |href: &str| {
+            schema
+                .node_from_json(&json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "hello",
+                            "marks": [{ "type": "link", "attrs": { "href": href } }]
+                        }]
+                    }]
+                }))
+                .unwrap()
+        };
+
+        let refused = [
+            "javascript:alert(1)",
+            "jAvAsCrIpT:alert(1)",
+            " javascript:alert(1)",
+            "\x01javascript:alert(1)",
+            "java\tscript:alert(1)",
+            "java\nscript:alert(1)",
+            "javascript\r:alert(1)",
+            "\u{3000}javascript:alert(1)",
+            "VBScript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "DATA:text/html;base64,PHNjcmlwdD4=",
+        ];
+        for uri in refused {
+            // Written from a document: no `href`.
+            let out = doc_to_html(&linked(uri));
+            assert!(!out.contains("href="), "written {uri:?}: {out}");
+            // Read from HTML: the text stays, unlinked.
+            let html = format!(
+                r#"<p><a href="{}">hello</a></p>"#,
+                uri.replace('"', "&quot;")
+            );
+            let doc = parser.parse(&html, &ParseOptions::default());
+            assert_eq!(doc_to_html(&doc), "<p>hello</p>", "read {uri:?}");
+        }
+        // Character references are decoded before the check.
+        for html in [
+            r#"<p><a href="&#106;avascript:alert(1)">hello</a></p>"#,
+            r#"<p><a href="java&#x09;script:alert(1)">hello</a></p>"#,
+        ] {
+            let doc = parser.parse(html, &ParseOptions::default());
+            assert_eq!(doc_to_html(&doc), "<p>hello</p>", "{html}");
+        }
+
+        // Every other URI is read and written as before, an app's own
+        // scheme included.
+        for href in [
+            "https://nsh.dev/docs",
+            "mailto:a@b.c",
+            "/relative",
+            "#top",
+            "web+app://open/1",
+            "lbapp://topic/2",
+        ] {
+            let html = format!(r#"<p><a href="{href}">hello</a></p>"#);
+            let doc = parser.parse(&html, &ParseOptions::default());
+            assert_eq!(doc_to_html(&doc), html, "read {href}");
+            assert_eq!(doc_to_html(&linked(href)), html, "written {href}");
+        }
+    }
 }

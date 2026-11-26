@@ -57,7 +57,7 @@ impl Runner {
                 return Err(io::Error::other(error));
             }
         };
-        self.pipes(endpoint, plan, capabilities).await
+        self.pipes(endpoint, plan, capabilities, Vec::new()).await
     }
 
     pub(crate) async fn pipes(
@@ -65,6 +65,7 @@ impl Runner {
         endpoint: Endpoint,
         command: crate::command::Prepared,
         capabilities: Vec<uuid::Uuid>,
+        disabled_sids: Vec<String>,
     ) -> io::Result<pipe::Spawned> {
         let _directory = command.directory();
         let cancellation = command.startup_cancellation();
@@ -85,6 +86,7 @@ impl Runner {
                     &Start {
                         plan,
                         capabilities,
+                        disabled_sids,
                         io: Transport::Pipe { stdio },
                     },
                     &cancellation,
@@ -126,7 +128,8 @@ impl Runner {
                 return Err(io::Error::other(error));
             }
         };
-        self.terminal(endpoint, plan, capabilities, size).await
+        self.terminal(endpoint, plan, capabilities, Vec::new(), size)
+            .await
     }
 
     pub(crate) async fn terminal(
@@ -134,6 +137,7 @@ impl Runner {
         endpoint: Endpoint,
         command: crate::command::Prepared,
         capabilities: Vec<uuid::Uuid>,
+        disabled_sids: Vec<String>,
         size: TerminalSize,
     ) -> io::Result<(pty::PtyChild, pty::PtyIo)> {
         let _directory = command.directory();
@@ -154,6 +158,7 @@ impl Runner {
                     &Start {
                         plan,
                         capabilities,
+                        disabled_sids,
                         io,
                     },
                     &cancellation,
@@ -347,7 +352,7 @@ async fn launch(start: Start) -> io::Result<Running> {
         .into_iter()
         .map(WriteCapability::new)
         .collect();
-    let token = Arc::new(WriteToken::current(&caps)?);
+    let token = Arc::new(WriteToken::current(&caps, &start.disabled_sids)?);
     let plan = start
         .plan
         .command()

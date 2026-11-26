@@ -15,6 +15,37 @@ Android's SMS suggestions) are the platform's own, and screen readers find one t
 `OtpInput` has no colors, sizes, borders or label of its own. Its parts are the cells, the groups they are split into
 and a caret, and the app styles each.
 
+```tsx tabs
+import { mount, signal } from "nsh";
+import { OtpInput } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const code = signal("");
+  const verify = (value: string) => console.log(`checking ${value}`);
+  return (
+    <OtpInput
+      length={6}
+      groups={2}
+      value={code()}
+      onChange={({ value }) => code.set(value)}
+      onComplete={({ value }) => verify(value)}
+      accessibilityLabel="Verification code, 6 digits"
+      class="flex-row gap-3"
+      groupClass="flex-row gap-2"
+      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring data-filled:bg-muted"
+      caretClass="w-0.5 h-6 bg-foreground"
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{OtpInputCompleteEvent, otp_input, theme};
 use nsh_core::prelude::*;
@@ -46,37 +77,6 @@ fn verification(verify: impl Fn(&str) + 'static) -> impl IntoElement {
         .cell_class("focus:border-ring data-filled:bg-muted")
         .caret_style(|s| s.w(px(2.0)).h(px(24.0)).bg(move || theme().foreground))
 }
-```
-
-```tsx tabs
-import { mount, signal } from "nsh";
-import { OtpInput } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const code = signal("");
-  const verify = (value: string) => console.log(`checking ${value}`);
-  return (
-    <OtpInput
-      length={6}
-      groups={2}
-      value={code()}
-      onChange={({ value }) => code.set(value)}
-      onComplete={({ value }) => verify(value)}
-      accessibilityLabel="Verification code, 6 digits"
-      class="flex-row gap-3"
-      groupClass="flex-row gap-2"
-      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring data-filled:bg-muted"
-      caretClass="w-0.5 h-6 bg-foreground"
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `OtpInput` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `otp_input()`

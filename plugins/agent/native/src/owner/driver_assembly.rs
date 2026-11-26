@@ -26,13 +26,13 @@ use serde::de::DeserializeOwned;
 
 #[derive(Debug)]
 pub(super) struct RestorationError {
-    pub(super) stage: AuthorityStage,
+    pub(super) stage: Option<AuthorityStage>,
     pub(super) cause: RunError,
 }
 impl From<RunError> for RestorationError {
     fn from(cause: RunError) -> Self {
         Self {
-            stage: AuthorityStage::InputCodec,
+            stage: Some(AuthorityStage::InputCodec),
             cause,
         }
     }
@@ -111,11 +111,17 @@ impl Owner {
         &self,
         view: &RunView,
     ) -> Result<(CapturedRun, Arc<crate::tools::SelectionSnapshot>), RestorationError> {
+        self.require_execution_spec(&view.spec)
+            .await
+            .map_err(|error| RestorationError {
+                stage: None,
+                cause: RunError::InvalidInput(error),
+            })?;
         let current = self
             .mutable_session(&view.spec.session_id)
             .await
             .map_err(|error| RestorationError {
-                stage: AuthorityStage::CurrentSession,
+                stage: Some(AuthorityStage::CurrentSession),
                 cause: RunError::InvalidInput(error),
             })?;
         let selection = self
@@ -135,6 +141,12 @@ impl Owner {
                 )
             }
             BackendSpec::Executor { descriptor, .. } => {
+                if self.store.checkpoint_execution().is_some() {
+                    return Err(RunError::InvalidInput(
+                        "execution_grant_requires_native_model_backend".into(),
+                    )
+                    .into());
+                }
                 (None, Some(self.run_content(view.run, descriptor).await?))
             }
             BackendSpec::Historical { .. } => {
@@ -158,14 +170,14 @@ impl Owner {
                 )
                 .await
                 .map_err(|error| RestorationError {
-                    stage: AuthorityStage::WorkspaceScope,
+                    stage: Some(AuthorityStage::WorkspaceScope),
                     cause: RunError::InvalidInput(error),
                 })?;
             self.mcp_projects
                 .capture(&current.configuration.workspace, &floor)
                 .await
                 .map_err(|error| RestorationError {
-                    stage: AuthorityStage::ToolBindings,
+                    stage: Some(AuthorityStage::ToolBindings),
                     cause: RunError::InvalidInput(error),
                 })?
         };
@@ -173,7 +185,7 @@ impl Owner {
             self.mcp_projects
                 .with_client(&view.spec.session_id, catalog)
                 .map_err(|error| RestorationError {
-                    stage: AuthorityStage::ToolBindings,
+                    stage: Some(AuthorityStage::ToolBindings),
                     cause: RunError::InvalidInput(error),
                 })?
         } else {
@@ -251,7 +263,12 @@ impl Owner {
                 .with_always_visible(super::goal::tools::NAMES)
                 .map_err(|error| RunError::InvalidInput(error.to_string()))?;
         }
-        let live_tools = mcp.for_run(access, live).map_err(RunError::InvalidInput)?;
+        let live_tools = mcp
+            .for_run(access.clone(), live)
+            .map_err(RunError::InvalidInput)?;
+        let owner = access.owner().map_err(RunError::InvalidInput)?;
+        let live_tools = super::mcp::tools::bind_for_run(owner, access, &self.tools, live_tools)
+            .map_err(RunError::InvalidInput)?;
         // Keep the admitted tool declarations across Host activations.
         let direct_only: std::collections::BTreeSet<_> =
             live_tools.direct_only().names().into_iter().collect();
@@ -292,11 +309,15 @@ impl Owner {
         &self,
         state: maka_agent_state::Store,
         claim: maka_agent_state::DriverClaim,
+        session: &str,
         stage: AuthorityStage,
         diagnostic: String,
     ) -> Result<DriverExit, RunError> {
         let engine = Engine::new(state.clone());
         loop {
+            self.require_execution(session)
+                .await
+                .map_err(RunError::InvalidInput)?;
             match engine
                 .current_authority_unavailable(
                     claim.clone(),
@@ -328,10 +349,11 @@ impl Owner {
             if claim.run() != view.run || claim.purpose() != maka_agent_state::DriverPurpose::Business {
                 return Err(RunError::InvalidInput("not the admitted business driver claim".into()));
             }
+            self.require_execution_spec(&view.spec).await.map_err(RunError::InvalidInput)?;
             let current = match self.mutable_session(&view.spec.session_id).await {
                 Ok(current) => current,
                 Err(error) => {
-                    return self.unavailable_current(self.durable.clone(), claim, AuthorityStage::CurrentSession, error)
+                    return self.unavailable_current(self.durable.clone(), claim, &view.spec.session_id, AuthorityStage::CurrentSession, error)
                         .await;
                 }
             };
@@ -341,7 +363,7 @@ impl Owner {
             {
                 Ok(scope) => scope,
                 Err(error) => {
-                    return self.unavailable_current(self.durable.clone(), claim, AuthorityStage::WorkspaceScope, error.to_string())
+                    return self.unavailable_current(self.durable.clone(), claim, &view.spec.session_id, AuthorityStage::WorkspaceScope, error.to_string())
                         .await;
                 }
             };
@@ -360,7 +382,7 @@ impl Owner {
                 let state = self.durable.with_data_writer(writer)?;
                 publication_store = state.clone();
                 preflight_stage = Some(AuthorityStage::InputCodec);
-                let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = Some(failure.stage); failure.cause })?;
+                let (basis, selection) = self.restored_data(&view).await.map_err(|failure| { preflight_stage = failure.stage; failure.cause })?;
                 preflight_stage = Some(AuthorityStage::ToolBindings);
                 let catalog = self.run_catalog(access.clone(), basis.mcp_catalog.as_ref().ok_or_else(|| RunError::InvalidInput("current MCP capability is unavailable".into()))?, &selection)?;
                 preflight_stage = Some(AuthorityStage::BackendScope);
@@ -590,7 +612,7 @@ impl Owner {
             .await;
             let result = match (result, preflight_stage) {
                 (Err(error), Some(stage)) if !error.is_cleanup_unconfirmed() => {
-                    self.unavailable_current(publication_store.clone(), claim, stage, error.to_string())
+                    self.unavailable_current(publication_store.clone(), claim, &view.spec.session_id, stage, error.to_string())
                         .await
                 }
                 (result, _) => result,
@@ -618,6 +640,8 @@ impl Owner {
                 self.retain_original_scope(view.spec.session_id.clone(), lease, driver_cleanup::OriginalScope::Driver { driver: original_driver, effects, state: publication_store, pending: None }).await;
                 return result.and(Err(RunError::Store(error)));
             }
+            drop(original_driver);
+            let _ = self.mcp_projects.prune().await;
             lease.finish();
             scope_cleanup = maka_plugin_core::operation::OperationCleanup::Confirmed;
             result

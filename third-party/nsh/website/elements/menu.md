@@ -25,7 +25,8 @@ trigger by the keyboard in the browser and on Linux, and by screen readers on ma
 
 Return, Space or Down on the focused trigger opens the menu with the keyboard focus on its first enabled item, and Up
 with it on its last; the arrow keys then move between the items. A press opens it with no item focused; in a popup Down or Home then
-focuses the first enabled item and Up or End the last. Page Down moves to the last enabled item in view and Page Up to
+focuses the first enabled item and Up or End the last, even while a field outside the menu keeps editing (a search
+field beside the trigger); a field inside the menu keeps its own arrows. Page Down moves to the last enabled item in view and Page Up to
 the first, a view at a time, stopping at the ends (a `MenuList` the same, see [Long lists](#long-lists)). In a popup the pointer moving over an item gives
 it the keyboard focus, so the keys go on from the item under the pointer; style an item's `focus:` state as its
 `hover:` one. In a popup a letter or digit moves the focus to the next enabled item whose text (or
@@ -35,36 +36,6 @@ menu keeps them, and an item out of view scrolls into it.
 In a popup and in a terminal, Right, Return or Space on a `Submenu`'s item opens it with the keyboard focus on
 its first enabled item; Left on one of its items, or Escape, closes it and puts the focus back on its item. A submenu
 the pointer opened closes when the arrow keys move the focus to another item of its menu.
-
-```rust tabs
-use nsh_base::{menu, menu_item, menu_separator, submenu};
-use nsh_core::prelude::*;
-
-fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
-    menu_item()
-        .on_select(on_select)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .child(text(label))
-}
-
-fn file_menu() -> impl IntoElement {
-    menu()
-        .offset(px(4.0))
-        .trigger(view().px_3().py_2().child(text("File")))
-        .child(item("New", || log::info!("new")))
-        .child(item("Open…", || log::info!("open")))
-        .child(menu_separator().h(px(1.0)).my_1().bg(rgb(0xe5e7eb)))
-        .child(
-            submenu()
-                .trigger(view().px_3().py_2().child(text("Share ›")))
-                .back(view().px_3().py_2().child(text("‹ Back")))
-                .child(item("Mail", || log::info!("mail")))
-                .child(item("Copy link", || log::info!("link"))),
-        )
-}
-```
 
 ```tsx tabs
 import { Text, View } from "nsh";
@@ -100,6 +71,41 @@ function FileMenu() {
   );
 }
 ```
+
+```rust tabs
+use nsh_base::{menu, menu_item, menu_separator, submenu};
+use nsh_core::prelude::*;
+
+fn item(label: &'static str, on_select: impl Fn() + 'static) -> impl IntoElement {
+    menu_item()
+        .on_select(on_select)
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .child(text(label))
+}
+
+fn file_menu() -> impl IntoElement {
+    menu()
+        .offset(px(4.0))
+        .trigger(view().px_3().py_2().child(text("File")))
+        .child(item("New", || log::info!("new")))
+        .child(item("Open…", || log::info!("open")))
+        .child(menu_separator().h(px(1.0)).my_1().bg(rgb(0xe5e7eb)))
+        .child(
+            submenu()
+                .trigger(view().px_3().py_2().child(text("Share ›")))
+                .back(view().px_3().py_2().child(text("‹ Back")))
+                .child(item("Mail", || log::info!("mail")))
+                .child(item("Copy link", || log::info!("link"))),
+        )
+}
+```
+
+A group of items under one row (Share, Language, Appearance) is a `Submenu`, never a row that expands its items in
+place with a chevron turning down: no platform's menu does that, and those rows would lose the submenu's keys and
+role. A few choices that stay visible are a section instead: a title that is not an item and checkable items under
+it, unindented, between separators (see [Checkable items](#checkable-items)).
 
 All five come from [`nsh/base`](../modules/nsh-base.md). The items reach their menu on their own, so you arrange them
 freely: groups in views, labels, items that come and go with `If`. `popupClass` styles the popup or the sheet,
@@ -174,46 +180,6 @@ indicator: the part before its content (`indicatorClass`, `indicatorStyle`) arou
 `group-checked:` classes with `group` in `indicatorClass`. `closeOnSelect={false}` keeps the menu open, so a setting
 shows its new value at once.
 
-```rust tabs
-use nsh_base::{menu, menu_item};
-use nsh_core::{element::StyleRefinement, prelude::*};
-
-fn view_menu(sidebar: Signal<bool>, sort: Signal<&'static str>) -> impl IntoElement {
-    // The indicator part shows the mark while the item is checked.
-    let part = |s: StyleRefinement| s.w(px(16.0)).opacity(0.0).checked(|s| s.opacity(1.0));
-    let by = move |label: &'static str| {
-        menu_item()
-            .role(AccessibilityRole::MenuItemRadio)
-            .checked(move || Some(sort.get() == label))
-            .indicator_style(part)
-            .indicator(text("✓"))
-            .on_select(move || sort.set(label))
-            .flex_row()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .child(text(label))
-    };
-    menu()
-        .trigger(view().px_3().py_2().child(text("View")))
-        .child(
-            menu_item()
-                .checked(move || Some(sidebar.get()))
-                .close_on_select(false)
-                .indicator_style(part)
-                .indicator(text("✓"))
-                .on_select(move || sidebar.set(!sidebar.get_untracked()))
-                .flex_row()
-                .gap_2()
-                .px_3()
-                .py_2()
-                .child(text("Show sidebar")),
-        )
-        .child(by("Name"))
-        .child(by("Date modified"))
-}
-```
-
 ```tsx tabs
 import { Text, View, signal } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
@@ -252,6 +218,46 @@ function ViewMenu() {
       </Each>
     </Menu>
   );
+}
+```
+
+```rust tabs
+use nsh_base::{menu, menu_item};
+use nsh_core::{element::StyleRefinement, prelude::*};
+
+fn view_menu(sidebar: Signal<bool>, sort: Signal<&'static str>) -> impl IntoElement {
+    // The indicator part shows the mark while the item is checked.
+    let part = |s: StyleRefinement| s.w(px(16.0)).opacity(0.0).checked(|s| s.opacity(1.0));
+    let by = move |label: &'static str| {
+        menu_item()
+            .role(AccessibilityRole::MenuItemRadio)
+            .checked(move || Some(sort.get() == label))
+            .indicator_style(part)
+            .indicator(text("✓"))
+            .on_select(move || sort.set(label))
+            .flex_row()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .child(text(label))
+    };
+    menu()
+        .trigger(view().px_3().py_2().child(text("View")))
+        .child(
+            menu_item()
+                .checked(move || Some(sidebar.get()))
+                .close_on_select(false)
+                .indicator_style(part)
+                .indicator(text("✓"))
+                .on_select(move || sidebar.set(!sidebar.get_untracked()))
+                .flex_row()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .child(text("Show sidebar")),
+        )
+        .child(by("Name"))
+        .child(by("Date modified"))
 }
 ```
 
@@ -393,14 +399,17 @@ submenu inside it sets its own. A menu whose items are all one choice puts them 
 
 - **iOS and Mac Catalyst**: the trigger is covered by a transparent `UIButton` whose `UIMenu` is its primary action:
   a tap, VoiceOver's activation or a hardware keyboard opens it at once, without waiting for JS. `icon` is an SF
-  Symbol; `title` heads the menu. VoiceOver reaches the button, named by `accessibilityLabel`, and not the trigger's
+  Symbol; `title` heads the menu. The menu grows out of the trigger, which hides while the menu is up and comes back as it
+  closes, as a system button does. VoiceOver reaches the button, named by `accessibilityLabel`, and not the trigger's
   content under it. New `items` change the menu the next time it opens.
 - **Desktops (macOS, Windows, Linux)**: a press shows the items as the platform's context menu at the pointer (as
   `Menu.popup` from `nsh/desktop`), sections between separators; `icon`, `title` and `destructive` are not shown.
 - **Android**: a transparent button over the trigger opens the system's popup menu below it at once, lined up with the
   trigger's end when the trigger is in the end half of the window. `title` is the menu's first row, which cannot be
   chosen (TalkBack reads it as a disabled item); `svg`, an SVG document, is the item's icon, drawn in the item's text
-  color on Android 10 and later (`icon` is iOS's). Checks, radio buttons, submenus and sections are the system's.
+  color on Android 10 and later (`icon` is iOS's). Checks, radio buttons, submenus and sections are the system's. A
+  tap outside closes the menu as the finger lifts; the back button and the back gesture close only the menu, so a
+  dialog under it stays open.
 - **The web**: there is no system menu for a view; the trigger shows and opens nothing. Use `Menu` there, picked by
   `platform.os`.
 

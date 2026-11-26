@@ -194,9 +194,11 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const composerToolbarIconSize = platform.idiom === 'terminal' ? 16 : 14;
+export const composerToolbarChevronSize = platform.idiom === 'terminal' ? 16 : 12;
 export const composerIconSlot = {
-  width: 32,
-  height: 32,
+  width: platform.idiom === 'terminal' ? 32 : 28,
+  height: platform.idiom === 'terminal' ? 32 : 28,
   flexShrink: 0,
   alignItems: 'center',
   justifyContent: 'center',
@@ -206,6 +208,16 @@ export const toolbarControlStyle = {
   ...controlStyle,
   paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
 } as const;
+export const composerToolbarControlStyle =
+  platform.idiom === 'terminal'
+    ? toolbarControlStyle
+    : ({
+        ...toolbarControlStyle,
+        minHeight: 28,
+        height: 28,
+        paddingHorizontal: 6,
+        paddingVertical: 0,
+      } as const);
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and
@@ -360,15 +372,28 @@ export function Disclosure(props: {
   reserveChevron?: boolean;
   /** On the desktop, what the row is, in place of the chevron. */
   icon?: Parameters<typeof Icon>[0]['name'];
-  /** Draws what stands in place of `icon`, for a row whose icon moves. */
+  /**
+   * On the desktop, when there is no mark or icon: `'blank'` keeps the icon's
+   * 16 pt place empty instead of a chevron; `'none'` omits the leading slot.
+   */
+  leading?: 'blank' | 'none';
+  /** On the desktop, draws a moving mark in the leading slot. */
   mark?: () => JSX.Element;
   terminalInset?: number;
   onPress: () => void;
   children: JSX.Element;
   trailing?: JSX.Element;
 }) {
-  const icon = () => (platform.idiom === 'terminal' ? undefined : props.icon);
-  const marked = computed(() => props.mark !== undefined);
+  const leading = computed(() => {
+    if (platform.idiom === 'terminal') return props.foldable !== false ? 'chevron' : 'none';
+    if (props.mark !== undefined) return 'mark';
+    if (props.icon !== undefined) return 'icon';
+    if (props.leading === 'none') return 'none';
+    if (props.leading === 'blank') return 'blank';
+    if (props.foldable !== false) return 'chevron';
+    // Nested rows can align their labels with foldable siblings.
+    return props.reserveChevron !== false ? 'blank' : 'none';
+  });
   return (
     <View
       style={{
@@ -399,25 +424,15 @@ export function Disclosure(props: {
         activeStyle={quietActiveStyle()}
         focusStyle={quietFocusStyle()}
       >
-        <If
-          when={icon()}
-          else={
-            <If
-              when={props.foldable !== false}
-              else={
-                // Nested rows can align their labels with foldable siblings.
-                <If when={platform.idiom !== 'terminal' && props.reserveChevron !== false}>
-                  <View style={{ width: 16, height: 16 }} />
-                </If>
-              }
-            >
-              <DisclosureChevron open={props.open} />
-            </If>
-          }
-        >
-          <If when={marked()} else={<Icon name={icon()!} color={C.muted} />}>
-            {props.mark?.()}
-          </If>
+        <If when={leading() === 'mark'}>{props.mark?.()}</If>
+        <If when={leading() === 'icon'}>
+          <Icon name={props.icon!} color={C.muted} />
+        </If>
+        <If when={leading() === 'chevron'}>
+          <DisclosureChevron open={props.open} />
+        </If>
+        <If when={leading() === 'blank'}>
+          <View style={{ width: 16, height: 16 }} />
         </If>
         {props.children}
       </Button>

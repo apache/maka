@@ -148,6 +148,19 @@ pub(super) struct Cache {
     pub chat: bool,
     pub reader: Reader,
 }
+impl Cache {
+    pub(super) fn executor_thinking(&self, address: &wire::HistoryRowAddress) -> Option<&TextBody> {
+        let wire::HistoryRowAddress::Live {
+            sequence,
+            fact,
+            item_index: 0,
+        } = address
+        else {
+            return None;
+        };
+        self.executor.as_ref()?.thinking_at(*sequence, *fact)
+    }
+}
 pub(super) fn snapshot_id(
     address: &wire::HistoryRowAddress,
 ) -> Option<maka_agent_facts::history_snapshot::SnapshotId> {
@@ -238,7 +251,7 @@ async fn project_item(
                     .run_source(item.recorded.run)
                     .await
                     .map_err(|error| error.to_string())?;
-                let mut timing = timing(&data, &source).await?;
+                let mut timing = timing(&data, &source, stop).await?;
                 cache.views.clear();
                 cache.executor = None;
                 if let BackendSpec::Executor { selection, .. } = &source.spec.backend {
@@ -388,11 +401,12 @@ async fn project_item(
 async fn timing(
     data: &data::DataSource,
     source: &maka_agent_state::session_history::RunSource,
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<wire::TurnTiming, String> {
     let millis =
         |at: UnixMillis| u64::try_from(at.0).map_err(|_| "agent_history_timestamp_invalid");
     let finished = data
-        .terminated(source.run)
+        .terminated(source.run, Some(stop))
         .await
         .map_err(|error| error.to_string())?
         .map(|(at, terminal)| {
@@ -869,6 +883,20 @@ async fn group(
     }
     Ok(summarize(members))
 }
+pub(super) fn thought_tail(body: &TextBody) -> Option<String> {
+    const LAST_THOUGHT_TAIL_BYTES: usize = 3072;
+    let total = body.len_bytes();
+    let mut start = total.saturating_sub(LAST_THOUGHT_TAIL_BYTES);
+    let slice = loop {
+        if let Some(slice) = body.slice(start..total) {
+            break slice;
+        }
+        start += 1;
+    };
+    let mut text = slice.to_string();
+    text.truncate(text.trim_end().len());
+    (!text.is_empty()).then_some(text)
+}
 fn summarize(members: Vec<Selected>) -> Option<Selected> {
     enum Seat {
         Tool(usize),
@@ -976,12 +1004,45 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
     }
     let image_count = images.len() as u64;
     images.drain(..images.len().saturating_sub(4));
-    let end = &members.last()?.row.chunk;
+    let end_member = members.last()?;
+    let end = &end_member.row.chunk;
+    let unfinished = matches!(end.position, wire::HistoryRowAddress::Live { .. })
+        && end
+            .timing
+            .as_ref()
+            .is_some_and(|timing| timing.finished.is_none());
+    let last_thought = unfinished
+        .then(|| {
+            seats.iter().rev().find_map(|(index, seat)| {
+                matches!(seat, Seat::Thought)
+                    .then(|| &members[*index].row)
+                    .and_then(|row| {
+                        let projection::Body::Text(body) = &row.body else {
+                            return None;
+                        };
+                        Some(Box::new(wire::WorkThought {
+                            position: row.chunk.position.clone(),
+                            offset: body.len_bytes() as u64,
+                            text: thought_tail(body)?,
+                        }))
+                    })
+            })
+        })
+        .flatten();
+    let end_offset =
+        if unfinished && end.tool.is_none() && end.field == wire::HistoryField::Thinking {
+            match &end_member.row.body {
+                projection::Body::Text(body) => body.len_bytes() as u64,
+                _ => 0,
+            }
+        } else {
+            0
+        };
     let work = wire::WorkGroup {
         end: wire::Cursor {
             field: end.field,
             position: end.position.clone(),
-            offset: 0,
+            offset: end_offset,
         },
         last: kind(last).unwrap_or(wire::WorkKind::Message),
         first_tool_use_id: members[first]
@@ -994,6 +1055,7 @@ fn summarize(members: Vec<Selected>) -> Option<Selected> {
             Seat::Tool(index) => tools[*index].0.call.clone().map(Box::new),
             _ => None,
         },
+        last_thought,
         kinds,
         thoughts: shown
             .iter()

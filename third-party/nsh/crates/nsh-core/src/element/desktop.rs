@@ -1866,28 +1866,26 @@ pub fn set_tray(tray: impl Into<Option<Tray>>) {
 /// the current owner, until [`unregister_global_shortcut`] or the owner
 /// goes. The keystroke is written as a [`MenuItem::shortcut`]'s
 /// (`"mod+shift+k"`). The answer is whether the system took it: `false`
-/// when another app holds it, or off desktops; it need not be awaited.
-/// Registering a keystroke again replaces its function.
+/// when another app holds it, when the keystroke is not one (a warning
+/// names why in the log, and the component goes on — keystrokes often
+/// come from user settings, where a typo must not end it), or off
+/// desktops; it need not be awaited. Registering a keystroke again
+/// replaces its function.
 ///
 /// On Linux it goes through the desktop portal
 /// (`org.freedesktop.portal.GlobalShortcuts`): the desktop may ask the
 /// user to confirm it or let them pick another keystroke, and Hyprland
 /// binds it in its own configuration
 /// (`bind = …, global, <app id>:<shortcut>`).
-///
-/// # Panics
-///
-/// When `keystroke` is not one.
-///
-/// The panic is not fatal to the app: like any panic in a component, it
-/// ends the component that made the call (its error boundary hears it, or
-/// it is logged) and the engine goes on. To take keystrokes from user
-/// settings, check them first with
-/// [`Shortcut::parse`](crate::desktop::Shortcut::parse).
 pub fn register_global_shortcut(keystroke: &str, on_press: impl Fn() + 'static) -> Answer<bool> {
     let shortcut = match Shortcut::parse(keystroke, super::os() == Os::MacOs) {
         Ok(shortcut) => shortcut,
-        Err(e) => panic!("register_global_shortcut: {e}"),
+        Err(e) => {
+            log::warn!("register_global_shortcut: {e}");
+            let (answer, slot) = Answer::new();
+            slot.borrow_mut().deliver(false);
+            return answer;
+        }
     };
     let (answer, slot) = Answer::new();
     if !desktop_os() {
@@ -1943,5 +1941,27 @@ fn unregister_where(remove: impl Fn(&super::menus::Global) -> bool) {
             slot.borrow_mut().deliver(false);
         }
         super::desktop_command(DesktopCommand::UnregisterGlobalShortcut(g.id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A keystroke that is not one answers `false` where the call was
+    /// made, instead of ending the component that took it from user
+    /// settings (#2758): the answer is already there to poll.
+    #[test]
+    fn a_keystroke_that_is_not_one_answers_false() {
+        let runtime = crate::element::Runtime::default();
+        runtime.set_environment(crate::element::Environment::default());
+        let _entered = runtime.enter();
+        let answer = register_global_shortcut("ctrl+alt+notakey", || {});
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        match std::pin::pin!(answer).poll(&mut cx) {
+            std::task::Poll::Ready(taken) => assert!(!taken),
+            std::task::Poll::Pending => panic!("the answer was to be delivered at once"),
+        }
     }
 }

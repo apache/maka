@@ -340,6 +340,51 @@ fn a_layout_shows_each_group_s_tabs_and_displayed_panel() {
     assert_eq!(app.screen().count("role:tablist").unwrap(), 2);
 }
 
+/// The panel tab `tab` (`role:tab[<name>]`) controls, which must be a
+/// tab panel.
+fn controlled_panel(app: &Headless, tab: &str) -> nsh_core::NodeId {
+    let screen = app.screen();
+    let panel = screen
+        .accessibility_controls(&format!("role:tab[{tab}]"))
+        .unwrap()
+        .unwrap_or_else(|| panic!("{tab} controls a view"));
+    let panels = (0..screen.count("role:tabpanel").unwrap())
+        .map(|n| screen.id(&format!("role:tabpanel >> nth={n}")).unwrap())
+        .collect::<Vec<_>>();
+    assert!(panels.contains(&panel), "{tab} controls a tab panel");
+    panel
+}
+
+/// Whether view `panel` holds the text `text`.
+fn holds(app: &Headless, panel: nsh_core::NodeId, text: &str) -> bool {
+    app.screen()
+        .id(&format!("view:{panel} >> text:{text}"))
+        .is_ok()
+}
+
+/// As WAI-ARIA's tabs pattern: each group's content frame is a tab panel
+/// holding the displayed panel, and every tab of the group names it as
+/// the element it controls.
+#[test]
+fn each_group_s_tabs_control_its_tab_panel() {
+    let mut app = start(two_groups(), 1000.0);
+    assert_eq!(app.screen().count("role:tabpanel").unwrap(), 2);
+    let (a, b, c) = (
+        controlled_panel(&app, "Tab a"),
+        controlled_panel(&app, "Tab b"),
+        controlled_panel(&app, "Tab c"),
+    );
+    assert_eq!(a, b, "the tabs of a group control one panel");
+    assert_ne!(a, c, "another group's tabs control its own");
+    assert!(holds(&app, a, "Panel a"));
+    assert!(holds(&app, c, "Panel c"));
+    // Selecting another tab shows its panel in the same tab panel.
+    app.press("id:tab-b").unwrap();
+    app.wait_for("Panel b").unwrap();
+    assert!(holds(&app, a, "Panel b"));
+    assert_eq!(controlled_panel(&app, "Tab a"), a);
+}
+
 #[test]
 fn a_press_on_a_tab_selects_it() {
     let mut app = start(two_groups(), 1000.0);
@@ -695,6 +740,11 @@ fn a_narrow_area_in_a_wide_window_is_compact() {
     assert!(app.shows("Tab c"));
     assert!(app.shows("Panel a"));
     assert!(!app.shows("Panel c"));
+    // Its tabs, every group's, control the one tab panel.
+    assert_eq!(app.screen().count("role:tabpanel").unwrap(), 1);
+    let panel = controlled_panel(&app, "Tab a");
+    assert_eq!(controlled_panel(&app, "Tab c"), panel);
+    assert!(holds(&app, panel, "Panel a"));
 }
 
 #[test]

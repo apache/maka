@@ -26,6 +26,7 @@ import type {
 import type { SettingsViewInput } from '../../../../../packages/plugin-sdk/src/workbench-views';
 import { activate } from '../../../../../plugins/settings/settings/ui';
 import { currentLocale } from '../../app/locale';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 function Fixture() {
   currentLocale.set('en');

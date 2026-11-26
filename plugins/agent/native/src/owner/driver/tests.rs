@@ -333,6 +333,7 @@ impl Rig {
         let agent_key = Uuid::new_v4();
         let gateway_key = Uuid::new_v4();
         let mut configuration = json!({
+            "locale":"en",
             "permissions":{"access":"read_only","requestPermissions":false},
             "workspaceRoots":[{"label":"test","path":self.directory.path().join("workspace")}],
             "tools":[]
@@ -516,6 +517,7 @@ impl Rig {
                 "continuationAvailability",
                 "continueRun",
                 "history",
+                "source",
                 "models",
                 "observe",
                 "history",
@@ -536,6 +538,8 @@ impl Rig {
                 "uploadAttachment",
                 "work",
                 "workReadiness",
+                "previewHistoryCheckpoint",
+                "publishCheckpoint",
                 "queue",
                 "queueMessage",
                 "editQueue",
@@ -550,8 +554,20 @@ impl Rig {
                 "schedule",
                 "schedules",
                 "metadata",
+                "changeSession",
+                "saveFile",
                 "project",
                 "projects",
+                "projectMcp",
+                "trustProjectMcp",
+                "declineProjectMcp",
+                "mcpConfigurations",
+                "manageMcpServer",
+                "setProjectMcpDecision",
+                "sessionMcp",
+                "sessionWorkspaceAvailable",
+                "changeSessionWorkspace",
+                "listFiles",
                 "stop",
             ]
         } else {
@@ -701,7 +717,11 @@ impl Rig {
         )
         .await?;
         self.host = Some(host.clone());
+        #[cfg(unix)]
         let socket = self.socket_directory.path().join("wait.sock");
+        #[cfg(windows)]
+        let socket =
+            std::path::PathBuf::from(format!(r"\\.\pipe\maka-agent-test-{}", Uuid::new_v4()));
         let listener = LocalListener::bind(&socket)?;
         let cancel = self.stop_serving.clone();
         self.serving = Some(tokio::spawn(async move {
@@ -908,7 +928,7 @@ impl Rig {
                 },
             },
             collaboration: CollaborationMode::Agent,
-            language: Language::En,
+            language: Language::EN,
             tool_discovery: false,
             allowed_tools: None,
             mcp_revision: None,
@@ -1654,13 +1674,19 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 mod bounded_risk {
     use super::*;
+    use maka_agent_engine::ports::{CellObservation, CellPorts};
     use maka_agent_facts::{
         artifact::ToolReturn,
-        cells::{CellEvent, CellId, CellOwner, CellReply, CellReplyState, CellStatus},
+        cells::{
+            CellEvent, CellId, CellInterruption, CellOwner, CellReply, CellReplyState, CellStatus,
+            CellVmBinding,
+        },
         tool_output::{AcceptedToolResult, DurableToolProjection, ReturnedToolResult, ToolOutput},
+        tools::{ToolExecutor, ToolFuture},
     };
 
-    // Typed State fixture only. No interpreter, process identity or physical cleanup ACK.
+    const ORIGINAL_CELL_SOURCE: &str = "// logical bounded Cell source";
+
     async fn start_original_cell(
         rig: &Rig,
         attempt: ModelAttemptId,
@@ -1670,7 +1696,7 @@ mod bounded_risk {
                 attempt,
                 "exec",
                 "bounded-cell-parent",
-                json!({"code":"logical bounded Cell source"}),
+                json!({"code":ORIGINAL_CELL_SOURCE}),
             )
             .await?;
         let driver = rig.driver.as_ref().ok_or("fixture driver missing")?;
@@ -1684,7 +1710,7 @@ mod bounded_risk {
             attempt,
         };
         let cell = CellId::for_agent(link, &parent.call);
-        let source = ContentBlob::new(b"logical bounded Cell source".to_vec());
+        let source = ContentBlob::new(ORIGINAL_CELL_SOURCE.as_bytes().to_vec());
         driver
             .state
             .append(
@@ -1708,6 +1734,216 @@ mod bounded_risk {
             )
             .await?;
         Ok((cell, parent))
+    }
+
+    struct NoTools;
+    impl ToolExecutor for NoTools {
+        fn names(&self) -> Vec<String> {
+            vec![]
+        }
+
+        fn invoke(&self, name: String, _: Value, _: CancellationToken) -> ToolFuture {
+            panic!("unexpected VM tool invocation: {name}");
+        }
+    }
+
+    async fn prepare_cell_with_shell(
+        rig: &mut Rig,
+    ) -> TestResult<(CellId, ToolKey, Uuid, maka_code_runtime::PreparedCell)> {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let attempt = rig.attempt().await?;
+        let (cell, parent) = start_original_cell(rig, attempt).await?;
+        rig.finish_model_request(attempt, None).await?;
+        let operation = Uuid::new_v4();
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let store = maka_code_runtime::CellStore::temporary().map_err(|error| error.message)?;
+        let context =
+            maka_code_runtime::CellContext::new(store, vec![]).map_err(|error| error.message)?;
+        let vm = owner
+            .code_executor
+            .prepare_module(
+                ORIGINAL_CELL_SOURCE.into(),
+                Arc::new(NoTools),
+                CancellationToken::new(),
+                context,
+            )
+            .await?;
+        let binding = vm.binding().clone();
+        let descriptor = ContentBlob::json(&binding.descriptor)?;
+        let input = ContentBlob::json(&json!({"command": "echo must-not-run"}))?;
+        rig.append(
+            vec![
+                Fact::Cell {
+                    event: CellEvent::VmBound {
+                        cell,
+                        binding: CellVmBinding {
+                            runtime: binding.runtime,
+                            version: binding.version,
+                            descriptor: descriptor.reference().clone(),
+                        },
+                    },
+                },
+                Fact::Cell {
+                    event: CellEvent::ChildPrepared {
+                        cell,
+                        operation,
+                        name: "Shell".into(),
+                        semantics: ToolSemantics::Parallel,
+                        input: input.reference().clone(),
+                        resources: vec![],
+                    },
+                },
+            ],
+            vec![descriptor, input],
+        )
+        .await?;
+        Ok((cell, parent, operation, vm))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dead_cell_never_admits_its_prepared_shell() {
+        let mut rig = Rig::new().unwrap();
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let (cell, parent, operation, vm) = prepare_cell_with_shell(&mut rig).await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            let original = &view.cells[&cell];
+            let child = &original.children[&operation];
+            assert!(matches!(original.status, CellStatus::Running));
+            assert!(original.vm.is_some() && !child.admitted && child.rejected.is_none());
+
+            vm.abort().await?;
+            assert!(matches!(
+                rig.cells
+                    .as_ref()
+                    .unwrap()
+                    .observe_original_cell(&view, original)
+                    .await?,
+                CellObservation::Recorded
+            ));
+
+            let view = driver.state.frontier(run).await?;
+            let CellStatus::Interrupted { report } = &view.cells[&cell].status else {
+                return Err("original VM exit did not interrupt the Cell".into());
+            };
+            let report: CellInterruption =
+                serde_json::from_slice(&driver.state.content(run, report.clone()).await?)?;
+            let child = &report.children[&operation];
+            assert!(
+                !child.admitted && child.rejected.is_some() && child.local_result.is_none(),
+                "original VM exit did not reject its unadmitted child: {child:?}"
+            );
+            assert!(!view.has_unsettled_recovery());
+            assert!(
+                view.tools[&maka_agent_state::fold::tool_key(&parent)]
+                    .local_returned
+                    .is_none()
+            );
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        match result {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retained_dead_cell_retries_after_child_admission() {
+        use maka_agent_facts::cells::CellReturnedResult;
+
+        let mut rig = Rig::new().unwrap();
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let (cell, _, operation, vm) = prepare_cell_with_shell(&mut rig).await?;
+            let driver = rig.driver.as_ref().unwrap();
+            let cells = rig.cells.as_ref().unwrap();
+            cells.retain_vm_for_test(cell);
+            let run = driver.access.execution().run_id;
+            let view = driver.state.frontier(run).await?;
+            vm.abort().await?;
+
+            // Leave the original batch retained without accepting a store write.
+            cells.before_vm_publication_for_test(Box::pin(async {
+                Err(ToolError::Persistence(
+                    "test: original VM write not sent".into(),
+                ))
+            }));
+            assert!(matches!(
+                cells.observe_original_cell(&view, &view.cells[&cell]).await,
+                Err(RunError::Tool(ToolError::Persistence(message)))
+                    if message == "test: original VM write not sent"
+            ));
+            driver.workers.close();
+            driver.workers.wait().await;
+
+            // Commit admission after cleanup has sampled the prepared child,
+            // but before the cleanup batch reaches the writer.
+            let (sampled, after_sample) = oneshot::channel();
+            let (resume, after_admission) = oneshot::channel();
+            cells.before_vm_publication_for_test(Box::pin(async move {
+                sampled.send(()).expect("cleanup sample observer");
+                after_admission.await.expect("cleanup publication gate");
+                Ok(())
+            }));
+            let (cleanup, admission) = tokio::join!(cells.original_cleanup_confirmed(), async {
+                after_sample.await?;
+                let returned = ContentBlob::json(&ToolReturn {
+                    schema_version: SCHEMA_VERSION,
+                    artifacts: vec![],
+                    body: CellReturnedResult {
+                        output: ToolOutput::Text("original Shell returned".into()),
+                        projection: None,
+                        is_error: false,
+                    },
+                })?;
+                rig.append(
+                    vec![
+                        Fact::Cell {
+                            event: CellEvent::ChildAdmitted { cell, operation },
+                        },
+                        Fact::Cell {
+                            event: CellEvent::LocalChildReturned {
+                                cell,
+                                operation,
+                                result: returned.reference().clone(),
+                                is_error: false,
+                                settlement: ToolSettlement::Returned,
+                            },
+                        },
+                    ],
+                    vec![returned],
+                )
+                .await?;
+                resume.send(()).expect("cleanup publication observer");
+                Ok::<_, Box<dyn Error + Send + Sync>>(())
+            });
+            admission?;
+            assert!(cleanup?, "retained VM closure must settle after the race");
+            let view = driver.state.frontier(run).await?;
+            let CellStatus::Interrupted { report } = &view.cells[&cell].status else {
+                return Err("retained VM closure did not interrupt the Cell".into());
+            };
+            let report: CellInterruption =
+                serde_json::from_slice(&driver.state.content(run, report.clone()).await?)?;
+            let child = &report.children[&operation];
+            assert!(child.admitted && child.rejected.is_none() && child.local_result.is_some());
+            assert!(!view.has_unsettled_recovery());
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = tokio::time::timeout(Duration::from_secs(30), rig.finish()).await;
+        match result {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+        let cleanup = cleanup.expect("retained VM fixture cleanup timed out");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2947,6 +3183,222 @@ mod source_recovery {
     use maka_agent_state::ReadyCause;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_before_external_launch_settles_admitted_run() {
+        use maka_agent_engine::ports::ExternalPorts;
+        let mut rig = Rig::new().unwrap();
+        let result: TestResult<()> = async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({"runtimes":{"codex":true}});
+                })
+                .await?;
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let NativeBackend::Executor(executor) = &driver.backend else {
+                return Err("expected an external executor".into());
+            };
+            let prepared = executor
+                .prepare_external(&driver.state.frontier(run).await?, task)
+                .await?;
+            rig.append(
+                vec![
+                    Fact::ExternalTaskPrepared {
+                        task,
+                        descriptor: prepared.descriptor.reference().clone(),
+                        live_workspace: prepared.live_workspace,
+                    },
+                    Fact::ExternalTaskAdmitted { task },
+                ],
+                vec![prepared.descriptor],
+            )
+            .await?;
+            rig.append(
+                vec![Fact::StopRequested {
+                    diagnostic: "steering_interrupt".into(),
+                    requester: StopRequester::Internal,
+                }],
+                vec![],
+            )
+            .await?;
+
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            engine
+                .drive(
+                    driver.access.claim().clone(),
+                    driver.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            driver.access.claim().deactivate();
+            driver.finish().await?;
+            rig.work_effects.take().unwrap().settle().await?;
+            rig.lease.take().unwrap().finish();
+            // Late cleanup cannot take over until the original driver drops its physical claim.
+            drop(rig.cells.take());
+            drop(rig.ordinary.take());
+            drop(rig.driver.take());
+            drop(driver);
+            owner.physical_availability_changed();
+
+            let mut changes = owner.durable.subscribe()?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    changes.borrow_and_update();
+                    let view = owner.durable.frontier(run).await?;
+                    if let Some(terminal) = view.terminal {
+                        assert_eq!(terminal, Terminal::Cancelled);
+                        let external = view.external.unwrap();
+                        assert!(external.binding.is_none());
+                        assert_eq!(external.cleanup, OperationCleanup::Confirmed);
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    changes.changed().await?;
+                }
+            })
+            .await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(result.is_ok(), "{result:?}; cleanup: {cleanup:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_after_handoff_before_external_spawn_settles_admitted_run() {
+        use maka_agent_engine::ports::{DriverPorts, ExternalPorts};
+        let mut rig = Rig::new().unwrap();
+        let result: TestResult<()> = async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({
+                        "runtimes": {"codex": true},
+                        "commands": {"codex": {"executable": "maka-nonexistent-codex-test-binary"}},
+                    });
+                })
+                .await?;
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let NativeBackend::Executor(executor) = &driver.backend else {
+                return Err("expected an external executor".into());
+            };
+            let prepared = executor
+                .prepare_external(&driver.state.frontier(run).await?, task)
+                .await?;
+            // Leave the task prepared (not yet admitted) so Engine::drive executes StartExternal,
+            // admits the task, and hands the TaskOwner off to the launch worker.
+            rig.append(
+                vec![Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor: prepared.descriptor.reference().clone(),
+                    live_workspace: prepared.live_workspace,
+                }],
+                vec![prepared.descriptor],
+            )
+            .await?;
+
+            let stop_driver = driver.clone();
+            let stop_executor = executor.clone();
+            let stop_state = driver.state.clone();
+            let stop_claim = driver.access.claim().clone();
+            let interruptor = tokio::spawn(async move {
+                loop {
+                    if stop_executor.prepared_private.lock().await.is_none() {
+                        // Cancel right after launch custody leaves prepared_private so the
+                        // worker hits its pre-launch cancellation path before spawning.
+                        stop_driver.cancel_live(run);
+                        let view = stop_state.frontier(run).await?;
+                        stop_state
+                            .append(
+                                &stop_claim,
+                                (&view).into(),
+                                vec![Change::new(
+                                    Fact::StopRequested {
+                                        diagnostic: "steering_interrupt".into(),
+                                        requester: StopRequester::Internal,
+                                    },
+                                    at(),
+                                )],
+                                vec![],
+                            )
+                            .await?;
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    tokio::task::yield_now().await;
+                }
+            });
+
+            let engine = maka_agent_engine::Engine::new(driver.state.clone());
+            engine
+                .drive(
+                    driver.access.claim().clone(),
+                    driver.clone(),
+                    CancellationToken::new(),
+                )
+                .await?;
+            interruptor.await??;
+            driver.access.claim().deactivate();
+            driver.join_original_workers().await?;
+            driver.finish().await?;
+            rig.work_effects.take().unwrap().settle().await?;
+            rig.lease.take().unwrap().finish();
+            drop(rig.cells.take());
+            drop(rig.ordinary.take());
+            drop(rig.driver.take());
+            drop(driver);
+            owner.physical_availability_changed();
+
+            let mut changes = owner.durable.subscribe()?;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    changes.borrow_and_update();
+                    let view = owner.durable.frontier(run).await?;
+                    if let Some(terminal) = view.terminal {
+                        assert_eq!(terminal, Terminal::Cancelled);
+                        let external = view.external.unwrap();
+                        assert!(external.binding.is_none());
+                        assert_eq!(external.cleanup, OperationCleanup::Confirmed);
+                        return Ok::<_, Box<dyn Error + Send + Sync>>(());
+                    }
+                    changes.changed().await?;
+                }
+            })
+            .await??;
+            Ok(())
+        }
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(result.is_ok(), "{result:?}; cleanup: {cleanup:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn external_scope_releases_root_after_late_vm_ack() {
         use maka_agent_facts::cells::{CellEvent, CellId, CellOwner};
         use maka_agent_facts::external_effects::{
@@ -3751,6 +4203,239 @@ mod source_recovery {
             "owned Stop recovery fixture did not settle"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ended_unknown_external_host_tool_keeps_mcp_open_and_releases_custody() {
+        use maka_agent_facts::tool_output::{ToolOutput, ToolSuccess};
+        use maka_plugin_core::{
+            contract::Transport,
+            deployment::DeploymentRef,
+            operation::{
+                OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryContract,
+                RecoveryProtocol, RecoveryRef,
+            },
+        };
+
+        struct ScriptedHostTool(
+            StdMutex<std::collections::VecDeque<Result<ToolOutput, ToolError>>>,
+        );
+        impl ToolPreparer for ScriptedHostTool {
+            fn names(&self) -> Vec<String> {
+                vec!["cua_repl".into()]
+            }
+            fn prepare(
+                &self,
+                _name: String,
+                _input: Value,
+                _context: ToolCallContext,
+                _cancellation: CancellationToken,
+            ) -> PreparationFuture {
+                let outcome = self.0.lock().unwrap().pop_front().unwrap();
+                Box::pin(async move {
+                    Ok(PreparedEffect::new(|_| {
+                        Box::pin(async move { outcome.map(ToolSuccess::from) })
+                    }))
+                })
+            }
+        }
+
+        let mut rig = Rig::new().expect("external host-tool fixture");
+        let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+            let session = rig
+                .start_configured(None, |config| {
+                    config["external"] = json!({"runtimes": {"codex": true}});
+                })
+                .await?;
+            let make_reply = |cleanup: OperationCleanup, diagnostic: &str| {
+                let digest = format!("sha256-{}", "a".repeat(64));
+                OperationReply {
+                    reference: RecoveryRef {
+                        source: DeploymentRef {
+                            state_domain: "b".repeat(64),
+                            deployment: Uuid::new_v4(),
+                            revision: 1,
+                        },
+                        namespace: maka_plugin_core::composition::InstanceId(vec![Uuid::new_v4()]),
+                        export: "computer".into(),
+                        method: "evaluate".into(),
+                        operation: Uuid::new_v4(),
+                        fingerprint: digest.clone(),
+                        contract: RecoveryContract {
+                            name: "maka.workspace.Computer".into(),
+                            version: 1,
+                            transport: Transport::Remote,
+                            digest,
+                        },
+                        recovery: RecoveryProtocol::JournalV1,
+                    },
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: diagnostic.into(),
+                        },
+                        cleanup,
+                    },
+                }
+            };
+            let diag_err = "paste did not produce an observable change; inspect the UI before trying another action";
+            let diag_ok = "second paste outcome unknown";
+            let diag_unconfirmed = "third action still running";
+            rig.extra_tools.push(ToolRegistration {
+                definition: ToolDefinition {
+                    name: "cua_repl".into(),
+                    description: "scripted host computer operation".into(),
+                    input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                    provider: None,
+                    freeform: None,
+                    output_schema: None,
+                },
+                nesting: ToolNesting::DirectOnly,
+                semantics: ToolSemantics::Parallel,
+                handler: ToolHandler::Prepared(Arc::new(ScriptedHostTool(StdMutex::new(
+                    std::collections::VecDeque::from([
+                        Err(ToolError::OperationUnknown {
+                            message: "outcome unknown".into(),
+                            observation: Box::new(make_reply(OperationCleanup::Confirmed, diag_err)),
+                        }),
+                        Ok(ToolOutput::Operation(Box::new(make_reply(
+                            OperationCleanup::Confirmed,
+                            diag_ok,
+                        )))),
+                        Ok(ToolOutput::Text("inspected UI".into())),
+                        Err(ToolError::OperationUnknown {
+                            message: "outcome unknown".into(),
+                            observation: Box::new(make_reply(
+                                OperationCleanup::Unconfirmed,
+                                diag_unconfirmed,
+                            )),
+                        }),
+                    ]),
+                )))),
+            });
+
+            rig.assemble_backend(
+                &session,
+                Budget {
+                    tokens: None,
+                    retries: 0,
+                    deadline: None,
+                },
+                false,
+                true,
+            )
+            .await?;
+            let driver = rig.driver.as_ref().unwrap().clone();
+            let run = driver.access.execution().run_id;
+            let task = ExternalTaskId::new();
+            let source = maka_agent_facts::executor::Binding {
+                executor_id: "external".to_string().try_into()?,
+                package_id: "maka.agent".into(),
+                entry_id: "maka.agent".into(),
+                activation: "fixture".into(),
+            };
+            let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+                protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+                source: source.clone(),
+                payload: json!({}),
+            })?;
+            rig.append(
+                vec![
+                    Fact::ExternalTaskPrepared {
+                        task,
+                        descriptor: task_descriptor.reference().clone(),
+                        live_workspace: true,
+                    },
+                    Fact::ExternalTaskAdmitted { task },
+                ],
+                vec![task_descriptor],
+            )
+            .await?;
+
+            let effects = driver
+                .external_effects
+                .get()
+                .cloned()
+                .ok_or("external effects missing")?;
+            let tools = crate::executor::external::Tools::for_test(
+                driver.catalog.clone(),
+                Arc::new(effects),
+                driver.access.execution().clone(),
+                driver.access.custody().clone(),
+                task,
+                source,
+            );
+
+            // 1) Err(OperationUnknown) with Confirmed cleanup: non-fatal MCP error, releases custody.
+            let (first, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "confirmed cleanup must keep MCP open: {fatal:?}");
+            assert_eq!(first["isError"], true);
+            let first_payload: Value =
+                serde_json::from_str(first["content"][0]["text"].as_str().unwrap())?;
+            assert_eq!(
+                first_payload["message"],
+                maka_agent_facts::tool_output::ended_unknown_message(diag_err)
+            );
+            assert!(driver.state.frontier(run).await?.blockers.is_empty());
+
+            // 2) Ok(ToolOutput::Operation) with Unknown + Confirmed in the SAME turn: also non-fatal.
+            let (second, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "returned unknown receipt must keep MCP open: {fatal:?}");
+            assert_eq!(second["isError"], true);
+            let second_payload: Value =
+                serde_json::from_str(second["content"][0]["text"].as_str().unwrap())?;
+            assert_eq!(
+                second_payload["message"],
+                maka_agent_facts::tool_output::ended_unknown_message(diag_ok)
+            );
+
+            // 3) Subsequent normal inspection tool in the SAME turn succeeds cleanly.
+            let (third, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(fatal.is_none(), "{fatal:?}");
+            assert_ne!(third["isError"], true);
+            assert!(
+                third["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("inspected UI"),
+                "{third}"
+            );
+            let after_third = driver.state.frontier(run).await?;
+            let effects = &after_third.external.as_ref().unwrap().effects;
+            assert_eq!(effects.len(), 2);
+            assert!(effects
+                .values()
+                .all(|effect| effect.ended_unknown() && !effect.unsettled()));
+
+            // 4) Unconfirmed cleanup stays fatal and leaves that effect unsettled.
+            let (_fourth, fatal) = tools
+                .invoke("cua_repl".into(), json!({}), CancellationToken::new())
+                .await;
+            assert!(
+                matches!(fatal, Some(maka_agent_ports::executor::Error::Unknown)),
+                "unconfirmed cleanup must stay fatal: {fatal:?}"
+            );
+            let after_fourth = driver.state.frontier(run).await?;
+            assert!(after_fourth
+                .external
+                .as_ref()
+                .unwrap()
+                .effects
+                .values()
+                .any(|effect| effect.unsettled()));
+
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }))
+        .catch_unwind()
+        .await;
+        let cleanup = rig.finish().await;
+        assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+    }
 }
 
 mod model_recovery {
@@ -3758,11 +4443,13 @@ mod model_recovery {
     mod codex_switch;
     mod compaction;
     mod discovery;
+    mod execution;
     mod memory;
     mod predictions;
     mod preset_acceptance;
     mod presets;
     mod work_groups;
+    mod workspace_change;
 
     use super::*;
     use maka_process::lifetime::{ProcessIdentity, ProcessObservation};
@@ -3834,6 +4521,7 @@ mod model_recovery {
         configure: impl FnOnce(&mut Value),
     ) -> TestResult<Boot> {
         let mut configuration = json!({
+            "locale": "en",
             "permissions": {"access": "read_only", "requestPermissions": false},
             "workspaceRoots": [{"label": "model test", "path": base.join("workspace")}],
             "tools": [],
@@ -6205,7 +6893,7 @@ mod replay_origin_regressions {
                 .context
                 .as_ref()
                 .and_then(|value| value.codex.as_ref()),
-            language: Language::En,
+            language: Language::EN,
             provider: &model.provider,
             options: &model.options,
             context_window: Some(128_000),
@@ -6440,7 +7128,7 @@ mod replay_origin_regressions {
                 })
                 .await?;
             assert!(with_partial.needs_continuation_cue());
-            crate::owner::driver_model::append_continuation_cue(Language::ZhCn, &mut with_partial)
+            crate::owner::driver_model::append_continuation_cue(Language::ZH_CN, &mut with_partial)
                 .await?;
             assert!(!with_partial.needs_continuation_cue());
             let prompt = finish(&rig, with_partial, &current, ModelOperation::Inference).await?;
@@ -7458,6 +8146,178 @@ async fn failed_background_summary_is_prepared_again_on_the_next_step() {
     assert!(cleanup.is_empty(), "{cleanup:?}");
     match result {
         Ok(result) => result.expect("background summary retry timed out").unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_proactive_summary_with_active_model_wait_falls_back_to_foreground_compaction()
+{
+    use maka_agent_engine::{DriverExit, Engine, ports::Preparation};
+    use maka_mock_ai::FinishReason;
+
+    const SUMMARY: &str = "Foreground fallback summary.";
+    let mut rig = Rig::new().unwrap();
+    rig.model_overrides = json!({"llama3.2":{"compactionThreshold":1_900}});
+    let listener =
+        tokio::net::TcpListener::from_std(rig.model_listener.try_clone().unwrap()).unwrap();
+    let mut server = MockAiBuilder::new()
+        .interactive(8)
+        .start_with_listener(listener)
+        .await
+        .unwrap();
+    let mut turns = server.take_interactive_rx().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig.start().await?;
+        rig.assemble_model(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let run = driver.access.execution().run_id;
+        rig.record_model_reply(Preparation::Initial, None).await?;
+        let view = driver.state.frontier(run).await?;
+        let mut main = driver
+            .model()?
+            .prepare_step(&view, Preparation::Initial, driver)
+            .await?;
+        let body = ContentBlob::json(&main.request)?;
+        main.contents.push(body.clone());
+        rig.append(
+            vec![Fact::StepPrepared {
+                step: main.request.step,
+                request: body.reference().clone(),
+                adjudications: vec![],
+            }],
+            main.contents,
+        )
+        .await?;
+
+        let is_summary = |handle: &maka_mock_ai::TurnHandle| {
+            handle.body()["tools"].as_array().is_none_or(Vec::is_empty)
+        };
+        let orchestrate = async {
+            let mut changes = driver.state.subscribe()?;
+            let mut first_main = None;
+            let mut bg_summary = None;
+            while first_main.is_none() || bg_summary.is_none() {
+                let turn = turns.recv().await.ok_or("mock-ai channel closed early")?;
+                if is_summary(&turn) {
+                    turn.delta("Partial background summary").await;
+                    bg_summary = Some(turn);
+                } else {
+                    first_main = Some(turn);
+                }
+            }
+            let first_main = first_main.unwrap();
+            let bg_summary = bg_summary.unwrap();
+            let background = loop {
+                changes.borrow_and_update();
+                if let Some(background) = driver.state.frontier(run).await?.proactive_summary
+                    && driver.state.history(run, 0, 256).await?.iter().any(|fact| {
+                        matches!(fact.fact, Fact::ModelFirstTokenObserved { attempt } if attempt == background)
+                    })
+                {
+                    break background;
+                }
+                changes.changed().await?;
+            };
+            first_main.delta("Long output. ".repeat(600)).await;
+            first_main.finish_with(FinishReason::Length).await;
+            loop {
+                changes.borrow_and_update();
+                let view = driver.state.frontier(run).await?;
+                if view.waits.values().any(|wait| {
+                    wait.satisfied.is_none()
+                        && wait.cancelled.is_none()
+                        && wait.due_at.is_none()
+                        && matches!(wait.reason, WaitReason::Model { attempt } if attempt == background)
+                }) {
+                    break;
+                }
+                changes.changed().await?;
+            }
+            bg_summary.truncate_eof().await;
+            let fg_summary = turns.recv().await.ok_or("foreground summary missing")?;
+            assert!(is_summary(&fg_summary));
+            fg_summary.reply_text(SUMMARY);
+            let final_main = turns.recv().await.ok_or("final main turn missing")?;
+            assert!(!is_summary(&final_main));
+            let final_body = final_main.body().to_string();
+            assert!(final_body.contains(SUMMARY), "{final_body}");
+            final_main.reply_text("Done.");
+            Ok::<_, Box<dyn Error + Send + Sync>>(background)
+        };
+        let engine = Engine::new(driver.state.clone());
+        let drive = async {
+            let mut changes = driver.state.subscribe()?;
+            loop {
+                changes.borrow_and_update();
+                let exit = engine
+                    .drive(
+                        driver.access.claim().clone(),
+                        driver.clone(),
+                        CancellationToken::new(),
+                    )
+                    .await?;
+                if !matches!(exit, DriverExit::Waiting { .. }) {
+                    return Ok::<_, Box<dyn Error + Send + Sync>>(exit);
+                }
+                changes.changed().await?;
+            }
+        };
+        let (background, exit) = tokio::try_join!(orchestrate, Box::pin(drive))?;
+        assert!(
+            matches!(exit, DriverExit::Terminal { terminal: Terminal::Completed, .. }),
+            "{exit:?}"
+        );
+        let history = driver.state.history(run, 0, 512).await?;
+        let wait_id = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitRegistered {
+                    wait,
+                    reason: WaitReason::Model { attempt },
+                    due_at: None,
+                } if attempt == background => Some(wait),
+                _ => None,
+            })
+            .ok_or("expected proactive summary WaitReason::Model")?;
+        let interrupted_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::ModelInterrupted { attempt, .. } if attempt == background => {
+                    Some(fact.revision)
+                }
+                _ => None,
+            })
+            .ok_or("expected interrupted proactive summary")?;
+        let satisfied_rev = history
+            .iter()
+            .find_map(|fact| match fact.fact {
+                Fact::WaitSatisfied { wait, .. } if wait == wait_id => Some(fact.revision),
+                _ => None,
+            })
+            .ok_or("expected proactive summary wait to be satisfied")?;
+        assert!(interrupted_rev < satisfied_rev, "{interrupted_rev} >= {satisfied_rev}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    drop(turns);
+    server.shutdown().await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    match result {
+        Ok(result) => result
+            .expect("interrupted background summary fallback timed out")
+            .unwrap(),
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }

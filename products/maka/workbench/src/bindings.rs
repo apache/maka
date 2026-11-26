@@ -518,6 +518,38 @@ impl ApplicationHost {
         .await
     }
 
+    pub async fn recent_model(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let client = source.local(&original).await?;
+            serde_json::to_value(client.recent_model().await?).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    pub async fn set_recent_model(
+        this: Instance<Self>,
+        model: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let model: maka_app_client::RecentModel =
+            serde_json::from_value(model).map_err(|_| "Invalid recent model")?;
+        model.validate()?;
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let saved = source
+                .local(&original)
+                .await?
+                .set_recent_model(model)
+                .await?;
+            serde_json::to_value(saved).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
     /// Capture attachment input before a session exists.
     pub async fn stage_intake(
         this: Instance<Self>,
@@ -644,7 +676,7 @@ impl ApplicationHost {
     /// The native startup language, using the same resolver as the desktop.
     #[getter]
     pub fn system_locale(&self) -> String {
-        maka_ui_support::locale::system()
+        maka_i18n::system_locale()
     }
 
     /// The optional session initially requested by the launcher.

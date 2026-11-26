@@ -45,6 +45,13 @@
     },
     "https://www.apache.org/licenses/LICENSE-2.0.txt"
   ],
+  "enum-assoc@1.4.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/Eolu/enum-assoc/blob/5d732f47b429d382daffb0948770adbaa2de0b8c/Cargo.toml"
+    },
+    "https://www.apache.org/licenses/LICENSE-2.0.txt"
+  ],
   "fqdn@0.5.2": [
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
@@ -55,6 +62,36 @@
     {
       "file": "scripts/rust/licenses/declared-mit.txt",
       "source": "https://github.com/zbraniecki/pluralrules/blob/d0715d5b7cca72e228d6e6c4de154bd30dfdd06a/intl_pluralrules/Cargo.toml"
+    }
+  ],
+  "reloadable-core@0.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/MOZGIII/rustls-cert-utils/blob/369e42a96a0f52610ed1fed007fce8ac03e07ba9/crates/reloadable-core/Cargo.toml"
+    }
+  ],
+  "reloadable-state@0.1.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/MOZGIII/rustls-cert-utils/blob/369e42a96a0f52610ed1fed007fce8ac03e07ba9/crates/reloadable-state/Cargo.toml"
+    }
+  ],
+  "rustls-cert-file-reader@0.4.2": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/MOZGIII/rustls-cert-utils/blob/d7a45045b1bb03d86ddf00ce8bd0b1e8520a1456/crates/rustls-cert-file-reader/Cargo.toml"
+    }
+  ],
+  "rustls-cert-read@0.3.0": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/MOZGIII/rustls-cert-utils/blob/d549c2272f2faa5edca935a1501790fb8ed46aa7/crates/rustls-cert-read/Cargo.toml"
+    }
+  ],
+  "rustls-cert-reloadable-resolver@0.7.1": [
+    {
+      "file": "scripts/rust/licenses/declared-mit.txt",
+      "source": "https://github.com/MOZGIII/rustls-cert-utils/blob/239c34ff86da418948f3f85c0de448762bdf5ab2/crates/rustls-cert-reloadable-resolver/Cargo.toml"
     }
   ],
   "rustls-tokio-stream@0.8.0": [

@@ -86,13 +86,7 @@ pub(crate) fn resolve_window(
             "stale_target: native window owner changed during app resolution",
         ));
     }
-    let warning = match language {
-        Language::En => {
-            "This app's risk classification has not been established. Approve access only if you trust the app and the requested work."
-        }
-        Language::ZhCn => "此应用的风险分类尚未确定。请仅在信任该应用和请求的操作时授权。",
-        Language::ZhTw => "此應用程式的風險分類尚未確定。請僅在信任此應用程式和要求的操作時授權。",
-    };
+    let warning = crate::language::i18n_catalog::permission::unknown_risk_warning(language);
     let subject = ComputerAppTarget {
         identity: ComputerAppIdentity {
             platform: ComputerAppPlatform::Windows,
@@ -142,7 +136,7 @@ pub(crate) fn verify_binding(binding: &ComputerAppBinding) -> Result<(), ToolErr
         return Ok(());
     }
     // Permission-bound observations also fence the packaged app behind the HWND owner.
-    let observed = resolve_window(binding.window_id, Language::En)?;
+    let observed = resolve_window(binding.window_id, Language::EN)?;
     if observed.binding.as_ref() != Some(binding) {
         return Err(failed("native application binding changed"));
     }
@@ -203,7 +197,7 @@ mod tests {
         };
         assert!(!hwnd.is_null(), "{}", std::io::Error::last_os_error());
         let window = Window(hwnd);
-        let resolved = resolve_window(window.0 as usize as u64, Language::En).unwrap();
+        let resolved = resolve_window(window.0 as usize as u64, Language::EN).unwrap();
         let composite = resolved.binding.unwrap();
         let generation = crate::identity::process(std::process::id()).unwrap();
         let raw = ComputerAppBinding {

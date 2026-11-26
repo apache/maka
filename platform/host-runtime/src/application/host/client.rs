@@ -53,6 +53,7 @@ pub type OpenChannel =
 #[derive(Clone)]
 enum Target {
     Local(PathBuf),
+    AuthenticatedPeer(OpenChannel),
     Supplied {
         open: OpenChannel,
         client_instance: Option<Arc<str>>,
@@ -64,12 +65,14 @@ impl Target {
             Self::Local(address) => Ok(Box::new(
                 ipc::connect(address).await.map_err(|e| e.to_string())?,
             )),
-            Self::Supplied { open, .. } => open().await.map_err(|error| error.to_string()),
+            Self::AuthenticatedPeer(open) | Self::Supplied { open, .. } => {
+                open().await.map_err(|error| error.to_string())
+            }
         }
     }
     fn client_instance(&self) -> Option<String> {
         match self {
-            Self::Local(_) => None,
+            Self::Local(_) | Self::AuthenticatedPeer(_) => None,
             Self::Supplied {
                 client_instance, ..
             } => client_instance.as_deref().map(str::to_owned),
@@ -78,10 +81,11 @@ impl Target {
     fn is_remote(&self) -> bool {
         matches!(
             self,
-            Self::Supplied {
-                client_instance: Some(_),
-                ..
-            }
+            Self::AuthenticatedPeer(_)
+                | Self::Supplied {
+                    client_instance: Some(_),
+                    ..
+                }
         )
     }
     async fn owner_control(&self, epoch: Uuid, request: Request) -> Result<Response> {
@@ -150,8 +154,8 @@ impl Client {
         )
         .await
     }
-    /// Open Host wire-ready channels. The optional identity binds remote sessions;
-    /// the server independently derives authority from ingress.
+    /// Open Host wire-ready channels. The optional identity binds a Bearer
+    /// credential, not a transport peer. Host derives authority from ingress.
     pub async fn connect_on(
         open: OpenChannel,
         epoch: Option<Uuid>,
@@ -161,6 +165,18 @@ impl Client {
             open,
             client_instance,
         };
+        let anchor = target.open().await?;
+        Self::open(target, epoch, anchor, Request::Connect).await
+    }
+
+    /// Open an anchor and subsequent calls as independent native binary streams.
+    /// The opener uses an already authenticated transport, without HTTP or
+    /// WebSocket framing. The remote Host derives the peer ID from that transport.
+    pub async fn connect_authenticated_peer(
+        open: OpenChannel,
+        epoch: Option<Uuid>,
+    ) -> Result<Self> {
+        let target = Target::AuthenticatedPeer(open);
         let anchor = target.open().await?;
         Self::open(target, epoch, anchor, Request::Connect).await
     }
@@ -610,6 +626,77 @@ impl Client {
             _ => Err("Host configuration response mismatch".into()),
         }
     }
+    pub async fn prepare_peer_pairing(
+        address: &Path,
+        epoch: Uuid,
+        options: super::PeerPairingOptions,
+    ) -> Result<super::PeerPairingInvite> {
+        match control(address, Some(epoch), Request::PreparePeerPairing(options)).await? {
+            Response::PeerPairingInvite(result) => result,
+            _ => Err("Host pairing invite response mismatch".into()),
+        }
+    }
+
+    pub async fn list_peer_access(
+        address: &Path,
+        epoch: Uuid,
+    ) -> Result<Vec<super::HostPeerAccess>> {
+        match control(address, Some(epoch), Request::ListPeerAccess).await? {
+            Response::PeerAccess(result) => result,
+            _ => Err("Host peer access response mismatch".into()),
+        }
+    }
+
+    pub async fn revoke_peer_access(
+        address: &Path,
+        epoch: Uuid,
+        peer_id: &super::PeerId,
+    ) -> Result<bool> {
+        match control(
+            address,
+            Some(epoch),
+            Request::RevokePeerAccess {
+                peer_id: peer_id.as_str().into(),
+            },
+        )
+        .await?
+        {
+            Response::Revoked(result) => result,
+            _ => Err("Host peer revocation response mismatch".into()),
+        }
+    }
+
+    /// The opener must already pin the authenticated server to the ticket's
+    /// Host key. Confirm the handshake SAS on that same transport before
+    /// calling this method. The receipt check is not a substitute for the pin.
+    pub async fn redeem_peer_pairing(
+        open: OpenChannel,
+        invite_secret: String,
+        device_label: Option<String>,
+        expected_root_id: &str,
+    ) -> Result<super::PeerPairingReceipt> {
+        let channel = Target::AuthenticatedPeer(open).open().await?;
+        match control_stream(
+            channel,
+            None,
+            Request::RedeemPeerPairing {
+                invite_secret,
+                device_label,
+            },
+        )
+        .await?
+        {
+            Response::PeerPairingReceipt(result) => {
+                let receipt = result?;
+                if receipt.root_id != expected_root_id {
+                    return Err("Host pairing receipt belongs to another State Root".into());
+                }
+                Ok(receipt)
+            }
+            _ => Err("Host pairing receipt response mismatch".into()),
+        }
+    }
+
     pub async fn prepare_access(
         address: &Path,
         epoch: Uuid,
@@ -633,6 +720,10 @@ impl Client {
         Self::status_stream(stream, epoch).await
     }
     pub async fn status_stream(stream: LocalStream, epoch: Option<Uuid>) -> Result<Status> {
+        Self::status_channel(Box::new(stream), epoch).await
+    }
+    /// Probe status on a native wire channel that needs no Bearer client identity.
+    pub async fn status_channel(stream: Channel, epoch: Option<Uuid>) -> Result<Status> {
         match control_stream(stream, epoch, Request::Status).await? {
             Response::Status(status) => Ok(status),
             _ => Err("Host status response mismatch".into()),

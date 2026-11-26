@@ -73,7 +73,7 @@ pub fn provide(
                     let opened = async {
                         let configuration: Configuration = serde_json::from_value(input)
                             .map_err(|_| "settings_configuration_invalid".to_owned())?;
-                        let native_language = maka_config::language::native_language();
+                        let native_language = maka_agent_facts::language::Language::system();
                         let persistence = context
                             .persistence()
                             .ok_or("settings_requires_persistence")?;

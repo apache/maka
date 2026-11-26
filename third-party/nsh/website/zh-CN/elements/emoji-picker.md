@@ -9,32 +9,6 @@ demo: el-emoji-picker
 
 表情选择面板是全部表情之上的一个搜索框：各个分组（笑脸、人物、动物、食物……）排成网格，用户最近用过的表情排在最前，能换肤色的表情可以选一种肤色。`EmojiPicker` 负责它的行为：表情本身（Unicode 的表情，带有来自 CLDR 的英文名称和关键词）、搜索、分组、高亮、键盘，以及屏幕阅读器听到的内容。搜索在原生端进行，网格是虚拟化的：只创建可见的行。外观和文字都由应用决定：面板本身什么也不画，也不内置任何文字，应用为每个部件设置样式（`itemClass`、`groupClass`、`searchClass` 等），为分组命名（`groupLabels`），并填入插槽（分组标签、指针下表情的预览）。
 
-```rust tabs
-use nsh_base::{EmojiGroupLabels, EmojiPickerEvent, emoji_picker};
-use nsh_core::prelude::*;
-
-fn picker() -> impl IntoElement {
-    let chosen = signal(SharedString::from("none"));
-    let mut labels = EmojiGroupLabels::default();
-    labels.smileys_emotion = Some("笑脸与情感".into());
-    labels.people_body = Some("人物与身体".into());
-    emoji_picker()
-        .recent(vec!["👍".into(), "🎉".into()])
-        .group_labels(labels)
-        .placeholder("搜索表情")
-        .accessibility_label("表情")
-        .auto_focus(true)
-        .on_select(move |e: &EmojiPickerEvent| {
-            if let EmojiPickerEvent::Select(emoji, ..) = e {
-                chosen.set(emoji.clone());
-            }
-        })
-        .item_class("size-9 items-center justify-center rounded-md text-[22px] hover:bg-accent focus:bg-accent")
-        .w(px(342.0))
-        .h(px(380.0))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { EmojiPicker } from "nsh/base";
@@ -66,6 +40,32 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{EmojiGroupLabels, EmojiPickerEvent, emoji_picker};
+use nsh_core::prelude::*;
+
+fn picker() -> impl IntoElement {
+    let chosen = signal(SharedString::from("none"));
+    let mut labels = EmojiGroupLabels::default();
+    labels.smileys_emotion = Some("笑脸与情感".into());
+    labels.people_body = Some("人物与身体".into());
+    emoji_picker()
+        .recent(vec!["👍".into(), "🎉".into()])
+        .group_labels(labels)
+        .placeholder("搜索表情")
+        .accessibility_label("表情")
+        .auto_focus(true)
+        .on_select(move |e: &EmojiPickerEvent| {
+            if let EmojiPickerEvent::Select(emoji, ..) = e {
+                chosen.set(emoji.clone());
+            }
+        })
+        .item_class("size-9 items-center justify-center rounded-md text-[22px] hover:bg-accent focus:bg-accent")
+        .w(px(342.0))
+        .h(px(380.0))
+}
 ```
 
 `EmojiPicker` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 里是 `nsh-base` crate。在 Rust 中用 `emoji_picker()` 创建，每个 prop 对应一个设置方法，每个事件对应一个监听方法，另有类型化的样式方法。它本身不弹出：桌面上放进 [`Popover`](./popover.md)，手机上放进 [`Sheet`](./sheet.md)，也可以直接放在页面里。

@@ -12,6 +12,20 @@ demo: el-image
 downsampled to the size the view shows them at, and cached in memory. Animated GIF, WebP and APNG images play. Rust
 makes one with `image(src)`, TSX with `<Image>` from `nsh`.
 
+```tsx tabs
+import { Image, View } from "nsh";
+import logo from "./assets/logo.png";
+
+<View style={{ flexDirection: "row", gap: 12 }}>
+  <Image src={logo} />
+  <Image
+    src="https://example.com/avatar.jpg"
+    placeholder={logo}
+    style={{ width: 64, height: 64, borderRadius: 32 }}
+  />
+</View>;
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -29,20 +43,6 @@ view()
             .size(px(64.0))
             .rounded_full(),
     )
-```
-
-```tsx tabs
-import { Image, View } from "nsh";
-import logo from "./assets/logo.png";
-
-<View style={{ flexDirection: "row", gap: 12 }}>
-  <Image src={logo} />
-  <Image
-    src="https://example.com/avatar.jpg"
-    placeholder={logo}
-    style={{ width: 64, height: 64, borderRadius: 32 }}
-  />
-</View>;
 ```
 
 An asset knows its size: without a width or height the image takes it, and with one of them the other follows the
@@ -64,11 +64,6 @@ The source (`src` and `placeholder`; `image(..)` and `.placeholder(..)` in Rust)
 An image from bytes the app already has shows without a request. A chat shows a picked photo from its blob while it
 uploads, then switches `src` to the photo's URL:
 
-```rust tabs
-// Bytes in a `data:` URI (an image the app made or received inline).
-image(format!("data:image/png;base64,{encoded}")).size(px(64.0))
-```
-
 ```tsx tabs
 import { Image, signal } from "nsh";
 
@@ -80,6 +75,11 @@ upload(photo).then((url) => {
 });
 
 <Image src={src()} style={{ width: 240, height: 180 }} />;
+```
+
+```rust tabs
+// Bytes in a `data:` URI (an image the app made or received inline).
+image(format!("data:image/png;base64,{encoded}")).size(px(64.0))
 ```
 
 Equal bytes are one image: the same picture as a `data:` URI and as a blob is decoded once and shares the cache.
@@ -116,12 +116,12 @@ Besides the [common props](./index.md#common-props) (with `style` typed as `Imag
 
 `ImageStyle` adds `tintColor` to the view styles, which recolors a template image (an icon drawn in one color), and `objectPosition`, which places the image in its box ([Image position](../docs/images-and-assets.md#image-position)).
 
-```rust tabs
-image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
-```
-
 ```tsx tabs
 <Image src={icon} style={{ width: 24, height: 24, tintColor: "#0969da" }} />
+```
+
+```rust tabs
+image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 ```
 
 ## Events
@@ -134,16 +134,6 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 | `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading or decoding failed, or the host is outside the app's capabilities (`code` `"ERR_ACCESS_DENIED"`). |
 | `onLoadEnd` | `.on_load_end` | none | After `onLoad` or `onError`. |
 
-```rust tabs
-let state = signal(SharedString::from("loading"));
-
-image(url)
-    .w_full()
-    .aspect_ratio(16.0 / 9.0)
-    .on_load(move |size: &Size<DevicePixels>| state.set(format!("{}×{}", size.width.0, size.height.0).into()))
-    .on_error(move |message: &str| state.set(message.to_string().into()))
-```
-
 ```tsx tabs
 const state = signal("loading");
 <Image
@@ -152,6 +142,16 @@ const state = signal("loading");
   onLoad={({ size }) => state.set(`${size.width}×${size.height} px`)}
   onError={(e) => state.set(e.message)}
 />;
+```
+
+```rust tabs
+let state = signal(SharedString::from("loading"));
+
+image(url)
+    .w_full()
+    .aspect_ratio(16.0 / 9.0)
+    .on_load(move |size: &Size<DevicePixels>| state.set(format!("{}×{}", size.width.0, size.height.0).into()))
+    .on_error(move |message: &str| state.set(message.to_string().into()))
 ```
 
 An image with [pixel-density variants](../docs/images-and-assets.md#pixel-densities) loads one of its files, and

@@ -192,6 +192,41 @@ pub(super) struct Blocks {
 pub(super) enum PendingScroll {
     By(f32),
     To(f32),
+    /// An animated `ScrollTo`: leaves the current position where the platform
+    /// is until the animation ticks, while keeping the list unsettled so
+    /// pre-command reports do not cancel the pin.
+    Animate,
+}
+
+impl PendingScroll {
+    pub(super) fn to(offset: f32, animated: bool) -> Self {
+        if animated {
+            Self::Animate
+        } else {
+            Self::To(offset)
+        }
+    }
+}
+
+/// Records an issued scroll, dropping earlier entries that it makes redundant:
+/// an instant `To` supersedes all earlier pending scrolls, and consecutive
+/// `Animate` markers collapse to the latest sequence number so repeated
+/// no-op `scrollTo` calls cannot grow `pending` unboundedly.
+pub(super) fn push_pending(
+    pending: &mut Vec<(u32, PendingScroll)>,
+    issued: u32,
+    scroll: PendingScroll,
+) {
+    match scroll {
+        PendingScroll::To(_) => pending.clear(),
+        PendingScroll::Animate => {
+            if matches!(pending.last(), Some((_, PendingScroll::Animate))) {
+                pending.pop();
+            }
+        }
+        PendingScroll::By(_) => {}
+    }
+    pending.push((issued, scroll));
 }
 
 /// Where the platform's reported `offset` ends up once the `pending`
@@ -202,9 +237,31 @@ pub(super) fn replay(offset: f32, pending: &[(u32, PendingScroll)]) -> f32 {
         match scroll {
             PendingScroll::By(d) => at += d,
             PendingScroll::To(t) => at = t,
+            PendingScroll::Animate => {}
         }
     }
     at
+}
+
+/// Like [`replay`], clamping to `limits` when replaying an instant `By` or
+/// `To` so stale reports combined with pending shifts cannot overshoot valid
+/// scroll bounds, while leaving rubber-band overscroll untouched when no
+/// shift is replayed.
+pub(super) fn replay_clamped(
+    offset: f32,
+    pending: &[(u32, PendingScroll)],
+    limits: Option<(f32, f32)>,
+) -> f32 {
+    let at = replay(offset, pending);
+    if let Some((min, max)) = limits
+        && pending
+            .iter()
+            .any(|(_, s)| !matches!(s, PendingScroll::Animate))
+    {
+        at.clamp(min, max)
+    } else {
+        at
+    }
 }
 
 /// The step [`ListState::urgent_span`] reads after the platform reported a
@@ -643,9 +700,9 @@ impl ListState {
 
     /// The items changed: `removed` items at `at` were replaced by
     /// `inserted` new ones. Measurements and cells follow the items that
-    /// stay, and when the change is above the first visible item of a list
-    /// scrolled past its start, the visible content keeps its place
-    /// ([`Self::visible_anchor`]).
+    /// stay, and when the change is above the first row that starts in the
+    /// viewport of a list scrolled past its start, the visible content
+    /// keeps its place ([`Self::reading_anchor`]).
     pub(super) fn splice(&mut self, at: u32, removed: u32, inserted: u32) {
         let at = at.min(self.count);
         let removed = removed.min(self.count - at);
@@ -659,7 +716,7 @@ impl ListState {
         }
         self.parent_offsets_changed |= self.parent;
         let anchor = self
-            .visible_anchor()
+            .reading_anchor()
             .filter(|&(index, _)| index >= at + removed)
             .map(|(index, from_top)| (index - removed + inserted, from_top));
         let natural_before = self.natural_offset();
@@ -691,8 +748,10 @@ impl ListState {
     /// its measurement and its cell (the content, the state in it, the
     /// focus) wherever it goes, the items it passes too; only new items
     /// need a cell, and only gone ones free theirs. The first visible item
-    /// that kept its order keeps its place, as for a splice: one that moved
-    /// away leaves the rows around it where they were.
+    /// that kept its order keeps its place, from the first row that starts
+    /// in the viewport, as for a splice ([`Self::reading_anchor`]): one
+    /// that moved away leaves the rows around it where they were. The row
+    /// the viewport's start cuts through comes last.
     pub(super) fn reorder(&mut self, diff: &ListDiff) {
         if diff.old_len != self.count {
             // Not a change of these items: all of them are new.
@@ -705,11 +764,13 @@ impl ListState {
         }
         self.items_changed = true;
         self.pin = None;
-        let anchor = self.visible_anchor().and_then(|(first, _)| {
+        let anchor = self.visible_anchor().and_then(|(cut, _)| {
+            let (first, _) = self.reading_anchor()?;
             let top = self.natural_offset();
             let bottom = top + self.viewport;
             (first..self.count)
                 .take_while(|&i| self.item_at(i) < bottom)
+                .chain(cut..first)
                 .find_map(|i| match diff.new_index(i) {
                     Some((to, false)) => Some((to, self.item_at(i) - top)),
                     _ => None,
@@ -892,6 +953,30 @@ impl ListState {
             })
     }
 
+    /// The visible item a change of the items keeps in place, and where it
+    /// is in the viewport, as [`Self::visible_anchor`]: the first row that
+    /// starts in the viewport rather than one its start cuts through, which
+    /// shows only its end. A change right after that row keeps the rows
+    /// below in place and moves it up, as a change above the viewport;
+    /// otherwise the rows being read would all move down. A row taller
+    /// than the viewport, with no row starting in view, is the anchor
+    /// itself.
+    fn reading_anchor(&self) -> Option<(u32, f32)> {
+        let (index, from_top) = self.visible_anchor()?;
+        // A row a pixel's rounding past the start shows whole.
+        if from_top >= -PIN_SLACK {
+            return Some((index, from_top));
+        }
+        let next = (self.row_of(index) + 1) * self.columns;
+        Some(
+            Some(next)
+                .filter(|&next| next < self.count)
+                .map(|next| (next, self.item_at(next) - self.natural_offset()))
+                .filter(|&(_, next_from_top)| next_from_top < self.viewport)
+                .unwrap_or((index, from_top)),
+        )
+    }
+
     /// The row the viewport starts in, by its first item, and how far
     /// past the row's start the viewport starts, in natural coordinates
     /// (`ref.measureScrollPosition()`); `None` without items or a
@@ -975,19 +1060,41 @@ impl ListState {
     }
 
     /// Records a `ScrollTo` sent to the platform.
-    pub(super) fn issue_scroll_to(&mut self, offset: f32) {
+    pub(super) fn issue_scroll_to(&mut self, offset: f32, animated: bool) {
         self.issued += 1;
-        self.pending.push((self.issued, PendingScroll::To(offset)));
+        push_pending(
+            &mut self.pending,
+            self.issued,
+            PendingScroll::to(offset, animated),
+        );
     }
 
     /// The platform reports its offset after applying `applied` of the
     /// issued scrolls: scrolls it has not applied yet still count, so a
     /// report that predates them does not move the window backwards.
-    pub(super) fn reported(&mut self, offset: f32, applied: u32) -> bool {
+    /// Returns `(moved_or_displaced, delta)`, where `delta` is the
+    /// displacement relative to the committed position (excluding core-issued
+    /// `ScrollBy` anchors and instant `ScrollTo` jumps).
+    pub(super) fn reported_clamped(
+        &mut self,
+        offset: f32,
+        applied: u32,
+        limits: Option<(f32, f32)>,
+    ) -> (bool, f32) {
         self.pending.retain(|&(n, _)| n > applied);
-        let at = replay(offset, &self.pending);
+        let limits = limits.or_else(|| (self.viewport > 0.0).then(|| self.offset_limits()));
+        let at = replay_clamped(offset, &self.pending, limits);
+        // An uncommitted splice shifts self.offset ahead of commit; exclude it
+        // so delta stays in the committed coordinate frame.
+        let prior = self.offset - self.splice_anchor;
+        let delta = at - prior;
         self.splice_overwritten = self.splice_anchor;
-        self.moved_to(at, self.pending.is_empty())
+        (self.moved_to(at, self.pending.is_empty()), delta)
+    }
+
+    #[cfg(test)]
+    pub(super) fn reported(&mut self, offset: f32, applied: u32) -> bool {
+        self.reported_clamped(offset, applied, None).0
     }
 
     /// No scroll the core issued is waiting for the platform.
@@ -3342,12 +3449,18 @@ mod tests {
         // Reported before the platform applied the shift.
         l.reported(500.0, 0);
         assert_eq!(l.offset, 530.0);
-        l.issue_scroll_to(1000.0);
+        l.issue_scroll_to(1000.0, false);
         l.reported(531.0, 1);
         assert_eq!(l.offset, 1000.0);
         l.reported(1002.0, 2);
         assert_eq!(l.offset, 1002.0);
         assert!(l.pending.is_empty());
+        // Repeated instant ScrollTo commands supersede earlier pending entries
+        // so platforms that omit no-op scroll events cannot grow pending forever.
+        for _ in 0..10 {
+            l.issue_scroll_to(1002.0, false);
+        }
+        assert_eq!(l.pending.len(), 1);
     }
 
     #[test]
@@ -3643,6 +3756,70 @@ mod tests {
         assert_eq!(l.take_splice_anchor(), -50.0);
     }
 
+    /// Row 20 at the top with 30 of its 50 points scrolled past: row 21 is
+    /// the first row that starts in view, 20 points down.
+    fn cut_by_the_viewport() -> ListState {
+        with_cells(100, 1030.0)
+    }
+
+    #[test]
+    fn a_change_right_after_a_row_cut_by_the_viewport_keeps_the_rows_below() {
+        // Rows arrive right after row 20: row 21 (now 23) stays, and row 20
+        // moves up out of view instead.
+        let mut l = cut_by_the_viewport();
+        l.splice(21, 0, 2);
+        assert_eq!(l.item_at(23) - l.offset, 20.0);
+        assert_eq!(l.take_splice_anchor(), 100.0);
+        // Row 20 itself goes: row 21 (now 20) stays.
+        let mut l = cut_by_the_viewport();
+        l.splice(20, 1, 0);
+        assert_eq!(l.item_at(20) - l.offset, 20.0);
+        assert_eq!(l.take_splice_anchor(), -50.0);
+        // A row from below moves in right after row 20: row 21 (now 22)
+        // stays.
+        let mut l = cut_by_the_viewport();
+        let (old, new) = moved_row(100, 60, 21);
+        l.reorder(&ListDiff::new(&old, &new).unwrap());
+        assert_eq!(l.item_at(22) - l.offset, 20.0);
+        assert_eq!(l.take_splice_anchor(), 50.0);
+    }
+
+    #[test]
+    fn changes_elsewhere_keep_their_anchoring_by_a_row_cut_by_the_viewport() {
+        // Below the first row that starts in view, only the rows below the
+        // change move.
+        let mut l = cut_by_the_viewport();
+        l.splice(22, 0, 2);
+        assert_eq!((l.offset, l.take_splice_anchor()), (1030.0, 0.0));
+        let mut l = cut_by_the_viewport();
+        let (old, new) = moved_row(100, 60, 22);
+        l.reorder(&ListDiff::new(&old, &new).unwrap());
+        assert_eq!((l.offset, l.take_splice_anchor()), (1030.0, 0.0));
+        // Above the cut row, it keeps its place with the rows below it.
+        let mut l = cut_by_the_viewport();
+        l.splice(5, 0, 2);
+        assert_eq!(l.item_at(22) - l.offset, -30.0);
+        assert_eq!(l.item_at(23) - l.offset, 20.0);
+        // A row starting at the viewport's start, a pixel's rounding away:
+        // a change right after it moves the rows below.
+        let mut l = with_cells(100, 1000.5);
+        l.splice(21, 0, 2);
+        assert_eq!((l.offset, l.take_splice_anchor()), (1000.5, 0.0));
+        // At its start the list stays there: the rows that arrive show.
+        let mut l = with_cells(100, 0.0);
+        l.splice(0, 0, 2);
+        assert_eq!((l.offset, l.take_splice_anchor()), (0.0, 0.0));
+        // A row taller than the viewport, no row starting in view: the rows
+        // below a change after it move.
+        let mut l = list(100, 50.0, 400.0);
+        l.measured(20, 600.0);
+        l.offset = 1100.0;
+        l.splice(21, 0, 2);
+        assert_eq!((l.offset, l.take_splice_anchor()), (1100.0, 0.0));
+        l.splice(10, 0, 2);
+        assert_eq!(l.item_at(22) - l.offset, -100.0);
+    }
+
     #[test]
     fn a_change_of_columns_keeps_the_first_visible_item_in_place() {
         let mut l = list(90, 50.0, 400.0);
@@ -3804,8 +3981,14 @@ mod tests {
     #[test]
     fn an_animated_pin_ends_when_the_list_moves_away_from_it() {
         let mut l = list(100, 50.0, 400.0);
+        l.offset = 500.0;
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
+        // Pre-ack report stays at the reported position without teleporting to
+        // the animation target or cancelling the pin.
+        l.reported(520.0, 0);
+        assert_eq!(l.offset, 520.0);
+        assert!(l.pinned());
         l.reported(3000.0, 1);
         l.reported(3500.0, 1);
         // Rows above measured: the web moves only where the animation
@@ -3828,7 +4011,7 @@ mod tests {
         // An animated scroll to the end: retargeted when the end moves,
         // corrected once it landed.
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
         l.measured(99, 90.0);
         assert_eq!(
             l.follow_pin(0.0),
@@ -3837,7 +4020,7 @@ mod tests {
                 animated: true
             }
         );
-        l.issue_scroll_to(4640.0);
+        l.issue_scroll_to(4640.0, true);
         l.reported(3000.0, 2);
         assert!(l.pinned(), "in flight");
         l.reported(4640.0, 2);
@@ -3857,7 +4040,7 @@ mod tests {
         // destination too; the owner must not retarget that same change.
         let mut l = list(100, 50.0, 400.0);
         l.pin(Some(PinTarget::End), 4600.0, true, false);
-        l.issue_scroll_to(4600.0);
+        l.issue_scroll_to(4600.0, true);
         l.measured(99, 70.0);
         l.anchor_by(20.0);
         l.issue_scroll_by(20.0);

@@ -1,6 +1,8 @@
-// Cmd+C copies text selected while an input keeps the keyboard focus (a
-// chat's composer): the Edit menu's Copy reaches the input's editor first,
-// which, with nothing of its own selected, copies the selection around it.
+// Cmd+C copies text selected while an input or a RichEditor keeps the
+// keyboard focus (a chat's composer): the Edit menu's Copy reaches the
+// input's editor first, which, with nothing of its own selected, copies the
+// selection around it; a RichEditor with nothing selected lets the key go on
+// to that Copy.
 // What the editor itself selects still copies first. macOS only; the
 // clipboard is put back after, even when a test fails.
 import { expect, open, test } from "nsh/test";
@@ -32,12 +34,12 @@ async function selectArea(app: App): Promise<string> {
 }
 
 // Focuses input `id`; it keeps the focus while text is selected.
-async function focus(app: App, id: "composer" | "notes") {
+async function focus(app: App, id: "composer" | "notes" | "editor") {
   await app.press(`id:${id}`);
   await app.waitFor(`text:Focus [${id}]`);
 }
 
-for (const id of ["composer", "notes"] as const) {
+for (const id of ["composer", "notes", "editor"] as const) {
   test(`Cmd+C copies a selectable view's selection while ${id} has the focus`, () =>
     onMac(async (app) => {
       await focus(app, id);
@@ -67,6 +69,8 @@ for (const id of ["composer", "notes"] as const) {
 
   test(`Cmd+C in ${id} copies its own selection first`, () =>
     onMac(async (app) => {
+      // A RichEditor's own copy is checked in the rich editor's tests (no `value` here).
+      if (id === "editor") return;
       // Text selected around the input, then text selected in it.
       await focus(app, id);
       await selectArea(app);

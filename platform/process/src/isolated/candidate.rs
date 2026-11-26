@@ -18,9 +18,9 @@
  */
 
 use super::{BaselineEntry, BaselineReader, Error, SnapshotFile, SnapshotProof, TaskOwner};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use super::{FileIdentity, SnapshotKind};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::{collections::BTreeMap, ffi::OsStr, path::PathBuf};
 use std::{fs::File, io, path::Path, sync::Arc};
 
@@ -32,22 +32,19 @@ pub struct CandidateCapture {
 }
 struct CaptureInput {
     resource: File,
-    #[cfg(target_os = "macos")]
     working: File,
     proof: SnapshotProof,
 }
-/// An immutable selected artifact. Each file is an exact physical COW clone.
+/// An immutable selected artifact. Each file has independent immutable contents.
 /// Its inventory is complete for this artifact, not a filesystem-wide atomic
 /// cut or proof of all writes at Known, absence of ABA, or producer quiescence.
 /// Dropping this handle leaves the protected artifact intact.
 pub struct FrozenCandidate {
     input: Arc<CaptureInput>,
-    #[cfg(unix)]
     directory: File,
     entries: Vec<SnapshotFile>,
 }
 impl CandidateCapture {
-    #[cfg(target_os = "macos")]
     pub(super) fn from_owner(owner: &TaskOwner) -> Result<Self, Error> {
         let resource = super::evidence::open_resource(&owner.resource)?;
         // Verify the original baseline identity before capturing working custody.
@@ -56,6 +53,9 @@ impl CandidateCapture {
             .clone()
             .ok_or_else(|| io::Error::other("live task has no publication candidate"))?;
         BaselineReader::from_resource(&resource, proof.clone())?;
+        #[cfg(windows)]
+        let working = super::fs::directory(&resource, "workspace".as_ref())?;
+        #[cfg(unix)]
         let working = directory_at(&resource, OsStr::new("workspace"))?;
         Ok(Self {
             input: Arc::new(CaptureInput {
@@ -65,13 +65,6 @@ impl CandidateCapture {
             }),
         })
     }
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn from_owner(_: &TaskOwner) -> Result<Self, Error> {
-        Err(Error::CaptureUnsupported(
-            "physical candidate COW unavailable".into(),
-        ))
-    }
-
     /// Caller supplies real Known/current-Root admission. This only freezes
     /// private bytes; it never reads or writes the original shared source.
     /// Observed structural changes fail the whole capture, without retries.
@@ -94,33 +87,44 @@ impl FrozenCandidate {
         BaselineReader::from_resource(&self.input.resource, self.input.proof.clone())
     }
     /// Read immutable artifact entries only; never follow working-tree paths.
-    #[cfg(unix)]
     pub fn open_entry(&self, relative: &Path) -> io::Result<BaselineEntry> {
         super::baseline::open_entry(&self.directory, &self.entries, relative)
     }
-    #[cfg(not(unix))]
-    pub fn open_entry(&self, _: &Path) -> io::Result<BaselineEntry> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "candidate reader unavailable",
-        ))
-    }
 }
-#[cfg(not(target_os = "macos"))]
-fn freeze(_: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
-    Err(Error::CaptureUnsupported(
-        "physical candidate COW unavailable".into(),
-    ))
+#[cfg(windows)]
+fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
+    use super::fs::{copy_tree, directory, identity, mkdir};
+    let check = || -> Result<(), Error> {
+        if identity(&directory(&input.resource, "workspace".as_ref())?)?
+            != identity(&input.working)?
+        {
+            return Err(Error::CaptureUnstable("workspace".into()));
+        }
+        Ok(())
+    };
+    let current = directory(&input.resource, "workspace".as_ref())?;
+    if identity(&current)? != identity(&input.working)? {
+        return Err(Error::CaptureUnstable("workspace".into()));
+    }
+    let owner = directory(&input.resource, "owner".as_ref())?;
+    let directory = mkdir(&owner, format!("frozen-{}", uuid::Uuid::new_v4()).as_ref())?;
+    let (entries, _) = copy_tree(&current, &directory, |_| true)?;
+    check()?;
+    Ok(FrozenCandidate {
+        input,
+        directory,
+        entries,
+    })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Eq, PartialEq)]
 pub(super) struct Observation {
     pub(super) identity: FileIdentity,
     pub(super) mode: u32,
     pub(super) kind: ObservedKind,
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Eq, PartialEq)]
 pub(super) enum ObservedKind {
     File,
@@ -129,9 +133,9 @@ pub(super) enum ObservedKind {
     Directory { change: (i64, i64) },
     Symlink(PathBuf),
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
-    use rustix::fs::{CloneFlags, Mode, OFlags, fchmod, fclonefileat, mkdirat, symlinkat};
+    use rustix::fs::{Mode, OFlags, fchmod, mkdirat, symlinkat};
     let before = inventory(&input.working)?;
     let current = directory_at(&input.resource, OsStr::new("workspace"))?;
     ensure(
@@ -174,16 +178,7 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
                 .map_err(|e| capture_error(relative, e.into()))?
                 .into();
                 ensure(original, &observe_file(&source)?, relative)?;
-                match fclonefileat(&source, &destination, name, CloneFlags::NOOWNERCOPY) {
-                    Ok(()) => {}
-                    Err(rustix::io::Errno::XDEV | rustix::io::Errno::OPNOTSUPP) => {
-                        return Err(Error::CaptureUnsupported(format!(
-                            "no exact physical COW at {}",
-                            relative.display()
-                        )));
-                    }
-                    Err(error) => return Err(error.into()),
-                }
+                super::fs::freeze_file(&source, &destination, name, relative)?;
                 let frozen: File = rustix::fs::openat(
                     &destination,
                     name,
@@ -226,16 +221,7 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
             kind,
         });
     }
-    let after = inventory(&input.working)?;
-    if before != after {
-        let path = before
-            .keys()
-            .chain(after.keys())
-            .find(|path| before.get(*path) != after.get(*path))
-            .cloned()
-            .unwrap_or_default();
-        return Err(Error::CaptureUnstable(path));
-    }
+    ensure_inventory(&before, &input.working)?;
     let current = directory_at(&input.resource, OsStr::new("workspace"))?;
     ensure(
         &before[Path::new("")],
@@ -263,13 +249,31 @@ fn freeze(input: Arc<CaptureInput>) -> Result<FrozenCandidate, Error> {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn inventory(root: &File) -> Result<BTreeMap<PathBuf, Observation>, Error> {
+#[cfg(unix)]
+pub(super) fn inventory(root: &File) -> Result<BTreeMap<PathBuf, Observation>, Error> {
     let mut entries = BTreeMap::new();
     inventory_directory(root, Path::new(""), &mut entries)?;
     Ok(entries)
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
+pub(super) fn ensure_inventory(
+    before: &BTreeMap<PathBuf, Observation>,
+    root: &File,
+) -> Result<(), Error> {
+    let after = inventory(root)?;
+    if *before != after {
+        let path = before
+            .keys()
+            .chain(after.keys())
+            .find(|path| before.get(*path) != after.get(*path))
+            .cloned()
+            .unwrap_or_default();
+        return Err(Error::CaptureUnstable(path));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn inventory_directory(
     directory: &File,
     relative: &Path,
@@ -300,7 +304,7 @@ fn inventory_directory(
     }
     Ok(())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(super) fn observe_file(file: &File) -> io::Result<Observation> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
@@ -322,7 +326,7 @@ pub(super) fn observe_file(file: &File) -> io::Result<Observation> {
         kind,
     })
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(super) fn observe_at(directory: &File, name: &OsStr) -> io::Result<Observation> {
     use rustix::fs::{AtFlags, FileType, readlinkat, statat};
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
@@ -330,7 +334,7 @@ pub(super) fn observe_at(directory: &File, name: &OsStr) -> io::Result<Observati
     let kind = match FileType::from_raw_mode(stat.st_mode as _) {
         FileType::RegularFile => ObservedKind::File,
         FileType::Directory => ObservedKind::Directory {
-            change: (stat.st_ctime, stat.st_ctime_nsec),
+            change: (stat.st_ctime as i64, stat.st_ctime_nsec as i64),
         },
         FileType::Symlink => ObservedKind::Symlink(PathBuf::from(OsString::from_vec(
             readlinkat(directory, name, Vec::new())?.into_bytes(),
@@ -345,13 +349,13 @@ pub(super) fn observe_at(directory: &File, name: &OsStr) -> io::Result<Observati
     Ok(Observation {
         identity: FileIdentity {
             device: stat.st_dev as u64,
-            inode: stat.st_ino,
+            inode: stat.st_ino as u64,
         },
         mode: stat.st_mode as u32 & 0o777,
         kind,
     })
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(super) fn directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(rustix::fs::openat(
         parent,
@@ -364,7 +368,7 @@ pub(super) fn directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
     )?
     .into())
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn parent_at(root: &File, relative: &Path) -> io::Result<File> {
     let mut parent = root.try_clone()?;
     if let Some(path) = relative.parent() {
@@ -374,7 +378,7 @@ fn parent_at(root: &File, relative: &Path) -> io::Result<File> {
     }
     Ok(parent)
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn checked_parent(
     root: &File,
     relative: &Path,
@@ -399,7 +403,7 @@ fn checked_parent(
     }
     Ok(parent)
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(super) fn ensure(
     expected: &Observation,
     actual: &Observation,
@@ -411,7 +415,7 @@ pub(super) fn ensure(
         Ok(())
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(super) fn capture_error(relative: &Path, error: io::Error) -> Error {
     match error.raw_os_error() {
         Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP | libc::ESTALE) => {
@@ -423,7 +427,7 @@ pub(super) fn capture_error(relative: &Path, error: io::Error) -> Error {
         _ => Error::Io(error),
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn source_link(proof: &SnapshotProof, relative: &Path, raw: &Path) -> Result<PathBuf, Error> {
     use std::path::Component;
     if let Ok(index) = proof

@@ -490,6 +490,14 @@ impl SessionStore {
                 .map_err(|reason| StoreError::InvalidTransition(reason.into()))?;
         }
         let owner = self.owner()?;
+        if let Some(execution) = owner
+            .checkpoint
+            .as_ref()
+            .and_then(|a| a.storage())
+            .and_then(|s| s.execution.as_ref())
+        {
+            execution.check_session(&self.id).await?;
+        }
         let access = self
             .gates
             .read([gates::Key::Session(self.id.to_string())])

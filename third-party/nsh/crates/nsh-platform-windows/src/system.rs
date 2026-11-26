@@ -242,6 +242,7 @@ pub(crate) fn watch_environment(surface: &Rc<Surface>) {
 /// A system setting changed (`WM_SETTINGCHANGE`, `WM_THEMECHANGED`,
 /// `WM_SYSCOLORCHANGE`, `WM_DWMCOLORIZATIONCOLORCHANGED`).
 pub(crate) fn settings_changed(surface: &Rc<Surface>) {
+    crate::text::invalidate_rendering_params();
     refresh_accent();
     update(surface, settings());
     // The taskbar's colors may have changed: a template tray icon follows.
@@ -1905,7 +1906,7 @@ impl Hosted for DialogItem {
         }
         if let (Some(footer), Some(card)) = (g.footer, g.cards.first()) {
             // The footer's band, its bottom corners the card's.
-            cx.push_clip_rounded(*card, [RADIUS; 4]);
+            cx.push_clip_rounded_shapes(*card, [RADIUS; 4]);
             // SAFETY: a COM call between BeginDraw and EndDraw.
             unsafe {
                 cx.dc.FillRectangle(

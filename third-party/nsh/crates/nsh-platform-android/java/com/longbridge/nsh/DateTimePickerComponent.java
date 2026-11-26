@@ -10,24 +10,31 @@ import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.text.format.DateFormat;
 import android.util.TypedValue;
+import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.DatePicker;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * {@code nsh/mobile}'s {@code DateTimePicker} on Android: the value in a field
  * (a day and a time of day are two, as iOS's compact picker shows them), in
- * the system's formats and the user's 12- or 24-hour clock. A press opens the
- * framework's {@link DatePickerDialog} or {@link TimePickerDialog}; the
- * picked value shows at once and is reported as {@code change} with its
- * fields ({@code year}, {@code month}, {@code day}, {@code hour},
- * {@code minute}). The app owns the value.
+ * the formats of the app's text language and the user's 12- or 24-hour clock.
+ * A press opens the framework's {@link DatePickerDialog} or
+ * {@link TimePickerDialog}; the picked value shows at once and is reported as
+ * {@code change} with its fields ({@code year}, {@code month}, {@code day},
+ * {@code hour}, {@code minute}). The app owns the value. The dialogs' own
+ * words (their buttons, month and day names, the date dialog's header) are in
+ * that language too.
  */
 final class DateTimePickerComponent implements NshComponent {
     /** Its name ({@code nsh_core::platform::DATE_TIME_PICKER_COMPONENT}). */
@@ -39,6 +46,8 @@ final class DateTimePickerComponent implements NshComponent {
     private final Context context;
     private final NshComponentContext events;
     private final BooleanSupplier night;
+    /** The language of the app's text ({@link Mounter#textLocale}; null: the system's). */
+    private final Supplier<Locale> textLocale;
     private final float density;
     private final Row row;
     private final Field dateField, timeField;
@@ -52,10 +61,12 @@ final class DateTimePickerComponent implements NshComponent {
     /** What screen readers say with each field's value (null: the value alone). */
     private String label;
 
-    DateTimePickerComponent(Context context, NshComponentContext events, BooleanSupplier night) {
+    DateTimePickerComponent(Context context, NshComponentContext events, BooleanSupplier night,
+            Supplier<Locale> textLocale) {
         this.context = context;
         this.events = events;
         this.night = night;
+        this.textLocale = textLocale;
         this.density = context.getResources().getDisplayMetrics().density;
         this.row = new Row(context);
         this.dateField = new Field(context);
@@ -144,13 +155,13 @@ final class DateTimePickerComponent implements NshComponent {
         return !"date".equals(mode);
     }
 
-    /** Shows the value in the system's formats, and the fields the mode has. */
+    /** Shows the value in the app's language and the user's clock, and the fields the mode has. */
     private void show() {
         Calendar at = Calendar.getInstance();
         at.clear();
         at.set(year, month - 1, day, hour, minute);
-        dateField.setText(DateFormat.getMediumDateFormat(context).format(at.getTime()));
-        timeField.setText(DateFormat.getTimeFormat(context).format(at.getTime()));
+        dateField.setText(dateFormat().format(at.getTime()));
+        timeField.setText(timeFormat().format(at.getTime()));
         // TalkBack reads a field's description in place of its text: the name, then the value.
         for (Field field : new Field[] {dateField, timeField}) {
             field.setContentDescription(label == null ? null : label + ", " + field.getText());
@@ -169,6 +180,34 @@ final class DateTimePickerComponent implements NshComponent {
         events.setSize(row.getMeasuredWidth() / density, row.getMeasuredHeight() / density);
     }
 
+    /**
+     * The day's format: the system's medium one, in the language of the app's
+     * text. {@link DateFormat#getMediumDateFormat} would take the field's
+     * context's, the activity's, which is the system's.
+     */
+    private java.text.DateFormat dateFormat() {
+        Locale locale = textLocale.get();
+        if (locale == null) return DateFormat.getMediumDateFormat(context);
+        return java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM, locale);
+    }
+
+    /**
+     * The time of day's format: {@link DateFormat#getTimeFormat}'s pattern in
+     * the language of the app's text, while the 12- or 24-hour clock stays the
+     * user's setting, as the time dialog's does.
+     */
+    private java.text.DateFormat timeFormat() {
+        Locale locale = textLocale.get();
+        if (locale == null) return DateFormat.getTimeFormat(context);
+        String skeleton = DateFormat.is24HourFormat(context) ? "Hm" : "hm";
+        return new SimpleDateFormat(DateFormat.getBestDateTimePattern(locale, skeleton), locale);
+    }
+
+    /** The language of the app's text changed ({@link Mounter#textLocale}): the fields show the value in it. */
+    void textLocaleChanged() {
+        show();
+    }
+
     /** The dialogs' theme: the appearance shown (the app's, else the system's). */
     private int dialogTheme() {
         return night.getAsBoolean()
@@ -176,9 +215,52 @@ final class DateTimePickerComponent implements NshComponent {
                 : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert;
     }
 
+    /**
+     * What the dialogs are made in: the framework's dialogs take their words
+     * from the context's resources, the system's language, while an app that
+     * shows itself in another one ({@code setLocale}, its translations) has
+     * the rest of its text in that, as the screen reader's state words are.
+     * The direction stays the window's, which the dialog's views lay out in.
+     */
+    private Context dialogContext() {
+        Locale locale = textLocale.get();
+        if (locale == null) return context;
+        Configuration config = new Configuration(context.getResources().getConfiguration());
+        int direction = config.screenLayout & Configuration.SCREENLAYOUT_LAYOUTDIR_MASK;
+        config.setLocale(locale);
+        config.screenLayout = (config.screenLayout & ~Configuration.SCREENLAYOUT_LAYOUTDIR_MASK) | direction;
+        // A wrapper, not createConfigurationContext: the dialog's window needs
+        // the activity's window manager (its token) that the wrapper hands on.
+        ContextThemeWrapper localized = new ContextThemeWrapper(context, dialogTheme());
+        localized.applyOverrideConfiguration(config);
+        return localized;
+    }
+
+    /** The date or time dialog shown, else null. */
+    private android.app.Dialog shown;
+
+    /** Shows {@code dialog}, the one shown until it goes. */
+    private void present(android.app.Dialog dialog) {
+        dialog.setOnDismissListener(d -> {
+            if (shown == d) shown = null;
+        });
+        shown = dialog;
+        dialog.show();
+    }
+
+    /**
+     * Closes the dialog shown, without a pick, as a press outside it does: its window is the activity's, which goes
+     * ({@link Mounter#leaveWindows}).
+     */
+    void closeDialog() {
+        android.app.Dialog dialog = shown;
+        shown = null;
+        if (dialog != null) dialog.dismiss();
+    }
+
     private void pickDate() {
         if (disabled) return;
-        DatePickerDialog dialog = new DatePickerDialog(context, dialogTheme(), (picker, y, m, d) -> {
+        DatePickerDialog dialog = new DatePickerDialog(dialogContext(), dialogTheme(), (picker, y, m, d) -> {
             year = y;
             month = m + 1;
             day = d;
@@ -191,18 +273,27 @@ final class DateTimePickerComponent implements NshComponent {
         if (max != null && max.get("year") instanceof Number) {
             dialog.getDatePicker().setMaxDate(millis(max, 23, 59));
         }
-        dialog.show();
+        if (textLocale.get() != null) {
+            // The calendar picker formats its header (the picked day, its year) in the
+            // process's default language, read when it is made, while its other words
+            // come from its context. A configuration change sets the header's language
+            // from the configuration: handing the picker the one it was made in (the
+            // app's language) formats the header in that, the process's default untouched.
+            DatePicker picker = dialog.getDatePicker();
+            picker.dispatchConfigurationChanged(picker.getContext().getResources().getConfiguration());
+        }
+        present(dialog);
     }
 
     private void pickTime() {
         if (disabled) return;
-        new TimePickerDialog(context, dialogTheme(), (picker, h, m) -> {
+        present(new TimePickerDialog(dialogContext(), dialogTheme(), (picker, h, m) -> {
             hour = h;
             // The dialog offers every minute: a pick between steps takes the
             // step before it.
             minute = m - m % minuteInterval;
             picked();
-        }, hour, minute, DateFormat.is24HourFormat(context)).show();
+        }, hour, minute, DateFormat.is24HourFormat(context)));
     }
 
     /** The user picked: the value moves into the bounds, shows and is reported. */
@@ -296,6 +387,10 @@ final class DateTimePickerComponent implements NshComponent {
         protected void onConfigurationChanged(Configuration config) {
             super.onConfigurationChanged(config);
             appearanceChanged();
+            // A size in sp is resolved when it is set: a font scale changed since takes
+            // setting it again, before `show` measures the fields.
+            dateField.setTextSize(TypedValue.COMPLEX_UNIT_SP, TEXT_SP);
+            timeField.setTextSize(TypedValue.COMPLEX_UNIT_SP, TEXT_SP);
             // The user's formats or clock may have changed with it.
             show();
         }

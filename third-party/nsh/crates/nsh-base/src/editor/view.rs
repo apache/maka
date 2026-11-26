@@ -1524,6 +1524,7 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
     );
     let value = ed.sink_value;
     let content = ed.clone();
+    let moved = ed.clone();
     input()
         .element_ref(&ed.input)
         .absolute()
@@ -1566,6 +1567,9 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         })
         .label(move || props.accessibility_label.get().unwrap_or_default())
         .on_change(move |text: &str| change.sink_changed(text))
+        .on_selection_change(move |selection: &nsh_core::element::Selection| {
+            moved.sink_selection(selection)
+        })
         .on_composition_change(move |c: &Composition| composition.composition(c.composing, &c.text))
         .on_key_press(move |k: &str| key.sink_key(k))
         .on_paste(move |p: &PasteEvent| paste.paste(&p.text))

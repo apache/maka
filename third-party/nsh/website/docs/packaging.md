@@ -1,8 +1,8 @@
 ---
 title: Packaging
-description: Build installable Rust and TSX apps with nsh package for iOS devices, the iOS simulator, Android, macOS, Windows, Linux and the web, with app metadata, icons and signing.
+description: Build installable TSX and Rust apps with nsh package for iOS devices, the iOS simulator, Android, macOS, Windows, Linux and the web, with app metadata, icons, signing and distribution outside the stores.
 order: 19
-group: platforms
+group: publishing
 ---
 
 # Packaging
@@ -466,6 +466,110 @@ Each package copies the extensions into `Contents/PlugIns/` and syncs their `CFB
 NSH signs each extension inside-out — nested `.framework` and `.dylib` items in `Contents/Frameworks/` first (with no
 entitlements), then the `.appex` with its own entitlements — using the package's signing identity (ad hoc or `--sign`).
 
+### Sign, notarize and distribute
+
+A Mac app is distributed outside the Mac App Store as a signed and notarized `.app`, downloaded from your site or a
+GitHub Release. `nsh package --target macos --sign …` builds the app and signs it with your Developer ID;
+notarization, stapling and uploading are done with Apple's command line tools and your release host.
+[App Updates](./app-updates.md) then keeps installed copies up to date.
+
+`nsh publish` has no macOS store upload: NSH does not package for the Mac App Store yet.
+
+#### Before the first release
+
+Once per developer account:
+
+1. **Join the Apple Developer Program.**
+2. **Create a Developer ID Application certificate** (Certificates, Identifiers & Profiles → Certificates; only the
+   account holder can create one) and install it in the login keychain of the Mac (or CI runner) that packages the
+   app. `security find-identity -v -p codesigning` lists it as
+   `Developer ID Application: Example Inc (ABCDE12345)`.
+3. **Set up notarization credentials** for `notarytool`, stored once in the keychain under a profile name. With an App
+   Store Connect team API key (the same kind [iOS uploads](./publish.md#before-the-first-release) use):
+
+   ```sh
+   xcrun notarytool store-credentials notes-notary \
+     --key /secure/AuthKey_ABC123DEFG.p8 --key-id ABC123DEFG --issuer 69a6de70-0000-0000-0000-000000000000
+   ```
+
+   or with an Apple ID and an app-specific password: `xcrun notarytool store-credentials notes-notary --apple-id
+   you@example.com --team-id ABCDE12345`.
+
+#### Configure the app
+
+| Key | In the build | Notes |
+|---|---|---|
+| `id` | `CFBundleIdentifier` | Also the app's [storage](../modules/nsh.md#storage) location; keep it stable. |
+| `name` | The `.app` name and `CFBundleName` | |
+| `version`, `build` | `CFBundleShortVersionString`, `CFBundleVersion` | `version` must be semver and grow for [self-updates](./app-updates.md). |
+| `icon` (or `icon.macos`) | `AppIcon.icns` | macOS artwork sits inset on a transparent canvas ([Icons](./packaging.md#icons)). |
+| `macos.infoPlist` | `Info.plist` keys | Usage descriptions and other keys ([Info.plist keys](./packaging.md#infoplist-keys-and-entitlements)). |
+| `macos.entitlements` | The app's entitlements | Signed into the app with Hardened Runtime; add the exceptions it needs, such as camera access. |
+| `LSMinimumSystemVersion` in `macos.infoPlist` | The lowest macOS that opens the app | Default macOS 14 ([Minimum system version](./packaging.md#minimum-system-version)). |
+| `macos.extensions` | `Contents/PlugIns/` | Prebuilt `.appex` bundles, signed inside-out ([macOS app extensions](./packaging.md#macos-app-extensions)). |
+
+#### Build and sign
+
+```sh
+nsh package --target macos --arch universal \
+  --sign "Developer ID Application: Example Inc (ABCDE12345)"
+```
+
+This writes `.nsh/out/<Name>.app`. With a certificate, NSH signs nested frameworks and extensions first, then the app,
+with Hardened Runtime (`--options runtime`) and a secure timestamp (`--timestamp`) as notarization requires, and
+verifies the result with `codesign --verify --deep --strict`. `--arch universal` runs on both Apple silicon and Intel
+Macs (it needs `rustup target add x86_64-apple-darwin` for a Rust app); leave it out for this Mac's processor only.
+Without `--sign` the app is signed ad hoc, which runs on the Mac that built it but is stopped by Gatekeeper elsewhere.
+
+#### Notarize and staple
+
+Apple scans a notarized app for malicious content and records it, so Gatekeeper opens it without a warning. Submit a
+zip of the app, wait for the result, then staple the ticket to the app so it opens offline too:
+
+```sh
+cd .nsh/out
+ditto -c -k --keepParent Notes.app Notes-notarize.zip
+xcrun notarytool submit Notes-notarize.zip --keychain-profile notes-notary --wait
+xcrun stapler staple Notes.app
+spctl --assess --type execute --verbose Notes.app   # "accepted, source=Notarized Developer ID"
+```
+
+If the submission is `Invalid`, `xcrun notarytool log <submission-id> --keychain-profile notes-notary` lists every
+problem.
+
+#### Distribute it
+
+Archive the stapled app for download. A zip made with `ditto` keeps its signature and extended attributes:
+
+```sh
+ditto -c -k --keepParent Notes.app Notes-1.4.0-macos.zip
+```
+
+With [`"updater"`](./app-updates.md#set-the-source) in `nsh.json`, `nsh package` also writes
+`<Name>-<version>-macos-<arch>.tar.gz` for self-updates. It holds the app as packaged, before notarization: archive the
+stapled app again under the same name, then write the manifest, as [App Updates](./app-updates.md#publish-a-release)
+describes:
+
+```sh
+tar -czf Notes-1.4.0-macos-aarch64.tar.gz Notes.app
+nsh update-manifest *.tar.gz --notes CHANGES.md --key keys/update.secret
+```
+
+Upload the archives, `latest.json` and its signature to the GitHub Release or your host. Installed copies check the
+manifest, download the archive, verify it and the app's code signature, and replace themselves.
+
+#### Common errors
+
+| Problem | What to do |
+|---|---|
+| `codesign` cannot find the identity | The certificate is not in the keychain the build uses, or its private key is missing: import the `.p12` exported with the key. |
+| `errSecInternalComponent` while signing on CI | The keychain is locked: unlock it (`security unlock-keychain`) and allow `codesign` to use the key (`security set-key-partition-list`). |
+| Notarization `Invalid`: not signed with a valid Developer ID certificate | The app was signed ad hoc or with an Apple Development certificate: package with `--sign "Developer ID Application: …"`. |
+| Notarization `Invalid`: the signature does not include a secure timestamp | Sign through `nsh package --sign`, which adds it; do not re-sign by hand without `--timestamp`. |
+| "Notes is damaged and can't be opened" after download | The archive lost the signature (zipped with a tool that drops attributes, or modified after signing): archive with `ditto` or `tar` after stapling. |
+| Gatekeeper warns although notarization succeeded | The ticket was not stapled and the Mac is offline, or the downloaded app is not the one notarized: staple, then archive again. |
+| The app cannot use the camera, microphone or other protected resources | Add the usage description to `macos.infoPlist` and the Hardened Runtime exception to `macos.entitlements`. |
+
 ## Linux
 
 ```sh
@@ -477,6 +581,133 @@ application id and nsh.json's window options, a TSX app's `nsh/bundle.nshc`, `<i
 `<id>.png`) and the same as `.nsh/out/<Name>.tar.gz`. Package on
 Linux: the runner is built for the machine it is built on. GTK 4 (4.14 or later), Pango and WebKitGTK 6.0 (for web
 views) must be installed where the app runs. Installing it and the desktop entry: [Linux](./linux.md#packaging).
+
+
+### AppImage and Flatpak
+
+`--format appimage` or `--format flatpak` also writes the desktop entry, the 256×256 icon and AppStream metainfo
+(`<id>.metainfo.xml`) from `nsh.json` and its `store` section ([Store listing](./publish.md#store-listing)).
+
+#### AppImage
+
+```sh
+nsh package --target linux --format appimage
+```
+
+Writes `.nsh/out/<Name>.AppDir` and `.nsh/out/<Name>-<arch>.AppImage`, besides the directory and archive. The
+AppImage carries the desktop entry, icon and metainfo, and runs on the system's GTK 4 and WebKitGTK like the archive,
+so the target system needs them installed. Attach it to your release; users run:
+
+```sh
+chmod +x Counter-x86_64.AppImage
+./Counter-x86_64.AppImage
+```
+
+#### Flatpak
+
+```sh
+nsh package --target linux --format flatpak
+```
+
+Writes `.nsh/out/flatpak/<id>.yml`, a manifest that installs the package's archive on the GNOME runtime, which
+provides GTK 4 and WebKitGTK. When `flatpak-builder` is installed it also builds it and writes
+`.nsh/out/<Name>.flatpak`, a single-file bundle to test or hand out:
+
+```sh
+flatpak install --user .nsh/out/Counter.flatpak
+flatpak run io.github.example.Counter
+```
+
+Requirements: [appimagetool](https://github.com/AppImage/appimagetool/releases) on `PATH` or in `NSH_APPIMAGETOOL`
+(without FUSE, set `APPIMAGE_EXTRACT_AND_RUN=1`); for a local Flatpak build, `flatpak`, `flatpak-builder` and the GNOME
+runtime and SDK. AppImage bundles NSH but not GTK 4 or WebKitGTK; when an AppImage starts without a window, the system
+lacks them, and the Flatpak brings them. Releasing on Flathub: [Publishing](./publish.md#publish-to-flathub).
+
+### Distribute
+
+`nsh package --target linux` writes the app as a directory and a `.tar.gz` of it, with a desktop entry and the icon.
+You upload the archive to your site or a GitHub Release, and users unpack it and install the desktop entry;
+[App Updates](./app-updates.md) keeps installed copies up to date.
+
+`--format appimage` and `--format flatpak` also write an AppImage and a Flatpak ([above](#appimage-and-flatpak));
+`nsh package` does not write `.deb` or `.rpm` packages yet. Releasing on Flathub is
+[Publishing](./publish.md#publish-to-flathub).
+
+#### Before the first release
+
+Package on Linux: the runner is built for the machine it is built on, so package on the processor you publish for
+(`x86_64` or `aarch64`), on a distribution old enough for the users you support, as a newer glibc than theirs stops the
+app from starting. Ubuntu 24.04 is a good base for current desktops. The build needs the development packages of
+GTK 4 (4.14 or later), Pango and WebKitGTK 6.0 ([Linux: Requirements](./linux.md#requirements)).
+
+#### Configure the app
+
+| Key | In the package | Notes |
+|---|---|---|
+| `id` | `<id>.desktop`, `StartupWMClass`, the GTK application id, `<id>.png` | Desktops match the app's windows to its launcher by it; reverse-DNS, as `com.example.notes`. Keep it stable. |
+| `name` | The executable `<Name>`, the directory, and the desktop entry's `Name` | |
+| `version` | Self-update archives | Must be semver and grow for [self-updates](./app-updates.md). |
+| `icon` (or `icon.linux`) | `<id>.png`, named by the desktop entry's `Icon` | A square PNG that fills its canvas ([Icons](./packaging.md#icons)). |
+
+#### Build
+
+```sh
+nsh package --target linux
+```
+
+```text
+.nsh/out/<Name>/
+  <Name>          the executable
+  nsh/            the app's code, assets and app.json
+  <id>.desktop    the desktop entry
+  <id>.png        the icon
+.nsh/out/<Name>.tar.gz
+```
+
+[Packaging: Linux](./packaging.md#linux) has the details.
+
+#### Distribute it
+
+Upload `<Name>.tar.gz` to your site or a GitHub Release, and tell users which libraries to install. The runtime needs
+GTK 4, Pango and WebKitGTK 6.0:
+
+| Distribution | Install |
+|---|---|
+| Debian, Ubuntu | `sudo apt install libgtk-4-1 libwebkitgtk-6.0-4` |
+| Fedora | `sudo dnf install gtk4 webkitgtk6.0` |
+| Arch | `sudo pacman -S gtk4 webkitgtk-6.0` |
+
+Installing for one user takes four steps, which an install script can run: unpack the directory somewhere stable, link
+the executable onto the `PATH`, and copy the desktop entry and the icon where desktops find them.
+
+```sh
+mkdir -p ~/.local/opt ~/.local/bin ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
+tar -xzf Notes.tar.gz -C ~/.local/opt
+ln -sf ~/.local/opt/Notes/Notes ~/.local/bin/Notes
+cp ~/.local/opt/Notes/com.example.notes.desktop ~/.local/share/applications/
+cp ~/.local/opt/Notes/com.example.notes.png ~/.local/share/icons/hicolor/256x256/apps/
+```
+
+The executable finds its `nsh/` directory through the link. Check the desktop entry with
+`desktop-file-validate ~/.local/share/applications/com.example.notes.desktop` before you ship it.
+
+With [`"updater"`](./app-updates.md#set-the-source) in `nsh.json`, `nsh package` also writes
+`<Name>-<version>-linux-<arch>.tar.gz` for self-updates. Upload it with the manifest
+([App Updates](./app-updates.md#publish-a-release)):
+
+```sh
+nsh update-manifest *.tar.gz *.zip --notes CHANGES.md --key keys/update.secret
+```
+
+#### Common errors
+
+| Problem | What to do |
+|---|---|
+| `error while loading shared libraries: libgtk-4.so.1` (or `libwebkitgtk-6.0.so.4`) | Install the runtime libraries above. |
+| `version 'GLIBC_2.39' not found` | The app was packaged on a newer distribution than the user's: package on an older one. |
+| The app does not show in the launcher | The desktop entry is not in `~/.local/share/applications`, or its `Exec` does not find the executable: link it onto the `PATH`. |
+| The launcher shows a generic icon, or a second icon while the app runs | The icon is not in an icon theme directory, or the desktop entry was renamed: keep the file name `<id>.desktop`, which `StartupWMClass` matches. |
+| `exec format error` | The archive was built for another processor: package on `x86_64` and `aarch64` separately. |
 
 ## Windows
 
@@ -493,6 +724,129 @@ embed the icon. The app runs from wherever its directory is copied. `nsh package
 installer (no administrator rights) with a Start menu shortcut, an Installed apps entry, and in-place upgrades. See
 [Windows](./windows.md#packaging).
 
+### MSIX
+
+```sh
+nsh package --target windows --format msix                  # .nsh/out/<Name>.msix, for the Store
+nsh package --target windows --format msix --sign cert.pfx  # signed, to install outside the Store
+```
+
+`--format msix` also writes `.nsh\out\<Name>.msix`: the packaged directory with `AppxManifest.xml` (a full-trust
+desktop app), the logos made from the app's icon, and the block map. It needs no Windows SDK, so Linux and macOS CI
+can make it (the icon is then not embedded in the `.exe`, but the Start menu and the Store use the logos). The
+package's identity comes from `nsh.json`:
+
+```json
+{
+  "windows": {
+    "identityName": "12345Example.MyApp",
+    "publisher": "CN=0A1B2C3D-1234-5678-9ABC-0123456789AB",
+    "publisherDisplayName": "Example Inc."
+  }
+}
+```
+
+Copy `identityName` and `publisher` from Partner Center (the app → Product identity: Package/Identity/Name and
+Package/Identity/Publisher); defaults are the app id and `CN=<name>`. The version is `version` with a fourth part 0,
+which the Store reserves. The Store signs what it publishes, so submit the unsigned package with
+`nsh publish windows` ([Publishing](./publish.md#publish-to-the-microsoft-store)). Outside the Store, Windows installs only signed
+packages: `--sign <cert.pfx>` signs it with `signtool` on Windows or `osslsigncode` (2.6 or newer) elsewhere, its
+password in `NSH_WINDOWS_CERT_PASSWORD`; the certificate's subject must equal `windows.publisher`.
+
+### Sign and distribute
+
+`nsh package --target windows` writes everything a Windows release needs for direct download: the app's directory, a
+`.zip` of it, and a per-user installer built with Inno Setup. You sign the executables with your code signing
+certificate and upload them to your site or a GitHub Release; [App Updates](./app-updates.md) keeps installed copies
+up to date.
+
+For the Microsoft Store, package an [MSIX](#msix) and submit it with `nsh publish windows`
+([Publishing](./publish.md#publish-to-the-microsoft-store)).
+
+#### Before the first release
+
+On the Windows machine (or CI runner) that packages the app:
+
+1. **Install the tools.** A TSX app needs none; a Rust app's runner is built with Visual Studio Build Tools. For the
+   installer, install Inno Setup 6: `winget install JRSoftware.InnoSetup`.
+2. **Get a code signing certificate** from a certificate authority, or use a cloud signing service such as Azure
+   Trusted Signing. Unsigned executables still run, but SmartScreen warns about an unknown publisher, and some
+   antivirus products treat them with suspicion.
+3. **Install the Windows SDK** for `signtool.exe` (it comes with the Visual Studio installer's Windows SDK component).
+
+#### Configure the app
+
+| Key | In the build | Notes |
+|---|---|---|
+| `id` | The installer's AppId, the Start menu shortcut's AppUserModelID | Groups the app's windows in the taskbar and identifies it for notifications; a newer installer with the same id upgrades the installed app. Keep it stable. |
+| `name` | `<Name>.exe`, the install directory and the Start menu entry | |
+| `version` | The installer's version and the Installed apps entry | Must be semver and grow for [self-updates](./app-updates.md). |
+| `icon` (or `icon.windows`) | Embedded in `<Name>.exe`, written as `nsh\icon.ico` | Package on Windows: only Windows can embed the icon ([Icons](./packaging.md#icons)). |
+
+#### Build
+
+```powershell
+nsh package --target windows
+```
+
+```text
+.nsh\out\<Name>\           the app: <Name>.exe and nsh\
+.nsh\out\<Name>.zip        the same, as an archive
+.nsh\out\<Name>.iss        the Inno Setup script
+.nsh\out\<Name>-setup.exe  the installer, when Inno Setup 6 is installed
+```
+
+The installer needs no administrator rights: it installs for the current user in `%LOCALAPPDATA%\Programs\<Name>`,
+adds a Start menu shortcut and an Installed apps entry that uninstalls it, and upgrades an installed copy in place,
+closing the app first. The app's data is never touched, by upgrades or by the uninstaller.
+[Packaging: Windows](./packaging.md#windows) has the details.
+
+#### Sign
+
+Sign the app's executable before the installer is built, so the installed app is signed too, then sign the installer.
+With a certificate in the Windows certificate store:
+
+```powershell
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /n "Example Inc" .nsh\out\Notes\Notes.exe
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .nsh\out\Notes.iss
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /n "Example Inc" .nsh\out\Notes-setup.exe
+signtool verify /pa .nsh\out\Notes-setup.exe
+```
+
+`ISCC.exe` compiles the installer again from the script `nsh package` wrote, now with the signed executable; its path
+depends on where Inno Setup is installed (`C:\Program Files (x86)\Inno Setup 6\ISCC.exe` for a machine-wide install).
+Make the `.zip` again from the signed directory too if you publish it. Always timestamp (`/tr`): the signature then
+stays valid after the certificate expires.
+
+#### Distribute it
+
+Upload `Notes-setup.exe` (and the `.zip`, for people who prefer a portable copy) to your site or a GitHub Release.
+
+With [`"updater"`](./app-updates.md#set-the-source) in `nsh.json`, `nsh package` also writes
+`<Name>-<version>-windows-<arch>.zip` for self-updates. Put the signed app in it, then write the manifest with the other
+platforms' archives ([App Updates](./app-updates.md#publish-a-release)):
+
+```powershell
+nsh update-manifest *.zip *.tar.gz --notes CHANGES.md --key keys\update.secret
+```
+
+#### SmartScreen
+
+SmartScreen decides by reputation, which grows as people download and run files signed with the same certificate. A
+new certificate, or a new kind of certificate, can show the "Windows protected your PC" warning for a while even when
+the file is signed. Keep signing every release with the same certificate so the reputation carries over.
+
+#### Common errors
+
+| Problem | What to do |
+|---|---|
+| No `<Name>-setup.exe` in `.nsh\out` | Inno Setup 6 is not installed, or not where `nsh package` looks: install it with `winget install JRSoftware.InnoSetup`, or compile `.nsh\out\<Name>.iss` with `ISCC.exe`. |
+| The executable shows the default icon | It was packaged on macOS or Linux: package on Windows to embed the icon. |
+| `signtool` is not recognized | Run it from a Developer PowerShell, or add the Windows SDK's `bin\<version>\x64` directory to `PATH`. |
+| `SignTool Error: No certificates were found that met all the given criteria` | The certificate is not in the store `signtool` searches, or `/n` does not match its subject: list them with `certutil -user -store My`. |
+| "Windows protected your PC" on a signed installer | SmartScreen reputation is still building for the certificate (above). |
+| The installer asks to close the app | It upgrades in place and closes the running copy first; this is expected. |
+
 ## Web
 
 ```sh
@@ -504,6 +858,110 @@ and `nsh.<digest>.wasm` (a Rust app's engine and crate; for a TSX app the runtim
 `app.<digest>.js`), its assets and icons, each named after its content
 so hosts can cache them for good. Deploy the directory to any web server or CDN; `--run` serves it on
 `http://127.0.0.1:4173/` for you to open. Cache headers and embedding: [Web](./web.md#publish-an-app).
+
+### Host the site
+
+On the web an app is a static site. `nsh package --target web` writes it; you copy the directory to any web server,
+object store or static host. There is no store, no signing and no review, and a deploy updates every user on their next
+load. `nsh publish` has nothing to do here.
+
+#### Configure the app
+
+| Key | In the site | Notes |
+|---|---|---|
+| `name` | The page title and the web app manifest's name | |
+| `id` | The web app manifest's id | |
+| `icon` (or `icon.web`) | The favicon, `apple-touch-icon` and manifest icons | Resized to 32, 180, 192 and 512 pixels ([Icons](./packaging.md#icons)). |
+| `appearance` | The page's colors while it loads | |
+| `web.base` | The path the site is served under | Needed when the app is opened at its own paths ([Links into the app](./web.md#links-into-the-app)). |
+| `web.host` | The page's host script | [The host's functions](./web.md#the-hosts-functions). |
+
+#### Build
+
+```sh
+nsh package --target web            # a Rust app, from its directory
+nsh package App.tsx --target web    # a TSX app
+nsh package --target web --run      # and serve it on http://127.0.0.1:4173/ to try it
+```
+
+This writes `.nsh/out/<Name>/` (`--out` for another directory): `index.html`, `manifest.webmanifest`, and every other
+file named after its content (`nsh.<digest>.wasm`, `app.<digest>.js`, `assets/…`), with Brotli and gzip copies
+beside them. A release changes only `index.html` and the files that really changed. The full list of files and the
+runtime's size: [Web: Publish an app](./web.md#publish-an-app).
+
+By default the site uses relative URLs, so it works from any directory of any host. To serve the files from a CDN while
+the page stays at the app's own address, pass `--asset-url https://cdn.example.com/notes/`.
+
+#### Deploy
+
+Any static host works. Two rules make the app load fast and update at once:
+
+| Files | `Cache-Control` |
+|---|---|
+| `index.html`, `manifest.webmanifest` | `no-cache` |
+| everything else | `public, max-age=31536000, immutable` |
+
+Serve `.wasm` as `application/wasm`, and send the precompressed `.br` and `.gz` copies to browsers that accept them
+([Deploy it](./web.md#deploy-it) has nginx and Caddy settings). Upload the hashed files before `index.html`, so a
+visitor never gets a page whose files are not there yet.
+
+##### GitHub Pages
+
+```yaml
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      # Install nsh (pin the version), then:
+      - run: nsh package --target web --out site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+```
+
+A project site lives under `/<repo>/`; relative URLs handle that. An app opened at its own paths sets
+`"web": { "base": "/<repo>/" }` and adds a copy of `index.html` as `404.html` (`cp site/index.html site/404.html`
+before the upload), which GitHub Pages answers unknown paths with. GitHub Pages cannot set `Cache-Control` per file, so returning visitors revalidate
+the hashed files too; a host that lets you set headers loads faster.
+
+##### An object store and a CDN
+
+```sh
+nsh package --target web --out site
+aws s3 sync site s3://example-notes --exclude index.html --exclude manifest.webmanifest \
+  --cache-control "public, max-age=31536000, immutable"
+aws s3 cp site/index.html s3://example-notes/ --cache-control no-cache
+aws s3 cp site/manifest.webmanifest s3://example-notes/ --cache-control no-cache
+```
+
+Configure the CDN to serve `.wasm` as `application/wasm` and to compress with Brotli, or to serve the `.br` copies.
+
+#### Supported browsers
+
+Safari 16.4 (iOS and iPadOS 16.4), Chrome and Edge 97, and Firefox 108 or later. Earlier browsers show a blank page
+([Supported browsers](./web.md#supported-browsers)).
+
+#### Common errors
+
+| Problem | What to do |
+|---|---|
+| A blank page and `Failed to load module script` in the console | The host serves `.js` or `.wasm` with the wrong content type, or the files were not uploaded: check the Network panel. |
+| `WebAssembly.instantiateStreaming` fails with an incorrect response MIME type | Serve `.wasm` as `application/wasm`. |
+| Opening a path of the app, or reloading on one, gives 404 | Answer every path under the app with `index.html` and set `web.base` ([Links into the app](./web.md#links-into-the-app)). |
+| Users see the old version after a deploy | `index.html` is cached: serve it with `Cache-Control: no-cache`. |
+| Files from the CDN are blocked by CORS | The CDN must answer with `Access-Control-Allow-Origin` for the page's origin when `--asset-url` names it. |
+| A blank page on an older iPhone or Android WebView | The browser is older than the supported ones. |
 
 ## Info.plist keys and entitlements
 
@@ -616,8 +1074,18 @@ development host's.
 App Store Connect checks an iOS app's privacy manifest, `PrivacyInfo.xcprivacy`, when it is uploaded: why the app
 calls the APIs Apple requires a reason for, whether it tracks and with which domains, and the data it collects
 ([Privacy manifest files](https://developer.apple.com/documentation/bundleresources/privacy-manifest-files)).
-`ios.privacyManifest` in `nsh.json` is that file's contents, which iOS packages write at the root of the app before
-signing it (an app extension carries its own, in its `.appex`):
+Every iOS package carries one. NSH's runtime is part of the app's executable, so the APIs it calls count as the app's;
+packages declare them for every app:
+
+| Category | What in NSH calls it | Reason |
+|---|---|---|
+| `NSPrivacyAccessedAPICategoryFileTimestamp` | Rust's standard library reading file metadata; the image cache, which ages its files | `C617.1` |
+| `NSPrivacyAccessedAPICategorySystemBootTime` | the renderer's timer | `35F9.1` |
+
+`ios.privacyManifest` in `nsh.json` is what the app adds: the APIs its own code and the SDKs it links call, whether it
+tracks, and the data it collects. Packages write it at the root of the app before signing it, with NSH's entries joined
+to the app's by category: one entry per category, with the reasons of both, each once (an app extension carries its
+own, in its `.appex`):
 
 ```json
 {
@@ -627,11 +1095,7 @@ signing it (an app extension carries its own, in its `.appex`):
       "NSPrivacyAccessedAPITypes": [
         {
           "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
-          "NSPrivacyAccessedAPITypeReasons": ["C617.1"]
-        },
-        {
-          "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
-          "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
+          "NSPrivacyAccessedAPITypeReasons": ["3B52.1"]
         }
       ]
     }
@@ -639,20 +1103,17 @@ signing it (an app extension carries its own, in its `.appex`):
 }
 ```
 
+Here the package's file timestamp entry gives `3B52.1`, for files people pick, and NSH's `C617.1`, and a system boot
+time entry with `35F9.1` follows it.
+
 It takes the four keys of Apple's format (`NSPrivacyTracking`, `NSPrivacyTrackingDomains`,
 `NSPrivacyCollectedDataTypes`, `NSPrivacyAccessedAPITypes`) and their entries' keys. An unknown key, a value of the
 wrong type or an entry without all its keys is left out with a warning. What App Store Connect would refuse as written
 (an entry with no reason, tracking without its domains) is warned about too; App Store Connect still checks the
 category and reason codes themselves.
 
-NSH's runtime is part of the app's executable, so the APIs it calls count as the app's: declare these with the app's
-own.
-
-| Category | What in NSH calls it | Reason |
-|---|---|---|
-| `NSPrivacyAccessedAPICategoryFileTimestamp` | Rust's standard library reading file metadata; the image cache, which ages its files | `C617.1`; also `3B52.1` when the app reads files people pick |
-| `NSPrivacyAccessedAPICategorySystemBootTime` | the renderer's timer | `35F9.1` |
-| `NSPrivacyAccessedAPICategoryUserDefaults` | reading the temperature unit people choose in Settings, which no reason of Apple's covers ([#2830](https://github.com/longbridge/nsh/issues/2830)) | |
+NSH reads no user defaults on iOS (the temperature unit comes from the locale): declare
+`NSPrivacyAccessedAPICategoryUserDefaults` only when the app's own code or an SDK it links calls `NSUserDefaults`.
 
 ### Minimum system version
 
@@ -779,11 +1240,11 @@ A packaged app declares the hardware NSH's own features use, from its `nsh.json`
 
 | Feature | iOS and macOS | Android |
 |---|---|---|
-| [`Speech`](../modules/nsh.md#speech), when the app grants `speech` or declares no capabilities | `NSMicrophoneUsageDescription`, `NSSpeechRecognitionUsageDescription` | |
 | Web pages that capture media ([`capabilities.webview.media`](./sandbox-and-capabilities.md#webview)) | `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`; on macOS the entitlements `com.apple.security.device.audio-input` and `com.apple.security.device.camera` | `RECORD_AUDIO`, `CAMERA` |
 | [`Notifications`](../modules/nsh.md#notifications), when the app grants `notifications` or declares no capabilities | | `POST_NOTIFICATIONS` |
 
-Every Android package also declares `INTERNET` and `ACCESS_NETWORK_STATE`. A usage description is what the system shows when the app first asks;
+The [nshm](./nshm.md) an app installs add what their features need: `nsh-extra`'s `speech`, for example, the
+microphone's and speech recognition's usage descriptions and `RECORD_AUDIO`. Every Android package also declares `INTERNET` and `ACCESS_NETWORK_STATE`. A usage description is what the system shows when the app first asks;
 the app's `infoPlist` words it its own way ([above](#infoplist-keys-and-entitlements)).
 
 On iOS and macOS, an app's own [Rust crate](./rust.md) reaches other hardware through the system's frameworks, with the
@@ -831,55 +1292,20 @@ machine in `target/<profile>` (`cargo build -p nsh-macos-app`, `cargo build -p n
 points the CLI at another directory laid out like the distribution's `runtime/` (`ios/iphoneos`,
 `ios/iphonesimulator`, `android/release`, `macos`, `linux`, `windows`, `gpui`, `web`, ...).
 
+## Publish
+
+`nsh package` stops at the installable file. Releasing it on a store is covered in [Publishing](./publish.md):
+[App Store](./publish.md#publish-to-the-app-store), [Google Play](./publish.md#publish-to-google-play),
+[Flathub](./publish.md#publish-to-flathub) and [Microsoft Store](./publish.md#publish-to-the-microsoft-store). Apps
+outside a store are distributed as described above: [macOS](#sign-notarize-and-distribute),
+[Windows](#sign-and-distribute), [Linux](#distribute) and [Web](#host-the-site).
+
 ## See also
 
+- [Publishing](./publish.md): releasing on the App Store, Google Play, Flathub and the Microsoft Store
 - [CLI](./cli.md): every command
 - [App Updates](./app-updates.md): packaged apps that update themselves
 - [OTA Updates](./ota-updates.md): new TSX for packaged apps, iOS and Android included, without a new build
 - [Signed packages](./signed-packages.md): updates apps download
 - [Project structure](./project-structure.md): `nsh.json` and the files of an app
 - [Native components](./native-components.md): views of the host app inside an NSH app
-
-## Upload to TestFlight
-
-`nsh publish ios <IPA>` uploads an App Store-signed IPA to App Store Connect using its
-[build uploads API](https://developer.apple.com/documentation/appstoreconnectapi/build-uploads).
-It runs on macOS and uses the IPA produced by `nsh package`, for Rust, Rust + TSX and TSX apps alike.
-
-Create the app record in App Store Connect first. Use an Apple Distribution signing identity and an
-App Store provisioning profile for that bundle identifier. Set `version` and increment `build` in
-`nsh.json` before packaging. Create a **team API key** in App Store Connect with permission to upload
-builds (Developer, App Manager or Admin), and keep its `.p8` file outside the repository. Supply
-credentials from your shell or CI secret environment; keep them out of `nsh.json` and version control.
-
-```sh
-nsh package --target ios --sign "Apple Distribution: Your Team (TEAMID)" \
-  --profile /secure/AppStore.mobileprovision
-
-export NSH_APP_STORE_APP_ID=1234567890
-export NSH_APP_STORE_ISSUER_ID=your-issuer-id
-export NSH_APP_STORE_KEY_ID=your-key-id
-export NSH_APP_STORE_PRIVATE_KEY=/secure/AuthKey_YOURKEY.p8
-nsh publish ios .nsh/out/MyApp.ipa
-```
-
-| Flag | Environment variable | Meaning |
-|---|---|---|
-| `--app-id <ID>` | `NSH_APP_STORE_APP_ID` | Numeric Apple ID of the existing App Store Connect app. |
-| `--issuer-id <ID>` | `NSH_APP_STORE_ISSUER_ID` | Team API key issuer ID. |
-| `--key-id <ID>` | `NSH_APP_STORE_KEY_ID` | API key ID. |
-| `--private-key <PATH>` | `NSH_APP_STORE_PRIVATE_KEY` | Path to the `.p8` private key. |
-
-All four values are required; flags override environment variables. The CLI reads the bundle ID,
-version and build number from the IPA and checks that the bundle ID matches the App Store Connect
-app. It signs short-lived ES256 tokens, streams the IPA in the requested parts, and commits its
-SHA-256 checksum. The final message includes the upload ID and the app's TestFlight link.
-
-A successful command means Apple accepted the upload for processing. Follow processing status,
-export compliance, tester groups and any beta review in App Store Connect. App Store review submission
-and production release remain manual. If an upload is interrupted, check its printed upload ID in
-App Store Connect before retrying; each invocation starts a new upload. Apple validates signing
-and provisioning while processing the build.
-
-`nsh publish <ENTRY> --key … --cert …` continues to produce a signed `.nshpkg` for embedding.
-Use `./ios` to name a local entry directory called `ios`.

@@ -124,37 +124,7 @@ impl Compiled {
 }
 
 fn materialized(path: &Path) -> Result<PathBuf, Error> {
-    let canonical = fs::canonicalize(path)?;
-    #[cfg(windows)]
-    let canonical = {
-        use std::path::{Component, Prefix};
-        let mut parts = canonical.components();
-        let mut result = match parts.next() {
-            Some(Component::Prefix(prefix)) => match prefix.kind() {
-                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
-                Prefix::VerbatimUNC(server, share) => {
-                    let mut root = PathBuf::from(r"\\");
-                    root.push(server);
-                    root.push(share);
-                    root
-                }
-                _ => return Err(Error::Invalid("unsupported canonical Windows path".into())),
-            },
-            _ => {
-                return Err(Error::Invalid(
-                    "canonical Windows path lacks a volume".into(),
-                ));
-            }
-        };
-        for part in parts {
-            if let Component::Normal(name) = part {
-                result.push(name);
-            }
-        }
-        result
-    };
-    path::validate(&canonical)?;
-    Ok(canonical)
+    Ok(path::policy_path_from_resolved(&fs::canonicalize(path)?)?.into_owned())
 }
 
 #[cfg(test)]

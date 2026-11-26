@@ -5,10 +5,10 @@
 //! ([`nsh_core::picker`]: ImageIO scales and encodes them, their
 //! orientation applied, HEIC as JPEG) on a thread of their own, and go to
 //! the engine in one root `Pick` event, in the order the panel lists them.
+//! The panel closes with the app ([`crate::panels`]).
 
 use std::rc::Rc;
 
-use block2::RcBlock;
 use nsh_core::{
     EventKind, EventPayload, ImageData, ROOT_ID,
     geometry::{DevicePixels, Size},
@@ -59,7 +59,7 @@ pub(crate) fn pick_images(surface: &Rc<Surface>, id: u32, request: PickRequest) 
         // extensions say the same.
         let _: () = msg_send![&panel, setAllowedFileTypes: &*types];
         let chosen = panel.clone();
-        let handler = RcBlock::new(move |response: isize| {
+        crate::file_requests::begin(surface, &panel, move |response: isize| {
             // NSModalResponseOK = 1.
             let urls: Vec<String> = if response == 1 {
                 let urls: Retained<NSArray<NSURL>> = msg_send![&chosen, URLs];
@@ -89,14 +89,6 @@ pub(crate) fn pick_images(surface: &Rc<Surface>, id: u32, request: PickRequest) 
                 })
                 .ok();
         });
-        match crate::window::panel_window(surface) {
-            Some(window) => {
-                let _: () = msg_send![&panel, beginSheetModalForWindow: &*window, completionHandler: &*handler];
-            }
-            None => {
-                let _: () = msg_send![&panel, beginWithCompletionHandler: &*handler];
-            }
-        }
     }
 }
 

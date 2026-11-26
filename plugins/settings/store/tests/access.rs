@@ -20,7 +20,7 @@
 use maka_agent_facts::access::ManagedPrincipalKind;
 use maka_config::{
     ConfigurationStore,
-    access::{AccessCreateMode, AccessCredential, CredentialState},
+    access::{AccessCreateMode, AccessCredential, CredentialState, PeerId},
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use std::sync::Arc;
@@ -189,4 +189,134 @@ async fn racing_finalizers_bind_once_and_owner_snapshot_survives_revocation_and_
             .is_none()
     );
     reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn transport_peer_grants_are_durable_and_scoped_to_one_host_publication() {
+    let (temp, namespaces, store) = setup().await;
+    let grant = "host-publication";
+    let peer = PeerId::new("transport-key".into()).unwrap();
+    store
+        .grant_host_peer_access(peer.clone(), grant.into())
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+
+    let reopen = || async {
+        let owner = RootOwner::open_existing(&temp.path().join("root"), &namespaces).unwrap();
+        ConfigurationStore::for_root(Arc::new(owner)).await.unwrap()
+    };
+    let store = reopen().await;
+    assert!(
+        store
+            .has_host_peer_access(peer.clone(), grant.into())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .has_host_peer_access(peer.clone(), "different-publication".into())
+            .await
+            .unwrap()
+    );
+    assert!(store.revoke_host_peer_access(peer.clone()).await.unwrap());
+    store.close().await.unwrap();
+
+    let store = reopen().await;
+    assert!(
+        !store
+            .has_host_peer_access(peer, grant.into())
+            .await
+            .unwrap()
+    );
+    store.close().await.unwrap();
+}
+
+fn pairing_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap()
+}
+
+async fn pairing_invite(store: &ConfigurationStore, expires_at_ms: u64, now_ms: u64) {
+    store
+        .create_host_peer_pairing_invite(
+            maka_config::access::NewHostPeerPairingInvite {
+                invite_id: "invite".into(),
+                secret_hash: [1; 32],
+                host_grant: "published".into(),
+                label: None,
+                expires_at_ms,
+                created_at: "issue time".into(),
+            },
+            now_ms,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn only_one_pairing_invite_redeemer_wins() {
+    let (_temp, _namespaces, store) = setup().await;
+    let now = pairing_now_ms();
+    pairing_invite(&store, now + 60_000, now).await;
+    let redeem = |peer: &str, grant: &str| {
+        store.redeem_host_peer_pairing_invite(
+            [1; 32],
+            PeerId::new(peer.into()).unwrap(),
+            grant.into(),
+            Some(format!("{peer} label")),
+        )
+    };
+    assert!(!redeem("wrong-grant", "obsolete").await.unwrap());
+    let (first, second) = tokio::join!(redeem("first", "published"), redeem("second", "published"));
+    let first = first.unwrap();
+    assert_ne!(first, second.unwrap());
+    let devices = store.list_host_peer_access().await.unwrap();
+    let [device] = devices.as_slice() else {
+        panic!("expected exactly one granted device");
+    };
+    assert_eq!(device.peer_id, if first { "first" } else { "second" });
+    assert_eq!(device.label, format!("{} label", device.peer_id));
+    assert!(!device.created_at.is_empty());
+}
+
+#[tokio::test]
+async fn an_invite_that_expires_while_waiting_for_the_writer_is_not_redeemed() {
+    use std::time::Duration;
+
+    let (temp, _namespaces, store) = setup().await;
+    let now = pairing_now_ms();
+    let expires_at = now + 1_000;
+    pairing_invite(&store, expires_at, now).await;
+
+    let writer =
+        rusqlite::Connection::open(temp.path().join("root/configuration-rust.sqlite")).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let redemption = store.redeem_host_peer_pairing_invite(
+        [1; 32],
+        PeerId::new("waiting-peer".into()).unwrap(),
+        "published".into(),
+        None,
+    );
+    tokio::pin!(redemption);
+    assert!(
+        pairing_now_ms() < expires_at,
+        "redemption must start before expiry"
+    );
+    tokio::select! {
+        biased;
+        result = &mut redemption => panic!("redemption completed while the writer was held: {result:?}"),
+        () = async {
+            while let Some(remaining) = expires_at.checked_sub(pairing_now_ms()) {
+                tokio::time::sleep(Duration::from_millis(remaining + 1)).await;
+            }
+        } => {}
+    }
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(!redemption.await.unwrap());
+    assert!(store.list_host_peer_access().await.unwrap().is_empty());
 }

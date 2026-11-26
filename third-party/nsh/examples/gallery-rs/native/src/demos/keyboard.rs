@@ -53,6 +53,7 @@ const NONE: Modifiers = Modifiers {
     alt: false,
     shift: false,
     cmd: false,
+    alt_graph: false,
 };
 
 /// The arrows the playfield consumes, so a scroll view around it never

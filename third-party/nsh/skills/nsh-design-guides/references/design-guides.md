@@ -170,6 +170,7 @@ Do not copy these web assumptions blindly:
 | Mobile-first single column | One column on phones, a resizable shell with a defined minimum window size on the desktops |
 | Hover-revealed critical actions | Keyboard-, touch- and pointer-reachable actions that do not depend on hover |
 | A row of hover-only icon buttons | A visible primary action plus `Menu` or `ContextMenu` for secondary commands |
+| A row in a menu that expands its nested items in place (accordion) | A `Submenu`: it cascades beside its item on the desktops and takes the menu's place in a phone's sheet |
 | Link-styled text for application commands | A `Button` in the app's default, outline, or ghost style; link styling only for URLs, web resources, or email addresses |
 | Large touch density everywhere | Touch-sized targets on touch screens; medium density with a pointer, compact only where information work benefits |
 | A drawn header and alert card on every platform | The system's header and `AlertDialog` on iOS and Android; the page's `header` slot on the desktops and the web |
@@ -245,6 +246,13 @@ Read colors from the theme (`theme()` in Rust, token classes in TSX) and use the
 - `chart-1` to `chart-5` for data series;
 - `border`, `input`, and `ring` for structure and interaction.
 
+```tsx tabs
+<View class="gap-1 rounded-(--radius) border border-border bg-background p-4">
+  <Text class="text-foreground">Balance</Text>
+  <Text class="text-sm text-muted-foreground">Updated just now</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_base::theme;
 
@@ -257,13 +265,6 @@ view()
     .gap_1()
     .child(text("Balance").text_color(move || theme().foreground))
     .child(text("Updated just now").text_sm().text_color(move || theme().muted_foreground))
-```
-
-```tsx tabs
-<View class="gap-1 rounded-(--radius) border border-border bg-background p-4">
-  <Text class="text-foreground">Balance</Text>
-  <Text class="text-sm text-muted-foreground">Updated just now</Text>
-</View>
 ```
 
 Do not use a semantic status color as decoration. Do not encode meaning by color alone. Verify every custom surface in
@@ -579,6 +580,25 @@ and [`Switch`](../elements/switch.md) for a setting that takes effect immediatel
 thumb, the checkbox's indicator) are the app's to style, with `checked:`, `indeterminate:` and `disabled:` classes
 that follow the control:
 
+```tsx tabs
+import { Text } from "nsh";
+import { Switch } from "nsh/base";
+
+function SettingSwitch(props: { label: string; on: boolean; onChange: (e: { checked: boolean }) => void }) {
+  return (
+    <Switch
+      checked={props.on}
+      onChange={props.onChange}
+      class="flex-row items-center gap-3"
+      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
+      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+    >
+      <Text class="text-foreground">{props.label}</Text>
+    </Switch>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{switch, theme};
 
@@ -609,26 +629,31 @@ fn setting_switch(label: &'static str, on: Signal<bool>) -> impl IntoElement {
 }
 ```
 
+A "select all" checkbox shows a partial selection with its indeterminate state:
+
 ```tsx tabs
 import { Text } from "nsh";
-import { Switch } from "nsh/base";
+import { Checkbox } from "nsh/base";
 
-function SettingSwitch(props: { label: string; on: boolean; onChange: (e: { checked: boolean }) => void }) {
+function SelectAll(props: { selected: number; total: number; onChange: (e: { checked: boolean }) => void }) {
   return (
-    <Switch
-      checked={props.on}
+    <Checkbox
+      checked={props.selected === props.total}
+      indeterminate={props.selected > 0 && props.selected < props.total}
       onChange={props.onChange}
-      class="flex-row items-center gap-3"
-      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
-      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+      class="flex-row items-center gap-2"
+      indicatorClass="size-5 items-center justify-center rounded-(--radius) border-2 border-border checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary"
+      indicator={
+        <Text class="text-primary-foreground">
+          {props.selected === props.total ? "✓" : props.selected > 0 ? "–" : ""}
+        </Text>
+      }
     >
-      <Text class="text-foreground">{props.label}</Text>
-    </Switch>
+      <Text class="text-foreground">Select all</Text>
+    </Checkbox>
   );
 }
 ```
-
-A "select all" checkbox shows a partial selection with its indeterminate state:
 
 ```rust tabs
 use nsh_base::{checkbox, theme};
@@ -660,30 +685,6 @@ fn mark(selected: usize, total: usize) -> &'static str {
 }
 ```
 
-```tsx tabs
-import { Text } from "nsh";
-import { Checkbox } from "nsh/base";
-
-function SelectAll(props: { selected: number; total: number; onChange: (e: { checked: boolean }) => void }) {
-  return (
-    <Checkbox
-      checked={props.selected === props.total}
-      indeterminate={props.selected > 0 && props.selected < props.total}
-      onChange={props.onChange}
-      class="flex-row items-center gap-2"
-      indicatorClass="size-5 items-center justify-center rounded-(--radius) border-2 border-border checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary"
-      indicator={
-        <Text class="text-primary-foreground">
-          {props.selected === props.total ? "✓" : props.selected > 0 ? "–" : ""}
-        </Text>
-      }
-    >
-      <Text class="text-foreground">Select all</Text>
-    </Checkbox>
-  );
-}
-```
-
 Disable submission while an operation is in flight, keep the user's input, and show the result near the action. Keep
 inputs above the software keyboard (`env(keyboard-inset-height)`). Reserve dialogs for short, focused decisions; use a full
 page or sheet for workflows that need exploration or many fields.
@@ -711,9 +712,35 @@ semantics.
 - Preserve the component family's geometry. Menu rows share vertical and horizontal padding, height, icon and
   checkmark slots, separators, radius, and state treatment. Do not imitate one menu with a custom popup whose spacing
   only approximates the system.
+- Nest menu items with `Submenu`. A group under one row of a menu (Language, Appearance, Open Recent, Export as)
+  is a `Submenu` whose trigger ends in a trailing chevron: on the desktops it cascades beside its row as the
+  pointer comes over it, its first item level with that row, as macOS, Windows and GTK menus do; on phones it
+  takes the menu's place in the sheet. Never expand nested items in place with a chevron that turns down and
+  indented rows: no platform's menu does that, the menu grows and moves under the pointer, and the rows lose the
+  submenu's Right and Left keys and its screen reader role. A short choice that should stay visible is a section
+  instead, flat and unindented: a title that is not an item, its checked items under it, separators around it.
 - Do not wrap a component merely to rename every prop or freeze all of its capabilities.
 - Move reusable behavior without product styling to `nsh/base`, or to a crate the app's products share; keep themed,
   opinionated presentation in the application's components.
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Button } from "nsh/base";
+
+// The footer of a form: a default Cancel and the primary commit.
+function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
+  return (
+    <View class="flex-row justify-end gap-2">
+      <Button onPress={props.onCancel} class="rounded-(--radius) border border-border px-4 py-2 active:bg-muted">
+        <Text class="text-foreground">Cancel</Text>
+      </Button>
+      <Button onPress={props.onCreate} class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
+        <Text class="text-primary-foreground">Create</Text>
+      </Button>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{button, theme};
@@ -745,25 +772,6 @@ fn form_actions(cancel: impl Fn() + 'static, create: impl Fn() + 'static) -> imp
                 .active(|s| s.bg(move || theme().primary.opacity(0.9)))
                 .child(text("Create").text_color(move || theme().primary_foreground)),
         )
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Button } from "nsh/base";
-
-// The footer of a form: a default Cancel and the primary commit.
-function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
-  return (
-    <View class="flex-row justify-end gap-2">
-      <Button onPress={props.onCancel} class="rounded-(--radius) border border-border px-4 py-2 active:bg-muted">
-        <Text class="text-foreground">Cancel</Text>
-      </Button>
-      <Button onPress={props.onCreate} class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
-        <Text class="text-primary-foreground">Create</Text>
-      </Button>
-    </View>
-  );
 }
 ```
 
@@ -839,6 +847,23 @@ and navigation destinations must show a persistent selected state (`selected`, w
 button that owns a menu must remain visibly pressed or open until the popup closes; hover alone cannot explain the
 relationship between trigger and surface.
 
+```tsx tabs
+import { Text } from "nsh";
+import { Tab } from "nsh/base";
+
+function SectionTab(props: { label: string; selected: boolean; onPress: () => void }) {
+  return (
+    <Tab
+      selected={props.selected}
+      onPress={props.onPress}
+      class="group rounded-(--radius) px-3 py-2 selected:bg-muted"
+    >
+      <Text class="text-muted-foreground group-selected:text-foreground">{props.label}</Text>
+    </Tab>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{tab, theme};
 
@@ -854,23 +879,6 @@ fn section_tab(label: &'static str, id: Section, current: Signal<Section>) -> im
         .child(text(label).text_color(move || {
             if selected() { theme().foreground } else { theme().muted_foreground }
         }))
-}
-```
-
-```tsx tabs
-import { Text } from "nsh";
-import { Tab } from "nsh/base";
-
-function SectionTab(props: { label: string; selected: boolean; onPress: () => void }) {
-  return (
-    <Tab
-      selected={props.selected}
-      onPress={props.onPress}
-      class="group rounded-(--radius) px-3 py-2 selected:bg-muted"
-    >
-      <Text class="text-muted-foreground group-selected:text-foreground">{props.label}</Text>
-    </Tab>
-  );
 }
 ```
 
@@ -914,6 +922,35 @@ This is more than a visual preference. `nsh/base`'s menus already own placement 
 the desktops and a sheet with submenus in place on phones, dismissal by choosing an item, a press outside, Escape or
 back, and the menu and menu item roles for screen readers. A custom strip of hover buttons must rebuild those behaviors
 and is invisible to touch, keyboard-only, and many assistive technology workflows.
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Menu, MenuItem, MenuSeparator } from "nsh/base";
+
+/** The app's popup surface, shared by its menus, popovers and tooltips. */
+export const popup = "min-w-48 rounded-(--radius) border border-border bg-popover p-1 shadow-lg";
+const item = "rounded-(--radius) px-3 py-2 hover:bg-muted active:bg-muted";
+
+function MoreMenu(props: { onRename: () => void; onDuplicate: () => void; onDelete: () => void }) {
+  return (
+    <Menu
+      offset={4}
+      popupClass={popup}
+      backdropClass="bg-black/50"
+      trigger={
+        <View accessibilityLabel="More actions" class="size-11 items-center justify-center rounded-full active:bg-muted">
+          <Text class="text-foreground">⋯</Text>
+        </View>
+      }
+    >
+      <MenuItem onSelect={props.onRename} class={item}><Text class="text-foreground">Rename…</Text></MenuItem>
+      <MenuItem onSelect={props.onDuplicate} class={item}><Text class="text-foreground">Duplicate</Text></MenuItem>
+      <MenuSeparator class="my-1 h-px bg-border" />
+      <MenuItem onSelect={props.onDelete} class={item}><Text class="text-foreground">Delete…</Text></MenuItem>
+    </Menu>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, theme};
@@ -960,35 +997,6 @@ fn more_menu(rename: impl Fn() + 'static, duplicate: impl Fn() + 'static, delete
         .child(item("Duplicate", duplicate))
         .child(menu_separator().h(px(1.0)).my_1().bg(move || theme().border))
         .child(item("Delete…", delete))
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Menu, MenuItem, MenuSeparator } from "nsh/base";
-
-/** The app's popup surface, shared by its menus, popovers and tooltips. */
-export const popup = "min-w-48 rounded-(--radius) border border-border bg-popover p-1 shadow-lg";
-const item = "rounded-(--radius) px-3 py-2 hover:bg-muted active:bg-muted";
-
-function MoreMenu(props: { onRename: () => void; onDuplicate: () => void; onDelete: () => void }) {
-  return (
-    <Menu
-      offset={4}
-      popupClass={popup}
-      backdropClass="bg-black/50"
-      trigger={
-        <View accessibilityLabel="More actions" class="size-11 items-center justify-center rounded-full active:bg-muted">
-          <Text class="text-foreground">⋯</Text>
-        </View>
-      }
-    >
-      <MenuItem onSelect={props.onRename} class={item}><Text class="text-foreground">Rename…</Text></MenuItem>
-      <MenuItem onSelect={props.onDuplicate} class={item}><Text class="text-foreground">Duplicate</Text></MenuItem>
-      <MenuSeparator class="my-1 h-px bg-border" />
-      <MenuItem onSelect={props.onDelete} class={item}><Text class="text-foreground">Delete…</Text></MenuItem>
-    </Menu>
-  );
 }
 ```
 
@@ -1175,16 +1183,16 @@ Every interactive control answers the pointer in layers, each small:
 - **A changed label** fades in rising a few points, rather than replacing its text in place.
 - Cards do not lift or resize on hover: a wash, a cover growing about 1%, a revealed action rising is enough.
 
+```tsx tabs
+<View onPress={open} class="transition-transform duration-150 active:scale-[0.97] motion-reduce:active:scale-100" />
+```
+
 ```rust tabs
 view()
     .on_press(open)
     .transition_transform()
     .duration(150.0)
     .when(!reduce_motion(), |v| v.active(|s| s.scale(0.97)))
-```
-
-```tsx tabs
-<View onPress={open} class="transition-transform duration-150 active:scale-[0.97] motion-reduce:active:scale-100" />
 ```
 
 ### Surfaces, lists and navigation
@@ -1211,13 +1219,13 @@ What the user moves follows the pointer or finger 1:1 in the same frame: a dragg
 swipe are set, never eased toward the pointer. When the user lets go, hand the gesture's velocity to a spring (or a
 decay) so the element continues the throw and settles; interrupting it picks up from the current value.
 
+```tsx tabs
+x.spring(0, { velocity: e.velocity.x });
+```
+
 ```rust tabs
 let spring = |velocity| Spring { velocity: Some(velocity), ..Spring::default() };
 x.spring(0.0, spring(e.velocity_x));
-```
-
-```tsx tabs
-x.spring(0, { velocity: e.velocity.x });
 ```
 
 Keep springs critically damped or nearly so for structural motion (sheets, drawers, snapping); save visible overshoot
@@ -1290,18 +1298,18 @@ Play them where a change completes (a switch turning, a message sent, a toast's 
 per streamed token or for a number that updates constantly. Silence is the default; a sound that repeats while the
 user works soon reads as noise.
 
-```rust tabs
-const TOGGLE: FileAsset = asset!("sounds/toggle.wav");
-
-let toggle = load_sound(TOGGLE.uri).await?; // once, ahead of the first press
-toggle.play(0.6, if on { 1.0 } else { 0.9 }); // a little lower turning off
-```
-
 ```tsx tabs
 import toggleFile from "./sounds/toggle.wav";
 
 const toggle = await Sound.load(toggleFile); // once, ahead of the first press
 toggle.play({ volume: 0.6, rate: on ? 1 : 0.9 }); // a little lower turning off
+```
+
+```rust tabs
+const TOGGLE: FileAsset = asset!("sounds/toggle.wav");
+
+let toggle = load_sound(TOGGLE.uri).await?; // once, ahead of the first press
+toggle.play(0.6, if on { 1.0 } else { 0.9 }); // a little lower turning off
 ```
 
 Load sounds once, ahead of use, so they play within the frame of the change they accompany. Vary one sound with
@@ -1470,6 +1478,14 @@ NSH apps run on phones, tablets, desktops, and the web, and often inside a host 
   subtree; start and end properties mirror ([Right to left](./layout.md#right-to-left)).
 - **Touch and pointer.** Touch targets are at least 44 × 44 points; hover and tooltips exist only with a pointer.
 
+```tsx tabs
+import { NavPage } from "nsh/base";
+
+<NavPage title="Inbox" header={<PageHeader title="Inbox" />}>
+  <Inbox />
+</NavPage>
+```
+
 ```rust tabs
 use nsh_base::nav_page;
 
@@ -1477,14 +1493,6 @@ nav_page()
     .title("Inbox")
     .header(page_header("Inbox"))
     .child(inbox())
-```
-
-```tsx tabs
-import { NavPage } from "nsh/base";
-
-<NavPage title="Inbox" header={<PageHeader title="Inbox" />}>
-  <Inbox />
-</NavPage>
 ```
 
 ## Guidance for AI-generated interfaces
@@ -1627,6 +1635,7 @@ report each group as passed or as what was fixed. A group not checked is not pas
   and paddings match across buttons, inputs, selects and toolbars of one size.
 - [ ] State colors come from per-variant tokens (normal, hover, active); selected and menu-open share one style.
 - [ ] Popups share one surface; focus rings sit outside the border with room to show.
+- [ ] Nested menu items are a `Submenu` that cascades beside its row; no row of a menu expands its items in place.
 
 **Other states**
 - [ ] Focus-visible rings on every keyboard-reachable control, outside the clip; selected, disabled and loading

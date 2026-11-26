@@ -35,6 +35,8 @@ pub(super) struct FileConfiguration {
     content_digest: Option<String>,
     // A disabled entry masks an inherited server with the same name.
     pub servers: BTreeMap<String, Option<ServerConfiguration>>,
+    #[serde(skip)]
+    pub server_locations: BTreeMap<String, maka_skills::LocationId>,
 }
 
 #[derive(Deserialize)]
@@ -117,23 +119,37 @@ pub(crate) fn document(dir: &Dir) -> Result<DocumentFile, String> {
         revision: maka_agent_facts::artifact::content_digest(&bytes),
     })
 }
+pub(crate) fn normalize_server(
+    name: &str,
+    value: serde_json::Value,
+    directory: &Path,
+) -> Result<Option<ServerConfiguration>, String> {
+    let entry: Entry =
+        serde_json::from_value(value).map_err(|_| "Invalid MCP server configuration")?;
+    if entry.disabled {
+        return Ok(None);
+    }
+    entry.normalize(name.into(), directory).map(Some)
+}
 pub(crate) fn validate_server(
     name: &str,
     value: serde_json::Value,
     directory: &Path,
 ) -> Result<(), String> {
-    let entry: Entry =
-        serde_json::from_value(value).map_err(|_| "Invalid MCP server configuration")?;
-    if entry.disabled {
-        return Ok(());
-    }
-    entry.normalize(name.into(), directory).map(|_| ())
+    normalize_server(name, value, directory).map(|_| ())
 }
-fn configuration(documents: Vec<(PathBuf, DocumentFile)>) -> Result<FileConfiguration, String> {
+pub(crate) fn server_config_digest(config: &ServerConfiguration) -> String {
+    maka_agent_facts::artifact::content_digest(
+        &serde_json::to_vec(config).expect("normalized MCP server configuration"),
+    )
+}
+fn configuration(
+    documents: Vec<(PathBuf, maka_skills::LocationId, DocumentFile)>,
+) -> Result<FileConfiguration, String> {
     let mut result = FileConfiguration::default();
     let mut raw = BTreeMap::new();
     let mut revisions = Vec::new();
-    for (directory, file) in documents {
+    for (directory, location_id, file) in documents {
         if file.revision == maka_agent_facts::artifact::content_digest(b"") {
             continue;
         }
@@ -141,11 +157,14 @@ fn configuration(documents: Vec<(PathBuf, DocumentFile)>) -> Result<FileConfigur
         revisions.push((directory.clone(), file.revision));
         if let Some(servers) = file.value["mcpServers"].as_object() {
             for (name, value) in servers {
-                raw.insert(name.clone(), (directory.clone(), value.clone()));
+                raw.insert(
+                    name.clone(),
+                    (directory.clone(), location_id, value.clone()),
+                );
             }
         }
     }
-    for (name, (directory, value)) in raw {
+    for (name, (directory, location_id, value)) in raw {
         let entry: Entry =
             serde_json::from_value(value).map_err(|_| "Invalid MCP server configuration")?;
         let server = if entry.disabled {
@@ -153,6 +172,7 @@ fn configuration(documents: Vec<(PathBuf, DocumentFile)>) -> Result<FileConfigur
         } else {
             Some(entry.normalize(name.clone(), &directory)?)
         };
+        result.server_locations.insert(name.clone(), location_id);
         result.servers.insert(name, server);
     }
     result.content_digest = result.path.as_ref().map(|_| {
@@ -164,20 +184,38 @@ fn configuration(documents: Vec<(PathBuf, DocumentFile)>) -> Result<FileConfigur
 }
 pub(super) fn global(home: Option<(&Dir, &Path)>) -> Result<FileConfiguration, String> {
     match home {
-        Some((home, path)) => layered(home, path),
+        Some((home, path)) => layered_locations(
+            home,
+            path,
+            maka_skills::LocationId::UserAgents,
+            maka_skills::LocationId::UserMaka,
+        ),
         None => Ok(FileConfiguration::default()),
     }
 }
 pub(super) fn layered(root: &Dir, path: &Path) -> Result<FileConfiguration, String> {
+    layered_locations(
+        root,
+        path,
+        maka_skills::LocationId::ProjectAgents,
+        maka_skills::LocationId::ProjectMaka,
+    )
+}
+fn layered_locations(
+    root: &Dir,
+    path: &Path,
+    agents: maka_skills::LocationId,
+    maka: maka_skills::LocationId,
+) -> Result<FileConfiguration, String> {
     use cap_fs_ext::DirExt;
     let mut documents = Vec::new();
-    for name in [".agents", ".maka"] {
+    for (name, location_id) in [(".agents", agents), (".maka", maka)] {
         let directory = match root.open_dir_nofollow(name) {
             Ok(directory) => directory,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(_) => return Err("MCP configuration directory is unavailable".into()),
         };
-        documents.push((path.join(name), document(&directory)?));
+        documents.push((path.join(name), location_id, document(&directory)?));
     }
     configuration(documents)
 }

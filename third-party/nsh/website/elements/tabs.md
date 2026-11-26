@@ -16,6 +16,47 @@ each section is the app's too: it shows the one its value names, next to the lis
 underline or a pill the app styles, sits on the selected tab and travels to the next one natively
 ([Indicator](#indicator)).
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Tab, Tabs } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const section = signal("overview");
+  const item = (value: string, label: string) => (
+    <Tab
+      selected={section() === value}
+      onPress={() => section.set(value)}
+      class="group rounded-(--radius) px-3 py-2"
+    >
+      <Text class="text-sm text-muted-foreground group-selected:text-foreground">{label}</Text>
+    </Tab>
+  );
+  return (
+    <View class="gap-4">
+      <Tabs
+        class="flex-row self-start gap-1 rounded-(--radius-lg) bg-muted p-1"
+        indicatorClass="inset-y-1 rounded-(--radius) bg-background"
+      >
+        {item("overview", "Overview")}
+        {item("activity", "Activity")}
+      </Tabs>
+      <Text class="text-foreground">
+        {section() === "overview"
+          ? "Visitors, sign-ups and conversion this week."
+          : "Deploys, invoices and new members, newest first."}
+      </Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{tab, tabs, theme};
 use nsh_core::prelude::*;
@@ -61,47 +102,6 @@ fn sections() -> impl IntoElement {
             }
         }).text_color(move || theme().foreground))
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Tab, Tabs } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const section = signal("overview");
-  const item = (value: string, label: string) => (
-    <Tab
-      selected={section() === value}
-      onPress={() => section.set(value)}
-      class="group rounded-(--radius) px-3 py-2"
-    >
-      <Text class="text-sm text-muted-foreground group-selected:text-foreground">{label}</Text>
-    </Tab>
-  );
-  return (
-    <View class="gap-4">
-      <Tabs
-        class="flex-row self-start gap-1 rounded-(--radius-lg) bg-muted p-1"
-        indicatorClass="inset-y-1 rounded-(--radius) bg-background"
-      >
-        {item("overview", "Overview")}
-        {item("activity", "Activity")}
-      </Tabs>
-      <Text class="text-foreground">
-        {section() === "overview"
-          ? "Visitors, sign-ups and conversion this week."
-          : "Deploys, invoices and new members, newest first."}
-      </Text>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Tab` and `Tabs` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the
@@ -211,6 +211,8 @@ A disabled tab takes no presses, and screen readers announce it as dimmed. Its `
   tab's title: say there what the tab can do beyond being selected (a closable tab that Delete closes).
 - `Tabs` has the role `"tablist"`: screen readers hear the tabs inside it as one set, each still an element of its
   own. Its `accessibilityLabel` names the list; give one wherever no text next to the list says what its tabs switch.
+- The content the app shows for the selected tab can say what it is: give its view `role="tabpanel"` (Rust
+  `.role(AccessibilityRole::TabPanel)`), and screen readers say they enter a tab panel.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - Where the platform has a property for a list's orientation, screen readers hear it: the web's `aria-orientation`

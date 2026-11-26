@@ -20,8 +20,6 @@
 use maka_host_runtime::application::host::Client;
 use serde_json::Value;
 use std::{
-    os::unix::fs::PermissionsExt,
-    os::unix::process::ExitStatusExt,
     path::PathBuf,
     process::{ExitStatus, Stdio},
 };
@@ -44,9 +42,13 @@ impl Sandbox {
     #[allow(dead_code)]
     pub async fn new() -> Result<Self> {
         let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-        tokio::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-            .await
-            .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let root = directory.path().join("root");
         let home = directory.path().join("home");
         let workspace = home.join("workspace");
@@ -54,6 +56,12 @@ impl Sandbox {
         tokio::fs::create_dir_all(&workspace)
             .await
             .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        for folder in ["Local", "Roaming"] {
+            tokio::fs::create_dir_all(home.join("AppData").join(folder))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Self {
             directory,
             root,
@@ -89,6 +97,27 @@ pub fn command_for(
         .env("no_proxy", "127.0.0.1,localhost");
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
+    }
+    if let Some(temp) = std::env::var_os("TMPDIR") {
+        command.env("TMPDIR", temp);
+    }
+    #[cfg(windows)]
+    {
+        command
+            .env("APPDATA", home.join("AppData/Roaming"))
+            .env("LOCALAPPDATA", home.join("AppData/Local"));
+        for key in [
+            "SystemRoot",
+            "SystemDrive",
+            "ComSpec",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
     }
     command
 }
@@ -129,9 +158,13 @@ impl Host {
     }
 
     fn spawn_command(mut command: Command, root: &std::path::Path) -> Result<Self> {
+        command.args(["host", "serve", "--root"]).arg(root);
+        Self::spawn_service(command)
+    }
+
+    pub fn spawn_service(mut command: Command) -> Result<Self> {
         let mut child = command
-            .args(["host", "serve", "--root"])
-            .arg(root)
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -218,7 +251,11 @@ impl Host {
             .start_kill()
             .map_err(|error| format!("SIGKILL original Host: {error}"))?;
         let status = self.wait_and_eof().await?;
-        if status.signal() != Some(libc::SIGKILL) {
+        #[cfg(unix)]
+        let killed = std::os::unix::process::ExitStatusExt::signal(&status) == Some(libc::SIGKILL);
+        #[cfg(windows)]
+        let killed = status.code() == Some(1);
+        if !killed {
             return Err(format!("Host was not killed by SIGKILL: {status}"));
         }
         Ok(())

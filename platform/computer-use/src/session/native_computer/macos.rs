@@ -487,23 +487,10 @@ impl Session {
         };
         let diagnostic = |cancelled| {
             let app = &approved.display.app_path;
-            ToolError::Failed(match (language, cancelled) {
-                (Language::En, false) => {
-                    format!(
-                        "macOS was asked to open {app}, but no window owned by that app appeared."
-                    )
-                }
-                (Language::En, true) => {
-                    format!("Window discovery for {app} was interrupted after launch.")
-                }
-                (Language::ZhCn, false) => {
-                    format!("已请求启动 {app}，但没有找到属于该应用的窗口。")
-                }
-                (Language::ZhCn, true) => format!("已请求启动 {app}，查找窗口时被中断。"),
-                (Language::ZhTw, false) => {
-                    format!("已請求啟動 {app}，但找不到屬於該應用程式的視窗。")
-                }
-                (Language::ZhTw, true) => format!("已請求啟動 {app}，尋找視窗時中斷。"),
+            ToolError::Failed(if cancelled {
+                crate::language::i18n_catalog::desktop::macos_launch_interrupted(language, app)
+            } else {
+                crate::language::i18n_catalog::desktop::macos_launch_no_window(language, app)
             })
         };
         tokio::select! {
@@ -921,9 +908,11 @@ fn commit_app_text(
 
 fn preserve_raw_error(error: ToolError, cleanup: ToolError) -> ToolError {
     match error {
-        error @ (ToolError::OutcomeUnknown(_)
-        | ToolError::CleanupUnconfirmed(_)
-        | ToolError::OperationUnknown { .. }
+        ToolError::OutcomeUnknown(reason)
+        | ToolError::OperationUnknown {
+            message: reason, ..
+        } => ToolError::CleanupUnconfirmed(format!("{reason}; cleanup failed: {cleanup}")),
+        error @ (ToolError::CleanupUnconfirmed(_)
         | ToolError::OperationCleanupUnconfirmed { .. }
         | ToolError::Persistence(_)) => error,
         _ => cleanup,
@@ -984,7 +973,7 @@ mod tests {
                 &mut previous,
                 first.clone(),
                 true,
-                maka_agent_facts::language::Language::En
+                maka_agent_facts::language::Language::EN
             ),
             first
         );
@@ -992,7 +981,7 @@ mod tests {
             &mut previous,
             second.clone(),
             true,
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
         );
         assert!(diff.contains("- Window A"));
         assert!(diff.contains("+ Window B"));
@@ -1002,25 +991,38 @@ mod tests {
                 &mut previous,
                 second,
                 true,
-                maka_agent_facts::language::Language::En
+                maka_agent_facts::language::Language::EN
             ),
             "Accessibility state unchanged."
         );
     }
 
     #[test]
-    fn observation_cleanup_does_not_replace_an_original_uncertain_outcome() {
+    fn failed_observation_cleanup_escalates_unknown_outcome_to_cleanup_unconfirmed() {
         use maka_agent_facts::tools::ToolError;
-        assert!(
-            matches!(preserve_raw_error(ToolError::OutcomeUnknown("original observation".into()),
-            ToolError::Failed("cleanup refused".into())),
-            ToolError::OutcomeUnknown(reason) if reason == "original observation")
-        );
-        assert!(
-            matches!(preserve_raw_error(ToolError::Failed("observation refused".into()),
-            ToolError::CleanupUnconfirmed("original cleanup".into())),
-            ToolError::CleanupUnconfirmed(reason) if reason == "original cleanup")
-        );
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::OutcomeUnknown("original observation".into()),
+                ToolError::CleanupUnconfirmed("AX owner dropped".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason)
+                if reason.contains("original observation") && reason.contains("AX owner dropped")
+        ));
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::OutcomeUnknown("original observation".into()),
+                ToolError::Failed("cleanup refused".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason)
+                if reason.contains("original observation") && reason.contains("cleanup refused")
+        ));
+        assert!(matches!(
+            preserve_raw_error(
+                ToolError::Failed("observation refused".into()),
+                ToolError::CleanupUnconfirmed("original cleanup".into()),
+            ),
+            ToolError::CleanupUnconfirmed(reason) if reason == "original cleanup"
+        ));
     }
 
     fn app(name: &str, bundle_id: Option<&str>, launch_path: Option<&str>) -> AppInfo {
@@ -1129,7 +1131,7 @@ mod tests {
                 "Editor".into(),
                 "org.example.Editor".into(),
                 path.into(),
-                maka_agent_facts::language::Language::En,
+                maka_agent_facts::language::Language::EN,
             )
             .unwrap()
         };

@@ -61,7 +61,7 @@ const icons = {
   conversation: { lucide: 'message-square', glyph: '▱' },
   user: { lucide: 'user-round', glyph: '●' },
   inbox: { lucide: 'inbox', glyph: '?' },
-  thinking: { custom: 'thinking', glyph: '◌' },
+  thinking: { lucide: 'brain', glyph: '◌' },
   statusRecorded: { lucide: 'circle-dot', glyph: '●' },
   statusSuccess: { lucide: 'circle-check', glyph: '✓' },
   statusError: { lucide: 'circle-x', glyph: '×' },
@@ -107,6 +107,7 @@ const icons = {
   reply: { custom: 'reply', glyph: '↩' },
   warning: { custom: 'warning', glyph: '!' },
   info: { custom: 'info', glyph: 'i' },
+  ask: { custom: 'ask', glyph: '❝' },
 } satisfies Record<
   string,
   | { lucide: keyof typeof lucide; glyph: string }
@@ -114,12 +115,6 @@ const icons = {
 >;
 
 const customIcons = {
-  // Thought wears Maka's own mark: the bar, the peak and the fold inside it.
-  thinking: [
-    { tag: 'path', d: 'M9.15 1.95h5.7' },
-    { tag: 'path', d: 'M2 21.5 12 5.3l10 16.2' },
-    { tag: 'path', d: 'M7.4 12.75 12 20.4l4.6-7.65' },
-  ],
   panelRight: [
     { tag: 'rect', x: 3, y: 3, width: 18, height: 18, rx: 2 },
     { tag: 'path', d: 'M15 3v18' },
@@ -199,6 +194,14 @@ const customIcons = {
     { tag: 'line', x1: 15, y1: 9, x2: 15.01, y2: 9 },
     { tag: 'path', d: 'M16 5h6' },
     { tag: 'path', d: 'M19 2v6' },
+  ],
+  ask: [
+    {
+      tag: 'path',
+      d: 'M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z',
+    },
+    { tag: 'path', d: 'M14 13a2 2 0 0 0 2-2V9h-2' },
+    { tag: 'path', d: 'M8 13a2 2 0 0 0 2-2V9H8' },
   ],
   reply: [
     { tag: 'polyline', points: '9 17 4 12 9 7' },

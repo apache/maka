@@ -95,7 +95,7 @@ impl Role {
     async fn prepare(
         &self,
         context: &Context,
-        selected: &maka_process::Command,
+        selected: &mut maka_process::Command,
     ) -> Result<maka_process::isolated::TaskOwner, HandlerError> {
         match self {
             Self::Runtime(access) => access
@@ -473,7 +473,7 @@ impl Processes {
         for (key, value) in specification.env {
             command.env(key, value);
         }
-        let isolated = authority.prepare(context, &command).await?;
+        let isolated = authority.prepare(context, &mut command).await?;
         let descriptor = isolated.descriptor();
         let resource_ref = descriptor
             .resource_ref

@@ -20,7 +20,6 @@
 import { formatDuration } from './duration';
 import type { Row } from './history';
 import { tr } from './locale';
-import { formatCount } from './numberFormat';
 import { cacheHitRate } from './TurnUsage';
 
 export function replyMetrics(row: Pick<Row, 'model' | 'replyInfo' | 'timing'>) {
@@ -46,12 +45,10 @@ export function replyDetails(row: Row): string {
   return [
     name,
     elapsed == null ? '' : formatDuration(elapsed, 'tenths'),
-    tokens?.input_tokens == null
-      ? ''
-      : tr('{count} input tokens', { count: formatCount(tokens.input_tokens) }),
+    tokens?.input_tokens == null ? '' : tr('{count} input tokens', { count: tokens.input_tokens }),
     tokens?.output_tokens == null
       ? ''
-      : tr('{count} output tokens', { count: formatCount(tokens.output_tokens) }),
+      : tr('{count} output tokens', { count: tokens.output_tokens }),
     cache && tr('Cache hit {rate}', { rate: cacheHitRate(cache) }),
   ]
     .filter(Boolean)

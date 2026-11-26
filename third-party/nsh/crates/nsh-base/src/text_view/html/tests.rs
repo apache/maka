@@ -1,5 +1,5 @@
 use super::*;
-use crate::text_view::MarkdownExtension;
+use crate::text_view::{MarkdownExtension, MarkdownOptions};
 
 fn doc(source: &str) -> Vec<Block> {
     parse(&Parser::new(), source).blocks
@@ -157,6 +157,51 @@ fn inline_elements() {
                 content: vec![t("sm")]
             },
         ])]
+    );
+}
+
+#[test]
+fn links_and_images_can_be_left_out() {
+    let parser = Parser::new().options(MarkdownOptions {
+        links: false,
+        images: false,
+        ..MarkdownOptions::default()
+    });
+    assert_eq!(
+        parse(
+            &parser,
+            r#"<p><a href="/x">link</a> <img src="a.png" alt="Alt"></p>"#
+        )
+        .blocks,
+        vec![p(vec![t("link Alt")])]
+    );
+    assert_eq!(
+        parse(
+            &parser,
+            r#"<a href="https://x.y"><img src="a.png" alt="Alt"></a>"#
+        )
+        .blocks,
+        vec![p(vec![t("Alt")])]
+    );
+}
+
+#[test]
+fn images_off_keeps_their_links() {
+    let parser = Parser::new().options(MarkdownOptions {
+        images: false,
+        ..MarkdownOptions::default()
+    });
+    assert_eq!(
+        parse(
+            &parser,
+            r#"<a href="https://x.y"><img src="a.png" alt="Alt"></a>"#
+        )
+        .blocks,
+        vec![p(vec![Inline::Link {
+            url: "https://x.y".into(),
+            title: None,
+            content: vec![t("Alt")],
+        }])]
     );
 }
 

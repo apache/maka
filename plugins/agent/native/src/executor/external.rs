@@ -29,7 +29,6 @@ use std::{
 
 mod agy;
 mod agy_acp;
-#[cfg(unix)]
 pub mod agy_front;
 mod attachments;
 pub(super) mod catalog;
@@ -47,6 +46,8 @@ const PRESENTATION_VERSION: u32 = 3;
 const AGY_ACP_VERSION: u32 = 5;
 const CONTEXT_VERSION: u32 = 6;
 pub(crate) use history::Inputs;
+#[cfg(test)]
+pub(crate) use tools::Tools;
 pub(crate) use tools::{HostEffects, HostTools};
 
 /// Observation addresses from the original runtime acknowledgement. None is a
@@ -170,7 +171,6 @@ async fn await_closed_task(
 }
 
 pub(crate) struct External {
-    #[cfg(unix)]
     agy_fronts: agy_front::Fronts,
     commands: BTreeMap<NativeRuntime, NativeCommand>,
     queries: Arc<maka_plugin_core::work::resources::Resources>,
@@ -244,7 +244,6 @@ impl External {
             .map_err(|error| error.to_string())?,
         );
         Ok(Arc::new(Self {
-            #[cfg(unix)]
             agy_fronts: Default::default(),
             commands,
             sessions,
@@ -416,6 +415,9 @@ impl External {
         lifecycle.closed(outcome.clone()).await?;
         Ok(NativeTaskObservation::Known { outcome })
     }
+    pub(super) fn has_runtime(&self, runtime: NativeRuntime) -> bool {
+        self.commands.contains_key(&runtime)
+    }
     pub(super) fn require_runtime(&self, runtime: Option<&str>) -> Result<NativeRuntime, Error> {
         let runtime = runtime
             .ok_or_else(|| Error::Invalid("External agent requires a runtime selection".into()))?
@@ -473,7 +475,7 @@ impl External {
         selected: Option<NativeRuntime>,
         read: catalog::Read,
         cancellation: CancellationToken,
-    ) -> Result<(Vec<Value>, bool), Error> {
+    ) -> Result<(Vec<Value>, bool, bool), Error> {
         let mut changes = self.catalog_changes();
         let mut cache = self.catalog.lock().await;
         cache.failure()?;
@@ -517,7 +519,7 @@ impl External {
                 ));
             }
             let snapshot = cache.snapshot(selected);
-            if read != catalog::Read::Resolve || !snapshot.0.is_empty() || !snapshot.1 {
+            if read != catalog::Read::Resolve || !snapshot.1 {
                 return Ok(snapshot);
             }
             drop(cache);
@@ -650,11 +652,9 @@ impl External {
             .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
             .collect();
         let endpoints = self.finish_endpoints(selected).await;
-        #[cfg(unix)]
         let fronts = self.agy_fronts.finish().await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let sessions = self.sessions.finish().await;
-        #[cfg(unix)]
         fronts?;
         queries?;
         endpoints?;
@@ -673,16 +673,14 @@ struct Call {
 struct CallResources {
     pipes: std::sync::OnceLock<Arc<maka_plugin_core::work::resources::Resources>>,
     bridge: std::sync::OnceLock<Arc<mcp::Bridge>>,
-    rejection: std::sync::Mutex<Option<Arc<PrelaunchRejection>>>,
+    prelaunch_seal: std::sync::Mutex<Option<Arc<PrelaunchSeal>>>,
 }
-struct PrelaunchRejection {
+struct PrelaunchSeal {
     seal: maka_process::isolated::NoLaunchSeal,
-    code: &'static str,
-    message: String,
     binding: Arc<dyn TaskBinding>,
     recording: tokio::sync::Mutex<()>,
 }
-impl PrelaunchRejection {
+impl PrelaunchSeal {
     async fn settle_cleanup(&self) -> Result<(), Error> {
         let _recording = self.recording.lock().await;
         self.seal
@@ -692,16 +690,30 @@ impl PrelaunchRejection {
         self.binding.cleanup(OperationCleanup::Confirmed).await?;
         Ok(())
     }
-    async fn record(&self) -> Result<Outcome, Error> {
-        self.settle_cleanup().await?;
-        let outcome = Outcome::Failed {
-            message: self.message.clone(),
-            code: Some(self.code.into()),
-            recoverable: false,
-        };
-        self.binding.closed(outcome.clone()).await?;
-        Ok(outcome)
+}
+async fn seal_prelaunch(
+    isolated: maka_process::isolated::TaskOwner,
+    binding: Arc<dyn TaskBinding>,
+    root_resources: &Arc<CallResources>,
+) -> Result<(), Error> {
+    let original = Arc::new(PrelaunchSeal {
+        seal: isolated.into_no_launch_seal(),
+        binding,
+        recording: tokio::sync::Mutex::new(()),
+    });
+    *root_resources
+        .prelaunch_seal
+        .lock()
+        .expect("original prelaunch custody") = Some(original.clone());
+    let result = original.settle_cleanup().await;
+    if result.is_ok() {
+        root_resources
+            .prelaunch_seal
+            .lock()
+            .expect("original prelaunch custody")
+            .take();
     }
+    result
 }
 async fn reject_prelaunch(
     isolated: maka_process::isolated::TaskOwner,
@@ -710,35 +722,23 @@ async fn reject_prelaunch(
     code: &'static str,
     message: String,
 ) -> Result<Outcome, Error> {
-    let original = Arc::new(PrelaunchRejection {
-        seal: isolated.into_no_launch_seal(),
-        code,
+    seal_prelaunch(isolated, binding.clone(), root_resources).await?;
+    let outcome = Outcome::Failed {
         message,
-        binding,
-        recording: tokio::sync::Mutex::new(()),
-    });
-    *root_resources
-        .rejection
-        .lock()
-        .expect("original rejection custody") = Some(original.clone());
-    let result = original.record().await;
-    if result.is_ok() {
-        root_resources
-            .rejection
-            .lock()
-            .expect("original rejection custody")
-            .take();
-    }
-    result
+        code: Some(code.into()),
+        recoverable: false,
+    };
+    binding.closed(outcome.clone()).await?;
+    Ok(outcome)
 }
 impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
     fn original_root_cleanup(&self) -> OperationCleanup {
         if self.pipes.get().is_none_or(|resources| resources.is_idle())
             && self.bridge.get().is_none_or(|bridge| bridge.drained())
             && self
-                .rejection
+                .prelaunch_seal
                 .lock()
-                .expect("original rejection custody")
+                .expect("original prelaunch custody")
                 .is_none()
         {
             OperationCleanup::Confirmed
@@ -748,22 +748,22 @@ impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
     }
     fn original_root_cleanup_signal(self: Arc<Self>) -> BoxFuture<'static, ()> {
         Box::pin(async move {
-            let rejection = self
-                .rejection
+            let prelaunch_seal = self
+                .prelaunch_seal
                 .lock()
-                .expect("original rejection custody")
+                .expect("original prelaunch custody")
                 .clone();
-            let rejection = async {
-                if let Some(rejection) = rejection {
-                    match rejection.settle_cleanup().await {
+            let seal = async {
+                if let Some(prelaunch_seal) = prelaunch_seal {
+                    match prelaunch_seal.settle_cleanup().await {
                         Ok(()) => {
-                            self.rejection
+                            self.prelaunch_seal
                                 .lock()
-                                .expect("original rejection custody")
+                                .expect("original prelaunch custody")
                                 .take();
                         }
                         Err(error) => {
-                            tracing::error!(%error, "Original no-launch rejection remains unsettled");
+                            tracing::error!(%error, "Original no-launch seal remains unsettled");
                             std::future::pending::<()>().await;
                         }
                     }
@@ -783,7 +783,7 @@ impl maka_agent_ports::executor::RootSettlementOwner for CallResources {
                     bridge.clone().original_root_cleanup_signal().await;
                 }
             };
-            tokio::join!(rejection, pipes, bridge);
+            tokio::join!(seal, pipes, bridge);
         })
     }
 }
@@ -833,12 +833,9 @@ impl Call {
             isolated,
         } = *self;
         if cancellation.is_cancelled() || binding.observation_retired().is_cancelled() {
+            seal_prelaunch(isolated, binding, root_resources).await?;
             return Err(Error::ObservationRetired);
         }
-        owner
-            .root
-            .session_for_work(execution.as_ref(), &request.execution.session_id)
-            .map_err(|e| Error::Persistence(e.to_string()))?;
         let cwd = request.cwd.as_str();
         let material_root = isolated.inputs();
         enum PrelaunchError {
@@ -857,6 +854,10 @@ impl Call {
             }
         }
         let prepared = async {
+            owner
+                .root
+                .session_for_work(execution.as_ref(), &request.execution.session_id)
+                .map_err(|e| Error::Persistence(e.to_string()))?;
             let runtime = owner.require_runtime(request.settings.runtime.as_deref())?;
             let config = &owner.commands[&runtime];
             let host_tools = tools::Tools::bind(
@@ -962,8 +963,14 @@ impl Call {
             {
                 return reject_prelaunch(isolated, binding, root_resources, code, message).await;
             }
-            Err(PrelaunchError::Rejected { .. }) => return Err(Error::ObservationRetired),
-            Err(PrelaunchError::Other(error)) => return Err(error),
+            Err(PrelaunchError::Rejected { .. }) => {
+                seal_prelaunch(isolated, binding, root_resources).await?;
+                return Err(Error::ObservationRetired);
+            }
+            Err(PrelaunchError::Other(error)) => {
+                seal_prelaunch(isolated, binding, root_resources).await?;
+                return Err(error);
+            }
         };
         *root_bridge = Some(bridge.clone());
         let native_request = serde_json::json!({

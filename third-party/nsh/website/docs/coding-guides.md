@@ -1,6 +1,6 @@
 ---
 title: Coding Guides
-description: "Architecture and coding conventions for maintainable Native Shell apps and component libraries, in Rust and TSX."
+description: "Architecture and coding conventions for maintainable Native Shell apps and component libraries, in TSX and Rust."
 order: 29.5
 group: ui
 ---
@@ -115,6 +115,21 @@ The app shell composes pages but contains little page logic. Pages read the stor
 they never write another page's state. Keep the store's signals private and export what reads and changes them, so the
 mutable state stays behind its public functions:
 
+```tsx tabs
+// store.ts
+import { signal } from "nsh";
+
+const name = signal("Untitled");
+
+/** The workspace's name (tracked where it is read). */
+export const workspaceName = () => name();
+
+/** Renames the workspace. */
+export function renameWorkspace(next: string) {
+  name.set(next);
+}
+```
+
 ```rust tabs
 /// The app's workspace: its state stays behind these functions.
 #[derive(Clone, Copy)]
@@ -140,21 +155,6 @@ impl Workspace {
 }
 ```
 
-```tsx tabs
-// store.ts
-import { signal } from "nsh";
-
-const name = signal("Untitled");
-
-/** The workspace's name (tracked where it is read). */
-export const workspaceName = () => name();
-
-/** Renames the workspace. */
-export function renameWorkspace(next: string) {
-  name.set(next);
-}
-```
-
 A page may hold the workspace and pass its id to search; search does not need the workspace's whole collection or its
 private signals. A simple acyclic dependency shape is:
 
@@ -174,6 +174,19 @@ Mount the app once; its root declares the app's top-level windows, and each wind
 background from the theme. A TSX entry calls `mount(App)`, a Rust app names its root component in `nsh.json`
 (`"root": "App"`):
 
+```tsx tabs
+import { mount, View } from "nsh";
+import { Window } from "nsh/desktop";
+
+mount(() => (
+  <Window id="main">
+    <View class="flex-1 bg-background">
+      <App />
+    </View>
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_core::{element::desktop::window, prelude::*};
 
@@ -187,19 +200,6 @@ pub fn App() -> impl IntoElement {
             .child(inbox()),
     )
 }
-```
-
-```tsx tabs
-import { mount, View } from "nsh";
-import { Window } from "nsh/desktop";
-
-mount(() => (
-  <Window id="main">
-    <View class="flex-1 bg-background">
-      <App />
-    </View>
-  </Window>
-));
 ```
 
 The app root coordinates what belongs to the whole app: the shared state, settings and the window registry. Each
@@ -245,15 +245,6 @@ handlers, the function returns elements, and nothing of it remains but the bindi
 props; the displayed label, value and callbacks come from the caller's current state. It still runs once, like any
 component: what changes afterwards are its bindings.
 
-```rust tabs
-fn empty_state(title: impl Into<SharedString>) -> impl IntoElement {
-    view()
-        .gap_2()
-        .items_center()
-        .child(text(title.into()).text_color(move || theme().muted_foreground))
-}
-```
-
 ```tsx tabs
 function EmptyState(props: { title: string }) {
   return (
@@ -264,11 +255,27 @@ function EmptyState(props: { title: string }) {
 }
 ```
 
+```rust tabs
+fn empty_state(title: impl Into<SharedString>) -> impl IntoElement {
+    view()
+        .gap_2()
+        .items_center()
+        .child(text(title.into()).text_color(move || theme().muted_foreground))
+}
+```
+
 ### Use a component for retained behavior
 
 Use a `#[component]` (or a TSX component that creates signals) when a piece of UI owns persistent state or an
 independent lifecycle: signals, effects, async work, timers, key bindings. Create that state in the component body,
 once, never inside a binding.
+
+```tsx tabs
+function Search(props: { placeholder: string }) {
+  const query = signal("");
+  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
+}
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -284,13 +291,6 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
         .value(move || query.get())
         .on_change(move |text: &str| query.set(text.to_owned()))
         .placeholder(move || props.placeholder.get().to_string())
-}
-```
-
-```tsx tabs
-function Search(props: { placeholder: string }) {
-  const query = signal("");
-  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
 }
 ```
 
@@ -343,17 +343,17 @@ Prefer controlled values for ordinary selection and toggles: pass the current va
 requested change, update the owner, and the bindings follow. A callback reports intent; it should not create a second
 hidden source of truth.
 
+```tsx tabs
+<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
+  <Text>Show hidden files</Text>
+</Switch>
+```
+
 ```rust tabs
 switch()
     .checked(show_hidden)
     .on_change(move |next: &bool| show_hidden.set(*next))
     .child(text("Show hidden files"))
-```
-
-```tsx tabs
-<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
-  <Text>Show hidden files</Text>
-</Switch>
 ```
 
 There is nothing to notify: writing a signal updates exactly the bindings that read it. A Rust component emits a
@@ -362,7 +362,26 @@ lives. Write several fields that form one invariant in one [`batch`](./reactivit
 values see them at once.
 
 A controlled component of the app's own follows the same contract. A quantity stepper, a domain control written once
-in Rust and placed from Rust and TSX:
+in Rust and placed from TSX and Rust:
+
+```tsx tabs
+import { signal } from "nsh";
+import { QuantityStepper } from "my-app";   // the Rust component: src/lib.rs has #[native_module("my-app")]
+
+function CartRow() {
+  const quantity = signal(1);
+  return (
+    <QuantityStepper
+      value={quantity()}
+      min={1}
+      max={10}
+      decrementLabel="Fewer"
+      incrementLabel="More"
+      onChange={({ value }) => quantity.set(value)}
+    />
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{button, theme};
@@ -456,25 +475,6 @@ quantity_stepper()
     .on_change(move |next: &u32| quantity.set(*next))
 ```
 
-```tsx tabs
-import { signal } from "nsh";
-import { QuantityStepper } from "my-app";   // the Rust component: src/lib.rs has #[native_module("my-app")]
-
-function CartRow() {
-  const quantity = signal(1);
-  return (
-    <QuantityStepper
-      value={quantity()}
-      min={1}
-      max={10}
-      decrementLabel="Fewer"
-      incrementLabel="More"
-      onChange={({ value }) => quantity.set(value)}
-    />
-  );
-}
-```
-
 The same contract in TSX, a component in `components/`:
 
 ```tsx
@@ -557,15 +557,6 @@ its state, its focus and its measurements when the data changes.
 - Never derive identity from a translated label or a mutable list index when items can be inserted or reordered.
 - Do not generate a fresh random key or id while rendering.
 
-```rust tabs
-each(projects, |p| p.id, move |project, _index| {
-    let id = project.get_untracked().id;
-    button()
-        .on_press(move || delete(id))
-        .child(text("Delete").test_id(&format!("delete-{id}")))
-})
-```
-
 ```tsx tabs
 <Each of={projects()} key={(p) => p.id}>
   {(project) => (
@@ -574,6 +565,15 @@ each(projects, |p| p.id, move |project, _index| {
     </Button>
   )}
 </Each>
+```
+
+```rust tabs
+each(projects, |p| p.id, move |project, _index| {
+    let id = project.get_untracked().id;
+    button()
+        .on_press(move || delete(id))
+        .child(text("Delete").test_id(&format!("delete-{id}")))
+})
 ```
 
 A changed key means a changed UI identity. Treat that reset as deliberate.
@@ -587,16 +587,6 @@ state; if one behavior changes keys every update, it never accumulates state.
 Keep a component body declarative: read current state, derive presentation values, and compose elements. Move domain
 operations, parsing and non-trivial mutation to named functions of the store or the app's crate.
 
-```rust tabs
-#[component]
-pub fn ProjectPage() -> impl IntoElement {
-    view()
-        .flex_1()
-        .child(toolbar())
-        .child(content())
-}
-```
-
 ```tsx tabs
 function ProjectPage() {
   return (
@@ -605,6 +595,16 @@ function ProjectPage() {
       <Content />
     </View>
   );
+}
+```
+
+```rust tabs
+#[component]
+pub fn ProjectPage() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(toolbar())
+        .child(content())
 }
 ```
 
@@ -649,6 +649,10 @@ titles, descriptions or close buttons: make semantic parts explicit, and take ev
 Read semantic values from the theme and apply layout with the typed style methods in Rust and Tailwind classes in TSX
 ([Tailwind](./tailwind.md), [theme tokens](./tailwind.md#theme-tokens)):
 
+```tsx tabs
+<View class="rounded-(--radius) border border-border bg-background text-foreground" />
+```
+
 ```rust tabs
 view()
     .bg(move || theme().background)
@@ -656,10 +660,6 @@ view()
     .border_1()
     .border_color(move || theme().border)
     .rounded(move || theme().radius)
-```
-
-```tsx tabs
-<View class="rounded-(--radius) border border-border bg-background text-foreground" />
 ```
 
 Rules:
@@ -745,17 +745,6 @@ Derive their label, icon, shortcut and disabled state from one command policy wh
 writes a shortcut the platform's way), so the entry points cannot disagree. The menu owns navigation and dismissal; the
 page still owns whether the command is allowed and what it does.
 
-```rust tabs
-on_key("mod+s", move |_| save());
-view()
-    .child(button().on_press(save).child(text("Save")))
-    .child(
-        menu()
-            .trigger(view().px_3().py_2().child(text("File")))
-            .child(menu_item().on_select(save).child(text(format!("Save  {}", key_label("mod+s"))))),
-    )
-```
-
 ```tsx tabs
 keymap.bind("mod+s", save);
 
@@ -765,6 +754,17 @@ keymap.bind("mod+s", save);
     <MenuItem onSelect={save}><Text>Save  {keymap.label("mod+s")}</Text></MenuItem>
   </Menu>
 </View>
+```
+
+```rust tabs
+on_key("mod+s", move |_| save());
+view()
+    .child(button().on_press(save).child(text("Save")))
+    .child(
+        menu()
+            .trigger(view().px_3().py_2().child(text("File")))
+            .child(menu_item().on_select(save).child(text(format!("Save  {}", key_label("mod+s"))))),
+    )
 ```
 
 Preserve semantic roles in the element choice. Use `Button` for commands even when the desired treatment is quiet;
@@ -829,6 +829,17 @@ Test the visible control state while a deliberately delayed request is still pen
 and stale or reordered responses. A headless result alone does not establish touch-to-frame latency: inspect or measure
 the interaction on the requested native target when available.
 
+```tsx tabs
+const results = resource(
+  () => query() || undefined,
+  async (q, { signal }) => {
+    const response = await fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`, { signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()) as SearchHit[];
+  },
+);
+```
+
 ```rust tabs
 let results = resource(
     move || {
@@ -845,17 +856,6 @@ let results = resource(
 );
 ```
 
-```tsx tabs
-const results = resource(
-  () => query() || undefined,
-  async (q, { signal }) => {
-    const response = await fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`, { signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as SearchHit[];
-  },
-);
-```
-
 Move expensive parsing or computation out of TSX handlers: into a `computed`, off the interaction path, or into Rust.
 Results can arrive after the query, the page or the selection has changed: a resource drops superseded loads, and work
 of your own attaches a revision or an identity and rejects stale results rather than applying them to new state.
@@ -866,19 +866,19 @@ A view lays out its children in a column, and children stretch across it by defa
 is a row, as in CSS. A row of controls wants its children centered (`items-center`), which says so. A row of
 full-height columns keeps the default stretch, so a column fills the row's height and its header stays at the top:
 
+```tsx tabs
+<View class="flex flex-1">
+  <Sidebar />
+  <Content />
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
     .flex_1()
     .child(sidebar())
     .child(content())
-```
-
-```tsx tabs
-<View class="flex flex-1">
-  <Sidebar />
-  <Content />
-</View>
 ```
 
 Most UI should use layout rather than measuring itself ([Layout](./layout.md)). Measurement (`onLayout`, `measure()`)
@@ -935,6 +935,19 @@ are reused for other rows:
   `estimatedItemSize` close to the typical row;
 - scrolling to an item (`scrollToIndex`) works in data coordinates even when most rows do not exist.
 
+```tsx tabs
+const liked = signal<Set<number>>(new Set());
+
+<List each={posts()} estimatedItemSize={64} class="flex-1">
+  {(post) => (
+    <View class="flex-row p-4">
+      <Text class="flex-1">{post().title}</Text>
+      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
+    </View>
+  )}
+</List>
+```
+
 ```rust tabs
 let liked = signal(HashSet::<u32>::new());
 
@@ -950,19 +963,6 @@ virtual_list(move || posts.with(Vec::len), move |at| {
         )
 })
 .estimated_item_size(px(64.0))
-```
-
-```tsx tabs
-const liked = signal<Set<number>>(new Set());
-
-<List each={posts()} estimatedItemSize={64} class="flex-1">
-  {(post) => (
-    <View class="flex-row p-4">
-      <Text class="flex-1">{post().title}</Text>
-      <Text onPress={() => toggle(post().id)}>{liked().has(post().id) ? "♥" : "♡"}</Text>
-    </View>
-  )}
-</List>
 ```
 
 ## Public API design
@@ -1159,16 +1159,6 @@ Test at the lowest layer that can prove the behavior ([Testing](./testing-and-tr
    `android`, `web`, ...);
 4. example or app smoke tests for complete workflows, and `nsh test --trace` for what an interaction costs.
 
-```rust tabs
-#[test]
-fn a_tap_counts() {
-    let mut app = Headless::start(EngineConfig::new(Root::of::<my_app::App>())).unwrap();
-    app.wait_for("Count: 0").unwrap();
-    app.press("Tap").unwrap();
-    app.wait_for("Count: 1").unwrap();
-}
-```
-
 ```tsx tabs
 import { expect, open, test } from "nsh/test";
 
@@ -1177,6 +1167,16 @@ test("a tap counts", async () => {
   await app.press("role:button[Tap]");
   expect(app.texts()).toContain("Count: 1");
 });
+```
+
+```rust tabs
+#[test]
+fn a_tap_counts() {
+    let mut app = Headless::start(EngineConfig::new(Root::of::<my_app::App>())).unwrap();
+    app.wait_for("Count: 0").unwrap();
+    app.press("Tap").unwrap();
+    app.wait_for("Count: 1").unwrap();
+}
 ```
 
 For an interactive component, cover the semantic contract rather than its implementation details: activation by press

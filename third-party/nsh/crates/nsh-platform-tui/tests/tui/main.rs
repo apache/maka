@@ -30,3 +30,8 @@ mod popup;
 mod scroll;
 mod search;
 mod tooltip;
+
+/// The platform's accent in a terminal of true color on a dark page (the
+/// tests' default), the brand indigo; ANSI blue at 16 and 256 colors.
+pub(crate) const ACCENT: ratatui_core::style::Color =
+    ratatui_core::style::Color::Rgb(0x8f, 0x9b, 0xff);

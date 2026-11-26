@@ -60,7 +60,7 @@ import {
   type PluginSettingsSnapshot,
 } from '../../../products/maka/workbench/app/pluginSettingsState';
 import { createSettingsOperations } from '../../../products/maka/workbench/app/settingsOperations';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { tr } from '../../../products/maka/workbench/app/locale';
 import { providerLabel } from '../../../products/maka/workbench/app/settingsLabels';
 import { appearance, initializeAppearance } from '../../../products/maka/workbench/app/appearance';
 import { initializeComposerToolbar } from '../../../products/maka/workbench/app/composerToolbar';
@@ -185,9 +185,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   initializeComposerToolbar();
   initializeUiScale(restored?.scale);
   void general.initializeLanguage().catch(operations.report);
-  effect(() => {
-    currentLocale.set(context.locale());
-  });
   const mountPage = (
     id: string,
     owner: PageOwner,
@@ -224,7 +221,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         await presets.recovered(value);
       else if (original.endpoint === 'web') await webSearch.load();
       else if (original.endpoint === 'skills') skills.recovered();
-      else if (original.endpoint === 'agent' && original.method === 'manageMcpServer')
+      else if (
+        original.endpoint === 'agent' &&
+        ['manageMcpServer', 'setProjectMcpDecision'].includes(original.method)
+      )
         mcp.recovered();
       else if (original.endpoint === 'agent' && original.method === 'selectWorkspace')
         configurationWorkspace.recovered(value);

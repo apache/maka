@@ -32,6 +32,25 @@ if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ]; then
   tty=1
 fi
 
+# Ctrl-C must stop the install. A non-interactive shell starts background
+# commands with SIGINT ignored, so the step running under the spinner is
+# stopped here, then the temporary directory goes and the script exits.
+pid=
+work=
+cleanup() {
+  [ -z "$work" ] || rm -rf "$work"
+}
+interrupted() {
+  trap '' INT TERM
+  [ -z "$pid" ] || kill "$pid" 2> /dev/null || true
+  [ -z "$tty" ] || printf '\r\033[K' >&2
+  cleanup
+  exit "$1"
+}
+trap cleanup EXIT
+trap 'interrupted 130' INT
+trap 'interrupted 143' TERM
+
 # step LABEL COMMAND...: run COMMAND with a spinner, then mark it done.
 step() {
   label="$1"
@@ -66,6 +85,7 @@ step() {
   done
   status=0
   wait "$pid" || status=$?
+  pid=
   printf '\r\033[K' >&2
   [ "$status" -eq 0 ] || return "$status"
   printf '\033[32m✓\033[0m %s\n' "$label" >&2
@@ -157,7 +177,6 @@ else
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT INT TERM
 
 echo "Installing NSH $version for $platform"
 if [ -n "$tty" ]; then
@@ -174,15 +193,15 @@ else
 fi
 curl -fsSL "$url.sha256" -o "$work/$asset.sha256" || fail "could not download $url.sha256"
 
-verify() {
+verify() (
   cd "$work"
   if command -v shasum > /dev/null 2>&1; then
     shasum -a 256 -c "$asset.sha256" > /dev/null
   else
     sha256sum -c "$asset.sha256" > /dev/null
   fi
-}
-(step "Verifying checksum" verify) || fail "the checksum of $asset does not match"
+)
+step "Verifying checksum" verify || fail "the checksum of $asset does not match"
 
 step "Extracting $asset" tar -xzf "$work/$asset" -C "$work" || fail "could not extract $asset"
 [ -x "$work/nsh/bin/nsh" ] || fail "$asset holds no nsh/bin/nsh"

@@ -1,7 +1,7 @@
 //! The `TextView` component: a [`Document`] shown with the primitives.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::{Rc, Weak},
     sync::Arc,
@@ -11,17 +11,18 @@ use nsh_core::{
     ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
     element::{
-        Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
-        ScrollIntent, Style, StyleRefinement, TsTypes,
+        Arg, CallCx, ElementRef, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError,
+        Reactive, Renderer, Ret, ScrollIntent, Style, StyleRefinement, TsTypes, ViewableItems,
     },
-    geometry::Length,
+    geometry::{Length, Percentage},
     keymap::Modifiers,
     prelude::*,
 };
 
 use super::{
     Alert, Block, CodeBlock, ColumnAlign, CustomNode, Document, Image, ImageLength, Inline,
-    ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table,
+    ListItem, MarkdownExtension, MarkdownOptions, MarkdownPlugins, Parser, Table, TextViewMark,
+    TextViewMarkPressEvent, TextViewMarksMatchEvent,
     markdown::{Projection, ProjectionKind},
     parse::{DocumentState, SourceOrigin},
     parts::{TextViewClasses, TextViewPart as Part, TextViewParts, TextViewStyles},
@@ -59,6 +60,10 @@ pub struct TextViewProps {
     /// `renderCustom` (mentions, charts, callouts, ...).
     #[prop(default)]
     pub extensions: Prop<Vec<MarkdownExtension>>,
+    /// Clickable prose passage marks overlaid on the parsed document without
+    /// altering Markdown source or `afterByte` anchors.
+    #[prop(default)]
+    pub marks: Prop<Vec<TextViewMark>>,
     /// Tailwind classes by part (`{ heading1: "text-2xl font-bold", code:
     /// "font-mono bg-muted" }`), after the part's own styles.
     #[prop(default)]
@@ -262,6 +267,64 @@ pub enum TextViewEvent {
     /// view's selection is the one there is, and it reports it.
     #[args(event)]
     SelectionChange(TextViewSelectionEvent),
+    /// A marked prose passage (`marks`) was pressed.
+    #[args(event)]
+    MarkPress(TextViewMarkPressEvent),
+    /// Which `marks` ids matched at least one passage in the current document.
+    #[args(event)]
+    MarksMatch(TextViewMarksMatchEvent),
+    /// The top-level headings of the parsed document changed: emitted once
+    /// parsing completes and only when the outline changes.
+    #[args(event)]
+    HeadingsChange(TextViewHeadingsEvent),
+    /// The range of document blocks intersecting the viewport changed
+    /// (virtualized `TextView`s with `sourceId` or `contentStyle`).
+    #[args(event)]
+    VisibleBlocksChange(TextViewVisibleBlocksEvent),
+}
+
+/// A top-level heading of a [`TextView`]'s document (`onHeadingsChange`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewHeading {
+    /// Block index in the document, accepted by `scrollToBlock`.
+    pub block_index: u32,
+    /// Heading level, 1 to 6.
+    pub level: u32,
+    /// Rendered plain text of the heading.
+    pub text: SharedString,
+}
+
+/// Top-level headings of a [`TextView`]'s document (`onHeadingsChange`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewHeadingsEvent {
+    /// Top-level headings in document order.
+    pub headings: Vec<TextViewHeading>,
+}
+
+/// Visible block range of a virtualized [`TextView`] (`onVisibleBlocksChange`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsObject)]
+#[non_exhaustive]
+pub struct TextViewVisibleBlocksEvent {
+    /// First visible document block index, or `None` when outside the viewport.
+    pub first_block: Option<u32>,
+    /// Last visible document block index, or `None` when outside the viewport.
+    pub last_block: Option<u32>,
+}
+
+/// Placement options for [`TextViewApi::scroll_to_block`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
+pub struct TextViewScrollToBlockOptions {
+    /// Position in the viewport: `0` at the start (default), `0.5` centered, `1` at the end.
+    #[prop(default)]
+    pub view_position: Option<f32>,
+    /// Offset in points (positive places the block further from the start).
+    #[prop(default)]
+    pub view_offset: Option<f32>,
+    /// Whether to animate the scroll (default `false`).
+    #[prop(default)]
+    pub animated: Option<bool>,
 }
 
 /// The methods of a [`TextView`]'s ref.
@@ -269,6 +332,7 @@ pub struct TextViewApi {
     document: Signal<Projection>,
     props: TextViewProps,
     reported: Rc<RefCell<Reported>>,
+    list_ref: ElementRef,
 }
 
 #[methods]
@@ -295,6 +359,71 @@ impl TextViewApi {
         self.document
             .with_untracked(|doc| selected(&doc.document, &source, &reported, format))
     }
+
+    /// Scrolls a virtualized `TextView` (`sourceId` or `contentStyle`) so
+    /// document block `block_index` is positioned in its viewport. Returns
+    /// `true` when the scroll command was issued.
+    pub fn scroll_to_block(
+        &self,
+        block_index: u32,
+        options: Option<TextViewScrollToBlockOptions>,
+    ) -> bool {
+        if self.list_ref.node().is_none() {
+            return false;
+        }
+        let target = block_index as usize;
+        let terminal = untracked(is_terminal);
+        let custom_image = self.props.render_image.with_untracked(Option::is_some);
+        let slot = self.document.with_untracked(|proj| {
+            if proj.kind != ProjectionKind::Parsed || target >= proj.document.blocks.len() {
+                return None;
+            }
+            if !terminal {
+                return Some(target as u32);
+            }
+            if blank_in_terminal(&proj.document.blocks[target], custom_image) {
+                return None;
+            }
+            let preceding = proj.document.blocks[..target]
+                .iter()
+                .filter(|b| !blank_in_terminal(b, custom_image))
+                .count();
+            Some(preceding as u32)
+        });
+        let Some(slot) = slot else {
+            return false;
+        };
+        let opts = options.unwrap_or_default();
+        self.list_ref.scroll_to_index(
+            slot,
+            Percentage(opts.view_position.unwrap_or(0.0)),
+            px(opts.view_offset.unwrap_or(0.0)),
+            opts.animated.unwrap_or(false),
+        );
+        true
+    }
+}
+
+fn extract_headings(doc: &Document) -> Vec<TextViewHeading> {
+    doc.blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let Block::Heading { level, .. } = block else {
+                return None;
+            };
+            let plain = block.plain_text();
+            let text = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                return None;
+            }
+            Some(TextViewHeading {
+                block_index: index as u32,
+                level: u32::from(*level),
+                text: text.into(),
+            })
+        })
+        .collect()
 }
 
 /// The selection of a [`TextView`] changed (`onSelectionChange`).
@@ -454,22 +583,88 @@ pub struct TextViewCodeActionEvent {
 pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElement {
     let plugins = use_context::<MarkdownPlugins>().unwrap_or_default();
     let parsed = super::parse::document(props, plugins.clone(), cx);
-    let document = parsed.document;
+    let source_document = parsed.document;
+    #[derive(Clone, Copy)]
+    struct DisplayDocument {
+        source: Signal<Projection>,
+        marked: Memo<Option<(Projection, Vec<SharedString>)>>,
+    }
+    impl DisplayDocument {
+        fn with<R>(&self, f: impl FnOnce(&Projection) -> R) -> R {
+            self.marked.with(|entry| match entry {
+                Some((projected, _)) => f(projected),
+                None => self.source.with(f),
+            })
+        }
+    }
+    let marked = computed(move || {
+        props.marks.with(|marks| {
+            if marks.is_empty() {
+                return None;
+            }
+            source_document.with(|projection| {
+                let mut projected = projection.clone();
+                let matched = super::marks::apply(&mut projected.document, marks);
+                Some((projected, matched))
+            })
+        })
+    });
+    let document = DisplayDocument {
+        source: source_document,
+        marked,
+    };
+    let last_matched = RefCell::new(Vec::<SharedString>::new());
+    effect(move || {
+        let ids = marked.with(|entry| {
+            entry
+                .as_ref()
+                .map(|(_, ids)| ids.clone())
+                .unwrap_or_default()
+        });
+        let mut previous = last_matched.borrow_mut();
+        if *previous != ids {
+            *previous = ids.clone();
+            cx.emit(TextViewEvent::MarksMatch(TextViewMarksMatchEvent { ids }));
+        }
+    });
     let plugins = Rc::new(plugins);
     let math_loaded = signal(false);
     let reported = Rc::new(RefCell::new(Reported::default()));
+    let list_ref = element_ref();
+    let last_headings: Rc<RefCell<Option<Vec<TextViewHeading>>>> = Rc::new(RefCell::new(None));
+    effect({
+        let last_headings = last_headings.clone();
+        move || {
+            let next = source_document.with(|proj| {
+                (proj.kind == ProjectionKind::Parsed).then(|| extract_headings(&proj.document))
+            });
+            let Some(next) = next else {
+                return;
+            };
+            let mut prev = last_headings.borrow_mut();
+            if prev.as_ref() == Some(&next) {
+                return;
+            }
+            *prev = Some(next.clone());
+            drop(prev);
+            cx.emit(TextViewEvent::HeadingsChange(TextViewHeadingsEvent {
+                headings: next,
+            }));
+        }
+    });
     cx.methods(TextViewApi {
-        document,
+        document: source_document,
         props,
         reported: reported.clone(),
+        list_ref,
     });
     dynamic(move || {
         parsed.track_source();
         // User choices belong to the source, not to a recycled list cell.
         // Signals and event owners are still made under each logical row.
-        let choices = BlockChoices::new(document);
+        let choices = BlockChoices::new(source_document);
         let prune = choices.clone();
-        effect(move || document.with(|document| prune.retain(document)));
+        effect(move || source_document.with(|document| prune.retain(document)));
         let visible = computed(move || {
             let terminal = is_terminal();
             let custom_image = props.render_image.with(Option::is_some);
@@ -559,7 +754,30 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                     view().child(render_row(item, plugins.clone(), choices.clone()))
                 })
             })
+            .element_ref(&list_ref)
             .viewport(ListViewport::Parent)
+            .on_viewable_items_change({
+                let last_visible = Cell::new(None::<TextViewVisibleBlocksEvent>);
+                move |v: &ViewableItems| {
+                    let event = visible.with_untracked(|indices| {
+                        let (first_block, last_block) = match v.viewable {
+                            Some((first, last)) if first < indices.len() => {
+                                let hi = last.min(indices.len() - 1);
+                                (Some(indices[first] as u32), Some(indices[hi] as u32))
+                            }
+                            _ => (None, None),
+                        };
+                        TextViewVisibleBlocksEvent {
+                            first_block,
+                            last_block,
+                        }
+                    });
+                    if last_visible.get() != Some(event) {
+                        last_visible.set(Some(event));
+                        cx.emit(TextViewEvent::VisibleBlocksChange(event));
+                    }
+                }
+            })
             .source_rows(move || {
                 // The live domain may be longer than this worker publication.
                 // Neither the repaired parser input nor an admitted old prefix
@@ -1059,6 +1277,21 @@ impl Cx {
             if links == TextViewLinks::Open && !url.starts_with('#') {
                 drop(open_url(url.to_string()));
             }
+        }
+    }
+
+    fn mark_press(&self, id: SharedString) -> impl Fn(&PressEvent) + Clone + 'static {
+        let scope = self.scope;
+        let owner = Owner::current();
+        let origin = self.source.origin();
+        move |press: &PressEvent| {
+            if !origin.is_current() || !owner.is_live() {
+                return;
+            }
+            scope.emit(TextViewEvent::MarkPress(TextViewMarkPressEvent {
+                id: id.clone(),
+                modifiers: press.modifiers,
+            }));
         }
     }
 
@@ -2645,8 +2878,43 @@ impl Cx {
                     .label(SharedString::from(label))
                     .when_some(title.clone(), |t, title| t.hint(title))
                     .when_some(hint, |t, hint| t.child(hint))
+                    // Where it goes, as data for the platform (the web
+                    // draws its characters as an `<a href>`), as a `Link`
+                    // carries its `href`.
+                    .__link_href(Reactive::Static(Some(url.clone())))
                     .on_press(self.link_press(url, target));
                 self.part(el, Part::Link).into_element()
+            }
+            Inline::Mark {
+                id,
+                title,
+                active,
+                content,
+            } => {
+                let id = SharedString::from(id.clone());
+                let span = self.span(content, key);
+                let mut label = String::new();
+                super::document::inline_text(content, &mut label);
+                let active = *active;
+                let hint = (!is_terminal() && title.is_some()).then(|| {
+                    let title = title.clone().map(SharedString::from);
+                    link_hint(|| None, move || title.clone(), HintAt::Pointer)
+                });
+                let el = span
+                    .focusable(true)
+                    .when(active, |t| t.text_color(move || theme().primary))
+                    .underline()
+                    .text_decoration_color(move || {
+                        theme().primary.opacity(if active { 0.65 } else { 0.45 })
+                    })
+                    .text_decoration_thickness(px(1.0))
+                    .role(AccessibilityRole::Button)
+                    .label(SharedString::from(label))
+                    .when_some(title.clone(), |t, title| t.hint(title))
+                    .when_some(hint, |t, hint| t.child(hint))
+                    .on_press(self.mark_press(id));
+                self.part(el, if active { Part::ActiveMark } else { Part::Mark })
+                    .into_element()
             }
             Inline::Image(image) => {
                 let link = self.link.borrow().clone();
@@ -3065,6 +3333,20 @@ impl TextView {
     pub fn plain_text(document: Document) -> String {
         document.plain_text()
     }
+
+    /// Top-level headings of Markdown `markdown`, using the same parser,
+    /// `options`, `extensions`, and block indices as [`TextView`].
+    pub fn headings(
+        markdown: String,
+        options: Option<MarkdownOptions>,
+        extensions: Option<Vec<MarkdownExtension>>,
+    ) -> Vec<TextViewHeading> {
+        let doc = Parser::new()
+            .options(options.unwrap_or_default())
+            .extensions(extensions.unwrap_or_default())
+            .markdown(&markdown);
+        extract_headings(&doc)
+    }
 }
 
 /// Lines that stand out more than the theme's borders (quotes' and
@@ -3264,7 +3546,8 @@ fn inline_source_bounds(content: &[Inline]) -> Option<(u64, u64)> {
             | Inline::Superscript { content }
             | Inline::Subscript { content }
             | Inline::Small { content }
-            | Inline::Link { content, .. } => {
+            | Inline::Link { content, .. }
+            | Inline::Mark { content, .. } => {
                 if let Some((s, e)) = inline_source_bounds(content) {
                     extend(s, e);
                 }

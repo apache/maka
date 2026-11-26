@@ -1,36 +1,38 @@
 ---
 title: 用 Rust 开发
-description: 完全用 Rust 编写 Native Shell 应用，在所有平台上都不带 QuickJS；或者在 Rust 之上用 TSX 编写页面：如何选择，以及两者如何共享组件和模块。
-order: 5.5
+description: Native Shell 应用何时通过 nshm 在 TSX 中加入 Rust，何时完全用 Rust 编写、在所有平台上都不带 QuickJS；Rust 应用如何构建、设置主题和测试，以及如何承载 TSX 页面。
+order: 5.8
 group: start
 ---
 
 # 用 Rust 开发
 
-Native Shell 应用可以用 Rust 编写，也可以用 TSX，或者两者结合。三种方式运行在同一个引擎上：响应式图、渲染器、Taffy
+Native Shell 应用用 TSX 编写，在值得的地方使用 Rust，也可以完全用 Rust 编写。它们都运行在同一个引擎上：响应式图、渲染器、Taffy
 布局以及原生模块（导航、对话框、键盘、状态栏）始终是 Rust，各平台都用自己的原生 UI 渲染。不同的是你自己的代码用什么语言，以及应用是否带着
 JavaScript 虚拟机。
 
-| | Rust | TSX | Rust + TSX |
+| | TSX | TSX + Rust | Rust |
 |---|---|---|---|
-| 你的 UI、状态和事件处理 | Rust | TSX，运行在 QuickJS 上 | Rust 组件和模块，TSX 页面使用它们 |
-| 应用运行的内容 | 只有引擎和你的 crate，所有平台和浏览器都一样 | QuickJS 和引擎（浏览器里是它的 JavaScript 引擎） | QuickJS 和引擎，加上你的 crate（浏览器里是它的 JavaScript 引擎） |
-| 适合 | 业务复杂度高的中大型应用 | 运行时下发的应用和模块、快速迭代 | Rust 核心加上经常变化的部分 |
-| 修改代码 | 重新构建并重启 | 热更新 | TSX 热更新，Rust 重新构建并重启 |
-| 创建 | `nsh init my-app --template rust` | `nsh init my-app --template ts` | `nsh init my-app --template mixed` |
+| 你的 UI、状态和事件处理 | TSX，运行在 QuickJS 上 | TSX 页面，使用来自 nshm（`ext/` 或已发布的）的 Rust 组件、模块和类 | Rust |
+| 应用运行的内容 | QuickJS 和引擎（浏览器里是它的 JavaScript 引擎） | QuickJS 和引擎，加上你的 crate（浏览器里是它的 JavaScript 引擎） | 只有引擎和你的 crate，所有平台和浏览器都一样 |
+| 适合 | 大多数应用，以及运行时下发的模块 | 有部分需要原生速度、平台能力或 crates.io 的应用 | 核心是庞大、复杂业务逻辑的应用 |
+| 修改代码 | 热更新 | TSX 热更新，Rust 重新构建 | 重新构建并重启 |
+| 创建 | `nsh init my-app --template ts` | `nsh init my-app --template mixed` | `nsh init my-app --template rust` |
 
 ## 如何选择
+
+**TSX** 适合大多数应用：界面、状态和业务逻辑在开发时支持热更新，只用 `nsh` 就能构建。同样的代码也能编写应用发布之后才到达的界面：原生应用在运行时加载的模块，由模型生成或由其他团队编写，以[签名包](./signed-packages.md)下发，运行在宿主配置的沙箱里。
+
+**TSX + Rust** 让应用保持用 TSX 编写，把需要原生速度、平台能力或 crates.io 生态的部分放进 Rust：解析、大规模数据、文件系统和系统 API、必须是原生的视图。Rust 代码放在 nshm crate 里，可以是应用自己在 `ext/` 里的，也可以是已发布的；TSX
+像导入其他 NSH 模块一样导入它们的组件、模块和类，两部分通过类型化的接口衔接（[nshm](./nshm.md)、[应用自己的 Rust：ext/](./nshm.md#应用自己的-rustext)）。
 
 **Rust** 适合业务逻辑庞大、要求高的应用：交易、编辑器、数据密集的工具。整个应用都有 Rust 的类型系统和编译期检查，可以使用
 crates.io 生态，你自己的代码（不只是 NSH 的代码）也是原生性能，还能用 `cargo test` 对真实 UI 做无界面测试。应用从头到尾都是
 Rust 和原生代码：在 iOS、Android、macOS、Windows、Linux、GPUI 和 Web 上，应用里既不带也不运行 JavaScript 虚拟机。
-组件是只运行一次的函数，把信号绑定到显示的内容上，和 TSX 一样（[响应式](./reactivity.md)），样式用类型化的方法而不是 class 字符串。
+组件是只运行一次的函数，把信号绑定到显示的内容上，和 TSX 一样（[响应式](./reactivity.md)），样式用类型化的方法而不是 class 字符串。Rust 应用仍然可以在上面加 TSX 页面，用于经常变化或在运行时下发的部分（[用 TSX 扩展 Rust 应用](#用-tsx-扩展-rust-应用)）；TSX
+运行在 QuickJS 上，这时应用会带上 QuickJS。
 
-**TSX** 适合应用发布之后才到达的界面：原生应用在运行时加载的模块，由模型生成或由其他团队编写，以[签名包](./signed-packages.md)下发，运行在宿主配置的沙箱里，开发时支持热更新。
-
-**Rust + TSX** 保留 Rust 核心，在值得的地方加上 TSX：页面、设置、引导、实验性功能，任何需要热更新快速迭代、或作为[签名包](./signed-packages.md)
-在运行时下发的部分。TSX 像导入其他 NSH 模块一样导入你的 Rust 组件和模块，两部分通过类型化的接口衔接。TSX 运行在 QuickJS
-上，这时应用会带上 QuickJS。
+本页其余部分介绍用 Rust 编写的应用：它们的结构、主题、测试，以及如何用 TSX 扩展它们。
 
 ## 完全用 Rust 编写的应用
 
@@ -462,6 +464,17 @@ nsh-engine = "0.1"
 nsh-testing = "0.1"
 ```
 
+```tsx tabs
+// App.test.tsx，与 nsh.json 放在一起：nsh test
+import { expect, open, test } from "nsh/test";
+
+test("a tap counts", async () => {
+  const app = await open(".");
+  await app.press("Tap");
+  expect(app.texts()).toContain("Count: 1");
+});
+```
+
 ```rust tabs
 // tests/app.rs：cargo test
 use nsh_engine::{EngineConfig, Root};
@@ -474,17 +487,6 @@ fn a_tap_counts() {
     app.press("Tap").unwrap();
     app.wait_for("Count: 1").unwrap();
 }
-```
-
-```tsx tabs
-// App.test.tsx，与 nsh.json 放在一起：nsh test
-import { expect, open, test } from "nsh/test";
-
-test("a tap counts", async () => {
-  const app = await open(".");
-  await app.press("Tap");
-  expect(app.texts()).toContain("Count: 1");
-});
 ```
 
 文字默认按估算宽度排版（每个字符为字号的 `0.55 ×`）；测试用 `Headless::start_with_text_engine` 启动应用时，传入一个在引擎线程上

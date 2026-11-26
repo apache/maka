@@ -14,6 +14,37 @@ an adjustable element for screen readers with its own value. The look is the app
 radii or motion of its own. It is made of a track with an indicator inside it, the range and the thumbs on the
 indicator, then its children (a label, the value as text), and the app styles each part.
 
+```tsx tabs
+import { mount, signal, Text } from "nsh";
+import { Slider } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const strength = signal(64);
+  return (
+    <Slider
+      value={strength()}
+      onChange={({ value }) => strength.set(value as number)}
+      accessibilityLabel="Option strength"
+      class="flex-row items-center gap-2"
+      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
+      indicatorClass="h-full"
+      rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
+      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
+      thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
+    >
+      <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
+    </Slider>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{SliderValue, slider, theme};
 use nsh_core::prelude::*;
@@ -57,37 +88,6 @@ fn strength(level: Signal<SliderValue>) -> impl IntoElement {
                 .text_color(move || theme().muted_foreground),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text } from "nsh";
-import { Slider } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const strength = signal(64);
-  return (
-    <Slider
-      value={strength()}
-      onChange={({ value }) => strength.set(value as number)}
-      accessibilityLabel="Option strength"
-      class="flex-row items-center gap-2"
-      trackClass="h-2 flex-1 px-2 rounded-full bg-muted disabled:opacity-35"
-      indicatorClass="h-full"
-      rangeClass="-ml-2 rounded-full bg-linear-to-r from-primary via-primary to-muted-foreground"
-      thumbClass="h-2 w-4 rounded-full bg-muted-foreground transition hover:brightness-110 active:brightness-125 focus-visible:outline-3 focus-visible:outline-primary/36 disabled:brightness-100 motion-reduce:transition-none"
-      thumbStyle={{ boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)" }}
-    >
-      <Text class="w-[42px] text-right font-mono text-[11px] text-muted-foreground">{`${strength()}%`}</Text>
-    </Slider>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `Slider` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `slider()` makes one

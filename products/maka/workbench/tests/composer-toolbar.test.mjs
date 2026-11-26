@@ -199,4 +199,30 @@ test('summarizeComposerUsage picks hottest window with remainingPercent and form
   const bal = summarizeComposerUsage([{ kind: 'balance', amount: 12.5, unit: '$' }]);
   assert.equal(bal?.kind, 'balance');
   assert.equal(bal.text, '$12.5');
+  assert.equal(bal.compactText, '$13');
+
+  const cny = summarizeComposerUsage([{ kind: 'balance', amount: 152.48, unit: 'CNY' }]);
+  assert.equal(cny?.kind, 'balance');
+  assert.equal(cny.text, '152.48 CNY');
+  assert.equal(cny.compactText, '¥152');
+
+  const intl = (value) =>
+    new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value);
+  const small = summarizeComposerUsage([{ kind: 'balance', amount: 1.005, unit: 'USD' }], intl);
+  assert.equal(small?.kind, 'balance');
+  assert.equal(small.text, '1.01 USD');
+  assert.equal(small.compactText, '$1.01');
+
+  const tinyNeg = summarizeComposerUsage([{ kind: 'balance', amount: -0.005, unit: 'USD' }], intl);
+  assert.equal(tinyNeg?.kind, 'balance');
+  assert.equal(tinyNeg.text, '-0.01 USD');
+  assert.equal(tinyNeg.compactText, '-$0.01');
+
+  const negLarge = summarizeComposerUsage([{ kind: 'balance', amount: -12.6, unit: 'USD' }], intl);
+  assert.equal(negLarge?.kind, 'balance');
+  assert.equal(negLarge.compactText, '-$13');
+
+  const credits = summarizeComposerUsage([{ kind: 'balance', amount: 250.4, unit: 'credits' }]);
+  assert.equal(credits?.kind, 'balance');
+  assert.equal(credits.compactText, '250 credits');
 });

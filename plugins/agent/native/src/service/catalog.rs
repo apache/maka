@@ -18,11 +18,15 @@
  */
 
 use super::*;
-use maka_agent_state::session_catalog::{Filter, Position, Record};
+use maka_agent_state::session_catalog::{Filter, Position, Record, SideQuestions};
 
 pub(super) async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, String> {
     let selection = match &input.scope {
         SessionListScope::All => CatalogSelection::All,
+        SessionListScope::SideQuestions { session_id } => {
+            owner.require_session(session_id).await?;
+            CatalogSelection::All
+        }
         SessionListScope::Children { session_id } => {
             owner.require_session(session_id).await?;
             CatalogSelection::Children(session_id.clone())
@@ -55,6 +59,10 @@ pub(super) fn catalog_filter(input: &List) -> Filter {
         },
         needs_you_only: matches!(input.filter, SessionFilter::NeedsYou),
         room: input.kind.map(|kind| kind == SessionKind::Room),
+        side: match &input.scope {
+            SessionListScope::SideQuestions { session_id } => SideQuestions::Of(session_id.clone()),
+            _ => SideQuestions::Hidden,
+        },
     }
 }
 
@@ -66,7 +74,11 @@ pub(super) async fn catalog_revision(owner: &Owner, input: &List) -> Result<Stri
         .map_err(catalog_error)
 }
 
-pub(super) async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String> {
+pub(super) async fn catalog_page(
+    owner: &Owner,
+    input: &List,
+    stop: &tokio_util::sync::CancellationToken,
+) -> Result<SessionPage, String> {
     let (revision, position) = match &input.position {
         crate::contract::SessionPosition::Start => (None, Position::Start),
         crate::contract::SessionPosition::At { cursor } => (None, Position::At(cursor.clone())),
@@ -84,6 +96,7 @@ pub(super) async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionP
     let reverse = matches!(position, Position::Before(_));
     let page = owner
         .canonical_catalog()?
+        .with_cancellation(stop.clone())
         .page(
             catalog_scope(owner, input).await?,
             revision,
@@ -164,6 +177,7 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
         .map(|origin| SessionBranch {
             session_id: origin.parent_session_id.clone(),
             position: origin.position.clone(),
+            side: origin.side,
         });
     Ok(Session {
         kind: if record.is_room {

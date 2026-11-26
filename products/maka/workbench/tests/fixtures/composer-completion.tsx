@@ -26,6 +26,7 @@ import {
 } from '../../../../../plugins/agent/composer/ui/ComposerCompletion';
 import type { ComposerViewInput } from '../../../../../packages/plugin-sdk/src/composer-view';
 import { SkillInput } from '../../app/SkillInput';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const skills = Array.from({ length: 16 }, (_, index) => `skill-${String(index).padStart(2, '0')}`);
 const makeRows = (read: number): ComposerCompletionRow[] =>
@@ -165,6 +166,7 @@ function PendingComposer() {
 }
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const pending = signal(false);
   return (
     <View style={{ flex: 1 }}>

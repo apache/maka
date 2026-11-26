@@ -184,8 +184,8 @@ export function ImageThumbnail(props: {
           <Text style={{ ...captionTextStyle, color: size() ? C.accent : C.muted }}>
             {size()
               ? tr('Open image · {width} × {height}', {
-                  width: size()!.width,
-                  height: size()!.height,
+                  width: String(size()!.width),
+                  height: String(size()!.height),
                 })
               : error()
                 ? tr('Image unavailable')

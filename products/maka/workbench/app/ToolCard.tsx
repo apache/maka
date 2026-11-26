@@ -41,6 +41,7 @@ import { ToolImage, ToolImageStrip, toolImages } from './ToolImage';
 import {
   createToolSource,
   OriginalToolSource,
+  ToolFieldDivider,
   type ToolSourceRef,
   type ToolSource,
 } from './ToolSource';
@@ -49,6 +50,7 @@ import {
   processFamily,
   providerSearchKey,
   processResourceRef,
+  record,
   toolArguments,
   toolResult,
   type ToolProjection,
@@ -261,6 +263,9 @@ function Field(props: {
   tool(): HistoryTool;
   source?: ToolSource;
   writeResult?: ToolSource;
+  readArgs?: ToolSource;
+  separated?(): boolean;
+  hasContent?(shown: boolean): void;
   senders?: MessageSenders;
   /** Called once a complete result is read, with whether its view shows a process's command. */
   showsCommand?(shown: boolean): void;
@@ -339,90 +344,135 @@ function Field(props: {
         return argument;
     }
   });
+  const emptySections = computed(() => {
+    const view = projection();
+    return (
+      !props.original() && !renderer() && view?.kind === 'sections' && view.sections.length === 0
+    );
+  });
+  const quietChangeReceipt = computed(() => {
+    const view = projection();
+    return (
+      !props.original() && !renderer() && view?.kind === 'change' && view.value.phase === 'recorded'
+    );
+  });
+  const readPath = () => {
+    if (!props.readArgs?.complete() || props.readArgs.error()) return undefined;
+    const args = record(props.readArgs.json());
+    return typeof args?.path === 'string' && args.path !== '' ? args.path : undefined;
+  };
   effect(() => {
     if (props.showsCommand && (source.complete() || source.error()))
       props.showsCommand(!renderer() && !source.error() && projection()?.kind === 'process');
   });
+  effect(() => {
+    if (!props.hasContent) return;
+    if (props.original()) {
+      props.hasContent(true);
+      return;
+    }
+    if (renderer()) {
+      props.hasContent(false);
+      return;
+    }
+    if (source.error() || !(family || presentation)) {
+      props.hasContent(true);
+      return;
+    }
+    if (source.complete()) props.hasContent(!emptySections());
+  });
   return (
-    <If
-      when={
-        props.original() ||
-        (source.complete() &&
-          (!props.writeResult || props.writeResult.complete() || !!props.writeResult.error())) ||
-        source.error() ||
-        !(family || presentation || renderer())
-      }
-      else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
-    >
-      <If when={terminalRef()}>
-        <Button
-          ref={(node) => {
-            terminalLink = node;
-          }}
-          onPress={() => {
-            const ref = terminalRef();
-            if (!ref) return;
-            props.previewTerminal?.(ref, () => {
-              if (!terminalLink) return false;
-              terminalLink.focus();
-              return true;
-            });
-          }}
-          style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 6,
-          }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-        >
-          <Icon name="terminal" size={14} color={C.muted} />
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('View terminal')}</Text>
-        </Button>
+    <If when={!emptySections()}>
+      <If when={props.separated?.() && !quietChangeReceipt()}>
+        <ToolFieldDivider />
       </If>
       <If
-        when={!props.original() && !!renderer() && source.complete() && !source.error()}
-        else={
-          <If
-            when={!props.original() && projection() !== null}
-            else={
-              <OriginalToolSource
-                source={source}
-                label={
-                  props.reference.field === 'arguments'
-                    ? tr('Original arguments')
-                    : !props.original() && props.tool().call?.origin === 'executor'
-                      ? tr('Output')
-                      : tr('Original result')
-                }
-              />
-            }
-          >
-            <View selectable>
-              <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
-            </View>
-          </If>
+        when={
+          props.original() ||
+          (source.complete() &&
+            (!props.writeResult || props.writeResult.complete() || !!props.writeResult.error())) ||
+          source.error() ||
+          !(family || presentation || renderer())
         }
+        else={<LoadingIndicator label={tr('Reading details…')} color={C.muted} />}
       >
-        <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
-          {(item) => (
-            <PluginView
-              runtime={plugins}
-              contribution={item()}
-              sessionId={() => props.sessionId}
-              tool={() => ({
-                field: props.reference.field,
-                value: value(),
-                sessionId: props.sessionId,
-                through: props.through,
-                tool: props.tool(),
-                userScroll: props.userScroll,
-              })}
-            />
-          )}
-        </Each>
+        <If when={terminalRef()}>
+          <Button
+            ref={(node) => {
+              terminalLink = node;
+            }}
+            onPress={() => {
+              const ref = terminalRef();
+              if (!ref) return;
+              props.previewTerminal?.(ref, () => {
+                if (!terminalLink) return false;
+                terminalLink.focus();
+                return true;
+              });
+            }}
+            style={{
+              ...controlStyle,
+              alignSelf: 'flex-start',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+            }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="terminal" size={14} color={C.muted} />
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('View terminal')}</Text>
+          </Button>
+        </If>
+        <If
+          when={!props.original() && !!renderer() && source.complete() && !source.error()}
+          else={
+            <If
+              when={!props.original() && projection() !== null}
+              else={
+                <OriginalToolSource
+                  source={source}
+                  tone={props.reference.field === 'result' ? 'output' : undefined}
+                  label={
+                    props.reference.field === 'arguments'
+                      ? tr('Original arguments')
+                      : !props.original() && props.tool().call?.origin === 'executor'
+                        ? tr('Output')
+                        : tr('Original result')
+                  }
+                />
+              }
+            >
+              <View selectable>
+                <ToolReader
+                  value={projection()!}
+                  field={props.reference.field}
+                  readPath={readPath}
+                  source={source}
+                  userScroll={props.userScroll}
+                />
+              </View>
+            </If>
+          }
+        >
+          <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
+            {(item) => (
+              <PluginView
+                runtime={plugins}
+                contribution={item()}
+                sessionId={() => props.sessionId}
+                tool={() => ({
+                  field: props.reference.field,
+                  value: value(),
+                  sessionId: props.sessionId,
+                  through: props.through,
+                  tool: props.tool(),
+                  userScroll: props.userScroll,
+                })}
+              />
+            )}
+          </Each>
+        </If>
       </If>
     </If>
   );
@@ -437,8 +487,38 @@ function WriteFields(
   const result = createToolSource(useHost(), props.resultRef, props.sessionId, props.through);
   return (
     <>
-      <Field {...props} reference={props.resultRef} source={result} />
       <Field {...props} reference={props.argumentsRef} writeResult={result} />
+      <Field {...props} reference={props.resultRef} source={result} separated={() => true} />
+    </>
+  );
+}
+
+function ReadFields(
+  props: Omit<Parameters<typeof Field>[0], 'reference' | 'source' | 'readArgs'> & {
+    argumentsRef: ToolSourceRef;
+    resultRef: ToolSourceRef;
+  },
+) {
+  const host = useHost();
+  const args = createToolSource(host, props.argumentsRef, props.sessionId, props.through);
+  const result = createToolSource(host, props.resultRef, props.sessionId, props.through);
+  const merged = () =>
+    !props.original() &&
+    !args.error() &&
+    !result.error() &&
+    (!result.complete() || toolResult('read', result.json())?.kind === 'read');
+  return (
+    <>
+      <If when={!merged()}>
+        <Field {...props} reference={props.argumentsRef} source={args} />
+      </If>
+      <Field
+        {...props}
+        reference={props.resultRef}
+        source={result}
+        readArgs={merged() ? args : undefined}
+        separated={() => !merged()}
+      />
     </>
   );
 }
@@ -518,10 +598,10 @@ export function ToolCard(props: {
       ? tr('Preparing tool')
       : activityTitle(call);
   };
-  // Open at the recorded output; the complete original arguments remain below,
-  // except a process's command once its recorded result shows it. Until that
-  // result is read, a successful settlement is taken to show it.
+  // Process results already include the recorded command; until read, a
+  // successful settlement is taken to show it so arguments are not duplicated.
   const resultShowsCommand = signal<boolean | null>(null);
+  const argumentsShown = signal(false);
   const plugins = viewRuntimeContext();
   const presentation = () => activityPresentation(tool()?.call?.presentation);
   const progress = () => {
@@ -531,8 +611,8 @@ export function ToolCard(props: {
   const progressLabel = () =>
     progress() === 'preparing' ? tr('Preparing tool') : tr('Running tool');
   const references = () =>
-    tool() && !searchFields().length
-      ? (['result', 'arguments'] as const).flatMap((field) => {
+    tool() && !searchFields().length && !writeFields().length && !readFields().length
+      ? (['arguments', 'result'] as const).flatMap((field) => {
           const value = reference(tool()!, field);
           const result = tool()!.result;
           const descriptor = presentation();
@@ -571,19 +651,22 @@ export function ToolCard(props: {
     const output = reference(value, 'result');
     return [{ args, output, key: JSON.stringify([args.key, output?.key]) }];
   });
-  const writeFields = computed(() => {
+  const pairedFields = (kind: 'write' | 'read') => {
     const call = tool();
     if (
-      family() !== 'write' ||
+      family() !== kind ||
       !call?.result ||
       call.result.isError ||
+      (kind === 'read' && call.result.image) ||
       plugins?.renderer(call.call?.presentation)
     )
       return [];
     const argumentsRef = reference(call, 'arguments');
     const resultRef = reference(call, 'result');
     return argumentsRef && resultRef ? [{ argumentsRef, resultRef }] : [];
-  });
+  };
+  const writeFields = computed(() => pairedFields('write'));
+  const readFields = computed(() => pairedFields('read'));
   const readDetails = () => {
     props.userScroll();
     props.reading?.();
@@ -610,7 +693,7 @@ export function ToolCard(props: {
   };
   const resultDetails = () => {
     const details = tool()?.result?.details;
-    const exit = details?.exitCode;
+    const exit = resultShowsCommand() ? null : details?.exitCode;
     const time = details?.durationMs;
     return [
       exit == null ? '' : tr('Exit {code}', { code: String(exit) }),
@@ -745,22 +828,11 @@ export function ToolCard(props: {
                   (platform.idiom === 'terminal' ? 0 : cardPadding.top + cardPadding.bottom),
               ),
             }}
-            contentStyle={{ gap: 16 }}
+            contentStyle={{ gap: 12 }}
           >
             <If when={resultDetails() !== ''}>
               <Text style={{ ...captionTextStyle, color: C.secondary }}>{resultDetails()}</Text>
             </If>
-            <Each of={images()} key={(value) => value.key}>
-              {(value) => (
-                <ToolImage
-                  sessionId={props.sessionId}
-                  through={imageThrough}
-                  position={value().position}
-                  image={value().image}
-                  preview={props.previewImage}
-                />
-              )}
-            </Each>
             <Each of={searchFields()} key={(fields) => fields.key}>
               {(fields) => (
                 <ProviderSearchCard
@@ -774,45 +846,91 @@ export function ToolCard(props: {
                 />
               )}
             </Each>
+            <Each of={writeFields()} key={(fields) => fields.resultRef.key}>
+              {(fields) => (
+                <WriteFields
+                  argumentsRef={fields().argumentsRef}
+                  resultRef={fields().resultRef}
+                  sessionId={props.sessionId}
+                  through={props.row().metadataThrough ?? props.through()}
+                  original={props.original}
+                  userScroll={readDetails}
+                  tool={() => tool()!}
+                />
+              )}
+            </Each>
+            <Each of={readFields()} key={(fields) => fields.resultRef.key}>
+              {(fields) => (
+                <ReadFields
+                  argumentsRef={fields().argumentsRef}
+                  resultRef={fields().resultRef}
+                  sessionId={props.sessionId}
+                  through={props.row().metadataThrough ?? props.through()}
+                  original={props.original}
+                  userScroll={readDetails}
+                  tool={() => tool()!}
+                />
+              )}
+            </Each>
+            <Each of={references()} key={(value) => value.key}>
+              {(value) => (
+                <Field
+                  reference={value()}
+                  sessionId={props.sessionId}
+                  through={props.row().metadataThrough ?? props.through()}
+                  original={props.original}
+                  userScroll={readDetails}
+                  tool={() => tool()!}
+                  senders={props.senders}
+                  previewTerminal={props.previewTerminal}
+                  hasContent={
+                    value().field === 'arguments' ? (shown) => argumentsShown.set(shown) : undefined
+                  }
+                  separated={
+                    value().field === 'result'
+                      ? () =>
+                          argumentsShown() &&
+                          references().some((item) => item.field === 'arguments')
+                      : undefined
+                  }
+                  showsCommand={
+                    value().field === 'result'
+                      ? (shown) => resultShowsCommand.set(shown)
+                      : undefined
+                  }
+                />
+              )}
+            </Each>
             <If
-              when={writeFields().length > 0}
-              else={
-                <Each of={references()} key={(value) => value.key}>
-                  {(value) => (
-                    <Field
-                      reference={value()}
-                      sessionId={props.sessionId}
-                      through={props.row().metadataThrough ?? props.through()}
-                      original={props.original}
-                      userScroll={readDetails}
-                      tool={() => tool()!}
-                      senders={props.senders}
-                      previewTerminal={props.previewTerminal}
-                      showsCommand={
-                        value().field === 'result'
-                          ? (shown) => resultShowsCommand.set(shown)
-                          : undefined
-                      }
-                    />
-                  )}
-                </Each>
+              when={
+                images().length > 0 &&
+                argumentsShown() &&
+                references().some((item) => item.field === 'arguments') &&
+                !references().some((item) => item.field === 'result')
               }
             >
-              <Each of={writeFields()} key={(fields) => fields.resultRef.key}>
-                {(fields) => (
-                  <WriteFields
-                    argumentsRef={fields().argumentsRef}
-                    resultRef={fields().resultRef}
-                    sessionId={props.sessionId}
-                    through={props.row().metadataThrough ?? props.through()}
-                    original={props.original}
-                    userScroll={readDetails}
-                    tool={() => tool()!}
-                  />
-                )}
-              </Each>
+              <ToolFieldDivider />
             </If>
-            <If when={!searchFields().length && !references().length && images().length === 0}>
+            <Each of={images()} key={(value) => value.key}>
+              {(value) => (
+                <ToolImage
+                  sessionId={props.sessionId}
+                  through={imageThrough}
+                  position={value().position}
+                  image={value().image}
+                  preview={props.previewImage}
+                />
+              )}
+            </Each>
+            <If
+              when={
+                !searchFields().length &&
+                !writeFields().length &&
+                !readFields().length &&
+                !references().length &&
+                images().length === 0
+              }
+            >
               <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                 {presentation()
                   ? result()

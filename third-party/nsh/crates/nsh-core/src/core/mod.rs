@@ -40,6 +40,8 @@ use std::{rc::Rc, sync::Arc};
 use slab::Slab;
 use taffy::{AvailableSpace, NodeId as LayoutId, Overflow, Position};
 
+#[doc(hidden)]
+pub use self::components::set_part_requester;
 pub use self::measure::{ListScrollPosition, Measurement};
 use self::{
     layout_tree::LayoutTree,
@@ -362,6 +364,23 @@ impl ComponentState {
     }
 }
 
+fn scroll_axis_limits(scroll: &ScrollState, frame: Size<Points>) -> Option<(f32, f32)> {
+    let content = scroll.content?;
+    let zoomed = content * scroll.zoom;
+    let inset = scroll.behavior.content_inset;
+    let (leading, trailing, content_len, vp_len) = if scroll.horizontal {
+        (inset.left.0, inset.right.0, zoomed.width.0, frame.width.0)
+    } else {
+        (inset.top.0, inset.bottom.0, zoomed.height.0, frame.height.0)
+    };
+    if vp_len <= 0.0 {
+        return None;
+    }
+    let min = -leading;
+    let max = (content_len + trailing - vp_len).max(min);
+    Some((min, max))
+}
+
 #[derive(Debug)]
 struct ScrollState {
     horizontal: bool,
@@ -605,6 +624,34 @@ impl<T: SharedDefault> PartialEq<T> for Sparse<T> {
     }
 }
 
+/// A node's flags about its children's positions among them (`first:`,
+/// `odd:`…), kept in a byte: the core keeps one record per node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Positional(u8);
+
+impl Positional {
+    const NONE: Self = Self(0);
+    /// A child's classes read their position among siblings.
+    const CHILDREN: Self = Self(1);
+    /// Its children moved, and it waits in `Core::position_parents` for
+    /// their positions to be looked at (`classes.rs` `flush_positions`).
+    const QUEUED: Self = Self(2);
+
+    fn has(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+
+    fn remove(&mut self, flag: Self) {
+        self.0 &= !flag.0;
+    }
+}
+
+impl std::ops::BitOrAssign for Positional {
+    fn bitor_assign(&mut self, flag: Self) {
+        self.0 |= flag.0;
+    }
+}
+
 struct Node {
     id: NodeId,
     kind: Kind,
@@ -664,8 +711,9 @@ struct Node {
     /// What only some nodes have: state styles, the styles of a page's
     /// header or a list's content ([`classes::NodeParts`]).
     parts: Option<Box<classes::NodeParts>>,
-    /// A child's classes read their position among siblings.
-    positional_children: bool,
+    /// What its children's positions among them are to it
+    /// ([`Positional`]).
+    positional: Positional,
     /// Styled with the margin its parent's `space-*` gives it.
     spaced: bool,
     /// The text color it inherits (`None`: React Native's black), CSS's
@@ -1010,7 +1058,7 @@ impl Node {
             resting_fill: None,
             data: Box::default(),
             parts: None,
-            positional_children: false,
+            positional: Positional::NONE,
             spaced: false,
             inherited_color: None,
             child_perspective: None,
@@ -1431,6 +1479,11 @@ pub struct Core<M: TextEngine> {
     /// Compiled shaders by the hash of their source, with their errors
     /// (an app setting the same source again compiles it once).
     shaders: rustc_hash::FxHashMap<u64, Result<crate::shader::Shader, crate::shader::ShaderError>>,
+    /// Web views whose URL `webview.hosts` does not grant, set while the
+    /// app may add an origin at run time (`webview.runtimeOrigin`): their
+    /// `allowOrigin` may come later in the same render, so they are
+    /// checked when their props go out ([`Self::settle_web_urls`]).
+    web_unchecked: rustc_hash::FxHashSet<(Key, NodeId)>,
     /// Shader transitions this commit starts ([`MountItem::ShaderTransition`]),
     /// put first in its batch.
     transition_starts: Vec<MountItem>,
@@ -1624,6 +1677,10 @@ pub struct Core<M: TextEngine> {
     /// `--font-sans`.
     default_font: Option<crate::style::FontFamily>,
     queue: Vec<Key>,
+    /// Parents whose children moved, each once: their children's positions
+    /// are looked at before the next flush (`classes.rs` `flush_positions`),
+    /// once however many joined or left.
+    position_parents: Vec<Key>,
     needs_layout: bool,
     /// Parsed classes and the theme.
     tailwind: Tailwind,
@@ -1691,9 +1748,6 @@ pub struct Core<M: TextEngine> {
     /// Opens and applies the app's windows of its own in place of the
     /// platform ([`Core::set_window_backend`]).
     window_backend: Option<Arc<dyn crate::desktop::WindowBackend>>,
-    /// Recognizes the app's speech in place of the platform
-    /// ([`Core::set_speech`]).
-    speech: Option<Arc<dyn crate::speech::SpeechBackend>>,
     /// Plays the app's sound in place of the platform ([`Core::set_audio`]).
     audio: Option<Arc<dyn crate::audio::AudioBackend>>,
     /// The app's login item ([`Core::set_login_item`]); without one the app
@@ -1787,7 +1841,6 @@ impl<M: TextEngine> Core<M> {
             clipboard: None,
             picker: None,
             window_backend: None,
-            speech: None,
             audio: None,
             login_item: None,
             components: components::Components::for_viewport(viewport),
@@ -1824,6 +1877,7 @@ impl<M: TextEngine> Core<M> {
             sticky_warned: false,
             inset_warned: false,
             shaders: Default::default(),
+            web_unchecked: Default::default(),
             transition_starts: Vec::new(),
             pictured: Default::default(),
             unlinked_from: Vec::new(),
@@ -1892,6 +1946,7 @@ impl<M: TextEngine> Core<M> {
             font_scale: 1.0,
             default_font: None,
             queue: Vec::new(),
+            position_parents: Vec::new(),
             needs_layout: true,
             tailwind: Tailwind::new(),
             class_env: ClassEnvironment::default(),
@@ -2055,6 +2110,7 @@ impl<M: TextEngine> Core<M> {
             crate::element::global::<crate::element::desktop::WindowAccess>()
                 .set(crate::element::desktop::WindowAccess(Some(access.clone())));
         }
+        self.components.runtime.set_access(access.clone());
         self.access = access;
         self.canvas_images.clear();
     }
@@ -2140,13 +2196,6 @@ impl<M: TextEngine> Core<M> {
     /// stay with the platform.
     pub fn set_window_backend(&mut self, backend: Option<Arc<dyn crate::desktop::WindowBackend>>) {
         self.window_backend = backend;
-    }
-
-    /// Recognizes the app's speech (`Speech.start`) with `backend`, an
-    /// embedding app's own recognizer or a test's fake, instead of the
-    /// platform's (`None`: the platform's, the default).
-    pub fn set_speech(&mut self, backend: Option<Arc<dyn crate::speech::SpeechBackend>>) {
-        self.speech = backend;
     }
 
     /// Plays the app's sound (`Sound`, `AudioPlayer`) with `backend`, an
@@ -2299,29 +2348,69 @@ impl<M: TextEngine> Core<M> {
 
     /// The platform scrolled a scroll view or list to `(x, y)`, having
     /// applied `applied` of the scrolls the core issued to it
-    /// (`MountItem::ScrollBy` and `Command::ScrollTo` of lists).
-    pub fn set_scroll_offset(&mut self, id: NodeId, offset: Point<Points>, applied: u32) {
+    /// (`MountItem::ScrollBy` and `Command::ScrollTo` of lists). Returns the
+    /// displacement since the previous report (for lists, excluding
+    /// core-issued anchoring corrections and instant jumps).
+    pub fn set_scroll_offset(
+        &mut self,
+        id: NodeId,
+        offset: Point<Points>,
+        applied: u32,
+    ) -> Point<Points> {
         let (x, y) = (offset.x.0, offset.y.0);
-        let Ok(key) = self.key(id) else { return };
+        let Ok(key) = self.key(id) else {
+            return Point::default();
+        };
         let node = &mut self.nodes[key as usize];
+        let frame = node.frame.size;
         let horizontal = node.scroll.as_ref().is_some_and(|s| s.horizontal);
+        let limits = node
+            .scroll
+            .as_ref()
+            .and_then(|s| scroll_axis_limits(s, frame));
         let mut dependents = false;
         let mut moved = false;
+        let mut delta = (0.0f32, 0.0f32);
         if let Some(scroll) = node.scroll.as_mut() {
-            moved = scroll.offset != (x, y);
+            let old = scroll.offset;
+            moved = old != (x, y);
+            delta = (x - old.0, y - old.1);
             scroll.offset = (x, y);
             if scroll.target.is_some_and(|(n, _)| n <= applied) {
                 scroll.target = None;
             }
-            if !scroll.dependents.is_empty() {
+            if !scroll.pending.is_empty() {
+                let prev_main = list::replay_clamped(
+                    if horizontal { old.0 } else { old.1 },
+                    &scroll.pending,
+                    limits,
+                );
                 scroll.pending.retain(|&(n, _)| n > applied);
+                let new_main =
+                    list::replay_clamped(if horizontal { x } else { y }, &scroll.pending, limits);
+                if horizontal {
+                    delta.0 = new_main - prev_main;
+                } else {
+                    delta.1 = new_main - prev_main;
+                }
+            }
+            if !scroll.dependents.is_empty() {
                 dependents = true;
             }
         }
-        let reported_moved = node
-            .list
-            .as_mut()
-            .is_some_and(|list| list.reported(if horizontal { x } else { y }, applied));
+        let mut reported_moved = false;
+        if let Some(list) = node.list.as_mut() {
+            let (list_moved, main_delta) =
+                list.reported_clamped(if horizontal { x } else { y }, applied, limits);
+            reported_moved = list_moved;
+            if !list.parent {
+                if horizontal {
+                    delta.0 = main_delta;
+                } else {
+                    delta.1 = main_delta;
+                }
+            }
+        }
         self.cull_moved(key);
         if dependents {
             self.dependents_dirty(key);
@@ -2356,6 +2445,7 @@ impl<M: TextEngine> Core<M> {
         if moved && !self.overlays.is_empty() {
             self.overlay_scrolled(key);
         }
+        crate::geometry::point(Points(delta.0), Points(delta.1))
     }
 
     /// The user moved scroll view `id` with scroll key move `key_move`, which
@@ -2559,9 +2649,13 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// What `onScroll` reports for scroll view `id`, if it listens to it:
-    /// the minimum milliseconds between events, the content size (zoomed),
-    /// the viewport size and the zoom scale.
-    pub fn scroll_listener(&self, id: NodeId) -> Option<(f32, Size<Points>, Size<Points>, f32)> {
+    /// the minimum milliseconds between events, the offset in the committed
+    /// content's coordinates (with pending core scrolls replayed), the
+    /// content size (zoomed), the viewport size and the zoom scale.
+    pub fn scroll_listener(
+        &self,
+        id: NodeId,
+    ) -> Option<(f32, Point<Points>, Size<Points>, Size<Points>, f32)> {
         let node = &self.nodes[self.key(id).ok()? as usize];
         if !node.events.contains(EventKind::Scroll) {
             return None;
@@ -2570,7 +2664,36 @@ impl<M: TextEngine> Core<M> {
         let frame = node.frame.size;
         let content = scroll.content.unwrap_or(frame);
         let z = scroll.zoom;
-        Some((scroll.event_throttle_ms, content * z, frame, z))
+        let zoomed = content * z;
+        let (x, y) = if let Some(list) = node.list.as_ref().filter(|l| !l.parent) {
+            if scroll.horizontal {
+                (list.offset, scroll.offset.1)
+            } else {
+                (scroll.offset.0, list.offset)
+            }
+        } else if !scroll.pending.is_empty() {
+            let limits = scroll_axis_limits(scroll, frame);
+            if scroll.horizontal {
+                (
+                    list::replay_clamped(scroll.offset.0, &scroll.pending, limits),
+                    scroll.offset.1,
+                )
+            } else {
+                (
+                    scroll.offset.0,
+                    list::replay_clamped(scroll.offset.1, &scroll.pending, limits),
+                )
+            }
+        } else {
+            scroll.offset
+        };
+        Some((
+            scroll.event_throttle_ms,
+            crate::geometry::point(Points(x), Points(y)),
+            zoomed,
+            frame,
+            z,
+        ))
     }
 
     /// Moves list render requests produced by the last commit into `out`:
@@ -2708,6 +2831,29 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
+    /// The active locale changed: rebuild every text and input block's
+    /// AttributedText and InputConfig with the new locale so platform text
+    /// engines re-shape locale-dependent glyphs (such as CJK Han variants).
+    pub(super) fn locale_changed(&mut self) {
+        self.fonts_changed();
+        let blocks: Vec<(Key, Kind)> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                matches!(n.kind, Kind::Text | Kind::Input) && !n.inline && n.layout.is_some()
+            })
+            .map(|(k, n)| (k as Key, n.kind))
+            .collect();
+        for (key, kind) in blocks {
+            if kind == Kind::Text {
+                self.mark(key, dirty::TEXT_BUILD);
+            } else {
+                self.measure_input(key);
+                self.mark(key, dirty::INPUT);
+            }
+        }
+    }
+
     /// The platform's views must get everything again, as new views do, and
     /// text is measured again: the unit the platform converted the values
     /// with changed (Android's density). The views stay, scrolled where they
@@ -2762,6 +2908,24 @@ impl<M: TextEngine> Core<M> {
             }
         }
         self.needs_layout = true;
+    }
+
+    /// A paste into input `id` (`onPaste`): its files larger than the
+    /// input's `pasteMaxSize` go to [`crate::PasteEvent::too_large`],
+    /// whichever platform read them, so every platform gives the app the
+    /// same files.
+    pub fn limit_paste(&self, id: NodeId, payload: &mut EventPayload) {
+        let EventPayload::Paste(paste) = payload else {
+            return;
+        };
+        let max = self
+            .key(id)
+            .ok()
+            .and_then(|key| self.nodes[key as usize].input.as_ref())
+            .and_then(|input| input.config.paste_max_size);
+        if let Some(max) = max {
+            paste.limit_files(max);
+        }
     }
 
     /// The user edited input `id` (before JS sees the edit): keeps the text
@@ -3293,7 +3457,14 @@ impl<M: TextEngine> Core<M> {
             .windows
             .keys()
             .copied()
-            .filter(|&id| self.key(id).is_err())
+            // Released, or out of the tree: a closed window's root that
+            // something still holds (a development host keeps the mounted
+            // app for hot updates) is not released yet, but it is gone.
+            .filter(|&id| {
+                !self
+                    .key(id)
+                    .is_ok_and(|k| id == crate::ROOT_ID || self.nodes[k as usize].parent != NO_KEY)
+            })
             .collect();
         for id in gone {
             self.windows.remove(&id);
@@ -3660,6 +3831,10 @@ impl<M: TextEngine> Core<M> {
         }
         // The views' patches and the views to make first.
         self.render_components();
+        // The children that moved, the app's and those the components just
+        // placed, styled at their places before anything reads their styles
+        // (`position: fixed`, the color they pass on).
+        self.flush_positions();
         self.prepare_reveals();
         // The focus reported since, after the components made and released
         // what they did: one change of the chain, the views both chains
@@ -4052,7 +4227,11 @@ impl<M: TextEngine> Core<M> {
                 }
                 // As a `src` the capability does not allow: the page is
                 // not loaded, so its headers go nowhere.
-                Command::Load(load) if !self.access.allows_webview(&load.src) => {
+                Command::Load(load)
+                    if !self
+                        .access
+                        .allows_webview_with(&load.src, self.web_origin(key)) =>
+                {
                     self.deny(not_granted("the web page", &load.src, "webview.hosts"));
                     continue;
                 }
@@ -4104,18 +4283,22 @@ impl<M: TextEngine> Core<M> {
                 Command::ScrollToIndex { .. } => continue,
                 _ => {}
             }
-            // Platforms count the scrolls they applied; lists count theirs.
-            if let Command::ScrollTo { x, y, .. } = command
-                && self.nodes[key as usize].kind == Kind::Scroll
-            {
+            // Platforms count the scrolls they applied, in mount order.
+            if let Command::ScrollTo { x, y, animated } = command {
                 let horizontal = self.nodes[key as usize]
                     .scroll
                     .as_ref()
                     .is_some_and(|s| s.horizontal);
                 let to = if horizontal { x.0 } else { y.0 };
-                self.scroll_issued(key, PendingScroll::To(to));
-                if let Some(scroll) = self.nodes[key as usize].scroll.as_mut() {
-                    scroll.target = Some((scroll.issued, (x.0, y.0)));
+                if self.nodes[key as usize].kind == Kind::Scroll {
+                    self.scroll_issued(key, PendingScroll::to(to, animated));
+                    if let Some(scroll) = self.nodes[key as usize].scroll.as_mut() {
+                        scroll.target = Some((scroll.issued, (x.0, y.0)));
+                    }
+                } else if let Some(list) = self.nodes[key as usize].list.as_mut()
+                    && !list.parent
+                {
+                    list.issue_scroll_to(to, animated);
                 }
             }
             self.mount.push(MountItem::Command { id, command });
@@ -4296,6 +4479,7 @@ impl<M: TextEngine> Core<M> {
                         | R::ImageButton
                         | R::Link
                         | R::Search
+                        | R::Textbox
                         | R::Checkbox
                         | R::Radio
                         | R::Switch
@@ -4697,6 +4881,7 @@ impl<M: TextEngine> Core<M> {
         let multiline = node.input.as_ref().is_some_and(|i| i.config.multiline);
         let mut text = AttributedText {
             max_lines: if multiline { 0 } else { 1 },
+            locale: Some(self.components.environment.locale),
             ..AttributedText::default()
         };
         let style = scaled(
@@ -5022,7 +5207,10 @@ impl<M: TextEngine> Core<M> {
         // automatic minimum size as a flex or grid item 0, which clipping the
         // paint must not do. Set here rather than while parsing the style so
         // that what `overflow` sets as a style stays what it was.
-        let clip = if node.view_style.overflow_hidden {
+        // An input always clips: it scrolls its own text, so text taller than
+        // its box (a fixed height, a `maxHeight`) stays in it and must not
+        // grow the content size of a scroll view around it.
+        let clip = if node.view_style.overflow_hidden || node.kind == Kind::Input {
             taffy::Overflow::Clip
         } else {
             taffy::Overflow::Visible
@@ -5441,27 +5629,32 @@ impl<M: TextEngine> Core<M> {
     /// video or web view source shows nothing and fails (`onError` with
     /// `code` `ERR_ACCESS_DENIED`).
     fn check_prop(&mut self, key: Key, prop: Prop) -> Prop {
+        let prop = match prop {
+            Prop::Native(NativeProp::AllowOrigin(Some(origin))) => {
+                Prop::Native(NativeProp::AllowOrigin(self.check_allow_origin(&origin)))
+            }
+            prop => prop,
+        };
         if self.access.is_unrestricted() {
             return prop;
         }
         let node = &self.nodes[key as usize];
         let (id, kind) = (node.id, node.kind);
+        // With `webview.runtimeOrigin`, a URL `webview.hosts` does not
+        // grant waits for the web view's `allowOrigin`, which may come
+        // after it in this render: it is checked when the props go out.
+        if kind == Kind::WebView
+            && self.access.allows_runtime_origin()
+            && let Some(url) = web_url(&prop)
+            && !url.is_empty()
+            && !self.access.allows_webview_with(url, self.web_origin(key))
+        {
+            self.web_unchecked.insert((key, id));
+            return prop;
+        }
         // Always reported: the `onError` listener may be set after the
         // source (JS finds the handler when the event is delivered).
-        let report = |core: &mut Self, message: String| {
-            core.events.push(crate::element::JsEvent::Event(
-                id,
-                EventKind::Error,
-                EventPayload::Map(vec![
-                    ("message", PayloadValue::Str(message.clone())),
-                    (
-                        "code",
-                        PayloadValue::Str(crate::element::codes::ACCESS_DENIED.into()),
-                    ),
-                ]),
-            ));
-            core.deny(message);
-        };
+        let report = |core: &mut Self, message: String| core.report_access_denied(id, message);
         let refuse = |core: &mut Self, what: &str, uri: &str, capability: &str| {
             report(core, not_granted(what, uri, capability));
         };
@@ -5509,7 +5702,8 @@ impl<M: TextEngine> Core<M> {
                 }
             }
             Prop::Native(NativeProp::Src(Some(url)))
-                if kind == Kind::WebView && !self.access.allows_webview(&url) =>
+                if kind == Kind::WebView
+                    && !self.access.allows_webview_with(&url, self.web_origin(key)) =>
             {
                 refuse(self, "the web page", &url, "webview.hosts");
                 Prop::Native(NativeProp::Src(None))
@@ -5532,7 +5726,8 @@ impl<M: TextEngine> Core<M> {
                 }
             }
             Prop::Native(NativeProp::Source(crate::WebSource::Uri(uri)))
-                if kind == Kind::WebView && !self.access.allows_webview(&uri) =>
+                if kind == Kind::WebView
+                    && !self.access.allows_webview_with(&uri, self.web_origin(key)) =>
             {
                 refuse(self, "the web page", &uri, "webview.hosts");
                 Prop::Native(NativeProp::Source(crate::WebSource::None))
@@ -5553,7 +5748,7 @@ impl<M: TextEngine> Core<M> {
                 if kind == Kind::WebView
                     && !url.is_empty()
                     && self.access.allows_webviews()
-                    && !self.access.allows_webview(&url) =>
+                    && !self.access.allows_webview_with(&url, self.web_origin(key)) =>
             {
                 refuse(self, "the base URL", &url, "webview.hosts");
                 Prop::Native(NativeProp::BaseUrl(None))
@@ -5563,7 +5758,7 @@ impl<M: TextEngine> Core<M> {
                 base_url: Some(url),
             })) if kind == Kind::WebView
                 && !url.is_empty()
-                && !self.access.allows_webview(&url) =>
+                && !self.access.allows_webview_with(&url, self.web_origin(key)) =>
             {
                 refuse(self, "the base URL", &url, "webview.hosts");
                 Prop::Native(NativeProp::Source(crate::WebSource::Html {
@@ -5573,6 +5768,97 @@ impl<M: TextEngine> Core<M> {
             }
             prop => prop,
         }
+    }
+
+    /// `allowOrigin` as the web view keeps it: the origin in its one
+    /// written form, or none (with a message) when it is not an origin or
+    /// the app may not add one (`webview.runtimeOrigin`).
+    fn check_allow_origin(&mut self, origin: &str) -> Option<Arc<str>> {
+        match crate::access::WebOrigin::parse(origin) {
+            Err(e) => {
+                self.deny(format!("`allowOrigin`: {e}"));
+                None
+            }
+            Ok(_) if !self.access.is_unrestricted() && !self.access.allows_runtime_origin() => {
+                self.deny(
+                    "`allowOrigin` is not granted: add `\"runtimeOrigin\": true` to capabilities.webview in nsh.json"
+                        .into(),
+                );
+                None
+            }
+            Ok(o) => Some(o.to_string().into()),
+        }
+    }
+
+    /// The `allowOrigin` of the web view `key`, when it has one.
+    fn web_origin(&self, key: Key) -> Option<&crate::access::WebOrigin> {
+        match self.nodes[key as usize].control.as_deref() {
+            Some(NativeProps::WebView(p)) => p.allow_origin.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Checks the URLs of web view `key` that waited for its `allowOrigin`
+    /// ([`Self::web_unchecked`]) as its props go out: what neither
+    /// `webview.hosts` nor its origin grants is refused as a prop would be
+    /// (`onError` with `ERR_ACCESS_DENIED`, and nothing loaded).
+    fn settle_web_urls(&mut self, key: Key) {
+        let id = self.nodes[key as usize].id;
+        if !self.web_unchecked.remove(&(key, id)) {
+            return;
+        }
+        let access = &self.access;
+        let Some(NativeProps::WebView(p)) = self.nodes[key as usize].control.as_deref_mut() else {
+            return;
+        };
+        let origin = p.allow_origin.clone();
+        let refuses =
+            |url: &str| !url.is_empty() && !access.allows_webview_with(url, origin.as_ref());
+        let mut messages = Vec::new();
+        // `src`, also while `html` shows instead: clearing `html` loads it.
+        let src = p.src.take_if(|url| refuses(url));
+        if let Some(url) = &src {
+            messages.push(not_granted("the web page", url, "webview.hosts"));
+        }
+        // What loads: `src`, or a URL Rust set as the source.
+        if let crate::WebSource::Uri(url) = &p.source
+            && refuses(url)
+        {
+            if src.as_ref() != Some(url) {
+                messages.push(not_granted("the web page", url, "webview.hosts"));
+            }
+            p.source = crate::WebSource::None;
+        }
+        let base = p.base_url.take_if(|url| refuses(url));
+        if let Some(url) = &base {
+            messages.push(not_granted("the base URL", url, "webview.hosts"));
+        }
+        if let crate::WebSource::Html { base_url, .. } = &mut p.source
+            && let Some(url) = base_url.take_if(|url| refuses(url))
+            && base.as_ref() != Some(&url)
+        {
+            messages.push(not_granted("the base URL", &url, "webview.hosts"));
+        }
+        for message in messages {
+            self.report_access_denied(id, message);
+        }
+    }
+
+    /// A refused source of node `id`: its `onError` (`ERR_ACCESS_DENIED`)
+    /// and the app's console.
+    fn report_access_denied(&mut self, id: NodeId, message: String) {
+        self.events.push(crate::element::JsEvent::Event(
+            id,
+            EventKind::Error,
+            EventPayload::Map(vec![
+                ("message", PayloadValue::Str(message.clone())),
+                (
+                    "code",
+                    PayloadValue::Str(crate::element::codes::ACCESS_DENIED.into()),
+                ),
+            ]),
+        ));
+        self.deny(message);
     }
 
     /// `source` compiled, once per source while the cache keeps it (its
@@ -6466,6 +6752,10 @@ impl<M: TextEngine> Core<M> {
                 if props.href != value {
                     props.href = value;
                     flags |= dirty::VIEW_PROPS;
+                    // A span's is recorded in its block's text (`link_hrefs`).
+                    if node.kind == Kind::Text && node.inline {
+                        rebuild_span = true;
+                    }
                 }
             }
             Prop::PanActivation(value) => {
@@ -6870,6 +7160,17 @@ impl<M: TextEngine> Core<M> {
             }
             Prop::Overlay(prop) => {
                 use crate::OverlayProp;
+                // A hint makes an overlay a tooltip's, which counts among no
+                // siblings (`is_element_child`): theirs move.
+                let parent = node.parent;
+                if matches!(prop, OverlayProp::Hint(_))
+                    && parent != NO_KEY
+                    && self.nodes[parent as usize]
+                        .positional
+                        .has(Positional::CHILDREN)
+                {
+                    self.queue_positions(parent);
+                }
                 self.set_overlay_config(key, |c| match prop {
                     OverlayProp::Anchor(v) => c.anchor = v,
                     OverlayProp::Placement(v) => c.placement = v,
@@ -7004,6 +7305,7 @@ impl<M: TextEngine> Core<M> {
                 {
                     let changed = match &prop {
                         NativeProp::Incognito(on) => Some(("`incognito` is", *on != p.incognito)),
+                        NativeProp::Zoomable(on) => Some(("`zoomable` is", *on != p.zoomable)),
                         // A re-render builds new handlers: only a change
                         // of the schemes served is worth a warning.
                         NativeProp::UrlSchemes(schemes) => Some((
@@ -7108,6 +7410,10 @@ impl<M: TextEngine> Core<M> {
                     }
                     Prop::PasteBehavior(behavior) => {
                         c.paste_behavior = behavior;
+                        false
+                    }
+                    Prop::PasteMaxSize(max) => {
+                        c.paste_max_size = max;
                         false
                     }
                     Prop::AutoFocus(on) => {
@@ -7391,10 +7697,13 @@ impl<M: TextEngine> Core<M> {
             .as_ref()
             .is_some_and(|c| c.deps() & crate::tailwind::deps::POSITION != 0)
         {
-            self.nodes[parent as usize].positional_children = true;
+            self.nodes[parent as usize].positional |= Positional::CHILDREN;
         }
-        if self.nodes[parent as usize].positional_children {
-            self.positions_changed(parent);
+        if self.nodes[parent as usize]
+            .positional
+            .has(Positional::CHILDREN)
+        {
+            self.queue_positions(parent);
         }
         self.spacing_changed(parent, child);
         if self.pointer_none_classes > 0 {
@@ -7530,8 +7839,11 @@ impl<M: TextEngine> Core<M> {
         if let Some(list) = self.nodes[parent as usize].list.as_mut() {
             list.remove_cell(key);
         }
-        if self.nodes[parent as usize].positional_children {
-            self.positions_changed(parent);
+        if self.nodes[parent as usize]
+            .positional
+            .has(Positional::CHILDREN)
+        {
+            self.queue_positions(parent);
         }
         let unlinked_id = self.nodes[key as usize].id;
         self.nodes[key as usize].parent = NO_KEY;
@@ -8423,6 +8735,8 @@ impl<M: TextEngine> Core<M> {
 
     fn flush_dirty(&mut self) {
         loop {
+            // The children that moved since, each parent's once.
+            self.flush_positions();
             self.flush_dirty_once();
             // Text blocks create the views of new attachments while
             // flushing, which queues them; texts inside attachments built
@@ -8659,6 +8973,9 @@ impl<M: TextEngine> Core<M> {
                     self.mount.push(MountItem::ComponentProps { id, props });
                 }
             }
+            if flags & dirty::NATIVE != 0 && !self.web_unchecked.is_empty() {
+                self.settle_web_urls(key);
+            }
             let node = &self.nodes[key as usize];
             if flags & dirty::NATIVE != 0
                 && let Some(control) = &node.control
@@ -8727,6 +9044,7 @@ impl<M: TextEngine> Core<M> {
                         node.rtl && !node.text_style.text_align_physical,
                     );
                     config.rtl = node.text_style.writing_direction.unwrap_or(node.rtl);
+                    config.locale = Some(self.components.environment.locale);
                     // A built-in bar takes the indicator's place.
                     config.scrollbar_visible =
                         input.scrollbar != crate::ScrollbarSetting::Hidden && input.bar.is_none();
@@ -8989,6 +9307,7 @@ impl<M: TextEngine> Core<M> {
             align: directed_align(align, node.rtl && !physical),
             writing_direction: node.text_style.writing_direction,
             rtl: node.rtl,
+            locale: Some(self.components.environment.locale),
             max_lines,
             ellipsize,
             // A line clamp already keeps lines from wrapping past it, and
@@ -9219,6 +9538,12 @@ impl<M: TextEngine> Core<M> {
                         if press && tracked & crate::tailwind::state::PRESSED != 0 {
                             events.set(EventKind::PressDown, true);
                             events.set(EventKind::PressUp, true);
+                        }
+                        // Where it goes (`TextView`'s links), for platforms
+                        // that make it a hyperlink (the web's `<a href>`).
+                        if let Some(href) = child.props.as_ref().and_then(|p| p.href.clone()) {
+                            out.link_hrefs
+                                .push(crate::text::LinkHref::new(out.links.len() as u32, href));
                         }
                         out.links.push(crate::text::TextLink {
                             start,
@@ -10774,7 +11099,11 @@ impl<M: TextEngine> Core<M> {
             }
         }
         if kind == Kind::Scroll {
-            self.set_scroll_content(key, scroll_extent(&l));
+            let horizontal = self.nodes[key as usize]
+                .scroll
+                .as_ref()
+                .is_some_and(|s| s.horizontal);
+            self.set_scroll_content(key, scroll_extent(&l, horizontal));
         }
         // List cells are positioned by `update_lists`, roots by
         // `layout_roots`.
@@ -10966,6 +11295,25 @@ impl<M: TextEngine> Core<M> {
                 }
             }
         }
+    }
+
+    /// The earliest index in `self.mount` where a newly issued `ScrollBy` for
+    /// `id` may be placed without overtaking an earlier counted scroll
+    /// (`ScrollBy` or `Command::ScrollTo`) already emitted for `id` in this batch.
+    pub(super) fn after_mounted_scroll(&self, id: NodeId) -> usize {
+        self.mount
+            .iter()
+            .rposition(|item| match item {
+                MountItem::Command {
+                    id: target,
+                    command: Command::ScrollTo { .. },
+                } => *target == id,
+                MountItem::ScrollBy { id: target, dx, dy } => {
+                    *target == id && (dx.0 != 0.0 || dy.0 != 0.0)
+                }
+                _ => false,
+            })
+            .map_or(0, |at| at + 1)
     }
 
     /// Merge relative corrections across list layout rounds. An explicit
@@ -11414,7 +11762,7 @@ impl<M: TextEngine> Core<M> {
                 (Some(pin), _) => list.target_offset(pin),
                 (None, &Command::ScrollTo { x, y, .. }) => {
                     let offset = if horizontal { x.0 } else { y.0 };
-                    if outer.is_some() {
+                    if outer.is_some() || list.viewport > 0.0 {
                         list.clamped(offset)
                     } else {
                         offset
@@ -11440,7 +11788,6 @@ impl<M: TextEngine> Core<M> {
                 outer_to = Some((o.start + offset, animated));
                 continue;
             }
-            list.issue_scroll_to(offset);
             let (x, y) = if horizontal {
                 (Points(offset), Points::ZERO)
             } else {
@@ -11464,11 +11811,6 @@ impl<M: TextEngine> Core<M> {
         if let (Some((offset, animated)), Some(o)) = (retarget, &outer) {
             outer_to = Some((o.start + offset, animated));
         } else if let Some((offset, animated)) = retarget {
-            self.nodes[key as usize]
-                .list
-                .as_mut()
-                .expect("list")
-                .issue_scroll_to(offset);
             let (x, y) = if horizontal {
                 (Points(offset), Points::ZERO)
             } else {
@@ -11855,11 +12197,13 @@ impl<M: TextEngine> Core<M> {
         // scroll before the viewport grows or the content shrinks, and
         // after the content grows (a shrinking viewport's frame comes
         // first anyway).
+        let after = self.after_mounted_scroll(id);
         let frame_at = grew
             .then(|| {
-                self.mount
+                self.mount[after..]
                     .iter()
                     .position(|m| matches!(m, MountItem::Frame { id: f, .. } if *f == id))
+                    .map(|offset| after + offset)
             })
             .flatten();
         match (scroll_by, frame_at) {
@@ -11888,7 +12232,7 @@ impl<M: TextEngine> Core<M> {
             }
             (Some(item), None) if content_len < old_len => {
                 self.set_scroll_content(key, content);
-                if let Some(at) = self.scroll_content_position(key) {
+                if let Some(at) = self.scroll_content_position(key).filter(|&at| at >= after) {
                     self.mount.insert(at, item);
                 } else {
                     self.mount.push(item);
@@ -11966,6 +12310,20 @@ impl<M: TextEngine> Core<M> {
             return true;
         };
         if list.dirty || !self.list_cells_settled(list) {
+            return false;
+        }
+        if list.parent
+            && let Some(outer) = list.outer
+            && let Some(outer_node) = self.nodes.get(outer.view as usize)
+            && (outer_node
+                .scroll
+                .as_ref()
+                .is_some_and(|s| s.asked.is_some())
+                || outer_node
+                    .list
+                    .as_ref()
+                    .is_some_and(|l| l.dirty || !self.list_cells_settled(l)))
+        {
             return false;
         }
         let Some((first, last)) = list.viewport_items() else {
@@ -12207,15 +12565,22 @@ fn ceil_to_pixel(value: Points, ratio: f32) -> Points {
 /// A scroll view's scrollable extent from its rounded layout: the overflow
 /// rectangle is measured from the padding box origin and stops at the
 /// children's border boxes, so the leading border and trailing padding are
-/// added.
-fn scroll_extent(l: &taffy::Layout) -> Size<Points> {
+/// added. The cross axis keeps the viewport's length, which the content
+/// spans (a vertical scroll view's width, a horizontal one's height). The
+/// main axis is the content's own extent, below the viewport too: a platform
+/// adds its own insets around the viewport (iOS's bars under a large title),
+/// and a floor there gives it a range to scroll over content that fits.
+fn scroll_extent(l: &taffy::Layout, horizontal: bool) -> Size<Points> {
     let o = l.scrollable_overflow_rect;
-    size_pt(
-        l.size.width.max(l.border.left + o.right + l.padding.right),
-        l.size
-            .height
-            .max(l.border.top + o.bottom + l.padding.bottom),
-    )
+    let (width, height) = (
+        l.border.left + o.right() + l.padding.right,
+        l.border.top + o.bottom() + l.padding.bottom,
+    );
+    if horizontal {
+        size_pt(width, height.max(l.size.height))
+    } else {
+        size_pt(width.max(l.size.width), height)
+    }
 }
 
 /// `layout` rounded as Taffy's rounding pass (`taffy::round_layout`) rounds
@@ -12279,10 +12644,17 @@ fn rounded(layout: &taffy::Layout, origin: Origin, ratio: taffy::Size<f32>) -> t
     out.padding.top = span(top, top + layout.padding.top, ry);
     out.padding.bottom = span(bottom - layout.padding.bottom, bottom, ry);
     let o = layout.scrollable_overflow_rect;
-    out.scrollable_overflow_rect.left = points(pixel(x + o.left, rx) - x0, rx);
-    out.scrollable_overflow_rect.right = points(pixel(x + o.right, rx) - x0, rx);
-    out.scrollable_overflow_rect.top = points(pixel(y + o.top, ry) - y0, ry);
-    out.scrollable_overflow_rect.bottom = points(pixel(y + o.bottom, ry) - y0, ry);
+    // Taffy packs the scroll-origin directions into the rectangle's signs;
+    // keep them, and keep the origin inside the rounded rectangle.
+    out.scrollable_overflow_rect = taffy::ScrollableOverflow::new(
+        taffy::Rect {
+            left: points(pixel(x + o.left(), rx) - x0, rx).min(0.0),
+            right: points(pixel(x + o.right(), rx) - x0, rx).max(0.0),
+            top: points(pixel(y + o.top(), ry) - y0, ry).min(0.0),
+            bottom: points(pixel(y + o.bottom(), ry) - y0, ry).max(0.0),
+        },
+        o.is_reversed(),
+    );
     out
 }
 
@@ -12515,6 +12887,7 @@ fn min_content_width<M: TextEngine>(
             let mut part = AttributedText {
                 no_wrap: true,
                 rtl: text.rtl,
+                locale: text.locale,
                 writing_direction: text.writing_direction,
                 ..Default::default()
             };
@@ -12585,7 +12958,7 @@ fn measure_leaf<M: TextEngine>(
         && let Some(LeafContext::Text(cx)) = cx
     {
         use taffy::util::ResolveOrZero;
-        let resolve = |_: *const (), _: f32| 0.0;
+        let resolve = |_: taffy::CalcHandle, _: f32| 0.0;
         let padding = style
             .padding
             .resolve_or_zero(input.parent_size.width, resolve);
@@ -12676,7 +13049,8 @@ fn measure_leaf_size<M: TextEngine>(
         }
         inset
     };
-    taffy::compute_leaf_layout(
+    let image = matches!(cx, Some(LeafContext::Image(_)));
+    let mut output = taffy::compute_leaf_layout(
         input,
         style,
         |_, _| 0.0,
@@ -12685,9 +13059,32 @@ fn measure_leaf_size<M: TextEngine>(
                 width: known.width.map(|w| (w - inset.width).max(0.0)),
                 height: known.height.map(|h| (h - inset.height).max(0.0)),
             };
+            // The space Taffy offers the content box is the space around
+            // the box less its padding and border, negative where that
+            // space is narrower than they are (a column squeezed while it
+            // resizes). The content then has no room, as with a known
+            // size: an input measured as wide as that negative space gave
+            // Taffy a negative overflow, which its debug assertions reject.
+            let available = taffy::Size {
+                width: available.width.map_definite_value(|w| w.max(0.0)),
+                height: available.height.map_definite_value(|h| h.max(0.0)),
+            };
             measure_content(engine, cache, cx, known, available, input_max_height)
         },
-    )
+    );
+    // An image is drawn inside its box whatever its fit (CSS's replaced
+    // elements have no scrollable overflow). Taffy lays a leaf out without
+    // the sizes its style gives it (`RunMode::PerformLayout`), so what was
+    // measured is the natural size: a 24 point icon in a 14 point box
+    // would give the scroll view around it 10 points to scroll.
+    if image {
+        let o = output.scrollable_overflow_rect;
+        let mut rect = o.rect();
+        rect.right = rect.right.min(output.size.width);
+        rect.bottom = rect.bottom.min(output.size.height);
+        output.scrollable_overflow_rect = taffy::ScrollableOverflow::new(rect, o.is_reversed());
+    }
+    output
 }
 
 /// The size of a leaf's content: `known` and `available` are its content
@@ -12965,6 +13362,24 @@ fn definite(size: Size<Points>) -> taffy::Size<AvailableSpace> {
 }
 
 /// The message for a refused URL.
+/// The URL a web view prop loads at or resolves against, when it is one.
+fn web_url(prop: &Prop) -> Option<&str> {
+    match prop {
+        Prop::Native(
+            NativeProp::Src(Some(url))
+            | NativeProp::BaseUrl(Some(url))
+            | NativeProp::Source(
+                crate::WebSource::Uri(url)
+                | crate::WebSource::Html {
+                    base_url: Some(url),
+                    ..
+                },
+            ),
+        ) => Some(url),
+        _ => None,
+    }
+}
+
 fn not_granted(what: &str, uri: &str, capability: &str) -> String {
     let advice = crate::access::grant_advice(uri, capability);
     format!("{what} {uri} is not granted: {advice}")
@@ -13017,6 +13432,9 @@ fn apply_native(control: &mut NativeProps, prop: NativeProp) {
             }
             p.base_url = url;
         }
+        (NativeProps::WebView(p), P::AllowOrigin(v)) => {
+            p.allow_origin = v.and_then(|o| crate::access::WebOrigin::parse(&o).ok());
+        }
         (NativeProps::WebView(p), P::InjectedJavaScript(v)) => p.injected_js = v,
         (NativeProps::WebView(p), P::InjectedJavaScriptBefore(v)) => p.injected_js_before = v,
         (NativeProps::WebView(p), P::UserAgent(v)) => p.user_agent = v,
@@ -13024,6 +13442,7 @@ fn apply_native(control: &mut NativeProps, prop: NativeProp) {
         (NativeProps::WebView(p), P::JavaScriptEnabled(v)) => p.javascript_enabled = v,
         (NativeProps::WebView(p), P::BackForwardGestures(v)) => p.back_forward_gestures = v,
         (NativeProps::WebView(p), P::Incognito(v)) => p.incognito = v,
+        (NativeProps::WebView(p), P::Zoomable(v)) => p.zoomable = v,
         (NativeProps::WebView(p), P::UrlSchemes(v)) => p.url_schemes = v,
         (NativeProps::WebView(p), P::DeferDownloads(v)) => p.defer_downloads = v,
         (NativeProps::Video(p), P::Source(v)) => {
@@ -13281,7 +13700,6 @@ fn shown_by(item: &MountItem) -> Shown {
                 | C::Share { .. }
                 | C::RenderCanvas { .. }
                 | C::FileRequest { .. }
-                | C::Speech { .. }
                 | C::Audio { .. }
                 | C::Notification { .. }
                 | C::Desktop { .. }

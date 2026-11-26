@@ -11,36 +11,6 @@ Collapsible 是内容可展开和收起的区域：摘要下面的详情、“�
 `content`。`open` 和切换它的触发控件（子元素之一）由应用持有，外观也由应用决定：`Collapsible` 没有自己的触发控件、箭头或文字。设置 `reveal`
 后，内容带动效展开和收起：它所在区域的高度从零弹到内容自身的高度再弹回，collapsible 之后的内容随之移动。
 
-```rust tabs
-use nsh_base::{collapsible, theme};
-use nsh_core::{AccessibilityState, prelude::*};
-
-fn storage() -> impl IntoElement {
-    let open = signal(false);
-    collapsible()
-        .open(open)
-        .reveal(true)
-        .gap_2()
-        .child(
-            view()
-                .role(AccessibilityRole::Button)
-                .accessibility_state(move || AccessibilityState {
-                    expanded: Some(open.get()),
-                    ..AccessibilityState::default()
-                })
-                .on_press(move || open.update(|o| *o = !*o))
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(text("Storage"))
-                .child(text("›").transition_transform().rotate(move || {
-                    if open.get() { deg(90.0) } else { deg(0.0) }
-                })),
-        )
-        .content(text("Photos 120 GB · Apps 54 GB · System 38 GB").text_color(move || theme().muted_foreground))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Collapsible } from "nsh/base";
@@ -73,6 +43,36 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{collapsible, theme};
+use nsh_core::{AccessibilityState, prelude::*};
+
+fn storage() -> impl IntoElement {
+    let open = signal(false);
+    collapsible()
+        .open(open)
+        .reveal(true)
+        .gap_2()
+        .child(
+            view()
+                .role(AccessibilityRole::Button)
+                .accessibility_state(move || AccessibilityState {
+                    expanded: Some(open.get()),
+                    ..AccessibilityState::default()
+                })
+                .on_press(move || open.update(|o| *o = !*o))
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(text("Storage"))
+                .child(text("›").transition_transform().rotate(move || {
+                    if open.get() { deg(90.0) } else { deg(0.0) }
+                })),
+        )
+        .content(text("Photos 120 GB · Apps 54 GB · System 38 GB").text_color(move || theme().muted_foreground))
+}
 ```
 
 `Collapsible` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 里是 `nsh-base` crate。值由应用持有：触发控件切换 `open`，

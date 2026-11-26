@@ -26,12 +26,12 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
-import { resolvePullRequestBaseline } from './ci.mjs';
+import { plan as planCi } from './ci.mjs';
 import { executor, runSuites } from './ci/run.mjs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkResults, createPlan, documentation } from './ci/plan.mjs';
-import { suites } from './ci/suites.mjs';
+import { suites, workers } from './ci/suites.mjs';
 
 test('manual worker validation runs its suites without claiming full CI coverage', () => {
   const plan = createPlan({ root, revision: 'head', worker: 'native-windows' });
@@ -199,7 +199,7 @@ test('the embedded external protocol fixture cannot be classified as documentati
   assert.equal(plan.full, false);
   assert.equal(plan.suites.root.filter, 'package(=maka-cli)');
   assert.ok(plan.suites.desktop);
-  assert.ok(plan.suites['macos-agent-execution']);
+  assert.ok(plan.suites['agent-execution']);
   assert.match(plan.suites.root.reason, /external_codex_cli/);
 });
 
@@ -227,17 +227,23 @@ test('a shared input plans the maintained platform jobs rather than silently nar
   }
 });
 
-test('macOS-only external_jobs run on native-macos without duplicating Linux recovery suites', () => {
+test('external_jobs run on both native workers and the Linux workspace suite', () => {
   const plan = full();
   assert.equal(
     plan.workers.find((worker) => worker.id === 'native-macos-agent'),
     undefined,
   );
   const worker = plan.workers.find((worker) => worker.id === 'native-macos');
-  assert.ok(worker.suites.includes('macos-agent-execution'));
+  assert.ok(worker.suites.includes('agent-execution'));
+  assert.ok(
+    plan.workers
+      .find((worker) => worker.id === 'native-windows')
+      .suites.includes('agent-execution'),
+  );
+  assert.ok(plan.suites.root);
   assert.ok(!worker.suites.includes('macos-nsh'));
-  assert.ok(!suites['macos-agent-execution'].cargoArgs.includes('--workspace'));
-  assert.equal(plan.suites['macos-agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
+  assert.ok(!suites['agent-execution'].cargoArgs.includes('--workspace'));
+  assert.equal(plan.suites['agent-execution'].filter, 'binary_id(=maka-cli::external_jobs)');
 });
 
 test('Node tooling tests under scripts/ map to tooling instead of triggering full CI', () => {
@@ -252,6 +258,20 @@ test('Node tooling tests under scripts/ map to tooling instead of triggering ful
   assert.ok(plan.suites.tooling);
   assert.equal(plan.suites.root, undefined);
   assert.deepEqual(plan.workers, []);
+});
+
+test('locales.manifest.json triggers a full CI plan including contracts, product, and native builds', () => {
+  const plan = createPlan({
+    root,
+    changes: ['locales.manifest.json'],
+    metadata: {},
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, true);
+  for (const id of ['tooling', 'contracts', 'product', 'root', 'native-build']) {
+    assert.ok(plan.suites[id], `expected suite ${id}`);
+  }
 });
 
 test('skill and product inputs still select the native Windows skills consumer', () => {
@@ -272,10 +292,13 @@ test('skill and product inputs still select the native Windows skills consumer',
   }
 });
 
-test('Windows process and account-guard regressions are selected from their actual consumers', () => {
+test('Windows process, sandbox and account-guard regressions are selected from their actual consumers', () => {
   const packages = [
     ['maka-host-runtime', 'platform/host-runtime'],
     ['maka-process', 'platform/process'],
+    ['maka-cli', 'products/maka/cli'],
+    ['maka-agent-native', 'plugins/agent/native'],
+    ['maka-sandbox', 'platform/sandbox'],
   ].map(([name, path]) => ({
     name,
     id: name,
@@ -292,6 +315,9 @@ test('Windows process and account-guard regressions are selected from their actu
   for (const path of [
     'platform/host-runtime/src/sandbox/windows/guards.rs',
     'platform/process/tests/integration/conpty.rs',
+    'products/maka/cli/tests/integration/sandbox/windows/isolated.rs',
+    'plugins/agent/native/src/executor/external/claude/interactive.rs',
+    'platform/sandbox/src/lib.rs',
   ]) {
     const plan = createPlan({
       root,
@@ -305,10 +331,67 @@ test('Windows process and account-guard regressions are selected from their actu
     assert.ok(worker.suites.includes('windows-shell'));
     assert.match(plan.suites['windows-shell'].filter, /binary_id\(=maka-process::integration\)/);
     assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::guards::tests::/);
+    assert.match(
+      plan.suites['windows-shell'].filter,
+      /native_task_namespace_can_be_denied_by_policy/,
+    );
+    assert.match(plan.suites['windows-shell'].filter, /sandbox::windows::policy::tests::/);
+    assert.ok(
+      plan.suites['windows-shell'].filter.includes(
+        '(binary_id(=maka-cli::integration) & test(sandbox::isolated::))',
+      ),
+    );
     assert.ok(!suites['windows-shell'].cargoArgs.includes('--workspace'));
-    for (const pkg of ['maka-process', 'maka-settings-native', 'maka-host-runtime']) {
+    for (const pkg of [
+      'maka-process',
+      'maka-cli',
+      'maka-agent-native',
+      'maka-settings-native',
+      'maka-host-runtime',
+      'maka-sandbox',
+    ]) {
       assert.ok(suites['windows-shell'].cargoArgs.includes(pkg));
+      assert.ok(worker.cargoScope.includes(pkg));
     }
+  }
+});
+
+test('Windows Host policy path regressions run for their actual consumers', () => {
+  const packages = [
+    [
+      'maka-processes-native',
+      'plugins/workspace/workspace-processes/native/src/execute.rs',
+      'managed_worktree_shell_keeps_writes_inside_its_workspace',
+    ],
+    ['maka-sandbox', 'platform/sandbox/src/path.rs', 'resolved_path_projection'],
+  ].map(([name, path, filter]) => ({
+    name,
+    id: name,
+    source: null,
+    manifest_path: join(root, dirname(dirname(path)), 'Cargo.toml'),
+    path,
+    filter,
+  }));
+  const metadata = {
+    root: {
+      packages,
+      workspace_members: packages.map(({ id }) => id),
+      resolve: { nodes: packages.map(({ id }) => ({ id, deps: [] })) },
+    },
+  };
+  for (const pkg of packages) {
+    const plan = createPlan({
+      root,
+      changes: [pkg.path],
+      metadata,
+      revision: 'test',
+      baseline: 'base',
+    });
+    const worker = plan.workers.find(({ id }) => id === 'native-windows');
+    assert.ok(worker.suites.includes('windows-shell'));
+    assert.ok(worker.cargoScope.includes(pkg.name));
+    assert.ok(suites['windows-shell'].cargoArgs.includes(pkg.name));
+    assert.ok(plan.suites['windows-shell'].filter.includes(pkg.filter));
   }
 });
 
@@ -854,7 +937,7 @@ test('frontend workbench edits stay scoped to UI/product consumers and skip unre
   assert.match(plan.suites.root.filter, /package\(=maka-cli\)/);
   assert.doesNotMatch(plan.suites.root.filter, /package\(=maka-agent-native\)/);
   assert.equal(plan.suites.bridge, undefined);
-  assert.equal(plan.suites['macos-agent-execution'], undefined);
+  assert.equal(plan.suites['agent-execution'], undefined);
   assert.equal(plan.suites['windows-skills'], undefined);
   assert.equal(plan.suites.nsh, undefined);
   assert.equal(plan.suites.termina, undefined);
@@ -1032,66 +1115,27 @@ test('every root suite package reference matches a real workspace crate', () => 
   assert.deepEqual(missing, []);
 });
 
-test('stacked PR baseline uses synthetic merge first parent to exclude unrelated trunk commits', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'maka-ci-stack-'));
-  const orig = join(dir, 'orig');
-  const depth2 = join(dir, 'depth2');
-  const depth1 = join(dir, 'depth1');
-  const git = (cwd, args) =>
-    execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: 'Test',
-        GIT_AUTHOR_EMAIL: 'test@example.com',
-        GIT_COMMITTER_NAME: 'Test',
-        GIT_COMMITTER_EMAIL: 'test@example.com',
-      },
-    }).trim();
-  try {
-    mkdirSync(orig);
-    git(orig, ['init', '-b', 'main']);
-    writeFileSync(join(orig, 'base.txt'), 'base\n');
-    git(orig, ['add', 'base.txt']);
-    git(orig, ['commit', '-m', 'init']);
-    git(orig, ['checkout', '-b', 'pr1']);
-    writeFileSync(join(orig, 'lower.txt'), 'lower\n');
-    git(orig, ['add', 'lower.txt']);
-    git(orig, ['commit', '-m', 'lower PR']);
-    const pr1Head = git(orig, ['rev-parse', 'HEAD']);
-    git(orig, ['checkout', '-b', 'pr2']);
-    writeFileSync(join(orig, 'upper.txt'), 'upper\n');
-    git(orig, ['add', 'upper.txt']);
-    git(orig, ['commit', '-m', 'upper PR']);
-    const pr2Head = git(orig, ['rev-parse', 'HEAD']);
-    git(orig, ['checkout', 'main']);
-    writeFileSync(join(orig, 'trunk-only.txt'), 'trunk\n');
-    git(orig, ['add', 'trunk-only.txt']);
-    git(orig, ['commit', '-m', 'unrelated trunk commit']);
-    git(orig, ['merge', '--no-ff', 'pr1', '-m', 'merge pr1 into main']);
-    const pr1Merge = git(orig, ['rev-parse', 'HEAD']);
-    git(orig, ['merge', '--no-ff', 'pr2', '-m', 'merge pr2 into pr1 merge']);
+test('fast PR check runs formatting, ASF headers, migration lock, and i18n without npm dependencies', async () => {
+  const calls = [];
+  const exec = executor(root, {}, { run: async (exe, args) => calls.push({ exe, args }) });
+  await exec.check('pr');
+  assert.deepEqual(calls, [
+    { exe: 'cargo', args: ['fmt', '--all', '--', '--check'] },
+    { exe: 'rustfmt', args: ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs'] },
+    { exe: process.execPath, args: ['scripts/asf-license-headers.mjs', 'check'] },
+    { exe: process.execPath, args: ['scripts/rust/migration-lock.mjs', 'check'] },
+    { exe: process.execPath, args: ['scripts/i18n/check.mjs'] },
+  ]);
+});
 
-    const remoteUrl = pathToFileURL(orig).href;
-    execFileSync('git', ['clone', '--depth=2', remoteUrl, depth2], { stdio: 'pipe' });
-    const resolved = await resolvePullRequestBaseline(depth2, {
-      base: { sha: pr1Head },
-      head: { sha: pr2Head },
-    });
-    assert.deepEqual(resolved, { baseline: pr1Merge, fetch: false });
-    assert.deepEqual(
-      git(depth2, ['diff', '--name-only', resolved.baseline, 'HEAD']).split('\n').filter(Boolean),
-      ['upper.txt'],
-    );
-
-    execFileSync('git', ['clone', '--depth=1', remoteUrl, depth1], { stdio: 'pipe' });
-    const fallback = await resolvePullRequestBaseline(depth1, {
-      base: { sha: pr1Head },
-      head: { sha: pr2Head },
-    });
-    assert.deepEqual(fallback, { baseline: pr1Head, fetch: true });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test('scheduled CI events plan full validation across all maintained workers', async () => {
+  const planned = await planCi({ event: 'schedule' });
+  assert.equal(planned.full, true);
+  assert.equal(planned.baseline, null);
+  assert.ok(planned.suites.root);
+  assert.ok(planned.suites.tooling);
+  assert.deepEqual(
+    planned.workers.map((worker) => worker.id),
+    workers.map((worker) => worker.id),
+  );
 });

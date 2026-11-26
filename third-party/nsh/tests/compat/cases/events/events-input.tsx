@@ -20,6 +20,7 @@ function App() {
   const selection = signal("none");
   const caret = signal("none");
   const pasted = signal("none");
+  const tooLarge = signal("none");
   const inserted = signal("none");
   let pasteField: InputRef | undefined;
   const size = signal("none");
@@ -55,15 +56,18 @@ function App() {
         testID="paste"
         ref={(r) => (pasteField = r)}
         pasteBehavior="report"
+        pasteMaxSize={1048576}
         style={{ width: 300, height: 40 }}
         onChange={({ value }) => inserted.set(value)}
         onPaste={(e) => {
           // Called first: a throw would leave "Pasted" as it was.
           if (e.text.startsWith("insert:")) pasteField!.insertText(e.text.slice("insert:".length));
           pasted.set(`${e.text} html ${e.html.length} files ${e.files.length} uris ${e.uris.length}`);
+          tooLarge.set(e.tooLarge.map((f) => `${f.name} ${f.type} ${f.size}`).join(", ") || "no files");
         }}
       />
       <Text>Pasted: {pasted()}</Text>
+      <Text>Too large: {tooLarge()}</Text>
       <Text>Inserted: {inserted()}</Text>
       <Text>Submitted: {submitted()}</Text>
       <Input

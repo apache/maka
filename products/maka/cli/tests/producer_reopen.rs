@@ -183,6 +183,7 @@ struct Model {
     marker: String,
     bootstrap: String,
     bootstrap_step: Mutex<u8>,
+    script_messages: Mutex<Vec<String>>,
     requests: AtomicUsize,
     producer_requests: AtomicUsize,
     eof: AtomicUsize,
@@ -216,6 +217,12 @@ impl Model {
             let content = last["content"].to_string();
             if content.contains("AUTOMATION-FOLLOWUP") || content.contains("AUTOMATION-STEERING") {
                 self.producer_requests.fetch_add(1, Ordering::SeqCst);
+                if content.contains("AUTOMATION-FOLLOWUP-POST") {
+                    let text = last["content"]
+                        .as_str()
+                        .ok_or("expected a text automation message")?;
+                    self.script_messages.lock().unwrap().push(text.to_owned());
+                }
                 return Ok(plan_text("Automation delivered."));
             }
         }
@@ -329,6 +336,32 @@ impl Model {
                     value == json!({"activated":["ScheduledTask"]}),
                     "actual discovery result must activate exactly ScheduledTask"
                 );
+                scheduled_tool(
+                    "test-script",
+                    json!({"mode":"test_script","state":{"cursor":7},
+                    "source":r#"const {cursor} = JSON.parse(Deno.env.get("MAKA_AUTOMATION_STATE"));
+                        console.error("preview"); console.log("checking");
+                        console.log(JSON.stringify({trigger:true,dedupeKey:"dry",summary:"Sample",data:cursor,state:cursor+1}));"#}),
+                )
+            }
+            2 => {
+                let result: Value = serde_json::from_str(tool_text(messages, "test-script")?)
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(result["ok"], true, "{result}");
+                assert_eq!(result["triggered"], true);
+                assert_eq!(result["dedupeKey"], "dry");
+                assert_eq!(result["summary"], "Sample");
+                assert_eq!(result["data"], 7);
+                assert_eq!(result["state"], 8);
+                assert!(result["durationMs"].is_u64());
+                assert!(result["stdout"].as_str().unwrap().starts_with("checking\n"));
+                assert_eq!(result["stderr"], "preview\n");
+                scheduled_tool("list-after-test", json!({"mode":"list"}))
+            }
+            3 => {
+                let listed: Value = serde_json::from_str(tool_text(messages, "list-after-test")?)
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(listed["tasks"], json!([]), "{listed}");
                 let start_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -341,7 +374,7 @@ impl Model {
                     "timezone":"UTC","misfire":"latest","effect":"agent_run","maxFires":1,"expiresAt":null}),
                 )
             }
-            2 => {
+            4 => {
                 let value: Value = serde_json::from_str(tool_text(messages, "create-schedule")?)
                     .map_err(|error| format!("direct create result JSON: {error}"))?;
                 assert!(value["taskId"].is_string());
@@ -503,6 +536,7 @@ async fn failed_run_history(client: &Client, session: &str, execution: &Value) -
         chunks,
         before,
         after,
+        ..
     } = page
     else {
         return Err("producer history unexpectedly selected a Room".into());
@@ -1000,7 +1034,7 @@ async fn body(
                 Some(model.as_ref()),
             )
             .await?;
-            assert_eq!(*model.bootstrap_step.lock().unwrap(), 3);
+            assert_eq!(*model.bootstrap_step.lock().unwrap(), 5);
             assert_eq!(model.producer_requests.load(Ordering::SeqCst), 0);
             let page = query(client, "schedules", json!({"kind":"list"})).await?;
             assert_eq!(page["kind"], "page");
@@ -1344,6 +1378,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
         marker: format!("producer-{nonce}"),
         bootstrap: format!("schedule-{nonce}"),
         bootstrap_step: Mutex::new(0),
+        script_messages: Mutex::default(),
         requests: AtomicUsize::new(0),
         producer_requests: AtomicUsize::new(0),
         eof: AtomicUsize::new(0),
@@ -1409,7 +1444,18 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
         Ok(Ok(Ok(()))) => {
             assert!(cleanup.is_empty(), "{cleanup:?}");
             if matches!(producer, Producer::Automation) {
-                assert_eq!(model.producer_requests.load(Ordering::SeqCst), 4);
+                let messages = model.script_messages.lock().unwrap();
+                assert_eq!(messages.len(), 2);
+                for (cursor, message) in (1..=2).zip(messages.iter()) {
+                    let evidence = format!(
+                        "AUTOMATION-FOLLOWUP-POST\n\n[Trigger context]\nSummary: POST event {cursor}\nData: {{\"cursor\":{cursor}}}\nDedupe key: post-{cursor}"
+                    );
+                    assert!(message.ends_with(&evidence), "{message}");
+                }
+                assert_eq!(
+                    model.producer_requests.load(Ordering::SeqCst),
+                    4 + messages.len()
+                );
                 return;
             }
             let (requests, producer_requests, eof) = match producer {
@@ -1417,7 +1463,7 @@ async fn acceptance(producer: Producer, retry_workspace: bool) {
                     let count = 3 + usize::from(pending_steering);
                     (count, count, 1)
                 }
-                Producer::Scheduler => (4, 1, 1),
+                Producer::Scheduler => (6, 1, 1),
                 Producer::Automation => unreachable!(),
                 Producer::GoalBudget => (2, 2, 0),
             };
@@ -1751,9 +1797,15 @@ async fn automation_delivery(
         "agent",
         "schedule",
         json!({"kind":"create","input":{"timezone":"UTC","misfire":"skip","task":{
-            "title":"POST check","intentBody":"AUTOMATION-FOLLOWUP-POST","maxFires":1,
+            "title":"POST check","intentBody":"AUTOMATION-FOLLOWUP-POST","maxFires":2,
             "schedule":{"kind":"script","everySeconds":1,"startAt":now_ms()+100,
-                "source":format!("const response = await fetch(\"{base}/condition\", {{ method: 'POST', headers: {{ 'x-condition': 'ready' }}, body: 'check' }}); console.log(await response.json());")},
+                "source":format!(r#"const response = await fetch("{base}/condition", {{ method: "POST", headers: {{ "x-condition": "ready" }}, body: "check" }});
+                    const previous = Deno.env.get("MAKA_AUTOMATION_STATE");
+                    const saved = previous === undefined ? undefined : JSON.parse(previous);
+                    if (saved && saved.padding.length !== 65510) throw Error("incomplete state");
+                    const cursor = (saved?.cursor ?? 0) + 1;
+                    console.log(JSON.stringify({{trigger:await response.json(), dedupeKey:"post-"+cursor,
+                        summary:"POST event "+cursor, data:{{cursor}}, state:{{cursor,padding:"x".repeat(65510)}}}}));"#)},
             "effect":{"kind":"session","delivery":"followup","model":{"connectionId":connection,"modelId":"gpt-4.1"},
                 "target":{"sessionId":session["id"],"workspace":session["workspace"],"permissions":session["permissions"],
                     "boundaryRevision":session["boundaryRevision"],"binding":session["binding"]}}
@@ -1762,9 +1814,18 @@ async fn automation_delivery(
     )
     .await?;
     assert_eq!(posted["kind"], "committed", "{posted}");
-    let posted = wait(posted["taskId"].as_str().unwrap().to_owned(), 1).await?;
+    let posted = wait(posted["taskId"].as_str().unwrap().to_owned(), 2).await?;
     assert_eq!(posted["task"]["status"], "completed", "{posted}");
     assert_eq!(posted["task"]["runs"][0]["outcome"], "ok", "{posted}");
-    assert!(posted["task"]["runs"][0]["runId"].is_string(), "{posted}");
+    for run in posted["task"]["runs"].as_array().unwrap() {
+        work(
+            client,
+            session["id"].as_str().unwrap(),
+            &fire_message_id(run),
+            Some("completed"),
+            Some(model),
+        )
+        .await?;
+    }
     Ok(())
 }

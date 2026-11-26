@@ -21,10 +21,11 @@
 mod access;
 mod client;
 pub mod discovery;
+mod execution;
 mod lifecycle;
 pub mod startup;
 pub mod websocket;
-pub use access::Pairing;
+pub use access::{Pairing, PeerPairingInvite, PeerPairingOptions, PeerPairingReceipt};
 pub mod protocol;
 pub use client::{CallChannelOpener, Channel, Client, LocalCall, OpenChannel};
 pub use discovery::Registration;
@@ -36,8 +37,10 @@ use super::transport::{
 use super::{Application, NativeRegistry, Result};
 use crate::ipc::{LocalListener, LocalStream};
 use access::{Authority, Principal};
+pub use maka_config::access::{HostPeerAccess, PeerId};
 use maka_event_log::root_store::RootStore;
 use maka_plugin_core::deployment::DeploymentRef;
+use maka_remote_pairing::RelayEndpoint;
 use protocol::{Connected, Opening, Request, Response, SessionControl};
 use sha2::Digest;
 use std::{
@@ -45,6 +48,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 use websocket::WebSocketListener;
@@ -65,6 +69,14 @@ impl Default for Options {
     }
 }
 
+/// A binary Host wire stream from a trusted transport adapter. The adapter
+/// must derive the ID from cryptographic endpoint authentication, never from
+/// the bytes on this stream. IDs must share a canonical namespace with grants.
+pub struct AuthenticatedPeerStream {
+    pub peer_id: PeerId,
+    pub stream: Channel,
+}
+
 /// Opened only from a checked, persisted source and trusted endpoint grants.
 /// The caller retains this owner after any failed cleanup acknowledgement.
 pub struct Host {
@@ -73,8 +85,11 @@ pub struct Host {
     application: Application,
     store: Arc<RootStore>,
     access: Arc<maka_config::ConfigurationStore>,
+    identity: maka_remote_pairing::DeviceIdentity,
     access_grant: Mutex<String>,
     access_gate: tokio::sync::Mutex<()>,
+    native_relays: Mutex<Vec<RelayEndpoint>>,
+    revoked_peers: broadcast::Sender<PeerId>,
     epoch: Uuid,
     source: DeploymentRef,
     policy: Arc<PeerPolicy>,
@@ -82,6 +97,7 @@ pub struct Host {
     sessions: Mutex<BTreeMap<Uuid, Arc<Session>>>,
     stop: CancellationToken,
     accept_closed: CancellationToken,
+    shutdown: tokio::sync::OnceCell<Result<()>>,
     residency: Mutex<lifecycle::Residency>,
 }
 struct Session {
@@ -101,6 +117,15 @@ enum SessionMode {
         selections: BTreeMap<String, HostEndpoint>,
     },
 }
+fn publication_grant(source: &DeploymentRef, configuration: &Configuration) -> Result<String> {
+    let publication =
+        serde_json::to_vec(&(source, configuration)).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "application.owner:{}",
+        hex::encode(sha2::Sha256::digest(publication))
+    ))
+}
+
 impl Host {
     pub async fn open(
         store: Arc<RootStore>,
@@ -152,6 +177,13 @@ impl Host {
         {
             return Err("invalid Host options".into());
         }
+        if let Some(execution) = store.checkpoint_execution() {
+            let grant = execution.grant();
+            if grant.binding.source.scope.deployment != loaded.source().reference.deployment {
+                return Err("execution grant belongs to another deployment".into());
+            }
+            execution.check().await.map_err(|e| e.to_string())?;
+        }
         configuration.validate()?;
         let Configuration::PublicHost {
             endpoints,
@@ -159,6 +191,26 @@ impl Host {
             ..
         } = &configuration;
         let root = store.owned_root().map_err(|error| error.to_string())?;
+        let source = loaded.source().reference.clone();
+        let access_grant = publication_grant(&source, &configuration)?;
+        let identity_path = root
+            .canonical_path()
+            .join(maka_remote_pairing::HOST_IDENTITY_FILE);
+        let identity = tokio::task::spawn_blocking(move || {
+            maka_remote_pairing::DeviceIdentity::load_or_create(&identity_path)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        let access = Arc::new(
+            maka_config::ConfigurationStore::for_root(root.clone())
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+        access
+            .prune_host_peer_pairing_invites(access_grant.clone())
+            .await
+            .map_err(|error| error.to_string())?;
         let policy = Arc::new(PeerPolicy::with_native_grants(grants.clone())?);
         let application = Application::start_loaded(
             store.clone(),
@@ -172,42 +224,35 @@ impl Host {
             application.shutdown().await?;
             return Err(error);
         }
-        let access = match maka_config::ConfigurationStore::for_root(root.clone()).await {
-            Ok(access) => Arc::new(access),
-            Err(error) => {
-                application.shutdown().await?;
-                return Err(error.to_string());
-            }
-        };
-        let access_grant = format!(
-            "application.owner:{}",
-            hex::encode(sha2::Sha256::digest(
-                serde_json::to_vec(&(application.source(), &configuration))
-                    .map_err(|error| error.to_string())?
-            ))
-        );
-        let source = application.source().expect("persisted Host").clone();
         // Only this running revision and newer ones can still have callers.
         if let Err(error) = store.release_superseded_application_sources(&source).await {
             tracing::error!(%error, "Superseded application sources remain installed");
         }
-        Ok(Arc::new(Self {
+        let host = Arc::new(Self {
             root,
             options,
             source,
             application,
             store,
             access,
+            identity,
             access_grant: Mutex::new(access_grant),
             access_gate: tokio::sync::Mutex::new(()),
+            native_relays: Mutex::new(Vec::new()),
+            // Keep room for a burst of peer revocations without disconnecting
+            // healthy peers. Subscribers still fail closed if they fall behind.
+            revoked_peers: broadcast::channel(64).0,
             policy,
             epoch: Uuid::new_v4(),
             configuration: Mutex::new(configuration),
             sessions: Mutex::default(),
             stop: CancellationToken::new(),
             accept_closed: CancellationToken::new(),
+            shutdown: tokio::sync::OnceCell::new(),
             residency: Mutex::new(lifecycle::Residency::default()),
-        }))
+        });
+        host.watch_execution();
+        Ok(host)
     }
 
     async fn publication(&self) -> Result<Publication> {
@@ -272,13 +317,8 @@ impl Host {
         if persisted != previous && persisted != desired {
             return Err("Host configuration conflicts with persisted authority".into());
         }
-        let access_grant = format!(
-            "application.owner:{}",
-            hex::encode(sha2::Sha256::digest(
-                serde_json::to_vec(&(Some(&self.source), &configuration))
-                    .map_err(|error| error.to_string())?
-            ))
-        );
+        let access_grant = publication_grant(&self.source, &configuration)?;
+        let grant_changed = *self.access_grant.lock().unwrap() != access_grant;
         if !self
             .store
             .compare_and_set_application_launch_configuration(source, record.configuration, desired)
@@ -287,14 +327,32 @@ impl Host {
         {
             return Err("Host configuration source or persisted authority changed".into());
         }
-        // No await between durable confirmation and publication of live authority.
-        // Existing sessions retain their captured bindings and accepted jobs.
+        // Fence obsolete native bindings before publishing the new authority.
+        // Jobs that already started still belong to their original transport.
+        if grant_changed {
+            self.revoke_native_sessions();
+            if let Err(error) = self
+                .access
+                .prune_host_peer_pairing_invites(access_grant.clone())
+                .await
+            {
+                // The durable publication moved. Do not admit under the old
+                // grant; cold startup will reconcile the invitations.
+                self.stop.cancel();
+                return Err(error.to_string());
+            }
+        }
         let Configuration::PublicHost { native, .. } = &configuration;
         self.policy.replace_native_grants(native.clone());
         *self.configuration.lock().unwrap() = configuration;
         *self.access_grant.lock().unwrap() = access_grant;
         Ok(())
     }
+    /// The native transport must use the same key that signs pairing tickets.
+    pub fn device_identity(&self) -> &maka_remote_pairing::DeviceIdentity {
+        &self.identity
+    }
+
     pub fn root_id(&self) -> &str {
         self.root.root_id()
     }
@@ -351,33 +409,87 @@ impl Host {
     }
     pub async fn serve(
         self: &Arc<Self>,
-        mut listener: LocalListener,
+        listener: LocalListener,
         websocket: Option<WebSocketListener>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        self.serve_with_peers(listener, websocket, None, cancel)
+            .await
+    }
+
+    /// Peer ingress EOF leaves IPC and WebSocket admission running.
+    pub async fn serve_with_peers(
+        self: &Arc<Self>,
+        listener: LocalListener,
+        websocket: Option<WebSocketListener>,
+        peers: Option<mpsc::Receiver<AuthenticatedPeerStream>>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        self.serve_ingress(Some(listener), websocket, peers, cancel)
+            .await
+    }
+
+    /// Peer ingress EOF drains accepted streams; cancellation interrupts that drain.
+    pub async fn serve_peer_streams(
+        self: &Arc<Self>,
+        peers: mpsc::Receiver<AuthenticatedPeerStream>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        self.serve_ingress(None, None, Some(peers), cancel).await
+    }
+
+    async fn serve_ingress(
+        self: &Arc<Self>,
+        mut listener: Option<LocalListener>,
+        websocket: Option<WebSocketListener>,
+        mut peers: Option<mpsc::Receiver<AuthenticatedPeerStream>>,
         cancel: CancellationToken,
     ) -> Result<()> {
         enum Incoming {
             Local(LocalStream),
-            Remote(tokio::net::TcpStream),
+            WebSocket(tokio::net::TcpStream, Arc<[String]>),
+            Peer(AuthenticatedPeerStream),
         }
         let tasks = TaskTracker::new();
         let mut rejected = None;
         let accepted = loop {
             let stream = tokio::select! {
-                biased;
                 () = self.stop.cancelled() => break Ok(()),
                 () = cancel.cancelled() => break Ok(()),
-                value = listener.accept() => match value {
+                value = async {
+                    match &mut listener {
+                        Some(listener) => listener.accept().await,
+                        None => std::future::pending().await,
+                    }
+                } => match value {
                     Ok(stream) => Incoming::Local(stream),
                     Err(error) => break Err(error.to_string()),
                 },
                 value = async {
                     match &websocket {
-                        Some(listener) => listener.listener.accept().await,
+                        Some(listener) => listener.listener.accept().await.map(|(stream, _)| {
+                            Incoming::WebSocket(stream, listener.allowed_origins.clone())
+                        }),
                         None => std::future::pending().await,
                     }
                 } => match value {
-                    Ok((stream, _)) => Incoming::Remote(stream),
+                    Ok(stream) => stream,
                     Err(error) => break Err(error.to_string()),
+                },
+                value = async {
+                    match &mut peers {
+                        Some(peers) => peers.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match value {
+                    Some(stream) => Incoming::Peer(stream),
+                    None => {
+                        peers = None;
+                        if listener.is_none() && websocket.is_none() {
+                            break Ok(());
+                        }
+                        continue;
+                    }
                 },
             };
             let connection = {
@@ -425,9 +537,6 @@ impl Host {
                 }
             };
             let host = self.clone();
-            let origins = websocket
-                .as_ref()
-                .map(|listener| listener.allowed_origins.clone());
             tasks.spawn(async move {
                 let _connection = connection;
                 // A malformed or disconnected peer fails only its own channel.
@@ -435,26 +544,37 @@ impl Host {
                     Incoming::Local(stream) => {
                         let _ = host.connection(stream).await;
                     }
-                    Incoming::Remote(stream) => {
-                        let _ = websocket::connection(
-                            stream,
-                            host,
-                            origins.expect("WebSocket listener"),
-                        )
-                        .await;
+                    Incoming::WebSocket(stream, origins) => {
+                        let _ = websocket::connection(stream, host, origins).await;
+                    }
+                    Incoming::Peer(AuthenticatedPeerStream { peer_id, stream }) => {
+                        tokio::select! {
+                            biased;
+                            () = host.accept_closed.cancelled() => {},
+                            _ = host.channel(stream, Authority::AuthenticatedPeer { peer_id }) => {},
+                        }
                     }
                 }
             });
         };
+        tasks.close();
+        // Only peer-only EOF removes the last ingress before shutdown.
+        if listener.is_none() && websocket.is_none() && peers.is_none() {
+            tokio::select! {
+                () = self.stop.cancelled() => {},
+                () = cancel.cancelled() => {},
+                () = tasks.wait() => {},
+            }
+        }
         // Stop accepting new peers and unlink the local socket BEFORE closing
         // any rejected stream or cancelling in-flight handshakes, so a peer
         // observing EOF/ECONNRESET while the Host retires sees the endpoint gone.
         drop(listener);
         drop(websocket);
+        drop(peers);
         drop(rejected);
         self.accept_closed.cancel();
         self.stop.cancel();
-        tasks.close();
         tasks.wait().await;
         self.shutdown().await?;
         accepted
@@ -474,10 +594,17 @@ impl Host {
     {
         let (input, mut output) = tokio::io::split(stream);
         let mut input = wire::Reader::new(input);
+        // Local administration may submit whole application configurations.
+        const MAX_NATIVE_OPENING: usize = 64 * 1024;
+        let limit = if matches!(authority, Authority::AuthenticatedPeer { .. }) {
+            MAX_NATIVE_OPENING
+        } else {
+            usize::MAX
+        };
         let opening: Opening = tokio::select! {
             biased;
             () = self.accept_closed.cancelled() => return Err("Host is closing".into()),
-            value = tokio::time::timeout(self.options.handshake_timeout, input.read()) => value.map_err(|_| "Host handshake timed out")??,
+            value = tokio::time::timeout(self.options.handshake_timeout, input.read_bounded(limit)) => value.map_err(|_| "Host handshake timed out")??,
         };
         if opening.version != VERSION || opening.epoch.is_some_and(|epoch| epoch != self.epoch) {
             return Err("Host protocol or incarnation changed".into());
@@ -522,6 +649,31 @@ impl Host {
                     &Response::Revoked(self.revoke_access(credential).await),
                 )
                 .await
+            }
+            Request::PreparePeerPairing(options) => {
+                authority.local()?;
+                let result = self.prepare_peer_pairing(options).await;
+                wire::write(&mut output, &Response::PeerPairingInvite(result)).await
+            }
+            Request::ListPeerAccess => {
+                authority.local()?;
+                let result = self.list_peer_access().await;
+                wire::write(&mut output, &Response::PeerAccess(result)).await
+            }
+            Request::RevokePeerAccess { peer_id } => {
+                authority.local()?;
+                let peer_id = PeerId::new(peer_id).map_err(|error| error.to_string())?;
+                let result = self.revoke_peer_access(peer_id).await;
+                wire::write(&mut output, &Response::Revoked(result)).await
+            }
+            Request::RedeemPeerPairing {
+                invite_secret,
+                device_label,
+            } => {
+                let result = self
+                    .redeem_peer_pairing(&authority, invite_secret, device_label)
+                    .await;
+                wire::write(&mut output, &Response::PeerPairingReceipt(result)).await
             }
             Request::FinalizeAccess => {
                 wire::write(
@@ -747,27 +899,31 @@ impl Host {
                     tokio::select! {
                         biased;
                         () = self.stop.cancelled() => return Err("Host is closing".into()),
+                        () = session.transport.wait_for_close() => return Ok(false),
                         result = wire::write(&mut output, &response) => result?,
                     }
                     let mut captured = None;
                     loop {
                         let command = tokio::select! {
                             biased;
-                            () = self.stop.cancelled() => break Ok(()),
-                            () = session.transport.wait_for_close() => break Ok(()),
+                            () = self.stop.cancelled() => break Ok(false),
+                            () = session.transport.wait_for_close() => break Ok(false),
                             result = input.read::<SessionControl>() => result?,
                         };
                         if matches!(command, SessionControl::Close) {
-                            break Ok(());
+                            break Ok(true);
                         }
                         let response = if matches!(command, SessionControl::Refresh) {
                             let result = async {
                                 let SessionMode::Owned { selections } = &session.mode else {
                                     return Err("Peer sessions require captured approval".into());
                                 };
-                                let endpoints =
-                                    Endpoints::start(&self.application.client(), selections)
-                                        .await?;
+                                let application = self.application.client();
+                                let endpoints = tokio::select! {
+                                    biased;
+                                    () = session.transport.wait_for_close() => return Err("Host session is closing".into()),
+                                    endpoints = Endpoints::start(&application, selections) => endpoints?,
+                                };
                                 let catalogue = Catalogue::captured(&endpoints);
                                 wire::encode_bounded(
                                     &Response::Refreshed(Ok(catalogue.clone())),
@@ -855,8 +1011,8 @@ impl Host {
                         };
                         tokio::select! {
                             biased;
-                            () = self.stop.cancelled() => break Ok(()),
-                            () = session.transport.wait_for_close() => break Ok(()),
+                            () = self.stop.cancelled() => break Ok(false),
+                            () = session.transport.wait_for_close() => break Ok(false),
                             result = wire::write(&mut output, &response) => result?,
                         }
                     }
@@ -866,6 +1022,13 @@ impl Host {
                 // drains all original calls before releasing the session.
                 session.peer.replace(vec![])?;
                 session.transport.request_close();
+                // Native streams close on revocation without waiting for a
+                // terminal-ack reader. Only an explicit Close requests an ack.
+                let mut output = Some(output);
+                if matches!(authority, Authority::AuthenticatedPeer { .. }) && result != Ok(true) {
+                    drop(input);
+                    drop(output.take());
+                }
                 self.close_ui_children(id).await?;
                 session.transport.close().await?;
                 {
@@ -875,8 +1038,10 @@ impl Host {
                 // EOF or a partial control frame still requests this same
                 // session's drain. Only the completed cleanup above authorizes
                 // its acknowledgement; writing that acknowledgement may fail.
-                wire::write(&mut output, &Response::Closed).await?;
-                result
+                if let Some(mut output) = output {
+                    wire::write(&mut output, &Response::Closed).await?;
+                }
+                result.map(|_| ())
             }
             Request::Call { session } => {
                 let gate = self.access_gate.lock().await;
@@ -897,7 +1062,11 @@ impl Host {
                     return Err("Host session belongs to another authenticated principal".into());
                 }
                 drop(gate);
-                wire::write(&mut output, &Response::Accepted).await?;
+                tokio::select! {
+                    biased;
+                    () = session.transport.wait_for_close() => return Err("Host session is closing".into()),
+                    result = wire::write(&mut output, &Response::Accepted) => result?,
+                }
                 // Carry buffered bytes into the existing bounded transport.
                 match &session.mode {
                     SessionMode::Owned { .. } | SessionMode::Ui => {
@@ -984,6 +1153,10 @@ impl Host {
     /// Errors retain this Host and its original Root for the embedding to hold.
     pub async fn shutdown(&self) -> Result<()> {
         self.accept_closed.cancel();
+        self.shutdown.get_or_init(|| self.drain()).await.clone()
+    }
+
+    async fn drain(&self) -> Result<()> {
         self.stop.cancel();
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut errors = Vec::new();

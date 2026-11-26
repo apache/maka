@@ -1123,6 +1123,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists, except while\none waits for the user.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'side_questions',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
             },
@@ -1366,6 +1383,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -3043,6 +3066,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -3456,6 +3485,107 @@ export const contracts: {
                 type: 'string',
                 enum: ['idle', 'working', 'waiting'],
               },
+              AgentRejection: {
+                type: 'string',
+                enum: [
+                  'preset_not_found',
+                  'preset_disabled',
+                  'preset_conflict',
+                  'preset_model_unavailable',
+                  'preset_thinking_level_unavailable',
+                  'preset_backend_conflict',
+                  'permission_change_requires_user',
+                  'title_invalid',
+                  'labels_invalid',
+                  'tools_unavailable',
+                  'busy',
+                  'workspace_unavailable',
+                  'session_unavailable',
+                  'history_unavailable',
+                  'closed',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
+        changeSessionWorkspace: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentChangeSessionWorkspace',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              expectedRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              path: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedRevision', 'path'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionWorkspaceChanged',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
+                  expected: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  actual: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'expected', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
               AgentRejection: {
                 type: 'string',
                 enum: [
@@ -8114,6 +8244,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -8798,6 +8934,53 @@ export const contracts: {
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
             },
+          },
+          resources: {},
+        },
+        declineProjectMcp: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpTrust',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpDeclineResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'declined',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
           },
           resources: {},
         },
@@ -11582,6 +11765,12 @@ export const contracts: {
                   type: 'string',
                 },
               },
+              side: {
+                description:
+                  "Makes the fork a side question of the source conversation: lists leave\nit out unless they ask for that conversation's side questions, or it\nwaits for the user.",
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'expectedRevision', 'position', 'title', 'labels'],
@@ -12049,6 +12238,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -12835,6 +13030,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -15727,6 +15928,17 @@ export const contracts: {
                 $ref: '#/$defs/HistoryView',
                 default: 'text',
               },
+              thought: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/Cursor',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['sessionId', 'position'],
@@ -16113,6 +16325,16 @@ export const contracts: {
                     anyOf: [
                       {
                         $ref: '#/$defs/Cursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
                       },
                       {
                         type: 'null',
@@ -17496,6 +17718,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -17747,6 +17981,25 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
               Role: {
                 description:
@@ -20336,6 +20589,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -21538,6 +21797,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -23533,6 +23798,23 @@ export const contracts: {
                     additionalProperties: false,
                     required: ['kind', 'sessionId'],
                   },
+                  {
+                    description:
+                      'Side questions asked beside an owned session. Every other scope leaves\nout side questions whose parent conversation still exists, except while\none waits for the user.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'side_questions',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
                 ],
               },
             },
@@ -23776,6 +24058,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -25466,6 +25754,16 @@ export const contracts: {
                       },
                     ],
                   },
+                  tailThought: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind', 'through', 'chunks', 'before', 'after'],
@@ -26843,6 +27141,18 @@ export const contracts: {
                       },
                     ],
                   },
+                  lastThought: {
+                    description:
+                      "Tail of the group's latest non-empty thought while its Turn is unfinished.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/HistoryWorkThought',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   firstToolUseId: {
                     description: "The first step's tool, when it is one.",
                     type: ['string', 'null'],
@@ -27094,6 +27404,25 @@ export const contracts: {
                     required: ['kind', 'query'],
                   },
                 ],
+              },
+              HistoryWorkThought: {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/$defs/HistoryRowAddress',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['position', 'offset', 'text'],
               },
               Role: {
                 description:
@@ -29149,6 +29478,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -29670,6 +30005,16 @@ export const contracts: {
                   $ref: '#/$defs/AgentMcpConfigurationLocation',
                 },
               },
+              projectTrust: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentProjectMcpTrustStatus',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
             },
             additionalProperties: false,
             required: ['locations'],
@@ -29722,6 +30067,26 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['name', 'configuration'],
+              },
+              AgentProjectMcpTrustStatus: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  decision: {
+                    $ref: '#/$defs/AgentProjectMcpTrustDecision',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'revision', 'decision'],
+              },
+              AgentProjectMcpTrustDecision: {
+                type: 'string',
+                enum: ['undecided', 'trusted', 'declined'],
               },
             },
           },
@@ -31047,6 +31412,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -32383,6 +32754,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -34075,6 +34452,10 @@ export const contracts: {
                   },
                   trusted: {
                     type: 'boolean',
+                  },
+                  declined: {
+                    type: 'boolean',
+                    default: false,
                   },
                   servers: {
                     type: 'array',
@@ -36162,6 +36543,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -44073,6 +44460,12 @@ export const contracts: {
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
                   },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
+                  },
                 },
                 additionalProperties: false,
                 required: ['sessionId', 'position'],
@@ -45045,6 +45438,7 @@ export const contracts: {
                 type: 'string',
                 enum: [
                   'model_unavailable',
+                  'workspace_unavailable',
                   'skills_unavailable',
                   'turn_stopped',
                   'original_operation_unsettled',
@@ -46477,6 +46871,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -52251,6 +52651,7 @@ export const contracts: {
                 type: 'string',
                 enum: [
                   'model_unavailable',
+                  'workspace_unavailable',
                   'skills_unavailable',
                   'turn_stopped',
                   'original_operation_unsettled',
@@ -52480,6 +52881,28 @@ export const contracts: {
                 format: 'uuid',
               },
             },
+          },
+          resources: {},
+        },
+        sessionWorkspaceAvailable: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'boolean',
+            type: 'boolean',
           },
           resources: {},
         },
@@ -52771,6 +53194,12 @@ export const contracts: {
                   },
                   position: {
                     $ref: '#/$defs/AgentForkPosition',
+                  },
+                  side: {
+                    description:
+                      'The branch is a side question of that conversation. Fork results stored\nbefore side questions have no such field.',
+                    type: 'boolean',
+                    default: false,
                   },
                 },
                 additionalProperties: false,
@@ -53206,6 +53635,113 @@ export const contracts: {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        setProjectMcpDecision: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpProjectTrustChange',
+            type: 'object',
+            properties: {
+              workspace: {
+                $ref: '#/$defs/AgentWorkspace',
+              },
+              revision: {
+                type: 'string',
+              },
+              decision: {
+                $ref: '#/$defs/AgentProjectMcpDecisionInput',
+              },
+            },
+            additionalProperties: false,
+            required: ['workspace', 'revision', 'decision'],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentProjectMcpDecisionInput: {
+                type: 'string',
+                enum: ['trusted', 'declined'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpProjectTrustChangeResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
           },
           resources: {},
         },
@@ -59993,7 +60529,10 @@ export const contracts: {
               },
               Language: {
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
               },
               ExecutionIdentity: {
                 type: 'object',
@@ -62917,7 +63456,10 @@ export const contracts: {
               },
               Language: {
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
               },
             },
           },
@@ -63865,74 +64407,15 @@ export const contracts: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              callId: {
+              patch: {
                 type: 'string',
+                description: 'Patch text wrapped in `*** Begin Patch` ... `*** End Patch`.',
                 minLength: 1,
               },
-              operation: {
-                $ref: '#/$defs/NativeOperation',
-              },
             },
-            required: ['callId', 'operation'],
-            title: 'NativeInput',
+            required: ['patch'],
+            title: 'PatchInput',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              NativeOperation: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'create_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                      diff: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['type', 'path', 'diff'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'update_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                      diff: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['type', 'path', 'diff'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      type: {
-                        type: 'string',
-                        const: 'delete_file',
-                      },
-                      path: {
-                        type: 'string',
-                        minLength: 1,
-                      },
-                    },
-                    required: ['type', 'path'],
-                  },
-                ],
-              },
-            },
           },
           output: {
             oneOf: [
@@ -69722,12 +70205,17 @@ export const contracts: {
                 ],
               },
               LanguagePreference: {
+                description: 'Language preference: "auto" or a canonical BCP 47 locale tag.',
                 type: 'string',
-                enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               Language: {
+                description:
+                  'Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).',
                 type: 'string',
-                enum: ['en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               ProfileAvatar: {
                 type: 'string',
@@ -74891,8 +75379,10 @@ export const contracts: {
                 ],
               },
               LanguagePreference: {
+                description: 'Language preference: "auto" or a canonical BCP 47 locale tag.',
                 type: 'string',
-                enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+                minLength: 2,
+                maxLength: 35,
               },
               ProfileAvatar: {
                 type: 'string',

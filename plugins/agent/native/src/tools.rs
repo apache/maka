@@ -808,6 +808,11 @@ impl ToolPreparer for Service {
                 .or_else(|| default_title.and_then(|kind| kind.render(&input)));
             let presentation = service.presentation.clone();
             let approval = if selection.confirmation == ToolConfirmation::Required {
+                access.require_execution().await.map_err(|error| {
+                    ToolRejection::PreparationFailed {
+                        message: error.to_string(),
+                    }
+                })?;
                 let target = access.target_for_context(&context).await.map_err(|error| {
                     ToolRejection::PreparationFailed {
                         message: error.to_string(),
@@ -849,8 +854,10 @@ impl ToolPreparer for Service {
             } else {
                 None
             };
-            let prepared =
-                PreparedEffect::new(move |cancel| service.execute(input, context, access, cancel));
+            let check_after_approval = approval.is_some();
+            let prepared = PreparedEffect::new(move |cancel| {
+                service.execute(input, context, access, check_after_approval, cancel)
+            });
             let prepared = match approval {
                 Some(id) => prepared.requiring_approval(id),
                 None => prepared,
@@ -872,6 +879,7 @@ impl Service {
         input: Value,
         context: ToolCallContext,
         access: Arc<RunAccess>,
+        check_after_approval: bool,
         cancellation: CancellationToken,
     ) -> maka_agent_facts::tools::ToolFuture<ToolSuccess> {
         let Self {
@@ -892,6 +900,9 @@ impl Service {
                 return Err(ToolError::Failed(
                     "service call cancelled before admission".into(),
                 ));
+            }
+            if check_after_approval {
+                access.require_execution().await?;
             }
             access.check_tool(&context, &selection.name).await?;
             let input = match selection.input {
@@ -976,7 +987,7 @@ impl Service {
                 // ceiling is independent of the preset's base network, which a
                 // process keeps until one applies. Process controls share it so
                 // a PTY launched with a grant stays usable.
-                *network = access.spec().network_approval_ceiling().clone();
+                *network = access.network_approval_ceiling()?;
             }
             let request = services
                 .request_with_work_and_context(
@@ -1143,13 +1154,7 @@ pub(crate) fn operation_uuid(
     Uuid::from_bytes(bytes)
 }
 fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSuccess, ToolError> {
-    let unknown = match language {
-        Language::En => {
-            "The operation result is unknown. Check the current state and continue from there."
-        }
-        Language::ZhCn => "操作结果尚未确认，请检查当前状态后继续。",
-        Language::ZhTw => "操作結果尚未確認，請檢查目前狀態後繼續。",
-    };
+    let unknown = maka_agent_facts::i18n::driver::operation_result_unknown(language);
     match &reply.receipt {
         Receipt::Recorded { outcome, .. } => match outcome {
             OperationOutcome::Returned { result } => {

@@ -41,6 +41,8 @@ mod sql;
 pub mod tool_result_source;
 pub use continuation::ContinuationSource;
 pub(crate) use continuation::admit_continuation;
+#[cfg(test)]
+pub(crate) use sql::recovery_diagnostic;
 pub(crate) use sql::{capture_at, captured_tool_call, source_content_at, sources_at, validate_cut};
 pub(crate) use sql::{index, index_queue, index_retained};
 
@@ -87,6 +89,16 @@ pub struct ExecutorText {
 impl ExecutorTranscript {
     pub fn text(&self, id: &str, thinking: bool) -> Option<&ExecutorText> {
         self.messages.get(&(id.to_owned(), thinking))
+    }
+
+    pub fn thinking_at(
+        &self,
+        sequence: u64,
+        fact: FactId,
+    ) -> Option<&maka_agent_facts::model::body::TextBody> {
+        self.messages.iter().find_map(|((_, thinking), entry)| {
+            (*thinking && entry.sequence == sequence && entry.fact == fact).then_some(&entry.body)
+        })
     }
 
     fn observe(

@@ -15,32 +15,6 @@ made. The look and the words are the app's: the picker draws nothing of its own 
 styles each part (`itemClass`, `groupClass`, `searchClass`, ...), names the groups (`groupLabels`) and fills its slots
 (the groups' tabs, a preview of the emoji under the pointer).
 
-```rust tabs
-use nsh_base::{EmojiGroupLabels, EmojiPickerEvent, emoji_picker};
-use nsh_core::prelude::*;
-
-fn picker() -> impl IntoElement {
-    let chosen = signal(SharedString::from("none"));
-    let mut labels = EmojiGroupLabels::default();
-    labels.smileys_emotion = Some("Smileys & emotion".into());
-    labels.people_body = Some("People & body".into());
-    emoji_picker()
-        .recent(vec!["👍".into(), "🎉".into()])
-        .group_labels(labels)
-        .placeholder("Search emoji")
-        .accessibility_label("Emoji")
-        .auto_focus(true)
-        .on_select(move |e: &EmojiPickerEvent| {
-            if let EmojiPickerEvent::Select(emoji, ..) = e {
-                chosen.set(emoji.clone());
-            }
-        })
-        .item_class("size-9 items-center justify-center rounded-md text-[22px] hover:bg-accent focus:bg-accent")
-        .w(px(342.0))
-        .h(px(380.0))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { EmojiPicker } from "nsh/base";
@@ -72,6 +46,32 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{EmojiGroupLabels, EmojiPickerEvent, emoji_picker};
+use nsh_core::prelude::*;
+
+fn picker() -> impl IntoElement {
+    let chosen = signal(SharedString::from("none"));
+    let mut labels = EmojiGroupLabels::default();
+    labels.smileys_emotion = Some("Smileys & emotion".into());
+    labels.people_body = Some("People & body".into());
+    emoji_picker()
+        .recent(vec!["👍".into(), "🎉".into()])
+        .group_labels(labels)
+        .placeholder("Search emoji")
+        .accessibility_label("Emoji")
+        .auto_focus(true)
+        .on_select(move |e: &EmojiPickerEvent| {
+            if let EmojiPickerEvent::Select(emoji, ..) = e {
+                chosen.set(emoji.clone());
+            }
+        })
+        .item_class("size-9 items-center justify-center rounded-md text-[22px] hover:bg-accent focus:bg-accent")
+        .w(px(342.0))
+        .h(px(380.0))
+}
 ```
 
 `EmojiPicker` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

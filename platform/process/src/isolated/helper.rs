@@ -17,44 +17,51 @@
  * under the License.
  */
 
-#[cfg(unix)]
 use super::Closure;
 use super::Manifest;
 use crate::Command;
-#[cfg(unix)]
 use std::time::Duration;
 use std::{io, path::Path};
-#[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Private current-executable role. Never reconstruct a task from a descriptor:
 /// create_new owner/started is a one-shot effect fence, not a resumable lease.
-pub async fn run_helper(resource: &Path) -> io::Result<i32> {
-    if !cfg!(target_os = "macos") {
+pub async fn run_helper(resource: &Path, runtime: &super::SandboxRuntime) -> io::Result<i32> {
+    if !super::os::SUPPORTED {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "persistent native task isolation unavailable",
         ));
     }
-    let resource = tokio::fs::canonicalize(resource).await?;
-    let task_path = resource.join("owner/task.json");
-    let task = tokio::fs::try_exists(&task_path).await?;
-    let bytes = if task {
-        super::write_json_new(
-            &resource.join("owner/started.json"),
-            &super::Started {
-                helper_pid: std::process::id(),
-            },
-        )
-        .await?;
-        let material = resource.join("launch/material.json");
-        let bytes = tokio::fs::read(&material).await?;
-        // Consume launch secrets before any provider process starts. A cold
-        // descriptor cannot recreate either the material or the once fence.
-        tokio::fs::remove_file(material).await?;
-        bytes
-    } else {
-        tokio::fs::read(resource.join("owner/manifest.json")).await?
+    let resource = super::os::canonical(resource).await?;
+    #[cfg(windows)]
+    let bytes = {
+        let resource = resource.clone();
+        tokio::task::spawn_blocking(move || read_manifest(&resource))
+            .await
+            .map_err(io::Error::other)??
+    };
+    #[cfg(unix)]
+    let bytes = {
+        let task_path = resource.join("owner/task.json");
+        let task = tokio::fs::try_exists(&task_path).await?;
+        if task {
+            super::write_json_new(
+                &resource.join("owner/started.json"),
+                &super::Started {
+                    helper_pid: std::process::id(),
+                },
+            )
+            .await?;
+            let material = resource.join("launch/material.json");
+            let bytes = tokio::fs::read(&material).await?;
+            // Consume launch secrets before any provider process starts. A cold
+            // descriptor cannot recreate either the material or the once fence.
+            tokio::fs::remove_file(material).await?;
+            bytes
+        } else {
+            tokio::fs::read(resource.join("owner/manifest.json")).await?
+        }
     };
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
     drop(bytes);
@@ -81,24 +88,21 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                 executable,
                 cwd.unwrap_or_else(|| resource.join("workspace")),
             );
-            command.env_clear().args(args);
-            #[cfg(target_os = "macos")]
-            {
-                command.private_stdio = true;
-            }
+            command.env_clear();
+            command.args = args;
+            super::os::private_stdio(&mut command);
             for (key, value) in environment {
                 command.env(key, value);
             }
-            let command = command.sandbox(&sandbox).map_err(io::Error::other)?;
-            #[cfg(unix)]
-            {
+            let command = runtime.apply(command.sandbox(&sandbox).map_err(io::Error::other)?);
+            let run = async {
                 let status = if let Some(size) = size {
                     let (mut child, io) = crate::pty::spawn(command, size)
                         .await
                         .map_err(|e| io::Error::other(e.to_string()))?;
                     let io = std::sync::Arc::new(io);
                     let input = input_pty(io.clone(), &resource).await?;
-                    let output = output_pty(io, &resource).await?;
+                    let output = output_pty(io.clone(), &resource).await?;
                     let mut controls = Control::new(&resource).await?;
                     loop {
                         tokio::select! {
@@ -107,7 +111,14 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                             operation = controls.next() => {
                                 let delivered = match operation? {
                                     Operation::Terminate => child.terminate().map(|_| ()),
+                                    #[cfg(unix)]
                                     Operation::Interrupt => child.interrupt_group().map(|_| ()),
+                                    #[cfg(windows)]
+                                    Operation::Interrupt => match io.write(&[3]).await {
+                                        Ok(1) => Ok(()),
+                                        Ok(_) => Err(io::ErrorKind::WriteZero.into()),
+                                        Err(error) => Err(error),
+                                    },
                                 };
                                 if let Err(error) = delivered {
                                     eprintln!("Original private task control failed: {error}");
@@ -118,8 +129,9 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                     publish_exited(&resource).await?;
                     let status = child.wait().await?;
                     input.finish().await?;
-                    output.await.map_err(io::Error::other)??;
-                    child.close().await?;
+                    let (closed, drained) = tokio::join!(child.close(), output);
+                    closed?;
+                    drained.map_err(io::Error::other)??;
                     status
                 } else {
                     let spawned = crate::pipe::spawn(command)
@@ -171,11 +183,17 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                 tokio::task::spawn_blocking(move || {
                     let pinned = super::evidence::pin(&original)?;
                     let snapshot = super::evidence::snapshot_identity(&pinned.owner)?;
+                    if let Err(error) = super::program::remove_runtime(&original) {
+                        eprintln!("Private task runtime cleanup failed: {error}");
+                    }
                     let closure = Closure::GroupClosed {
                         resource: original.clone(),
                         snapshot,
                         exit_code: status.code(),
+                        #[cfg(unix)]
                         signal: std::os::unix::process::ExitStatusExt::signal(&status),
+                        #[cfg(windows)]
+                        signal: None,
                         original_group_closed: true,
                         streams_drained: true,
                     };
@@ -183,21 +201,21 @@ pub async fn run_helper(resource: &Path) -> io::Result<i32> {
                 })
                 .await
                 .map_err(io::Error::other)??;
-                Ok(status.code().unwrap_or(1))
+                Ok::<_, io::Error>(status.code().unwrap_or(1))
             }
-            #[cfg(not(unix))]
-            {
-                let _ = (command, size);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "task owner unavailable",
-                ))
+            .await;
+            if run.is_err() {
+                let original = resource.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = super::program::remove_runtime(&original);
+                })
+                .await;
             }
+            run
         }
     }
 }
 
-#[cfg(unix)]
 async fn publish_exited(resource: &Path) -> io::Result<()> {
     let resource = resource.to_owned();
     tokio::task::spawn_blocking(move || {
@@ -216,27 +234,42 @@ async fn publish_exited(resource: &Path) -> io::Result<()> {
     .map_err(io::Error::other)?
 }
 
-#[cfg(unix)]
 async fn log_file(path: impl AsRef<Path>) -> io::Result<tokio::fs::File> {
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
     #[cfg(unix)]
-    options.mode(0o600);
-    options.open(path).await
+    {
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .await
+    }
+    #[cfg(windows)]
+    {
+        let path = path.as_ref().to_owned();
+        let file = tokio::task::spawn_blocking(move || {
+            let resource = path
+                .parent()
+                .and_then(Path::parent)
+                .expect("original log owner");
+            let owner = super::evidence::pin(resource)?.owner;
+            super::fs::create(&owner, path.file_name().expect("log name"))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        Ok(tokio::fs::File::from_std(file))
+    }
 }
-#[cfg(unix)]
 struct InputRelay {
     stop: tokio_util::sync::CancellationToken,
     task: tokio::task::JoinHandle<io::Result<()>>,
 }
-#[cfg(unix)]
 impl InputRelay {
     async fn finish(self) -> io::Result<()> {
         self.stop.cancel();
         self.task.await.map_err(io::Error::other)?
     }
 }
-#[cfg(unix)]
 async fn input_pipe(mut target: crate::pipe::Input, resource: &Path) -> io::Result<InputRelay> {
     let mut log = log_file(resource.join("owner/stdin.bin")).await?;
     let stop = tokio_util::sync::CancellationToken::new();
@@ -267,7 +300,6 @@ async fn input_pipe(mut target: crate::pipe::Input, resource: &Path) -> io::Resu
     });
     Ok(InputRelay { stop, task })
 }
-#[cfg(unix)]
 async fn output_pipe<R, W>(
     mut source: R,
     mut front: W,
@@ -311,7 +343,6 @@ where
         log.sync_all().await
     }))
 }
-#[cfg(unix)]
 async fn input_pty(
     target: std::sync::Arc<crate::pty::PtyIo>,
     resource: &Path,
@@ -349,7 +380,6 @@ async fn input_pty(
     });
     Ok(InputRelay { stop, task })
 }
-#[cfg(unix)]
 async fn output_pty(
     source: std::sync::Arc<crate::pty::PtyIo>,
     resource: &Path,
@@ -389,22 +419,32 @@ async fn output_pty(
     }))
 }
 
-#[cfg(unix)]
 enum Operation {
     Terminate,
     Interrupt,
 }
-#[cfg(unix)]
 struct Control {
+    #[cfg(unix)]
     directory: std::path::PathBuf,
+    #[cfg(windows)]
+    directory: std::sync::Arc<std::fs::File>,
     seen: u64,
     timer: tokio::time::Interval,
 }
-#[cfg(unix)]
 impl Control {
     async fn new(resource: &Path) -> io::Result<Self> {
         Ok(Self {
+            #[cfg(unix)]
             directory: resource.join("owner"),
+            #[cfg(windows)]
+            directory: {
+                let path = resource.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    super::evidence::pin(&path).map(|p| std::sync::Arc::new(p.owner))
+                })
+                .await
+                .map_err(io::Error::other)??
+            },
             seen: 0,
             timer: tokio::time::interval(Duration::from_millis(20)),
         })
@@ -412,8 +452,23 @@ impl Control {
     async fn next(&mut self) -> io::Result<Operation> {
         loop {
             self.timer.tick().await;
-            let path = self.directory.join(format!("control-{}", self.seen));
-            match tokio::fs::read(&path).await {
+            let name = format!("control-{}", self.seen);
+            #[cfg(unix)]
+            let bytes = tokio::fs::read(self.directory.join(name)).await;
+            #[cfg(windows)]
+            let bytes = {
+                use std::io::Read;
+                let directory = self.directory.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut file = super::evidence::open_regular(&directory, &name)?;
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    Ok::<_, io::Error>(bytes)
+                })
+                .await
+                .map_err(io::Error::other)?
+            };
+            match bytes {
                 Ok(bytes) => {
                     self.seen += 1;
                     return match bytes.as_slice() {
@@ -429,7 +484,6 @@ impl Control {
     }
 }
 
-#[cfg(target_os = "macos")]
 enum Publication {
     Ready(u64),
     Pending {
@@ -440,14 +494,14 @@ enum Publication {
     Failed(std::sync::Arc<tokio::task::JoinError>),
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn publish_control(
     resource: std::path::PathBuf,
     mut next: u64,
     interrupt: bool,
 ) -> (u64, io::Result<()>) {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
-    use std::{io::Write, os::fd::AsRawFd};
+    use std::io::Write;
     let result = (|| {
         let successor = next
             .checked_add(1)
@@ -465,22 +519,7 @@ fn publish_control(
         let written = (|| {
             file.write_all(if interrupt { b"I" } else { b"T" })?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: the pinned owner FD and owned C strings live through the call;
-            // EXCL refuses to overwrite any original control publication.
-            if unsafe {
-                libc::renameatx_np(
-                    pinned.owner.as_raw_fd(),
-                    from.as_ptr(),
-                    pinned.owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            super::fs::rename_noreplace(&pinned.owner, &pending, &name)?;
             // Handoff precedes directory durability and cannot be rolled back.
             next = successor;
             pinned.owner.sync_all()
@@ -501,79 +540,54 @@ fn publish_control(
     (next, result)
 }
 
-#[cfg(unix)]
 pub(crate) struct ExternalOwner {
     resource: std::path::PathBuf,
-    #[cfg(target_os = "macos")]
     publication: Publication,
     checking: Option<tokio::task::JoinHandle<io::Result<bool>>>,
 }
-#[cfg(unix)]
 impl ExternalOwner {
     pub(crate) fn new(resource: std::path::PathBuf) -> Self {
         Self {
             resource,
-            #[cfg(target_os = "macos")]
             publication: Publication::Ready(0),
             checking: None,
         }
     }
     /// Join the already admitted effect; cancellation leaves the same handle here.
     pub(crate) async fn settle_control(&mut self) -> io::Result<Option<bool>> {
-        #[cfg(target_os = "macos")]
-        {
-            let (interrupt, completed) = match &mut self.publication {
-                Publication::Ready(_) => return Ok(None),
-                Publication::Failed(error) => return Err(io::Error::other(error.clone())),
-                Publication::Pending { interrupt, work } => (*interrupt, work.await),
-            };
-            match completed {
-                Ok((next, result)) => {
-                    self.publication = Publication::Ready(next);
-                    result.map(|()| Some(interrupt))
-                }
-                Err(error) => {
-                    let error = std::sync::Arc::new(error);
-                    self.publication = Publication::Failed(error.clone());
-                    Err(io::Error::other(error))
-                }
+        let (interrupt, completed) = match &mut self.publication {
+            Publication::Ready(_) => return Ok(None),
+            Publication::Failed(error) => return Err(io::Error::other(error.clone())),
+            Publication::Pending { interrupt, work } => (*interrupt, work.await),
+        };
+        match completed {
+            Ok((next, result)) => {
+                self.publication = Publication::Ready(next);
+                result.map(|()| Some(interrupt))
             }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Ok(None)
+            Err(error) => {
+                let error = std::sync::Arc::new(error);
+                self.publication = Publication::Failed(error.clone());
+                Err(io::Error::other(error))
+            }
         }
     }
     pub(crate) async fn control(&mut self, interrupt: bool) -> io::Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            if self.settle_control().await? == Some(interrupt) {
-                return Ok(());
-            }
-            let Publication::Ready(next) = &self.publication else {
-                unreachable!("original control joined");
-            };
-            let next = *next;
-            let resource = self.resource.clone();
-            self.publication = Publication::Pending {
-                interrupt,
-                work: tokio::task::spawn_blocking(move || {
-                    publish_control(resource, next, interrupt)
-                }),
-            };
-            self.settle_control().await.map(|_| ())
+        if self.settle_control().await? == Some(interrupt) {
+            return Ok(());
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = interrupt;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "private task control unavailable",
-            ))
-        }
+        let Publication::Ready(next) = &self.publication else {
+            unreachable!("original control joined");
+        };
+        let next = *next;
+        let resource = self.resource.clone();
+        self.publication = Publication::Pending {
+            interrupt,
+            work: tokio::task::spawn_blocking(move || publish_control(resource, next, interrupt)),
+        };
+        self.settle_control().await.map(|_| ())
     }
     pub(crate) fn io_settled(&self) -> bool {
-        #[cfg(target_os = "macos")]
         if matches!(self.publication, Publication::Pending { .. }) {
             return false;
         }
@@ -602,4 +616,111 @@ impl ExternalOwner {
             ))
         })
     }
+}
+
+#[cfg(windows)]
+fn read_manifest(resource: &Path) -> io::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+    let pinned = super::evidence::pin(resource)?;
+    let mut bytes = Vec::new();
+    let mut fence = super::fs::create(&pinned.owner, "started.json".as_ref())?;
+    fence.write_all(
+        &serde_json::to_vec(&super::Started {
+            helper_pid: std::process::id(),
+        })
+        .map_err(io::Error::other)?,
+    )?;
+    fence.sync_all()?;
+    let launch = super::fs::directory(&pinned.resource, "launch".as_ref())?;
+    let mut material = super::fs::read(&launch, "material.json".as_ref(), true)?;
+    super::fs::private_file(&material)?;
+    material.read_to_end(&mut bytes)?;
+    super::fs::mark_deleted(&material)?;
+    drop(material);
+    if super::evidence::open_optional(&launch, "material.json")?.is_some() {
+        return Err(io::Error::other("launch material deletion unconfirmed"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn publish_control(
+    resource: std::path::PathBuf,
+    next: u64,
+    interrupt: bool,
+) -> (u64, io::Result<()>) {
+    let result = (|| {
+        let successor = next
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("private control sequence exhausted"))?;
+        let owner = super::evidence::pin(&resource)?.owner;
+        if interrupt {
+            let super::TaskReceipt::Task { terminal_size, .. } =
+                super::evidence::read_json(super::evidence::open_regular(&owner, "task.json")?)?;
+            if terminal_size.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Windows background pipes have no console interrupt",
+                ));
+            }
+        }
+        super::fs::publish(
+            &owner,
+            &format!("control-{next}"),
+            if interrupt { b"I" } else { b"T" },
+        )?;
+        Ok(successor)
+    })();
+    match result {
+        Ok(successor) => (successor, Ok(())),
+        Err(error) => (next, Err(error)),
+    }
+}
+
+#[cfg(windows)]
+pub(super) const SNAPSHOT_UNSTABLE: i32 = 74;
+#[cfg(windows)]
+pub(super) const SNAPSHOT_UNSUPPORTED: i32 = 75;
+
+#[cfg(windows)]
+pub fn run_snapshot(resource: &Path) -> io::Result<i32> {
+    use super::{evidence, fs, snapshot};
+    use std::io::Write;
+    // Only this resource is granted to the sandboxed copier. Its namespace
+    // ancestor, sibling tasks, and protected owner/launch directories stay
+    // inaccessible; Host exchanges request/reply via a temporary `snapshot`
+    // directory and seals the validated proof into protected `owner/`.
+    fn context(stage: &'static str) -> impl FnOnce(io::Error) -> io::Error {
+        move |error| io::Error::new(error.kind(), format!("{stage}: {error}"))
+    }
+    let exchange = maka_event_log::root::windows::open_nofollow(&resource.join("snapshot"), false)
+        .map_err(context("open snapshot exchange"))?;
+    let manifest: Manifest = evidence::read_json(
+        fs::read(&exchange, "manifest.json".as_ref(), false)
+            .map_err(context("open snapshot request"))?,
+    )?;
+    let Manifest::Snapshot { source, policy } = manifest else {
+        return Err(io::Error::other("expected snapshot manifest"));
+    };
+    let (reply, code) = match snapshot::capture(&source, resource, &policy) {
+        Ok(proof) => (serde_json::to_vec(&proof), 0),
+        Err(error) => match error.downcast::<super::Error>() {
+            Ok(super::Error::CaptureUnstable(path)) => {
+                (serde_json::to_vec(&path), SNAPSHOT_UNSTABLE)
+            }
+            Ok(super::Error::CaptureUnsupported(message)) => {
+                (serde_json::to_vec(&message), SNAPSHOT_UNSUPPORTED)
+            }
+            Ok(error) => return Err(io::Error::other(error)),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                (serde_json::to_vec(&error.to_string()), SNAPSHOT_UNSUPPORTED)
+            }
+            Err(error) => return Err(context("capture workspace")(error)),
+        },
+    };
+    let mut file = fs::open_output(&exchange, "reply.json".as_ref())
+        .map_err(context("open snapshot reply"))?;
+    file.write_all(&reply.map_err(io::Error::other)?)?;
+    file.sync_all()?;
+    Ok(code)
 }

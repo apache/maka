@@ -13,7 +13,10 @@
 //!   `TrayTitlePlacement::Left`), its runs each in its color, in the menu
 //!   bar's font; the item grows to fit it.
 //! - The menu's items are reported as the application menu's are
-//!   ([`crate::chrome::menu`]). The item goes with the app that set it.
+//!   ([`crate::chrome::menu`]). There is one item per process: an app that
+//!   sets a tray takes the item from the app that had it, and the item goes
+//!   with the app that set it last, whether that app removes its tray or
+//!   stops. The app that lost the item cannot remove the new one's.
 
 use std::{cell::RefCell, sync::Arc};
 
@@ -101,8 +104,9 @@ define_class!(
 /// `DesktopCommand::SetTray`.
 pub(crate) fn set(surface: &Surface, tray: Option<&Tray>) {
     let Some(tray) = tray else {
-        let item = ITEM.with(|i| i.borrow_mut().take());
-        drop(item);
+        // Only the app that has the item removes it: another app may have
+        // taken it over since this one set it.
+        release(surface.key());
         return;
     };
     let mtm = surface.mtm;
@@ -328,7 +332,8 @@ fn open_menu(mtm: MainThreadMarker) {
     });
 }
 
-/// The app of the surface with `key` stopped: its item goes with it.
+/// The app of the surface with `key` stopped or removed its tray: its item
+/// goes with it, unless another app has the item now.
 pub(crate) fn release(key: u64) {
     let item = ITEM.try_with(|i| {
         let mut item = i.borrow_mut();

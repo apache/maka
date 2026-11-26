@@ -10,22 +10,6 @@ demo: el-web-view
 
 web view 在应用内显示一个网页，或你传入的一段 HTML：iOS 和 Mac Catalyst 上是 WKWebView，Android 上是 `android.webkit.WebView`。由于 NSH 用原生视图渲染，web view 和其他视图一样处在布局中，与周围视图按顺序排列。Rust 用 `web_view(url)` 或 `web_view_html(html, base_url)` 创建，TSX 用从 `nsh` 导入的 `<WebView>`。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn browser() -> impl IntoElement {
-    let title = signal(SharedString::from("加载中…"));
-    view()
-        .flex_1()
-        .child(text(title).number_of_lines(1))
-        .child(
-            web_view("https://example.com")
-                .flex_1()
-                .on_navigation_state_change(move |e: &WebNavigation| title.set(e.title.clone().into())),
-        )
-}
-```
-
 ```tsx tabs
 import { signal, Text, View, WebView, type WebViewNavigation } from "nsh";
 
@@ -44,6 +28,22 @@ function Browser() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn browser() -> impl IntoElement {
+    let title = signal(SharedString::from("加载中…"));
+    view()
+        .flex_1()
+        .child(text(title).number_of_lines(1))
+        .child(
+            web_view("https://example.com")
+                .flex_1()
+                .on_navigation_state_change(move |e: &WebNavigation| title.set(e.title.clone().into())),
+        )
+}
+```
+
 在 TSX 中 web view 接受 `src` 和 `html` 二者之一（参见 [WebView API](../modules/nsh-webview.md)）。[Web view 与视频指南](../docs/web-view-and-video.md)介绍了通信模式和能力声明。
 
 ## 属性
@@ -55,12 +55,14 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 | `src` | `web_view(url)` | `string` | | 要显示的页面的 URL。 |
 | `html` | `web_view_html(html, base_url)`、`.html(html, base_url)` | `string` | | 内联 HTML，代替 `src` 显示。 |
 | `baseUrl` | `web_view_html` / `.html` 的 `base_url` | `string` | | `html` 中相对链接的解析基准。它需要与该地址的页面相同的授权（`webview.hosts`）；未授权时 HTML 不带基准 URL 加载，`onError` 报告 `ERR_ACCESS_DENIED`。 |
+| `allowOrigin` | `.allow_origin(..)` | `string` | | 除 `webview.hosts` 之外，这个网页视图还可以显示和导航到的一个源，用于应用运行时才知道的源（例如用户填写的服务器）：`scheme://host[:port]`，`http` 或 `https`，精确匹配（相同的 scheme、主机和端口，不包括子域名）。需要在 [`capabilities.webview`](../docs/sandbox-and-capabilities.md#webview) 中声明 `"runtimeOrigin": true`；其他值会被拒绝并给出提示。与 `src` 在同一次渲染中设置时，对这个 `src` 生效；之后再改，从下一次导航开始生效。其他网页视图和页面打开的窗口都没有它。 |
 | `injectedJavaScript` | `.injected_java_script(..)` | `string` | | 每个页面加载完成后执行。 |
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | 在每个页面自身的脚本之前执行。 |
 | `userAgent` | `.user_agent(..)` | `string` | | 浏览器的 user agent 字符串。 |
 | `javaScriptEnabled` | `.java_script_enabled(..)` | `boolean` | `true` | 页面可以运行脚本。 |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动页面。 |
 | `incognito` | `.incognito(bool)` | `boolean` | `false` | 页面的网站数据（cookie、存储、缓存）只与网页视图同存亡，与应用的数据分开；Android 上网页视图加载时不使用 HTTP 缓存、不保存表单数据（见[网站数据](../docs/web-view-and-video.md#网站数据)）。在网页视图创建时读取。 |
+| `zoomable` | `.zoomable(bool)` | `boolean` | `false` | 用户可以双指缩放页面，也可以超出页面 viewport 的缩放限制：Android 上是内置缩放（不显示缩放按钮），iOS 上忽略 viewport 的缩放限制，macOS 上是放大。关闭时保持各平台自己的行为（Android 和 macOS 不缩放，iOS 在 viewport 允许的范围内缩放，Windows 可以缩放）。在网页视图创建时读取。 |
 
 | `ios` 键 | Rust | 类型 | 说明 |
 |---|---|---|---|
@@ -138,6 +140,29 @@ web_view("https://example.com").on_download_pending(|event: &WebDownloadPending|
 
 应用和页面之间交换的是字符串。页面通过 `window.nsh.postMessage(data)` 发送；应用通过 ref 的 `postMessage(data)`（Rust 中为 `post_message(..)`）发送。结构化数据请用 JSON。
 
+```tsx tabs
+import { signal, Text, View, WebView, type WebViewRef } from "nsh";
+
+const page = `<!doctype html>
+<meta name="viewport" content="width=device-width">
+<button onclick="window.nsh.postMessage('来自页面的问候')">发给应用</button>
+<p id="got"></p>
+<script>
+  window.addEventListener("message", (e) => { document.getElementById("got").textContent = e.data; });
+</script>`;
+
+function Bridge() {
+  const message = signal("");
+  let web!: WebViewRef;
+  return (
+    <View style={{ gap: 12 }}>
+      <WebView ref={web} html={page} style={{ height: 200 }} onMessage={(e) => message.set(e.data)} />
+      <Text onPress={() => web.postMessage("来自应用的问候")}>发给页面 · 收到：{message()}</Text>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -164,29 +189,6 @@ fn bridge() -> impl IntoElement {
             text(move || format!("发给页面 · 收到：{}", message.get()))
                 .on_press(move || web.post_message("来自应用的问候")),
         )
-}
-```
-
-```tsx tabs
-import { signal, Text, View, WebView, type WebViewRef } from "nsh";
-
-const page = `<!doctype html>
-<meta name="viewport" content="width=device-width">
-<button onclick="window.nsh.postMessage('来自页面的问候')">发给应用</button>
-<p id="got"></p>
-<script>
-  window.addEventListener("message", (e) => { document.getElementById("got").textContent = e.data; });
-</script>`;
-
-function Bridge() {
-  const message = signal("");
-  let web!: WebViewRef;
-  return (
-    <View style={{ gap: 12 }}>
-      <WebView ref={web} html={page} style={{ height: 200 }} onMessage={(e) => message.set(e.data)} />
-      <Text onPress={() => web.postMessage("来自应用的问候")}>发给页面 · 收到：{message()}</Text>
-    </View>
-  );
 }
 ```
 

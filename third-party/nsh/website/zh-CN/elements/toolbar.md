@@ -9,40 +9,6 @@ demo: el-toolbar
 
 工具栏是一栏控件：文本编辑器的格式栏、媒体播放器的播放控制、竖排的工具面板。`Toolbar` 负责它的键盘和语义：屏幕阅读器把它播报为一个工具栏（名字来自 `accessibilityLabel`），键盘一站就进入它，再用其 `axis` 方向上的方向键在项目之间移动。它的项目是其中任意层级的 `Button`、`Toggle` 和 `Link`。`ToolbarGroup` 是一段有名字的相关项目（撤销与重做、对齐方式），`ToolbarSeparator` 是应用在各段之间画的一条线。外观由应用决定：工具栏没有自己的颜色、内边距或间距，每个控件保留自己的状态。
 
-```rust tabs
-use nsh_base::{button, theme, toggle, toolbar, toolbar_group, toolbar_separator};
-use nsh_core::prelude::*;
-
-fn formatting() -> impl IntoElement {
-    let bold = signal(false);
-    toolbar()
-        .accessibility_label("Formatting")
-        .items_center()
-        .gap_1()
-        .child(
-            toolbar_group()
-                .accessibility_label("History")
-                .child(button().accessibility_label("Undo").size_8().child(text("↶")))
-                .child(button().accessibility_label("Redo").size_8().child(text("↷"))),
-        )
-        .child(toolbar_separator().w(px(1.0)).h_5().bg(move || theme().border))
-        .child(
-            toggle()
-                .pressed(bold)
-                .accessibility_label("Bold")
-                .on_change(move |pressed: &bool| bold.set(*pressed))
-                .size_8()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .border_color(transparent_black())
-                .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
-                .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
-                .child(text("B")),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Button, Toggle, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
@@ -78,6 +44,40 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{button, theme, toggle, toolbar, toolbar_group, toolbar_separator};
+use nsh_core::prelude::*;
+
+fn formatting() -> impl IntoElement {
+    let bold = signal(false);
+    toolbar()
+        .accessibility_label("Formatting")
+        .items_center()
+        .gap_1()
+        .child(
+            toolbar_group()
+                .accessibility_label("History")
+                .child(button().accessibility_label("Undo").size_8().child(text("↶")))
+                .child(button().accessibility_label("Redo").size_8().child(text("↷"))),
+        )
+        .child(toolbar_separator().w(px(1.0)).h_5().bg(move || theme().border))
+        .child(
+            toggle()
+                .pressed(bold)
+                .accessibility_label("Bold")
+                .on_change(move |pressed: &bool| bold.set(*pressed))
+                .size_8()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(transparent_black())
+                .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+                .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
+                .child(text("B")),
+        )
+}
 ```
 
 `Toolbar`、`ToolbarGroup` 和 `ToolbarSeparator` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。工具栏不持有值：其中的开关按钮被告知是否按下并报告 `onChange`，按钮报告 `onPress`，状态由应用保存。在 Rust 中由 `toolbar()`、`toolbar_group()` 和 `toolbar_separator()` 创建，每个属性对应一个设置方法（`.axis(..)`、`.disabled(..)`），再加上类型化的样式方法和放内容的 `.child(..)`。

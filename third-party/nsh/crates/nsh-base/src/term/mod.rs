@@ -90,6 +90,15 @@ pub struct TerminalApi {
     term: Term,
 }
 
+impl TerminalApi {
+    /// Feeds raw program output bytes directly to the emulator without
+    /// requiring each chunk to be valid UTF-8 (for example, PTY or SSH
+    /// reads split mid-character or mid-escape sequence).
+    pub fn write_bytes(&self, data: &[u8]) {
+        self.term.write(data);
+    }
+}
+
 #[methods]
 impl TerminalApi {
     /// Shows `data`, the program's output.

@@ -98,6 +98,7 @@ pub(crate) fn get() -> Result<std::rc::Rc<Gfx>> {
 /// invalidates device resources made so far.
 pub(crate) fn lost() {
     log::warn!("the graphics device was lost; recreating it");
+    crate::text::invalidate_rendering_params();
     GFX.with(|g| g.borrow_mut().take());
     GENERATION.with(|g| g.set(g.get() + 1));
 }

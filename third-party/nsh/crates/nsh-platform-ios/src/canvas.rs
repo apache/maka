@@ -790,7 +790,8 @@ impl<'a> Replay<'a> {
         }
         let c = self.cx();
         let s = &self.state;
-        let font = crate::text::make_font(&s.font.with_numeric(s.numeric).text_style());
+        let style = s.font.with_numeric(s.numeric).text_style();
+        let font = crate::text::make_font(&style);
         let string =
             CFMutableAttributedString::new(None, 0).expect("CFAttributedStringCreateMutable");
         let whole = CFRange {
@@ -822,6 +823,14 @@ impl<'a> Replay<'a> {
                 Some(kCTForegroundColorFromContextAttributeName),
                 Some(yes),
             );
+        }
+        if style.italic {
+            // Text in fallback fonts without an italic face (CJK) leans too.
+            let range = CFRange {
+                location: 0,
+                length: CFAttributedString::length(&string),
+            };
+            nsh_platform_apple::core_text::slant_fallbacks(&string, range, &font);
         }
         // SAFETY: a valid attributed string.
         let line = unsafe { CTLine::with_attributed_string(&string) };

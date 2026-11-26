@@ -686,6 +686,17 @@ impl Surface {
         });
     }
 
+    pub(crate) fn events_sent(&self) -> u64 {
+        self.control
+            .borrow()
+            .as_ref()
+            .map_or(0, EngineControl::events_sent)
+    }
+
+    pub(crate) fn events_handled(&self) -> u64 {
+        self.events_handled.get()
+    }
+
     /// Records events passed to [`Surface::event`] instead of forwarding them
     /// to an engine, for unit tests without a running engine.
     #[cfg(test)]
@@ -701,17 +712,6 @@ impl Surface {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
-    }
-
-    pub(crate) fn events_sent(&self) -> u64 {
-        self.control
-            .borrow()
-            .as_ref()
-            .map_or(0, EngineControl::events_sent)
-    }
-
-    pub(crate) fn events_handled(&self) -> u64 {
-        self.events_handled.get()
     }
 
     /// The view of node `id`.

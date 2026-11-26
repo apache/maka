@@ -266,7 +266,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let rendered = render_message_text(&input, Language::ZhCn).unwrap();
+        let rendered = render_message_text(&input, Language::ZH_CN).unwrap();
         assert!(
             rendered.contains(r#"<quoted_excerpt label="AGENTS.md">"#),
             "{rendered}"

@@ -21,14 +21,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   appendDraftQuote,
+  confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
   unsettledSends,
+  workingRowActive,
 } from '../../../../plugins/agent/conversations/ui/sendReceipt.ts';
+import { acceptedSend } from '../app/history.ts';
 
 const recorded = (outcome) => ({ kind: 'recorded', outcome, cleanup: { kind: 'confirmed' } });
+
+test('a deleted workspace during project MCP preflight abandons the unconfirmed send', async () => {
+  const unavailable = new Error('agent_workspace_unavailable');
+  let abandoned = false;
+  await assert.rejects(
+    confirmAfterProjectMcp(
+      async () => {
+        throw unavailable;
+      },
+      async () => {
+        abandoned = true;
+      },
+      async () => assert.fail('a failed preflight must not confirm the send'),
+    ),
+    (reason) => reason === unavailable,
+  );
+  assert.equal(abandoned, true);
+});
+
+test('a failure after send confirmation starts does not abandon the original', async () => {
+  const transport = new Error('lost confirmation response');
+  await assert.rejects(
+    confirmAfterProjectMcp(
+      async () => true,
+      async () => assert.fail('the original may already have been delivered'),
+      async () => {
+        throw transport;
+      },
+    ),
+    (reason) => reason === transport,
+  );
+});
 
 test('a Host handler failure displays its reason without offering an unsafe retry', () => {
   const result = { kind: 'failure', diagnostic: 'agent_execution_unavailable' };
@@ -50,6 +85,20 @@ test('a rejected send keeps its reason and can be retried', () => {
     },
     retryable: true,
   });
+});
+
+test('a missing workspace is a definitive non-delivery and can be retried', () => {
+  const result = sendReceiptFailure(
+    recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'rejected', sessionId: 'conversation', reason: 'workspace_unavailable' },
+      },
+    }),
+  );
+  assert.equal(result?.retryable, true);
+  assert.equal(result?.detail.key, 'The workspace for this task is unavailable.');
 });
 
 test('a run that is still unsettled produces a definitive send failure', () => {
@@ -199,4 +248,83 @@ test('a sent message leaves its own row once its operation is accepted', () => {
   const inFlight = new Map([['operation-7', send]]);
   assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['draft-send-1'])), [send]);
   assert.deepEqual(unsettledSends(undefined, inFlight, new Set(['operation-7'])), []);
+});
+
+test('working row bridges idle queued receipt into admitted run and clears on rejection', () => {
+  const queuedReply = {
+    receipt: recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'queued', sessionId: 's1', messageId: 'm1', revision: 1 },
+      },
+    }),
+  };
+  const accepted = acceptedSend(queuedReply, 's1');
+  const projected = shouldProjectPendingSend(accepted, {
+    immediate: true,
+    activeRunId: null,
+    atHistoryTail: true,
+  });
+  assert.equal(projected, true);
+  // Outgoing settled, accepted pending row keeps the working row alive until admitted.
+  assert.equal(
+    workingRowActive({ run: 'idle', quietWait: false, pendingCount: 1, outgoingCount: 0 }),
+    true,
+  );
+  // Once admitted arrives and history clears pending, admitted keeps the working row alive.
+  assert.equal(
+    workingRowActive({ run: 'admitted', quietWait: false, pendingCount: 0, outgoingCount: 0 }),
+    true,
+  );
+
+  const rejectedReply = {
+    receipt: recorded({
+      kind: 'returned',
+      result: {
+        kind: 'success',
+        value: { kind: 'rejected', sessionId: 's1', reason: 'model_unavailable' },
+      },
+    }),
+  };
+  const rejected = acceptedSend(rejectedReply, 's1');
+  assert.equal(
+    shouldProjectPendingSend(rejected, { immediate: true, activeRunId: null, atHistoryTail: true }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({ run: 'idle', quietWait: false, pendingCount: 0, outgoingCount: 0 }),
+    false,
+  );
+  // A pending user interaction pauses the working row even while its tool call stays open.
+  assert.equal(
+    workingRowActive({
+      run: 'running',
+      quietWait: false,
+      waitingForUser: true,
+      pendingCount: 0,
+      outgoingCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({
+      run: 'waiting',
+      quietWait: true,
+      waitingForUser: true,
+      pendingCount: 0,
+      outgoingCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    workingRowActive({
+      run: 'running',
+      quietWait: false,
+      waitingForUser: true,
+      pendingCount: 1,
+      outgoingCount: 0,
+    }),
+    true,
+  );
 });

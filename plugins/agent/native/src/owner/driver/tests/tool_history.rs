@@ -663,7 +663,7 @@ async fn goal_history_masks_the_same_objective_bytes_in_body_and_origin() -> Tes
             grant: (),
             token_budget: None,
             start: true,
-            language: Language::ZhCn,
+            language: Language::ZH_CN,
         },
         Default::default(),
         None,
@@ -1820,14 +1820,17 @@ async fn check_wait_archive(rig: &mut Rig) -> TestResult<()> {
         fact: caller.id,
         item_index: 0,
     };
-    let start = serde_json::to_string(event)?.len() + 1;
-    suppress_history_quotes(rig, &session, &[(source_sequence, start, "logical")]).await?;
+    let quote = "logical";
+    let source = args["code"].as_str().ok_or("missing fixture source")?;
+    let offset = source.find(quote).ok_or("missing fixture quote")?;
+    let start = serde_json::to_string(event)?.len() + 1 + offset;
+    suppress_history_quotes(rig, &session, &[(source_sequence, start, quote)]).await?;
     let spans = history
         .read_restrictions(vec![caller_address.clone()])
         .await?;
     let call_body = format!("exec\n{}", serde_json::to_string(args)?);
-    let from = call_body.find("logical").ok_or("missing code literal")? as u64;
-    assert_eq!(spans[&caller_address], [(from, from + 7)]);
+    let from = call_body.find(quote).ok_or("missing code literal")? as u64;
+    assert_eq!(spans[&caller_address], [(from, from + quote.len() as u64)]);
     Ok(())
 }
 
@@ -2133,7 +2136,7 @@ async fn assert_restricted_retry_history(
     reader.finish().await?;
 
     let traces = HistoryDataSource::Snapshot(earlier)
-        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true)
+        .model_request_traces_for_reader(driver.access.execution().run_id, 0, 24, true, None)
         .await?;
     assert!(!traces.run_terminated);
     assert_eq!(traces.requests.len(), 2);
@@ -2146,6 +2149,421 @@ async fn assert_restricted_retry_history(
         };
         assert_eq!(finished.diagnostic, Some(expected));
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_effect_ended_unknown_releases_followup_and_projects_history() -> TestResult<()> {
+    use maka_agent_facts::external_effects::{
+        ExternalEffectDescriptor, ExternalEffectEvent, ExternalEffectKey,
+    };
+    use maka_agent_state::{SessionObligation, SessionQuiescence};
+    use maka_plugin_core::{
+        contract::Transport,
+        deployment::DeploymentRef,
+        operation::{
+            OperationOutcome, OperationReply, Receipt, RecoveryContract, RecoveryProtocol,
+            RecoveryRef,
+        },
+    };
+
+    let mut rig = Rig::new()?;
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(30), async {
+        let session = rig
+            .start_configured(None, |config| {
+                config["external"] = json!({"runtimes":{"codex":true}});
+            })
+            .await?;
+        rig.assemble_backend(
+            &session,
+            Budget {
+                tokens: None,
+                retries: 0,
+                deadline: None,
+            },
+            false,
+            true,
+        )
+        .await?;
+        let driver = rig.driver.as_ref().unwrap().clone();
+        let run = driver.access.execution().run_id;
+        let owner = driver.owner.run_owner();
+        let task = ExternalTaskId::new();
+        let key = ExternalEffectKey {
+            task,
+            operation: Uuid::new_v4(),
+        };
+        let binding = maka_agent_facts::executor::Binding {
+            executor_id: "external".to_string().try_into()?,
+            package_id: "maka.agent".into(),
+            entry_id: "maka.agent".into(),
+            activation: "fixture".into(),
+        };
+        let task_descriptor = ContentBlob::json(&maka_agent_facts::executor::TaskDescriptor {
+            protocol: maka_agent_facts::executor::NATIVE_TASK_PROTOCOL.into(),
+            source: binding.clone(),
+            payload: json!({}),
+        })?;
+        let descriptor = ContentBlob::json(&ExternalEffectDescriptor {
+            schema_version: SCHEMA_VERSION,
+            protocol: "fixture".into(),
+            execution: driver.access.execution().clone(),
+            key,
+            origin: maka_agent_facts::tool_call::ToolOrigin::External {
+                task,
+                operation: key.operation,
+                package_id: binding.package_id,
+                entry_id: binding.entry_id,
+                activation: binding.activation,
+            },
+            operation_id: format!("external:{task}:{}", key.operation),
+            name: "cua_repl".into(),
+            input: json!({"code": "await app.paste('hi')"}),
+            definition: ToolDefinition {
+                name: "cua_repl".into(),
+                description: "Computer Use REPL".into(),
+                input_schema: json!({}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            catalog_digest: maka_agent_engine::digest(&json!({}))?,
+            resources: vec![],
+        })?;
+        let digest = format!("sha256-{}", "d".repeat(64));
+        let reference = RecoveryRef {
+            source: DeploymentRef {
+                state_domain: "b".repeat(64),
+                deployment: owner.deployment,
+                revision: 1,
+            },
+            namespace: owner.namespace.clone(),
+            export: "computer".into(),
+            method: "evaluate".into(),
+            operation: Uuid::new_v4(),
+            fingerprint: digest.clone(),
+            contract: RecoveryContract {
+                name: "maka.workspace.Computer".into(),
+                version: 1,
+                transport: Transport::Remote,
+                digest,
+            },
+            recovery: RecoveryProtocol::JournalV1,
+        };
+        let diagnostic =
+            "paste did not produce an observable change; inspect the UI before trying another action";
+        let observed = |cleanup| Fact::ExternalEffect {
+            event: ExternalEffectEvent::Observed {
+                key,
+                observation: OperationReply {
+                    reference: reference.clone(),
+                    receipt: Receipt::Recorded {
+                        outcome: OperationOutcome::Unknown {
+                            diagnostic: diagnostic.into(),
+                        },
+                        cleanup,
+                    },
+                },
+            },
+        };
+        rig.append(
+            vec![
+                Fact::ExternalTaskPrepared {
+                    task,
+                    descriptor: task_descriptor.reference().clone(),
+                    live_workspace: true,
+                },
+                Fact::ExternalTaskAdmitted { task },
+            ],
+            vec![task_descriptor],
+        )
+        .await?;
+        let committed = rig.append(
+            vec![
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Prepared {
+                        key,
+                        descriptor: descriptor.reference().clone(),
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Admitted {
+                        key,
+                        approval: None,
+                    },
+                },
+                Fact::ExternalEffect {
+                    event: ExternalEffectEvent::Bound {
+                        key,
+                        reference: reference.clone(),
+                    },
+                },
+                observed(OperationCleanup::Unconfirmed),
+                Fact::Blocked {
+                    blocker: BlockerId::new(),
+                    reason: BlockerKind::ExternalEffectUnknown {
+                        task,
+                        operation: key.operation,
+                    },
+                },
+                Fact::ExternalTaskCleanupObserved {
+                    task,
+                    cleanup: OperationCleanup::Confirmed,
+                },
+                Fact::RunTerminated {
+                    terminal: Terminal::Failed,
+                    diagnostic: Some(format!(
+                        "{diagnostic}. The call may still be running; its end was not confirmed."
+                    )),
+                },
+            ],
+            vec![descriptor],
+        )
+        .await?;
+        let prepared_fact_id = committed.facts[0].id;
+        let termination_fact_id = committed.facts.last().unwrap().id;
+
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let failures: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "failure")
+            .map(|row| row["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            failures,
+            [
+                "paste did not produce an observable change; inspect the UI before trying another action. The call may still be running; its end was not confirmed."
+            ]
+        );
+
+        let connection_id = driver
+            .owner
+            .configuration
+            .catalog()
+            .await?
+            .connections
+            .into_iter()
+            .next()
+            .ok_or("missing fixture model connection")?
+            .connection_id;
+        let client = rig.client.as_ref().unwrap();
+        let message = json!({
+            "sessionId": session,
+            "message": "Continue after inspecting the UI",
+            "backend": {"kind": "model", "connectionId": connection_id, "modelId": "llama3.2"},
+            "delivery": "queue",
+        });
+        let blocked = model_recovery::call(client, "agent", "send", message.clone()).await?;
+        assert_eq!(blocked["reason"], "original_operation_unsettled", "{blocked}");
+        assert_eq!(
+            driver.state.session_quiescence(owner.clone(), session.clone()).await?,
+            SessionQuiescence::Busy(SessionObligation::ExternalEffect)
+        );
+        let revision = driver.owner.mutable_session(&session).await?.revision;
+        let blocked_fork = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({"sessionId": session, "expectedRevision": revision, "position": {"kind": "end"}, "title": "Blocked fork", "labels": []}),
+        )
+        .await?;
+        assert_ne!(blocked_fork["kind"], "forked", "unconfirmed external effect must block fork: {blocked_fork}");
+
+        let confirmed = driver
+            .state
+            .observe(run, vec![Change::new(observed(OperationCleanup::Confirmed), at())], vec![])
+            .await?;
+        let observed_fact_id = confirmed.facts[0].id;
+
+        assert_eq!(
+            driver
+                .state
+                .frontier(run)
+                .await?
+                .recovery_failure_diagnostic()
+                .as_deref(),
+            Some(diagnostic)
+        );
+        let page = live(&rig, &session, wire::Position::Tail).await?;
+        let tool_results: Vec<_> = page["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["role"] == "tool_result")
+            .collect();
+        assert_eq!(tool_results.len(), 1, "{page}");
+        assert_eq!(tool_results[0]["tool"]["call"]["name"], "cua_repl");
+        assert_eq!(tool_results[0]["tool"]["call"]["pending"], false);
+        assert_eq!(tool_results[0]["tool"]["result"]["settlement"], "unknown");
+        assert_eq!(tool_results[0]["tool"]["result"]["isError"], true);
+        let reader = model_reader(&driver)?;
+        let detail = serde_json::to_value(
+            crate::service::history::source(
+                &driver.owner,
+                reader.scope(),
+                serde_json::from_value(json!({
+                    "sessionId": session,
+                    "through": page["through"],
+                    "source": {"kind": "row", "position": tool_results[0]["position"]},
+                    "field": "result",
+                    "position": {"kind": "start"},
+                }))?,
+            )
+            .await?,
+        )?;
+        reader.finish().await?;
+        let expected_text = maka_agent_facts::tool_output::ended_unknown_message(diagnostic);
+        assert_eq!(detail["source"]["text"], expected_text);
+
+        // Snapshot projection, Recall search, and Session Fork all succeed after cleanup confirms.
+        let history = driver.state.session_history(owner.clone(), session.clone());
+        let cut = history.capture().await?;
+        let snapshot = history
+            .capture_snapshot(
+                CaptureRequest {
+                    id: SnapshotId::new(),
+                    cut: cut.clone(),
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+        let frozen = serde_json::to_value(
+            crate::service::history::snapshot_page(
+                &snapshot,
+                wire::Position::Tail,
+                true,
+                wire::HistoryView::Conversation,
+                &CancellationToken::new(),
+            )
+            .await?,
+        )?;
+        assert!(frozen["chunks"].as_array().unwrap().iter().any(|row| {
+            row["role"] == "tool_result" && row["tool"]["result"]["settlement"] == "unknown"
+        }));
+
+        let find = |query: &str, mask_evidence: bool| {
+            maka_agent_state::session_history::navigation::SourceFind {
+                after: None,
+                query: query.into(),
+                case_sensitive: true,
+                whole_word: false,
+                include_internal: true,
+                mask_evidence,
+            }
+        };
+        let live_tree =
+            maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
+                .await?;
+        let snapshot_tree =
+            maka_agent_state::session_history::source_tree::SourceTree::snapshot(&snapshot).await?;
+        for tree in [&live_tree, &snapshot_tree] {
+            let hits = tree.find_page(find(diagnostic, false), CancellationToken::new()).await?;
+            assert!(
+                hits.matches.iter().any(|hit| {
+                    hit.field == maka_agent_state::recall::Field::Result
+                        && hit.preview.contains(diagnostic)
+                }),
+                "Recall search must find ended-unknown observation (got {} hits)",
+                hits.matches.len()
+            );
+        }
+
+        let revision = driver.owner.mutable_session(&session).await?.revision;
+        let forked = model_recovery::call(
+            client,
+            "agent",
+            "fork",
+            json!({"sessionId": session, "expectedRevision": revision, "position": {"kind": "end"}, "title": "Fork after ended unknown", "labels": []}),
+        )
+        .await?;
+        assert_eq!(forked["kind"], "forked", "ended-unknown external effect must not block fork: {forked}");
+
+        // Restricting the diagnostic hides it from restricted Recall search, paired archive,
+        // RunTerminated failure row, and model recovery diagnostic, while audit readers keep it.
+        let obs_seq = history
+            .fact_sequence(&cut, run, observed_fact_id)
+            .await?
+            .ok_or("missing observed sequence")?;
+        let term_seq = history
+            .fact_sequence(&cut, run, termination_fact_id)
+            .await?
+            .ok_or("missing termination sequence")?;
+        let termination = history
+            .item(&cut, term_seq)
+            .await?
+            .ok_or("missing termination item")?;
+        let start = expected_text.find(diagnostic).ok_or("missing diagnostic")?;
+        suppress_history_quotes(&rig, &session, &[(obs_seq, start, diagnostic)]).await?;
+
+        for tree in [&live_tree, &snapshot_tree] {
+            let leaked = tree.find_page(find(diagnostic, true), CancellationToken::new()).await?;
+            assert!(leaked.matches.is_empty(), "restricted Recall search leaked diagnostic");
+            let masked = tree
+                .find_page(find("The call ended", true), CancellationToken::new())
+                .await?;
+            assert!(masked.matches.iter().any(|hit| {
+                hit.field == maka_agent_state::recall::Field::Result
+                    && !hit.preview.contains(diagnostic)
+            }));
+        }
+        let restricted = history
+            .restricted_archives(vec![prepared_fact_id, termination_fact_id])
+            .await?;
+        assert!(restricted.contains_key(&prepared_fact_id), "{restricted:?}");
+        assert!(restricted.contains_key(&termination_fact_id), "{restricted:?}");
+        let live_source = maka_agent_state::session_history::source_tree::HistoryDataSource::Live {
+            history,
+            cut,
+        };
+        let archived_source =
+            maka_agent_state::session_history::source_tree::HistoryDataSource::Snapshot(snapshot);
+        for data in [live_source, archived_source] {
+            let model = data.recovery_failure_for_reader(&termination, true).await?;
+            assert!(
+                model.as_deref() == Some("The operation outcome is unknown."),
+                "restricted recovery diagnostic leaked: {model:?}"
+            );
+            assert_eq!(
+                data.recovery_failure_at(&termination).await?.as_deref(),
+                Some(format!(
+                    "{diagnostic}. The call may still be running; its end was not confirmed."
+                ).as_str())
+            );
+        }
+
+        assert_eq!(
+            driver
+                .state
+                .session_quiescence(owner.clone(), session.clone())
+                .await?,
+            SessionQuiescence::Quiescent
+        );
+
+        let continued = model_recovery::call(
+            client,
+            "agent",
+            "continueRun",
+            json!({
+                "sessionId": session,
+                "sourceRunId": run,
+                "sourceHighWater": driver.state.frontier(run).await?.revision,
+                "model": {"connectionId": connection_id, "modelId": "llama3.2"},
+            }),
+        )
+        .await?;
+        assert_eq!(continued["reason"], "safety_check_failed", "{continued}");
+
+        let sent = model_recovery::call(client, "agent", "send", message).await?;
+        assert_eq!(sent["kind"], "queued", "{sent}");
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
     Ok(())
 }
 
@@ -3286,7 +3704,7 @@ async fn shared_cell_child_receipt_survives_snapshot_transfer() {
             },
             cell,
             &canonical.children,
-            maka_agent_facts::language::Language::En,
+            maka_agent_facts::language::Language::EN,
             false,
             &resources,
             &stop,
@@ -3897,6 +4315,387 @@ async fn executor_history_keeps_message_boundaries_and_tool_results() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work_group_last_thought_tracks_unfinished_turns_and_executor_deltas() {
+    use maka_agent_facts::executor::{Output, Selection, Settings};
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let original = driver
+            .state
+            .frontier(driver.access.execution().run_id)
+            .await?;
+        let mut spec = original.spec.clone();
+        let selection = Selection {
+            executor: "external".into(),
+            settings: Settings {
+                runtime: Some("antigravity".into()),
+                ..Settings::default()
+            },
+        };
+        let descriptor = ContentBlob::json(&json!({
+            "selection": selection, "import": "fixture", "member": 0, "basis": "fixture"
+        }))?;
+        let mut contents = vec![descriptor.clone()];
+        for reference in [&spec.input, &spec.system_prompt, &spec.tool_selection] {
+            contents.push(ContentBlob::new(
+                driver
+                    .state
+                    .content(original.run, reference.clone())
+                    .await?,
+            ));
+        }
+        spec.turn_id = Uuid::new_v4().to_string();
+        spec.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        spec.backend = BackendSpec::Executor {
+            selection,
+            descriptor: descriptor.reference().clone(),
+        };
+        let admitted = driver
+            .state
+            .admit(Admission::new(spec, at(), contents))
+            .await?;
+        let run = admitted.facts[0].run;
+        let claim = driver.state.claim(run).await?;
+        let task = ExternalTaskId::new();
+        let session_history = driver
+            .state
+            .session_history(driver.owner.run_owner(), session.clone());
+        let append = |facts: Vec<Fact>| {
+            let claim = &claim;
+            let session_history = &session_history;
+            async move {
+                let view = driver.state.frontier(run).await?;
+                driver
+                    .state
+                    .append(
+                        claim,
+                        (&view).into(),
+                        facts
+                            .into_iter()
+                            .map(|fact| Change::new(fact, at()))
+                            .collect(),
+                        vec![],
+                    )
+                    .await?;
+                Ok::<u64, Box<dyn Error + Send + Sync>>(
+                    session_history.capture().await?.through_sequence,
+                )
+            }
+        };
+        append(vec![
+            Fact::ExternalTaskPrepared {
+                task,
+                descriptor: descriptor.reference().clone(),
+                live_workspace: true,
+            },
+            Fact::ExternalTaskAdmitted { task },
+            Fact::ExternalTaskObserved {
+                task,
+                index: 0,
+                model_time_ms: None,
+                output: Output::ThinkingDelta {
+                    message_id: "t1".into(),
+                    text: "Initial plan.".into(),
+                },
+            },
+        ])
+        .await?;
+
+        let chat = |position: Value,
+                    through: Option<u64>,
+                    include_thinking: bool,
+                    thought: Option<Value>| {
+            let rig = &rig;
+            let session = &session;
+            async move {
+                let mut req = json!({
+                    "sessionId": session,
+                    "through": through,
+                    "position": position,
+                    "includeThinking": include_thinking,
+                    "view": "chat",
+                });
+                if let Some(thought) = thought {
+                    req["thought"] = thought;
+                }
+                query(rig, "history", req).await
+            }
+        };
+        let work_chunk = |page: &Value| -> Option<Value> {
+            page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|chunk| !chunk["work"].is_null())
+                .cloned()
+        };
+
+        let first_page = chat(json!({"kind": "tail"}), None, true, None).await?;
+        let first_group = work_chunk(&first_page).ok_or("missing initial work group")?;
+        assert_eq!(
+            first_group["work"]["last"]["kind"], "thought",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["text"], "Initial plan.",
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["lastThought"]["offset"],
+            "Initial plan.".len() as u64,
+            "{first_group}"
+        );
+        assert_eq!(
+            first_group["work"]["end"]["offset"],
+            "Initial plan.".len() as u64,
+            "{first_group}"
+        );
+        let t1_position = first_group["work"]["lastThought"]["position"].clone();
+
+        // Continuation delta on t1 is delivered in the same Chat After follow via tailThought.
+        let cont_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 1,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " Checking PR #7270.".into(),
+            },
+        }])
+        .await?;
+        let cont_page = chat(
+            json!({"kind": "after", "cursor": first_group["work"]["end"]}),
+            Some(cont_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": "Initial plan.".len() as u64,
+            })),
+        )
+        .await?;
+        assert!(
+            cont_page["chunks"].as_array().unwrap().is_empty(),
+            "{cont_page}"
+        );
+        let expected_t1 = "Initial plan. Checking PR #7270.";
+        assert_eq!(
+            cont_page["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1.len() as u64,
+                "text": expected_t1,
+            }),
+            "{cont_page}"
+        );
+
+        // Following again from the updated offset produces no redundant tailThought.
+        let updated_end = json!({
+            "position": t1_position,
+            "field": "thinking",
+            "offset": expected_t1.len() as u64,
+        });
+        let idle_page = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(cont_fence),
+            true,
+            Some(updated_end.clone()),
+        )
+        .await?;
+        assert!(
+            idle_page["chunks"].as_array().unwrap().is_empty(),
+            "{idle_page}"
+        );
+        assert!(idle_page["tailThought"].is_null(), "{idle_page}");
+
+        // Following tool returns a refreshed WorkGroup chunk (no tailThought) while preserving lastThought.
+        let tool_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 2,
+            model_time_ms: None,
+            output: Output::ToolStart {
+                tool_call_id: "call-1".into(),
+                name: "run_command".into(),
+                input: json!({"CommandLine": "cargo test"}),
+            },
+        }])
+        .await?;
+        let after_tool = chat(
+            json!({"kind": "after", "cursor": updated_end}),
+            Some(tool_fence),
+            true,
+            Some(updated_end.clone()),
+        )
+        .await?;
+        assert!(after_tool["tailThought"].is_null(), "{after_tool}");
+        let tool_group = work_chunk(&after_tool).ok_or("missing work group after tool")?;
+        assert_eq!(tool_group["work"]["last"]["kind"], "tool", "{tool_group}");
+        assert_eq!(
+            tool_group["work"]["lastThought"]["text"], expected_t1,
+            "{tool_group}"
+        );
+        assert_eq!(
+            tool_group["work"]["lastThought"]["offset"],
+            expected_t1.len() as u64,
+            "{tool_group}"
+        );
+
+        // Continuing the same thinking message ID after a tool now occupies work.end
+        // still delivers tailThought from the already-projected executor transcript.
+        let after_tool_thought_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 3,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t1".into(),
+                text: " After tool.".into(),
+            },
+        }])
+        .await?;
+        let after_tool_thought = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(after_tool_thought_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1.len() as u64,
+            })),
+        )
+        .await?;
+        assert!(
+            after_tool_thought["chunks"].as_array().unwrap().is_empty(),
+            "{after_tool_thought}"
+        );
+        let expected_t1_after_tool = "Initial plan. Checking PR #7270. After tool.";
+        assert_eq!(
+            after_tool_thought["tailThought"],
+            json!({
+                "position": t1_position,
+                "offset": expected_t1_after_tool.len() as u64,
+                "text": expected_t1_after_tool,
+            }),
+            "{after_tool_thought}"
+        );
+
+        // Whitespace-first thought leaves lastThought on t1; once non-empty CJK text arrives,
+        // Chat After re-summarizes the group with a bounded valid UTF-8 tail (<= 3072 bytes).
+        let blank_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 4,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: "  \n".into(),
+            },
+        }])
+        .await?;
+        let blank_page = chat(
+            json!({"kind": "after", "cursor": tool_group["work"]["end"]}),
+            Some(blank_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
+        )
+        .await?;
+        let blank_group = work_chunk(&blank_page).ok_or("missing work group after blank t2")?;
+        assert_eq!(blank_group["work"]["last"]["kind"], "tool", "{blank_group}");
+        assert_eq!(
+            blank_group["work"]["lastThought"]["text"], expected_t1_after_tool,
+            "{blank_group}"
+        );
+
+        let long_cjk = format!("{}结尾思考", "思".repeat(1200));
+        let second_fence = append(vec![Fact::ExternalTaskObserved {
+            task,
+            index: 5,
+            model_time_ms: None,
+            output: Output::ThinkingDelta {
+                message_id: "t2".into(),
+                text: long_cjk,
+            },
+        }])
+        .await?;
+        let after_second = chat(
+            json!({"kind": "after", "cursor": blank_group["work"]["end"]}),
+            Some(second_fence),
+            true,
+            Some(json!({
+                "position": t1_position,
+                "field": "thinking",
+                "offset": expected_t1_after_tool.len() as u64,
+            })),
+        )
+        .await?;
+        assert!(after_second["tailThought"].is_null(), "{after_second}");
+        let second_group = work_chunk(&after_second).ok_or("missing work group after t2")?;
+        assert_eq!(
+            second_group["work"]["last"]["kind"], "thought",
+            "{second_group}"
+        );
+        let second_text = second_group["work"]["lastThought"]["text"]
+            .as_str()
+            .ok_or("missing t2 lastThought text")?;
+        assert!(
+            second_text.len() <= 3072,
+            "tail byte len {}",
+            second_text.len()
+        );
+        assert!(second_text.ends_with("结尾思考"), "{second_text}");
+
+        // Reading without thinking omits lastThought from the WorkGroup summary.
+        let no_thinking = chat(json!({"kind": "tail"}), None, false, None).await?;
+        let no_thinking_group = work_chunk(&no_thinking).ok_or("missing no-thinking work group")?;
+        assert!(
+            no_thinking_group["work"]["lastThought"].is_null(),
+            "{no_thinking_group}"
+        );
+
+        // Finished turns omit lastThought and reset work.end.offset to 0.
+        append(vec![
+            Fact::ExternalTaskClosed {
+                task,
+                outcome: Terminal::Completed,
+                diagnostic: None,
+                final_message: None,
+            },
+            Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            },
+        ])
+        .await?;
+        let finished = chat(json!({"kind": "tail"}), None, true, None).await?;
+        let finished_group = work_chunk(&finished).ok_or("missing finished work group")?;
+        assert!(
+            finished_group["work"]["lastThought"].is_null(),
+            "{finished_group}"
+        );
+        assert_eq!(
+            finished_group["work"]["end"]["offset"], 0,
+            "{finished_group}"
+        );
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(&result, Ok(Ok(Ok(())))),
+        "work group lastThought regression: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "fixture cleanup: {cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continue_run_recovers_across_interrupted_boundaries() -> TestResult<()> {
     const PIXEL_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -4138,4 +4937,346 @@ async fn wait_terminal(client: &HostClient, session: &str, run_id: Value) -> Tes
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_snapshot_indexes_rebuild_without_skipping_pages_or_aborting_sibling_writes()
+-> TestResult<()> {
+    use maka_agent_state::{
+        recall::{RecallStore, SearchQuery},
+        session_catalog::{Filter, Position as CatalogPosition, SideQuestions},
+        session_history::{
+            navigation::SourceFind,
+            source_tree::{HistoryDataSource, SourceTree},
+        },
+    };
+    use maka_event_log::{
+        StoreError,
+        connection::Query,
+        sessions::{CatalogFilter, CatalogScope},
+        writeback::{Notification, Prepared, Statement},
+    };
+
+    struct SqlWrite<F>(F);
+    impl<F: FnOnce(&rusqlite::Connection) -> Result<bool, StoreError> + Send + 'static> Statement
+        for SqlWrite<F>
+    {
+        type Value = ();
+        type Output = ();
+        fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
+            let changed = (self.0)(c)?;
+            Ok(Prepared {
+                value: (),
+                changed,
+                notification: Notification::NONE,
+            })
+        }
+        fn committed(_: ()) {}
+        fn isolated_rejection(_: &StoreError) -> bool {
+            false
+        }
+    }
+    struct SqlQuery<F>(F);
+    impl<
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, StoreError> + Send + 'static,
+    > Query for SqlQuery<F>
+    {
+        type Output = T;
+        fn execute(self, c: &rusqlite::Connection) -> Result<T, StoreError> {
+            (self.0)(c)
+        }
+    }
+
+    let mut rig = Rig::new()?;
+    let base = rig.directory.path().to_path_buf();
+    let server = MockAiBuilder::new()
+        .scripted(vec![
+            TurnPlan::new()
+                .push_text("Alpha milestone answer.")
+                .with_usage(Usage::new(120, 40)),
+            TurnPlan::new()
+                .push_text("Beta followup answer.")
+                .with_usage(Usage::new(180, 50)),
+            TurnPlan::new()
+                .push_text("Compacted summary.")
+                .with_usage(Usage::new(90, 30)),
+        ])
+        .start()
+        .await?;
+    let boot = model_recovery::bootstrap(&base, server.base_url(), false).await?;
+    model_recovery::attach(&mut rig, &boot).await?;
+
+    let result = AssertUnwindSafe(tokio::time::timeout(
+        Duration::from_secs(60),
+        Box::pin(async {
+            let client = rig.client.as_ref().ok_or("client missing")?;
+            let owner = rig.captured.lock().unwrap().clone().ok_or("owner missing")?;
+            let writer = owner.store.data_writer()?;
+            let run_owner = owner.run_owner();
+
+            let conns = model_recovery::call(client, "settings", "connections", json!({"kind": "start"})).await?;
+            let conn_id = model_recovery::call(client, "settings", "create", json!({
+                "expectedCatalogRevision": conns["revision"],
+                "connection": {
+                    "slug": "snapshot-rebuild", "name": "Snapshot Rebuild",
+                    "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration": {"baseUrl": boot.base_url},
+                    "enabled": true, "enabledModelIds": ["llama3.2"],
+                    "modelOverrides": {"llama3.2": {"apiProtocol": "openai-chat-completions"}}
+                }
+            })).await?["connection"]["connectionId"].clone();
+            let backend = json!({"kind": "model", "connectionId": conn_id, "modelId": "llama3.2"});
+
+            let create_session = |title: &str| {
+                let (title, path) = (title.to_owned(), base.join("workspace"));
+                async move {
+                    let r = model_recovery::call(client, "agent", "create", json!({
+                        "title": title, "automaticTitle": false, "labels": [],
+                        "workspace": {"kind": "directory", "path": path}
+                    })).await?;
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("session id")?.to_owned())
+                }
+            };
+            let fork_session = |source: &str, title: &str| {
+                let (owner, source, title) = (owner.clone(), source.to_owned(), title.to_owned());
+                async move {
+                    let rev = owner.session(&source).await?.revision;
+                    let r = model_recovery::call(client, "agent", "fork", json!({
+                        "sessionId": source, "expectedRevision": rev,
+                        "position": {"kind": "end"}, "title": title, "labels": []
+                    })).await?;
+                    assert_eq!(r["kind"], "forked", "{r}");
+                    Ok::<String, Box<dyn Error + Send + Sync>>(r["session"]["id"].as_str().ok_or("fork id")?.to_owned())
+                }
+            };
+            let poison = |id: SnapshotId, nav: Option<i64>, cat: Option<i64>, phantom: bool, clear_kind: bool| {
+                let writer = writer.clone();
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        let s = id.to_string();
+                        match nav {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_nav_heads SET version=? WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_nav_heads WHERE snapshot=?", [&s])?,
+                        };
+                        if clear_kind {
+                            c.execute("UPDATE agent_history_snapshot_entries SET fact_kind=NULL WHERE snapshot=? AND kind='fact'", [&s])?;
+                        }
+                        if phantom {
+                            c.execute("UPDATE agent_history_snapshot_nav_documents SET label='STALE_V3_LABEL' WHERE snapshot=?", [&s])?;
+                            let doc: i64 = c.query_row("SELECT id FROM agent_history_snapshot_nav_documents WHERE snapshot=? ORDER BY id LIMIT 1", [&s], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_fields(document,ordinal,field,internal,bytes) VALUES(?,999,'\"body\"',0,22)", [doc])?;
+                            let chunk: i64 = c.query_row("INSERT INTO agent_history_snapshot_nav_chunks(document,field_ordinal,ordinal,start,body) VALUES(?,999,0,0,'phantom_v3_stale_token') RETURNING id", [doc], |r| r.get(0))?;
+                            c.execute("INSERT INTO agent_history_snapshot_nav_terms(rowid,grams) VALUES(?,?)", rusqlite::params![chunk, "pha han ant nto tom om_ m_v _v3 v3_ 3_s _st sta tal ale le_ e_t _to tok oke ken"])?;
+                        }
+                        match cat {
+                            Some(v) => c.execute("UPDATE agent_history_snapshot_catalog SET summary_json=json_set(summary_json,'$.version',?) WHERE snapshot=?", rusqlite::params![v, &s])?,
+                            None => c.execute("DELETE FROM agent_history_snapshot_catalog WHERE snapshot=?", [&s])?,
+                        };
+                        Ok(true)
+                    })).await
+                }
+            };
+            let find_req = |q: &str, include_internal: bool| SourceFind {
+                after: None, query: q.into(), case_sensitive: true,
+                whole_word: false, include_internal, mask_evidence: false,
+            };
+
+            // Seed primary -> forked_peer + forked_a (+ turn 2 + compact) -> forked_nested (S0 -> S1).
+            let primary = create_session("Primary Source").await?;
+            let sent1 = model_recovery::call(client, "agent", "send", json!({"sessionId": primary, "message": "Alpha milestone prompt", "backend": backend})).await?;
+            let primary_run = model_recovery::completed_message(client, &primary, &sent1["messageId"]).await?;
+            let forked_peer = fork_session(&primary, "Forked Peer").await?;
+            let forked_a = fork_session(&primary, "Forked Base").await?;
+            let sent2 = model_recovery::call(client, "agent", "send", json!({"sessionId": forked_a, "message": "Beta followup prompt", "backend": backend})).await?;
+            model_recovery::completed_message(client, &forked_a, &sent2["messageId"]).await?;
+            let compact_run: RunId = serde_json::from_value(
+                model_recovery::call(client, "agent", "compact", json!({"sessionId": forked_a, "model": {"connectionId": conn_id, "modelId": "llama3.2"}})).await?["execution"]["runId"].clone()
+            )?;
+            assert_eq!(wait_terminal(client, &forked_a, json!(compact_run)).await?["state"]["kind"], "completed");
+            let forked_nested = fork_session(&forked_a, "Forked Nested").await?;
+
+            let peer_history = owner.durable.session_history(run_owner.clone(), forked_peer.clone());
+            let peer_cut = peer_history.capture().await?;
+            let peer_tree = SourceTree::live(&peer_history, &peer_cut).await?;
+            let Some(HistoryDataSource::Snapshot(snap_peer)) = peer_tree.sources().next().map(|(_, s)| s.clone()) else {
+                return Err("forked_peer must adopt a snapshot".into());
+            };
+            let nested_history = owner.durable.session_history(run_owner.clone(), forked_nested.clone());
+            let nested_cut = nested_history.capture().await?;
+            let nested_tree = SourceTree::live(&nested_history, &nested_cut).await?;
+            let nested_snaps: Vec<_> = nested_tree.sources().filter_map(|(_, s)| match s {
+                HistoryDataSource::Snapshot(snap) => Some(snap.clone()),
+                HistoryDataSource::Live { .. } => None,
+            }).collect();
+            assert_eq!(nested_snaps.len(), 2);
+            let (s0, s1) = (nested_snaps[0].clone(), nested_snaps[1].clone());
+            let s1_compact_seq = s1.page(0, 64).await?.items.into_iter()
+                .find(|it| it.recorded.run == compact_run && matches!(it.recorded.fact, Fact::ContextCompacted { .. }))
+                .ok_or("compaction fact missing in s1")?.sequence;
+
+            // 1. Upgrade path: agent.observe rebuilds stale v3 snapshot, triggers FTS5 delete on phantom chunks, and restores labels.
+            poison(snap_peer.id(), Some(3), Some(2), true, false).await?;
+            let fts_hits = |term: &'static str| writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT COUNT(*) FROM agent_history_snapshot_nav_terms WHERE agent_history_snapshot_nav_terms MATCH ?", [term], |r| r.get::<_, i64>(0)).map_err(Into::into)
+            }));
+            assert!(fts_hits("pha").await? > 0);
+            let obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_peer})).await?;
+            assert_eq!(obs["metrics"]["contextTokens"], 160, "{obs}");
+            assert_eq!(fts_hits("pha").await?, 0, "Edit::Reset must clear stale FTS5 nav_terms");
+            assert!(peer_tree.find_page(find_req("phantom_v3_stale_token", true), CancellationToken::new()).await?.matches.is_empty());
+            let landmarks = peer_tree.landmarks(16, CancellationToken::new()).await?;
+            assert_eq!(landmarks.len(), 1);
+            assert!(landmarks[0].label.contains("Alpha milestone"), "{}", landmarks[0].label);
+
+            // 2. Nested S0 -> S1 cold rebuild, compaction_duration_ms, and concurrent peer-path rebuilds.
+            poison(s0.id(), Some(3), Some(1), true, false).await?;
+            poison(s1.id(), Some(3), Some(1), true, false).await?;
+            let nested_obs = model_recovery::call(client, "agent", "observe", json!({"sessionId": forked_nested})).await?;
+            assert_eq!(nested_obs["session"]["id"], forked_nested, "{nested_obs}");
+            poison(s1.id(), Some(3), Some(2), false, false).await?;
+            let _ = HistoryDataSource::Snapshot(s1.clone())
+                .compaction_duration_ms(compact_run, compact_run, StepId::new(), s1_compact_seq, None).await?;
+
+            poison(snap_peer.id(), None, Some(1), true, false).await?;
+            let snap_source = HistoryDataSource::Snapshot(snap_peer.clone());
+            let recall = RecallStore::new(writer.clone(), run_owner.clone(), owner.prefix.clone())?;
+            let query = SearchQuery { terms: vec!["Forked".into()], session_id: None, since: None, until: None, exclude: None, limit: None };
+            let (r_m, r_c, r_cal, r_tr, r_f, r_l, r_t, r_r) = tokio::join!(
+                peer_history.metrics(&peer_cut, None),
+                peer_history.current_model_context(&peer_cut, None),
+                peer_history.calibration_sample(&peer_cut, None),
+                snap_source.model_request_traces(primary_run, 0, 24),
+                peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()),
+                peer_tree.landmarks(16, CancellationToken::new()),
+                snap_peer.terminated(primary_run, None),
+                recall.search(query, 0, 0, CancellationToken::new()),
+            );
+            assert!(r_m?.is_some() && r_c?.is_some() && r_cal?.is_some());
+            assert!(!r_tr?.requests.is_empty() && !r_f?.matches.is_empty() && !r_l?.is_empty());
+            assert!(matches!(r_t?, Some((_, Terminal::Completed))));
+            assert!(r_r?.titles.iter().any(|r| r.metadata.id == forked_peer));
+
+            // 3. Pagination stability, filtered non-rebuild, & catalog cancellation:
+            // missing summary_json never causes After(cursor) to skip a Session, and unmatched filters skip stale snapshots.
+            let catalog = owner.canonical_catalog()?;
+            let snap_peer_id = snap_peer.id().to_string();
+            let snap_updated = writer
+                .query(SqlQuery(move |c: &rusqlite::Connection| {
+                    c.query_row(
+                        "SELECT CAST(json_extract(summary_json,'$.summary.updatedAt') AS INTEGER) FROM agent_history_snapshot_catalog WHERE snapshot=?",
+                        [snap_peer_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map_err(Into::into)
+                }))
+                .await?;
+            let between = create_session("Between Recency").await?;
+            let (fp, bw) = (forked_peer.clone(), between.clone());
+            writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 2_000, snap_updated - 2_000, fp])?;
+                c.execute("UPDATE session_control SET created_at=?, updated_at=? WHERE id=?", rusqlite::params![snap_updated - 1_000, snap_updated - 1_000, bw])?;
+                Ok(true)
+            })).await?;
+            poison(snap_peer.id(), Some(4), None, false, false).await?;
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let err = catalog.clone().with_cancellation(cancelled).record(&forked_peer).await.err().ok_or("cancelled catalog read must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+
+            let filter = Filter {
+                base: CatalogFilter { roots_only: false, archived_only: false, include_archived: true },
+                needs_you_only: false, room: None, side: SideQuestions::Any,
+            };
+            // An unmatched title filter must return 0 rows without rebuilding filtered-out snapshots.
+            let empty_page = catalog
+                .page(
+                    CatalogScope::Owned {
+                        id_prefix: owner.prefix.clone(),
+                        selection: maka_event_log::sessions::CatalogSelection::All,
+                        title_query: "no-such-session-title-xyz".into(),
+                    },
+                    None,
+                    CatalogPosition::Start,
+                    filter.clone(),
+                    8,
+                )
+                .await?;
+            assert!(empty_page.sessions.is_empty());
+            let still_missing = writer
+                .query(SqlQuery({
+                    let id = snap_peer.id().to_string();
+                    move |c: &rusqlite::Connection| {
+                        c.query_row(
+                            "SELECT NOT EXISTS(SELECT 1 FROM agent_history_snapshot_catalog WHERE snapshot=?)",
+                            [id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(Into::into)
+                    }
+                }))
+                .await?;
+            assert!(still_missing, "unmatched filter must not rebuild filtered-out snapshots");
+
+            let (mut seen, mut rev, mut pos) = (Vec::new(), None, CatalogPosition::Start);
+            loop {
+                let page = catalog.page(CatalogScope::Profile, rev.clone(), pos, filter.clone(), 1).await?;
+                rev = Some(page.revision);
+                seen.extend(page.sessions.into_iter().map(|r| r.metadata.id));
+                match page.next_cursor { Some(c) => pos = CatalogPosition::After(c), None => break }
+            }
+            let peer_idx = seen.iter().position(|id| id == &forked_peer).ok_or("forked_peer skipped across pages")?;
+            let between_idx = seen.iter().position(|id| id == &between).ok_or("between missing")?;
+            assert!(peer_idx < between_idx, "forked_peer must sort ahead of between: {seen:?}");
+
+            // 4. Batched writer isolation: cancelling an in-flight Backfill queued in the same Root batch never rolls back sibling writes.
+            poison(snap_peer.id(), Some(3), Some(2), false, true).await?;
+            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let hold = tokio::spawn({
+                let writer = writer.clone();
+                async move { writer.write(SqlWrite(move |_: &rusqlite::Connection| { let _ = entered_tx.send(()); let _ = release_rx.recv(); Ok(false) })).await }
+            });
+            tokio::task::spawn_blocking(move || entered_rx.recv()).await.map_err(|e| e.to_string())??;
+            let stop_search = CancellationToken::new();
+            let search_task = tokio::spawn({
+                let (tree, stop) = (peer_tree.clone(), stop_search.clone());
+                async move { tree.find_page(find_req("Alpha milestone", false), stop).await }
+            });
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let tag = format!("sibling-{}", Uuid::now_v7());
+            let sibling_task = tokio::spawn({
+                let (writer, tag) = (writer.clone(), tag.clone());
+                async move {
+                    writer.write(SqlWrite(move |c: &rusqlite::Connection| {
+                        c.execute("CREATE TABLE IF NOT EXISTS test_sibling_commits(tag TEXT PRIMARY KEY)", [])?;
+                        c.execute("INSERT INTO test_sibling_commits(tag) VALUES(?)", [tag])?;
+                        Ok(true)
+                    })).await
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop_search.cancel();
+            let _ = release_tx.send(());
+
+            hold.await.map_err(|e| e.to_string())??;
+            let err = search_task.await.map_err(|e| e.to_string())?.err().ok_or("cancelled find_page must fail")?;
+            assert!(err.to_string().contains("cancelled"), "{err}");
+            sibling_task.await.map_err(|e| e.to_string())?.map_err(|e| format!("sibling rolled back: {e}"))?;
+            let committed = writer.query(SqlQuery(move |c: &rusqlite::Connection| {
+                c.query_row("SELECT EXISTS(SELECT 1 FROM test_sibling_commits WHERE tag=?)", [tag], |r| r.get::<_, bool>(0)).map_err(Into::into)
+            })).await?;
+            assert!(committed, "sibling write must remain committed");
+            assert!(!peer_tree.find_page(find_req("Alpha milestone", false), CancellationToken::new()).await?.matches.is_empty());
+
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        }),
+    ))
+    .catch_unwind()
+    .await;
+    server.shutdown().await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    Ok(())
 }

@@ -14,44 +14,6 @@ never made at all, so a tree of thousands of items opens and scrolls at once. Th
 nothing of its own, the app styles each row (`itemClass`) and draws its content (`renderItem`: an icon, the label
 indented by the item's depth, a chevron, a badge).
 
-```rust tabs
-use nsh_base::{TreeEntry, TreeItem, theme, tree};
-use nsh_core::prelude::*;
-
-fn files() -> impl IntoElement {
-    let items = vec![
-        TreeItem::new("src", "src")
-            .child(TreeItem::new("src/main.rs", "main.rs"))
-            .child(TreeItem::new("src/ui", "ui").child(TreeItem::new("src/ui/tree.rs", "tree.rs"))),
-        TreeItem::new("Cargo.toml", "Cargo.toml"),
-    ];
-    let selected = signal(None::<SharedString>);
-    tree()
-        .items(items)
-        .default_expanded(vec!["src".into()])
-        .selected(move || selected.get())
-        .on_selected_change(move |id: &SharedString| selected.set(Some(id.clone())))
-        .accessibility_label("Files")
-        .h(px(320.0))
-        .list_class("p-1")
-        .item_class(
-            "group rounded-md hover:bg-accent selected:bg-primary/10 \
-             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
-        )
-        .render_item(|entry: &TreeEntry| {
-            view()
-                .flex_row()
-                .gap_2()
-                .h_8()
-                .items_center()
-                .rounded_md()
-                .pl(px(8.0 + 16.0 * entry.depth as f32))
-                .child(text(if entry.folder { "▸" } else { " " }).text_color(move || theme().muted_foreground))
-                .child(text(entry.label.clone()))
-        })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Tree, type TreeItem } from "nsh/base";
@@ -100,6 +62,44 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{TreeEntry, TreeItem, theme, tree};
+use nsh_core::prelude::*;
+
+fn files() -> impl IntoElement {
+    let items = vec![
+        TreeItem::new("src", "src")
+            .child(TreeItem::new("src/main.rs", "main.rs"))
+            .child(TreeItem::new("src/ui", "ui").child(TreeItem::new("src/ui/tree.rs", "tree.rs"))),
+        TreeItem::new("Cargo.toml", "Cargo.toml"),
+    ];
+    let selected = signal(None::<SharedString>);
+    tree()
+        .items(items)
+        .default_expanded(vec!["src".into()])
+        .selected(move || selected.get())
+        .on_selected_change(move |id: &SharedString| selected.set(Some(id.clone())))
+        .accessibility_label("Files")
+        .h(px(320.0))
+        .list_class("p-1")
+        .item_class(
+            "group rounded-md hover:bg-accent selected:bg-primary/10 \
+             focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring disabled:opacity-50",
+        )
+        .render_item(|entry: &TreeEntry| {
+            view()
+                .flex_row()
+                .gap_2()
+                .h_8()
+                .items_center()
+                .rounded_md()
+                .pl(px(8.0 + 16.0 * entry.depth as f32))
+                .child(text(if entry.folder { "▸" } else { " " }).text_color(move || theme().muted_foreground))
+                .child(text(entry.label.clone()))
+        })
+}
 ```
 
 `Tree` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The expanded items and the

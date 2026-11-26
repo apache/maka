@@ -125,18 +125,22 @@ impl Owner {
             issuer: Issuer::default(),
             source: persistence.source().clone(),
         });
-        let processes = Arc::new(processes::Processes::new(
-            calls.clone(),
-            configuration.clone(),
-        ));
+        let data_namespace = maka_plugin_core::storage::Namespace::new(
+            IMPLEMENTATION,
+            maka_plugin_core::scope::Scope::Profile,
+        )
+        .expect("ACP storage namespace");
         let storage = Arc::new(storage::Storage::new(
             store.clone(),
             namespace.clone(),
-            maka_plugin_core::storage::Namespace::new(
-                IMPLEMENTATION,
-                maka_plugin_core::scope::Scope::Profile,
-            )
-            .expect("ACP storage namespace"),
+            data_namespace.clone(),
+        ));
+        let processes = Arc::new(processes::Processes::new(
+            calls.clone(),
+            configuration.clone(),
+            storage.clone(),
+            data_namespace,
+            store.owned_root().map_err(|e| e.to_string())?,
         ));
         let journal = Arc::new(journal::Journal::new(
             storage.clone(),

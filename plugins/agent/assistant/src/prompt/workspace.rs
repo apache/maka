@@ -21,17 +21,7 @@ use crate::instructions::WorkspaceInstruction;
 use maka_agent_facts::language::Language;
 
 fn intro(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "User instructions for this workspace and session, subject to system, developer and permission rules. Global files come from the user config directory; project files come from the session cwd."
-        }
-        Language::ZhCn => {
-            "适用于此工作区和会话的用户指令，遵循系统、开发者和权限规则。全局文件来自用户配置目录；项目文件来自会话的 cwd。"
-        }
-        Language::ZhTw => {
-            "適用於此工作區和對話的使用者指令，遵循系統、開發者和權限規則。全域檔案來自使用者設定目錄；專案檔案來自對話的 cwd。"
-        }
-    }
+    maka_agent_facts::i18n::assistant::workspace_instructions_intro(language)
 }
 const END: &str = "\n</workspace-instructions>";
 
@@ -73,18 +63,18 @@ mod tests {
         let small = render(
             vec![entry("same".into())],
             vec![entry("same".into())],
-            Language::En,
+            Language::EN,
         );
         assert!(small.find("scope=\"global\"").unwrap() < small.find("scope=\"project\"").unwrap());
         assert_eq!(small.matches("\nsame\n").count(), 2);
         let large = render(
             vec![entry("🦀".repeat(12_000))],
             vec![entry("🦀".repeat(12_000))],
-            Language::En,
+            Language::EN,
         );
         assert_eq!(large.matches("🦀").count(), 24_000);
         assert!(large.contains("scope=\"project\""));
         assert!(large.ends_with(END));
-        assert!(render(vec![], vec![], Language::En).is_empty());
+        assert!(render(vec![], vec![], Language::EN).is_empty());
     }
 }

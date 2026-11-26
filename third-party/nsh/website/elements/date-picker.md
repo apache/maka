@@ -18,6 +18,52 @@ The picker owns the behavior: the value (the app's, or its own), the open state,
 the keyboard and what screen readers hear. The look is the app's: it draws the trigger (with the value, a
 placeholder, an icon) and styles the popup, the calendar's parts, the presets and the time field.
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { DatePicker, type DatePickerValue } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const due = signal<DatePickerValue>(null);
+  return (
+    <DatePicker
+      value={due()}
+      onChange={({ value }) => due.set(value)}
+      timePrecision="minute"
+      cleanable
+      clearButton={<Text>×</Text>}
+      clearButtonAccessibilityLabel="Clear the due date"
+      presets={[{ label: "Tomorrow 9:00", value: "2026-10-29T09:00" }]}
+      accessibilityLabel="Due"
+      offset={4}
+      popupClass="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md"
+      backdropClass="bg-black/40"
+      contentClass="flex-row gap-3"
+      presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+      headerClass="flex-row items-center justify-between"
+      rowClass="flex-row justify-between"
+      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      timeClass="mt-2 gap-3"
+      timeLabel={<Text class="text-sm">Time</Text>}
+      timeAccessibilityLabel="Due time"
+      timeFieldClass="flex-row rounded-md border border-input px-2 py-1"
+      segmentClass="text-sm tabular-nums focus:bg-accent"
+      trigger={
+        <View class="h-9 w-56 justify-center rounded-md border border-input px-3 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <Text>{typeof due() === "string" ? (due() as string).replace("T", " ") : "Pick a date"}</Text>
+        </View>
+      }
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use chrono::NaiveDate;
 use nsh_base::{DateRangePreset, DateTime, PickedDate, date_picker, theme};
@@ -63,52 +109,6 @@ fn trip_dates() -> impl IntoElement {
                 .child(text(title)),
         )
 }
-```
-
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { DatePicker, type DatePickerValue } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const due = signal<DatePickerValue>(null);
-  return (
-    <DatePicker
-      value={due()}
-      onChange={({ value }) => due.set(value)}
-      timePrecision="minute"
-      cleanable
-      clearButton={<Text>×</Text>}
-      clearButtonAccessibilityLabel="Clear the due date"
-      presets={[{ label: "Tomorrow 9:00", value: "2026-10-29T09:00" }]}
-      accessibilityLabel="Due"
-      offset={4}
-      popupClass="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md"
-      backdropClass="bg-black/40"
-      contentClass="flex-row gap-3"
-      presetClass="rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-      headerClass="flex-row items-center justify-between"
-      rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus-visible:ring-2 focus-visible:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
-      timeClass="mt-2 gap-3"
-      timeLabel={<Text class="text-sm">Time</Text>}
-      timeAccessibilityLabel="Due time"
-      timeFieldClass="flex-row rounded-md border border-input px-2 py-1"
-      segmentClass="text-sm tabular-nums focus:bg-accent"
-      trigger={
-        <View class="h-9 w-56 justify-center rounded-md border border-input px-3 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <Text>{typeof due() === "string" ? (due() as string).replace("T", " ") : "Pick a date"}</Text>
-        </View>
-      }
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `DatePicker` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `date_picker()`

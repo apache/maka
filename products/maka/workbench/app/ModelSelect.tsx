@@ -59,9 +59,12 @@ import {
 } from './modelSelection';
 import { SettingsSegmented } from './SettingsPage';
 import { createText, errorText, UiError } from './text';
+import { useToolbarCompact } from './composerToolbar';
 import {
   C,
   captionTextStyle,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
   controlDisabledStyle,
   floatingStyle,
   menuDetailTextStyle,
@@ -70,7 +73,6 @@ import {
   menuSeparatorStyle,
   shortcut,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
 
 type SelectionAction = {
@@ -78,6 +80,7 @@ type SelectionAction = {
   sessionId: string;
   expected: BackendIdentity;
   backend: ModelBackend;
+  label?: string | null;
 };
 type EffortAction = SelectionAction & { level: string };
 type ModelsPage = Pick<
@@ -107,7 +110,7 @@ export function ModelSelect(props: {
   current(): boolean;
   toggle(target: ModelTarget): void;
   close(instance: number): boolean;
-  select(instance: number, backend: ModelBackend): Promise<void>;
+  select(instance: number, backend: ModelBackend, label?: string | null): Promise<void>;
   manage(target: { sessionId: string; instance: number }): void;
 }) {
   const owner = props.owner;
@@ -137,6 +140,10 @@ export function ModelSelect(props: {
     ]
       .filter(Boolean)
       .join(' · ');
+  const triggerLabel = () => {
+    const suffix = useToolbarCompact() ? '' : modifiers();
+    return suffix ? `${model()} · ${suffix}` : model();
+  };
   const tooltipLabel = () =>
     [modelCaption(owner.backend(), owner.modelDetails()), modifiers()].filter(Boolean).join(' · ');
   return (
@@ -147,7 +154,7 @@ export function ModelSelect(props: {
       align="end"
       offset={8}
       margin={8}
-      style={{ minWidth: 0, alignItems: 'flex-end' }}
+      style={{ minWidth: 0, flexShrink: 1, maxWidth: '100%', alignItems: 'flex-end' }}
       popupStyle={{
         ...floatingStyle(),
         width: platform.idiom === 'terminal' ? 420 : 340,
@@ -164,7 +171,7 @@ export function ModelSelect(props: {
               : `${tooltipLabel()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           style={{
-            ...toolbarControlStyle,
+            ...composerToolbarControlStyle,
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',
@@ -176,36 +183,20 @@ export function ModelSelect(props: {
           focusStyle={{ backgroundColor: C.line }}
           activeStyle={{ backgroundColor: C.surface }}
         >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              minWidth: 0,
-              flexShrink: 1,
-            }}
+          <Text
+            style={[
+              {
+                color: owner.backend() ? C.secondary : C.warning,
+                fontSize: 13,
+                minWidth: 0,
+                flexShrink: 1,
+              },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
-            <Text
-              style={[
-                {
-                  color: owner.backend() ? C.secondary : C.warning,
-                  fontSize: 13,
-                  minWidth: 0,
-                  flexShrink: 1,
-                },
-                { numberOfLines: 1 },
-              ]}
-            >
-              {model()}
-            </Text>
-            <If when={modifiers()}>
-              <Text
-                style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
-              >
-                {` · ${modifiers()}`}
-              </Text>
-            </If>
-          </View>
-          <Icon name="down" color={C.muted} />
+            {triggerLabel()}
+          </Text>
+          <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
         </Button>
       }
     >
@@ -224,7 +215,7 @@ export function ModelSelect(props: {
               instance={instance}
               current={() => props.current() && props.instance() === instance}
               close={props.close}
-              select={(backend) => props.select(instance, backend)}
+              select={(backend, label) => props.select(instance, backend, label)}
               manage={() => {
                 if (props.current() && props.instance() === instance)
                   props.manage({ sessionId: owner.sessionId, instance });
@@ -248,7 +239,7 @@ function ModelMenu(props: {
   instance: number;
   current(): boolean;
   close(instance: number): boolean;
-  select(backend: ModelBackend): Promise<void>;
+  select(backend: ModelBackend, label?: string | null): Promise<void>;
   manage(): void;
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
@@ -301,11 +292,15 @@ function ModelMenu(props: {
       effortOpen.set(false);
   });
 
-  const action = (backend: ModelBackend): SelectionAction => ({
+  const action = (
+    backend: ModelBackend,
+    label: string | null = readyChoice()?.label ?? null,
+  ): SelectionAction => ({
     instance: props.instance,
     sessionId: owner.sessionId,
     expected: owner.backend(),
     backend,
+    label,
   });
   const submit = async (request: SelectionAction) => {
     if (
@@ -321,7 +316,7 @@ function ModelMenu(props: {
     pending.set(true);
     error.set('');
     try {
-      await props.select(request.backend);
+      await props.select(request.backend, request.label ?? null);
     } catch (reason) {
       if (active()) error.set(errorText(reason, 'Could not change the model.'));
     } finally {
@@ -471,7 +466,7 @@ function ModelMenu(props: {
   const byId = computed(() => new Map(choices().map((choice) => [routeId(choice), choice])));
   const ids = computed(() => choices().map(routeId));
   const modelAction = (choice: ModelChoice) =>
-    action(selectionForChoice(owner.backend(), choice) ?? choice.selection);
+    action(selectionForChoice(owner.backend(), choice) ?? choice.selection, choice.label);
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(choices().length - 1, index() + delta));
     selected.set(next);

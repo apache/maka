@@ -67,6 +67,15 @@ impl Child {
     }
 }
 
+const FLAGS: u32 = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB;
+
+pub(crate) fn spawn_helper(
+    plan: &crate::command::Prepared,
+    streams: [&File; 3],
+) -> io::Result<(OwnedHandle, u32)> {
+    crate::windows::spawn::launch_with_handles(plan, &[], streams, FLAGS)
+}
+
 pub async fn spawn(executable: &Path, args: &[&str], stderr: Option<File>) -> io::Result<Child> {
     if !executable.is_absolute() {
         return Err(io::Error::other("detached executable must be absolute"));
@@ -131,10 +140,7 @@ pub async fn spawn(executable: &Path, args: &[&str], stderr: Option<File>) -> io
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT
-                | DETACHED_PROCESS
-                | CREATE_NEW_PROCESS_GROUP
-                | CREATE_BREAKAWAY_FROM_JOB,
+            EXTENDED_STARTUPINFO_PRESENT | FLAGS,
             ptr::null(),
             ptr::null(),
             &startup.StartupInfo,

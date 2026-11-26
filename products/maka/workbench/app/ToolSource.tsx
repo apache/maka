@@ -20,13 +20,21 @@
 import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
 import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, Clipboard, computed, inputAction, platform, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistorySourceRead } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { Host } from './host';
 import { messageBytes } from './history';
-import { C, captionTextStyle, codeTextStyle, controlStyle } from './ui';
+import { Icon } from './Icon';
+import {
+  C,
+  captionTextStyle,
+  codeTextStyle,
+  controlStyle,
+  quietFocusStyle,
+  textTooltip,
+} from './ui';
 
 export type ToolSourceRef = {
   key: string;
@@ -139,12 +147,98 @@ export function createToolSource(
 }
 export type ToolSource = ReturnType<typeof createToolSource>;
 
-export function OriginalToolSource(props: { source: ToolSource; label: string }) {
-  const source = props.source;
+export function ToolFieldDivider() {
   return (
-    <View style={{ gap: 8 }}>
-      <Text style={{ ...captionTextStyle, color: C.muted }}>{props.label}</Text>
-      <Text style={[{ color: C.text, ...codeTextStyle }, { userSelect: 'text' }]}>
+    <If when={platform.idiom !== 'terminal'}>
+      <View
+        accessibilityElementsHidden
+        style={[{ height: 1, backgroundColor: C.line }, { pointerEvents: 'none' }]}
+      />
+    </If>
+  );
+}
+
+export function ToolCopyButton(props: { text(): string; label: string; source: ToolSource }) {
+  const feedback = signal<{ text: string; error: string } | null>(null);
+  let alive = true;
+  let pending = false;
+  cleanup(() => {
+    alive = false;
+  });
+  const action = computed(() => {
+    const originalText = props.text();
+    const owns = () =>
+      alive && props.source.complete() && !props.source.error() && props.text() === originalText;
+    return inputAction(async () => {
+      if (!owns() || pending) return;
+      pending = true;
+      try {
+        await Clipboard.writeText(originalText);
+        if (owns()) feedback.set({ text: originalText, error: '' });
+      } catch (reason) {
+        if (owns())
+          feedback.set({
+            text: originalText,
+            error: reason instanceof Error ? reason.message : String(reason),
+          });
+      } finally {
+        pending = false;
+      }
+    }, null);
+  });
+  const current = () => (feedback()?.text === props.text() ? feedback() : null);
+  const copied = () => current() !== null && !current()!.error;
+  return (
+    <View style={{ alignItems: 'flex-end', minWidth: 32, flexShrink: 1 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'none' }]}>
+          {copied() ? tr('Copied') : ''}
+        </Text>
+        <Button
+          accessibilityLabel={props.label}
+          tooltip={textTooltip(() => (copied() ? tr('Copied') : props.label))}
+          onPress={action()}
+          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          hoverStyle={{ backgroundColor: C.cardRaised }}
+          activeStyle={{ opacity: 0.72 }}
+          focusStyle={quietFocusStyle()}
+        >
+          <Icon name={copied() ? 'check' : 'copy'} color={C.secondary} />
+        </Button>
+      </View>
+      <If when={current()?.error}>
+        <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+          {current()!.error}
+        </Text>
+      </If>
+    </View>
+  );
+}
+
+export function OriginalToolSource(props: { source: ToolSource; label: string; tone?: 'output' }) {
+  const source = props.source;
+  const textColor = () =>
+    props.tone === 'output' && platform.idiom !== 'terminal' ? C.secondary : C.text;
+  return (
+    <View style={{ minWidth: 0 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Text
+          style={[
+            { ...captionTextStyle, color: C.muted, flex: 1, minWidth: 0 },
+            { numberOfLines: 1, textOverflow: 'ellipsis', userSelect: 'none' },
+          ]}
+        >
+          {props.label}
+        </Text>
+        <If when={source.complete() && !source.error() && source.content() !== ''}>
+          <ToolCopyButton
+            label={tr('Copy {label}', { label: props.label })}
+            text={source.content}
+            source={source}
+          />
+        </If>
+      </View>
+      <Text style={[{ color: textColor(), ...codeTextStyle }, { userSelect: 'text' }]}>
         {source.content()}
       </Text>
       <If when={source.error()}>

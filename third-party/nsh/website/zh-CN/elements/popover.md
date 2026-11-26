@@ -9,6 +9,29 @@ demo: el-popover
 
 弹出框把内容显示在触发元素旁边、其他一切之上：详情、一个小表单、一个取色器。按下触发元素会打开和关闭它；外部按压、Escape、Android 返回键和 VoiceOver 的退出手势会关闭它。它放在触发元素的某一侧，空间不够时换到另一侧，始终位于安全区之内、软键盘之上，并在触发元素滚动时跟随它。它自己不绘制任何东西：弹出层和其中的内容都属于应用。
 
+```tsx tabs
+import { Text, View } from "nsh";
+import { Popover } from "nsh/base";
+
+function Details() {
+  return (
+    <Popover
+      offset={6}
+      margin={8}
+      popupClass="w-60 gap-1 rounded-lg bg-white p-3 shadow-lg"
+      trigger={
+        <View class="rounded-md bg-gray-200 px-3 py-2">
+          <Text>Details</Text>
+        </View>
+      }
+    >
+      <Text class="font-semibold">Order #1024</Text>
+      <Text>Shipped yesterday, arriving Friday.</Text>
+    </Popover>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
 use nsh_core::prelude::*;
@@ -37,29 +60,6 @@ fn details() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text, View } from "nsh";
-import { Popover } from "nsh/base";
-
-function Details() {
-  return (
-    <Popover
-      offset={6}
-      margin={8}
-      popupClass="w-60 gap-1 rounded-lg bg-white p-3 shadow-lg"
-      trigger={
-        <View class="rounded-md bg-gray-200 px-3 py-2">
-          <Text>Details</Text>
-        </View>
-      }
-    >
-      <Text class="font-semibold">Order #1024</Text>
-      <Text>Shipped yesterday, arriving Friday.</Text>
-    </Popover>
-  );
-}
-```
-
 `Popover` 来自 [`nsh/base`](../modules/nsh-base.md)。它的内容在每次打开时创建，所以其中的状态每次都从头开始。
 
 <a id="open-state"></a>
@@ -84,15 +84,6 @@ const open = signal(false);
 
 弹出框打开时不移动键盘焦点。要让弹出框像一个小的非模态对话框那样接住焦点，就在 `onOpen` 中聚焦它的内容：`onOpen` 在内容渲染之后才触发，此时内容里的 ref 已经指向各自的视图。给这个视图加上 `focusable`（或一个按压处理函数），它才能持有焦点。焦点在弹出框内时，弹出框因 Escape 或被应用关闭，焦点会在桌面平台上于它开始离开时回到触发元素，离开途中按下的键归触发元素（在 macOS 上由指针打开时，焦点回到弹出框打开之前的位置，因为那里的按压不会把焦点交给触发元素）；外部按压则让焦点留在按压所在的位置；应用在关闭它的同一轮里对弹出框外的视图调用 `focus()` 也一样，焦点留在那里。
 
-```rust tabs
-let panel = element_ref();
-
-popover()
-    .on_open(move || panel.focus())
-    .trigger(text("Filters"))
-    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
-```
-
 ```tsx tabs
 let panel!: ViewRef;
 <Popover onOpen={() => panel.focus()} trigger={<Text>Filters</Text>}>
@@ -100,6 +91,15 @@ let panel!: ViewRef;
     <FilterForm />
   </View>
 </Popover>;
+```
+
+```rust tabs
+let panel = element_ref();
+
+popover()
+    .on_open(move || panel.focus())
+    .trigger(text("Filters"))
+    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
 ```
 
 <a id="phones-and-desktops"></a>

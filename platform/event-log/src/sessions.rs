@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::{EventLog, StoreError};
 
 pub const MAX_SESSION_PAGE: usize = 32;
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SessionRecord<T = serde_json::Value> {

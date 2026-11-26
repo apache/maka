@@ -58,7 +58,6 @@ fn config(app: App) -> EngineConfig {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,

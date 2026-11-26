@@ -132,6 +132,12 @@ impl Translations {
     /// `<locale>.<key>` where no language has it.
     pub fn translate(&self, locale: &str, key: &str, args: &[(&str, String)]) -> String {
         let Some(text) = self.lookup(locale, key) else {
+            // The `<locale>.<key>` that shows is a translation that does
+            // not exist yet. In a development build, where the app is
+            // being written, say so — once per key, since a text is read
+            // again with every render.
+            #[cfg(debug_assertions)]
+            missing(locale, key);
             return format!("{locale}.{key}");
         };
         if args.is_empty() {
@@ -140,6 +146,26 @@ impl Translations {
         let (names, values): (Vec<&str>, Vec<String>) = args.iter().cloned().unzip();
         rust_i18n::replace_patterns(&text, &names, &values)
     }
+}
+
+/// Warns of a translation that no language of the fallback has, once for
+/// the key and locale: a development build's only, since the app is being
+/// written and `<locale>.<key>` is what shows (a development build reads
+/// a text again with every render, and once is a line, not a stream).
+#[cfg(debug_assertions)]
+fn missing(locale: &str, key: &str) {
+    thread_local! {
+        static SAID: std::cell::RefCell<std::collections::HashSet<(Box<str>, Box<str>)>> =
+            Default::default();
+    }
+    SAID.with(|said| {
+        if said
+            .borrow_mut()
+            .insert((locale.into(), key.into()))
+        {
+            log::warn!("i18n: no translation for {key:?} in {locale} (or its fallbacks); the text shows as `{locale}.{key}`");
+        }
+    });
 }
 
 /// `locale`, then each shorter tag (`zh-Hant-TW`, `zh-Hant`, `zh`), then

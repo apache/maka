@@ -176,6 +176,15 @@ pub enum Request {
     RevokeAccess {
         credential: String,
     },
+    PreparePeerPairing(super::PeerPairingOptions),
+    ListPeerAccess,
+    RevokePeerAccess {
+        peer_id: String,
+    },
+    RedeemPeerPairing {
+        invite_secret: String,
+        device_label: Option<String>,
+    },
     FinalizeAccess,
 }
 #[derive(Serialize, Deserialize)]
@@ -202,6 +211,9 @@ pub enum Response {
     Closed,
     Pairing(Result<super::Pairing>),
     Revoked(Result<bool>),
+    PeerPairingInvite(Result<super::PeerPairingInvite>),
+    PeerAccess(Result<Vec<super::HostPeerAccess>>),
+    PeerPairingReceipt(Result<super::PeerPairingReceipt>),
     Finalized(Result<()>),
 }
 #[derive(Serialize, Deserialize)]

@@ -9,27 +9,6 @@ demo: el-table
 
 `Table` 排布应用作为子元素写出的少量行（发票、汇总、对比），并为屏幕阅读器提供表格语义：表格本身、行组、行、列标题和单元格，各有其角色。它的部件有 `TableHeader`、`TableBody` 和 `TableFooter`（行组）、`TableRow`（单元格横向排列）、`TableHead`（列的标题单元格）、`TableCell` 和 `TableCaption`。外观由应用决定：各部件没有自己的颜色、边框、内边距或宽度，都接受应用的 `class` 和 `style`。行数很多、需要排序、选择和可调整宽度的列时，使用 [`DataTable`](./data-table.md)。
 
-```rust tabs
-use nsh_base::{table, table_body, table_cell, table_head, table_header, table_row, theme};
-use nsh_core::prelude::*;
-
-fn invoices() -> impl IntoElement {
-    let cell = |label: &'static str| table_cell().w(px(120.0)).px_3().py_2().child(text(label));
-    table()
-        .accessibility_label("Recent invoices")
-        .child(
-            table_header().child(
-                table_row()
-                    .border_b_1()
-                    .border_color(move || theme().border)
-                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Invoice")))
-                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Amount"))),
-            ),
-        )
-        .child(table_body().child(table_row().child(cell("INV001")).child(cell("$250.00"))))
-}
-```
-
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "nsh/base";
@@ -59,6 +38,27 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{table, table_body, table_cell, table_head, table_header, table_row, theme};
+use nsh_core::prelude::*;
+
+fn invoices() -> impl IntoElement {
+    let cell = |label: &'static str| table_cell().w(px(120.0)).px_3().py_2().child(text(label));
+    table()
+        .accessibility_label("Recent invoices")
+        .child(
+            table_header().child(
+                table_row()
+                    .border_b_1()
+                    .border_color(move || theme().border)
+                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Invoice")))
+                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Amount"))),
+            ),
+        )
+        .child(table_body().child(table_row().child(cell("INV001")).child(cell("$250.00"))))
+}
 ```
 
 `Table` 及其部件来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate，由 `table()`、`table_header()`、`table_body()`、`table_footer()`、`table_row()`、`table_head()`、`table_cell()` 和 `table_caption()` 创建，配合类型化的样式方法和 `.child(..)`。行把单元格横向排列；单元格的宽度由应用设置，使各列对齐。

@@ -11,24 +11,6 @@ demo: el-data-table
 
 `DataTable` 提供布局、对齐、虚拟化和交互。应用通过 `classes` 和 `styles` 设置各部件的内边距、颜色、边框和选中态外观。Rust 用 `nsh_base::data_table()` 创建它，TSX 用 `nsh/base` 中的 `<DataTable>`。
 
-```rust tabs
-use nsh_base::{DataTableColumn, data_table};
-use nsh_core::prelude::*;
-
-fn column(key: &str, title: &str) -> DataTableColumn {
-    let mut column = DataTableColumn::default();
-    column.key = key.into();
-    column.title = Some(title.into());
-    column
-}
-
-fn table() -> impl IntoElement {
-    data_table()
-        .columns(vec![column("name", "Name"), column("city", "City")])
-        .flex_1()
-}
-```
-
 ```tsx tabs
 import { mount } from "nsh";
 import { DataTable, type DataTableColumn } from "nsh/base";
@@ -55,6 +37,24 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{DataTableColumn, data_table};
+use nsh_core::prelude::*;
+
+fn column(key: &str, title: &str) -> DataTableColumn {
+    let mut column = DataTableColumn::default();
+    column.key = key.into();
+    column.title = Some(title.into());
+    column
+}
+
+fn table() -> impl IntoElement {
+    data_table()
+        .columns(vec![column("name", "Name"), column("city", "City")])
+        .flex_1()
+}
 ```
 
 表格填满应用给它的盒子（`flex-1`、一个高度），在其中滚动：纵向滚动所有行，横向滚动所有列，带滚动条（`scrollbar={false}` 隐藏滚动条，`bounces={false}` 关闭有回弹的平台上的边缘回弹）。

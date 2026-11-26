@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { formatCount } from './numberFormat';
 import { UiError, errorText, renderText, type UiText } from './text';
 import { currentLocale, tr } from './locale';
 import { formatDuration } from './duration';
@@ -68,8 +67,8 @@ function withCoverage(value: string, reported: number, requests: number): string
     ? value
     : tr('{value} ({reported}/{requests} requests)', {
         value,
-        reported: formatCount(reported),
-        requests: formatCount(requests),
+        reported,
+        requests,
       });
 }
 
@@ -271,7 +270,7 @@ export function TurnUsage(props: {
           <If when={!props.reported && reading().kind === 'loading'}>
             <Text style={{ color: C.muted }}>
               {tr('Reading original usage… {count} records checked', {
-                count: formatCount((reading() as Extract<Reading, { kind: 'loading' }>).checked),
+                count: (reading() as Extract<Reading, { kind: 'loading' }>).checked,
               })}
             </Text>
           </If>
@@ -304,12 +303,9 @@ export function TurnUsage(props: {
           </If>
           <If when={reading().kind === 'ready' && attempts().length > 0}>
             <Text style={{ color: C.muted }}>
-              {tr(
-                attempts().length === 1
-                  ? '{count} main model request in this turn'
-                  : '{count} main model requests in this turn',
-                { count: formatCount(attempts().length) },
-              )}
+              {tr('turn.main_model_requests_count', {
+                count: attempts().length,
+              })}
             </Text>
             <Each of={counters()} key={(counter) => counter.key}>
               {(counter) => {

@@ -216,6 +216,7 @@ fn modifiers(meta: i32) -> Modifiers {
         alt: meta & META_ALT_ON != 0,
         shift: meta & META_SHIFT_ON != 0,
         cmd: meta & META_META_ON != 0,
+        alt_graph: false,
     }
 }
 
@@ -992,6 +993,7 @@ mod tests {
             alt: true,
             shift: true,
             cmd: true,
+            alt_graph: false,
         };
         assert_eq!(capture_modifiers(mods), 0b1111);
         assert_eq!(capture_modifiers(Modifiers::default()), 0);

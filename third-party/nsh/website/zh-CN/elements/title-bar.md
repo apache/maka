@@ -11,6 +11,33 @@ demo: el-title-bar
 
 重叠按标题栏所在的位置计算。分栏布局里每一栏放一个标题栏：侧栏的标题栏在左侧为红绿灯让开，内容栏的标题栏从红绿灯右边开始，不加内边距；侧栏隐藏后，内容栏的标题栏碰到红绿灯，就会让开。进入全屏（没有窗口按钮）后内边距消失。窗口按钮指标题栏所在窗口的按钮：第二个 `<Window>` 里的 `TitleBar` 跟随那个窗口。
 
+```tsx tabs
+import { mount, Text, View } from "nsh";
+import { TitleBar } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  return (
+    <View class="flex-1 flex-row">
+      {/* 侧栏这一段标题栏：让开红绿灯。 */}
+      <TitleBar class="h-11 w-60 bg-muted">
+        <Text class="px-3">Library</Text>
+      </TitleBar>
+      {/* 内容栏这一段：侧栏显示时不加内边距。 */}
+      <TitleBar class="h-11 flex-1 border-b border-border">
+        <Text class="px-3">Inbox</Text>
+      </TitleBar>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main" titleBar={{ style: "hidden" }}>
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{theme, title_bar};
 use nsh_core::prelude::*;
@@ -37,33 +64,6 @@ fn chrome() -> impl IntoElement {
                 .child(view().px_3().child(text("Inbox"))),
         )
 }
-```
-
-```tsx tabs
-import { mount, Text, View } from "nsh";
-import { TitleBar } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  return (
-    <View class="flex-1 flex-row">
-      {/* 侧栏这一段标题栏：让开红绿灯。 */}
-      <TitleBar class="h-11 w-60 bg-muted">
-        <Text class="px-3">Library</Text>
-      </TitleBar>
-      {/* 内容栏这一段：侧栏显示时不加内边距。 */}
-      <TitleBar class="h-11 flex-1 border-b border-border">
-        <Text class="px-3">Inbox</Text>
-      </TitleBar>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main" titleBar={{ style: "hidden" }}>
-    <App />
-  </Window>
-));
 ```
 
 `TitleBar` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate 的 `title_bar()`。它加的内边距是与窗口按钮重叠的那部分宽度：应用自己的内边距写在其中的 view 上，写在标题栏本身会把它替换掉。使用系统标题栏（默认）的窗口没有标题栏区域：标题栏什么都不加，只是一行。没有窗口的平台上它同样只是一行。

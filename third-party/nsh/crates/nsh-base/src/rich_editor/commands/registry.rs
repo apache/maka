@@ -15,6 +15,7 @@ use serde_json::Value;
 use super::{BoxCommand, Dispatch, base, chain, list, tiptap};
 use crate::rich_editor::{
     extensions::{history, input_rules},
+    formats::DomParser,
     model::{Attrs, Fragment, MarkType, NodeType, Schema},
     state::EditorState,
 };
@@ -181,35 +182,11 @@ fn plain(f: fn(&EditorState, Dispatch<'_>) -> bool) -> BoxCommand {
 }
 
 /// Content as a fragment: ProseMirror JSON (a node, an array of nodes, a
-/// whole document's children) or a string (plain text, one paragraph per
-/// line, or inline text where it goes).
+/// whole document's children) or an HTML string (Tiptap's
+/// `createNodeFromContent`).
 pub fn content_fragment(schema: &Schema, content: &Value) -> Result<Fragment, String> {
     match content {
-        Value::String(text) => Ok(if text.contains('\n') {
-            let paragraph = schema
-                .node_types()
-                .into_iter()
-                .find(|t| t.is_textblock())
-                .ok_or("the schema has no textblock")?;
-            let blocks = text
-                .split('\n')
-                .map(|line| {
-                    let content = if line.is_empty() {
-                        Fragment::empty()
-                    } else {
-                        Fragment::from(vec![schema.text(line, vec![])])
-                    };
-                    paragraph
-                        .create(None, content, vec![])
-                        .map_err(|e| e.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Fragment::from(blocks)
-        } else if text.is_empty() {
-            Fragment::empty()
-        } else {
-            Fragment::from(vec![schema.text(text, vec![])])
-        }),
+        Value::String(html) => Ok(DomParser::from_schema(schema).parse_insert_fragment(html)),
         Value::Array(_) => Fragment::from_json(schema, content).map_err(|e| e.to_string()),
         json => {
             let node = schema.node_from_json(json).map_err(|e| e.to_string())?;
@@ -455,12 +432,16 @@ fn builtin_registry() -> CommandRegistry {
             value: v,
         };
         let (from, to) = a.range("position")?;
-        let content = content_fragment(s, a.get("content").unwrap_or(&Value::Null))?;
+        let raw_val = a.get("content").unwrap_or(&Value::Null);
+        let raw_text = raw_val.as_str().map(str::to_owned);
+        let content = content_fragment(s, raw_val)?;
         let mut options = tiptap::InsertContentOptions::default();
         if let Some(update) = a.get("options").and_then(|o| o.get("updateSelection")) {
             options.update_selection = update.as_bool().unwrap_or(true);
         }
-        Ok(tiptap::insert_content_at(from, to, content, options))
+        Ok(tiptap::insert_content_at_raw(
+            from, to, content, raw_text, options,
+        ))
     });
     r.register("cut", |v, _| {
         let a = Args {
@@ -562,5 +543,77 @@ mod tests {
         registry.extend(&CommandRegistry::builtin());
         registry.register("nothing", |_, _| Ok(super::super::command(|_, _| false)));
         assert!(registry.contains("nothing") && registry.contains("selectAll"));
+    }
+
+    #[test]
+    fn insert_content_at_parses_html_preserves_whitespace_and_tables() {
+        use crate::rich_editor::{
+            extensions::{ExtensionManager, kit},
+            formats::doc_to_html,
+        };
+        let manager =
+            ExtensionManager::with_core(vec![kit::starter_kit(), kit::table_kit()]).unwrap();
+        let s = manager.schema().clone();
+        let registry = manager.commands();
+        let empty = n(&s, "doc", vec![p(&s, "")]);
+
+        // Preserves bare spaces.
+        let cmd = registry
+            .make(
+                "insertContentAt",
+                &json!({ "position": 1, "content": "  " }),
+                &s,
+            )
+            .unwrap();
+        let out = apply(&state(empty.clone(), 1, 1), cmd.as_ref()).unwrap();
+        assert_eq!(doc_to_html(out.doc()), "<p>  </p>");
+
+        // Preserves incomplete HTML tag as literal text.
+        let cmd = registry
+            .make(
+                "insertContentAt",
+                &json!({ "position": 1, "content": "foo<p" }),
+                &s,
+            )
+            .unwrap();
+        let out = apply(&state(empty.clone(), 1, 1), cmd.as_ref()).unwrap();
+        assert_eq!(doc_to_html(out.doc()), "<p>foo&lt;p</p>");
+
+        // Preserves newlines and tabs inside <p>.
+        let cmd = registry
+            .make(
+                "insertContentAt",
+                &json!({ "position": 1, "content": "<p>Hello\n\tworld</p>" }),
+                &s,
+            )
+            .unwrap();
+        let out = apply(&state(empty.clone(), 1, 1), cmd.as_ref()).unwrap();
+        assert_eq!(doc_to_html(out.doc()), "<p>Hello\n\tworld</p>");
+
+        // Inter-tag newline between block fragments does not become an extra textblock.
+        let cmd = registry
+            .make(
+                "insertContentAt",
+                &json!({ "position": 1, "content": "<h1>Tiptap</h1>\n<p><strong>Hello</strong></p>" }),
+                &s,
+            )
+            .unwrap();
+        let out = apply(&state(empty.clone(), 1, 1), cmd.as_ref()).unwrap();
+        assert_eq!(
+            doc_to_html(out.doc()),
+            "<h1>Tiptap</h1><p><strong>Hello</strong></p>"
+        );
+
+        // Inserting an HTML table into an empty paragraph keeps the table.
+        let cmd = registry
+            .make(
+                "insertContentAt",
+                &json!({ "position": 1, "content": "<table><tr><td>hello</td></tr></table>" }),
+                &s,
+            )
+            .unwrap();
+        let out = apply(&state(empty, 1, 1), cmd.as_ref()).unwrap();
+        assert_eq!(out.doc().child(0).ty().name(), "table");
+        assert_eq!(out.doc().child(0).text_content(), "hello");
     }
 }

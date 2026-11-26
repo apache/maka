@@ -1,0 +1,10 @@
+{
+  "name": "Extra",
+  "id": "com.longbridge.nsh.extra",
+  "dependencies": {
+    "nsh-extra": { "path": "../../crates/nsh-extra", "features": ["speech"] }
+  },
+  "capabilities": {
+    "speech": true
+  }
+}

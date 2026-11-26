@@ -118,7 +118,7 @@ false), and `Environment::clipboard_images` (`None` by default: as NSH's own bac
 terminal backends say `Some(false)`) is links of the app's schemes reaching it (off: `open_auth_session` fails at once
 unless the platform shows sign-in sessions itself). The Mini Program platform turns the first two off; as it hands the
 app no links of its schemes, it should say `Some(false)` for the third. The other services follow the same pattern
-(`screen_color`, `file_requests`, `speech`, `notifications`, `audio`: what the platform answers).
+(`screen_color`, `file_requests`, `notifications`, `audio`: what the platform answers).
 
 ## WebAssembly hosts
 

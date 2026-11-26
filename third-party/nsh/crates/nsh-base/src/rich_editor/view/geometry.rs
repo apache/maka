@@ -127,6 +127,9 @@ pub(crate) struct Geometry {
     /// holder that is not the block's own origin (a task item's content,
     /// after its checkbox): their frames are in the holder, not the block.
     pub(crate) insets: HashMap<u64, Point<Points>>,
+    /// Horizontal scroll offset and visible width of each independently scrolling grid.
+    pub(crate) table_scroll: HashMap<u64, (Points, Points)>,
+    pub(crate) table_scroll_handles: HashMap<u64, ElementRef>,
     /// The textblocks, by block id.
     pub(crate) texts: HashMap<u64, TextGeo>,
     /// Textblock ids ordered by `TextGeo::start`.
@@ -164,6 +167,16 @@ pub(crate) enum Hit {
 }
 
 impl Geometry {
+    pub(crate) fn table_viewport(&self, id: u64) -> Option<Bounds<Points>> {
+        let (offset, width) = self.table_scroll.get(&id)?;
+        let original = self.origin(id)?;
+        let (_, grid) = self.frames.get(&id)?;
+        Some(Bounds::new(
+            Point::new(original.x + *offset, original.y),
+            Size::new(*width, grid.size.height),
+        ))
+    }
+
     /// Whether the content point `at` is in a block's box before where its
     /// children start: on a task item's checkbox, or under it.
     pub(crate) fn before_holder(&self, at: Point<Points>) -> bool {

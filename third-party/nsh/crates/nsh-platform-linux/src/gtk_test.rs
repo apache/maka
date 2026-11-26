@@ -5,6 +5,7 @@
 //! gives them a virtual one, as CI does.
 
 use std::{
+    cell::RefCell,
     panic::{self, AssertUnwindSafe},
     rc::Rc,
     sync::{OnceLock, mpsc},
@@ -23,12 +24,29 @@ use crate::{surface::Surface, view::NshView};
 /// A test's work for the GTK thread.
 type Job = Box<dyn FnOnce() + Send>;
 
+thread_local! {
+    /// The last panic on the GTK thread, with where it happened.
+    static PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 /// Runs `f` on the tests' GTK thread and returns what it returns; `None`
 /// where no display can be opened (it does not run). A display that is set
 /// but does not open fails the test.
+///
+/// A panic in `f` fails the calling test with its message and location.
+/// The GTK thread's own panic output cannot show them: a thread takes its
+/// output capture from the one that spawns it, so it goes to the test that
+/// happened to start the thread, long finished.
 pub(crate) fn run<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
     static JOBS: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
     let jobs = JOBS.get_or_init(|| {
+        let hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if thread::current().name() == Some("gtk") {
+                PANIC.with(|p| *p.borrow_mut() = Some(info.to_string()));
+            }
+            hook(info);
+        }));
         let (jobs, queue) = mpsc::channel::<Job>();
         let (ready, started) = mpsc::channel();
         thread::Builder::new()
@@ -61,12 +79,14 @@ pub(crate) fn run<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> 
     let (done, result) = mpsc::channel();
     jobs.send(Box::new(move || {
         // The thread lives on for the other tests.
-        let _ = done.send(panic::catch_unwind(AssertUnwindSafe(f)));
+        let result = panic::catch_unwind(AssertUnwindSafe(f))
+            .map_err(|_| PANIC.take().unwrap_or_else(|| "panicked".into()));
+        let _ = done.send(result);
     }))
     .expect("the GTK thread takes work");
     match result.recv().expect("the GTK thread answers") {
         Ok(value) => Some(value),
-        Err(panic) => panic::resume_unwind(panic),
+        Err(panic) => panic!("the GTK thread {panic}"),
     }
 }
 

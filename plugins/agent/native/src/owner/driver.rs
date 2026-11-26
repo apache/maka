@@ -1079,11 +1079,7 @@ impl DriverPorts for NativeDriver {
                 }
             };
             let approval = prepared.tool.approval_id();
-            let display = prepared.tool.display(match view.spec.language {
-                maka_agent_facts::language::Language::En => "en",
-                maka_agent_facts::language::Language::ZhCn => "zh-CN",
-                maka_agent_facts::language::Language::ZhTw => "zh-TW",
-            });
+            let display = prepared.tool.display(view.spec.language.tag());
             let semantics = prepared.tool.semantics;
             self.prepared
                 .lock()
@@ -1107,6 +1103,10 @@ impl DriverPorts for NativeDriver {
         tool: &'a Tool,
     ) -> BoxFuture<'a, Result<ToolValidation, RunError>> {
         Box::pin(async move {
+            self.owner
+                .require_execution(&self.access.execution().session_id)
+                .await
+                .map_err(RunError::InvalidInput)?;
             let configuration = match self.access.live_configuration().await {
                 Ok(configuration) => configuration,
                 Err(error) => {

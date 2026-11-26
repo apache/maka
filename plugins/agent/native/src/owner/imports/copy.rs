@@ -184,10 +184,20 @@ impl Owner {
         let stamp = candidate.stamp();
         let selected_workspace: Workspace =
             serde_json::from_value(candidate.workspace).map_err(|_| Failure::Invalid)?;
-        let policy = self
-            .creation_policy(scope)
+        let (incognito, parent_session_id, tools, permissions, caller_fence) = match self
+            .agent_caller(scope)
             .await
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(|_| Failure::Unavailable)?
+        {
+            None => (false, None, None, self.settings.permissions.clone(), None),
+            Some(caller) => (
+                caller.incognito,
+                Some(caller.session_id),
+                caller.tools,
+                caller.permissions,
+                Some(caller.fence),
+            ),
+        };
         let (labels, backend) = match input {
             CopySource::External(_) => (vec![], None),
             CopySource::Quick {
@@ -198,22 +208,19 @@ impl Owner {
             ),
         };
         let configuration = StoredSessionConfiguration {
-            incognito: policy.incognito,
-            parent_session_id: scope
-                .identity
-                .agent()
-                .map(|source| source.session_id.clone()),
+            incognito,
+            parent_session_id: parent_session_id.clone(),
             backend,
             applied_preset: None,
             compaction_prompt: None,
             collaboration_mode: CollaborationMode::Agent,
-            tools: policy.tools,
+            tools,
             title,
             title_is_manual: true,
             pinned: false,
             labels,
             workspace: binding,
-            permissions: policy.permissions,
+            permissions,
             boundary_revision: 0,
         };
         let resolved = configuration
@@ -247,10 +254,7 @@ impl Owner {
             session_id: target,
             creator: namespace(),
             fingerprint: operation.fingerprint.clone(),
-            authority_session_id: scope
-                .identity
-                .agent()
-                .map(|source| source.session_id.clone()),
+            authority_session_id: parent_session_id,
         };
         let configuration = serde_json::to_value(configuration).map_err(|_| Failure::Invalid)?;
         let statement = self
@@ -272,7 +276,7 @@ impl Owner {
                     statement,
                     planned,
                     source,
-                    caller: policy.caller,
+                    caller: caller_fence,
                 })
             })
             .map_err(Failure::from)?;

@@ -347,6 +347,18 @@ pub enum Inline {
         #[serde(serialize_with = "serialize_inlines")]
         content: Vec<Inline>,
     },
+    /// A clickable passage mark overlaid from `TextViewProps::marks`.
+    #[serde(skip)]
+    Mark {
+        /// App-owned mark identifier.
+        id: String,
+        /// Tooltip / accessibility hint.
+        title: Option<String>,
+        /// Active visual state.
+        active: bool,
+        /// Its content.
+        content: Vec<Inline>,
+    },
     /// An image.
     Image(Image),
     /// A formula in the text (`$ … $`), in TeX.
@@ -398,7 +410,8 @@ pub(crate) fn inline_text(inlines: &[Inline], out: &mut String) {
             | Inline::Superscript { content }
             | Inline::Subscript { content }
             | Inline::Small { content }
-            | Inline::Link { content, .. } => inline_text(content, out),
+            | Inline::Link { content, .. }
+            | Inline::Mark { content, .. } => inline_text(content, out),
             Inline::Image(image) => out.push_str(&image.alt),
             Inline::Break => out.push('\n'),
             Inline::FootnoteReference { index, .. } => {

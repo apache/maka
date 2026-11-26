@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: "Create an app in Rust or TSX with nsh init, run it on iOS, Android, macOS, Windows, Linux or the web, host TSX modules in your app and ship them as signed packages, or package the app on its own."
+description: "Create an app in TSX with nsh init, extend it with Rust where needed, run it on iOS, Android, macOS, Windows, Linux or the web, host TSX modules in your app and ship them as signed packages, or package the app on its own."
 order: 4
 group: start
 demo: guide-getting-started
@@ -8,9 +8,11 @@ demo: guide-getting-started
 
 # Getting started
 
-This guide creates an NSH app, runs it on the platforms you target, and ships it. NSH apps are written in Rust or TSX,
-on the same engine: Rust compiles your app into native code with no JavaScript VM, and TSX runs on QuickJS with hot
-updates, as modules a native app can load at run time. The guide follows a Rust app first, then the same app in TSX.
+This guide creates an NSH app, runs it on the platforms you target, and ships it. NSH apps are written in TSX, with
+hot updates while you develop; the app's own code runs on QuickJS, and the engine, layout, rendering and modules
+under it are native. Where an app needs native speed, system access or a crate, it adds Rust through
+[nshm](./nshm.md), and an app can also be Rust from start to end, compiled with no JavaScript VM. The guide follows a
+TSX app, with the same app in Rust beside it.
 It assumes `nsh` is installed and on your `PATH` ([Installation](./installation.md)); in a checkout, use
 `./target/debug/nsh` instead.
 
@@ -21,8 +23,25 @@ It assumes `nsh` is installed and on your `PATH` ([Installation](./installation.
 
 ## Create an app
 
-On a terminal, `nsh init` asks what the app is written in: `rust`, `ts` or `mixed` (TSX extended with Rust in `ext/`).
-`--template` chooses without asking.
+On a terminal, `nsh init` asks what the app is written in: `ts` (the default), `rust` or `mixed` (TSX extended with
+Rust in `ext/`). `--template` chooses without asking.
+
+### In TSX
+
+```sh
+nsh init my-app --template ts
+```
+
+A TSX app is one or more `.tsx` files with an entry: what `nsh run` runs, and what a host app loads as a module.
+
+| File | What it is |
+|---|---|
+| `App.tsx` | The entry module: renders the app with `mount` |
+| `App.test.tsx` | Its test (`nsh test`) |
+| `nsh.json` | The app's name, id, version and build number ([Project structure](./project-structure.md#nshjson)) |
+| `tsconfig.json` | Extends `.nsh/tsconfig.json`, NSH's TypeScript settings, which resolve `nsh` to the declarations in `.nsh/types` |
+| `.gitignore` | Ignores `.nsh/` and `target/` |
+| `.nsh/types/` | Generated declarations of every NSH module, for your editor |
 
 ### In Rust
 
@@ -46,34 +65,51 @@ Rust development needs a Rust toolchain ([rustup](https://rustup.rs), and we rec
 [huacnlee/cargo](https://github.com/huacnlee/cargo) for building); the `nsh` commands build the app's runners
 from NSH's crates on crates.io, at the CLI's version.
 
-### In TSX
-
-```sh
-nsh init my-app --template ts
-```
-
-A TSX app is one or more `.tsx` files with an entry: what `nsh run` runs, and what a host app loads as a module.
-
-| File | What it is |
-|---|---|
-| `App.tsx` | The entry module: renders the app with `mount` |
-| `App.test.tsx` | Its test (`nsh test`) |
-| `nsh.json` | The app's name, id, version and build number ([Project structure](./project-structure.md#nshjson)) |
-| `tsconfig.json` | Extends `.nsh/tsconfig.json`, NSH's TypeScript settings, which resolve `nsh` to the declarations in `.nsh/types` |
-| `.gitignore` | Ignores `.nsh/` and `target/` |
-| `.nsh/types/` | Generated declarations of every NSH module, for your editor |
-
-Files that already exist are kept, so you can run it in a directory that has some of them; a Rust app is created in
-a new directory.
+For a TSX app, files that already exist are kept, so you can run it in a directory that has some of them; a Rust app
+is created in a new directory.
 
 For both, the display name defaults to the directory's name; pass `--name "My App"` to choose another. The id becomes
-`com.example.<name>`: change it in `nsh.json` before you ship. `nsh init my-app --template mixed` creates a TSX app
-extended with Rust: an nshm crate of its own in `ext/<name>-native/`, whose component, module and class `App.tsx`
-imports ([An app's own Rust: ext/](./nshm.md#an-apps-own-rust-ext)).
+`com.example.<name>`: change it in `nsh.json` before you ship.
+
+### TSX extended with Rust
+
+```sh
+nsh init my-app --template mixed
+```
+
+The TSX app, plus an nshm crate of its own in `ext/<name>-native/`, whose component, module and class `App.tsx`
+imports: the place for the parts of the app that are better in Rust ([An app's own Rust: ext/](./nshm.md#an-apps-own-rust-ext)).
+A TSX app made with `--template ts` adds the same later with `nsh add`.
 
 ### The root component
 
 The two templates make the same app, a counter:
+
+```tsx tabs
+// App.tsx
+import { mount, signal, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const count = signal(0);
+  return (
+    <View class="flex-1 items-center justify-center gap-4 bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+      <Text class="text-3xl font-semibold text-foreground">{count()}</Text>
+      <View
+        onPress={() => count.update((c) => c + 1)}
+        role="button"
+        class="rounded-(--radius) bg-primary px-5 py-3 active:bg-primary/90"
+      >
+        <Text class="text-lg text-primary-foreground">Tap</Text>
+      </View>
+    </View>
+  );
+}
+
+// The desktops show the app in windows it declares; `App` is the content of
+// the first one. Off the desktops it is the app's screen.
+mount(() => <Window id="main">{App}</Window>);
+```
 
 ```rust tabs
 // src/lib.rs
@@ -126,31 +162,22 @@ pub fn App() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-// App.tsx
-import { mount, signal, Text, View } from "nsh";
-import { Window } from "nsh/desktop";
+In TSX:
 
-function App() {
-  const count = signal(0);
-  return (
-    <View class="flex-1 items-center justify-center gap-4 bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-      <Text class="text-3xl font-semibold text-foreground">{count()}</Text>
-      <View
-        onPress={() => count.update((c) => c + 1)}
-        role="button"
-        class="rounded-(--radius) bg-primary px-5 py-3 active:bg-primary/90"
-      >
-        <Text class="text-lg text-primary-foreground">Tap</Text>
-      </View>
-    </View>
-  );
-}
-
-// The desktops show the app in windows it declares; `App` is the content of
-// the first one. Off the desktops it is the app's screen.
-mount(() => <Window id="main">{App}</Window>);
-```
+- **`import { mount, signal, Text, View } from "nsh"`**: `nsh` is the core module: signals, `mount`, the other
+  reactive primitives, and the host elements. It is served by the native runtime, not bundled. **`nsh/base`** has the
+  base components.
+- **`function App()`** is a component that runs **once**. **`{count()}`** reads the signal inside JSX: the compiler
+  sees a call and makes this text follow the signal.
+- **`<View onPress>`** is a native view that reacts to presses; `active:` classes are its style while pressed. `View`,
+  `Text`, `Image`, `Scroll` and the other [host elements](../elements/index.md) are imported from `nsh` (`Input` from `nsh/base`); only
+  `If` and `Each` need no import.
+- **`class`** takes [Tailwind](./tailwind.md) classes; `style={{ … }}` takes an object of camelCase style
+  properties, with numbers in points. `bg-background`, `bg-primary`, `text-primary-foreground` and
+  `rounded-(--radius)` name the tokens of the app's theme ([Theme tokens](./tailwind.md#theme-tokens)): they follow
+  dark mode by themselves, and `"theme"` in `nsh.json` restyles them. Layout is flexbox, and children stack in a
+  column by default ([Layout](./layout.md)).
+- **`mount(App)`** renders the app root; on the desktops the root declares its windows with `<Window>`.
 
 In Rust:
 
@@ -167,28 +194,12 @@ In Rust:
   natively. The button is the app's own: NSH provides the primitives and the capabilities, and the app draws its UI
   from them.
 - **`.px_5()`, `.rounded(px(10.0))`, `.gap_4()`** are typed style methods named as Tailwind's utilities are, in
-  points (`px`). Layout is flexbox, and children stack in a column by default ([Layout](./layout.md)).
+  points (`px`).
 - **`#[native_module("my-app/native")]`** names what a TSX entry may import from the crate, for when you add TSX
   screens on top ([Building with Rust](./rust.md#extending-a-rust-app-with-tsx)).
 
-In TSX:
-
-- **`import { mount, signal, Text, View } from "nsh"`**: `nsh` is the core module: signals, `mount`, the other
-  reactive primitives, and the host elements. It is served by the native runtime, not bundled. **`nsh/base`** has the
-  base components, as `nsh_base` does in Rust.
-- **`function App()`** is a component that runs **once**. **`{count()}`** reads the signal inside JSX: the compiler
-  sees a call and makes this text follow the signal.
-- **`<View onPress>`** is a native view that reacts to presses; `active:` classes are its style while pressed. `View`,
-  `Text`, `Image`, `Scroll` and the other [host elements](../elements/index.md) are imported from `nsh` (`Input` from `nsh/base`); only
-  `If` and `Each` need no import.
-- **`class`** takes [Tailwind](./tailwind.md) classes; `style={{ … }}` takes an object of camelCase style
-  properties, with numbers in points. `bg-background`, `bg-primary`, `text-primary-foreground` and
-  `rounded-(--radius)` name the tokens of the app's theme ([Theme tokens](./tailwind.md#theme-tokens)): they follow
-  dark mode by themselves, and `"theme"` in `nsh.json` restyles them.
-- **`mount(App)`** renders the app root; on the desktops the root declares its windows with `<Window>`.
-
 > [!IMPORTANT]
-> Text shows in a text element: `text(..)` in Rust, `<Text>` in TSX. In TSX, text written straight in a `<View>`
+> Text shows in a text element: `<Text>` in TSX, `text(..)` in Rust. In TSX, text written straight in a `<View>`
 > (`<View>Hello</View>`) is a build error that points at it, and a string an expression puts there
 > (`<View>{name}</View>`) is reported in the log.
 
@@ -197,12 +208,13 @@ In TSX:
 ### Run it
 
 `nsh run` builds the app, launches it and rebuilds while you edit; the app's logs appear in the terminal. Give it the
-app's directory: it runs a Rust app's root, or a TSX app's `App.tsx` (`nsh run my-app/App.tsx` names another entry).
+app's directory: it runs a TSX app's `App.tsx` (`nsh run my-app/App.tsx` names another entry), or a Rust app's root.
 
-For a Rust app, `nsh run` builds the app's own runner for the target, with your crate and the root mounted and no
-QuickJS, and starts it; a change to the Rust code builds it again and restarts the app. `cargo run` in the app's
-directory starts the same root straight on the desktop backend. For a TSX app, `nsh run` starts a dev server and a
-development host that loads the app from it, and patches the running app on every save.
+For a TSX app, `nsh run` starts a dev server and a development host that loads the app from it, and patches the
+running app on every save; Rust in `ext/` is built into the host, and built again when it changes. For a Rust
+app, `nsh run` builds the app's own runner for the target, with your crate and the root mounted and no QuickJS, and
+starts it; a change to the Rust code builds it again and restarts the app. `cargo run` in the app's directory starts
+the same root straight on the desktop backend.
 
 Without `--target`, `nsh run` uses the machine you are on: an AppKit window on macOS, a Win32 window on Windows and a
 GTK window on Linux. Pick another platform with `--target`:
@@ -276,21 +288,33 @@ page loads the new build by itself after a change; see [Web](./web.md).
 
 Leave `nsh run` running and change the button's label:
 
+```tsx tabs
+<Text style={{ color: "white", fontSize: 17 }}>Add one</Text>
+```
+
 ```rust tabs
 text("Add one")
     .text_size(px(17.0))
     .text_color(move || theme().primary_foreground)
 ```
 
-```tsx tabs
-<Text style={{ color: "white", fontSize: 17 }}>Add one</Text>
-```
-
-Save. A Rust app is built again and restarts with the new label; the count starts over. A TSX app gets a hot update:
-the CLI rebuilds and sends a patch, and the host runs the changed module again and renders again only the components
-whose code changed. Here that is `App`, which owns the `count` signal, so the count starts over too.
+Save. A TSX app gets a hot update: the CLI rebuilds and sends a patch, and the host runs the changed module again and
+renders again only the components whose code changed. Here that is `App`, which owns the `count` signal, so the count
+starts over. A Rust app is built again and restarts with the new label; the count starts over too.
 
 Pieces of UI move into components of their own, or plain functions that return elements:
+
+```tsx tabs
+function TapButton(props: { onPress: () => void }) {
+  return (
+    <View onPress={props.onPress} activeStyle={{ opacity: 0.6 }} style={{ padding: 12, borderRadius: 10, backgroundColor: "#0969da" }}>
+      <Text style={{ color: "white", fontSize: 17 }}>Tap</Text>
+    </View>
+  );
+}
+
+// In App: <TapButton onPress={() => count.update((c) => c + 1)} />
+```
 
 ```rust tabs
 /// The app's button: a view that answers presses.
@@ -305,18 +329,6 @@ fn tap_button(on_press: impl Fn() + 'static) -> impl IntoElement {
 }
 
 // In App: .child(tap_button(move || count.update(|value| *value += 1)))
-```
-
-```tsx tabs
-function TapButton(props: { onPress: () => void }) {
-  return (
-    <View onPress={props.onPress} activeStyle={{ opacity: 0.6 }} style={{ padding: 12, borderRadius: 10, backgroundColor: "#0969da" }}>
-      <Text style={{ color: "white", fontSize: 17 }}>Tap</Text>
-    </View>
-  );
-}
-
-// In App: <TapButton onPress={() => count.update((c) => c + 1)} />
 ```
 
 In TSX, state survives when you edit a component that does not own it: tap a few times, then change `TapButton`'s
@@ -438,7 +450,7 @@ packages](./signed-packages.md).
 
 ## Or ship it as a standalone app
 
-`nsh package` builds an installable app, Rust or TSX, with no Xcode project or Gradle build of your own:
+`nsh package` builds an installable app, TSX or Rust, with no Xcode project or Gradle build of your own:
 
 ```sh
 nsh package my-app --target ios-simulator --run
@@ -449,18 +461,18 @@ nsh package my-app --target windows
 nsh package my-app --target web
 ```
 
-A Rust app is packaged with its own runner, built from your crate and NSH's crates, its root mounted; a TSX app with
-the prebuilt runtime. Options, signing and icons: [Packaging](./packaging.md).
+A TSX app is packaged with the prebuilt runtime (or, with Rust in `ext/`, a runtime built with it); a Rust app with its
+own runner, built from your crate and NSH's crates, its root mounted. Options, signing and icons: [Packaging](./packaging.md).
 
 ## Try it in the terminal
 
-`nsh test` runs an app headless, with no device or window. Given a Rust app's `nsh.json` or a TSX app's entry, it
+`nsh test` runs an app headless, with no device or window. Given a TSX app's entry or a Rust app's `nsh.json`, it
 opens the app, lets it run and prints what it mounts; with `--trace`, also the native view operations and the time of
 every commit ([Testing](./testing-and-trace.md)):
 
 ```sh
-nsh test my-app/nsh.json --trace     # a Rust app's root
 nsh test my-app/App.tsx --trace      # a TSX app's entry
+nsh test my-app/nsh.json --trace     # a Rust app's root
 ```
 
 Given a directory, it runs the app's tests: each template's `App.test.tsx` opens the app, presses its button and
@@ -469,9 +481,10 @@ checks what it shows (`nsh test my-app`). A Rust app's opens its root (`open("."
 
 ## Next steps
 
-- [Building with Rust](./rust.md): Rust apps, their theme, and TSX on top of a Rust crate.
-- [JSX and components](./jsx-and-components.md) and [Reactivity](./reactivity.md): components and signals, in Rust and
-  TSX.
+- [JSX and components](./jsx-and-components.md) and [Reactivity](./reactivity.md): components and signals, in TSX and
+  Rust.
+- [nshm](./nshm.md): add Rust to a TSX app, in `ext/` or from crates.io, and use published nshm.
+- [Building with Rust](./rust.md): apps written in Rust from start to end, their theme, and TSX on top of a Rust crate.
 - [Platforms](./platforms.md): what each platform supports, and its own page ([iOS](./ios.md),
   [Android](./android.md), [macOS](./macos.md), [Windows](./windows.md), [Linux](./linux.md), [Web](./web.md), [TUI](./tui.md)).
 - [Signed packages](./signed-packages.md) and [Sandbox and capabilities](./sandbox-and-capabilities.md): delivery and

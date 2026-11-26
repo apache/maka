@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { formatCount } from './numberFormat';
 import {
   batch,
   cleanup,
@@ -36,7 +35,7 @@ import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
 import { formatDuration } from './duration';
 import { TokenCount } from './TokenCount';
-import { tr, type MessageKey } from './locale';
+import { currentLocale, tr, type MessageKey } from './locale';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { LoadingIndicator, LoadingState } from './Loading';
 import { Icon } from './Icon';
@@ -193,7 +192,7 @@ export function createGoalContent(props: {
                 </If>
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr(goalStatusLabel(current()!.status))} ·{' '}
-                  {tr('Iteration {count}', { count: formatCount(current()!.iterations) })}
+                  {tr('Iteration {count}', { count: current()!.iterations })}
                 </Text>
               </View>
               <Text style={{ ...bodyTextStyle, color: C.text }}>{current()!.objective}</Text>
@@ -206,7 +205,7 @@ export function createGoalContent(props: {
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr('Retrying at {time}', {
-                    time: new Date(current()!.retryAt!).toLocaleString(),
+                    time: new Date(current()!.retryAt!).toLocaleString(currentLocale()),
                   })}
                 </Text>
               </If>

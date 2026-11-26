@@ -9,6 +9,41 @@ demo: el-alert-dialog
 
 `AlertDialog` 显示平台自己的警告框或操作表：在 iOS 和 Mac Catalyst 上是 `UIAlertController`，在 Android 上是 `AlertDialog`（操作表为列表对话框），在其他平台上是平台对话框风格的警告框。`AlertDialog.show`（Rust 中为 `alert_dialog()` 的 `.show()`）返回一个 promise（在 Rust 中是 future），结果是 `{ action }`：用户所选操作的 `id`。所有文字都来自应用，所以警告框说的是你的应用要说的话，用的是它的语言。
 
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { AlertDialog, Button } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const answer = signal("–");
+  const confirm = async () => {
+    const { action } = await AlertDialog.show({
+      title: "Delete the photo?",
+      description: "This cannot be undone.",
+      actions: [
+        { label: "Cancel", role: "cancel", id: "cancel" },
+        { label: "Delete", role: "destructive", id: "delete" },
+      ],
+    });
+    answer.set(action === "delete" ? "deleted" : "kept");
+  };
+  return (
+    <View style={{ flex: 1, padding: 16, paddingTop: 48, gap: 12 }}>
+      <Button onPress={confirm} class="rounded-lg bg-red-600 px-4 py-3 active:bg-red-700">
+        <Text class="text-center font-semibold text-white">Delete…</Text>
+      </Button>
+      <Text>{answer()}</Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{alert_dialog, button};
 use nsh_core::prelude::*;
@@ -46,41 +81,6 @@ fn app() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { AlertDialog, Button } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const answer = signal("–");
-  const confirm = async () => {
-    const { action } = await AlertDialog.show({
-      title: "Delete the photo?",
-      description: "This cannot be undone.",
-      actions: [
-        { label: "Cancel", role: "cancel", id: "cancel" },
-        { label: "Delete", role: "destructive", id: "delete" },
-      ],
-    });
-    answer.set(action === "delete" ? "deleted" : "kept");
-  };
-  return (
-    <View style={{ flex: 1, padding: 16, paddingTop: 48, gap: 12 }}>
-      <Button onPress={confirm} class="rounded-lg bg-red-600 px-4 py-3 active:bg-red-700">
-        <Text class="text-center font-semibold text-white">Delete…</Text>
-      </Button>
-      <Text>{answer()}</Text>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 需要自己设计外观的对话框（卡片、sheet、全屏流程），使用 [Dialog](./dialog.md)。
 
 <a id="alertdialogshow"></a>
@@ -103,6 +103,19 @@ alert_dialog().title(..).description(..).action(..).cancel(..).destructive(..).s
 ## 操作表
 
 操作表使用相同的选项，呈现方式为 `"actionSheet"`：
+
+```tsx tabs
+const { action } = await AlertDialog.show({
+  title: "Share the photo",
+  presentation: "actionSheet",
+  actions: [
+    { label: "Copy link", id: "copy" },
+    { label: "Save", id: "save" },
+    { label: "Delete", role: "destructive", id: "delete" },
+    { label: "Cancel", role: "cancel", id: "cancel" },
+  ],
+});
+```
 
 ```rust tabs
 use nsh_base::alert_dialog;
@@ -127,19 +140,6 @@ fn share() {
         }
     });
 }
-```
-
-```tsx tabs
-const { action } = await AlertDialog.show({
-  title: "Share the photo",
-  presentation: "actionSheet",
-  actions: [
-    { label: "Copy link", id: "copy" },
-    { label: "Save", id: "save" },
-    { label: "Delete", role: "destructive", id: "delete" },
-    { label: "Cancel", role: "cancel", id: "cancel" },
-  ],
-});
 ```
 
 <a id="alertdialogoptions"></a>

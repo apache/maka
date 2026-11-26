@@ -1100,7 +1100,7 @@ impl<'a> Converter<'a> {
         self.depth += 1;
         let out = self.read_inlines(nodes);
         self.depth -= 1;
-        out
+        common::without_links_and_images(&self.parser.options, out)
     }
 
     fn read_inlines(&mut self, nodes: &[Node]) -> Vec<Inline> {

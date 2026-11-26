@@ -9,33 +9,6 @@ demo: el-checkbox
 
 复选框用来选择一个选项、列表中的一项，或者全部选项。它处于勾选、未勾选或半选（两者都不是：部分选中时的“全选”）状态。它负责行为：按压、键盘激活、禁用状态，以及屏幕阅读器读到的复选框角色和它的值。外观由应用决定：`Checkbox` 没有自己的方框、标记、颜色、尺寸或文字。它由一个指示器（方框，里面是应用的标记）以及之后的子元素（标签）组成，应用为每个部件设置样式，部件上的 `checked:`、`indeterminate:` 和 `disabled:` 类跟随复选框的状态。
 
-```rust tabs
-use nsh_base::{checkbox, theme};
-use nsh_core::prelude::*;
-
-fn notify() -> impl IntoElement {
-    let on = signal(false);
-    checkbox()
-        .checked(on)
-        .on_change(move |next: &bool| on.set(*next))
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .indicator_style(|s| {
-            s.size(px(20.0))
-                .items_center()
-                .justify_center()
-                .rounded_md()
-                .border_2()
-                .border_color(move || theme().border)
-                .transition_colors()
-                .checked(|s| s.bg(move || theme().primary).border_color(move || theme().primary))
-        })
-        .indicator(text(move || if on.get() { "✓" } else { "" }).text_color(move || theme().primary_foreground))
-        .child(text("Notify me"))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Checkbox } from "nsh/base";
@@ -61,6 +34,33 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{checkbox, theme};
+use nsh_core::prelude::*;
+
+fn notify() -> impl IntoElement {
+    let on = signal(false);
+    checkbox()
+        .checked(on)
+        .on_change(move |next: &bool| on.set(*next))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .indicator_style(|s| {
+            s.size(px(20.0))
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_2()
+                .border_color(move || theme().border)
+                .transition_colors()
+                .checked(|s| s.bg(move || theme().primary).border_color(move || theme().primary))
+        })
+        .indicator(text(move || if on.get() { "✓" } else { "" }).text_color(move || theme().primary_foreground))
+        .child(text("Notify me"))
+}
 ```
 
 `Checkbox` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：按压时通过 `onChange` 报告下一个值，复选框显示应用传回的 `checked` 和 `indeterminate`。在 Rust 中，`checkbox()` 创建一个复选框，每个属性对应一个设置方法（`.checked(..)`、`.indicator_style(..)`），每个事件对应一个监听方法（`.on_change(..)`），复选框自身用类型化的样式方法，标签用 `.child(..)`；指示器的样式接受跟随复选框的状态方法（`.checked(..)`、`.indeterminate(..)`、`.disabled_style(..)`）。

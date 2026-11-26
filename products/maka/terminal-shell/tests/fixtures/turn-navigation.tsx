@@ -20,6 +20,7 @@
 import { mount, signal, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
+import { installWorkbenchLocaleCatalog } from '../../../workbench/app/localeCatalog';
 import { TurnNavigation, type TurnNavigationItem } from '../../../workbench/app/TurnNavigation';
 
 const colors = ['#161719', '#17181a', '#18191b', '#191a1c'];
@@ -47,21 +48,24 @@ const items: TurnNavigationItem[] = Array.from({ length: 6 }, (_, index) => ({
     },
   },
 }));
-mount(() => (
-  <View
-    style={{
-      flex: 1,
-      backgroundColor: colors[stage()],
-      flexDirection: 'row',
-      justifyContent: 'flex-end',
-    }}
-  >
-    <TurnNavigation
-      items={() => items}
-      active={() => null}
-      busy={() => null}
-      navigate={(item) => Clipboard.writeText(item.turnKey)}
-      cancel={() => {}}
-    />
-  </View>
-));
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: colors[stage()],
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+      }}
+    >
+      <TurnNavigation
+        items={() => items}
+        active={() => null}
+        busy={() => null}
+        navigate={(item) => Clipboard.writeText(item.turnKey)}
+        cancel={() => {}}
+      />
+    </View>
+  );
+});

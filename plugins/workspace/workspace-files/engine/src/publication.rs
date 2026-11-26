@@ -20,7 +20,6 @@
 //! Conditional single-item publication through the existing selected workspace.
 //! The coordinator orders cooperating writers; this is not a kernel content CAS
 //! against external processes and does not promise a multi-file transaction.
-#[cfg(unix)]
 use crate::write_target::Target;
 use crate::{failed, scoped::Authority, write::WriteCoordinator};
 use maka_agent_facts::{
@@ -41,7 +40,27 @@ pub struct PublishChange {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceIdentity {
     pub device: u64,
-    pub inode: u64,
+    pub inode: FileId,
+}
+
+/// Both native identities occur in portable, content-addressed manifests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum FileId {
+    Unix(u64),
+    Windows([u8; 16]),
+}
+
+impl From<u64> for FileId {
+    fn from(inode: u64) -> Self {
+        Self::Unix(inode)
+    }
+}
+
+impl From<[u8; 16]> for FileId {
+    fn from(id: [u8; 16]) -> Self {
+        Self::Windows(id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -101,7 +120,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
 pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
 
 /// The native boundary supplies an already owned immutable fixed-slot resource.
@@ -109,13 +127,11 @@ pub(crate) const BUFFER_BYTES: usize = 64 * 1024;
 pub trait PublicationContent: Read + Seek + Send {}
 impl<T: Read + Seek + Send> PublicationContent for T {}
 
-#[cfg(unix)]
 pub(crate) enum SourceCheck {
     Matched,
     Changed,
     Uncaptured,
 }
-#[cfg(unix)]
 pub(crate) enum Capture {
     Ready(Target),
     Refused(PublicationResult),
@@ -145,6 +161,10 @@ pub(crate) fn run(
         match entry {
             PublicationEntry::File { content, mode } => {
                 content.validate().map_err(failed)?;
+                #[cfg(windows)]
+                if !matches!(mode, 0o400 | 0o600) {
+                    return Ok(unsupported(PublicationUnsupported::ModePlatform));
+                }
                 if mode & !0o777 != 0 {
                     return Err(failed(
                         "publication file mode is outside the captured permission bits",
@@ -155,122 +175,110 @@ pub(crate) fn run(
             _ => return Ok(unsupported(PublicationUnsupported::StructuralChange)),
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (authority, coordinator, source, content, started);
-        Ok(unsupported(PublicationUnsupported::ModePlatform))
+    let mut content = content;
+    match (&change.candidate, content.as_mut()) {
+        (
+            PublicationEntry::File {
+                content: expected, ..
+            },
+            Some(reader),
+        ) => {
+            let actual = match hash_reader(reader.as_mut(), cancellation) {
+                Ok(reference) => reference,
+                Err(_) if cancellation.is_cancelled() => return Ok(cancelled()),
+                Err(error) => return Err(error),
+            };
+            if actual != *expected {
+                return Err(failed(
+                    "immutable publication resource differs from the original manifest",
+                ));
+            }
+            reader.rewind().map_err(io_error)?;
+        }
+        (PublicationEntry::File { .. }, None) => {
+            return Err(failed(
+                "publication write requires the original content resource",
+            ));
+        }
+        (PublicationEntry::Missing, None) => {}
+        (_, Some(_)) => {
+            return Err(failed(
+                "publication deletion does not accept a content resource",
+            ));
+        }
+        _ => unreachable!("structural changes refused above"),
     }
-    #[cfg(unix)]
-    {
-        let mut content = content;
-        match (&change.candidate, content.as_mut()) {
-            (
-                PublicationEntry::File {
-                    content: expected, ..
-                },
-                Some(reader),
-            ) => {
-                let actual = match hash_reader(reader.as_mut(), cancellation) {
-                    Ok(reference) => reference,
-                    Err(_) if cancellation.is_cancelled() => return Ok(cancelled()),
-                    Err(error) => return Err(error),
-                };
-                if actual != *expected {
-                    return Err(failed(
-                        "immutable publication resource differs from the original manifest",
-                    ));
-                }
-                reader.rewind().map_err(io_error)?;
-            }
-            (PublicationEntry::File { .. }, None) => {
-                return Err(failed(
-                    "publication write requires the original content resource",
-                ));
-            }
-            (PublicationEntry::Missing, None) => {}
-            (_, Some(_)) => {
-                return Err(failed(
-                    "publication deletion does not accept a content resource",
-                ));
-            }
-            _ => unreachable!("structural changes refused above"),
+    let _guard = coordinator
+        .mutation
+        .lock()
+        .map_err(|_| failed("Write coordinator poisoned"))?;
+    if cancellation.is_cancelled() {
+        return Ok(cancelled());
+    }
+    match authority.publication_source(&source)? {
+        SourceCheck::Matched => {}
+        SourceCheck::Changed => return Ok(conflict(PublicationConflict::WorkspaceIdentity)),
+        SourceCheck::Uncaptured => {
+            return Ok(unsupported(PublicationUnsupported::UncapturedWorkspace));
         }
-        let _guard = coordinator
-            .mutation
-            .lock()
-            .map_err(|_| failed("Write coordinator poisoned"))?;
-        if cancellation.is_cancelled() {
-            return Ok(cancelled());
-        }
-        match authority.publication_source(&source)? {
-            SourceCheck::Matched => {}
-            SourceCheck::Changed => return Ok(conflict(PublicationConflict::WorkspaceIdentity)),
-            SourceCheck::Uncaptured => {
-                return Ok(unsupported(PublicationUnsupported::UncapturedWorkspace));
-            }
-        }
-        let mode_only = matches!((&change.expected, &change.candidate),
+    }
+    let mode_only = matches!((&change.expected, &change.candidate),
             (PublicationEntry::File { content: before, .. }, PublicationEntry::File { content: after, .. }) if before == after);
-        let mut target = match Target::capture_publication(
-            authority,
-            &change.path,
-            &change.expected,
-            mode_only,
-        )? {
+    let mut target =
+        match Target::capture_publication(authority, &change.path, &change.expected, mode_only)? {
             Capture::Ready(target) => target,
             Capture::Refused(result) => return Ok(result),
         };
-        match target.publication_condition(&change.expected, cancellation) {
-            Ok(Some(reason)) => return Ok(conflict(reason)),
-            Ok(None) => {}
-            Err(_) if cancellation.is_cancelled() => return Ok(cancelled()),
-            Err(error) => return Err(error),
+    match target.publication_condition(&change.expected, cancellation) {
+        Ok(Some(reason)) => return Ok(conflict(reason)),
+        Ok(None) => {}
+        Err(_) if cancellation.is_cancelled() => return Ok(cancelled()),
+        Err(error) => return Err(error),
+    }
+    if cancellation.is_cancelled() {
+        return Ok(cancelled());
+    }
+    let mutation = match (change.candidate, content) {
+        (
+            PublicationEntry::File {
+                content: expected,
+                mode,
+            },
+            Some(mut reader),
+        ) => {
+            if mode_only {
+                target.apply_publication_mode(mode, cancellation, started)
+            } else {
+                target.apply_publication(reader.as_mut(), &expected, mode, cancellation, started)
+            }
         }
-        if cancellation.is_cancelled() {
+        (PublicationEntry::Missing, None) => {
+            if matches!(change.expected, PublicationEntry::Missing) {
+                return Ok(PublicationResult::Applied);
+            }
+            #[cfg(windows)]
+            let result = target.delete_publication(cancellation, started);
+            #[cfg(unix)]
+            let result = target.delete(cancellation, started);
+            result
+        }
+        _ => unreachable!("candidate resource shape checked before admission"),
+    };
+    if let Err(error) = mutation {
+        if !started.load(std::sync::atomic::Ordering::SeqCst) && cancellation.is_cancelled() {
             return Ok(cancelled());
         }
-        let mutation = match (change.candidate, content) {
-            (
-                PublicationEntry::File {
-                    content: expected,
-                    mode,
-                },
-                Some(mut reader),
-            ) => {
-                if mode_only {
-                    target.apply_publication_mode(mode, cancellation, started)
-                } else {
-                    target.apply_publication(
-                        reader.as_mut(),
-                        &expected,
-                        mode,
-                        cancellation,
-                        started,
-                    )
-                }
-            }
-            (PublicationEntry::Missing, None) => {
-                if matches!(change.expected, PublicationEntry::Missing) {
-                    return Ok(PublicationResult::Applied);
-                }
-                target.delete(cancellation, started)
-            }
-            _ => unreachable!("candidate resource shape checked before admission"),
-        };
-        if let Err(error) = mutation {
-            if !started.load(std::sync::atomic::Ordering::SeqCst) && cancellation.is_cancelled() {
-                return Ok(cancelled());
-            }
-            return Err(error);
-        }
-        match authority.publication_source(&source) {
-            Ok(SourceCheck::Matched) => Ok(PublicationResult::Applied),
-            _ => Err(ToolError::OutcomeUnknown("publication wrote through its original FD but selected workspace visibility changed".into())),
-        }
+        return Err(error);
+    }
+    match authority.publication_source(&source) {
+        Ok(SourceCheck::Matched) => Ok(PublicationResult::Applied),
+        _ => Err(ToolError::OutcomeUnknown(
+            "publication wrote through its original FD but selected workspace visibility changed"
+                .into(),
+        )),
     }
 }
 
-#[cfg(unix)]
 pub(crate) fn hash_reader(
     reader: &mut (impl Read + ?Sized),
     cancellation: &CancellationToken,
@@ -300,7 +308,6 @@ pub(crate) fn hash_reader(
         bytes,
     })
 }
-#[cfg(unix)]
 pub(crate) fn conflict(reason: PublicationConflict) -> PublicationResult {
     PublicationResult::Conflict { reason }
 }
@@ -312,7 +319,6 @@ fn cancelled() -> PublicationResult {
         reason: PublicationNotAttempted::Cancelled,
     }
 }
-#[cfg(unix)]
 fn io_error(error: std::io::Error) -> ToolError {
     ToolError::Io {
         kind: error.kind(),
@@ -328,4 +334,21 @@ pub(crate) fn finish_digest(digest: Sha256) -> String {
         write!(encoded, "{byte:02x}").expect("formatting into a String is infallible");
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_root_identity_round_trips_on_every_platform() {
+        for inode in [
+            serde_json::json!(u64::MAX),
+            serde_json::to_value([255u8; 16]).unwrap(),
+        ] {
+            let value = serde_json::json!({"device":1,"inode":inode});
+            let root: SourceIdentity = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(root).unwrap(), value);
+        }
+    }
 }

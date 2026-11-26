@@ -116,12 +116,25 @@ impl Shell {
         config
             .host
             .handle("screenshot.chooseFolder", crate::screenshot::choose_folder);
+        #[cfg(windows)]
+        config.host.handle(
+            "screenshot.chooseFolder",
+            crate::direct2d::choose_local_folder,
+        );
         #[cfg(target_os = "macos")]
         config.host.handle("quickLauncher.commandHeld", |call| {
             call.resolve(JsonValue::Bool(crate::appkit::command_only(
                 objc2_app_kit::NSEvent::modifierFlags_class(),
             )));
         });
+        #[cfg(windows)]
+        config
+            .host
+            .handle("screenshot.capture", crate::screenshot_windows::capture);
+        #[cfg(windows)]
+        config
+            .host
+            .handle("screenshot.release", crate::screenshot_windows::release);
         if let Some(updater) = self.updater.clone() {
             let state_controller = Arc::clone(&updater);
             config.host.handle("updater.state", move |call| {

@@ -458,7 +458,7 @@ pub(in crate::adapters) fn responses_content_array(
     content_array::plan(
         parts,
         content_array::Codec::Responses,
-        maka_agent_facts::language::Language::En,
+        maka_agent_facts::language::Language::EN,
     )
 }
 pub(in crate::adapters) fn content_array_allocation() -> io::Result<usize> {

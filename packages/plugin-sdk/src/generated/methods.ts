@@ -2532,6 +2532,7 @@ export type AgentSessionSendInput_ThinkingLevel =
  */
 export type AgentSessionSendInput_ExecutorEffort = string;
 export type AgentSessionSendInput_RunId = string;
+export type AgentSetProjectMcpDecisionInput_AgentProjectMcpDecisionInput = 'trusted' | 'declined';
 export type AgentSystemPermissionStatusOutput_AgentSystemPermissionOutcome =
   | {
       kind: 'system_permission_granted';
@@ -2589,12 +2590,14 @@ export type AgentUpdatePresetOutput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
-export type SettingsAssistantPreferencesOutput_LanguagePreference =
-  | 'auto'
-  | 'en'
-  | 'zh-CN'
-  | 'zh-TW';
-export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * Language preference: "auto" or a canonical BCP 47 locale tag.
+ */
+export type SettingsAssistantPreferencesOutput_LanguagePreference = string;
+/**
+ * Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).
+ */
+export type SettingsAssistantPreferencesOutput_Language = string;
 export type SettingsAssistantPreferencesOutput_ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
@@ -3047,6 +3050,27 @@ export interface ServiceMethods {
       input: Runtime.AgentChangeSession;
       output: Runtime.AgentSessionChanged;
     };
+    changeSessionWorkspace: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedRevision: number;
+        path: string;
+      };
+      output:
+        | {
+            kind: 'changed';
+          }
+        | {
+            kind: 'revision_conflict';
+            expected: number;
+            actual: number;
+          }
+        | {
+            kind: 'rejected';
+            reason: Runtime.AgentRejection;
+          };
+    };
     checklist: {
       mode: 'query';
       input: Runtime.AgentChecklistRead;
@@ -3216,6 +3240,20 @@ export interface ServiceMethods {
           }
         | {
             kind: 'thinkingLevelUnavailable';
+          };
+    };
+    declineProjectMcp: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        revision: string;
+      };
+      output:
+        | {
+            kind: 'declined';
+          }
+        | {
+            kind: 'changed';
           };
     };
     deleteGitHubToken: {
@@ -4007,6 +4045,7 @@ export interface ServiceMethods {
             path: string;
             revision: string;
             trusted: boolean;
+            declined?: boolean;
             servers: AgentProjectMcpOutput_AgentMcpServerView[];
             disabled: string[];
           };
@@ -4507,6 +4546,11 @@ export interface ServiceMethods {
         runId?: Runtime.RunId | null;
       };
     };
+    sessionWorkspaceAvailable: {
+      mode: 'query';
+      input: Runtime.AgentSessionRead;
+      output: boolean;
+    };
     setCompactionPrompt: {
       mode: 'mutation';
       input: {
@@ -4515,6 +4559,21 @@ export interface ServiceMethods {
         prompt: string | null;
       };
       output: Runtime.AgentMetadataResult;
+    };
+    setProjectMcpDecision: {
+      mode: 'mutation';
+      input: {
+        workspace: AgentSetProjectMcpDecisionInput_AgentWorkspace;
+        revision: string;
+        decision: AgentSetProjectMcpDecisionInput_AgentProjectMcpDecisionInput;
+      };
+      output:
+        | {
+            kind: 'saved';
+          }
+        | {
+            kind: 'changed';
+          };
     };
     skillCandidates: {
       mode: 'query';
@@ -7234,6 +7293,27 @@ export interface AgentSessionSendInput_ExecutorSettings {
   model?: string | null;
   thinkingLevel?: AgentSessionSendInput_ExecutorEffort | null;
   runtime?: string | null;
+}
+export interface AgentSetProjectMcpDecisionInput_AgentWorkspace {
+  /**
+   * Native owner allocation; never accepted from a caller as workspace authority.
+   */
+  worktree?: AgentSetProjectMcpDecisionInput_Binding | null;
+  /**
+   * Optional membership in this Agent's canonical Project catalog.
+   */
+  projectId?: string | null;
+  path: string;
+}
+/**
+ * Immutable allocation intent, not the current child branch or HEAD.
+ */
+export interface AgentSetProjectMcpDecisionInput_Binding {
+  id: string;
+  common_dir: string;
+  source: string;
+  base_commit: string;
+  directory: string;
 }
 export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   reference: string;

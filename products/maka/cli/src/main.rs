@@ -33,6 +33,7 @@ mod host_client;
 mod initialize;
 mod logging;
 mod operation;
+mod relay;
 mod run;
 mod sandbox;
 mod serve;
@@ -55,7 +56,6 @@ fn main() -> std::process::ExitCode {
     {
         return wsl_stdio::entry();
     }
-    #[cfg(unix)]
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_agent_native::FRONT_HELPER))
     {
@@ -76,14 +76,50 @@ fn main() -> std::process::ExitCode {
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(maka_process::isolated::HELPER))
     {
-        let mut args = std::env::args_os().skip(2);
-        let result = match (args.next(), args.next()) {
+        let mut args = std::env::args_os().skip(2).peekable();
+        let resource = args.next();
+        #[cfg(windows)]
+        let state_root = if args.peek().is_some_and(|arg| arg == "--root") {
+            args.next();
+            Some(args.next().map(std::path::PathBuf::from))
+        } else {
+            None
+        };
+        let result = match (resource, args.next()) {
+            #[cfg(windows)]
+            (Some(role), Some(resource))
+                if role == "--snapshot" && args.next().is_none() && state_root.is_none() =>
+            {
+                maka_process::isolated::run_snapshot(std::path::Path::new(&resource))
+            }
+            (Some(probe), None) if probe == maka_process::isolated::PROBE => {
+                return std::process::ExitCode::SUCCESS;
+            }
             (Some(resource), None) => tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .and_then(|runtime| {
+                    let sandbox_runtime = maka_process::isolated::SandboxRuntime::default();
+                    #[cfg(target_os = "linux")]
+                    let sandbox_runtime =
+                        sandbox_runtime.with_network_helper(std::env::current_exe()?);
+                    #[cfg(windows)]
+                    let sandbox_runtime = match state_root {
+                        Some(Some(root)) if root.is_absolute() => sandbox_runtime.with_backend(
+                            std::sync::Arc::new(maka_host_runtime::sandbox::windows::Backend::new(
+                                &root,
+                                &std::env::current_exe()?,
+                            )),
+                        ),
+                        _ => {
+                            return Err(std::io::Error::other(
+                                "isolated helper requires an absolute StateRoot",
+                            ));
+                        }
+                    };
                     let result = runtime.block_on(maka_process::isolated::run_helper(
                         std::path::Path::new(&resource),
+                        &sandbox_runtime,
                     ));
                     // Tokio's stdin read can outlive its cancelled relay; this process exits next.
                     runtime.shutdown_background();
@@ -124,7 +160,7 @@ fn main() -> std::process::ExitCode {
             maka_process::network_namespace::HELPER,
         ))
     {
-        let mut args = std::env::args_os().skip(2);
+        let mut args = std::env::args_os().skip(2).peekable();
         let result = match (
             args.next()
                 .and_then(|fd| fd.to_str().and_then(|fd| fd.parse().ok())),
@@ -163,7 +199,7 @@ fn main() -> std::process::ExitCode {
             maka_host_runtime::sandbox::windows::READ_PREPARATION,
         ))
     {
-        let mut args = std::env::args_os().skip(2);
+        let mut args = std::env::args_os().skip(2).peekable();
         let result = match (args.next(), args.next()) {
             (Some(root), None) => maka_host_runtime::sandbox::windows::prepare_default_reads(
                 std::path::Path::new(&root),

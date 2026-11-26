@@ -15,30 +15,6 @@ decimals, and stop at `min` and `max`; leaving the field holds a typed number to
 between the app's `prefix` and `suffix`, and the increment button (or the field between them and a column with both
 buttons, `controlsRight`), and the app styles each part and fills the buttons.
 
-```rust tabs
-use nsh_base::{number_input, theme};
-use nsh_core::prelude::*;
-
-fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
-    number_input()
-        .value(move || count.get())
-        .min(1.0)
-        .max(10.0)
-        .accessibility_label("Tickets")
-        .on_change(move |next: &Option<f64>| count.set(*next))
-        .h(px(32.0))
-        .flex_row()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(move || theme().input)
-        .input_style(|s| s.flex_1().text_center().text_color(move || theme().foreground))
-        .decrement_button_style(|s| s.w(px(32.0)).items_center().justify_center())
-        .increment_button_style(|s| s.w(px(32.0)).items_center().justify_center())
-        .decrement_button(text("−"))
-        .increment_button(text("+"))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { NumberInput } from "nsh/base";
@@ -68,6 +44,30 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{number_input, theme};
+use nsh_core::prelude::*;
+
+fn tickets(count: Signal<Option<f64>>) -> impl IntoElement {
+    number_input()
+        .value(move || count.get())
+        .min(1.0)
+        .max(10.0)
+        .accessibility_label("Tickets")
+        .on_change(move |next: &Option<f64>| count.set(*next))
+        .h(px(32.0))
+        .flex_row()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(move || theme().input)
+        .input_style(|s| s.flex_1().text_center().text_color(move || theme().foreground))
+        .decrement_button_style(|s| s.w(px(32.0)).items_center().justify_center())
+        .increment_button_style(|s| s.w(px(32.0)).items_center().justify_center())
+        .decrement_button(text("−"))
+        .increment_button(text("+"))
+}
 ```
 
 `NumberInput` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust, `number_input()`

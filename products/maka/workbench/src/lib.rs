@@ -446,10 +446,12 @@ mod tests {
         assert!(app.shows("4,000,000"));
     }
 
-    fn headless_fixture(
+    fn headless_fixture_with_locales(
         entry: &str,
         viewport: Size<Points>,
         native_focus_scopes: bool,
+        idiom: nsh_core::platform::Idiom,
+        locales: Option<Vec<String>>,
     ) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
@@ -466,6 +468,7 @@ mod tests {
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
+            locales,
             ..Default::default()
         })
         .unwrap();
@@ -473,6 +476,7 @@ mod tests {
             viewport,
             environment: Environment {
                 os: Os::MacOs,
+                idiom,
                 native_focus_scopes,
                 ..Environment::default()
             },
@@ -480,6 +484,28 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap()
+    }
+
+    fn headless_fixture_in(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+        idiom: nsh_core::platform::Idiom,
+    ) -> nsh_testing::Headless {
+        headless_fixture_with_locales(entry, viewport, native_focus_scopes, idiom, None)
+    }
+
+    fn headless_fixture(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+    ) -> nsh_testing::Headless {
+        headless_fixture_in(
+            entry,
+            viewport,
+            native_focus_scopes,
+            Environment::default().idiom,
+        )
     }
 
     #[test]
@@ -565,6 +591,107 @@ mod tests {
             .unwrap();
         app.wait_for("text:The original tool source could not be verified.")
             .unwrap();
+    }
+
+    #[test]
+    fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
+        let mut app = headless_fixture_with_locales(
+            "tests/fixtures/tool-card-order.tsx",
+            Size::new(px(900.0), px(1400.0)),
+            false,
+            Environment::default().idiom,
+            Some(vec!["en".into(), "de".into()]),
+        );
+        app.wait_for("text:/const line1 = 1;/").unwrap();
+        app.wait_for(r#"text:/"kind":"changed"/"#).unwrap();
+        app.wait_for("label:Show 4 more lines").unwrap();
+        app.wait_for("label:Copy Script").unwrap();
+        app.wait_for("label:Copy Output").unwrap();
+        app.wait_for("text:Recorded edit · 1,234 replacements · Recorded line 1234")
+            .unwrap();
+        app.wait_for("text:/read arguments timed out/").unwrap();
+
+        let texts = app.screen().texts();
+        let pos = |needle: &str| {
+            texts
+                .iter()
+                .position(|item| item.contains(needle))
+                .unwrap_or_else(|| panic!("expected {needle:?} in {texts:?}"))
+        };
+        assert!(
+            pos("const line1 = 1;") < pos(r#""kind":"changed""#),
+            "script should appear before output: {texts:?}"
+        );
+        assert!(
+            pos("arguments") < pos("Recorded edit · 1,234 replacements · Recorded line 1234"),
+            "edit diff should appear before recorded receipt: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|item| item.contains("const line10 = 10;")),
+            "long script should collapse past 6 lines initially: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"src/ToolCard.tsx")
+                && texts.contains(&"Read lines 1234–1235 / 12,345")
+                && texts.contains(&"1234\n1235")
+                && !texts.contains(&"File"),
+            "read card should merge path into header instead of rendering a trailing File section: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Lines 1234–1235"),
+            "review note should keep line numbers ungrouped: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"read-result-fetches:1"),
+            "read result should load once: {texts:?}"
+        );
+
+        app.press("label:Copy Script").unwrap();
+        app.wait_for("text:Copied").unwrap();
+        assert!(
+            app.screen()
+                .clipboard()
+                .is_some_and(|copied| copied.contains("const line10 = 10;")),
+            "copying a folded script should still copy all lines"
+        );
+
+        app.press("label:Show 4 more lines").unwrap();
+        app.wait_for("text:/const line10 = 10;/").unwrap();
+        app.wait_for("label:Show fewer lines").unwrap();
+
+        app.press("label:Toggle read original").unwrap();
+        app.wait_for("text:Original arguments").unwrap();
+        let raw_texts = app.screen().texts();
+        let raw_pos = |needle: &str| {
+            raw_texts
+                .iter()
+                .position(|item| item.contains(needle))
+                .unwrap_or_else(|| panic!("expected {needle:?} in {raw_texts:?}"))
+        };
+        assert!(raw_pos("Original arguments") < raw_pos("Original result"));
+        assert!(raw_texts.contains(&"read-result-fetches:1"));
+
+        app.press("label:Switch to German").unwrap();
+        app.wait_for(
+            "text:Aufgezeichnete Bearbeitung · 1.234 Ersetzungen · Aufgezeichnete Zeile 1234",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn terminal_tool_cards_preserve_untruncated_long_lines() {
+        let mut app = headless_fixture_in(
+            "tests/fixtures/tool-card-order.tsx",
+            Size::new(px(900.0), px(1400.0)),
+            false,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        app.wait_for("text:/TAIL/").unwrap();
+        let texts = app.screen().texts();
+        assert!(
+            !texts.iter().any(|item| item.contains("more characters")),
+            "terminal mode must not apply desktop CoreText 720-column truncation: {texts:?}"
+        );
     }
 
     #[test]
@@ -1976,7 +2103,7 @@ mod tests {
                 .matches("label:Search models and sources")
                 .unwrap()
         );
-        app.wait_for("text: · medium").unwrap();
+        app.wait_for("text:Reasoning model · medium").unwrap();
         assert!(
             app.screen()
                 .enabled("label:Choose reasoning effort")
@@ -1991,7 +2118,7 @@ mod tests {
         app.press("label:Choose reasoning effort").unwrap();
         app.wait_for("label:Use effort high").unwrap();
         app.press("label:Use effort high").unwrap();
-        app.wait_for("text: · high").unwrap();
+        app.wait_for("text:Reasoning model · high").unwrap();
         assert!(!app.screen().matches("label:Use effort high").unwrap());
         assert!(
             app.screen()
@@ -2017,14 +2144,14 @@ mod tests {
         app.press("label:Use Sol · ChatGPT").unwrap();
         app.wait_for("label:Ultrafast").unwrap();
         app.press("label:Ultrafast").unwrap();
-        app.wait_for("text: · Ultrafast").unwrap();
+        app.wait_for("text:Sol · Ultrafast").unwrap();
         app.press("label:Choose reasoning effort").unwrap();
         app.press("label:Use effort high").unwrap();
-        app.wait_for("text: · high · Ultrafast").unwrap();
+        app.wait_for("text:Sol · high · Ultrafast").unwrap();
         app.press("label:Fast").unwrap();
-        app.wait_for("text: · high · Fast").unwrap();
+        app.wait_for("text:Sol · high · Fast").unwrap();
         app.press("label:Default").unwrap();
-        app.wait_for("text: · high").unwrap();
+        app.wait_for("text:Sol · high").unwrap();
         app.press("label:Use Plain model · DeepSeek").unwrap();
         app.wait_for("text:Unsupported").unwrap();
         assert!(!app.screen().matches("text:Speed").unwrap());

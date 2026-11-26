@@ -35,11 +35,7 @@ pub(crate) fn project(
 ) -> Result<Message, RunError> {
     let text = references::text(content, resources, language)?;
     let text = if steering {
-        let label = match language {
-            Language::En => "A message arrived while you were working:",
-            Language::ZhCn => "你工作期间收到一条消息：",
-            Language::ZhTw => "你工作期間收到一則訊息：",
-        };
+        let label = maka_agent_facts::i18n::history::steering_message_label(language);
         format!("{label}\n<user_query>\n{text}\n</user_query>")
     } else {
         text

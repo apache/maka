@@ -33,11 +33,13 @@ function patchFile(
 ): ToolPatchFile | null {
   if (operation === 'delete') return lines.length ? null : { path, operation, hunks: [] };
   if (operation === 'create') {
-    if (!lines.length || lines.some((line) => !line.startsWith('+'))) return null;
+    if (lines.some((line) => !line.startsWith('+'))) return null;
     return {
       path,
       operation,
-      hunks: [{ context: '', before: '', after: lines.map((line) => line.slice(1)).join('\n') }],
+      hunks: lines.length
+        ? [{ context: '', before: '', after: lines.map((line) => line.slice(1)).join('\n') }]
+        : [],
     };
   }
   const hunks: ToolPatchFile['hunks'] = [];
@@ -86,7 +88,7 @@ export function structuredToolPatch(
         : type === 'delete_file'
           ? 'delete'
           : null;
-  if (!operation) return null;
+  if (!operation || (operation !== 'delete' && !diff)) return null;
   const file = patchFile(path, operation, diff ? linesOf(diff) : []);
   return file ? [file] : null;
 }

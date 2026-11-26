@@ -20,11 +20,11 @@
 //! One stdio ACP front per resolved command in this activation. A private
 //! supervisor owns its group and the original transcripts across Host loss.
 use super::*;
+use maka_host_runtime::ipc::{LocalListener, LocalStream};
 use maka_process::isolated::{Descriptor, TaskOwner};
 use std::{io, path::Path, process::Stdio};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
     process::ChildStdin,
     sync::Mutex,
     task::JoinSet,
@@ -55,13 +55,15 @@ struct Pool {
 }
 #[derive(Clone)]
 struct Front {
+    #[cfg(windows)]
+    pid: u32,
     ready: futures_util::future::Shared<BoxFuture<'static, Result<(), String>>>,
     registrations: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     retire: CancellationToken,
     exited: CancellationToken,
 }
 pub(super) struct Lease {
-    pub socket: UnixStream,
+    pub socket: LocalStream,
     pub exited: CancellationToken,
 }
 impl Fronts {
@@ -73,12 +75,17 @@ impl Fronts {
     ) -> Result<Lease, Error> {
         let resolved = runtime::resolve(config, cwd).await.require()?.executable;
         let task = owner.as_ref().expect("unregistered Run");
+        #[cfg(unix)]
         let dir = tempfile::Builder::new()
             .prefix("maka-acp-")
+            .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .tempdir_in("/tmp")
             .map_err(provider)?;
+        #[cfg(unix)]
         let socket = dir.path().join("run");
-        let listener = UnixListener::bind(&socket).map_err(provider)?;
+        #[cfg(windows)]
+        let socket = PathBuf::from(format!(r"\\.\pipe\maka-agy-{}", uuid::Uuid::new_v4()));
+        let mut listener = LocalListener::bind(&socket).map_err(provider)?;
         let front = {
             let mut pool = self.0.lock().await;
             while let Some(result) = pool.supervisors.try_join_next() {
@@ -110,9 +117,16 @@ impl Fronts {
             .send(registration)
             .map_err(|_| Error::Provider("agy ACP supervisor exited before admission".into()))?;
         owner.take();
-        let (socket, _) = tokio::select! {
-            connection = listener.accept() => connection.map_err(provider)?,
-            () = front.exited.cancelled() => return Err(Error::Provider("agy ACP supervisor exited during admission".into())),
+        let socket = loop {
+            let socket = tokio::select! {
+                connection = listener.accept() => connection.map_err(provider)?,
+                () = front.exited.cancelled() => return Err(provider("agy ACP supervisor exited during admission")),
+            };
+            #[cfg(windows)]
+            if socket.client_pid().map_err(provider)? != front.pid {
+                continue;
+            }
+            break socket;
         };
         Ok(Lease {
             socket,
@@ -164,12 +178,17 @@ impl Front {
         launch: Launch,
         jobs: &mut JoinSet<io::Result<()>>,
     ) -> io::Result<Self> {
-        let mut child = tokio::process::Command::new(helper)
+        let mut command = tokio::process::Command::new(helper);
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB);
+        let mut child = command
             .arg(FRONT_HELPER)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
+        #[cfg(windows)]
+        let pid = child.id().expect("just spawned supervisor");
         let mut input: ChildStdin = child.stdin.take().unwrap();
         let mut status = BufReader::new(child.stdout.take().unwrap()).lines();
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -243,6 +262,8 @@ impl Front {
         .boxed()
         .shared();
         Ok(Self {
+            #[cfg(windows)]
+            pid,
             ready,
             registrations: send,
             retire,

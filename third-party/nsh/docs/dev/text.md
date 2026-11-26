@@ -9,7 +9,10 @@
   `fontFamily` (system or imported fonts:
   `import Inter from "./Inter.ttf"` evaluates to the family name and registers the font before the first frame; a host can register the same files itself, `NshView.registerFont` / `NshAppView.registerFont`, and the app names the family), `fontWeight`,
   `fontStyle` (italic runs leave color emoji upright, in runs of their own: `AttributedText::push`, as WebKit does;
-  Chrome and Android would slant them), `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
+  Chrome and Android would slant them; a family without an italic face leans by CSS's oblique angle, 14°, as browsers
+  and Android synthesize it: on macOS and iOS a shear in the font's matrix, which `nsh_platform_apple::core_text`'s
+  `slant_fallbacks` also sets on the upright fonts CoreText falls back to, such as CJK in the system font's italic),
+  `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
   `textAlignVertical` (the core moves the content box down). `adjustsFontSizeToFit` shrinks the fonts (down to
   `minimumFontScale`, at least 0.1) until the text fits its box and lines (`Paragraph::fit`, a binary search in the core).
   On iOS and macOS, a positive fixed-height box keeps its first line even when that line is taller than the box
@@ -34,8 +37,9 @@
   truncations and omits the ellipsis from range boxes; mixed-direction ranges split by visual run on both Apple
   backends. Web hit testing measures cluster rectangles in the complete drawn DOM run on first use, keeps both
   edges at bidi boundaries and caches them with the layout. Linux selection drawing reuses its rectangle buffer.
-  Test-id-only span updates remount the text metadata with its cached final layout (`LaidText`), retaining fitted
-  font sizes. They preserve prepared state and measurement caches and raise no `onTextLayout`.
+  Span updates of metadata only (a test id, a link's `href`) remount the text metadata with its cached final layout
+  (`LaidText`), retaining fitted font sizes. They preserve prepared state and measurement caches and raise no
+  `onTextLayout`.
 - A text laid out gives Taffy its first line's baseline, below its top through its padding and border
   (`TextEngine::first_baseline`: every built-in engine, CoreText on macOS and iOS, Android, Pango, DirectWrite, GPUI,
   the web, Cells and the headless one; `measure_leaf`, cached per width in `TextContext::baseline`), so a flex row
@@ -139,7 +143,7 @@
   built by `chrome::menu`), Windows and GPUI to their popup (`selectable_view::context_menu`), GTK as a section of
   the edit popover (`selection-menu.item-N` actions), iOS 16 and later to the edit menu
   (`editMenuInteraction:menuForConfiguration:suggestedActions:`; groups between separators are inline sections; iOS
-  15's `UIMenuController` shows the system's items alone), Android to the floating `ActionMode` after the
+  15's `UIMenuController` shows the system's items alone), Android to the floating `ActionMode` before the
   `PROCESS_TEXT` actions (`encode.rs` `selection_menu`, `SelectableView.addAppItems`). The web shows the browser's
   menu alone: the browser's renderer drops the prop.
 - **Color changes**: a text whose spans change only their colors (text, decoration and background) or which of them
@@ -156,6 +160,11 @@
   restyled span merges into its text again. The platforms only hit-test their links as they already do for hints
   and presses. A color change takes the path above; a decoration line typesets the paragraph again without laying
   out the views around it (`layout_eq`).
+- **Where links go**: a link's span with an `href` (`ViewProps::href`, from the hidden builder `Link` sets its own
+  with: `TextView` gives each of its links its URL) records it in its block's text (`AttributedText::link_hrefs`, by
+  the link's index in `links`, `Core::collect_text`). It is metadata, as `test_ids`: a new one is mounted without
+  typesetting again (`metadata_eq`), on a fitted text's drawn spans too (`set_metadata`). Platforms that make a
+  link a hyperlink take it: the web draws the link's characters as an `a` (`docs/dev/web.md` "Links of text").
 - **Span backgrounds**: `backgroundColor` / `borderRadius` on a nested `<Text>` (its view style, which spans otherwise
   ignore) become `ResolvedTextStyle::background` (`TextBackground`: color, radius and the span's node, so neighboring
   spans that look the same stay apart), inherited by the spans inside it; the block's own background stays its view's.

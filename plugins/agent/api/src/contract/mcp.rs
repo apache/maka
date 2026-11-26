@@ -54,6 +54,8 @@ pub enum McpView {
         path: String,
         revision: String,
         trusted: bool,
+        #[serde(default)]
+        declined: bool,
         servers: Vec<McpServerView>,
         disabled: Vec<String>,
     },
@@ -70,6 +72,13 @@ pub struct McpTrust {
 #[schemars(rename = "AgentMcpTrustResult")]
 pub enum McpTrustResult {
     Trusted,
+    Changed,
+}
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentMcpDeclineResult")]
+pub enum McpDeclineResult {
+    Declined,
     Changed,
 }
 

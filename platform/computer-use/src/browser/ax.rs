@@ -265,11 +265,9 @@ impl<'a> Walk<'a> {
                         .checked_add(1)
                         .filter(|next| *next <= 9_007_199_254_740_991)
                         .ok_or_else(|| {
-                            failed(match language {
-                                Language::En => "accessibility index limit reached; reset Cua",
-                                Language::ZhCn => "无障碍索引数已达上限；请重置 Cua",
-                                Language::ZhTw => "輔助使用索引數已達上限；請重設 Cua",
-                            })
+                            failed(crate::language::i18n_catalog::browser::ax_index_limit(
+                                language,
+                            ))
                         })?;
                     self.projection.indices.insert(identity.clone(), index);
                     index
@@ -383,10 +381,10 @@ mod tests {
             let title = JsonStringLiteral::parse(literal.into()).unwrap();
             let scalar = title.strict_scalar().unwrap();
             let (old, old_refs) = Projection::default()
-                .render("dialog", &dialog.ax_nodes(&scalar), Language::En)
+                .render("dialog", &dialog.ax_nodes(&scalar), Language::EN)
                 .unwrap();
             let (current, current_refs) = Projection::default()
-                .render_dialog("dialog", &dialog, &title, Language::En)
+                .render_dialog("dialog", &dialog, &title, Language::EN)
                 .unwrap();
             assert_eq!(current.as_bytes(), old.as_bytes(), "{literal}");
             assert_eq!(dialog_refs(&current_refs), dialog_refs(&old_refs));
@@ -410,11 +408,11 @@ mod tests {
         .unwrap();
         assert!(title.strict_scalar().is_err());
         let (baseline, baseline_refs) = Projection::default()
-            .render("dialog", &dialog.ax_nodes(""), Language::En)
+            .render("dialog", &dialog.ax_nodes(""), Language::EN)
             .unwrap();
         let mut projection = Projection::default();
         let (state, refs) = projection
-            .render_dialog("dialog", &dialog, &title, Language::En)
+            .render_dialog("dialog", &dialog, &title, Language::EN)
             .unwrap();
         assert_eq!(
             state.lines().next(),
@@ -427,7 +425,7 @@ mod tests {
         assert_eq!(dialog_refs(&refs), dialog_refs(&baseline_refs));
         assert_eq!(refs.len(), 3, "prompt, dismiss and accept controls survive");
         let (again, again_refs) = projection
-            .render_dialog("dialog", &dialog, &title, Language::En)
+            .render_dialog("dialog", &dialog, &title, Language::EN)
             .unwrap();
         assert_eq!(again, state);
         assert_eq!(dialog_refs(&again_refs), dialog_refs(&refs));
@@ -443,7 +441,7 @@ mod tests {
             "dialog_root_name":"untrusted page field"
         }]);
         let (page_state, _) = Projection::default()
-            .render("page", page.as_array().unwrap(), Language::En)
+            .render("page", page.as_array().unwrap(), Language::EN)
             .unwrap();
         assert_eq!(page_state, "0 RootWebArea \"Actual page name\"");
     }
@@ -479,17 +477,17 @@ mod tests {
             assert!(alias.strict_scalar().is_err());
             let mut projection = Projection::default();
             let (state, refs) = projection
-                .render_dialog("dialog", &dialog, &first, Language::En)
+                .render_dialog("dialog", &dialog, &first, Language::EN)
                 .unwrap();
             let (alias_state, alias_refs) = projection
-                .render_dialog("dialog", &dialog, &alias, Language::En)
+                .render_dialog("dialog", &dialog, &alias, Language::EN)
                 .unwrap();
             assert_eq!(state, alias_state);
             assert_eq!(dialog_refs(&refs), dialog_refs(&alias_refs));
             let expected_root = format!("0 RootWebArea {expected}");
             assert_eq!(state.lines().next(), Some(expected_root.as_str()));
             assert_eq!(
-                crate::session::display_diff(Some(&state), &alias_state, Language::En),
+                crate::session::display_diff(Some(&state), &alias_state, Language::EN),
                 "Accessibility state unchanged."
             );
         }
@@ -502,7 +500,7 @@ mod tests {
         ))
         .unwrap();
         let (state, refs) = Projection::default()
-            .render_dialog("dialog", &dialog, &title, Language::En)
+            .render_dialog("dialog", &dialog, &title, Language::EN)
             .unwrap();
         let expected_root = format!("0 RootWebArea \"{prefix}\\ud800A\\udc00😀\\n\"");
         assert_eq!(state.lines().next(), Some(expected_root.as_str()));
@@ -543,7 +541,7 @@ mod tests {
         let nodes = vec![
             json!({"nodeId":"ax","backendDOMNodeId":12,"makaFrame":element.frame,"role":{"value":"button"},"name":{"value":"Next"}}),
         ];
-        let (_, refs) = projection.render("main:one", &nodes, Language::En).unwrap();
+        let (_, refs) = projection.render("main:one", &nodes, Language::EN).unwrap();
         assert!(refs.keys().all(|id| *id > dom));
         assert_eq!(projection.dom_reference("main:one", &element).unwrap(), dom);
         let fresh = projection.dom_reference("main:two", &element).unwrap();
@@ -558,7 +556,7 @@ mod tests {
             node
         }).collect::<Vec<_>>();
         let mut projection = Projection::default();
-        let (state, refs) = projection.render("original", &nodes, Language::En).unwrap();
+        let (state, refs) = projection.render("original", &nodes, Language::EN).unwrap();
         assert_eq!(refs.len(), 70);
         assert!(
             state.ends_with("button \"Node 69\""),
@@ -569,7 +567,7 @@ mod tests {
             .find(|(_, value)| matches!(value,ElementRef::Dom(element) if element.backend==70))
             .unwrap()
             .0;
-        let (_, again) = projection.render("original", &nodes, Language::En).unwrap();
+        let (_, again) = projection.render("original", &nodes, Language::EN).unwrap();
         assert!(matches!(&again[&index],ElementRef::Dom(element) if element.backend==70));
     }
 
@@ -586,7 +584,7 @@ mod tests {
             {"nodeId":"5","parentId":"4","role":{"value":"InlineTextBox"},"name":{"value":"Delete"}}
         ]);
         let (state, refs) = projection
-            .render("document1", tree.as_array().unwrap(), Language::En)
+            .render("document1", tree.as_array().unwrap(), Language::EN)
             .unwrap();
         assert_eq!(state.lines().count(), 3, "{state}");
         assert!(
@@ -607,12 +605,12 @@ mod tests {
         replacement[0]["childIds"] = json!(["3", "6"]);
         replacement.push(json!({"nodeId":"6","parentId":"1","backendDOMNodeId":12,"role":{"value":"button"},"name":{"value":"Submit"}}));
         let (_, fresh) = projection
-            .render("document1", &replacement, Language::En)
+            .render("document1", &replacement, Language::EN)
             .unwrap();
         assert!(!fresh.contains_key(&removed));
         assert!(matches!(fresh.get(&2),Some(ElementRef::Dom(element)) if element.backend==11));
         let (_, navigated) = projection
-            .render("document2", tree.as_array().unwrap(), Language::En)
+            .render("document2", tree.as_array().unwrap(), Language::EN)
             .unwrap();
         assert!(navigated.keys().all(|key| !fresh.contains_key(key)));
     }

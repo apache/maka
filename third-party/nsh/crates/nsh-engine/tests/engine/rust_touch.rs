@@ -150,7 +150,6 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         audio: None,
         windows: None,
         login_item: None,

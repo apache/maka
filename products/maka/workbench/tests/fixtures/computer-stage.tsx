@@ -39,6 +39,7 @@ import type {
   ComputerFrameResult,
   ComputerPresentTarget,
 } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 // Only the service boundary is controlled; NSH owns every signal/effect and cleanup.
 class Stream implements UiSubscription<unknown> {
@@ -104,6 +105,7 @@ type Command =
   | { kind: 'release' };
 
 mount(() => {
+  installWorkbenchLocaleCatalog();
   const mounted = signal(true);
   const cachedReady = signal(false);
   const visible = signal(true);

@@ -9,6 +9,37 @@ demo: el-otp-input
 
 一次性验证码输入框接收固定位数的数字（短信里的验证码、身份验证器的验证码），并把它们显示在格子里。行为由它负责：一个透明的原生输入框覆盖在格子之上，接收键盘输入，因此打字、输入法、粘贴、数字键盘以及系统的验证码自动填充（iOS 的“来自信息”、Android 的短信验证码建议）都是平台自己的，屏幕阅读器也只看到一个文本框。只有数字能输入，最多 `length` 位；退格键删除最后一位，填满时 `onComplete` 通知应用。外观由应用决定：`OtpInput` 没有自己的颜色、尺寸、边框或文字。它的部件是格子、格子分成的组和光标，应用为每个部件设置样式。
 
+```tsx tabs
+import { mount, signal } from "nsh";
+import { OtpInput } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const code = signal("");
+  const verify = (value: string) => console.log(`checking ${value}`);
+  return (
+    <OtpInput
+      length={6}
+      groups={2}
+      value={code()}
+      onChange={({ value }) => code.set(value)}
+      onComplete={({ value }) => verify(value)}
+      accessibilityLabel="验证码，6 位数字"
+      class="flex-row gap-3"
+      groupClass="flex-row gap-2"
+      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring data-filled:bg-muted"
+      caretClass="w-0.5 h-6 bg-foreground"
+    />
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_base::{OtpInputCompleteEvent, otp_input, theme};
 use nsh_core::prelude::*;
@@ -39,37 +70,6 @@ fn verification(verify: impl Fn(&str) + 'static) -> impl IntoElement {
         .cell_class("focus:border-ring data-filled:bg-muted")
         .caret_style(|s| s.w(px(2.0)).h(px(24.0)).bg(move || theme().foreground))
 }
-```
-
-```tsx tabs
-import { mount, signal } from "nsh";
-import { OtpInput } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const code = signal("");
-  const verify = (value: string) => console.log(`checking ${value}`);
-  return (
-    <OtpInput
-      length={6}
-      groups={2}
-      value={code()}
-      onChange={({ value }) => code.set(value)}
-      onComplete={({ value }) => verify(value)}
-      accessibilityLabel="验证码，6 位数字"
-      class="flex-row gap-3"
-      groupClass="flex-row gap-2"
-      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring data-filled:bg-muted"
-      caretClass="w-0.5 h-6 bg-foreground"
-    />
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
 ```
 
 `OtpInput` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`otp_input()` 创建一个输入框，每个 prop 有一个 setter（`.length(..)`、`.cell_style(..)`），每个事件有一个监听方法（`.on_complete(..)`），输入框本身用带类型的样式方法设置样式。

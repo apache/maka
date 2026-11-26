@@ -13,6 +13,38 @@ Dialog 负责行为，外观交给应用：它的样式设定弹出层（包含�
 
 在 macOS 和 Linux 上，关闭对话框后，键盘焦点会回到打开前的输入框或控件，包括 `Editor` 和 `RichEditor`，前提是该控件仍在当前作用域中可见。如果其他控件已经取得焦点，则保留它的焦点。
 
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Button, Dialog } from "nsh/base";
+
+function Example() {
+  const open = signal(false);
+  return (
+    <View style={{ flex: 1, justifyContent: "center", padding: 24 }}>
+      <Button onPress={() => open.set(true)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
+        <Text class="font-semibold text-white">Open</Text>
+      </Button>
+      <Dialog open={open()} presentation="pageSheet" onOpenChange={(e) => open.set(e.open)} class="flex-1 bg-white">
+        <View
+          style={{
+            flex: 1,
+            gap: 12,
+            paddingHorizontal: 20,
+            paddingTop: "calc(env(safe-area-inset-top) + 20px)",
+            paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
+          }}
+        >
+          <Text style={{ fontSize: 24, fontWeight: "700" }}>A sheet</Text>
+          <Button onPress={() => open.set(false)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
+            <Text class="font-semibold text-white">Close</Text>
+          </Button>
+        </View>
+      </Dialog>
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{button, dialog};
 use nsh_core::prelude::*;
@@ -54,38 +86,6 @@ fn example() -> impl IntoElement {
                         .child(primary("Close", move || open.set(false))),
                 )
         }))
-}
-```
-
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Button, Dialog } from "nsh/base";
-
-function Example() {
-  const open = signal(false);
-  return (
-    <View style={{ flex: 1, justifyContent: "center", padding: 24 }}>
-      <Button onPress={() => open.set(true)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
-        <Text class="font-semibold text-white">Open</Text>
-      </Button>
-      <Dialog open={open()} presentation="pageSheet" onOpenChange={(e) => open.set(e.open)} class="flex-1 bg-white">
-        <View
-          style={{
-            flex: 1,
-            gap: 12,
-            paddingHorizontal: 20,
-            paddingTop: "calc(env(safe-area-inset-top) + 20px)",
-            paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
-          }}
-        >
-          <Text style={{ fontSize: 24, fontWeight: "700" }}>A sheet</Text>
-          <Button onPress={() => open.set(false)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
-            <Text class="font-semibold text-white">Close</Text>
-          </Button>
-        </View>
-      </Dialog>
-    </View>
-  );
 }
 ```
 
@@ -138,15 +138,6 @@ function Example() {
 `.role(AccessibilityRole::AlertDialog)`。各平台按自己的对话框呈现这个角色：macOS 上是 VoiceOver 的对话框，iOS 上是以标题命名的语义分组，
 Windows 上是 UI Automation 的对话框窗格，Linux 上是 AT-SPI 的对话框，Web 上是带 `aria-modal` 的 dialog。
 
-```rust tabs
-dialog()
-    .role(AccessibilityRole::AlertDialog)
-    .label("Delete this item?")
-    .accessibility_description("This can't be undone.")
-    .on_cancel(move || confirm.set(false))
-    .child(card())
-```
-
 ```tsx tabs
 <Dialog
   open={confirm()}
@@ -159,23 +150,20 @@ dialog()
 </Dialog>
 ```
 
+```rust tabs
+dialog()
+    .role(AccessibilityRole::AlertDialog)
+    .label("Delete this item?")
+    .accessibility_description("This can't be undone.")
+    .on_cancel(move || confirm.set(false))
+    .child(card())
+```
+
 ## 打开与关闭
 
 对话框的状态属于应用。用户关闭 dialog（Escape、Android 返回键、按下背景层、下滑 sheet）时，它在原生侧关闭并通知应用，由应用把状态改成一致：TSX 中是 `onOpenChange({ open: false, reason })`，Rust 中是 `on_cancel`。在 TSX 中，`open` 一直为 `true` 时 dialog 保持关闭，`open` 从 `false` 变为 `true` 时再次打开。
 
 由于主线程从不等待应用代码，每个 `closeOn*` 标志都在用户操作时由原生侧读取。要在关闭前先确认，把这些标志设为 `false`：此时用户的尝试会调用 `onCancel`，由应用自己关闭对话框（TSX 中把 `open` 设为 `false`，Rust 中把它移出视图）：
-
-```rust tabs
-dialog()
-    .presentation(ModalPresentation::PageSheet)
-    .close_on_escape(false)
-    .close_on_backdrop_press(false)
-    .close_on_swipe(false)
-    .on_cancel(move || ask_to_discard.set(true))
-    .flex_1()
-    .bg(white())
-    .child(form())
-```
 
 ```tsx tabs
 <Dialog
@@ -191,23 +179,23 @@ dialog()
 </Dialog>
 ```
 
+```rust tabs
+dialog()
+    .presentation(ModalPresentation::PageSheet)
+    .close_on_escape(false)
+    .close_on_backdrop_press(false)
+    .close_on_swipe(false)
+    .on_cancel(move || ask_to_discard.set(true))
+    .flex_1()
+    .bg(white())
+    .child(form())
+```
+
 每次尝试都会调用 `onCancel`，无论这些标志是否允许关闭。
 
 ## 半屏 sheet
 
 在 iOS 上，带 `detents` 的 `pageSheet` 或 `formSheet` dialog 停在这些高度：用户按系统的方式在各档之间拖动，拖过最小一档时，若 `closeOnSwipe` 允许就关闭。里面放 [`NavStack`](./nav-stack.md) 时，推进的页面带系统的导航头、返回键和侧滑返回，都在 sheet 内：
-
-```rust tabs
-dialog()
-    .presentation(ModalPresentation::PageSheet)
-    .detents(vec![SheetDetent::Medium, SheetDetent::Large])
-    .detent(move || Some(detent.get()))
-    .on_detent_change(move |d: &SheetDetent| detent.set(*d))
-    .grabber(true)
-    .on_cancel(move || open.set(false))
-    .flex_1()
-    .child(nav_stack().flex_1().child(nav_page().key("settings").child(settings())))
-```
 
 ```tsx tabs
 <Dialog
@@ -226,6 +214,18 @@ dialog()
 </Dialog>
 ```
 
+```rust tabs
+dialog()
+    .presentation(ModalPresentation::PageSheet)
+    .detents(vec![SheetDetent::Medium, SheetDetent::Large])
+    .detent(move || Some(detent.get()))
+    .on_detent_change(move |d: &SheetDetent| detent.set(*d))
+    .grabber(true)
+    .on_cancel(move || open.set(false))
+    .flex_1()
+    .child(nav_stack().flex_1().child(nav_page().key("settings").child(settings())))
+```
+
 `detent` 的值变化时 sheet 移过去，如上用 `onDetentChange` 跟随用户的拖动；app 不跟的拖动不会被撤销，sheet 停在用户拖到的那档。
 
 内容按 sheet 所停的高度排版。其他平台忽略 detents，dialog 保持它在那里的形式；需要在所有平台上都按档位停靠的底部 sheet，请用 [`Sheet`](./sheet.md)。
@@ -233,6 +233,21 @@ dialog()
 ## 带背景层的对话框
 
 默认 `fullScreen` 形式的 dialog 显示应用绘制的内容：这里是一层变暗的背景和居中的卡片。按下背景层即关闭：
+
+```tsx tabs
+<Dialog
+  open={confirm()}
+  animation="fade"
+  onOpenChange={({ open }) => confirm.set(open)}
+  backdropClass="bg-black/40"
+  class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
+>
+  <Text style={{ fontSize: 20, fontWeight: "700" }}>删除这一项？</Text>
+  <Button onPress={remove} class="items-center rounded-lg bg-red-600 px-4 py-3 active:opacity-70">
+    <Text class="font-semibold text-white">删除</Text>
+  </Button>
+</Dialog>
+```
 
 ```rust tabs
 when(confirm, move || {
@@ -270,21 +285,6 @@ when(confirm, move || {
                 ),
         )
 })
-```
-
-```tsx tabs
-<Dialog
-  open={confirm()}
-  animation="fade"
-  onOpenChange={({ open }) => confirm.set(open)}
-  backdropClass="bg-black/40"
-  class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
->
-  <Text style={{ fontSize: 20, fontWeight: "700" }}>删除这一项？</Text>
-  <Button onPress={remove} class="items-center rounded-lg bg-red-600 px-4 py-3 active:opacity-70">
-    <Text class="font-semibold text-white">删除</Text>
-  </Button>
-</Dialog>
 ```
 
 如果需要系统提示框或操作表，请使用 `nsh/base` 的 [`AlertDialog`](./alert-dialog.md)。

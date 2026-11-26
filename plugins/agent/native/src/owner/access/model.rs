@@ -66,6 +66,11 @@ impl RunAccess {
         model: &PreparedModel,
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
+        self.owner()
+            .map_err(RunError::InvalidInput)?
+            .require_execution(&self.execution.session_id)
+            .await
+            .map_err(RunError::InvalidInput)?;
         let view = self.fresh().await.map_err(RunError::InvalidInput)?;
         let current = self.live_configuration().await?;
         let owner = self.owner().map_err(RunError::InvalidInput)?;

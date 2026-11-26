@@ -12,6 +12,29 @@ demo: guide-forms
 
 输入框和其他视图一样接受样式（Rust 中是类型化的样式方法，TSX 中是样式和 Tailwind 类），所以表单里的输入框是应用自己的外观。带标签的输入框就是一个简短的自定义组件：
 
+```tsx tabs
+import { signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+function Field(props: { label: string; value: string; onChange: (e: { value: string }) => void; masked?: boolean }) {
+  const focused = signal(false);
+  return (
+    <View class="gap-1">
+      <Text class="text-sm text-neutral-500">{props.label}</Text>
+      <Input
+        value={props.value}
+        onChange={props.onChange}
+        masked={props.masked}
+        onFocus={() => focused.set(true)}
+        onBlur={() => focused.set(false)}
+        class="rounded-lg border px-3 py-2 text-base"
+        style={{ borderColor: focused() ? "#0969da" : "#d0d7de" }}
+      />
+    </View>
+  );
+}
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -37,32 +60,36 @@ fn field(label: &'static str, value: Signal<String>, masked: bool) -> impl IntoE
 }
 ```
 
-```tsx tabs
-import { signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-
-function Field(props: { label: string; value: string; onChange: (e: { value: string }) => void; masked?: boolean }) {
-  const focused = signal(false);
-  return (
-    <View class="gap-1">
-      <Text class="text-sm text-neutral-500">{props.label}</Text>
-      <Input
-        value={props.value}
-        onChange={props.onChange}
-        masked={props.masked}
-        onFocus={() => focused.set(true)}
-        onBlur={() => focused.set(false)}
-        class="rounded-lg border px-3 py-2 text-base"
-        style={{ borderColor: focused() ? "#0969da" : "#d0d7de" }}
-      />
-    </View>
-  );
-}
-```
-
 ## 受控与非受控输入框
 
 传入值时（`.value(..)`，TSX 的 `value`）输入框是**受控**的：它显示 signal 中的内容，由你在变化事件（`.on_change(..)`，TSX 的 `onChange`）中更新 signal。
+
+```tsx tabs
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function App() {
+  const name = signal("");
+  return (
+    <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 8 }}>
+      <Input
+        value={name()}
+        onChange={({ value }) => name.set(value)}
+        placeholder="Your name"
+        style={{ fontSize: 17, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, padding: 12 }}
+      />
+      <Text>Hello, {name() || "stranger"}</Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -93,33 +120,6 @@ pub fn App() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function App() {
-  const name = signal("");
-  return (
-    <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 8 }}>
-      <Input
-        value={name()}
-        onChange={({ value }) => name.set(value)}
-        placeholder="Your name"
-        style={{ fontSize: 17, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, padding: 12 }}
-      />
-      <Text>Hello, {name() || "stranger"}</Text>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 既然值由你控制，就可以变换用户输入的内容：`.on_change(move |t: &str| tag.set(t.to_uppercase()))` 转为大写，`onChange={({ value }) => code.set(value.replace(/[^0-9]/g, ""))}` 只保留数字。
 
 ### 输入法
@@ -127,6 +127,22 @@ mount(() => (
 中文、日文、韩文输入法先组字再上屏：拼音在选字后变成“腾”。`onCompositionChange`（Rust 的 `.on_composition_change(..)`） 随组字报告其状态：用户输入时为 `{ composing: true, text: "teng" }`，结束时为 `{ composing: false, text: "" }`；上屏的文本先经 `onChange` 报告，然后才报告结束。在 iOS、Android、macOS 和 Web 上，系统把正在组的字放在输入框里，`onChange` 也会报告它；在 Windows、Linux 和 GPUI 上，`onChange` 报告上屏后的文本。受控输入框无论应用如何处理值，组字都会继续：用户组字时设置的 `value` 在组字结束后显示，因此转大写或过滤文本的输入框也能正常输入拼音。
 
 只搜索上屏文本的搜索框：
+
+```tsx tabs
+const query = signal("");
+let composing = false;
+<Input
+  value={query()}
+  onChange={({ value }) => {
+    query.set(value);
+    if (!composing) search(value);
+  }}
+  onCompositionChange={(e) => {
+    composing = e.composing;
+    if (!e.composing) search(query());
+  }}
+/>
+```
 
 ```rust tabs
 let query = signal(String::new());
@@ -145,22 +161,6 @@ input()
             search(&query.get());
         }
     })
-```
-
-```tsx tabs
-const query = signal("");
-let composing = false;
-<Input
-  value={query()}
-  onChange={({ value }) => {
-    query.set(value);
-    if (!composing) search(value);
-  }}
-  onCompositionChange={(e) => {
-    composing = e.composing;
-    if (!e.composing) search(query());
-  }}
-/>
 ```
 
 不传值时输入框是**非受控**的：它自己保存文本，初始值为默认值（`.default_value(..)`，TSX 的 `defaultValue`），需要时从变化或提交事件读取。只在提交时读取的字段（例如密码）适合这样用。
@@ -220,6 +220,13 @@ let composing = false;
 
 输入框的样式与文本相同：`fontSize`、`color`、`fontFamily`、`textAlign`、`letterSpacing` 以及其余[文本样式](./text.md)，再加上边框、内边距和背景。焦点样式（Rust 中是 `.focus(|s| ..)`，TSX 中是 Tailwind 的 `focus:` 变体或 `focusStyle`）在输入框获得焦点时生效。占位文字的颜色是 `.placeholder_color(..)`（样式键 `placeholderColor`，`placeholder:text-*`），光标的颜色是 `.caret_color(..)`（`caretColor`，`caret-*`），选区高亮的颜色是 `.selection_color(..)`（`selectionColor`，`selection:text-*`）；UIKit 用同一种颜色绘制光标和选区，设置了光标颜色时以它为准：
 
+```tsx tabs
+<Input
+  class="rounded-lg border border-zinc-300 px-3 py-2 text-base focus:border-blue-500 placeholder:text-zinc-400 selection:text-blue-600"
+  placeholder="Search"
+/>
+```
+
 ```rust tabs
 input()
     .placeholder("Search")
@@ -232,13 +239,6 @@ input()
     .focus(|s| s.border_color(rgb(0x3b82f6)))
     .placeholder_color(rgb(0xa1a1aa))
     .selection_color(rgb(0x2563eb))
-```
-
-```tsx tabs
-<Input
-  class="rounded-lg border border-zinc-300 px-3 py-2 text-base focus:border-blue-500 placeholder:text-zinc-400 selection:text-blue-600"
-  placeholder="Search"
-/>
 ```
 
 ## 键盘与自动填充
@@ -262,6 +262,12 @@ input()
 
 未开启 `masked` 的密码框（例如点了“显示密码”之后）就是以明文显示的密码：`autoComplete` 为 `"current-password"` 或 `"new-password"`（`AutoFill::Password`、`AutoFill::NewPassword`）且 `masked` 关闭时，Android 使用可见密码键盘，iOS 使用 ASCII 键盘，各平台都不会自动大写、提供建议或自动更正，无论 `autoCapitalize` 和 `autoCorrect` 如何设置。显示/隐藏按钮只需切换 `masked`。
 
+```tsx tabs
+<Input keyboardType="email-address" autoCapitalize="none" autoCorrect={false} autoComplete="email" placeholder="E-mail" />
+<Input masked autoComplete="new-password" placeholder="Password" />
+<Input keyboardType="number-pad" autoComplete="one-time-code" maxLength={6} placeholder="Code" />
+```
+
 ```rust tabs
 use nsh_core::element::AutoFill;
 
@@ -279,12 +285,6 @@ input()
     .placeholder("Code")
 ```
 
-```tsx tabs
-<Input keyboardType="email-address" autoCapitalize="none" autoCorrect={false} autoComplete="email" placeholder="E-mail" />
-<Input masked autoComplete="new-password" placeholder="Password" />
-<Input keyboardType="number-pad" autoComplete="one-time-code" maxLength={6} placeholder="Code" />
-```
-
 ## 回车键与在字段间切换
 
 回车键类型（`.return_key_type(ReturnKeyType::Next)`，TSX 的 `returnKeyType`）设置回车键上的文字：默认、完成、前往、下一项、搜索或发送。按下它做什么由提交行为（`.submit_behavior(..)`，TSX 的 `submitBehavior`）决定：
@@ -298,6 +298,39 @@ input()
 设置了 `"submit"` 或 `"blurAndSubmit"` 的多行输入框像聊天输入框一样按回车发送，文本仍会自动换行；使用硬件键盘时（桌面、Mac、平板的外接键盘），Shift+Return 或 Option / Alt+Return 插入换行。用回车确认输入法的候选词（例如中文或日文输入）只会上屏，不会提交。
 
 要切换到下一个字段，保存输入框的 ref（Rust 中是 `element_ref()` 和 `.element_ref(&r)`，TSX 中是 `ref`）并调用 `focus()`：
+
+```tsx tabs
+import { type InputRef, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+import { Window } from "nsh/desktop";
+
+function SignIn() {
+  const email = signal("");
+  let password!: InputRef;
+  const submit = () => console.log("sign in", email());
+  return (
+    <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 12 }}>
+      <Input
+        value={email()}
+        onChange={({ value }) => email.set(value)}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        returnKeyType="next"
+        submitBehavior="submit"
+        onSubmit={() => password.focus()}
+        placeholder="E-mail"
+      />
+      <Input ref={password} masked returnKeyType="go" onSubmit={submit} placeholder="Password" />
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <SignIn />
+  </Window>
+));
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -333,39 +366,6 @@ pub fn sign_in() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { type InputRef, mount, signal, View } from "nsh";
-import { Input } from "nsh/base";
-import { Window } from "nsh/desktop";
-
-function SignIn() {
-  const email = signal("");
-  let password!: InputRef;
-  const submit = () => console.log("sign in", email());
-  return (
-    <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 12 }}>
-      <Input
-        value={email()}
-        onChange={({ value }) => email.set(value)}
-        keyboardType="email-address"
-        autoCapitalize="none"
-        returnKeyType="next"
-        submitBehavior="submit"
-        onSubmit={() => password.focus()}
-        placeholder="E-mail"
-      />
-      <Input ref={password} masked returnKeyType="go" onSubmit={submit} placeholder="Password" />
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <SignIn />
-  </Window>
-));
-```
-
 第一个字段上提交而不失去焦点（`SubmitBehavior::Submit`，`submitBehavior="submit"`）让键盘在焦点切换时保持弹出，不会先收起再弹起。按回车发送并保持焦点的聊天输入框也这样提交（见[下面](#滚动视图之外的内容)的输入栏）。
 
 最大长度和提交行为都在原生端执行：用户输入时，平台会询问"能否再加这个字符？"和"回车是否结束编辑？"，NSH 根据属性直接回答，不等待 JS。
@@ -385,19 +385,34 @@ mount(() => (
 
 Rust 中的 `dismiss_keyboard()` 和 TSX 中 `nsh` 的 `Keyboard.dismiss()` 让当前拥有焦点的输入框失去焦点：
 
-```rust tabs
-view().on_press(|| dismiss_keyboard())
-```
-
 ```tsx tabs
 import { View, Keyboard } from "nsh";
 
 <View onPress={() => Keyboard.dismiss()}>…</View>
 ```
 
+```rust tabs
+view().on_press(|| dismiss_keyboard())
+```
+
 ## 选区
 
 选区事件（`.on_selection_change(..)`，TSX 的 `onSelectionChange`）报告光标和选区，ref 的 `set_selection` 或选区属性（`.selected_range(..)`，TSX 的 `selectedRange`）设置它们。位置以 UTF-16 码元计，与 JavaScript 字符串索引一致，所以在 TSX 中 `text.slice(start, end)` 就是选中的文本；在 Rust 中按文本的 UTF-16 码元截取。
+
+```tsx tabs
+const text = signal("Select part of this text");
+const range = signal({ start: 0, end: 0 });
+const selection = signal<{ start: number; end?: number } | undefined>(undefined);
+
+<Input
+  value={text()}
+  onChange={({ value }) => text.set(value)}
+  selectedRange={selection()}
+  onSelectionChange={(r) => range.set(r)}
+/>
+<Text>Selected: "{text().slice(range().start, range().end)}"</Text>
+<View onPress={() => selection.set({ start: 0, end: text().length })}><Text>Select all</Text></View>
+```
 
 ```rust tabs
 /// `text` 中按 UTF-16 码元计的 `start..end`，与输入框的计数方式一致。
@@ -433,24 +448,39 @@ view()
     )
 ```
 
-```tsx tabs
-const text = signal("Select part of this text");
-const range = signal({ start: 0, end: 0 });
-const selection = signal<{ start: number; end?: number } | undefined>(undefined);
-
-<Input
-  value={text()}
-  onChange={({ value }) => text.set(value)}
-  selectedRange={selection()}
-  onSelectionChange={(r) => range.set(r)}
-/>
-<Text>Selected: "{text().slice(range().start, range().end)}"</Text>
-<View onPress={() => selection.set({ start: 0, end: text().length })}><Text>Select all</Text></View>
-```
-
 ## 光标位置
 
 光标事件（`.on_caret_move(..)`，TSX 的 `onCaretMove`）报告光标在哪里，让属于光标处的内容在那里打开：`@` 提及的候选列表、斜杠命令的菜单、表情选择器。`bounds` 是光标在输入框中的 `Bounds`（`origin` 和 `size`，已计入输入框的内边距和滚动），宽度是平台绘制的光标宽度，高度是它所在的行高；`pageBounds` 是同一个矩形在窗口（或输入框所在的对话框）中的位置，可直接作为浮层的 `anchor`。输入框获得焦点时，光标每次移动都会触发这个事件：随选区移动时，以及输入框的文本滚动或重新换行时。在 Rust 中，浮层用 `.anchor_bounds(..)` 相对一个矩形放置。
+
+```tsx tabs
+import { type Bounds, Overlay, Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
+
+const draft = signal("");
+const end = signal(0);
+const caret = signal<Bounds | null>(null);
+
+<View>
+  <Input
+    multiline
+    value={draft()}
+    onChange={({ value }) => draft.set(value)}
+    onSelectionChange={(e) => end.set(e.end)}
+    onCaretMove={(e) => {
+      // 光标前的词以 "@" 开头时显示候选。
+      const word = draft().slice(0, end()).split(/\s/).pop() ?? "";
+      caret.set(word.startsWith("@") ? e.pageBounds : null);
+    }}
+    class="p-2"
+  />
+  <If when={caret()}>
+    <Overlay anchor={caret()} placement="bottom" align="start" offset={4}>
+      <Text>@ada</Text>
+      <Text>@grace</Text>
+    </Overlay>
+  </If>
+</View>;
+```
 
 ```rust tabs
 let draft = signal(String::new());
@@ -486,36 +516,6 @@ view()
     ))
 ```
 
-```tsx tabs
-import { type Bounds, Overlay, Text, View, signal } from "nsh";
-import { Input } from "nsh/base";
-
-const draft = signal("");
-const end = signal(0);
-const caret = signal<Bounds | null>(null);
-
-<View>
-  <Input
-    multiline
-    value={draft()}
-    onChange={({ value }) => draft.set(value)}
-    onSelectionChange={(e) => end.set(e.end)}
-    onCaretMove={(e) => {
-      // 光标前的词以 "@" 开头时显示候选。
-      const word = draft().slice(0, end()).split(/\s/).pop() ?? "";
-      caret.set(word.startsWith("@") ? e.pageBounds : null);
-    }}
-    class="p-2"
-  />
-  <If when={caret()}>
-    <Overlay anchor={caret()} placement="bottom" align="start" offset={4}>
-      <Text>@ada</Text>
-      <Text>@grace</Text>
-    </Overlay>
-  </If>
-</View>;
-```
-
 `pageBounds` 是事件发生时光标所在的位置：页面在输入框下方滚动会移动输入框，但不会触发事件，所以页面滚动时关闭候选列表，或把它锚定到输入框本身。
 
 ## 粘贴图片和文件
@@ -527,20 +527,6 @@ const caret = signal<Bounds | null>(null);
 这时事件在插入任何内容之前到达，应用可以放行、取消或改写这次粘贴。ref 的 `insertText`（Rust 的 `insert_text`）以用户编辑的方式用放行的文本替换选区：遵守 `maxLength` 与单行规则，由 `onChange` 报告，在 Linux、Windows 和 Web 上是输入框撤销历史中的一步，Ctrl+Z 一次即可撤回。设置新的 `value` 则是替换整段文本。
 
 `insertText` 在 iOS、macOS、Linux、Windows、Web 和无头测试（`nsh test`）中插入文本；在 Android 和 GPUI 上目前不做任何事，只打印一条警告。请配合 `pasteBehavior="report"` 使用：`"insert"`（默认值）时输入框已经插入了这次粘贴，再调用 `insertText` 会插入第二遍。输入法正在组字时，`insertText` 不插入任何内容。
-
-```rust tabs
-let field = element_ref();
-
-input()
-    .element_ref(&field)
-    .paste_behavior(PasteBehavior::Report)
-    .on_paste(move |e: &PasteEvent| {
-        // 丢弃粘贴的密钥；其他文本去掉首尾空白后插入。
-        if !e.text.starts_with("sk-") {
-            field.insert_text(e.text.trim());
-        }
-    })
-```
 
 ```tsx tabs
 import type { InputRef } from "nsh";
@@ -559,16 +545,17 @@ let field: InputRef | undefined;
 ```
 
 ```rust tabs
-let attachments = signal(Vec::<PastedFile>::new());
+let field = element_ref();
 
 input()
-    .multiline(true)
-    .placeholder("Message")
+    .element_ref(&field)
+    .paste_behavior(PasteBehavior::Report)
     .on_paste(move |e: &PasteEvent| {
-        // 粘贴到消息里的截图作为图片一起发送。
-        attachments.update(|a| a.extend(e.files.iter().cloned()));
+        // 丢弃粘贴的密钥；其他文本去掉首尾空白后插入。
+        if !e.text.starts_with("sk-") {
+            field.insert_text(e.text.trim());
+        }
     })
-    .p_2()
 ```
 
 ```tsx tabs
@@ -588,11 +575,49 @@ const attachments = signal<File[]>([]);
 />;
 ```
 
+```rust tabs
+let attachments = signal(Vec::<PastedFile>::new());
+
+input()
+    .multiline(true)
+    .placeholder("Message")
+    .on_paste(move |e: &PasteEvent| {
+        // 粘贴到消息里的截图作为图片一起发送。
+        attachments.update(|a| a.extend(e.files.iter().cloned()));
+    })
+    .p_2()
+```
+
 像上传任何 `File` 一样上传粘贴的文件，使用 `fetch` 和 `FormData`（`form.append("image", file)`）；它的字节在发送前一直留在原生侧。在 Android 上，插入图片的键盘（GIF、贴纸）也以同样方式报告。在 Linux 上剪贴板是异步读取的，因此 `"insert"` 时事件可能在它插入的文本的 `onChange` 之后到达；`"report"` 时它总是先到。macOS 上的密码输入框保留 AppKit 自己的粘贴，不报告任何内容。
+
+在 macOS 的访达中复制的文件，除 URL 外还会把文件名作为文本放进剪贴板，因此 `"insert"` 时输入框会插入文件名，与 AppKit 自带的文本框一致。接收文件的输入框使用 `"report"`，只在这次粘贴不含文件时插入文本：`if (e.uris.length === 0 && e.files.length === 0 && e.tooLarge.length === 0) field?.insertText(e.text)`。`uris` 中的是路径而不是文件内容：处理函数收到它之后，`fs/promises` 可以直接读取这个精确路径，不需要 `capabilities.fs.read` 根目录，与拖放的文件一样（见[文件](../modules/standard-modules.md#文件)）。
+
+粘贴的文件可能很大：在“文件”或“照片”里复制的视频、几百 MB 的文档。用 `pasteMaxSize`（Rust 的 `.paste_max_size(..)`）给输入框指定读取的最大文件，单位为字节：更大的文件不读取，在 `onPaste` 的 `tooLarge` 中只带 `name`、`type` 和 `size` 到达，应用可以据此提示用户。在 iOS、Android 和 Web 上，先检查大小，再把字节复制进应用。不设置这个属性时所有文件都会读取。
+
+```tsx
+<Input
+  pasteMaxSize={20 * 1024 * 1024}
+  onPaste={(e) => {
+    attachments.update((a) => [...a, ...e.files]);
+    if (e.tooLarge.length) notice.set(`${e.tooLarge[0].name} 超过 20 MB`);
+  }}
+/>;
+```
 
 ## 自动增高的多行输入框
 
 多行输入框（`.multiline(true)`，TSX 的 `multiline`）在自身高度内滚动文本。要让它随内容增高，把内容尺寸事件（`.on_content_size_change(..)`，TSX 的 `onContentSizeChange`）报告的高度加上上限后写回样式：
+
+```tsx tabs
+const height = signal(0);
+
+<Input
+  multiline
+  placeholder="Write a comment"
+  onContentSizeChange={({ size }) => height.set(Math.min(size.height, 120))}
+  style={{ fontSize: 16, padding: 10, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, height: Math.max(height(), 20) + 20 }}
+/>
+```
 
 ```rust tabs
 let height = signal(px(0.0));
@@ -609,17 +634,6 @@ input()
     .h(move || height.get().max(px(20.0)) + px(20.0))
 ```
 
-```tsx tabs
-const height = signal(0);
-
-<Input
-  multiline
-  placeholder="Write a comment"
-  onContentSizeChange={({ size }) => height.set(Math.min(size.height, 120))}
-  style={{ fontSize: 16, padding: 10, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, height: Math.max(height(), 20) + 20 }}
-/>
-```
-
 报告的高度是文本本身的高度（按输入框宽度计算），所以要像上面那样自己加上上下内边距。
 
 ## 让输入框保持在键盘上方
@@ -627,14 +641,6 @@ const height = signal(0);
 ### 滚动视图内：自动处理
 
 当键盘弹出、而获得焦点的输入框位于滚动视图或列表中时，NSH 会给滚动视图加上与键盘等高的底部 inset，并把输入框滚动到可见位置。这是原生完成的，不需要任何代码。长表单就是一个装满输入框的滚动视图：
-
-```rust tabs
-scroll()
-    .flex_1()
-    .keyboard_dismiss_mode(KeyboardDismissMode::OnDrag)
-    .keyboard_taps(KeyboardTaps::Handled)
-    .child(view().p(px(16.0)).gap(px(12.0)) /* 输入框 */)
-```
 
 ```tsx tabs
 <Scroll style={{ flex: 1 }} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
@@ -644,6 +650,14 @@ scroll()
 </Scroll>
 ```
 
+```rust tabs
+scroll()
+    .flex_1()
+    .keyboard_dismiss_mode(KeyboardDismissMode::OnDrag)
+    .keyboard_taps(KeyboardTaps::Handled)
+    .child(view().p(px(16.0)).gap(px(12.0)) /* 输入框 */)
+```
+
 收起方式（`.keyboard_dismiss_mode(..)`，TSX 的 `keyboardDismissMode`：不收起、拖动时、交互式）让拖动表单时收起键盘；已处理的点击（`.keyboard_taps(KeyboardTaps::Handled)`，TSX 的 `keyboardShouldPersistTaps="handled"`）让键盘弹出时点击按钮能直接生效，而不只是收起键盘。见[滚动](./scrolling.md#滚动视图与键盘)。
 
 ### 滚动视图之外的内容
@@ -651,46 +665,6 @@ scroll()
 在 iOS 上，如果键盘会盖住一个不在滚动视图中的已聚焦输入框，NSH 会沿键盘的曲线把它所在页面（或对话框）的内容上移，直到输入框刚好在键盘上方；键盘收起或输入框失去焦点时再移回，与 SwiftUI 的做法一致（在 Android 上，`adjustPan` 模式的窗口由系统平移）。它只处理应用自己的布局之后仍被盖住的部分：像下面这样自己让出空间的应用不会再被额外移动。
 
 这样会移动整个页面。固定在页面底部的消息栏应该跟着键盘上移，而它上方的内容随之变矮：用 CSS 的 `env(keyboard-inset-height)` 为页面底部加内边距（`paddingBottom: "env(keyboard-inset-height)"`、Tailwind `pb-[env(keyboard-inset-height)]`、Rust `.pb_keyboard()`）：它会在底部让出与键盘等高的空间，并与键盘原生同步动画。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-pub fn chat_screen() -> impl IntoElement {
-    let draft = signal(String::new());
-    let send = move || {
-        let text = draft.get();
-        if !text.trim().is_empty() {
-            log::info!("send {text}");
-        }
-        draft.set(String::new());
-    };
-    view()
-        .flex_1()
-        .pb_keyboard()
-        .child(scroll().flex_1().keyboard_dismiss_mode(KeyboardDismissMode::Interactive) /* 消息 */)
-        .child(
-            view()
-                .flex_row()
-                .p(px(8.0))
-                // 在 Home 指示条之上，除非键盘已经盖住了它。
-                .pb(move || {
-                    px(8.0) + if keyboard_height() > px(0.0) { px(0.0) } else { safe_area().bottom }
-                })
-                .child(
-                    input()
-                        .value(move || draft.get())
-                        .on_change(move |t: &str| draft.set(t.to_owned()))
-                        .multiline(true)
-                        .submit_behavior(SubmitBehavior::Submit)
-                        .return_key_type(ReturnKeyType::Send)
-                        .on_submit(move |_: &str| send())
-                        .placeholder("Message")
-                        .flex_1()
-                        .max_h(px(120.0)),
-                ),
-        )
-}
-```
 
 ```tsx tabs
 import { Scroll, signal, View, keyboardFrame, safeAreaInsets } from "nsh";
@@ -732,6 +706,46 @@ function ChatScreen() {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+pub fn chat_screen() -> impl IntoElement {
+    let draft = signal(String::new());
+    let send = move || {
+        let text = draft.get();
+        if !text.trim().is_empty() {
+            log::info!("send {text}");
+        }
+        draft.set(String::new());
+    };
+    view()
+        .flex_1()
+        .pb_keyboard()
+        .child(scroll().flex_1().keyboard_dismiss_mode(KeyboardDismissMode::Interactive) /* 消息 */)
+        .child(
+            view()
+                .flex_row()
+                .p(px(8.0))
+                // 在 Home 指示条之上，除非键盘已经盖住了它。
+                .pb(move || {
+                    px(8.0) + if keyboard_height() > px(0.0) { px(0.0) } else { safe_area().bottom }
+                })
+                .child(
+                    input()
+                        .value(move || draft.get())
+                        .on_change(move |t: &str| draft.set(t.to_owned()))
+                        .multiline(true)
+                        .submit_behavior(SubmitBehavior::Submit)
+                        .return_key_type(ReturnKeyType::Send)
+                        .on_submit(move |_: &str| send())
+                        .placeholder("Message")
+                        .flex_1()
+                        .max_h(px(120.0)),
+                ),
+        )
+}
+```
+
 内边距（`.pb_keyboard()`）让上方内容缩小，背景仍延伸到屏幕底部；底部外边距（`marginBottom: "env(keyboard-inset-height)"`、`.mb_keyboard()`）让整个视图止于键盘顶部。`calc(env(keyboard-inset-height) + <length>)`（Rust `.pb_keyboard_plus(..)`、`.mb_keyboard_plus(..)`）再加一段长度，例如减去视图下方标签栏的高度。
 
 完整的键盘高度适合延伸到 surface 底部的视图，页面内容通常如此。在会为键盘缩小窗口的 Android 宿主上，窗口本身已经变小，该变量为 0。见[键盘](../elements/keyboard.md)。
@@ -742,13 +756,6 @@ function ChatScreen() {
 
 Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（毫秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。键盘开始移动时那次更新中随它们变化的内容，会沿键盘的曲线、从键盘开始移动的时刻起与键盘一起移动（`LayoutCurve::Keyboard`），和 `env(keyboard-inset-height)` 一样；应用为这次更新自己设置的动画（`LayoutAnimation.configureNext`）优先。
 
-```rust tabs
-view().child(when(
-    || keyboard_height() == px(0.0),
-    || view().absolute().right(px(16.0)).bottom(px(16.0)), /* … */
-))
-```
-
 ```tsx tabs
 import { View, keyboardFrame } from "nsh";
 
@@ -757,9 +764,44 @@ import { View, keyboardFrame } from "nsh";
 </If>
 ```
 
+```rust tabs
+view().child(when(
+    || keyboard_height() == px(0.0),
+    || view().absolute().right(px(16.0)).bottom(px(16.0)), /* … */
+))
+```
+
 ## 键盘上方的工具栏：InputAccessoryView
 
 Rust 中的 `input_accessory_view(id)` 和 TSX 中 `nsh/mobile` 的 `InputAccessoryView` 会在引用它的输入框获得焦点时，在键盘顶部显示一个附着的工具栏，即 iOS 的 `inputAccessoryView`。它由原生跟随键盘移动，包括交互式收起键盘的过程。它在树中所处的位置不占空间；输入框通过它的 id 引用它（`.input_accessory(id)`，TSX 的 `ios={{ inputAccessoryViewID }}` 与 `nativeID`）：
+
+```tsx tabs
+import { type InputRef, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { InputAccessoryView } from "nsh/mobile";
+
+function Note() {
+  const text = signal("");
+  let input!: InputRef;
+  return (
+    <View style={{ padding: 16 }}>
+      <Input
+        ref={input}
+        value={text()}
+        onChange={({ value }) => text.set(value)}
+        ios={{ inputAccessoryViewID: "note-bar" }}
+        placeholder="A note"
+      />
+      <InputAccessoryView nativeID="note-bar" style={{ backgroundColor: "#f6f8fa" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", padding: 8 }}>
+          <Text style={{ flex: 1, color: "#57606a" }}>{text().length} characters</Text>
+          <Text onPress={() => input.blur()} style={{ color: "#0969da", fontWeight: "600" }}>Done</Text>
+        </View>
+      </InputAccessoryView>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -796,34 +838,6 @@ pub fn note() -> impl IntoElement {
                     ),
             ),
         )
-}
-```
-
-```tsx tabs
-import { type InputRef, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { InputAccessoryView } from "nsh/mobile";
-
-function Note() {
-  const text = signal("");
-  let input!: InputRef;
-  return (
-    <View style={{ padding: 16 }}>
-      <Input
-        ref={input}
-        value={text()}
-        onChange={({ value }) => text.set(value)}
-        ios={{ inputAccessoryViewID: "note-bar" }}
-        placeholder="A note"
-      />
-      <InputAccessoryView nativeID="note-bar" style={{ backgroundColor: "#f6f8fa" }}>
-        <View style={{ flexDirection: "row", alignItems: "center", padding: 8 }}>
-          <Text style={{ flex: 1, color: "#57606a" }}>{text().length} characters</Text>
-          <Text onPress={() => input.blur()} style={{ color: "#0969da", fontWeight: "600" }}>Done</Text>
-        </View>
-      </InputAccessoryView>
-    </View>
-  );
 }
 ```
 

@@ -13,16 +13,6 @@ demo: ui-navigation
 
 外观由应用决定：页面、对话框或标题栏里的内容都是你自己的 JSX，用基础元素配合样式、[Tailwind](../docs/tailwind.md) 类和主题绘制；或者是[你自己的 crate](../docs/rust.md) 中的 Rust 组件；也可以是社区基于 `nsh/base` 构建的组件库。每个宿主都提供 `nsh/base`；Rust 应用通过 `nsh-base` crate 使用同一套 API（`nsh_base::{button, dialog, …}`）。
 
-```rust tabs
-use nsh_base::{
-    MarkdownExtension, MarkdownOptions, accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger,
-    alert_dialog, button, carousel, carousel_content, carousel_item, carousel_next,
-    carousel_pagination, carousel_pagination_item, carousel_previous, checkbox, color_area, color_field, color_picker,
-    color_slider, color_swatch, dialog, diff_view, dock_area, editor, hover_card, link,
-    calendar, combobox, command, date_picker, emoji_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, split_view, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
-};
-```
-
 ```tsx tabs
 import {
   Accordion,
@@ -232,6 +222,16 @@ import type {
 } from "nsh/base";
 ```
 
+```rust tabs
+use nsh_base::{
+    MarkdownExtension, MarkdownOptions, accordion, accordion_header, accordion_item, accordion_panel, accordion_trigger,
+    alert_dialog, button, carousel, carousel_content, carousel_item, carousel_next,
+    carousel_pagination, carousel_pagination_item, carousel_previous, checkbox, color_area, color_field, color_picker,
+    color_slider, color_swatch, dialog, diff_view, dock_area, editor, hover_card, link,
+    calendar, combobox, command, date_picker, emoji_picker, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, split_view, switch, tab, tabs, text_view, theme, time_field, toast, toast_stack, toggle, toggle_group, toolbar, toolbar_group, toolbar_separator, tree, v_resizable,
+};
+```
+
 本页是模块的索引：每个组件都有自己的元素页面，包含示例、属性和平台说明。完整的上手讲解见[导航指南](../docs/navigation.md)和[表单与键盘](../docs/forms-and-keyboard.md)。
 
 | TSX | Rust | 是什么 |
@@ -349,7 +349,7 @@ import type {
 
 ### Calendar
 
-从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem` 只收到条目本身；状态是条目的类，范围中的日期是 `selected:`，并带 `data-range-start:`、`data-range-middle:`、`data-range-end:`）。见 [Calendar](../elements/calendar.md)。
+从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem` 只收到条目本身；状态是条目的类，范围中的日期是 `selected:`，并带 `data-range-start:`、`data-range-middle:`、`data-range-end:`，选择结束日时到鼠标或键盘所在那一天的日期带 `data-range-preview-*:`）。见 [Calendar](../elements/calendar.md)。
 
 ### TimeField
 
@@ -515,6 +515,18 @@ import type {
 
 状态栏属于屏幕上正在显示的内容，和 UIKit 一样：在 UIKit 中，每个视图控制器声明自己的 `preferredStatusBarStyle`，由最上层的那个决定。在 NSH 中，页面和对话框就是这些视图控制器：`NavPage` 或 `Dialog` 用 `statusBar` 声明它需要的状态栏，应用则在 `nsh.json` 中声明默认值。
 
+```tsx tabs
+import { NavPage } from "nsh/base";
+
+function PhotoViewer() {
+  return (
+    <NavPage headerVisible={false} statusBar={{ foreground: "light", hidden: true, animated: true }}>
+      …
+    </NavPage>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::nav_page;
 use nsh_core::prelude::*;
@@ -526,18 +538,6 @@ fn photo_viewer() -> Screen {
             .hidden(true)
             .animated(true),
     )
-}
-```
-
-```tsx tabs
-import { NavPage } from "nsh/base";
-
-function PhotoViewer() {
-  return (
-    <NavPage headerVisible={false} statusBar={{ foreground: "light", hidden: true, animated: true }}>
-      …
-    </NavPage>
-  );
 }
 ```
 
@@ -557,6 +557,13 @@ function PhotoViewer() {
 
 **最近显示**的页面或对话框决定状态栏，并且**逐个字段**生效：推入栈的页面位于它下面的页面之上，打开的对话框位于页面之上。它省略的字段取自下面那个，最终取自应用的默认值。页面被弹出或对话框关闭时，下面那个重新生效。
 
+```tsx tabs
+<NavPage title="Inbox" statusBar={{ foreground: "dark" }}>…</NavPage>
+
+// 推入在它之上：隐藏状态栏；再次显示时沿用收件箱的深色内容。
+<NavPage title="Photo" statusBar={{ hidden: true }}>…</NavPage>
+```
+
 ```rust tabs
 nav_page()
     .title("Inbox")
@@ -566,13 +573,6 @@ nav_page()
 nav_page()
     .title("Photo")
     .status_bar(StatusBarSetting::default().hidden(true));
-```
-
-```tsx tabs
-<NavPage title="Inbox" statusBar={{ foreground: "dark" }}>…</NavPage>
-
-// 推入在它之上：隐藏状态栏；再次显示时沿用收件箱的深色内容。
-<NavPage title="Photo" statusBar={{ hidden: true }}>…</NavPage>
 ```
 
 <a id="the-apps-default"></a>

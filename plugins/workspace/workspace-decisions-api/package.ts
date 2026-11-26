@@ -18,19 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.workspace-decisions-api',
   displayName: 'Decisions API',
   description: 'Evaluate structured questions with JEV or OpenAI Decisions.',
-  localizations: {
-    'zh-CN': {
-      displayName: '决策 API',
-      description: '使用 JEV 或 OpenAI Decisions 评估结构化问题。',
-    },
-  },
   application: {
     host: native(sdk.nativeImplementations.workspaceDecisionsApi),
   },
-};
+});

@@ -93,12 +93,14 @@ pub(in crate::executor::external) async fn execute(
         let cwd_path = tokio::fs::canonicalize(cwd)
             .await
             .map_err(|error| Error::Provider(error.to_string()))?;
-        let cwd = cwd_path
+        let policy_path = maka_sandbox::policy_path_from_resolved(&cwd_path)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let cwd = policy_path
             .to_str()
             .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
             .to_owned();
         let status = bridge.directory().join("context.json");
-        let mut cursor = Cursor::fence(transcript(config, &cwd_path, &session)?, resume).await?;
+        let mut cursor = Cursor::fence(transcript(config, &cwd, &session)?, resume).await?;
         cursor.status_path = Some(status.clone());
         let mcp_path = bridge.directory().join("mcp.json");
         tokio::fs::write(
@@ -431,7 +433,7 @@ async fn context_usage(path: &Path, session: &str, row: &Value) -> Option<Output
     ))
 }
 
-fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathBuf, Error> {
+fn transcript(config: &NativeCommand, cwd: &str, session: &str) -> Result<PathBuf, Error> {
     let root = configuration_directory(|key| {
         config
             .env
@@ -441,8 +443,6 @@ fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathB
     })?;
     // Native Claude encodes each non-ASCII-alphanumeric UTF-16 code unit as '-'.
     let project: String = cwd
-        .to_str()
-        .ok_or_else(|| Error::Invalid("Claude cwd must be UTF-8".into()))?
         .encode_utf16()
         .map(|ch| {
             if ch <= 127 && (ch as u8).is_ascii_alphanumeric() {
@@ -476,10 +476,59 @@ struct Cursor {
 }
 struct OpenedTranscript {
     file: tokio::fs::File,
-    identity: std::fs::Metadata,
+    identity: TranscriptIdentity,
     offset: u64,
     pending: Vec<u8>,
     scanned: usize,
+}
+#[cfg(unix)]
+type TranscriptIdentity = (u64, u64);
+#[cfg(windows)]
+type TranscriptIdentity = (u64, [u8; 16]);
+
+#[cfg(unix)]
+fn transcript_identity(metadata: &std::fs::Metadata) -> TranscriptIdentity {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+async fn opened_identity(file: &tokio::fs::File) -> std::io::Result<TranscriptIdentity> {
+    #[cfg(unix)]
+    {
+        Ok(transcript_identity(&file.metadata().await?))
+    }
+    #[cfg(windows)]
+    {
+        let file = file.try_clone().await?.into_std().await;
+        tokio::task::spawn_blocking(move || {
+            let info = maka_sandbox::windows::file_identity(&file)?;
+            Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+}
+
+async fn named_transcript(path: &Path) -> std::io::Result<(TranscriptIdentity, u64)> {
+    #[cfg(unix)]
+    {
+        let metadata = tokio::fs::metadata(path).await?;
+        Ok((transcript_identity(&metadata), metadata.len()))
+    }
+    #[cfg(windows)]
+    {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(path)?;
+            let info = maka_sandbox::windows::file_identity(&file)?;
+            Ok((
+                (info.VolumeSerialNumber, info.FileId.Identifier),
+                file.metadata()?.len(),
+            ))
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
 }
 impl Cursor {
     async fn fence(path: PathBuf, resume: bool) -> Result<Self, Error> {
@@ -489,8 +538,7 @@ impl Cursor {
                     .seek(std::io::SeekFrom::End(0))
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
+                let identity = opened_identity(&file)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
                 Some(OpenedTranscript {
@@ -515,7 +563,7 @@ impl Cursor {
         })
     }
     async fn next(&mut self) -> Result<Option<Value>, Error> {
-        let metadata = match tokio::fs::metadata(&self.path).await {
+        let (identity, length) = match named_transcript(&self.path).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && self.opened.is_none() => {
                 return Ok(None);
@@ -524,20 +572,10 @@ impl Cursor {
         };
         let opened = match &mut self.opened {
             Some(opened) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::MetadataExt;
-                    if metadata.dev() != opened.identity.dev()
-                        || metadata.ino() != opened.identity.ino()
-                    {
-                        return Err(Error::Invalid("Claude live transcript rotated".into()));
-                    }
-                }
-                #[cfg(not(unix))]
-                if metadata.created().ok() != opened.identity.created().ok() {
+                if identity != opened.identity {
                     return Err(Error::Invalid("Claude live transcript rotated".into()));
                 }
-                if metadata.len() < opened.offset {
+                if length < opened.offset {
                     return Err(Error::Invalid("Claude live transcript truncated".into()));
                 }
                 opened
@@ -546,8 +584,7 @@ impl Cursor {
                 let file = tokio::fs::File::open(&self.path)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
-                let identity = file
-                    .metadata()
+                let identity = opened_identity(&file)
                     .await
                     .map_err(|e| Error::Provider(e.to_string()))?;
                 slot.insert(OpenedTranscript {
@@ -1132,6 +1169,28 @@ impl LiveTurn<'_> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn transcript_uses_the_windows_launch_directory_spelling() {
+        let config = NativeCommand {
+            executable: "claude".into(),
+            args: vec![],
+            env: [("CLAUDE_CONFIG_DIR".into(), "config".into())].into(),
+        };
+        let cwd = r"C:\Work\my.repo";
+        #[cfg(windows)]
+        let projected =
+            maka_sandbox::policy_path_from_resolved(Path::new(r"\\?\C:\Work\my.repo")).unwrap();
+        #[cfg(windows)]
+        assert_eq!(projected.to_str(), Some(cwd));
+        assert_eq!(
+            transcript(&config, cwd, "session").unwrap(),
+            Path::new("config")
+                .join("projects")
+                .join("C--Work-my-repo")
+                .join("session.jsonl")
+        );
+    }
 
     fn submitted(markers: &str, prompt: &str, images: usize) -> input::Submitted {
         input::Submitted {

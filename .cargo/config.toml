@@ -39,3 +39,8 @@ rustc-wrapper = ""
 # without relying on a racy runtime sqlite3_config() call.
 [env]
 LIBSQLITE3_FLAGS = "SQLITE_DEFAULT_MEMSTATUS=0"
+
+# MXC's release build otherwise enables Required ETW diagnostics independently
+# of the per-request telemetry preference. Use the SDK's unrouted build.
+MXC_TELEMETRY_COMPONENT_PATH = { value = "", force = true }
+MXC_TELEMETRY_TEST_KEYWORDS = { value = "", force = true }

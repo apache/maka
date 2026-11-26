@@ -285,6 +285,13 @@ pub enum SessionListScope {
         #[schemars(length(min = 1))]
         session_id: String,
     },
+    /// Side questions asked beside an owned session. Every other scope leaves
+    /// out side questions whose parent conversation still exists, except while
+    /// one waits for the user.
+    SideQuestions {
+        #[schemars(length(min = 1))]
+        session_id: String,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -494,6 +501,25 @@ pub enum SessionAction {
     Archive,
     Restore,
     Remove,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentChangeSessionWorkspace")]
+pub struct ChangeSessionWorkspace {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub expected_revision: u64,
+    #[schemars(length(min = 1))]
+    pub path: String,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionWorkspaceChanged")]
+pub enum SessionWorkspaceChanged {
+    Changed,
+    RevisionConflict { expected: u64, actual: u64 },
+    Rejected { reason: Rejection },
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -943,6 +969,7 @@ pub enum CompletionRegistration {
 #[schemars(rename = "AgentSendRejection")]
 pub enum SendRejection {
     ModelUnavailable,
+    WorkspaceUnavailable,
     SkillsUnavailable,
     TurnStopped,
     OriginalOperationUnsettled,
@@ -1516,6 +1543,8 @@ pub struct History {
     pub include_thinking: bool,
     #[serde(default)]
     pub view: maka_agent_ports::session::history::HistoryView,
+    #[serde(default)]
+    pub thought: Option<Cursor>,
 }
 pub use maka_agent_ports::session::history::Position as HistoryPosition;
 pub use maka_agent_ports::session::history::Prompt as HistoryPrompt;
@@ -1709,6 +1738,8 @@ pub enum HistoryPage {
         before: Option<Cursor>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Cursor>")]
         after: Option<Cursor>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail_thought: Option<Box<maka_agent_ports::session::history::WorkThought>>,
     },
 }
 
@@ -1947,11 +1978,13 @@ impl From<maka_agent_ports::session::history::Page> for HistoryPage {
             chunks,
             before,
             after,
+            tail_thought,
         } = value;
         HistoryPage::Ready {
             through,
             before,
             after,
+            tail_thought,
             chunks: chunks
                 .into_iter()
                 .map(|chunk| HistoryChunk {
@@ -2225,6 +2258,7 @@ pub fn contract() -> Contract {
                 ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),
+                ("declineProjectMcp".into(), method::<McpTrust, McpDeclineResult>(MethodMode::Mutation)),
                 (
                     "globalInstructions".into(),
                     method::<GlobalInstructionsRead, GlobalInstructionsView>(MethodMode::Query),
@@ -2351,6 +2385,7 @@ pub fn contract() -> Contract {
                 ),
                 ("mcpConfigurations".into(), method::<McpConfigurations, McpConfigurationList>(MethodMode::Query)),
                 ("manageMcpServer".into(), method::<McpConfigurationChange, McpConfigurationResult>(MethodMode::Mutation)),
+                ("setProjectMcpDecision".into(), method::<McpProjectTrustChange, McpProjectTrustChangeResult>(MethodMode::Mutation)),
                 (
                     "directories".into(),
                     method::<Directories, DirectoryPage>(MethodMode::Query),
@@ -2585,6 +2620,14 @@ pub fn contract() -> Contract {
                 (
                     "changeSession".into(),
                     method::<ChangeSession, SessionChanged>(MethodMode::Mutation),
+                ),
+                (
+                    "changeSessionWorkspace".into(),
+                    method::<ChangeSessionWorkspace, SessionWorkspaceChanged>(MethodMode::Mutation),
+                ),
+                (
+                    "sessionWorkspaceAvailable".into(),
+                    method::<SessionRead, bool>(MethodMode::Query),
                 ),
                 (
                     "selectBackend".into(),

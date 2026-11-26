@@ -39,7 +39,7 @@ pub(crate) mod builder;
 pub(crate) mod call;
 mod callback;
 pub(crate) mod class;
-mod component;
+pub(crate) mod component;
 pub mod description;
 pub mod desktop;
 mod element_ref;
@@ -116,7 +116,7 @@ pub(crate) use self::{
     component::{AnyInstance, caught, panic_message},
     task::{
         Action, AfterAnswer, AnswerSlot, AudioAction, ClipboardRead, Executor, FileAnswer,
-        NotificationAction, SpeechAction,
+        NotificationAction,
     },
 };
 pub use self::{

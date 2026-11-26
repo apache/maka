@@ -6,8 +6,9 @@
 //!   (`info`, `my_app=debug,js=info`, `warn,nsh_engine::updates=info`); else
 //!   the runners' rule, warnings, errors and the app's `js` lines
 //!   (`console.*`), and every line from info up when run by `nsh run`.
-//! - Where: a rolling file, `logs/app.log` in the app's data directory
-//!   ([`log_dir`]), whose path apps read (`nsh_core::element::log_file`, TS
+//! - Where: a rolling file, `app.log` in the directory `nsh.json`
+//!   `"logDir"` names, else `logs` in the app's data directory
+//!   ([`log_directory`], [`log_dir`]), whose path apps read (`nsh_core::element::log_file`, TS
 //!   `process.logFile`), and the platform's output the runner hands
 //!   [`LogOptions::output`] (the unified log, the debugger's output,
 //!   stderr).
@@ -75,6 +76,21 @@ pub struct LogOptions {
 /// has none.
 pub fn log_dir(app_id: &str) -> Option<PathBuf> {
     crate::support_dir().map(|dir| dir.join(crate::app_dir_name(Some(app_id))).join("logs"))
+}
+
+/// The directory the desktop runners write the log files of app `app_id`
+/// in: `log_dir` (`nsh.json` `"logDir"`, already resolved) when the app names
+/// one, else `logs` in `data_dir` (`"dataDir"`), else [`log_dir`]'s default.
+pub fn log_directory(
+    app_id: &str,
+    data_dir: Option<&Path>,
+    log_dir_override: Option<&Path>,
+) -> Option<PathBuf> {
+    match (log_dir_override, data_dir) {
+        (Some(dir), _) => Some(dir.to_path_buf()),
+        (None, Some(dir)) => Some(dir.join("logs")),
+        (None, None) => log_dir(app_id),
+    }
 }
 
 /// Makes the runners' logger the process's logger, filtered by `RUST_LOG`
@@ -632,6 +648,54 @@ mod tests {
             Some(data.join("com.example.notes/logs"))
         );
         assert_eq!(log_dir("../x"), Some(data.join("default/logs")));
+    }
+
+    #[test]
+    fn the_log_directory_option_comes_first() {
+        let data = Path::new("/data");
+        let logs = Path::new("/logs/ui");
+        assert_eq!(
+            log_directory("com.example.notes", Some(data), Some(logs)),
+            Some(logs.to_path_buf())
+        );
+        assert_eq!(
+            log_directory("com.example.notes", None, Some(logs)),
+            Some(logs.to_path_buf())
+        );
+    }
+
+    #[test]
+    fn without_a_log_directory_option_the_data_directory_holds_the_logs() {
+        assert_eq!(
+            log_directory("com.example.notes", Some(Path::new("/data")), None),
+            Some(PathBuf::from("/data/logs"))
+        );
+        assert_eq!(
+            log_directory("com.example.notes", None, None),
+            log_dir("com.example.notes")
+        );
+    }
+
+    #[test]
+    fn a_log_directory_option_gets_the_files_and_the_data_directory_none() {
+        let root = temp_dir("log-dir-option");
+        let (data, logs) = (root.join("data"), root.join("logs/ui"));
+        let directory = log_directory("a.b", Some(&data), Some(&logs)).unwrap();
+        let logger = Logger::new(
+            LogOptions {
+                directory: Some(directory),
+                ..LogOptions::default()
+            },
+            Some("info"),
+        );
+        log(&logger, Level::Info, "t", "hello");
+        assert!(
+            std::fs::read_to_string(logs.join("app.log"))
+                .unwrap()
+                .contains("hello")
+        );
+        assert!(!data.join("logs").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

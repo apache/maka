@@ -1095,7 +1095,7 @@ where
         self.tree.set_unrounded(node, own);
     }
 
-    fn resolve_calc_value(&self, _: *const (), _: f32) -> f32 {
+    fn resolve_calc_value(&self, _: taffy::CalcHandle, _: f32) -> f32 {
         0.0
     }
 
@@ -1131,7 +1131,7 @@ impl<C, M> CacheTree for View<'_, C, M>
 where
     M: FnMut(LayoutInput, NodeId, Option<&mut C>, &Style, Aligned) -> LayoutOutput,
 {
-    fn cache_get(&mut self, node: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
+    fn cache_get(&self, node: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
         self.tree.nodes[key(node)].cache.get(input)
     }
 

@@ -11,6 +11,36 @@ NSH apps make HTTP requests with `fetch`: in Rust the function of `nsh_core::pre
 
 ## Getting JSON
 
+```tsx tabs
+import { mount, resource, Scroll, Text, View } from "nsh";
+import { Window } from "nsh/desktop";
+
+type Post = { id: number; title: string };
+
+function App() {
+  const posts = resource(async ({ signal }) => {
+    const response = await fetch("https://jsonplaceholder.typicode.com/posts?_limit=5", { signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()) as Post[];
+  });
+
+  return (
+    <Scroll style={{ flex: 1 }}>
+      <View style={{ padding: 16, paddingTop: 60, gap: 8 }}>
+        <Text style={{ color: "#57606a" }}>{posts.loading() ? "loading…" : String(posts.error() ?? "")}</Text>
+        <Each of={posts() ?? []}>{(post) => <Text style={{ numberOfLines: 1 }}>{post().title}</Text>}</Each>
+      </View>
+    </Scroll>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -63,41 +93,32 @@ fn App() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, resource, Scroll, Text, View } from "nsh";
-import { Window } from "nsh/desktop";
-
-type Post = { id: number; title: string };
-
-function App() {
-  const posts = resource(async ({ signal }) => {
-    const response = await fetch("https://jsonplaceholder.typicode.com/posts?_limit=5", { signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as Post[];
-  });
-
-  return (
-    <Scroll style={{ flex: 1 }}>
-      <View style={{ padding: 16, paddingTop: 60, gap: 8 }}>
-        <Text style={{ color: "#57606a" }}>{posts.loading() ? "loading…" : String(posts.error() ?? "")}</Text>
-        <Each of={posts() ?? []}>{(post) => <Text style={{ numberOfLines: 1 }}>{post().title}</Text>}</Each>
-      </View>
-    </Scroll>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 [`resource`](./reactivity.md#resource) keeps the value, the error and whether a load runs, loads again from a source that changes (or on `refetch()`), and cancels a load that no longer counts (the component goes away, or a newer load starts): in Rust by dropping the load's task, which cancels its request, in TSX through the `signal` it passes on. Rust's `fetch` takes absolute URLs; JSON is parsed with a crate such as `serde_json`.
 
 In TSX, a `Response` reads its body once, as `json()`, `text()`, `arrayBuffer()`, `bytes()`, `blob()` or `formData()`, or as the `body` stream. `response.ok` is true for 2xx statuses; like in browsers, an HTTP error status does not reject the promise.
 
 ## Sending data
+
+```tsx tabs
+// JSON
+const created = await fetch("https://api.example.com/notes", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify({ title: "Groceries", items: ["milk", "eggs"] }),
+});
+
+// A form, URL-encoded
+await fetch("https://api.example.com/login", {
+  method: "POST",
+  body: new URLSearchParams({ user: "ada", password: "…" }),
+});
+
+// Query strings
+const url = new URL("https://api.example.com/search");
+url.searchParams.set("q", "native shell");
+url.searchParams.set("page", "2");
+const results = await (await fetch(url)).json();
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -122,27 +143,6 @@ fetch(
 fetch(HttpRequest::new("DELETE", "https://api.example.com/notes/1")).await?;
 ```
 
-```tsx tabs
-// JSON
-const created = await fetch("https://api.example.com/notes", {
-  method: "POST",
-  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-  body: JSON.stringify({ title: "Groceries", items: ["milk", "eggs"] }),
-});
-
-// A form, URL-encoded
-await fetch("https://api.example.com/login", {
-  method: "POST",
-  body: new URLSearchParams({ user: "ada", password: "…" }),
-});
-
-// Query strings
-const url = new URL("https://api.example.com/search");
-url.searchParams.set("q", "native shell");
-url.searchParams.set("page", "2");
-const results = await (await fetch(url)).json();
-```
-
 `HttpRequest::new(method, url)`, `get` and `post` make a request, `.header(..)` and `.body(..)` complete it. In TSX, `body` accepts a string, `URLSearchParams`, `FormData`, a `Blob` or `File`, an `ArrayBuffer` or typed array, or a `ReadableStream`.
 
 ### Uploading files with FormData
@@ -162,6 +162,17 @@ const response = await fetch("https://api.example.com/photos", { method: "POST",
 [`Picker`](../modules/nsh.md#picker) gives the photos the user picks as files whose bytes stay native, scaled down
 and in a format servers take; Rust sends their bytes, TSX appends the `File` to a `FormData`:
 
+```tsx tabs
+import { Picker } from "nsh";
+
+const [photo] = await Picker.pickImages({ maxDimension: 2048 });
+if (photo) {
+  const form = new FormData();
+  form.append("photo", photo.file);
+  await fetch("https://api.example.com/photos", { method: "POST", body: form });
+}
+```
+
 ```rust tabs
 use nsh_core::geometry::DevicePixels;
 use nsh_core::picker::PickRequest;
@@ -177,17 +188,6 @@ spawn(async move {
         let _ = fetch(upload).await;
     }
 });
-```
-
-```tsx tabs
-import { Picker } from "nsh";
-
-const [photo] = await Picker.pickImages({ maxDimension: 2048 });
-if (photo) {
-  const form = new FormData();
-  form.append("photo", photo.file);
-  await fetch("https://api.example.com/photos", { method: "POST", body: form });
-}
 ```
 
 ## Streaming
@@ -255,6 +255,14 @@ A streamed body cannot be sent twice, so a 307 or 308 redirect of a streamed req
 
 In Rust, a request runs in a task and is cancelled with it: when the task's component goes away, or with `cancel()` on the task `spawn` returns. In TSX, pass an `AbortSignal` to cancel a request; the promise rejects with the signal's reason (an `AbortError` `DOMException` by default), and a body being read stops.
 
+```tsx tabs
+const controller = new AbortController();
+const request = fetch("https://api.example.com/search?q=" + encodeURIComponent(query), { signal: controller.signal });
+
+// Typing again: cancel the previous search.
+controller.abort();
+```
+
 ```rust tabs
 let task = spawn(async move {
     if let Ok(response) = fetch(format!("https://api.example.com/search?q={query}")).await {
@@ -266,14 +274,6 @@ let task = spawn(async move {
 task.cancel();
 ```
 
-```tsx tabs
-const controller = new AbortController();
-const request = fetch("https://api.example.com/search?q=" + encodeURIComponent(query), { signal: controller.signal });
-
-// Typing again: cancel the previous search.
-controller.abort();
-```
-
 In TSX, `AbortSignal.timeout(ms)` makes a signal that aborts after a delay, and `AbortSignal.any([...])` combines signals:
 
 ```ts
@@ -281,21 +281,6 @@ const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 ```
 
 A component that loads data should cancel when it goes away: a Rust task does on its own, and TSX aborts in [`cleanup`](./reactivity.md):
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn weather(city: String) -> impl IntoElement {
-    let data = signal(String::new());
-    // The task, and its request, end when the component goes away.
-    spawn(async move {
-        if let Ok(response) = fetch(format!("https://api.example.com/weather?city={city}")).await {
-            data.set(response.text());
-        }
-    });
-    text(move || data.get())
-}
-```
 
 ```tsx tabs
 import { cleanup, signal, Text } from "nsh";
@@ -312,17 +297,24 @@ function Weather(props: { city: string }) {
 }
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn weather(city: String) -> impl IntoElement {
+    let data = signal(String::new());
+    // The task, and its request, end when the component goes away.
+    spawn(async move {
+        if let Ok(response) = fetch(format!("https://api.example.com/weather?city={city}")).await {
+            data.set(response.text());
+        }
+    });
+    text(move || data.get())
+}
+```
+
 ## Errors
 
 A request that does not produce an HTTP response fails: Rust's `fetch` gives an `Err` with the message, TSX's rejects with a `TypeError` whose message starts with `Network request failed:`. That happens with no connection, a DNS or TLS failure, an unsupported URL scheme, or a request your app's capabilities do not allow. Check `ok()` / `status()` (TSX: `response.ok`, `response.status`) for HTTP errors.
-
-```rust tabs
-match fetch(url).await {
-    Ok(response) if response.ok() => items.set(response.text()),
-    Ok(response) => error.set(format!("Server answered {}", response.status())),
-    Err(message) => error.set(message), // no response, or not granted
-}
-```
 
 ```tsx tabs
 try {
@@ -332,6 +324,14 @@ try {
 } catch (e) {
   if (e instanceof DOMException && e.name === "AbortError") return; // cancelled
   showError(String(e));
+}
+```
+
+```rust tabs
+match fetch(url).await {
+    Ok(response) if response.ok() => items.set(response.text()),
+    Ok(response) => error.set(format!("Server answered {}", response.status())),
+    Err(message) => error.set(message), // no response, or not granted
 }
 ```
 

@@ -9,41 +9,6 @@ demo: el-command
 
 命令面板是一个搜索框加一列命令：用户输入几个字母，列表缩小到匹配的命令，方向键移动高亮，回车执行高亮的命令。`Command` 负责它的行为：过滤、分区、高亮、键盘，以及屏幕阅读器听到的内容。过滤在原生端进行，行是虚拟化的：只创建可见的行，所以成千上万条命令、文件或 emoji 的面板在每次按键时都能即时过滤。外观由应用决定：命令面板本身什么也不画，应用为每个部件设置样式（`itemClass`、`groupClass`、`searchClass` 等），并绘制行的内容（`renderItem`：图标、标签、快捷键）。
 
-```rust tabs
-use nsh_base::{CommandEntry, CommandItem, command, theme};
-use nsh_core::prelude::*;
-
-fn palette() -> impl IntoElement {
-    let items = vec![
-        CommandItem::new("new", "New File").group("File").shortcut("mod+n"),
-        CommandItem::new("open", "Open…").group("File").shortcut("mod+o"),
-        CommandItem::new("theme", "Toggle Theme").group("View").keywords(["dark", "light"]),
-        CommandItem::new("settings", "Settings").group("View").shortcut("mod+,"),
-    ];
-    let chosen = signal(SharedString::from("none"));
-    command()
-        .items(items)
-        .placeholder("Type a command or search…")
-        .accessibility_label("Commands")
-        .auto_focus(true)
-        .on_select(move |id: &SharedString| chosen.set(id.clone()))
-        .empty(text("No results.").text_color(move || theme().muted_foreground))
-        .h(px(360.0))
-        .render_item(|entry: &CommandEntry| {
-            view()
-                .flex_row()
-                .items_center()
-                .h_8()
-                .px_2()
-                .child(text(entry.label.clone()).flex_1())
-                .child(
-                    text(entry.shortcut_label.clone().unwrap_or_default())
-                        .text_color(move || theme().muted_foreground),
-                )
-        })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";
 import { Command, type CommandItem } from "nsh/base";
@@ -89,6 +54,41 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{CommandEntry, CommandItem, command, theme};
+use nsh_core::prelude::*;
+
+fn palette() -> impl IntoElement {
+    let items = vec![
+        CommandItem::new("new", "New File").group("File").shortcut("mod+n"),
+        CommandItem::new("open", "Open…").group("File").shortcut("mod+o"),
+        CommandItem::new("theme", "Toggle Theme").group("View").keywords(["dark", "light"]),
+        CommandItem::new("settings", "Settings").group("View").shortcut("mod+,"),
+    ];
+    let chosen = signal(SharedString::from("none"));
+    command()
+        .items(items)
+        .placeholder("Type a command or search…")
+        .accessibility_label("Commands")
+        .auto_focus(true)
+        .on_select(move |id: &SharedString| chosen.set(id.clone()))
+        .empty(text("No results.").text_color(move || theme().muted_foreground))
+        .h(px(360.0))
+        .render_item(|entry: &CommandEntry| {
+            view()
+                .flex_row()
+                .items_center()
+                .h_8()
+                .px_2()
+                .child(text(entry.label.clone()).flex_1())
+                .child(
+                    text(entry.shortcut_label.clone().unwrap_or_default())
+                        .text_color(move || theme().muted_foreground),
+                )
+        })
+}
 ```
 
 `Command` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。应用设置 `query` 时，查询词由应用持有，应用在 `onQueryChange` 里更新它；不设置时由搜索框自己保存，从 `defaultQuery` 开始。项目用应用自己的 `id` 标识，而不是标签：`onSelect({ id })` 告诉应用用户选了哪一个。在 Rust 中由 `command()` 创建，每个 prop 有对应的 setter（`.items(..)`、`.query(..)`、`.render_item(..)`），每个事件有对应的监听方法，以及类型化的样式方法。

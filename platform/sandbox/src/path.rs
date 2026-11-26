@@ -18,7 +18,139 @@
  */
 
 use crate::Error;
-use std::{cmp::Ordering, path::Path};
+use std::{borrow::Cow, cmp::Ordering, path::Path};
+
+/// Resolve an existing filesystem path to the spelling used by policy rules.
+pub fn canonical_policy_path(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    let resolved = std::fs::canonicalize(path)?;
+    Ok(policy_path_from_resolved(&resolved)
+        .map_err(std::io::Error::other)?
+        .into_owned())
+}
+
+/// Translate a Host-resolved path without reopening it or changing its identity.
+/// This is not a resolver for raw user input.
+pub fn policy_path_from_resolved(path: &Path) -> Result<Cow<'_, Path>, Error> {
+    #[cfg(windows)]
+    let path = windows_policy_spelling(path)?;
+    #[cfg(not(windows))]
+    let path = Cow::Borrowed(path);
+    validate(&path)?;
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn windows_policy_spelling(path: &Path) -> Result<Cow<'_, Path>, Error> {
+    use std::path::{Component, PathBuf, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return Ok(Cow::Borrowed(path));
+    };
+    let invalid = || Error::Invalid("noncanonical Windows policy path".into());
+    let unc = match prefix.kind() {
+        Prefix::VerbatimDisk(_) => false,
+        Prefix::VerbatimUNC(..) => true,
+        _ => return Ok(Cow::Borrowed(path)),
+    };
+    let text = path.to_str().ok_or_else(invalid)?;
+    let (policy_tail, names) = if unc {
+        let tail = text.strip_prefix(r"\\?\UNC\").ok_or_else(invalid)?;
+        let mut parts = tail.split('\\');
+        if parts.next().is_none_or(str::is_empty) || parts.next().is_none_or(str::is_empty) {
+            return Err(invalid());
+        }
+        (tail, tail)
+    } else {
+        let dos = text.strip_prefix(r"\\?\").ok_or_else(invalid)?;
+        let names = dos.get(2..).and_then(|tail| tail.strip_prefix('\\'));
+        (dos, names.ok_or_else(invalid)?)
+    };
+    // Removing a verbatim prefix must not reinterpret a component as a
+    // separator, device name, or trimmed Win32 spelling. No MAX_PATH limit:
+    // policy matching is lexical, and existing native guards handle long paths.
+    if names.trim_end_matches('\\').split('\\').any(|name| {
+        name.bytes().any(|byte| byte < b' ')
+            || name.contains(['/', ':', '?', '*', '<', '>', '"', '|'])
+            || name.ends_with(['.', ' '])
+            || (!unc && is_dos_device(name))
+    }) {
+        return Err(invalid());
+    }
+    Ok(if unc {
+        Cow::Owned(PathBuf::from(format!(r"\\{policy_tail}")))
+    } else {
+        Cow::Borrowed(Path::new(policy_tail))
+    })
+}
+
+#[cfg(windows)]
+fn is_dos_device(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+        || stem.get(..3).is_some_and(|prefix| {
+            (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+                && matches!(
+                    &stem[3..],
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+        })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_path_projection_preserves_disk_and_unc_roots() {
+        for (resolved, expected) in [
+            (r"\\?\C:\project\worktree", r"C:\project\worktree"),
+            (r"\\?\UNC\server\share\worktree", r"\\server\share\worktree"),
+        ] {
+            let resolved = Path::new(resolved);
+            assert!(validate(resolved).is_err());
+            assert_eq!(
+                policy_path_from_resolved(resolved).unwrap().as_ref(),
+                Path::new(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_path_projection_rejects_names_changed_by_win32() {
+        for path in [
+            r"\\?\C:\project\directory.",
+            r"\\?\C:\project\NUL.txt",
+            r"\\?\C:\project\COM¹.txt",
+            r"\\?\C:/project",
+            r"\\?\UNC\server\share\literal/slash",
+            r"\\?\UNC\server\share\ancestor\..\file",
+            r"\\?\UNC\.\share\file",
+            r"\\?\Volume{deadbeef}\file",
+        ] {
+            assert!(
+                policy_path_from_resolved(Path::new(path)).is_err(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_path_projection_preserves_long_local_paths() {
+        let policy = format!(r"C:\{}file", "directory\\".repeat(30));
+        let resolved = format!(r"\\?\{policy}");
+        assert_eq!(
+            policy_path_from_resolved(Path::new(&resolved))
+                .unwrap()
+                .as_ref(),
+            Path::new(&policy)
+        );
+    }
+}
 
 pub(crate) fn validate(path: &Path) -> Result<(), Error> {
     let text = path

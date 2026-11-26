@@ -96,6 +96,14 @@ pub struct MarkdownOptions {
     /// `[!WARNING]`, `[!CAUTION]` (default true).
     #[prop(default = true)]
     pub alerts: bool,
+    /// Links: `[text](url)`, bare URLs and `<a href>` (default true);
+    /// false shows their text, not a link.
+    #[prop(default = true)]
+    pub links: bool,
+    /// Images: `![alt](src)` and `<img>` (default true); false shows
+    /// their `alt` text.
+    #[prop(default = true)]
+    pub images: bool,
     /// YAML front matter (`---` … `---` first) is a custom node
     /// `frontmatter` whose text is the YAML (default false: a rule and
     /// text).
@@ -125,6 +133,8 @@ impl Default for MarkdownOptions {
             math: true,
             html: true,
             alerts: true,
+            links: true,
+            images: true,
             frontmatter: false,
             mdx: false,
             streaming: false,

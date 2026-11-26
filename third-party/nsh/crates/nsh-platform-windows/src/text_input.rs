@@ -298,7 +298,7 @@ fn make_editor(
         e.send(EM_SETEDITSTYLE, SES_USECTF as usize, SES_USECTF as isize);
         // Without `IMF_IMEALWAYSSENDNOTIFY`, RichEdit suppresses `EN_CHANGE`
         // and `EN_SELCHANGE` while an IME composes undetermined text, leaving
-        // `onCompositionChange` (and a `RichEditor`'s inline preedit) empty
+        // `onCompositionChange` (and a rich editor's inline preedit) empty
         // until commit.
         let (lang, _) = e.send(EM_GETLANGOPTIONS, 0, 0);
         e.send(
@@ -563,6 +563,10 @@ impl InputState {
             s.font_weight,
             s.italic,
         );
+        let locale_name = config
+            .locale
+            .map(|locale| HSTRING::from(locale.as_str()))
+            .unwrap_or_default();
         // SAFETY: COM calls with valid strings and live objects.
         let format = unsafe {
             crate::gfx::dwrite()
@@ -577,7 +581,7 @@ impl InputState {
                     },
                     DWRITE_FONT_STRETCH_NORMAL,
                     s.font_size.0.max(1.0),
-                    &HSTRING::new(),
+                    &locale_name,
                 )
                 .ok()?
         };
@@ -1078,6 +1082,8 @@ impl InputState {
                 let list = dc.CreateCommandList().ok()?;
                 dc.SetTarget(&list);
                 dc.SetDpi(96.0 * s, 96.0 * s);
+                let params = cx.dc.GetTextRenderingParams().ok();
+                dc.SetTextRenderingParams(params.as_ref());
                 dc.BeginDraw();
                 // RichEdit draws its client pixels in units of GDI's DPI,
                 // not the target's: scaled to the target's (nothing on a
@@ -1222,7 +1228,17 @@ impl Hosted for InputState {
                 );
             }
         }
+        let indicator = multiline && config.scrollbar_visible;
         drop(config);
+        if indicator {
+            // RichEdit has no window of its own: the `WS_VSCROLL` bar it
+            // keeps the range of is never drawn, so the field draws the
+            // platform's indicator over its text, as a scroll view does.
+            let (min, max, pos, page) = e.vscroll();
+            if let Some((x, y, bw, bh)) = indicator_thumb((w, h), min, max, pos, page, cx.scale) {
+                crate::scroll::draw_knob(cx, x, y, bw, bh, 1.0);
+            }
+        }
         cx.pop();
     }
 
@@ -1306,6 +1322,40 @@ fn copy_face_name(dst: &mut [u16; 32], face: &str) {
 #[cfg(test)]
 fn family(name: Option<&str>) -> String {
     crate::text::resolve_family(name, 400, false).gdi_name
+}
+
+/// Where a multiline field of `size` points draws its scroll indicator's
+/// thumb, from RichEdit's vertical range (`min..max`, position `pos` and
+/// page `page`, in pixels at `scale`); `None` when all the text fits.
+fn indicator_thumb(
+    size: (f32, f32),
+    min: i32,
+    max: i32,
+    pos: i32,
+    page: i32,
+    scale: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    use nsh_core::scroll::INDICATOR_THICK;
+    const MARGIN: f32 = 2.0;
+    const MIN_THUMB: f32 = 20.0;
+    let (w, h) = size;
+    let s = scale.max(0.01);
+    let content = (max - min) as f32 / s;
+    let viewport = if page > 0 { page as f32 / s } else { h };
+    if content <= viewport + 0.5 || h <= 2.0 * MARGIN {
+        return None;
+    }
+    let track = h - 2.0 * MARGIN;
+    let thumb = (track * viewport / content).clamp(MIN_THUMB.min(track), track);
+    let travel = (content - viewport).max(1.0);
+    let at = ((pos - min) as f32 / s / travel).clamp(0.0, 1.0);
+    let thick = INDICATOR_THICK.0;
+    Some((
+        w - thick - MARGIN,
+        MARGIN + (track - thumb) * at,
+        thick,
+        thumb,
+    ))
 }
 
 fn scroll_flags(config: &InputConfig) -> u32 {
@@ -1959,10 +2009,7 @@ fn update_ime(surface: &Surface) {
         })
         .map(|v| crate::app_window::hwnd_showing(surface, &v));
     let host = surface.hwnd();
-    for hwnd in crate::app_window::all_hwnds(surface)
-        .into_iter()
-        .chain([host])
-    {
+    for hwnd in crate::app_window::hwnds(surface).into_iter().chain([host]) {
         if hwnd.is_invalid() {
             continue;
         }
@@ -2286,6 +2333,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         (
             old.style != config.style
                 || old.multiline != config.multiline
+                || old.locale != config.locale
                 || input.font_generation.get() != crate::text::font_generation(),
             old.editable != config.editable || old.secure != config.secure,
         )
@@ -2607,7 +2655,17 @@ pub(crate) fn pointer(surface: &Rc<Surface>, view: &NshView, event: &ItemPointer
     };
     if matches!(event.kind, PointerKind::Down) {
         let arrives = focused(surface).as_ref() != Some(view);
+        // Focus scrolls RichEdit to its caret (the text's end after the
+        // value was set); the press is hit against what shows, so the
+        // field stays where it was until the press places the caret.
+        let mut scroll = windows::Win32::Foundation::POINT::default();
+        if arrives {
+            input.send(EM_GETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
+        }
         set_focus(surface, Some(view));
+        if arrives {
+            input.send(EM_SETSCROLLPOS, 0, &mut scroll as *mut _ as isize);
+        }
         // The press, sent to RichEdit after the focus arrived, places the
         // caret where it lands (or extends the selection, or starts a
         // drag): `selectTextOnFocus` waits for its release. A Shift or
@@ -3413,6 +3471,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn indicator_thumb_follows_the_text_scroll() {
+        // All the text fits: no thumb.
+        assert_eq!(indicator_thumb((100.0, 50.0), 0, 50, 0, 50, 1.0), None);
+        // 4 pages of text at 175%: a quarter of the track, at the top, then at the bottom.
+        let s = 1.75;
+        let page = (50.0 * s) as i32;
+        let max = page * 4;
+        let (x, y, _, h) = indicator_thumb((100.0, 50.0), 0, max, 0, page, s).unwrap();
+        assert!(x > 90.0 && (y - 2.0).abs() < 0.01 && (h - 20.0).abs() < 0.5);
+        let (_, y, _, h) = indicator_thumb((100.0, 50.0), 0, max, max - page, page, s).unwrap();
+        assert!((y + h - 48.0).abs() < 0.01);
+    }
+
+    #[test]
     fn multiline_scrollbars_have_native_overflow_ranges() {
         for editable in [false, true] {
             let config = InputConfig {
@@ -3816,6 +3888,8 @@ mod tests {
             ]
         );
 
+        // Replacing a selection while composing reports only the composition
+        // text until commit.
         value(&view, "ab", 1);
         surface.take_events();
         input.send(EM_SETSEL, 1, 2);
@@ -3856,6 +3930,7 @@ mod tests {
             ]
         );
 
+        // Cancelling a composition emits no `ChangeText`.
         input.with_editor(Editor::start_composition);
         replace_selection(&input, "x");
         process(&surface, &view, &input);
@@ -3912,6 +3987,8 @@ mod tests {
             )]
         );
 
+        // One coalesced batch: commit "你", end the first composition, start
+        // the next one at the caret before "b", and type "h".
         input.send(EM_SETSEL, 1, 2);
         replace_selection(&input, "你");
         input.with_editor(Editor::end_composition);
@@ -3942,6 +4019,7 @@ mod tests {
             ]
         );
 
+        // Commit the second composition.
         input.send(EM_SETSEL, 2, 3);
         replace_selection(&input, "好");
         input.with_editor(Editor::end_composition);
@@ -3965,6 +4043,8 @@ mod tests {
             ]
         );
 
+        // A composition that starts and ends before `process` runs commits as
+        // plain text without spurious composition events.
         input.with_editor(Editor::start_composition);
         replace_selection(&input, "!");
         input.with_editor(Editor::end_composition);
@@ -3995,6 +4075,8 @@ mod tests {
         value(&view, "from-js", 0);
         assert_eq!(input.text(), "n");
 
+        // Cancel the first composition and immediately start a second one in
+        // the same batch: the pending value stays deferred while composing.
         input.send(EM_SETSEL, 0, 1);
         replace_selection(&input, "");
         input.with_editor(Editor::end_composition);
@@ -4005,6 +4087,7 @@ mod tests {
         assert_eq!(input.composed.borrow().as_deref(), Some("h"));
         assert_eq!(input.count.get(), 0);
 
+        // Once the final composition ends, the deferred value applies.
         input.send(EM_SETSEL, 0, 1);
         replace_selection(&input, "");
         input.with_editor(Editor::end_composition);

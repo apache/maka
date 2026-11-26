@@ -41,12 +41,16 @@
 
 #![cfg(unix)]
 
+#[path = "support/execution_compat.rs"]
+mod execution_compat;
 #[path = "support/host.rs"]
 mod host;
 
 use futures_util::FutureExt;
 use host::Host;
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_config::{ConfigurationStore, access::PeerId};
+use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_host_runtime::application::{host::Client, transport::Reply};
 use maka_mock_ai::{
     ControlPlaneConfig, FinishReason, MockAiBuilder, MockAiServer, ModelEntry, NormalizedRequest,
@@ -80,6 +84,32 @@ const BIN_ENV: &str = "MAKA_COMPAT_BIN";
 const ATTACHMENT_BYTES: &[u8] = "compat capsule attachment — 兼容性附件\n".as_bytes();
 const COMPACTION_PROMPT: &str = "Preserve upgrade compatibility markers across restarts.";
 const PRESET_NAME: &str = "Compat Reviewer";
+const COMPAT_PEER_GRANT: &str = "compat-host-publication";
+const COMPAT_PAIRING_HASH: [u8; 32] = [31; 32];
+const COMPAT_MCP_OWNER: &str = "compat-mcp-owner";
+const COMPAT_MCP_WORKSPACE: &str =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const COMPAT_MCP_REVISION: &str =
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const COMPAT_MCP_NEXT_REVISION: &str =
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+async fn seed_pairing_invite(settings: &ConfigurationStore) {
+    settings
+        .create_host_peer_pairing_invite(
+            maka_config::access::NewHostPeerPairingInvite {
+                invite_id: "compat-pairing-invite".into(),
+                secret_hash: COMPAT_PAIRING_HASH,
+                host_grant: COMPAT_PEER_GRANT.into(),
+                label: Some("Compat device".into()),
+                expires_at_ms: i64::MAX as u64,
+                created_at: "2026-09-12T00:00:00Z".into(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +123,9 @@ struct CapsuleManifest {
     connection_slug: String,
     primary_session_id: String,
     forked_session_id: String,
+    /// Capsules sealed before side questions existed have none.
+    #[serde(default)]
+    side_session_id: Option<String>,
     room_id: String,
     room_pre_message: String,
     preset_id: String,
@@ -103,7 +136,17 @@ struct CapsuleManifest {
     session_data_key: String,
     #[serde(default)]
     operation_ref: Option<Value>,
+    #[serde(default)]
+    script_task_id: Option<String>,
+    #[serde(default)]
+    execution_authority: Option<execution_compat::Capsule>,
     migrations: BTreeMap<String, Vec<i64>>,
+    #[serde(default)]
+    host_peer_id: Option<String>,
+    #[serde(default)]
+    host_pairing_invite: bool,
+    #[serde(default)]
+    project_mcp_trusted: bool,
 }
 
 struct FixtureSecret;
@@ -312,6 +355,33 @@ async fn wait_run_completed(client: &Client, session: &str, message_id: &str) ->
             other => panic!("unexpected workReadiness {other}: {readiness}"),
         }
     }
+}
+
+async fn wait_successful_script_check(client: &Client, task_id: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let mut first_due = None;
+        loop {
+            let detail = call(
+                client,
+                "agent",
+                "schedules",
+                json!({"kind":"get","taskId":task_id}),
+                Attachments::new(),
+            )
+            .await;
+            let task = &detail["detail"]["task"];
+            assert_eq!(task["status"], "active", "{detail}");
+            assert_eq!(task["fireCount"], 0, "{detail}");
+            assert!(task["lastError"].is_null(), "{detail}");
+            let next = task["nextFireAt"].as_i64().unwrap();
+            if next > *first_due.get_or_insert(next) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("script did not complete its next check");
 }
 
 async fn recall_search(client: &Client, term: &str) -> Value {
@@ -579,6 +649,23 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     |row| row.get(0),
                 )
                 .unwrap();
+            if has_runs > 0 && versions.contains(&17) {
+                use maka_agent_facts::external_publication::PublicationManifest;
+                use maka_fs_tools::publication::{PublicationChange, SourceIdentity};
+                let mut manifests = conn.prepare(
+                    "SELECT p.publication,c.payload FROM agent_external_publications p
+                     LEFT JOIN contents c ON c.content_sha256=json_extract(p.body,'$.manifest.digest')
+                     WHERE json_extract(p.body,'$.manifest') IS NOT NULL",
+                ).unwrap();
+                let mut rows = manifests.query([]).unwrap();
+                while let Some(row) = rows.next().unwrap() {
+                    let id: String = row.get(0).unwrap();
+                    let bytes: Vec<u8> = row.get(1).expect("missing publication manifest");
+                    let manifest: PublicationManifest<SourceIdentity, PublicationChange> =
+                        serde_json::from_slice(&bytes).expect("invalid publication manifest");
+                    assert_eq!(manifest.publication.to_string(), id);
+                }
+            }
             if has_runs > 0 && versions.contains(&53) {
                 let mut streaks = conn
                     .prepare("SELECT run, retry_streak FROM agent_runs")
@@ -605,6 +692,40 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                         "unexpected agent_runs.retry_streak variant for run {run}: {parsed}"
                     );
                 }
+            }
+            if has_runs > 0 && versions.contains(&55) {
+                for view in [
+                    "agent_memory_operation_field_source",
+                    "agent_memory_termination_receipts",
+                    "agent_memory_recall_outputs",
+                ] {
+                    let _: i64 = conn
+                        .query_row(&format!("SELECT COUNT(*) FROM {view}"), [], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_else(|e| panic!("v55 view {view} failed on {rel}: {e}"));
+                }
+                let missing_ended_unknown: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_session_history h
+                         JOIN agent_facts f ON f.sequence=h.sequence
+                         JOIN contents b ON b.id=f.body_content_id
+                         WHERE h.kind='external_effect' AND h.tool_start=0 AND h.result_source=0
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.kind'='observed'
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.outcome.kind'='unknown'
+                           AND CAST(b.payload AS TEXT)->>'$.fact.event.observation.receipt.cleanup.kind'='confirmed'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM agent_recall_messages m
+                             WHERE m.owner=h.owner AND m.session=h.session AND m.sequence=h.sequence
+                           )",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    missing_ended_unknown, 0,
+                    "v55 must index every ended-unknown external observation on {rel}"
+                );
             }
             ledgers.insert(rel, versions);
         }
@@ -696,6 +817,17 @@ fn verify_queued_after_upgrade(item: &QueuedBeforeUpgrade) {
         interrupted, None,
         "ordinary enqueue acquired interrupt provenance"
     );
+}
+
+// Only open settings directly with the real Root lease after the child exits.
+async fn open_compat_settings(root: &Path) -> ConfigurationStore {
+    let root = root.to_owned();
+    let owner = tokio::task::spawn_blocking(move || {
+        RootOwner::open_existing(&root, &RootNamespaces::for_current_account().unwrap()).unwrap()
+    })
+    .await
+    .unwrap();
+    ConfigurationStore::for_root(Arc::new(owner)).await.unwrap()
 }
 
 async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
@@ -911,6 +1043,34 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
         assert_eq!(forked["kind"], "forked", "{forked}");
         let forked_session_id = forked["session"]["id"].as_str().unwrap().to_owned();
 
+        // 3b. Side question (a fork whose lineage carries `side`).
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let side = call(
+            &client,
+            "agent",
+            "fork",
+            json!({
+                "sessionId": primary_session_id,
+                "expectedRevision": observed["session"]["revision"],
+                "position": {"kind": "end"},
+                "title": format!("Compat Side {nonce}"),
+                "labels": [],
+                "side": true
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(side["kind"], "forked", "{side}");
+        assert_eq!(side["session"]["branch"]["side"], true, "{side}");
+        let side_session_id = side["session"]["id"].as_str().unwrap().to_owned();
+
         // 4. Multi-participant Room + persisted message.
         let room = call(
             &client,
@@ -1030,9 +1190,48 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             "checkpoint export failed: {}",
             String::from_utf8_lossy(&export_out.stderr)
         );
-
+        let seed = dirs.workspace.join("compat-script-seed");
+        tokio::fs::write(&seed, &nonce).await.unwrap();
+        let session = &observed["session"];
+        let script = call(&client, "agent", "schedule", json!({"kind":"create","input":{
+            "timezone":"UTC","misfire":"skip","task":{"title":"Compat script cursor","intentBody":"Report a match",
+                "schedule":{"kind":"script","everySeconds":1,"startAt":0,
+                    "source":format!(r#"const prior = Deno.env.get("MAKA_AUTOMATION_STATE");
+                        if (prior === undefined) console.log(JSON.stringify({{trigger:false,state:await Deno.readTextFile("compat-script-seed")}}));
+                        else if (JSON.parse(prior) === "{nonce}") console.log(false);
+                        else throw Error("Wrong persisted script cursor");"#)},
+                "effect":{"kind":"session","target":{"sessionId":primary_session_id,
+                    "workspace":session["workspace"],"permissions":session["permissions"],
+                    "binding":session["binding"],"boundaryRevision":session["boundaryRevision"]},
+                    "model":{"connectionId":connection_id,"modelId":"gpt-4.1"}}}
+        }}), Attachments::new()).await;
+        assert_eq!(script["kind"], "committed", "{script}");
+        let script_task_id = script["taskId"].as_str().unwrap().to_owned();
+        wait_successful_script_check(&client, &script_task_id).await;
         host.quit(&mut client).await.expect("Host quit");
+        // Only the persisted cursor can satisfy the first check after upgrading.
+        tokio::fs::remove_file(seed).await.unwrap();
 
+        let execution_authority = Some(execution_compat::produce(capsule_dir).await);
+        let host_peer_id = format!("compat-peer-{nonce}");
+        let settings = open_compat_settings(&dirs.root).await;
+        settings
+            .grant_host_peer_access(
+                PeerId::new(host_peer_id.clone()).unwrap(),
+                COMPAT_PEER_GRANT.into(),
+            )
+            .await
+            .unwrap();
+        seed_pairing_invite(&settings).await;
+        settings
+            .trust_project_mcp(
+                COMPAT_MCP_OWNER.into(),
+                COMPAT_MCP_WORKSPACE.into(),
+                COMPAT_MCP_REVISION.into(),
+            )
+            .await
+            .unwrap();
+        settings.close().await.unwrap();
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
             format_version: 1,
@@ -1044,6 +1243,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             connection_slug: "compat-loopback".into(),
             primary_session_id,
             forked_session_id,
+            side_session_id: Some(side_session_id),
             room_id,
             room_pre_message,
             preset_id,
@@ -1053,7 +1253,12 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             portable_archive: portable_archive_name,
             session_data_key: "compat_capsule_state".into(),
             operation_ref,
+            script_task_id: Some(script_task_id),
+            execution_authority,
             migrations,
+            host_peer_id: Some(host_peer_id),
+            host_pairing_invite: true,
+            project_mcp_trusted: true,
         }
     })
     .catch_unwind()
@@ -1124,6 +1329,9 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         verify_queued_after_upgrade(&queued_before);
 
         // Stage 2: Exhaustive read/deserialization sweep across every persisted domain.
+        if let Some(id) = &manifest.script_task_id {
+            wait_successful_script_check(&client, id).await;
+        }
         let catalog = call(
             &client,
             "settings",
@@ -1200,6 +1408,50 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             );
         }
 
+        // A side question stays one: listed under its conversation, not among the others.
+        if let Some(side_session_id) = &manifest.side_session_id {
+            let ids = |page: &Value| {
+                page["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|session| session["id"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            let beside = call(
+                &client,
+                "agent",
+                "list",
+                json!({
+                    "filter": "all",
+                    "position": {"kind": "start"},
+                    "scope": {"kind": "side_questions", "sessionId": manifest.primary_session_id}
+                }),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(ids(&beside), [side_session_id.clone()], "{beside}");
+            let all = call(
+                &client,
+                "agent",
+                "list",
+                json!({"filter": "all", "position": {"kind": "start"}}),
+                Attachments::new(),
+            )
+            .await;
+            assert!(!ids(&all).contains(side_session_id), "{all}");
+            assert!(ids(&all).contains(&manifest.forked_session_id), "{all}");
+            let observed = call(
+                &client,
+                "agent",
+                "observe",
+                json!({"sessionId": side_session_id}),
+                Attachments::new(),
+            )
+            .await;
+            assert_eq!(observed["session"]["branch"]["side"], true, "{observed}");
+        }
+
         // Presets sweep.
         let presets = call(&client, "agent", "presets", json!({}), Attachments::new()).await;
         let presets_json = serde_json::to_string(&presets).unwrap();
@@ -1270,6 +1522,32 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         // Stage 3: Live continuation on upgraded State Root.
+        let lang_updated = call(
+            &client,
+            "settings",
+            "updateAssistantPreferences",
+            json!({
+                "expectedRevision": prefs["revision"],
+                "mutation": {
+                    "kind": "language",
+                    "preference": "zh-HK"
+                }
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(lang_updated["kind"], "committed", "{lang_updated}");
+        let prefs_after = call(
+            &client,
+            "settings",
+            "assistantPreferences",
+            json!({}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(prefs_after["language"], "zh-HK", "{prefs_after}");
+        assert_eq!(prefs_after["resolvedLanguage"], "zh-HK", "{prefs_after}");
+
         let updated_conn = call(
             &client,
             "settings",
@@ -1316,6 +1594,105 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             "post-upgrade Code Mode cell did not observe pre-upgrade SessionData"
         );
 
+        let destination = dirs.workspace.join("post-upgrade-workspace");
+        fs::create_dir_all(&destination).unwrap();
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let rebound = call(
+            &client,
+            "agent",
+            "changeSessionWorkspace",
+            json!({
+                "sessionId": manifest.primary_session_id,
+                "expectedRevision": observed["session"]["revision"],
+                "path": destination,
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(rebound["kind"], "changed", "{rebound}");
+
+        // Exercise real project MCP consent proposal + Settings decision on the upgraded Host.
+        let mcp_dir = destination.join(".maka");
+        fs::create_dir_all(&mcp_dir).unwrap();
+        fs::write(
+            mcp_dir.join("mcp.json"),
+            r#"{"mcpServers":{"compat-demo":{"command":"echo","args":["ok"],"disabled":true}}}"#,
+        )
+        .unwrap();
+        let rebound_observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let project_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(project_view["kind"], "configuration", "{project_view}");
+        assert_eq!(project_view["trusted"], false, "{project_view}");
+        assert_eq!(project_view["declined"], false, "{project_view}");
+        let project_revision = project_view["revision"].as_str().unwrap().to_owned();
+        let saved_trust = call(
+            &client,
+            "agent",
+            "setProjectMcpDecision",
+            json!({
+                "workspace": rebound_observed["session"]["workspace"],
+                "revision": project_revision,
+                "decision": "trusted",
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(saved_trust["kind"], "saved", "{saved_trust}");
+        let trusted_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(trusted_view["trusted"], true, "{trusted_view}");
+        assert_eq!(trusted_view["declined"], false, "{trusted_view}");
+        let saved_decline = call(
+            &client,
+            "agent",
+            "setProjectMcpDecision",
+            json!({
+                "workspace": rebound_observed["session"]["workspace"],
+                "revision": project_revision,
+                "decision": "declined",
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(saved_decline["kind"], "saved", "{saved_decline}");
+        let declined_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(declined_view["trusted"], false, "{declined_view}");
+        assert_eq!(declined_view["declined"], true, "{declined_view}");
+
         let room_post = call(
             &client,
             "agent",
@@ -1356,6 +1733,121 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
 
         host.quit(&mut client).await.expect("Host quit");
+
+        // Cold startup preserves historical device rows but must prune
+        // invitations for a publication this Host is not serving.
+        let settings = open_compat_settings(&dirs.root).await;
+        let peer = PeerId::new(
+            manifest
+                .host_peer_id
+                .clone()
+                .unwrap_or_else(|| format!("compat-peer-{post_nonce}")),
+        )
+        .unwrap();
+        let granted = settings
+            .has_host_peer_access(peer.clone(), COMPAT_PEER_GRANT.into())
+            .await
+            .unwrap();
+        assert_eq!(granted, manifest.host_peer_id.is_some());
+        if granted {
+            let devices = settings.list_host_peer_access().await.unwrap();
+            let device = devices.iter().find(|device| device.peer_id == peer.as_str()).unwrap();
+            assert!(device.label.is_empty() && device.created_at.is_empty());
+            assert!(settings.revoke_host_peer_access(peer.clone()).await.unwrap());
+        }
+        let redeem = async |settings: &ConfigurationStore| {
+                settings
+                    .redeem_host_peer_pairing_invite(
+                        COMPAT_PAIRING_HASH,
+                        peer.clone(),
+                        COMPAT_PEER_GRANT.into(),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+        };
+        if manifest.host_pairing_invite {
+            assert!(!redeem(&settings).await, "cold startup kept a foreign-grant invitation");
+        }
+        seed_pairing_invite(&settings).await;
+        assert!(redeem(&settings).await);
+        settings.close().await.unwrap();
+        let settings = open_compat_settings(&dirs.root).await;
+        assert!(!redeem(&settings).await, "reopen revived a consumed invitation");
+        let devices = settings.list_host_peer_access().await.unwrap();
+        let device = devices.iter().find(|device| device.peer_id == peer.as_str()).unwrap();
+        assert_eq!(device.grant, COMPAT_PEER_GRANT);
+        assert_eq!(device.label, "Compat device");
+        assert!(!device.created_at.is_empty());
+        assert!(settings.revoke_host_peer_access(peer).await.unwrap());
+        if manifest.project_mcp_trusted {
+            assert_eq!(
+                settings
+                    .project_mcp_decision(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_REVISION.into(),
+                    )
+                    .await
+                    .unwrap(),
+                Some(maka_config::ProjectMcpDecision::Trusted)
+            );
+            assert!(
+                settings
+                    .advance_project_mcp_trust(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_REVISION.into(),
+                        COMPAT_MCP_NEXT_REVISION.into(),
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                settings
+                    .project_mcp_decision(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_NEXT_REVISION.into(),
+                    )
+                    .await
+                    .unwrap(),
+                Some(maka_config::ProjectMcpDecision::Trusted)
+            );
+        }
+        settings
+            .decline_project_mcp(
+                COMPAT_MCP_OWNER.into(),
+                COMPAT_MCP_WORKSPACE.into(),
+                COMPAT_MCP_REVISION.into(),
+            )
+            .await
+            .unwrap();
+        settings.close().await.unwrap();
+        let settings = open_compat_settings(&dirs.root).await;
+        assert_eq!(
+            settings
+                .project_mcp_decision(
+                    COMPAT_MCP_OWNER.into(),
+                    COMPAT_MCP_WORKSPACE.into(),
+                    COMPAT_MCP_REVISION.into(),
+                )
+                .await
+                .unwrap(),
+            Some(maka_config::ProjectMcpDecision::Declined)
+        );
+        assert_eq!(
+            settings
+                .project_mcp_decision(
+                    COMPAT_MCP_OWNER.into(),
+                    COMPAT_MCP_WORKSPACE.into(),
+                    COMPAT_MCP_NEXT_REVISION.into(),
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        settings.close().await.unwrap();
 
         // Online checkpoint re-export & open sweep on the upgraded live Root
         // (proves checkpoint heads and objects survived upgrade, not only the pre-upgrade tarball).
@@ -1409,6 +1901,10 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         );
         let inspected: Value = serde_json::from_slice(&inspect_out.stdout).unwrap();
         assert!(!inspected["facts"].as_array().unwrap().is_empty());
+
+        if let Some(execution) = &manifest.execution_authority {
+            execution_compat::verify(capsule_dir, execution).await;
+        }
 
         // Post-upgrade SQLite integrity and monotonic migration check.
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);

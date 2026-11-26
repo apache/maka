@@ -33,7 +33,9 @@ type AdmissionGuards = (runs::Ordered, Option<tokio::sync::OwnedMutexGuard<()>>)
 
 impl Owner {
     pub fn activated(self: &Arc<Self>) {
-        self.recover_removed_sessions();
+        if self.store.checkpoint_execution().is_none() {
+            self.recover_removed_sessions();
+        }
         self.scheduler.bind(self);
         self.todo.bind(self);
         self.recall
@@ -42,10 +44,13 @@ impl Owner {
             .expect("Recall bound once");
         self.bot.bind(self);
         self.goals.bind(self);
-        self.start_goals();
-        self.start_schedules();
-        self.start_bot_wake();
-        self.start_completion_notifications();
+        // Managed execution owns one ordinary Session, not Root-wide producers.
+        if self.store.checkpoint_execution().is_none() {
+            self.start_goals();
+            self.start_schedules();
+            self.start_bot_wake();
+            self.start_completion_notifications();
+        }
         let owner = self.clone();
         self.producers.spawn(async move { owner.schedule().await });
     }
@@ -63,10 +68,22 @@ impl Owner {
             Ok(root) => root,
             Err(_) => return,
         };
+        if let Some(execution) = self.store.checkpoint_execution()
+            && let Err(error) = execution.check().await
+        {
+            tracing::error!(%error, "Execution authority refused queue recovery");
+            return;
+        }
         if let Err(error) = self
             .durable
             .queue()
-            .recover_undelivered_steering(self.run_owner(), UnixMillis(now() as i64))
+            .recover_undelivered_steering(
+                self.run_owner(),
+                self.store
+                    .checkpoint_execution()
+                    .map(|e| e.grant().binding.source.session.clone()),
+                UnixMillis(now() as i64),
+            )
             .await
         {
             tracing::error!(%error, "Failed to recover undelivered steering");
@@ -158,6 +175,9 @@ impl Owner {
         at: UnixMillis,
         cause: ReadyCause,
     ) -> Result<AdmissionWaits, String> {
+        if let Some(execution) = self.store.checkpoint_execution() {
+            execution.check().await.map_err(|e| e.to_string())?;
+        }
         let waits = AdmissionWaits::new();
         let mut sessions = BTreeSet::new();
         let mut after = None;
@@ -172,6 +192,9 @@ impl Owner {
             }
             for entry in page {
                 after = Some(entry.admission_sequence);
+                if !self.execution_contains_session(&entry.session_id) {
+                    continue;
+                }
                 if let maka_agent_state::DriverPurpose::LateExternalCleanup { task } = entry.purpose
                 {
                     if let Err(error) = self.wake_cleanup(entry.run, entry.session_id, task).await {
@@ -213,6 +236,9 @@ impl Owner {
             for ready in page {
                 after = Some(ready.cursor);
                 let session = ready.entry.request.spec.session_id.clone();
+                if !self.execution_contains_session(&session) {
+                    continue;
+                }
                 if !ready.entry.placement.is_followup() {
                     continue;
                 }
@@ -278,6 +304,7 @@ impl Owner {
         if self.stop.is_cancelled() {
             return Ok(());
         }
+        self.require_execution(session).await?;
         let original = self
             .durable
             .queue()
@@ -285,6 +312,7 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?
             .ok_or("agent_queue_request_unavailable")?;
+        self.require_execution_spec(&original.request.spec).await?;
         let busy = {
             let runs = ordered.state().await;
             runs.closing || runs.busy(session)
@@ -484,6 +512,10 @@ impl Owner {
         if view.spec.owner != self.run_owner() || !matches!(view.spec.origin, RunOrigin::Local) {
             return Ok(());
         }
+        if !self.execution_contains_session(&view.spec.session_id) {
+            return Ok(());
+        }
+        self.require_execution_spec(&view.spec).await?;
         {
             let mut runs = self.runs.state().await;
             if view.terminal.is_some() {

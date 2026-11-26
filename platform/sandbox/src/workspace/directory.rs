@@ -122,6 +122,19 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("workspace");
         std::fs::create_dir(&path).unwrap();
+        // cap-std's Windows directory handle denies FILE_SHARE_DELETE. This
+        // identity test holds a renameable handle while replacing the path.
+        #[cfg(windows)]
+        let directory = {
+            use std::os::windows::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&path)
+                .unwrap();
+            Dir::from_std_file(file)
+        };
+        #[cfg(unix)]
         let directory = Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap();
         let grant = DirectoryIdentity::capture(&directory).unwrap();
 
@@ -130,6 +143,7 @@ mod tests {
         std::fs::remove_file(&probe).unwrap();
         let same_reopened = Dir::open_ambient_dir(&path, cap_std::ambient_authority()).unwrap();
         assert!(grant.matches(&same_reopened).unwrap());
+        drop(same_reopened);
 
         std::fs::rename(&path, temp.path().join("original")).unwrap();
         std::fs::create_dir(&path).unwrap();

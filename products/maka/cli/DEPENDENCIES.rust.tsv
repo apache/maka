@@ -22,6 +22,10 @@ alloc-stdlib@0.3.0					X
 allocator-api2@0.2.21		X										X							
 ambient-authority@0.0.2		X	X									X							
 annotate-snippets@0.12.17		X										X							
+anstream@1.0.0		X										X							
+anstyle-parse@1.0.0		X										X							
+anstyle-query@1.1.5		X										X							
+anstyle-wincon@3.0.11		X										X							
 anstyle@1.0.14		X										X							
 anyhow@1.0.104		X										X							
 append-only-vec@0.1.10		X										X							
@@ -39,8 +43,11 @@ arrayvec@0.7.8		X										X
 ascii@1.1.0		X										X							
 ashpd@0.13.13												X							
 asn1-rs-derive@0.4.0		X										X							
+asn1-rs-derive@0.6.0		X										X							
 asn1-rs-impl@0.1.0		X										X							
+asn1-rs-impl@0.2.0		X										X							
 asn1-rs@0.5.2		X										X							
+asn1-rs@0.7.2		X										X							
 ast_node@5.0.0		X																	
 async-broadcast@0.7.2		X										X							
 async-channel@2.5.0		X										X							
@@ -71,6 +78,7 @@ aws-lc-sys@0.40.0		X			X						X	X	X
 aws-lc-sys@0.46.0		X			X						X	X	X						
 axum-core@0.5.6												X							
 axum@0.8.9												X							
+backon@1.6.0		X																	
 base-encode@0.3.1												X							
 base16ct@0.2.0		X										X							
 base16ct@1.0.0		X										X							
@@ -161,6 +169,7 @@ cmov@0.5.4		X										X
 cobs@0.3.0		X										X							
 collection_literals@1.0.3												X							
 color_quant@1.1.0												X							
+colorchoice@1.0.5		X										X							
 compact_str@0.10.0												X							
 compact_str@0.7.1												X							
 compact_str@0.9.1												X							
@@ -175,6 +184,7 @@ constant_time_eq@0.4.2		X						X					X
 convert_case@0.10.0												X							
 convert_case@0.12.0												X							
 cooked-waker@5.0.0														X					
+cordyceps@0.3.5												X							
 core_maths@0.1.1												X							
 core-foundation-sys@0.8.7		X										X							
 core-foundation@0.10.1		X										X							
@@ -228,6 +238,8 @@ darling_macro@0.24.1												X
 darling@0.24.1												X							
 dashmap@5.5.3												X							
 dashmap@6.2.1												X							
+data-encoding-macro-internal@0.1.19												X							
+data-encoding-macro@0.1.21												X							
 data-encoding@2.11.1												X							
 data-url@0.3.1		X										X							
 debugid@0.8.0		X																	
@@ -284,6 +296,7 @@ deno_whoami@0.1.0												X
 denort_helper@0.58.0												X							
 der_derive@0.7.3		X										X							
 der_derive@0.8.0		X										X							
+der-parser@10.0.0		X										X							
 der-parser@8.2.0		X										X							
 der@0.7.10		X										X							
 der@0.8.2		X										X							
@@ -293,6 +306,7 @@ derive_more@2.1.1												X
 derive-io-macros@0.4.1		X										X							
 derive-io@0.4.1		X										X							
 des@0.8.1		X										X							
+diatomic-waker@0.2.3		X										X							
 diff@0.1.13		X										X							
 digest@0.10.7		X										X							
 digest@0.11.3		X										X							
@@ -340,6 +354,7 @@ encoding_rs@0.8.35		X			X							X
 endi@1.1.1												X							
 endian-type@0.2.0												X							
 enum-as-inner@0.6.1		X										X							
+enum-assoc@1.4.2		X										X							
 enumflags2_derive@0.7.12		X										X							
 enumflags2@0.7.12		X										X							
 env_filter@2.0.0		X										X							
@@ -405,6 +420,7 @@ fs2@0.4.3		X										X
 fslock@0.2.1												X							
 funty@2.0.0												X							
 futf@0.1.5		X										X							
+futures-buffered@0.2.14												X							
 futures-channel@0.3.34		X										X							
 futures-concurrency@7.7.1		X										X							
 futures-core@0.3.34		X										X							
@@ -563,6 +579,7 @@ icu_segmenter_data@2.4.0																X
 icu_segmenter@2.4.0																X			
 icy_sixel@0.5.1		X										X							
 ident_case@1.0.1		X										X							
+identity-hash@0.1.0		X										X							
 idna_adapter@1.2.2		X										X							
 idna@1.1.0		X										X							
 if_chain@1.0.3		X										X							
@@ -589,6 +606,13 @@ io-lifetimes@2.0.4		X	X									X
 io-lifetimes@3.0.1		X	X									X							
 ipconfig@0.3.4		X										X							
 ipnet@2.12.2		X										X							
+iroh-base@1.5.0		X										X							
+iroh-dns@1.5.0		X										X							
+iroh-metrics-derive@1.0.1		X										X							
+iroh-metrics@1.0.3		X										X							
+iroh-relay@1.5.0		X										X							
+iroh@1.5.0		X										X							
+is_terminal_polyfill@1.70.2		X										X							
 is-docker@0.2.0												X							
 is-macro@0.3.8		X																	
 is-wsl@0.4.0												X							
@@ -601,6 +625,7 @@ ixdtf@0.6.7																X
 jiff-core@0.1.1												X						X	
 jiff-tzdb-platform@0.1.3												X						X	
 jiff-tzdb@0.1.9												X						X	
+jiff-tzdb@1.0.0												X						X	
 jiff@0.2.38												X						X	
 jiter@0.17.0												X							
 jobserver@0.1.35		X										X							
@@ -645,6 +670,8 @@ lock_api@0.4.14		X										X
 log@0.4.34		X										X							
 lru-slab@0.1.3		X										X							X
 lru@0.18.5												X							
+lru@0.19.2												X							
+mac-addr@0.3.0												X							
 mac@0.1.1		X										X							
 mach2@0.6.0		X		X								X							
 maka-acp-native@0.3.0		X																	
@@ -674,6 +701,8 @@ maka-fs-tools@0.3.0		X
 maka-goal@0.3.0		X																	
 maka-host-js@0.3.0		X																	
 maka-host-runtime@0.3.0		X																	
+maka-i18n-build@0.3.0		X																	
+maka-i18n@0.3.0		X																	
 maka-interactions-api@0.3.0		X																	
 maka-interactions-native@0.3.0		X																	
 maka-js-runtime@0.3.0		X																	
@@ -689,6 +718,8 @@ maka-product-native@0.3.0		X
 maka-provider-protocol@0.3.0		X																	
 maka-providers@0.3.0		X																	
 maka-python-runtime@0.3.0		X																	
+maka-remote-pairing@0.3.0		X																	
+maka-remote-transport@0.3.0		X																	
 maka-sandbox@0.3.0		X																	
 maka-scheduler@0.3.0		X																	
 maka-schema@0.3.0		X																	
@@ -719,6 +750,7 @@ markdown@1.0.0												X
 markup5ever_rcdom@0.3.0		X										X							
 markup5ever@0.12.1		X										X							
 markup5ever@0.39.0		X										X							
+matchers@0.2.0												X							
 matchit@0.8.4					X							X							
 maybe-owned@0.3.4		X										X							
 md-5@0.10.6		X										X							
@@ -747,10 +779,21 @@ monty-types@1.3.0												X
 monty@1.3.0												X							
 moxcms@0.8.1		X			X														
 msvc_spectre_libs@0.1.3		X										X							
-mxc-sdk@1.0.1												X							
+mxc-sdk@1.1.0												X							
+n0-dns-resolver@0.1.1		X										X							
+n0-error-macros@1.0.3		X										X							
+n0-error@1.0.3		X										X							
+n0-future@0.3.2		X										X							
+n0-watcher@1.0.1		X										X							
 napi_sym@0.190.0												X							
 native-tls@0.2.18		X										X							
+netdev@0.47.0												X							
 netif@0.1.6											X								
+netlink-packet-core@0.9.0												X							
+netlink-packet-route@0.33.0												X							
+netlink-proto@0.13.0												X							
+netlink-sys@0.9.0												X							
+netwatch@0.20.2		X										X							
 new_debug_unreachable@1.0.6												X							
 nibble_vec@0.1.0												X							
 nix@0.23.2												X							
@@ -766,27 +809,32 @@ nom@7.1.3												X
 nom@8.0.0												X							
 nonempty@0.12.0												X							
 nonmax@0.5.5		X										X							
+noq-proto@1.5.0		X										X							
+noq-udp@1.5.0		X										X							
+noq@1.5.0		X										X							
 normpath@1.5.2		X										X							
 notify-types@2.1.0		X										X							
-notify@8.2.1								X											
-nsh-base@0.6.0		X																	
-nsh-bundler@0.6.0		X																	
-nsh-core@0.6.0		X																	
-nsh-engine@0.6.0		X																	
-nsh-i18n@0.6.0		X																	
-nsh-js@0.6.0		X																	
-nsh-macros@0.6.0		X																	
-nsh-package@0.6.0		X																	
-nsh-platform-apple@0.6.0		X																	
-nsh-platform-linux@0.6.0		X																	
-nsh-platform-macos@0.6.0		X																	
-nsh-platform-tui@0.6.0		X																	
-nsh-platform-windows@0.6.0		X																	
-nsh-terminal@0.6.0		X																	
-nsh-updater@0.6.0		X																	
+notify@8.2.2								X											
+nsh-base@0.7.0		X																	
+nsh-bundler@0.7.0		X																	
+nsh-core@0.7.0		X																	
+nsh-engine@0.7.0		X																	
+nsh-i18n@0.7.0		X																	
+nsh-js@0.7.0		X																	
+nsh-macros@0.7.0		X																	
+nsh-package@0.7.0		X																	
+nsh-platform-apple@0.7.0		X																	
+nsh-platform-linux@0.7.0		X																	
+nsh-platform-macos@0.7.0		X																	
+nsh-platform-tui@0.7.0		X																	
+nsh-platform-windows@0.7.0		X																	
+nsh-terminal@0.7.0		X																	
+nsh-updater@0.7.0		X																	
 ntapi@0.4.3		X										X							
 nu-ansi-term@0.50.3												X							
 num_cpus@1.17.0		X										X							
+num_enum_derive@0.7.6		X			X							X							
+num_enum@0.7.6		X			X							X							
 num-bigint-dig@0.8.6		X										X							
 num-bigint@0.4.8		X										X							
 num-bigint@0.5.1		X										X							
@@ -819,12 +867,16 @@ objc2-io-surface@0.3.2		X										X							X
 objc2-quartz-core@0.2.2												X							
 objc2-quartz-core@0.3.2		X										X							X
 objc2-screen-capture-kit@0.3.2		X										X							X
+objc2-security@0.3.2		X										X							X
+objc2-system-configuration@0.3.2		X										X							X
 objc2@0.5.3												X							
 objc2@0.6.5												X							
 object@0.36.7		X										X							
 object@0.39.1		X										X							
 ocb3@0.1.0		X										X							
 oid-registry@0.6.1		X										X							
+oid-registry@0.8.1		X										X							
+once_cell_polyfill@1.70.2		X										X							
 once_cell@1.21.4		X										X							
 onig_sys@69.9.3												X							
 onig@6.5.3												X							
@@ -889,6 +941,7 @@ pango-sys@0.22.9												X
 pango@0.22.9												X							
 pangocairo-sys@0.22.9												X							
 pangocairo@0.22.9												X							
+papaya@0.2.5												X							
 par-core@2.0.0		X																	
 parking_lot_core@0.9.12		X										X							
 parking_lot@0.12.5		X										X							
@@ -901,6 +954,7 @@ pbkdf2@0.12.2		X										X
 pbkdf2@0.13.0		X										X							
 pem-rfc7468@0.7.0		X										X							
 pem-rfc7468@1.0.0		X										X							
+pem@4.0.0												X							
 percent-encoding@2.3.2		X										X							
 petgraph@0.8.3		X										X							
 phf_codegen@0.11.3												X							
@@ -933,6 +987,7 @@ pkg-config@0.3.34		X										X
 platform-linux@0.54.0												X							
 platform-macos@0.54.0												X							
 platform-windows@0.54.0												X							
+plist@1.10.4												X							
 png@0.18.1		X										X							
 pnp@0.12.12				X															
 polling@3.11.0		X										X							
@@ -941,6 +996,7 @@ polycool@0.4.0		X										X
 polyval@0.6.2		X										X							
 polyval@0.7.3		X										X							
 portable-atomic@1.15.0		X										X							
+postcard-derive@0.2.3		X										X							
 postcard@1.1.3		X										X							
 potential_utf@0.1.6																X			
 powerfmt@0.2.1		X										X							
@@ -962,6 +1018,7 @@ pxfm@0.1.30		X			X
 quantette@0.6.0		X										X							
 quick-error@2.0.1		X										X							
 quick-xml@0.41.0												X							
+quick-xml@0.42.0												X							
 quickjs-jit-core@0.14.2												X							
 quickjs-jit-macro@0.14.2												X							
 quickjs-jit-stdlib@0.14.2		X																	
@@ -997,6 +1054,7 @@ ratex-types@0.1.15												X
 rayon-core@1.13.0		X										X							
 rayon@1.12.0		X										X							
 rc2@0.8.1		X										X							
+rcgen@0.14.10		X										X							
 read-fonts@0.41.0		X										X							
 ref-cast-impl@1.0.27		X										X							
 ref-cast@1.0.27		X										X							
@@ -1009,6 +1067,8 @@ regex@1.13.1		X										X
 regorus@0.10.1		X			X							X							
 regress@0.12.0		X										X							
 relative-path@2.0.3		X										X							
+reloadable-core@0.1.0												X							
+reloadable-state@0.1.0												X							
 reqwest@0.13.5		X										X							
 resb@0.1.2																X			
 resolv-conf@0.7.6		X										X							
@@ -1072,6 +1132,9 @@ rustix-linux-procfs@0.1.1		X	X									X
 rustix-openpty@0.2.0		X	X									X							
 rustix@0.38.44		X	X									X							
 rustix@1.1.5		X	X									X							
+rustls-cert-file-reader@0.4.2												X							
+rustls-cert-read@0.3.0												X							
+rustls-cert-reloadable-resolver@0.7.1												X							
 rustls-native-certs@0.7.3		X									X	X							
 rustls-native-certs@0.8.5		X									X	X							
 rustls-pemfile@2.2.0		X									X	X							
@@ -1102,6 +1165,7 @@ secret-service@5.2.0		X										X
 security-framework-sys@2.17.0		X										X							
 security-framework@2.11.1		X										X							
 security-framework@3.7.0		X										X							
+seize@0.5.1												X							
 selectors@0.38.0														X					
 self_cell@1.3.0		X								X									
 semver@1.0.28		X										X							
@@ -1124,6 +1188,7 @@ serde_yaml@0.9.34+deprecated		X										X
 serde-saphyr@1.3.0		X										X							
 serde@1.0.229		X										X							
 serdect@0.2.0		X										X							
+serdect@0.4.3		X										X							
 servo_arc@0.4.3		X										X							
 sha1_smol@1.0.1					X														
 sha1@0.10.7		X										X							
@@ -1147,6 +1212,7 @@ signature@3.0.0		X										X
 simd-adler32@0.3.10												X							
 simd-json@0.18.1		X										X							
 simdutf8@0.1.5		X										X							
+simple-dns@0.13.1												X							
 simplecss@0.2.2		X										X							
 siphasher@0.3.11		X										X							
 siphasher@1.0.4		X										X							
@@ -1159,8 +1225,10 @@ smartstring@1.0.1															X
 smawk@0.3.3												X							
 socket2@0.5.10		X										X							
 socket2@0.6.5		X										X							
+sorted-index-buffer@0.2.1		X										X							
 sourcemap@9.3.2					X														
 speedate@0.17.0												X							
+spez@0.1.2				X															
 spin@0.10.1												X							
 spin@0.9.9												X							
 spki@0.7.3		X										X							
@@ -1232,8 +1300,11 @@ sys_traits_macros@0.1.0												X
 sys_traits@0.1.29												X							
 sys-locale@0.3.2		X										X							
 sysinfo@0.31.4												X							
+system-configuration-sys@0.6.0		X										X							
+system-configuration@0.7.0		X										X							
+system-configuration@0.8.0		X										X							
 system-deps@9.0.1		X										X							
-taffy@0.15.0												X							
+taffy@0.16.0												X							
 tagptr@0.2.0		X										X							
 tap@1.0.1												X							
 tar@0.4.46		X										X							
@@ -1269,6 +1340,7 @@ tinyvec@1.13.3		X										X							X
 tokio-eld@0.3.0		X										X							
 tokio-macros@2.7.2												X							
 tokio-native-tls@0.3.1												X							
+tokio-rustls-acme@0.10.0		X										X							
 tokio-rustls@0.26.6		X										X							
 tokio-socks@0.5.3												X							
 tokio-stream@0.1.19												X							
@@ -1277,6 +1349,7 @@ tokio-tungstenite@0.28.0												X
 tokio-tungstenite@0.30.0												X							
 tokio-util@0.7.20												X							
 tokio-vsock@0.7.3		X																	
+tokio-websockets@0.13.3												X							
 tokio@1.54.1												X							
 toml_datetime@0.6.11		X										X							
 toml_datetime@1.1.2+spec-1.1.0		X										X							
@@ -1354,6 +1427,7 @@ usvg@0.48.1		X										X
 utf-8@0.7.6		X										X							
 utf8_iter@1.0.4		X										X							
 utf8-zero@0.8.1		X										X							
+utf8parse@0.2.2		X										X							
 uuid-simd@0.8.0												X							
 uuid@1.29.0		X										X							
 v8@150.4.0												X							
@@ -1445,6 +1519,7 @@ winresource@0.1.34												X
 winsafe@0.0.19												X							
 winx@0.36.4			X																
 wl-clipboard-rs@0.9.4		X										X							
+wmi@0.18.4		X										X							
 wnaf@0.14.1		X										X							
 writeable@0.6.4																X			
 wuff@0.2.9												X							
@@ -1455,6 +1530,7 @@ x11rb@0.13.2		X										X
 x25519-dalek@2.0.1					X														
 x25519-dalek@3.0.0					X														
 x509-parser@0.15.1		X										X							
+x509-parser@0.18.1		X										X							
 xattr@1.6.1		X										X							
 xkbcommon@0.9.0												X							
 xkeysym@0.2.1		X										X							X
@@ -1466,6 +1542,7 @@ yaml-rust2@0.13.0		X										X
 yamux@0.13.10		X										X							
 yansi@1.0.1		X										X							
 yasna@0.5.2		X										X							
+yasna@0.6.0		X										X							
 yoke-derive@0.7.5																X			
 yoke-derive@0.8.4																X			
 yoke@0.7.5																X			

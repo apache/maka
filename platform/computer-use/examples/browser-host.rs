@@ -75,7 +75,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -94,7 +94,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -106,7 +106,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -120,7 +120,7 @@ async fn run() -> Result<(), String> {
             },
             &peer_invocation,
             &cancellation,
-            Language::En,
+            Language::EN,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -131,7 +131,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -146,7 +146,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -160,7 +160,7 @@ async fn run() -> Result<(), String> {
                 "handoff-example",
                 "inventory",
                 invocation.execution_correlation(),
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -169,7 +169,7 @@ async fn run() -> Result<(), String> {
                 Command::BrowserUserOpenTabs { browser_id: id },
                 &peer_invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -181,7 +181,7 @@ async fn run() -> Result<(), String> {
             "handoff-peer",
             "inventory",
             peer_invocation.execution_correlation(),
-            Language::En,
+            Language::EN,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -196,7 +196,7 @@ async fn run() -> Result<(), String> {
                 },
                 &invocation,
                 &cancellation,
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -209,7 +209,7 @@ async fn run() -> Result<(), String> {
                 "handoff-example",
                 "inventory",
                 invocation.execution_correlation(),
-                Language::En,
+                Language::EN,
             )
             .await
             .map_err(|error| error.to_string())?;

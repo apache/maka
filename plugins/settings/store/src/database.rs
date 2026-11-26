@@ -44,6 +44,27 @@ static MIGRATIONS: &[Migration] = &[
         configure: None,
         data: None,
     },
+    Migration {
+        version: 3,
+        description: "host peer access",
+        sql: include_str!("../migrations/0003_host_peer_access.sql"),
+        configure: None,
+        data: None,
+    },
+    Migration {
+        version: 4,
+        description: "host peer pairing",
+        sql: include_str!("../migrations/0004_host_peer_pairing.sql"),
+        configure: None,
+        data: None,
+    },
+    Migration {
+        version: 5,
+        description: "project mcp decision",
+        sql: include_str!("../migrations/0005_project_mcp_decision.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 pub(crate) fn unsigned(value: i64) -> Result<u64> {

@@ -390,6 +390,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: Some(queue::rebuild_queue_projections),
     },
+    maka_event_log::migration::Migration {
+        version: 55,
+        description: "index ended-unknown external effect observations and redaction links",
+        sql: include_str!("../migrations/0055_external_effect_ended_unknown.sql"),
+        configure: None,
+        data: Some(recall::migrate_external_effect_observations),
+    },
 ];
 
 #[cfg(test)]

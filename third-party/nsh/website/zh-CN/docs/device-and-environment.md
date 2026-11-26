@@ -27,6 +27,28 @@ demo: guide-device
 | `network()` | `network()`（`nsh`） | 设备怎样连到网络：是否在线，Wi-Fi、蜂窝还是有线，是否昂贵或受限，以及在 iOS 上应用能否使用蜂窝数据（[网络](#网络)）。 |
 | `reduce_motion()`、`screen_reader()` | `reduceMotion()`、`screenReaderEnabled()`（`nsh`） | 见[无障碍](./accessibility.md)。 |
 
+```tsx tabs
+import { mount, Text, View, safeArea } from "nsh";
+import { colorScheme, fontScale, windowSize } from "nsh";
+import { Window } from "nsh/desktop";
+
+function App() {
+  return (
+    <View style={{ flex: 1, paddingTop: safeArea().top + 16, paddingHorizontal: 16, backgroundColor: colorScheme() === "dark" ? "#0d1117" : "#ffffff" }}>
+      <Text style={{ color: colorScheme() === "dark" ? "#e6edf3" : "#1f2328" }}>
+        {Math.round(windowSize().width)} × {Math.round(windowSize().height)} pt, text at {fontScale().toFixed(2)}×
+      </Text>
+    </View>
+  );
+}
+
+mount(() => (
+  <Window id="main">
+    <App />
+  </Window>
+));
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -53,31 +75,25 @@ pub fn App() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { mount, Text, View, safeArea } from "nsh";
-import { colorScheme, fontScale, windowSize } from "nsh";
-import { Window } from "nsh/desktop";
-
-function App() {
-  return (
-    <View style={{ flex: 1, paddingTop: safeArea().top + 16, paddingHorizontal: 16, backgroundColor: colorScheme() === "dark" ? "#0d1117" : "#ffffff" }}>
-      <Text style={{ color: colorScheme() === "dark" ? "#e6edf3" : "#1f2328" }}>
-        {Math.round(windowSize().width)} × {Math.round(windowSize().height)} pt, text at {fontScale().toFixed(2)}×
-      </Text>
-    </View>
-  );
-}
-
-mount(() => (
-  <Window id="main">
-    <App />
-  </Window>
-));
-```
-
 ## 窗口尺寸与响应式布局
 
 `window()`（TSX：`windowSize()`）是 NSH 渲染目标 surface 的尺寸：手机上是屏幕，iPad 分屏时是窗口，嵌入时是宿主视图。桌面平台上应用宿主不可见，所以这是宿主 surface 的尺寸，不是调用方窗口的尺寸；窗口内的布局应读取它自己的 `state()?.contentBounds` 和 `state()?.scaleFactor`。用它来改变布局，而不只是改变尺寸：
+
+```tsx tabs
+import { Image, View } from "nsh";
+import { windowSize } from "nsh";
+
+function Gallery() {
+  const columns = () => (windowSize().width >= 700 ? 4 : windowSize().width >= 500 ? 3 : 2);
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+      <Each of={photos}>
+        {(p) => <Image src={p().url} style={{ width: (windowSize().width - 32 - (columns() - 1) * 8) / columns(), aspectRatio: 1 }} />}
+      </Each>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -96,27 +112,17 @@ fn gallery() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Image, View } from "nsh";
-import { windowSize } from "nsh";
-
-function Gallery() {
-  const columns = () => (windowSize().width >= 700 ? 4 : windowSize().width >= 500 ? 3 : 2);
-  return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-      <Each of={photos}>
-        {(p) => <Image src={p().url} style={{ width: (windowSize().width - 32 - (columns() - 1) * 8) / columns(), aspectRatio: 1 }} />}
-      </Each>
-    </View>
-  );
-}
-```
-
 很多时候 flexbox、百分比和 `aspect_ratio`（`aspectRatio`）就能完成任务，根本不需要读取尺寸；见[布局](./layout.md)。Rust 中 `style_when(|| window().width.0 >= 640.0, |s| s.flex_row())` 随宽度切换样式；TSX 中使用 Tailwind 时，断点变体（`sm:`、`md:`、`lg:`、`xl:`、`2xl:`、`max-*:`、`min-[…]:`）和 `portrait:` / `landscape:` 同样跟随窗口：`class="grid grid-cols-2 md:grid-cols-4"`。
 
 ## 深色模式
 
 外观跟随系统，除非应用设置了自己的外观。在 Rust 中，支持深色模式最简单的方法是带有浅色值和深色值的颜色 `AdaptiveColor::rgb(light, dark)`：外观变化时它在原生层切换，无需运行任何代码。在 TSX 中则是 Tailwind 的 `dark:` 变体，它在 `colorScheme()` 为 `"dark"` 时生效：
+
+```tsx tabs
+<View class="flex-1 bg-white dark:bg-zinc-900 p-4">
+  <Text class="text-zinc-900 dark:text-zinc-100">Follows the system appearance</Text>
+</View>
+```
 
 ```rust tabs
 view()
@@ -129,23 +135,7 @@ view()
     )
 ```
 
-```tsx tabs
-<View class="flex-1 bg-white dark:bg-zinc-900 p-4">
-  <Text class="text-zinc-900 dark:text-zinc-100">Follows the system appearance</Text>
-</View>
-```
-
 其他情况下，在闭包或计算值中读取 `dark()`（TSX：`colorScheme()`）；在 TSX 中颜色较多时，先统一派生出一套调色板：
-
-```rust tabs
-use nsh_core::prelude::*;
-
-// `dark()` 是响应式的：外观变化时闭包重新运行。
-view()
-    .flex_1()
-    .bg(move || if dark() { rgb(0x0d1117) } else { rgb(0xf6f8fa) })
-    .child(text("Hello"))
-```
 
 ```tsx tabs
 import { computed, Text, View } from "nsh";
@@ -162,6 +152,16 @@ const palette = computed(() =>
 </View>
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+// `dark()` 是响应式的：外观变化时闭包重新运行。
+view()
+    .flex_1()
+    .bg(move || if dark() { rgb(0x0d1117) } else { rgb(0xf6f8fa) })
+    .child(text("Hello"))
+```
+
 Rust 组件也从主题中取色，主题为每种颜色提供浅色和深色两个值（`nsh.json` 的 `"theme"`，见[用 Rust 开发](./rust.md)），所以它们也会随系统切换。要让状态栏与背景相配，为页面和对话框设置 [`statusBar`](../modules/nsh-base.md#status-bar)，或在 `nsh.json` 中为应用设置。
 
 ### 应用自己的外观
@@ -173,6 +173,15 @@ Rust 组件也从主题中取色，主题为每种颜色提供浅色和深色两
 ```
 
 `set_color_scheme(Appearance::Dark)`（TSX：`nsh` 中的 `setColorScheme`）在运行时修改它，用于应用内的外观设置；`Appearance::System`（`"system"`）恢复跟随系统：
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { colorScheme, setColorScheme } from "nsh";
+
+<View onPress={() => setColorScheme(colorScheme() === "dark" ? "light" : "dark")} role="button" class="rounded-lg px-4 py-2 bg-neutral-200 dark:bg-neutral-800">
+  <Text class="text-neutral-900 dark:text-neutral-50">{colorScheme() === "dark" ? "Light" : "Dark"}</Text>
+</View>
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -192,15 +201,6 @@ view()
     )
 ```
 
-```tsx tabs
-import { Text, View } from "nsh";
-import { colorScheme, setColorScheme } from "nsh";
-
-<View onPress={() => setColorScheme(colorScheme() === "dark" ? "light" : "dark")} role="button" class="rounded-lg px-4 py-2 bg-neutral-200 dark:bg-neutral-800">
-  <Text class="text-neutral-900 dark:text-neutral-50">{colorScheme() === "dark" ? "Light" : "Dark"}</Text>
-</View>
-```
-
 > [!TIP]
 > 开发时两种外观都要测试：`xcrun simctl ui booted appearance dark` 可以切换 iOS 模拟器，Android 的快捷设置里有深色主题开关。变化会立即传到应用中，无需重新加载。
 
@@ -213,15 +213,15 @@ import { colorScheme, setColorScheme } from "nsh";
 | `.allow_font_scaling(..)` | `allowFontScaling` | `true` | 跟随系统文字大小。 |
 | `.max_font_size_multiplier(..)` | `maxFontSizeMultiplier` | `0`（无上限） | 应用于该文本的最大缩放。 |
 
+```tsx tabs
+<Text style={{ fontSize: 34, fontWeight: "700" }} maxFontSizeMultiplier={1.4}>Today</Text>
+```
+
 ```rust tabs
 text("Today")
     .text_size(px(34.0))
     .font_weight(FontWeight::BOLD)
     .max_font_size_multiplier(1.4)
-```
-
-```tsx tabs
-<Text style={{ fontSize: 34, fontWeight: "700" }} maxFontSizeMultiplier={1.4}>Today</Text>
 ```
 
 对于不会自动跟随文字的布局，读取 `font_scale()` 来调整，例如文字变大时把横排改为竖排：Rust 中 `.style_when(|| font_scale() > 1.3, |s| s.flex_col())`，TSX 中 `flexDirection: fontScale() > 1.3 ? "column" : "row"`。
@@ -234,12 +234,6 @@ text("Today")
 
 应用自己在各语言下的文字来自它的翻译：`t("hello")`（`nsh/i18n`；Rust 中为 `t!("hello")`）以用户的语言显示一个 key，`setLocale` 让应用显示另一种语言。见 [I18n](./i18n.md)。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-text(move || t!("welcome"))
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import { t } from "nsh/i18n";
@@ -247,19 +241,17 @@ import { t } from "nsh/i18n";
 <Text>{t("welcome")}</Text>
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+text(move || t!("welcome"))
+```
+
 ## 语言与地区设置
 
 `locale_settings()`（TSX：`localeSettings()`）给出用户为语言和地区所做的其他设置：偏好语言、设备的时区，以及用户如何读时间、星期和度量。系统把这些放在一起保存（iPhone 和 Mac 上的“语言与地区”、Android 的语言和地区偏好、Windows 的“时间和语言”），并常常一次改动好几项，所以它们作为一个值给出，其中任何一项变化时，读取它的地方都会更新。它的名称和取值都是 `Intl` 的，可以直接传入 `Intl` 的选项。
 
 只想跟随其中一项时，通过 `computed` 读取它：读取它的地方只在这一项变化时更新，用户去了另一个时区或添加了一种语言时不会更新。
-
-```rust tabs
-use nsh_core::prelude::*;
-
-// 只在用户切换 12 小时制和 24 小时制时更新。
-let twelve_hour = computed(|| locale_settings().hour_cycle.twelve_hour());
-text(move || if twelve_hour.get() { "3:00 PM" } else { "15:00" })
-```
 
 ```tsx tabs
 import { Text } from "nsh";
@@ -269,6 +261,14 @@ import { computed, localeSettings } from "nsh";
 const twelveHour = computed(() => ["h11", "h12"].includes(localeSettings().hourCycle));
 
 <Text>{twelveHour() ? "3:00 PM" : "15:00"}</Text>
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+// 只在用户切换 12 小时制和 24 小时制时更新。
+let twelve_hour = computed(|| locale_settings().hour_cycle.twelve_hour());
+text(move || if twelve_hour.get() { "3:00 PM" } else { "15:00" })
 ```
 
 测试中，`open` 的 `localeSettings` 设置其中列出的项，其余的是区域设置的（区域设置本身作为偏好语言、所在地区的偏好、UTC）；`app.setLocaleSettings({ hourCycle: "h23" })` 修改其中列出的项，其余的保持不变（[测试](./testing-and-trace.md#操作步骤)）。
@@ -290,6 +290,22 @@ const twelveHour = computed(() => ["h11", "h12"].includes(localeSettings().hourC
 
 用户做了设置时，各项是系统的设置，否则是所在地区自己的（按 Unicode CLDR 的数据：美国是 12 小时制、每周从星期日开始，德国是 24 小时制、每周从星期一开始）。
 
+```tsx tabs
+import { localeSettings } from "nsh";
+
+const time = (date: Date) =>
+  date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hourCycle: localeSettings().hourCycle });
+
+const temperature = (celsius: number) =>
+  localeSettings().temperatureUnit === "fahrenheit"
+    ? `${Math.round((celsius * 9) / 5 + 32)} °F`
+    : `${Math.round(celsius)} °C`;
+
+// 从用户的第一天开始的日历列：1 是星期一，7 是星期日。
+const weekColumns = () =>
+  Array.from({ length: 7 }, (_, i) => ((localeSettings().firstDayOfWeek - 1 + i) % 7) + 1);
+```
+
 ```rust tabs
 use nsh_core::{platform::TemperatureUnit, prelude::*};
 
@@ -308,22 +324,6 @@ fn week_columns() -> [u8; 7] {
 }
 ```
 
-```tsx tabs
-import { localeSettings } from "nsh";
-
-const time = (date: Date) =>
-  date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hourCycle: localeSettings().hourCycle });
-
-const temperature = (celsius: number) =>
-  localeSettings().temperatureUnit === "fahrenheit"
-    ? `${Math.round((celsius * 9) / 5 + 32)} °F`
-    : `${Math.round(celsius)} °C`;
-
-// 从用户的第一天开始的日历列：1 是星期一，7 是星期日。
-const weekColumns = () =>
-  Array.from({ length: 7 }, (_, i) => ((localeSettings().firstDayOfWeek - 1 + i) % 7) + 1);
-```
-
 `Intl` 按区域设置自己的小时周期书写时间：像上面那样把 `hourCycle` 作为它的 `hourCycle` 选项传入，就能按用户的习惯书写。在 Web 上，浏览器不提供这些用户设置：小时周期和每周的第一天是浏览器按其语言给出的，单位是其地区的。
 
 基础组件显示应用传给它们的值，用它们自己的形式。`Calendar` 和 `DatePicker` 的 `firstDayOfWeek` 从 `0`（星期日）到 `6`（星期六）给星期编号：用户的第一天是 `localeSettings().firstDayOfWeek % 7`（Rust：`locale_settings().first_day_of_week.number() % 7`）。`TimeField` 和 `DatePicker` 的 `hourCycle` 是 `"h12"` 或 `"h23"`：`localeSettings().hourCycle` 为 `"h11"` 或 `"h12"` 时用户的是 `"h12"`，否则是 `"h23"`（Rust：`locale_settings().hour_cycle.twelve_hour()` 时为 `HourCycle::H12`）。
@@ -332,17 +332,17 @@ const weekColumns = () =>
 
 `time_zone`（TSX：`timeZone`）是设备的时区，即系统给它的名称：`Europe/Berlin`、`America/New_York` 这样的 IANA 名称、`UTC`，或系统使用偏移量时区时的名称（Android 上的 `GMT+01:00`）。用户修改设置或设备到了另一个时区时它会变化，读取它的地方随之更新：标出时区的时钟、按用户时区显示的时间列表、和创建时所在时区一起保存的日期。
 
-```rust tabs
-use nsh_core::prelude::*;
-
-text(move || format!("Times in {}", locale_settings().time_zone))
-```
-
 ```tsx tabs
 import { Text } from "nsh";
 import { localeSettings } from "nsh";
 
 <Text>{`Times in ${localeSettings().timeZone}`}</Text>
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+text(move || format!("Times in {}", locale_settings().time_zone))
 ```
 
 `Date` 的本地时间一如既往地跟随系统时区：`time_zone` 给出它的名称。`Intl` 也按这个时区格式化本地时间，给出的名称与它相同：`Intl.DateTimeFormat().resolvedOptions().timeZone` 就是 `localeSettings().timeZone`，`{ timeZone: localeSettings().timeZone }` 按本地时间格式化。测试中，`localeSettings()` 给出的是 `open` 或 `app.setLocaleSettings` 设置的时区（否则是 `UTC`）；`Date` 和 `Intl` 的本地时间仍是这台机器的，`Intl` 给出的也是这台机器的时区。
@@ -355,6 +355,13 @@ import { localeSettings } from "nsh";
 
 `lifecycle()`（TSX 中同名）表示用户是否正在使用应用。应用在前台时为 `active`；仍可见但焦点在另一个应用或窗口上（或系统在它上面显示了内容：应用切换器、来电）时为 `inactive`；不可见时为 `background`：手机上在后台、桌面上已最小化、Web 上是隐藏的标签页。与所有访问器一样，它会更新读取它的地方，因此 effect 可以在后台暂停实时数据、轮询或视频，并在用户回来时恢复：
 
+```tsx tabs
+effect(() => {
+  if (lifecycle() === "background") feed.pause();
+  else feed.resume();
+});
+```
+
 ```rust tabs
 effect(move || {
     if lifecycle() == Lifecycle::Background {
@@ -365,18 +372,17 @@ effect(move || {
 });
 ```
 
-```tsx tabs
-effect(() => {
-  if (lifecycle() === "background") feed.pause();
-  else feed.resume();
-});
-```
-
 用 `background` 暂停工作，并在用户做出更改时就保存它：系统可能在应用进入后台几秒后就将其挂起，早于读取这一变化的副作用运行。显示在原生应用中的应用跟随该应用的状态；应用有多个窗口时（iPad、桌面），视图跟随它所在的窗口。在 macOS 和 Windows 上，屏幕锁定或关闭时、窗口在另一个桌面（Space、虚拟桌面）上时，独立应用以及嵌入 AppKit 和 Win32 应用中的视图也处于 `background`。在 Windows 上，用户注销、Windows 关机或重启、安装程序关闭应用时，应用会进入 `background`，它的处理函数在会话结束前运行；随后应用退出（[`Application.on("quit")`](../modules/nsh-desktop.md#退出)）。Linux 上的独立应用在用户注销、系统关机或重启时，以及收到 `SIGTERM` 时（systemd 结束会话或停止服务时会发送它）也是如此。在测试中，`nsh/test` 的 `app.setLifecycle("background")` 会把应用移到后台（[测试](./testing-and-trace.md#操作步骤)）。
 
 ## 睡眠之后
 
 `wake_count()`（TSX 中为 `wakeCount()`）统计应用运行期间系统从睡眠中唤醒的次数：启动时为 0，每次唤醒后加一。笔记本合上再打开、应用一直在前台时，应用始终是 `active`，但它持有的网络连接和设置的定时器并没有挺过这次睡眠。读取这个计数的 effect 会在每次唤醒后重新运行，应用就在这里检查连接或重新建立连接：
+
+```tsx tabs
+effect(() => {
+  if (wakeCount() > 0) feed.reconnect();
+});
+```
 
 ```rust tabs
 effect(move || {
@@ -386,29 +392,23 @@ effect(move || {
 });
 ```
 
-```tsx tabs
-effect(() => {
-  if (wakeCount() > 0) feed.reconnect();
-});
-```
-
 独立应用以及嵌入 AppKit、Win32 和 GTK 应用中的视图在 macOS、Windows 和 Linux 上统计唤醒（Linux 通过 systemd 的 `logind`）。在 iOS 和 Android 上，设备睡眠会把应用移到后台，由 `lifecycle()` 报告。在测试中，`nsh/test` 的 `app.wake()` 会唤醒系统（[测试](./testing-and-trace.md#操作步骤)）。
 
 ## 网络
 
 `network()`（TSX 中同名）说明设备现在怎样连到网络：`online`（只有系统确知没有路由时才为 false）、路由所走链路的 `kind`（`"wifi"`、`"cellular"`、`"wired"`、`"other"`，离线为 `"none"`，平台不报告时为 `"unknown"`，按在线处理）、这条链路是否 `expensive`（蜂窝数据、手机热点、按流量计费的网络）或 `constrained`（低数据模式、流量节省程序），以及在 iOS 上用户是否允许应用使用蜂窝数据（`cellularData`：`"unknown"`、`"restricted"` 或 `"notRestricted"`）。读取它的 effect 会在路由变化时重新运行，所以离线时失败的请求可以等网络回来后立刻重试，而不是按定时器重试：
 
+```tsx tabs
+effect(() => {
+  if (network().online && sync.failedOffline()) sync.retry();
+});
+```
+
 ```rust tabs
 effect(move || {
     if network().online() && sync.failed_offline() {
         sync.retry();
     }
-});
-```
-
-```tsx tabs
-effect(() => {
-  if (network().online && sync.failedOffline()) sync.retry();
 });
 ```
 
@@ -423,6 +423,24 @@ iOS 和 macOS 跟随系统的路径监视器（Network.framework），iOS 另外
 - `safe_area()`（TSX：`safeArea()`）给出整个 surface 的 inset。
 - 组件的 `cx.insets()`（TSX：`safeAreaInsets()`）给出**组件渲染位置**的 inset：在导航[页面](./navigation.md#标题栏下的安全区域)中从标题栏下方算起，在[对话框](../elements/dialog.md)中是对话框自己的。可能出现在多个地方的组件应该优先用它。
 - CSS 的 `env(safe-area-inset-top)`、`-right`、`-bottom`、`-left` 在 `padding*` 和 `margin*` 中按组件渲染处的 inset 为任意视图加内边距或外边距（`calc(env(safe-area-inset-bottom) + 8px)` 再加一段长度；Tailwind `pt-[env(safe-area-inset-top)]`；Rust `.p_safe_area()`、`.pt_safe_area()`、`.pb_safe_area_plus(px(8.0))` 等）。inset 变化时内边距原生更新（[安全区域](../elements/safe-area.md)）。
+
+```tsx tabs
+import { View, safeAreaInsets } from "nsh";
+
+function Screen() {
+  return (
+    <View class="flex-1 bg-white pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
+      <Content />
+      <BottomBar />
+    </View>
+  );
+}
+
+function BottomBar() {
+  const insets = safeAreaInsets();
+  return <View style={{ paddingBottom: insets().bottom + 8, paddingTop: 8, flexDirection: "row" }}>…</View>;
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -445,24 +463,6 @@ fn BottomBar(cx: Scope<NoEvent>) -> impl IntoElement {
         .flex_row()
         .pt(px(8.0))
         .pb(move || cx.insets().bottom + px(8.0))
-}
-```
-
-```tsx tabs
-import { View, safeAreaInsets } from "nsh";
-
-function Screen() {
-  return (
-    <View class="flex-1 bg-white pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
-      <Content />
-      <BottomBar />
-    </View>
-  );
-}
-
-function BottomBar() {
-  const insets = safeAreaInsets();
-  return <View style={{ paddingBottom: insets().bottom + 8, paddingTop: 8, flexDirection: "row" }}>…</View>;
 }
 ```
 
@@ -491,16 +491,16 @@ TSX 的 `platform` 完整成员：
 | `platform.catalyst` | 应用运行在 Mac Catalyst 下（`os` 为 `"ios"`），无论是 Mac 还是 iPad 界面风格。 |
 | `platform.select(spec)` | 当前平台对应的值；见[平台特定代码](./platform-specific.md#platformselect)。 |
 
-```rust tabs
-use nsh_core::{element::Os, prelude::*};
-
-let haptics_supported = os() == Os::Ios || (os() == Os::Android && os_version().0 >= 30);
-```
-
 ```tsx tabs
 import { platform } from "nsh";
 
 const hapticsSupported = platform.os === "ios" || (platform.os === "android" && Number(platform.version) >= 30);
+```
+
+```rust tabs
+use nsh_core::{element::Os, prelude::*};
+
+let haptics_supported = os() == Os::Ios || (os() == Os::Android && os_version().0 >= 30);
 ```
 
 `nsh test` 以 iOS 身份无界面运行。
@@ -569,17 +569,17 @@ Rust 中的 `pixel_ratio()` 和 `round_to_nearest_pixel(points)`，以及 TSX �
 
 一条一个设备像素高的细线：
 
-```rust tabs
-view()
-    .h(move || px(1.0 / pixel_ratio()))
-    .bg(rgb(0xd0d7de))
-```
-
 ```tsx tabs
 import { View } from "nsh";
 import { pixelRatio } from "nsh";
 
 <View style={{ height: 1 / pixelRatio(), backgroundColor: "#d0d7de" }} />
+```
+
+```rust tabs
+view()
+    .h(move || px(1.0 / pixel_ratio()))
+    .bg(rgb(0xd0d7de))
 ```
 
 `pixel_ratio()` 和 `pixelRatio()` 都是响应式的。桌面平台上它们报告宿主显示器的缩放比例；窗口被移到另一块密度不同的屏幕上时，它自己的比例在 `state()?.scaleFactor` 中。

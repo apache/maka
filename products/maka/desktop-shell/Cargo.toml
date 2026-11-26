@@ -48,6 +48,9 @@ maka-wsl-bridge.workspace = true
 nsh-core.workspace = true
 tokio = { workspace = true, features = ["process"] }
 nsh-platform-windows.workspace = true
+png = "0.18.1"
+clipboard-win = "5.4.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_UI_Controls_Dialogs", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 clap.workspace = true
 maka-terminal-shell.workspace = true

@@ -20,6 +20,7 @@
 mod session;
 use super::*;
 mod management;
+pub(super) mod tools;
 impl Owner {
     pub(crate) async fn project_mcp(
         self: &Arc<Self>,
@@ -29,6 +30,9 @@ impl Owner {
         self.resource_work(scope, move |owner, _| {
             Box::pin(async move {
                 let session = owner.session(&input.session_id).await?;
+                if session.configuration.permissions.access == WorkspaceAccess::ReadOnly {
+                    return Ok(McpView::Absent);
+                }
                 workspace::validate(
                     &owner.workspace_roots,
                     &session.configuration.workspace,
@@ -65,7 +69,7 @@ impl Owner {
                     .mcp_projects
                     .proposal(&session.configuration.workspace)
                     .await?;
-                if proposal.revision != input.revision {
+                if proposal.project_revision.as_deref() != Some(input.revision.as_str()) {
                     return Ok(McpTrustResult::Changed);
                 }
                 owner.mcp_projects.trust(&proposal).await?;
@@ -75,6 +79,45 @@ impl Owner {
                     .map_err(|_| "agent_root_unavailable")?
                     .capability_source_changed();
                 Ok(McpTrustResult::Trusted)
+            })
+        })
+        .await
+    }
+    pub(crate) async fn decline_project_mcp(
+        self: &Arc<Self>,
+        input: McpTrust,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<McpDeclineResult, String> {
+        if scope.identity.agent().is_some() {
+            return Err("agent_mcp_user_approval_required".into());
+        }
+        self.resource_work(scope, move |owner, _| {
+            Box::pin(async move {
+                let session = owner.session(&input.session_id).await?;
+                workspace::validate(
+                    &owner.workspace_roots,
+                    &session.configuration.workspace,
+                    &owner.managed_worktrees,
+                )
+                .await?;
+                let proposal = owner
+                    .mcp_projects
+                    .proposal(&session.configuration.workspace)
+                    .await?;
+                if proposal.project_revision.as_deref() != Some(input.revision.as_str()) {
+                    return Ok(McpDeclineResult::Changed);
+                }
+                owner.mcp_projects.decline(&proposal).await?;
+                let _ = owner
+                    .mcp_projects
+                    .drop_stale_for_scope(Some(&session.configuration.workspace))
+                    .await;
+                owner
+                    .store
+                    .owned_root()
+                    .map_err(|_| "agent_root_unavailable")?
+                    .capability_source_changed();
+                Ok(McpDeclineResult::Declined)
             })
         })
         .await

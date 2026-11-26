@@ -63,8 +63,8 @@ export function lineRangeText(startLine: number, endLine: number): string {
 
 export function realLineRangeText(startLine1: number, endLine1: number): string {
   return startLine1 === endLine1
-    ? tr('Line {line}', { line: startLine1 })
-    : tr('Lines {start}–{end}', { start: startLine1, end: endLine1 });
+    ? tr('Line {line}', { line: String(startLine1) })
+    : tr('Lines {start}–{end}', { start: String(startLine1), end: String(endLine1) });
 }
 
 function formatShortTimestamp(iso: string): string {
@@ -844,9 +844,7 @@ export function ReviewBatchBar(props: {
           >
             <Icon name={expanded() ? 'down' : 'up'} size={14} color={C.secondary} />
             <Text style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}>
-              {notes().length === 1
-                ? tr('1 review note')
-                : tr('{count} review notes', { count: notes().length })}
+              {tr('review.notes_count', { count: notes().length })}
             </Text>
           </Button>
           <View style={{ flex: 1 }} />

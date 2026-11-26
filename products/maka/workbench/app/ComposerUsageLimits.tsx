@@ -23,21 +23,16 @@ import type { ComposerBackend } from '../../../../packages/plugin-sdk/src/compos
 import { composerToolbar, useToolbarCompact } from './composerToolbar';
 import { summarizeComposerUsage, type ComposerUsageSummary } from './composerUsageSummary';
 import { tr } from './locale';
+import { formatDecimal } from './numberFormat';
 import {
   C,
   captionTextStyle,
+  composerToolbarControlStyle,
   floatingStyle,
   menuDetailTextStyle,
   textTooltip,
-  toolbarControlStyle,
 } from './ui';
-import {
-  usageLabel,
-  UsageLimitsList,
-  usageNumber,
-  useUsageLimits,
-  type UsageLimit,
-} from './UsageLimits';
+import { usageLabel, UsageLimitsList, useUsageLimits, type UsageLimit } from './UsageLimits';
 import { isExternalUsageRuntime, type UsageTarget } from './usageLimitsReading';
 
 function targetForBackend(backend: ComposerBackend): UsageTarget | null {
@@ -60,7 +55,9 @@ function usageTooltip(source: string, summary: ComposerUsageSummary | null): str
   if (summary.kind === 'balance') {
     return [source, `${usageLabel(summary.limit)} ${summary.text}`].filter(Boolean).join(' · ');
   }
-  const remaining = tr('{percent}% remaining', { percent: usageNumber(summary.remainingPercent) });
+  const remaining = tr('{percent}% remaining', {
+    percent: formatDecimal(summary.remainingPercent, 2),
+  });
   return [source, `${usageLabel(summary.limit)} · ${remaining}`].filter(Boolean).join(' · ');
 }
 
@@ -117,10 +114,10 @@ function ComposerUsagePopover(props: {
           accessibilityLabel={tooltipText()}
           tooltip={textTooltip(() => (open() ? undefined : tooltipText()))}
           style={{
-            ...toolbarControlStyle,
+            ...composerToolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 6,
+            gap: 4,
             flexShrink: 0,
           }}
           hoverStyle={{ backgroundColor: C.line }}
@@ -129,13 +126,13 @@ function ComposerUsagePopover(props: {
         >
           <If when={balanceSummary() !== null}>
             <Text style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 1 }]}>
-              {balanceSummary()?.text ?? ''}
+              {(useToolbarCompact() ? balanceSummary()?.compactText : balanceSummary()?.text) ?? ''}
             </Text>
           </If>
           <If when={windowSummary() !== null && useToolbarCompact()}>
             <Canvas
               accessibilityElementsHidden
-              style={[{ width: 15, height: 15 }, { pointerEvents: 'none' }]}
+              style={[{ width: 14, height: 14 }, { pointerEvents: 'none' }]}
               draw={(cx) => {
                 const current = windowSummary();
                 if (!current) return;
@@ -143,13 +140,13 @@ function ComposerUsagePopover(props: {
                 cx.lineCap = 'round';
                 cx.strokeStyle = C.line;
                 cx.beginPath();
-                cx.arc(7.5, 7.5, 5.75, 0, Math.PI * 2);
+                cx.arc(7, 7, 5.5, 0, Math.PI * 2);
                 cx.stroke();
                 const start = -Math.PI / 2;
                 const share = Math.max(0.04, current.remainingPercent / 100);
                 cx.strokeStyle = fillColor();
                 cx.beginPath();
-                cx.arc(7.5, 7.5, 5.75, start, start + share * Math.PI * 2);
+                cx.arc(7, 7, 5.5, start, start + share * Math.PI * 2);
                 cx.stroke();
               }}
             />
@@ -228,7 +225,8 @@ export function ComposerUsageLimits(props: {
     const result = observation()?.reading.result;
     return result?.kind === 'ready' ? result.limits : [];
   };
-  const summary = () => summarizeComposerUsage(limits(), usageNumber, props.model());
+  const summary = () =>
+    summarizeComposerUsage(limits(), (value) => formatDecimal(value, 2), props.model());
 
   return (
     <If when={composerToolbar.usageLimits() && summary() !== null}>

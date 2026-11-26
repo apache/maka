@@ -17,72 +17,123 @@
  * under the License.
  */
 
-import { signal } from 'nsh';
-import { computerPermissionMessages } from './locale-computer-permissions';
-import { goalMessages } from './locale-goal';
-import { composerMessages } from './locale-composer';
-import { roomMessages } from './locale-rooms';
-import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
-import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
+import { signal, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import { commonMessages } from './locale-common';
-import { conversationMessages } from './locale-conversation';
-import { settingsMessages } from './locale-settings';
-import { workspaceMessages } from './locale-workspace';
-import { recallMessages } from './locale-recall';
-import { pluginMessages } from './locale-plugins';
-import { configurationMessages } from './locale-configuration';
-import { externalAgentMessages } from './locale-external-agents';
-import { toolActivityMessages } from './locale-tool-activity';
-import { sessionToolMessages } from './locale-tool-sessions';
-import { deploymentToolMessages } from './locale-tool-deployment';
-import { automationMessages } from './locale-automation';
-import { nativeToolMessages } from './locale-tool-native';
-import { discoveryMessages } from './locale-discovery';
+import {
+  formatMessage,
+  negotiateLocale,
+  normalizeLocaleTag,
+  resolveDisplayText,
+  resolveLocale,
+  resolveLocalizedPresentation,
+  type DisplayText,
+  type LanguagePreference,
+} from '../../../../packages/plugin-sdk/src/index.js';
+import type en from '../locales/en.json';
 
-import { subagentMessages } from './locale-subagents';
+export type MessageKey = keyof typeof en;
 
-const nativeLocale = nativeHost.systemLocale;
-export const currentLocale = signal(resolveLocale('auto', nativeLocale));
-let observedRevision = -1;
-const copy = createCopy({
-  ...commonMessages,
-  ...subagentMessages,
-  ...computerPermissionMessages,
-  ...goalMessages,
-  ...conversationMessages,
-  ...composerMessages,
-  ...roomMessages,
-  ...settingsMessages,
-  ...workspaceMessages,
-  ...recallMessages,
-  ...pluginMessages,
-  ...configurationMessages,
-  ...externalAgentMessages,
-  ...toolActivityMessages,
-  ...sessionToolMessages,
-  ...deploymentToolMessages,
-  ...nativeToolMessages,
-  ...automationMessages,
-  ...discoveryMessages,
-});
-export type MessageKey = keyof ReturnType<typeof copy>;
+type WorkbenchTranslator = (
+  locale: string,
+  key: MessageKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
 
-/** Host preferences are the authority; an older startup read cannot undo a saved change. */
-export function applyLanguagePreference(preference: LanguagePreference, revision: number) {
-  if (revision < observedRevision) return;
-  observedRevision = revision;
-  currentLocale.set(resolveLocale(preference, nativeLocale));
+interface WorkbenchLocaleState {
+  readonly nativeLocale: unknown;
+  readonly currentLocale: Signal<string>;
+  observedRevision: number;
+  translate: WorkbenchTranslator | null;
+  nshSynced: boolean;
 }
 
-/** Render selects one immutable catalog; interpolation never rebuilds the catalog. */
+const WORKBENCH_LOCALE_KEY = Symbol.for('maka.workbench.i18n');
+
+/**
+ * Keep regional tags whose primary language matches the negotiated built-in locale
+ * (e.g. en-GB -> en-GB, fr-CA -> fr-CA) so Intl preserves regional date/number
+ * formatting, while remapping aliases and unsupported tags (e.g. yue-Hant-HK -> zh-HK,
+ * zh-MO -> zh-HK, zh-Hant -> zh-TW, ar-SA -> en) onto their negotiated built-in tag so
+ * QuickJS Intl and native CJK glyph shaping never fall back to en-US or Simplified Han.
+ */
+export function resolveUiLocale(raw: string): string {
+  const normalized = normalizeLocaleTag(raw);
+  const builtin = negotiateLocale(raw);
+  if (!normalized) return builtin;
+  if (builtin.startsWith('zh-')) {
+    const lower = normalized.toLowerCase();
+    const builtinLower = builtin.toLowerCase();
+    return lower === builtinLower || lower.startsWith(`${builtinLower}-`) ? normalized : builtin;
+  }
+  const rawLang = normalized.split('-')[0];
+  const builtinLang = builtin.split('-')[0];
+  return rawLang === builtinLang ? normalized : builtin;
+}
+
+const globals = globalThis as Record<symbol, WorkbenchLocaleState | undefined>;
+const state: WorkbenchLocaleState =
+  globals[WORKBENCH_LOCALE_KEY] ??
+  (globals[WORKBENCH_LOCALE_KEY] = {
+    nativeLocale: nativeHost.systemLocale,
+    currentLocale: signal(resolveUiLocale(resolveLocale('auto', nativeHost.systemLocale))),
+    observedRevision: -1,
+    translate: null,
+    nshSynced: false,
+  });
+
+export const currentLocale = state.currentLocale;
+
+/** Register the single window-owned catalog and NSH locale sync (idempotent). */
+export function registerWorkbenchLocaleRuntime(
+  translate: WorkbenchTranslator,
+  bindNshSync?: () => void,
+) {
+  state.translate = translate;
+  if (!state.nshSynced && bindNshSync) {
+    state.nshSynced = true;
+    bindNshSync();
+  }
+}
+
+/** Host preferences are the authority; an older startup read cannot undo a saved change. */
+export function applyLanguagePreference(
+  preference: LanguagePreference,
+  revision: number,
+  resolvedLanguage?: string,
+) {
+  if (revision < state.observedRevision) return;
+  state.observedRevision = revision;
+  if (preference !== 'auto') {
+    currentLocale.set(resolveUiLocale(resolveLocale(preference, state.nativeLocale)));
+    return;
+  }
+  const local = resolveUiLocale(resolveLocale('auto', state.nativeLocale));
+  if (resolvedLanguage && negotiateLocale(local) !== negotiateLocale(resolvedLanguage)) {
+    currentLocale.set(resolveUiLocale(resolvedLanguage));
+  } else {
+    currentLocale.set(local);
+  }
+}
+
+/**
+ * Render selects one immutable catalog and formats ICU placeholders/plurals for the active locale.
+ * Numeric values and `#` are locale-formatted automatically; pass identifiers, line numbers, or dimensions as `string`.
+ */
 export function tr(key: MessageKey, values?: Readonly<Record<string, string | number>>): string {
-  const message = copy(currentLocale())[key];
-  return values === undefined
-    ? message
-    : message.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (placeholder, name: string) =>
-        name in values ? String(values[name]) : placeholder,
-      );
+  const locale = currentLocale();
+  if (state.translate) {
+    return state.translate(locale, key, values);
+  }
+  return formatMessage(key, locale, values);
+}
+
+/** Merge stable ASCII shortcuts with localized search keywords for the active locale. */
+export function localizedKeywords(base: readonly string[], key: MessageKey): string[] {
+  const extra = tr(key)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set([...base, ...extra])];
 }
 
 export function messageTime(at: number): string {
@@ -99,23 +150,10 @@ export function messageDateTime(at: number): string {
 export function localizedPresentation<T extends { displayName: string; description: string }>(
   presentation: T & { localizations?: { [locale: string]: T | undefined } },
 ): T {
-  const locale = currentLocale();
-  const translations = presentation.localizations;
-  return (
-    translations?.[locale] ??
-    translations?.[locale.split('-')[0]!] ??
-    translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
-    presentation
-  );
+  return resolveLocalizedPresentation(presentation, currentLocale());
 }
 
 /** Honor authored DisplayText translations; opaque custom titles keep their fallback. */
 export function displayText(text: DisplayText): string {
-  const locale = currentLocale();
-  return (
-    text.translations?.[locale] ??
-    text.translations?.[locale.split('-')[0]!] ??
-    text.translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
-    text.fallback
-  );
+  return resolveDisplayText(text, currentLocale());
 }

@@ -1,13 +1,15 @@
 import { Clipboard, mount, platform, signal, Text, View } from "nsh";
 import { Window } from "nsh/desktop";
-import { Input } from "nsh/base";
+import { createRichEditor, Input, RichEditor } from "nsh/base";
 
-// A chat's shape: selectable messages above a composer (single-line or
-// multiline) that keeps the keyboard focus while the messages are selected.
+// A chat's shape: selectable messages above a composer (single-line,
+// multiline or a rich text editor) that keeps the keyboard focus while the
+// messages are selected.
 // Shows the clipboard's text, read every 100 ms, and puts back what it held
 // before on "Restore" (nothing if it was never read).
 function App() {
   const area = signal("");
+  const editor = createRichEditor({});
   const focused = signal("none");
   const board = signal("");
   const restored = signal(false);
@@ -59,6 +61,14 @@ function App() {
         onFocus={() => focused.set("notes")}
         onBlur={() => focused.set("none")}
         style={{ ...field, height: 64 }}
+      />
+      <RichEditor
+        editor={editor}
+        testID="editor"
+        placeholder="Rich message"
+        onFocus={() => focused.set("editor")}
+        onBlur={() => focused.set("none")}
+        styles={{ root: { ...field, minHeight: 32 } }}
       />
       <View role="button" onPress={restore} style={{ padding: 8, width: 120 }}>
         <Text style={{ color: "#111" }}>Restore</Text>

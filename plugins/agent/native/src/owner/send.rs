@@ -84,10 +84,26 @@ pub(super) struct PreparedAgentSend {
 }
 
 impl PreparedAgentSend {
+    fn validate_workspace(&self, connection: &rusqlite::Connection) -> Result<(), StoreError> {
+        let QueueEdit::Enqueue { request, .. } = &self.queue.command.edit else {
+            return Ok(());
+        };
+        // A send can be prepared before the rebind and settle after it.
+        let current =
+            maka_event_log::workspace_bindings::permission_basis(connection, &self.queue.session)?;
+        if current.as_ref() != Some(&request.spec.permission_basis) {
+            return Err(StoreError::InvalidTransition(
+                "agent_session_workspace_changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn execute_for_room(
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<maka_agent_state::queue::QueueCommit>, StoreError> {
+        self.validate_workspace(connection)?;
         let mut queued = self.queue.execute_for_room(connection)?;
         if let Some(completion) = self.completion {
             let registered = completion.execute(connection)?;
@@ -114,6 +130,7 @@ impl Statement for PreparedAgentSend {
         self,
         connection: &rusqlite::Connection,
     ) -> Result<Prepared<Self::Value>, StoreError> {
+        self.validate_workspace(connection)?;
         let mut queued = self.queue.execute(connection)?;
         if let Some(completion) = self.completion {
             let registered = completion.execute(connection)?;
@@ -186,6 +203,7 @@ impl Owner {
         fingerprint: String,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<CapturedRun, CaptureError> {
+        self.require_execution(id).await?;
         if parent.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
@@ -204,6 +222,12 @@ impl Owner {
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
+        workspace::validate(
+            &self.workspace_roots,
+            &session.configuration.workspace,
+            &self.managed_worktrees,
+        )
+        .await?;
         let mut selection = selection.or_else(|| session.configuration.backend.clone());
         if session.configuration.applied_preset.is_none() {
             selection = self.use_bot_model(parent, selection).await?;
@@ -238,12 +262,9 @@ impl Owner {
                 (Some(source.accepted), None)
             }
             BackendPreference::Executor { selection } => {
-                workspace::validate(
-                    &self.workspace_roots,
-                    &session.configuration.workspace,
-                    &self.managed_worktrees,
-                )
-                .await?;
+                if self.store.checkpoint_execution().is_some() {
+                    return Err("execution_grant_requires_native_model_backend".into());
+                }
                 let backend = self.executors.select(selection)?;
                 (None, Some(backend.accepted))
             }
@@ -394,6 +415,7 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<PreparedSend, String> {
+        self.require_execution(&input.session_id).await?;
         if !self.may_control(parent, &input.session_id).await? {
             return Ok(PreparedSend::Returned(SendResult::NotYourWorker {
                 session_id: input.session_id,
@@ -500,10 +522,13 @@ impl Owner {
             .await
         {
             Ok(basis) => basis,
-            Err(CaptureError::ModelUnavailable) => {
+            Err(error @ (CaptureError::ModelUnavailable | CaptureError::WorkspaceUnavailable)) => {
                 return Ok(PreparedSend::Returned(SendResult::Rejected {
                     session_id: id,
-                    reason: SendRejection::ModelUnavailable,
+                    reason: match error {
+                        CaptureError::WorkspaceUnavailable => SendRejection::WorkspaceUnavailable,
+                        _ => SendRejection::ModelUnavailable,
+                    },
                     skills: None,
                 }));
             }

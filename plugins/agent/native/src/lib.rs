@@ -25,7 +25,6 @@ pub mod checkpoints;
 pub use service::history::snapshot_page as checkpoint_history_page;
 mod diagnostics;
 pub mod executor;
-#[cfg(unix)]
 pub use executor::external::agy_front::{FRONT_HELPER, serve_front};
 mod mcp;
 mod model;

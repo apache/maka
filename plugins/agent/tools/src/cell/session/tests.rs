@@ -385,6 +385,59 @@ async fn learning_a_nested_tool_preserves_the_code_mode_definitions() {
 
     assert_eq!(available.snapshot().await.unwrap().names(), ["Lookup"]);
     assert_eq!(fixture.cells.cell_definitions(&available), initial);
+
+    // Adding dynamic MCP tools must not alter exec's cached tool definition prefix.
+    struct NamedTool(&'static str);
+    impl ToolExecutor for NamedTool {
+        fn names(&self) -> Vec<String> {
+            vec![self.0.into()]
+        }
+        fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+            Box::pin(async { Ok(json!({})) })
+        }
+    }
+    let with_mcp_catalog = ToolCatalog::new([
+        ToolRegistration {
+            definition: ToolDefinition {
+                name: "Lookup".into(),
+                description: "Look up a record by key.".into(),
+                input_schema: json!({"type":"object"}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            handler: ToolHandler::Immediate(Arc::new(Lookup)),
+            semantics: ToolSemantics::Parallel,
+            nesting: ToolNesting::Nestable,
+        },
+        ToolRegistration {
+            definition: ToolDefinition {
+                name: "mcp__sample__search".into(),
+                description: "Search via dynamic MCP.".into(),
+                input_schema: json!({"type":"object"}),
+                provider: None,
+                freeform: None,
+                output_schema: None,
+            },
+            handler: ToolHandler::Immediate(Arc::new(NamedTool("mcp__sample__search"))),
+            semantics: ToolSemantics::Parallel,
+            nesting: ToolNesting::Nestable,
+        },
+    ])
+    .unwrap()
+    .with_discovery();
+    let with_mcp = Availability::new(
+        with_mcp_catalog,
+        LoadedTools::new(
+            fixture
+                .port
+                .store
+                .reader(SESSION.into(), tokio::runtime::Handle::current()),
+        ),
+    );
+    assert_eq!(fixture.cells.cell_definitions(&with_mcp), initial);
+    assert!(with_mcp.all().contains("mcp__sample__search"));
+
     fixture.close().await;
 }
 

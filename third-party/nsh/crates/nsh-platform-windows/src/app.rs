@@ -362,11 +362,8 @@ impl AppView {
 
     /// The Win32 handle of the focused (or first open) app window, if any.
     pub fn active_window_hwnd(&self) -> Option<HWND> {
-        crate::app_window::focused_hwnd(&self.surface).or_else(|| {
-            crate::app_window::all_hwnds(&self.surface)
-                .into_iter()
-                .next()
-        })
+        crate::app_window::focused_hwnd(&self.surface)
+            .or_else(|| crate::app_window::hwnds(&self.surface).into_iter().next())
     }
 
     /// Shows a top-level view's window (in the mode nsh.json `window`
@@ -488,7 +485,6 @@ impl AppView {
             clipboard: None,
             host: options.host.clone(),
             picker: None,
-            speech: None,
             audio: None,
             windows: None,
             login_item: self.login_item(&options),

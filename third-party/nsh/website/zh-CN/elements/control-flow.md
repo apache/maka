@@ -1,6 +1,6 @@
 ---
 title: If / Each
-description: 控制流：If 按条件渲染一个分支，Each 为列表的每一项渲染一个带 key 的行，附 Rust 与 TSX 示例。
+description: 控制流：If 按条件渲染一个分支，Each 为列表的每一项渲染一个带 key 的行，附 TSX 与 Rust 示例。
 order: 140
 group: primitives
 demo: el-control-flow
@@ -9,6 +9,15 @@ demo: el-control-flow
 # If / Each
 
 `If` 和 `Each` 决定哪些元素存在：条件内容和重复内容。它们自身不创建原生视图。原生渲染器只更新发生变化的部分：`If` 在条件翻转时切换分支，`Each` 按 key 增加、移动和删除行，而不是重建整个列表。Rust 在 `nsh_core::prelude` 中提供 `when(..)`、`each(..)` 和 `dynamic(..)`；TSX 提供 `<If>` 和 `<Each>`，它们是无需导入的全局组件。
+
+```tsx tabs
+<View>
+  <If when={user()} else={<Text>未登录</Text>}>
+    {(u) => <Text>你好，{u().name}</Text>}
+  </If>
+  <Each of={todos()}>{(todo) => <Text>{todo().title}</Text>}</Each>
+</View>
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -21,15 +30,6 @@ view()
         .otherwise(|| text("未登录")),
     )
     .child(each(todos, |t: &Todo| t.id, |todo, _index| text(move || todo.get().title)))
-```
-
-```tsx tabs
-<View>
-  <If when={user()} else={<Text>未登录</Text>}>
-    {(u) => <Text>你好，{u().name}</Text>}
-  </If>
-  <Each of={todos()}>{(todo) => <Text>{todo().title}</Text>}</Each>
-</View>
 ```
 
 在 TSX 中它们是全局组件（作用域中同名的绑定会取代它们）。在 JSX 表达式里仍然可以使用普通 JavaScript（`cond ? a : b`、`items.map(…)`），在 Rust 中则是 `dynamic(move || ..)`：这些写法会在其读取的值变化时重新创建元素，而 `If` 和 `Each`（Rust 中的 `when` 和 `each`）会保留不变的元素。
@@ -46,13 +46,6 @@ view()
 
 条件翻转到某个分支时才创建该分支，翻转离开时它创建的内容随之移除。TSX 中如果 `when` 从一个真值变成另一个真值（例如 `user()` 从一个对象变成另一个对象），分支会保留，其中的表达式各自更新。
 
-```rust tabs
-let loading = signal(true);
-
-when(move || !loading.get(), || profile())
-    .otherwise(|| text("加载中…").text_color(rgb(0x6e7781)))
-```
-
 ```tsx tabs
 const loading = signal(true);
 
@@ -61,18 +54,25 @@ const loading = signal(true);
 </If>;
 ```
 
-在 TSX 中，函数形式的子元素读取的是 `when` 给出的值，类型中不含 `null` 和 `undefined`，所以分支里不需要写 `!`。在 Rust 中，分支自己读取 signal，或者用 `dynamic` 把值映射为元素：
-
 ```rust tabs
-let user = signal(None::<User>);
+let loading = signal(true);
 
-dynamic(move || user.get().map(|u| text(u.name)))
+when(move || !loading.get(), || profile())
+    .otherwise(|| text("加载中…").text_color(rgb(0x6e7781)))
 ```
+
+在 TSX 中，函数形式的子元素读取的是 `when` 给出的值，类型中不含 `null` 和 `undefined`，所以分支里不需要写 `!`。在 Rust 中，分支自己读取 signal，或者用 `dynamic` 把值映射为元素：
 
 ```tsx tabs
 const user = signal<User | null>(null);
 
 <If when={user()}>{(u) => <Text>{u().name}</Text>}</If>;
+```
+
+```rust tabs
+let user = signal(None::<User>);
+
+dynamic(move || user.get().map(|u| text(u.name)))
 ```
 
 ## Each
@@ -86,6 +86,25 @@ const user = signal<User | null>(null);
 | `children` | `each(.., .., \|item, index\| row)` | `(item: () => any, index: () => number) => JSX.Element` | 渲染一行。 |
 
 行函数拿到的是**访问器**而不是值：TSX 中调用 `item()` 和 `index()`，Rust 中调用 `item.get()` 和 `index.get()`（两者都是 `ReadSignal`）。条目变化时，key 仍然存在的行会被保留（位置变了就移动），它们的条目和索引会更新，只有读取它们的表达式会重新执行。新的 key 产生新行；key 消失的行被删除。
+
+```tsx tabs
+interface Todo {
+  id: number;
+  title: string;
+  done: boolean;
+}
+
+const todos = signal<Todo[]>([]);
+
+<Each of={todos()} key={(t: Todo) => t.id}>
+  {(todo, index) => (
+    <View style={{ flexDirection: "row", gap: 8 }}>
+      <Text>{index() + 1}.</Text>
+      <Text style={{ textDecorationLine: todo().done ? "line-through" : "none" }}>{todo().title}</Text>
+    </View>
+  )}
+</Each>;
+```
 
 ```rust tabs
 #[derive(Clone, PartialEq)]
@@ -107,25 +126,6 @@ each(todos, |t: &Todo| t.id, |todo, index| {
                 .style_when(move || todo.get().done, |s| s.line_through()),
         )
 })
-```
-
-```tsx tabs
-interface Todo {
-  id: number;
-  title: string;
-  done: boolean;
-}
-
-const todos = signal<Todo[]>([]);
-
-<Each of={todos()} key={(t: Todo) => t.id}>
-  {(todo, index) => (
-    <View style={{ flexDirection: "row", gap: 8 }}>
-      <Text>{index() + 1}.</Text>
-      <Text style={{ textDecorationLine: todo().done ? "line-through" : "none" }}>{todo().title}</Text>
-    </View>
-  )}
-</Each>;
 ```
 
 ### 如何选择 key

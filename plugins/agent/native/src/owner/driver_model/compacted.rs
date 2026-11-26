@@ -436,7 +436,9 @@ impl DriverModel {
         let history = self
             .state
             .session_history(view.spec.owner.clone(), view.spec.session_id.clone());
-        let sample = history.calibration_sample(&source.current).await?;
+        let sample = history
+            .calibration_sample(&source.current, Some(&self.cancellation))
+            .await?;
         let route = preparation::route_identity(&model.provider)?;
         Ok(sample.and_then(|sample| {
             maka_agent_engine::preparation::Calibration::for_route(
@@ -494,17 +496,8 @@ impl DriverModel {
         }
         match &body.checkpoint.summary {
             CheckpointContent::Text(text) => {
-                let guidance = match language {
-                    Language::En => {
-                        "Session checkpoint snapshot (not a new user request). If messages follow this snapshot, first reconcile it with their tool results, state changes, and latest user instructions so launched or completed work is not replayed; if compressed earlier details need exact verification, check the source via Recall (when available) or Read (including preserved resource_ref handles and workspace files), then continue the remaining work:\n\n"
-                    }
-                    Language::ZhCn => {
-                        "以下是会话历史检查点快照（非新的用户请求）。若此快照之后附有后续消息，请先结合后续消息中的工具结果、状态变化和用户最新指示更新认知，避免重复执行已启动或已完成的操作；若快照中早期细节被压缩，可通过 Recall（若可用）或 Read（含已保留的 resource_ref 与工作区文件）核实原文，然后继续推进剩余工作：\n\n"
-                    }
-                    Language::ZhTw => {
-                        "以下是工作階段歷史檢查點快照（非新的使用者請求）。若此快照之後附有後續訊息，請先結合後續訊息中的工具結果、狀態變化和使用者最新指示更新認知，避免重複執行已啟動或已完成的操作；若快照中早期細節被壓縮，可透過 Recall（若可用）或 Read（含已保留的 resource_ref 與工作區檔案）核實原文，然後繼續推進剩餘工作：\n\n"
-                    }
-                };
+                let guidance =
+                    maka_agent_facts::i18n::driver::checkpoint_snapshot_guidance(language);
                 messages
                     .append(Message::user(format!("{guidance}{text}")))
                     .await?;
@@ -549,15 +542,5 @@ impl DriverModel {
 }
 
 fn cut_off_note(language: Language) -> &'static str {
-    match language {
-        Language::En => {
-            "[Host] Your previous response was cut off because the context window was full. Earlier history is now summarized; continue the task without assuming the cut-off text was delivered."
-        }
-        Language::ZhCn => {
-            "[Host] 你上一次的回复因上下文已满被截断。较早的历史已整理成摘要；请继续完成任务，不要假设被截断的内容已经送达。"
-        }
-        Language::ZhTw => {
-            "[Host] 你上一次的回覆因上下文已滿被截斷。較早的歷史已整理成摘要；請繼續完成任務，不要假設被截斷的內容已經送達。"
-        }
-    }
+    maka_agent_facts::i18n::driver::cut_off_note(language)
 }

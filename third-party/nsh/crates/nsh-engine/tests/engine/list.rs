@@ -134,7 +134,6 @@ fn config(app: &str) -> (EngineConfig, std::path::PathBuf) {
         clipboard: None,
         host: Default::default(),
         picker: None,
-        speech: None,
         chunk_loader: None,
         audio: None,
         windows: None,
@@ -1343,5 +1342,132 @@ mount(App);
         "{:?}",
         paced.texts
     );
+    assert_eq!(paced.errors(), Vec::<String>::new());
+}
+
+#[test]
+fn on_scroll_reports_consistent_offset_and_user_delta_across_reflows() {
+    let app = r#"
+import { List, mount, signal, Text, View } from "nsh";
+const stage = signal(0);
+const latest = signal("none");
+const rows = Array.from({ length: 40 }, (_, i) => i);
+function rowHeight(i: number, s: number) {
+  if (i === 5 && s === 1) return 950;          // +900 above viewport
+  if (i === 24 && s === 3) return 90;          // +40 above viewport
+  if (i === 39 && s === 3) return 20;          // -30 at tail
+  if (i === 24 && s === 4) return 95;          // baseline before -45 shrink
+  return 50;
+}
+function App() {
+  return (
+    <View style={{ flex: 1 }}>
+      <View onPress={() => stage.set(stage() + 1)} style={{ height: 0 }} />
+      <Text style={{ height: 0 }}>{latest()}</Text>
+      <List
+        each={rows}
+        estimatedItemSize={50}
+        style={{ flex: 1 }}
+        scrollEventThrottle={0}
+        onScroll={(e) => {
+          const end = Math.max(0, e.contentSize.height - e.size.height);
+          latest.set(`off=${Math.round(e.offset.y)} dy=${Math.round(e.delta.y)} end=${Math.round(end)} clen=${Math.round(e.contentSize.height)}`);
+        }}
+      >
+        {(row) => <View style={{ height: rowHeight(row(), stage()) }} />}
+      </List>
+    </View>
+  );
+}
+mount(App);
+"#;
+    let mut paced = Paced::start(app);
+    paced.settle(|_, _| {});
+    let list = paced.list.expect("list id");
+    let trigger = paced.pressable.expect("pressable id");
+    let report = |paced: &Paced| {
+        paced
+            .texts
+            .values()
+            .find(|t| t.starts_with("off="))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut applied = 0u32;
+    let step_stage = |paced: &mut Paced, applied: &mut u32| -> f32 {
+        let seen = paced.items.len();
+        paced.engine.control().dispatch_event(
+            trigger,
+            nsh_core::EventKind::Press,
+            nsh_core::EventPayload::None,
+        );
+        paced.settle(|_, _| {});
+        let mut dy_total = 0.0f32;
+        for item in &paced.items[seen..] {
+            if let MountItem::ScrollBy { id, dy, .. } = item
+                && *id == list
+            {
+                *applied += 1;
+                dy_total += dy.0;
+            }
+        }
+        dy_total
+    };
+
+    // 1. Stale report from a grow/shrink ScrollBy pair replays to the shrunk
+    // coordinate space and carries only the real -4pt upward user movement.
+    paced
+        .engine
+        .control()
+        .scroll(list, nsh_core::geometry::point(px(0.0), px(600.0)), 0);
+    paced.settle(|_, _| {});
+    let grow = step_stage(&mut paced, &mut applied);
+    assert_eq!(grow, 900.0);
+    let applied_after_grow = applied;
+    let shrink = step_stage(&mut paced, &mut applied);
+    assert_eq!(shrink, -900.0);
+    paced.engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(600.0 + grow - 4.0)),
+        applied_after_grow,
+    );
+    paced.settle(|_, _| {});
+    assert_eq!(report(&paced), "off=596 dy=-4 end=1500 clen=2000");
+
+    // 2. Mixed reflow near bottom: above-viewport row grows +40pt while tail
+    // row shrinks -30pt and the user scrolls UP 4pt. Even though offset rises
+    // (+36pt) and distance to end shrinks (36 -> 10), delta.y stays negative.
+    paced.engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(1464.0)),
+        applied,
+    );
+    paced.settle(|_, _| {});
+    assert_eq!(step_stage(&mut paced, &mut applied), 40.0);
+    paced.engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(1500.0)),
+        applied,
+    );
+    paced.settle(|_, _| {});
+    assert_eq!(report(&paced), "off=1500 dy=-4 end=1510 clen=2010");
+
+    // 3. Above-viewport row shrinks -45pt while the user scrolls DOWN 32pt to
+    // the bottom. Even though offset drops (-13pt), delta.y is +32 at end.
+    let _ = step_stage(&mut paced, &mut applied); // stage 4: row 24 = 95, row 39 = 50
+    paced.engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(1513.0)),
+        applied,
+    );
+    paced.settle(|_, _| {});
+    assert_eq!(step_stage(&mut paced, &mut applied), -45.0); // stage 5: row 24 -> 50
+    paced.engine.control().scroll(
+        list,
+        nsh_core::geometry::point(px(0.0), px(1500.0)),
+        applied,
+    );
+    paced.settle(|_, _| {});
+    assert_eq!(report(&paced), "off=1500 dy=32 end=1500 clen=2000");
     assert_eq!(paced.errors(), Vec::<String>::new());
 }

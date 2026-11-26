@@ -153,15 +153,19 @@ test('a link stays in its run, drawn in its text\'s bidi order', { skip: !chromi
   const dir = await mkdtemp(join(tmpdir(), 'nsh-text-link-'));
   try {
     const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
-    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { fillRun };').toString('base64');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { fillRun, KEYFRAMES };').toString('base64');
     await writeFile(join(dir, 'index.html'), `<!doctype html><meta charset="utf-8"><body><script type="module">
-      import { fillRun } from '${module}';
+      import { fillRun, KEYFRAMES } from '${module}';
       try {
+        // The runtime's rules: how the a of a link of text looks.
+        const style = document.createElement('style');
+        style.textContent = KEYFRAMES;
+        document.head.append(style);
         const near = (a,b,what) => { if (Math.abs(a-b)>0.5) throw Error(what+': '+a+' != '+b); };
-        const run = (parts) => {
+        const run = (parts, address = null) => {
           const el = document.createElement('span');
-          el.style.cssText = 'position:absolute;left:0;top:0;white-space:pre;font:400 20px Arial';
-          fillRun(el, 'אב גד', parts, [{ node: 3 }]);
+          el.style.cssText = 'position:absolute;left:0;top:0;white-space:pre;font:400 20px Arial;color:rgb(10, 20, 30)';
+          fillRun(el, 'אב גד', parts, [{ node: 3, events: new Set(['onPress']), address }]);
           document.body.append(el);
           return el;
         };
@@ -172,16 +176,25 @@ test('a link stays in its run, drawn in its text\'s bidi order', { skip: !chromi
           return r.getBoundingClientRect();
         };
         // The same text without a link, and with its second word one,
-        // styled as the rest (one run).
+        // styled as the rest (one run): a span, or an a where it goes
+        // somewhere a browser opens.
         const plain = run(null);
-        const linked = run([[3, 5, 0]]);
-        const link = linked.querySelector('span');
-        if (link?._link?.node !== 3 || link.textContent !== 'גד') throw Error('the link has no span of its own');
-        near(linked.getBoundingClientRect().width, plain.getBoundingClientRect().width, 'run width');
-        near(link.getBoundingClientRect().left, box(plain, 3, 5).left, 'link left');
-        near(link.getBoundingClientRect().width, box(plain, 3, 5).width, 'link width');
-        // Right to left: the second word is drawn left of the first.
-        if (!(link.getBoundingClientRect().right <= box(plain, 0, 2).left + 0.5)) throw Error('the words are not right to left');
+        for (const [tag, address] of [['span', null], ['a', 'https://example.com/guide']]) {
+          const linked = run([[3, 5, 0]], address);
+          const link = linked.querySelector(tag);
+          if (link?._link?.node !== 3 || link.textContent !== 'גד') throw Error(tag + ': the link has no element of its own');
+          if (link.getAttribute('href') !== address) throw Error(tag + ': href ' + link.getAttribute('href'));
+          near(linked.getBoundingClientRect().width, plain.getBoundingClientRect().width, tag + ' run width');
+          near(link.getBoundingClientRect().left, box(plain, 3, 5).left, tag + ' link left');
+          near(link.getBoundingClientRect().width, box(plain, 3, 5).width, tag + ' link width');
+          // Right to left: the second word is drawn left of the first.
+          if (!(link.getBoundingClientRect().right <= box(plain, 0, 2).left + 0.5)) throw Error(tag + ': the words are not right to left');
+          // The run's color and decoration, none of the browser's link
+          // blue or underline.
+          const drawn = getComputedStyle(link);
+          if (drawn.color !== 'rgb(10, 20, 30)') throw Error(tag + ': color ' + drawn.color);
+          if (drawn.textDecorationLine !== 'none') throw Error(tag + ': decoration ' + drawn.textDecorationLine);
+        }
         document.body.dataset.result = 'passed';
       } catch(e) { document.body.dataset.result = 'failed: '+e.message; }
     </script>`);

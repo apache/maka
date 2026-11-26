@@ -42,8 +42,8 @@
 //! `nsh_platform_macos::set_ui_sets` and then [`main`].
 
 /// The host's Info.plist, embedded in the executable as AppKit reads it for
-/// one outside an app bundle: the host runs any app, which may recognize
-/// speech or let its web pages capture media (`webview.media`). WebKit
+/// one outside an app bundle: the host runs any app, which may let its web
+/// pages capture media (`webview.media`). WebKit
 /// exposes `navigator.mediaDevices` only to an app that describes why it
 /// uses the microphone or the camera; what a page may capture is still the
 /// app's declaration.

@@ -1028,7 +1028,10 @@ export type AgentExternalModels =
       detail: string;
     };
 export type ExternalTaskId = string;
-export type Language = 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * Resolved canonical BCP 47 language tag (for example en, zh-CN, zh-TW, zh-HK, ja, ko, es, fr, de, pt-BR, ru, it).
+ */
+export type Language = string;
 export type RunId = string;
 export type ExecutorSetupAction =
   | {
@@ -1609,7 +1612,10 @@ export type PricingMutation =
       kind: 'delete';
       modelKey: string;
     };
-export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+/**
+ * Language preference: "auto" or a canonical BCP 47 locale tag.
+ */
+export type LanguagePreference = string;
 export type ProfileAvatar = 'blue' | 'green' | 'rose' | 'amber';
 /**
  * User-facing isolation preset, independent of whether approval may be requested.
@@ -2202,6 +2208,7 @@ export type CatalogMutationResult =
  * Standard user/project configuration locations, ordered from highest precedence.
  */
 export type ConfigurationLocation = 'project:maka' | 'project:agents' | 'user:maka' | 'user:agents';
+export type AgentProjectMcpTrustDecision = 'undecided' | 'trusted' | 'declined';
 export type AgentMcpServerChange =
   | {
       kind: 'save';
@@ -2423,6 +2430,10 @@ export type AgentSessionListScope =
     }
   | {
       kind: 'workspace';
+      sessionId: string;
+    }
+  | {
+      kind: 'side_questions';
       sessionId: string;
     };
 export type AgentWorkspaceSelection =
@@ -4263,6 +4274,7 @@ export type RoomDelivery =
     };
 export type AgentSendRejection =
   | 'model_unavailable'
+  | 'workspace_unavailable'
   | 'skills_unavailable'
   | 'turn_stopped'
   | 'original_operation_unsettled';
@@ -4806,6 +4818,7 @@ export type AgentHistoryPage =
       chunks: AgentHistoryChunk[];
       before: Cursor | null;
       after: Cursor | null;
+      tailThought?: HistoryWorkThought | null;
     };
 export type AgentRoomActor =
   | {
@@ -7321,6 +7334,7 @@ export interface Binding {
 }
 export interface AgentMcpConfigurationList {
   locations: AgentMcpConfigurationLocation[];
+  projectTrust?: AgentProjectMcpTrustStatus | null;
 }
 export interface AgentMcpConfigurationLocation {
   location: ConfigurationLocation;
@@ -7332,6 +7346,11 @@ export interface AgentMcpConfigurationEntry {
   name: string;
   configuration: unknown;
   shadowedBy?: ConfigurationLocation | null;
+}
+export interface AgentProjectMcpTrustStatus {
+  path: string;
+  revision: string;
+  decision: AgentProjectMcpTrustDecision;
 }
 export interface AgentMcpConfigurationChange {
   workspace?: AgentWorkspace | null;
@@ -7842,6 +7861,11 @@ export interface AppliedPreset {
 export interface AgentSessionBranch {
   sessionId: string;
   position: AgentForkPosition;
+  /**
+   * The branch is a side question of that conversation. Fork results stored
+   * before side questions have no such field.
+   */
+  side?: boolean;
 }
 export interface AgentRecallPassage {
   session: AgentSession;
@@ -8002,6 +8026,12 @@ export interface AgentFork {
   position: AgentForkPosition;
   title: string;
   labels: string[];
+  /**
+   * Makes the fork a side question of the source conversation: lists leave
+   * it out unless they ask for that conversation's side questions, or it
+   * waits for the user.
+   */
+  side?: boolean;
 }
 export interface AgentForkReceipt {
   /**
@@ -8755,6 +8785,7 @@ export interface AgentHistoryRead {
   position: HistoryPosition;
   includeThinking?: boolean;
   view?: HistoryView & string;
+  thought?: Cursor | null;
 }
 /**
  * Byte offset in one message field's UTF-8 text, not a bearer capability.
@@ -8988,6 +9019,10 @@ export interface HistoryWorkGroup {
   last: HistoryWorkKind;
   lastCall?: HistoryToolCall | null;
   /**
+   * Tail of the group's latest non-empty thought while its Turn is unfinished.
+   */
+  lastThought?: HistoryWorkThought | null;
+  /**
    * The first step's tool, when it is one.
    */
   firstToolUseId?: string | null;
@@ -9019,6 +9054,11 @@ export interface HistoryToolCall {
    */
   dispatched: boolean;
   externalTarget?: ExternalToolTarget | null;
+}
+export interface HistoryWorkThought {
+  position: HistoryRowAddress;
+  offset: number;
+  text: string;
 }
 /**
  * Canonical references at the requested fence, never execution authority.

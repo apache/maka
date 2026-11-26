@@ -26,12 +26,10 @@ mod policy;
 pub use availability::is_available;
 
 use crate::{Error, Network, filesystem};
-use mxc_sdk::mxc_common::{
-    logger::{Logger, Mode},
-    models::{ContainerPolicy, ExecutionRequest},
-    sandbox_process::{SandboxBackend, SandboxProcess, StdioMode},
+use mxc_sdk::v1::{
+    self, ContainerRequest, MxcProcess, SpawnExtendedOptions, SpawnStdio, TelemetryConfig,
+    WaitResult,
 };
-use mxc_sdk::process_container_common::base_container_runner::BaseContainerRunner;
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -49,7 +47,7 @@ unsafe extern "system" {}
 /// A policy already checked against native PSEC capabilities. SDK types and
 /// fallback dispatch remain private; a launch error never selects another tier.
 pub struct PreparedPolicy {
-    policy: ContainerPolicy,
+    request: ContainerRequest,
 }
 
 impl PreparedPolicy {
@@ -63,13 +61,13 @@ impl PreparedPolicy {
                 "native Windows process security environments are unavailable".into(),
             ));
         }
-        let policy = policy::prepare(filesystem, network, cwd)?;
-        if !policy.denied_paths.is_empty() && !BaseContainerRunner::supports_native_denied_paths() {
+        let request = policy::prepare(filesystem, network, cwd)?;
+        if !availability::supports_deny_paths() {
             return Err(Error::Unsupported(
                 "this Windows build cannot enforce native MXC deny paths".into(),
             ));
         }
-        Ok(Self { policy })
+        Ok(Self { request })
     }
 
     /// Launch inside the calling helper's inherited pipes or ConPTY. The process
@@ -93,7 +91,7 @@ impl PreparedPolicy {
                 if key.is_empty() || key.contains(['=', '\0']) || value.contains('\0') {
                     return Err(Error::Invalid("invalid Windows environment entry".into()));
                 }
-                Ok(format!("{key}={value}"))
+                Ok((key.to_owned(), value.to_owned()))
             })
             .collect::<Result<Vec<_>, Error>>()?;
         // The native SDK needs these startup locations even for env_clear.
@@ -107,27 +105,28 @@ impl PreparedPolicy {
                 .ok_or_else(|| {
                     Error::Invalid(format!("MXC requires a nonempty Unicode Host {key}"))
                 })?;
-            env.retain(|entry| {
-                !entry
-                    .split_once('=')
-                    .is_some_and(|(name, _)| name.eq_ignore_ascii_case(key))
-            });
-            env.push(format!("{key}={value}"));
+            env.retain(|(name, _)| !name.eq_ignore_ascii_case(key));
+            env.push((key.to_owned(), value));
         }
-        let request = ExecutionRequest {
-            script_code: command_line.into(),
-            working_directory: unicode(cwd.as_os_str(), "working directory")?.into(),
-            // Some, with inherit_default_env=false, uses exactly these entries;
-            // SDK profile defaults must not restore variables after env_clear.
-            env: Some(env),
-            policy: self.policy.clone(),
-            ..Default::default()
-        };
-        let mut logger = Logger::new(Mode::Buffer);
-        let child = BaseContainerRunner::new()
-            .spawn(&request, &mut logger, StdioMode::Inherit)
-            .map_err(|error| io::Error::other(error.error_message))?;
-        // Never publish the SDK buffer: it can contain command/environment data.
+        let mut request = self.request.clone();
+        request.command = command_line.into();
+        request.working_directory = Some(unicode(cwd.as_os_str(), "working directory")?.into());
+        request.environment = Some(env);
+        request.inherit_default_environment = Some(false);
+        let mut options = SpawnExtendedOptions::default();
+        options.stdio = SpawnStdio::Inherit;
+        options.telemetry = Some(TelemetryConfig {
+            enabled: Some(false),
+        });
+        // The free-form SDK message may include the original command or environment.
+        let child = v1::spawn_with_extended_options(request, options).map_err(|error| {
+            io::Error::other(format!(
+                "MXC {} in {} ({})",
+                error.code,
+                error.operation.as_deref().unwrap_or("spawn"),
+                error.native_code.as_deref().unwrap_or("no native code")
+            ))
+        })?;
         // The SDK retains the original process handle while we open this handle,
         // so the process object and its PID cannot be recycled between the calls.
         let handle = unsafe {
@@ -150,7 +149,7 @@ impl PreparedPolicy {
 /// Root exit observation does not release the Job or PSEC policy. In particular,
 /// callers must not finish_tree merely because the foreground shell has exited.
 pub struct Execution {
-    child: Box<dyn SandboxProcess>,
+    child: MxcProcess,
     process: OwnedHandle,
 }
 
@@ -170,7 +169,10 @@ impl Execution {
     /// Complete execution ownership, terminating remaining descendants before
     /// releasing native policy. Call only at the real execution settlement.
     pub fn finish_tree(&mut self) -> io::Result<i32> {
-        self.child.wait()
+        match self.child.wait()? {
+            WaitResult::Exited(code) => Ok(code),
+            WaitResult::TimedOut => Err(io::ErrorKind::TimedOut.into()),
+        }
     }
 }
 

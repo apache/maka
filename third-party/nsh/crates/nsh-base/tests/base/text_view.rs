@@ -5,8 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use nsh_base::{
-    TextViewClasses, TextViewLinkPressEvent, TextViewPart, TextViewParts, TextViewStyles,
-    TextViewTaskPressEvent, text_view,
+    TextViewClasses, TextViewLinkPressEvent, TextViewMark, TextViewMarkPressEvent,
+    TextViewMarksMatchEvent, TextViewPart, TextViewParts, TextViewStyles, TextViewTaskPressEvent,
+    text_view,
 };
 use nsh_core::{
     Color, MountItem, StyleKey,
@@ -449,6 +450,51 @@ fn a_link_press_reports_the_modifier_keys_held() {
          #footnote-n:cmd https://example.com/guide:plain",
     )
     .unwrap();
+}
+
+/// A paragraph with a link to a page, one to a heading of the document and
+/// one around emphasis, to a path of the app's.
+#[component]
+fn LinkDestinations() -> impl IntoElement {
+    text_view().markdown(
+        "See [the guide](https://example.com/guide), [the notes](#notes) or [*this*](/this).",
+    )
+}
+
+#[test]
+fn each_link_of_a_paragraph_carries_its_url_to_the_platform() {
+    let mut core = nsh_core::Core::new(nsh_core::ApproxTextEngine, Size::new(px(400.0), px(200.0)));
+    core.mount_root(&nsh_core::element::Root::of::<LinkDestinations>());
+    let batch = core.commit().expect("initial batch");
+    let text = batch
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::Text { text, .. } if text.text.starts_with("See") => Some(text.clone()),
+            _ => None,
+        })
+        .expect("the paragraph");
+    // Each link's characters and where they go (the web draws them as an
+    // `<a href>`): the URL as written, whatever it is.
+    let links: Vec<_> = text
+        .links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            (
+                &text.text[l.start as usize..l.end as usize],
+                text.link_href(i),
+            )
+        })
+        .collect();
+    assert_eq!(
+        links,
+        [
+            ("the guide", Some("https://example.com/guide")),
+            ("the notes", Some("#notes")),
+            ("this", Some("/this")),
+        ]
+    );
 }
 
 /// An image at the end of a paragraph that wraps in a narrow column.
@@ -1595,6 +1641,64 @@ fn app_part_classes_can_still_override_marker_user_select() {
 }
 
 #[component]
+fn MarkedPassages() -> impl IntoElement {
+    let matched = signal(String::new());
+    let pressed = signal(String::new());
+    let marks = vec![
+        TextViewMark {
+            id: "s1".into(),
+            quotes: vec!["cache is warm".into()],
+            title: Some("Why warm?".into()),
+            active: Some(false),
+        },
+        TextViewMark {
+            id: "s2".into(),
+            quotes: vec!["not in prose".into()],
+            title: None,
+            active: Some(false),
+        },
+    ];
+    view()
+        .child(
+            text_view()
+                .selectable(true)
+                .markdown("The cache is **warm** now. See [docs](https://example.test) and `not in prose`.")
+                .marks(marks)
+                .on_marks_match(move |e: &TextViewMarksMatchEvent| {
+                    matched.set(e.ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","));
+                })
+                .on_mark_press(move |e: &TextViewMarkPressEvent| {
+                    pressed.set(format!("mark:{}", e.id));
+                })
+                .on_link_press(move |e: &TextViewLinkPressEvent| {
+                    pressed.set(format!("link:{}", e.url));
+                }),
+        )
+        .child(text(move || format!("Matched {}", matched.get())))
+        .child(text(move || format!("Pressed {}", pressed.get())))
+}
+
+#[test]
+fn passage_marks_report_matches_and_fire_mark_press_without_disturbing_links() {
+    let mut config = EngineConfig::new(nsh_testing::windowed_root::<MarkedPassages>());
+    config.environment.os = Os::MacOs;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("Matched s1").unwrap();
+    app.press("cache is warm").unwrap();
+    app.wait_for("Pressed mark:s1").unwrap();
+    app.press("docs").unwrap();
+    app.wait_for("Pressed link:https://example.test").unwrap();
+    // Tab lands on the coalesced mark in a single stop, then moves to the link.
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed mark:s1").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("Pressed link:https://example.test").unwrap();
+}
+
+#[component]
 fn TerminalChromeDoc() -> impl IntoElement {
     text_view()
         .selectable(true)
@@ -2170,5 +2274,338 @@ mod maka_worker_and_offscreen {
             first_height > 0.0 && first_height <= 50.0,
             "a single-line parsed paragraph has its actual small geometry: {first_height}"
         );
+    }
+}
+
+mod outline_and_block_navigation {
+    use super::*;
+    use nsh_base::{
+        MarkdownOptions, TextView, TextViewApi, TextViewCodeAction, TextViewHeading,
+        TextViewHeadingsEvent, TextViewScrollToBlockOptions, TextViewVisibleBlocksEvent,
+    };
+    use nsh_core::ListContentStyle;
+    use nsh_core::element::{Root, component_ref};
+
+    fn format_headings(headings: &[TextViewHeading]) -> String {
+        headings
+            .iter()
+            .map(|h| format!("h{}@{}:{}", h.level, h.block_index, h.text))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    #[component]
+    fn StreamingOutline() -> impl IntoElement {
+        let tv = component_ref::<TextView>();
+        let initial = "1. ```sh
+   # Install the CLI
+   ```
+
+## Verify **now**
+
+Intro body.
+";
+        let source = signal(SharedString::from(initial));
+        let outline = signal(SharedString::from(""));
+        let immediate_scroll = signal(false);
+        view()
+            .flex_col()
+            .child(
+                view()
+                    .test_id("append-heading")
+                    .h(px(20.0))
+                    .on_press(move || {
+                        source.update(|s| {
+                            *s = SharedString::from(format!(
+                                "{s}
+
+## 深入分析
+
+Second section body.
+"
+                            ));
+                        });
+                    }),
+            )
+            .child(text(move || format!("OUTLINE={}", outline.get())))
+            .child(text(move || format!("SCROLLED={}", immediate_scroll.get())))
+            .child(
+                text_view()
+                    .component_ref(&tv)
+                    .source_id("streaming-outline")
+                    .markdown(move || Some(source.get()))
+                    .options(MarkdownOptions {
+                        streaming: true,
+                        ..Default::default()
+                    })
+                    .content_style(ListContentStyle {
+                        row_gap: px(12.0),
+                        ..Default::default()
+                    })
+                    .code_block_actions(vec![
+                        TextViewCodeAction::new("wrap").with_label("Wrap code"),
+                    ])
+                    .on_headings_change(move |e: &TextViewHeadingsEvent| {
+                        outline.set(format_headings(&e.headings).into());
+                        if let Some(h) = e.headings.iter().find(|h| h.text.as_ref() == "深入分析")
+                            && let Some(api) = tv.api::<TextViewApi>()
+                            && api.scroll_to_block(h.block_index, None)
+                        {
+                            immediate_scroll.set(true);
+                        }
+                    }),
+            )
+    }
+
+    #[test]
+    fn headings_change_matches_parsed_document_and_streams_without_rebuilding() {
+        let mut app = Headless::start(EngineConfig {
+            viewport: Size::new(px(600.0), px(500.0)),
+            ..EngineConfig::new(Root::of::<StreamingOutline>())
+        })
+        .unwrap();
+        app.wait_for("Wrap code").unwrap();
+        app.wait_for("text:OUTLINE=h2@1:Verify now").unwrap();
+        let original_wrap = app.screen().press_target("Wrap code").unwrap().unwrap();
+        app.press("id:append-heading").unwrap();
+        app.wait_for("text:OUTLINE=h2@1:Verify now|h2@3:深入分析")
+            .unwrap();
+        app.wait_for("text:SCROLLED=true").unwrap();
+        assert_eq!(
+            app.screen().press_target("Wrap code").unwrap(),
+            Some(original_wrap),
+            "streaming a new heading must keep earlier blocks mounted without rebuilding TextView"
+        );
+        let static_headings = TextView::headings(
+            "1. ```sh
+   # Install the CLI
+   ```
+
+## Verify **now**
+
+Intro body.
+
+## 深入分析
+
+Second section body.
+"
+            .to_string(),
+            Some(MarkdownOptions {
+                streaming: true,
+                ..Default::default()
+            }),
+            None,
+        );
+        assert_eq!(
+            format_headings(&static_headings),
+            "h2@1:Verify now|h2@3:深入分析"
+        );
+    }
+
+    #[component]
+    fn VirtualizedScrollTarget() -> impl IntoElement {
+        let tv = component_ref::<TextView>();
+        let deep_dive_block = signal(None::<u32>);
+        let visible_range = signal(SharedString::from("none"));
+        let mut md = String::from(
+            "# Overview
+
+Opening paragraph.
+
+## Architecture
+
+",
+        );
+        for i in 1..=64 {
+            md.push_str(&format!(
+                "Architecture paragraph {i:02} with enough prose to wrap across multiple lines inside the reading column.
+
+"
+            ));
+        }
+        let wide_json = format!(r#"{{"entries":[{}]}}"#, r#""payload","#.repeat(1200));
+        md.push_str(&format!(
+            "```json
+{wide_json}
+```
+
+"
+        ));
+        md.push_str(
+            "## Deep Dive
+
+DEEP_DIVE_MARKER reached.
+
+",
+        );
+        for i in 1..=10 {
+            md.push_str(&format!(
+                "Deep dive paragraph {i:02}.
+
+"
+            ));
+        }
+        let source = SharedString::from(md);
+
+        view()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .child(
+                view()
+                    .flex_row()
+                    .h(px(24.0))
+                    .child(
+                        view()
+                            .test_id("jump-deep-dive")
+                            .w(px(120.0))
+                            .h(px(24.0))
+                            .on_press(move || {
+                                if let Some(index) = deep_dive_block.get_untracked()
+                                    && let Some(api) = tv.api::<TextViewApi>()
+                                {
+                                    api.scroll_to_block(
+                                        index,
+                                        Some(TextViewScrollToBlockOptions {
+                                            view_position: Some(0.0),
+                                            view_offset: Some(12.0),
+                                            animated: Some(false),
+                                        }),
+                                    );
+                                }
+                            })
+                            .child(text("Jump Deep Dive")),
+                    )
+                    .child(text(move || format!("VISIBLE={}", visible_range.get()))),
+            )
+            .child(
+                virtual_list(
+                    move || 1usize,
+                    move |_| {
+                        let source = source.clone();
+                        view().w_full().child(
+                            text_view()
+                                .component_ref(&tv)
+                                .source_id("long-reply")
+                                .markdown(source)
+                                .content_style(ListContentStyle {
+                                    row_gap: px(16.0),
+                                    ..Default::default()
+                                })
+                                .on_headings_change(move |e: &TextViewHeadingsEvent| {
+                                    if let Some(h) =
+                                        e.headings.iter().find(|h| h.text.as_ref() == "Deep Dive")
+                                    {
+                                        deep_dive_block.set(Some(h.block_index));
+                                    }
+                                })
+                                .on_visible_blocks_change(move |e: &TextViewVisibleBlocksEvent| {
+                                    visible_range.set(
+                                        match (e.first_block, e.last_block) {
+                                            (Some(f), Some(l)) => format!("{f}..{l}"),
+                                            _ => "none".to_string(),
+                                        }
+                                        .into(),
+                                    );
+                                }),
+                        )
+                    },
+                )
+                .flex_grow(1.0)
+                .min_h(px(0.0))
+                .w_full(),
+            )
+    }
+
+    #[test]
+    fn scroll_to_block_reaches_virtualized_heading_across_long_paragraphs_and_wide_code_block() {
+        let mut app = Headless::start(EngineConfig {
+            viewport: Size::new(px(640.0), px(424.0)),
+            ..EngineConfig::new(Root::of::<VirtualizedScrollTarget>())
+        })
+        .unwrap();
+        app.wait_for("text:Overview").unwrap();
+        assert!(!app.shows("DEEP_DIVE_MARKER"));
+        app.press("id:jump-deep-dive").unwrap();
+        app.wait_for("text:DEEP_DIVE_MARKER reached.").unwrap();
+        // Block 68 = Overview(0), para(1), Architecture(2), 64 paras(3..66), code(67), Deep Dive(68).
+        app.wait_for(r"text:/VISIBLE=68\.\./").unwrap();
+    }
+
+    #[component]
+    fn FootnotesOnlyViewport() -> impl IntoElement {
+        let outer = element_ref();
+        let visible_range = signal(SharedString::from("unset"));
+        let refs = (1..=24).map(|i| format!("[^{i}]")).collect::<String>();
+        let mut md = format!("# Title\n\nBody with footnotes {refs}.\n\n");
+        for i in 1..=24 {
+            md.push_str(&format!(
+                "[^{i}]: Footnote line {i:02} with extra explanatory text to extend the footnotes section well beyond one viewport height.\n\n"
+            ));
+        }
+        let source = SharedString::from(md);
+        view()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .child(
+                view()
+                    .flex_row()
+                    .h(px(24.0))
+                    .child(
+                        view()
+                            .test_id("scroll-footnotes")
+                            .w(px(120.0))
+                            .h(px(24.0))
+                            .on_press(move || {
+                                outer.scroll_to_end(false);
+                            })
+                            .child(text("To Footnotes")),
+                    )
+                    .child(text(move || format!("VISIBLE={}", visible_range.get()))),
+            )
+            .child(
+                virtual_list(
+                    move || 1usize,
+                    move |_| {
+                        let source = source.clone();
+                        view().w_full().child(
+                            text_view()
+                                .source_id("footnotes-reply")
+                                .markdown(source)
+                                .content_style(ListContentStyle {
+                                    row_gap: px(12.0),
+                                    ..Default::default()
+                                })
+                                .on_visible_blocks_change(move |e: &TextViewVisibleBlocksEvent| {
+                                    visible_range.set(
+                                        match (e.first_block, e.last_block) {
+                                            (Some(f), Some(l)) => format!("{f}..{l}"),
+                                            _ => "none".to_string(),
+                                        }
+                                        .into(),
+                                    );
+                                }),
+                        )
+                    },
+                )
+                .element_ref(&outer)
+                .flex_grow(1.0)
+                .min_h(px(0.0))
+                .w_full(),
+            )
+    }
+
+    #[test]
+    fn visible_blocks_reports_none_when_only_footnotes_are_visible() {
+        let mut app = Headless::start(EngineConfig {
+            viewport: Size::new(px(480.0), px(200.0)),
+            ..EngineConfig::new(Root::of::<FootnotesOnlyViewport>())
+        })
+        .unwrap();
+        app.wait_for("text:Title").unwrap();
+        app.wait_for(r"text:/VISIBLE=0../").unwrap();
+        app.press("id:scroll-footnotes").unwrap();
+        app.wait_for("text:VISIBLE=none").unwrap();
     }
 }

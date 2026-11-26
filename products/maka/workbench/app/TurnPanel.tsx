@@ -17,13 +17,23 @@
  * under the License.
  */
 
-import { formatCount } from './numberFormat';
 import { formatDuration } from './duration';
 import { ExecutorTokenCounts } from './TurnUsage';
-import { LoadingIndicator, ShimmerText, ThinkingMark, ThinkingPeek } from './Loading';
+import { FadingText, LoadingIndicator, ThinkingMark, ThinkingPeek } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
-import { Canvas, cleanup, computed, effect, inputAction, List, signal, Text, View } from 'nsh';
+import {
+  Canvas,
+  cleanup,
+  computed,
+  effect,
+  inputAction,
+  List,
+  signal,
+  Text,
+  untracked,
+  View,
+} from 'nsh';
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
@@ -31,7 +41,7 @@ import { activityMessage, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { turnOutcome } from './processGroups';
+import { groupLatestIsThought, groupThought, turnOutcome, turnThought } from './processGroups';
 import {
   C,
   captionTextStyle,
@@ -151,20 +161,27 @@ function activityCountLabel({
   messages,
 }: Pick<NonNullable<Row['foldedWork']>, 'thoughts' | 'tools' | 'messages'>) {
   return [
-    thoughts
-      ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', {
-          count: formatCount(thoughts),
-        })
-      : '',
-    tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: formatCount(tools) }) : '',
-    messages
-      ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
-          count: formatCount(messages),
-        })
-      : '',
+    thoughts ? tr('turn.thoughts_count', { count: thoughts }) : '',
+    tools ? tr('turn.tools_count', { count: tools }) : '',
+    messages ? tr('turn.agent_messages_count', { count: messages }) : '',
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+const thinkingMark = () => <ThinkingMark />;
+
+/** What a turn at work is doing: its wait, its tool, or its thinking. */
+export function liveActivityTitle(activity: LiveActivity, tool: ToolActivity | undefined): string {
+  if (activity.kind === 'waiting_for_user') return tr('Waiting for your response');
+  if (activity.kind === 'retrying') return tr('Waiting to retry');
+  if (tool)
+    return toolActivitySummary(
+      tool,
+      tool.phase === 'preparing' ? tr('Preparing tool') : tr('Running tool'),
+      tool.title ? displayText(tool.title) : tool.source === 'native' ? '' : undefined,
+    );
+  return activity.kind === 'thinking' ? tr('Analyzing the request') : tr('Working…');
 }
 
 export function TurnSummary(props: {
@@ -174,6 +191,10 @@ export function TurnSummary(props: {
   row(id: string): Row | undefined;
   expanded: () => boolean;
   canFold: () => boolean;
+  /** What the turn is doing right now, for its row while its work is folded. */
+  doing?: () => string | null;
+  /** The turn at work waits for the user: its header says so even with its work open. */
+  waiting?: () => boolean;
   toggle(open: boolean): void;
   /** Folded work keeps its images in reach; open work shows them on each tool. */
   images?: {
@@ -200,10 +221,30 @@ export function TurnSummary(props: {
     const turn = props.turn();
     return !running() && turn.finalOutputIds.length === 0 ? turn.timing?.executorUsage : null;
   };
+  // On the desktop the row of a turn at work is where the Maka mark is: one
+  // row that stays in its place from the moment the message is sent, whatever
+  // the groups under it do.
+  const marked = computed(() => platform.idiom !== 'terminal' && running());
+  const activeTitle = computed(() =>
+    props.waiting?.()
+      ? tr('Waiting for your response')
+      : !props.expanded()
+        ? (props.doing?.() ?? tr('Working…'))
+        : tr('Working…'),
+  );
+  const stableDoing = stableActivityTitle(activeTitle, () => marked() && !props.expanded(), 600);
+  const elapsedLabel = () => {
+    const time = elapsed(props.turn(), clock());
+    return time !== null && time >= 1000 ? formatDuration(time) : null;
+  };
   const label = () => {
     const turn = props.turn();
     if (running()) {
       const time = elapsed(turn, clock());
+      if (props.waiting?.())
+        return time !== null && time >= 1000
+          ? `${tr('Waiting for your response')} · ${formatDuration(time)}`
+          : tr('Waiting for your response');
       return time !== null && time >= 1000
         ? tr('Working for {duration}', { duration: formatDuration(time) })
         : tr('Working…');
@@ -232,6 +273,16 @@ export function TurnSummary(props: {
   const choose = (action: { turnKey: string; open: boolean }) => {
     if (props.turn().turnKey === action.turnKey && props.canFold()) props.toggle(action.open);
   };
+  // The turn's rows fold into this one when it ends: what follows glides up.
+  let wasMarked = untracked(marked);
+  effect(() => {
+    if (wasMarked && !marked()) animateDisclosure();
+    wasMarked = marked();
+  });
+  const peek = computed(() =>
+    marked() && !props.expanded() ? turnThought(props.groups(), props.row) : null,
+  );
+  const peeked = computed(() => peek() !== null);
   return (
     // On the desktop the message above ends in its own action row: that row is the gap.
     // Open, the summary heads its work, as close to it as the work's own rows are.
@@ -246,6 +297,7 @@ export function TurnSummary(props: {
         open={props.expanded()}
         foldable={props.canFold()}
         reserveChevron={false}
+        mark={marked() ? thinkingMark : undefined}
         terminalInset={controlStyle.paddingHorizontal}
         onPress={inputAction(choose, {
           turnKey: props.turn().turnKey,
@@ -280,30 +332,57 @@ export function TurnSummary(props: {
           </View>
         }
       >
-        <Text
-          style={[
-            {
-              ...disclosureTitleStyle,
-              color: running() ? C.secondary : C.muted,
-            },
-            { numberOfLines: 1 },
-          ]}
+        <If
+          when={marked()}
+          else={
+            <Text
+              style={[
+                {
+                  ...disclosureTitleStyle,
+                  color: running() ? C.secondary : C.muted,
+                },
+                { numberOfLines: 1 },
+              ]}
+            >
+              {label()}
+            </Text>
+          }
         >
-          {label()}
-        </Text>
+          <View
+            style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          >
+            <FadingText
+              text={stableDoing()}
+              style={captionTextStyle}
+              color={C.secondary}
+              shimmer={!props.waiting?.()}
+            />
+            <If when={elapsedLabel() !== null}>
+              <Text style={{ ...captionTextStyle, color: C.muted, flexShrink: 0 }}>
+                {`· ${elapsedLabel()!}`}
+              </Text>
+            </If>
+            <If when={props.canFold()}>
+              <DisclosureChevron open={props.expanded()} size={12} color={C.muted} />
+            </If>
+          </View>
+        </If>
       </Disclosure>
+      <If when={peeked()}>
+        <ThinkingPeek text={() => peek() ?? ''} />
+      </If>
     </View>
   );
 }
 
-function stableActivityTitle(desiredTitle: () => string, active: () => boolean) {
+function stableActivityTitle(desiredTitle: () => string, active: () => boolean, dwell = 150) {
   let presentedTitle = desiredTitle();
   let presentedAt = Date.now();
   const stableTitle = signal(presentedTitle);
   effect(() => {
     const desired = desiredTitle();
     if (desired === presentedTitle) return;
-    const remaining = active() ? 150 - (Date.now() - presentedAt) : 0;
+    const remaining = active() ? dwell - (Date.now() - presentedAt) : 0;
     const commit = () => {
       presentedTitle = desiredTitle();
       presentedAt = Date.now();
@@ -487,7 +566,7 @@ function ActivityLog(props: {
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
-            const movement = event.offset.y - lastOffset;
+            const movement = event.delta.y;
             lastOffset = event.offset.y;
             const end = Math.max(0, event.contentSize.height - event.size.height);
             const distance = end - lastOffset;
@@ -645,23 +724,33 @@ type TurnPanelProps = {
 
 export function TurnPanel(props: TurnPanelProps) {
   const desktop = platform.idiom !== 'terminal';
-  // What the model is thinking right now, while its steps are folded.
-  const thought = () => {
-    const activity = props.activity();
-    if (
-      props.state.open() ||
-      !props.turn().active ||
-      activity.kind !== 'thinking' ||
-      !activity.rowId ||
-      !props.group().rowIds.includes(activity.rowId)
-    )
-      return null;
-    return props.row(activity.rowId)?.text.trim() || null;
-  };
+  // The group's latest thought, for as long as the group is at work and its
+  // steps are folded. It stays while a tool runs after it, and after its row is
+  // folded into the group's summary: a window that came and went with every
+  // thought would move the conversation each time.
+  const atWork = computed(() => {
+    const turn = props.turn();
+    // A group is closed while its tool runs and at work all the same.
+    return (
+      turn.active &&
+      turnOutcome(turn) === null &&
+      (!props.group().closed || props.toolActivity() !== undefined)
+    );
+  });
+  const thought = computed(() =>
+    props.state.open() || !atWork() ? null : groupThought(props.group(), props.row),
+  );
+  // The rows under the window glide to their places when it comes and goes.
+  const windowed = computed(() => desktop && thought() !== null);
+  let wasWindowed = untracked(windowed);
+  effect(() => {
+    if (windowed() !== wasWindowed) animateDisclosure();
+    wasWindowed = windowed();
+  });
   return (
     <View style={desktop ? { ...panelStyle, gap: 0 } : panelStyle}>
       <GroupHeader {...props} />
-      <If when={desktop && thought() !== null}>
+      <If when={windowed()}>
         <ThinkingPeek text={() => thought() ?? ''} />
       </If>
       <If when={props.state.open()}>
@@ -723,7 +812,6 @@ function activityVerbs(group: ProcessGroup, row: (id: string) => Row | undefined
   return [...new Set(kinds.map(stepVerb))].join(tr(', '));
 }
 
-const thinkingMark = () => <ThinkingMark />;
 function GroupHeader(props: TurnPanelProps) {
   const active = () =>
     props.turn().active &&
@@ -760,15 +848,19 @@ function GroupHeader(props: TurnPanelProps) {
       activity.rowId &&
       props.group().rowIds.includes(activity.rowId)
     )
-      // On the desktop the thought itself passes under the header while it is folded.
-      return desktop && !props.state.open()
+      // On the desktop the thought itself passes under the header while it is
+      // folded, and under its own step while the steps are open.
+      return desktop
         ? tr('Analyzing the request')
         : `${tr('Analyzing the request')}${activity.detail ? ` · ${activity.detail}` : ''}`;
+    if (groupLatestIsThought(props.group(), props.row)) return tr('Analyzing the request');
     const work = latestWork(props.group(), props.row);
     const latest = work ? work.lastCall : props.row(props.group().rowIds.at(-1) ?? '')?.tool?.call;
     return latest ? activityTitle(latest) : tr('Working…');
   });
-  const stableTitle = stableActivityTitle(desiredTitle, active);
+  // On the desktop a title stays long enough to be read: one that is replaced
+  // sooner is never shown, so the row does not flicker through every state.
+  const stableTitle = stableActivityTitle(desiredTitle, active, desktop ? 600 : 150);
   const foldable = () =>
     props.group().rowIds.length > 0 ||
     props.group().workRowId !== undefined ||
@@ -788,16 +880,23 @@ function GroupHeader(props: TurnPanelProps) {
       props.revealTerminalGroup?.();
     }
   };
+  // A group wears the icon of its latest tool. The Maka mark is the turn's, on
+  // the row above the groups, and thoughts have no icon of their own: one icon
+  // down every row would be read as a pattern, not as what each group did.
   const icon = () => {
-    const last =
-      latestWork(props.group(), props.row)?.last ??
-      stepKind(props.row(props.group().rowIds.at(-1) ?? ''));
-    if (last?.kind === 'tool') return activityIcon(last.presentation);
-    return last?.kind === 'thought' ? 'thinking' : 'activity';
+    const group = props.group();
+    for (let at = group.rowIds.length - 1; at >= 0; at -= 1) {
+      const kind = stepKind(props.row(group.rowIds[at]));
+      if (kind?.kind === 'tool') return activityIcon(kind.presentation);
+    }
+    const work = groupWork(group, props.row);
+    if (!work) return undefined;
+    if (work.last.kind === 'tool') return activityIcon(work.last.presentation);
+    // `work.kinds` is deduplicated by first appearance, so it only names the
+    // latest tool unambiguously when the group used one tool presentation.
+    const tools = work.kinds.filter((kind) => kind.kind === 'tool');
+    return tools.length === 1 ? activityIcon(tools[0].presentation) : undefined;
   };
-  // The mark keeps moving for as long as the turn is at work, through its
-  // thoughts and its tools alike.
-  const working = computed(() => active());
   if (desktop)
     return (
       <Disclosure
@@ -805,7 +904,7 @@ function GroupHeader(props: TurnPanelProps) {
         open={props.state.open()}
         foldable={foldable()}
         icon={icon()}
-        mark={working() ? thinkingMark : undefined}
+        leading="blank"
         onPress={inputAction(choose, {
           sessionId: props.sessionId,
           key: props.group().key,
@@ -813,21 +912,11 @@ function GroupHeader(props: TurnPanelProps) {
         })}
       >
         <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <If
-            when={active()}
-            else={
-              <Text
-                style={[
-                  { ...captionTextStyle, color: C.muted, flexShrink: 1, minWidth: 0 },
-                  { numberOfLines: 1, textOverflow: 'ellipsis' },
-                ]}
-              >
-                {desiredTitle()}
-              </Text>
-            }
-          >
-            <ShimmerText text={stableTitle()} style={captionTextStyle} />
-          </If>
+          <FadingText
+            text={active() ? stableTitle() : desiredTitle()}
+            style={captionTextStyle}
+            color={active() ? C.secondary : C.muted}
+          />
           <If when={foldable()}>
             <DisclosureChevron open={props.state.open()} size={12} color={C.muted} />
           </If>

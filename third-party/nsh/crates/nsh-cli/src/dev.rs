@@ -28,10 +28,12 @@ const DEBOUNCE: Duration = Duration::from_millis(30);
 pub(crate) struct DevSession {
     entry: PathBuf,
     src_dir: PathBuf,
+    /// Directories `nsh.json`'s `"watch"` skips: events inside them are
+    /// not the app's.
+    watch_ignored: Vec<PathBuf>,
     release: bool,
     server: DevServer,
     /// Whether other machines may connect.
-    network: bool,
     devices: Arc<Devices>,
     /// The modules of the last good development build: updates are
     /// computed against it.
@@ -50,8 +52,18 @@ pub(crate) struct DevSession {
 pub(crate) struct Listen {
     /// Its port, zero for one the OS allocates.
     pub(crate) port: u16,
-    /// Whether other machines may connect, or only this one.
-    pub(crate) network: bool,
+    pub(crate) host: Ipv4Addr,
+}
+
+impl Listen {
+    pub(crate) fn new(port: u16, network: bool) -> Self {
+        let host = if network {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            Ipv4Addr::LOCALHOST
+        };
+        Self { port, host }
+    }
 }
 
 impl DevSession {
@@ -74,6 +86,11 @@ impl DevSession {
         // The app's directory: its `nsh.json`'s, which may be above the
         // entry (`"entry"`); its assets are named from it.
         let app_dir = nsh_bundler::app_dir::app_dir_of(&entry);
+        // What its `"watch"` leaves out of the watcher.
+        let watch_ignored = crate::package::read_config(&entry)
+            .ok()
+            .map(|config| ignored_dirs(&config.watch.ignore, &app_dir))
+            .unwrap_or_default();
         let server = start_server(listen, &app_dir, devices.clone())?;
         server.serve_files(crate::build::crate_assets().map(|a| (a.path, a.source)));
         server.install_commands(install_commands(&app_dir));
@@ -89,9 +106,9 @@ impl DevSession {
         let session = DevSession {
             entry,
             src_dir,
+            watch_ignored,
             release,
             server,
-            network: listen.network,
             devices,
             hot: Default::default(),
             watch_files: Default::default(),
@@ -114,20 +131,36 @@ impl DevSession {
 
     /// WebSocket URL for hosts on this machine.
     pub(crate) fn local_url(&self) -> String {
-        format!(
-            "ws://127.0.0.1:{}{WS_PATH}",
-            self.server.local_addr().port()
-        )
+        format!("ws://{}{WS_PATH}", self.local_endpoint())
+    }
+
+    /// WebSocket URL for a host reaching the server through `127.0.0.1`
+    /// (such as an Android device over `adb reverse`).
+    pub(crate) fn loopback_url(&self) -> String {
+        format!("ws://{}:{}{WS_PATH}", Ipv4Addr::LOCALHOST, self.port())
     }
 
     /// The web host's page for browsers on this machine.
     pub(crate) fn web_url(&self) -> String {
-        format!("http://127.0.0.1:{}/", self.server.local_addr().port())
+        format!("http://{}/", self.local_endpoint())
+    }
+
+    fn local_endpoint(&self) -> SocketAddr {
+        let addr = self.server.local_addr();
+        if addr.ip().is_unspecified() {
+            SocketAddr::from((Ipv4Addr::LOCALHOST, addr.port()))
+        } else {
+            addr
+        }
     }
 
     /// This machine's addresses other machines reach the server on.
     fn network_ips(&self) -> Vec<Ipv4Addr> {
-        if self.network { lan_ips() } else { Vec::new() }
+        match self.server.local_addr().ip() {
+            std::net::IpAddr::V4(ip) if ip.is_unspecified() => lan_ips(),
+            std::net::IpAddr::V4(ip) if !ip.is_loopback() => vec![ip],
+            _ => Vec::new(),
+        }
     }
 
     /// Prints where hosts can connect.
@@ -199,18 +232,24 @@ impl DevSession {
                 continue;
             }
             if let Some(app) = &rust
-                && event.paths.iter().any(|p| app.is_rust(p))
+                && event
+                    .paths
+                    .iter()
+                    .any(|p| app.is_rust(p) && !app.in_watch_ignore(p))
             {
                 return Err(crate::rust_app::Restart.into());
             }
-            if !is_source(&event, &self.src_dir) {
+            if !is_source(&event, &self.src_dir, &self.watch_ignored) {
                 continue;
             }
             // A Rust change saved with this one (a checkout, a formatter)
             // starts the session again, which builds the TSX too: built
             // now, it would check its imports against the old UI sets.
             let deadline = Instant::now() + DEBOUNCE;
-            let is_rust = |p: &Path| rust.as_ref().is_some_and(|app| app.is_rust(p));
+            let is_rust = |p: &Path| {
+                rust.as_ref()
+                    .is_some_and(|app| app.is_rust(p) && !app.in_watch_ignore(p))
+            };
             if rust_changed_until(&rx, deadline, is_rust) {
                 return Err(crate::rust_app::Restart.into());
             }
@@ -490,18 +529,11 @@ fn start_server(
     assets_root: &Path,
     devices: Arc<Devices>,
 ) -> anyhow::Result<DevServer> {
-    let Listen { port, network } = listen;
+    let Listen { port, host } = listen;
     if ui::stop_requested() {
         anyhow::bail!("development session is stopping");
     }
-    let addr = SocketAddr::from((
-        if network {
-            [0, 0, 0, 0]
-        } else {
-            [127, 0, 0, 1]
-        },
-        port,
-    ));
+    let addr = SocketAddr::from((host, port));
     DevServer::start(
         addr,
         nsh_js::BYTECODE_VERSION,
@@ -539,16 +571,33 @@ fn rust_changed_until(
     false
 }
 
-fn is_source(event: &notify::Event, root: &Path) -> bool {
+fn is_source(event: &notify::Event, root: &Path, ignored: &[PathBuf]) -> bool {
     event.paths.iter().any(|p| {
         !p.components()
             .any(|c| c.as_os_str() == ".nsh" || c.as_os_str() == "node_modules")
             && !in_nested_checkout(root, p)
+            && !ignored.iter().any(|dir| p.starts_with(dir))
             && matches!(
                 p.extension().and_then(|e| e.to_str()),
                 Some("ts" | "tsx" | "js" | "jsx" | "json")
             )
     })
+}
+
+/// The absolute directories `ignore` names (`nsh.json`'s `"watch.ignore"`):
+/// entries are relative to `dir`, absolute ones as they are.
+pub(crate) fn ignored_dirs(ignore: &[String], dir: &Path) -> Vec<PathBuf> {
+    ignore
+        .iter()
+        .map(|entry| {
+            let path = Path::new(entry);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                dir.join(path)
+            }
+        })
+        .collect()
 }
 
 /// Whether `path` is in another Git checkout kept below `root` (a
@@ -680,26 +729,46 @@ fn lan_ips() -> Vec<Ipv4Addr> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::Listen;
 
     fn on_network(port: u16) -> Listen {
-        Listen {
-            port,
-            network: true,
-        }
+        Listen::new(port, true)
     }
 
     #[test]
     fn only_a_network_listen_is_open_to_other_machines() {
         let dir = std::env::temp_dir();
-        let local = Listen {
-            port: 0,
-            network: false,
-        };
+        let local = Listen::new(0, false);
         let server = super::start_server(local, &dir, Default::default()).unwrap();
         assert!(server.local_addr().ip().is_loopback());
         let server = super::start_server(on_network(0), &dir, Default::default()).unwrap();
         assert!(server.local_addr().ip().is_unspecified());
+    }
+
+    #[test]
+    fn explicit_host_is_the_bound_address() {
+        let listen = Listen {
+            port: 0,
+            host: Ipv4Addr::LOCALHOST,
+        };
+        let server =
+            super::start_server(listen, &std::env::temp_dir(), Default::default()).unwrap();
+        assert_eq!(server.local_addr().ip(), listen.host);
+    }
+
+    #[test]
+    fn loopback_url_targets_127_0_0_1_even_when_bound_to_all_interfaces() {
+        let dir = std::env::temp_dir().join(format!("nsh-loopback-url-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = dir.join("App.tsx");
+        std::fs::write(&entry, "export default function App() { return null; }\n").unwrap();
+        let session = super::DevSession::start(&entry, on_network(0), false, None).unwrap();
+        let expected = format!("ws://127.0.0.1:{}{}", session.port(), super::WS_PATH);
+        assert_eq!(session.loopback_url(), expected);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -800,13 +869,66 @@ mod tests {
         let saved = |path: std::path::PathBuf| {
             Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(path)
         };
-        assert!(super::is_source(&saved(dir.join("App.tsx")), &dir));
-        assert!(super::is_source(&saved(dir.join("src/view.tsx")), &dir));
-        assert!(!super::is_source(&saved(nested.join("App.tsx")), &dir));
-        assert!(!super::is_source(&saved(nested.join("src/view.tsx")), &dir));
+        let no_ignored: Vec<std::path::PathBuf> = Vec::new();
+        assert!(super::is_source(
+            &saved(dir.join("App.tsx")),
+            &dir,
+            &no_ignored
+        ));
+        assert!(super::is_source(
+            &saved(dir.join("src/view.tsx")),
+            &dir,
+            &no_ignored
+        ));
+        assert!(!super::is_source(
+            &saved(nested.join("App.tsx")),
+            &dir,
+            &no_ignored
+        ));
+        assert!(!super::is_source(
+            &saved(nested.join("src/view.tsx")),
+            &dir,
+            &no_ignored
+        ));
         // The app's own `.git` is not a checkout below it.
         std::fs::create_dir_all(dir.join(".git")).unwrap();
-        assert!(super::is_source(&saved(dir.join("App.tsx")), &dir));
+        assert!(super::is_source(
+            &saved(dir.join("App.tsx")),
+            &dir,
+            &no_ignored
+        ));
+        // What `watch.ignore` names is skipped, however it is spelled.
+        let ignored = super::ignored_dirs(
+            &[
+                "vendor".into(),
+                "third/jpeg".into(),
+                nested.to_string_lossy().into(),
+            ],
+            &dir,
+        );
+        assert_eq!(
+            ignored,
+            vec![
+                dir.join("vendor"),
+                dir.join("third/jpeg"),
+                dir.join(".worktrees/feature")
+            ]
+        );
+        assert!(!super::is_source(
+            &saved(dir.join("vendor/lib.ts")),
+            &dir,
+            &ignored
+        ));
+        assert!(!super::is_source(
+            &saved(dir.join("third/jpeg/turbo.ts")),
+            &dir,
+            &ignored
+        ));
+        assert!(super::is_source(
+            &saved(dir.join("third/png.ts")),
+            &dir,
+            &ignored
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

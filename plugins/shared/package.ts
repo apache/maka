@@ -25,6 +25,7 @@ import type {
 } from '../../packages/plugin-sdk/src/index.js';
 export const required = (contract: Contract): Export => ({ contract, availability: 'required' });
 export const one = (contract: Contract): Import => ({ contract, cardinality: { kind: 'one' } });
+export { localizePackage, localizedTitle, packageLocalizations } from './manifest-i18n.js';
 export const empty = { type: 'object', properties: {}, required: [], additionalProperties: false };
 export function native(definition: {
   implementation: string;

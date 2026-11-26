@@ -316,14 +316,12 @@ fn prompt(
     {
         return Err(Error::Invalid("ACP attachment forwarding is not supported"));
     }
-    use maka_agent_facts::language::Language;
     let mut blocks = Vec::new();
     if let Some(instructions) = instructions.filter(|value| !value.is_empty()) {
-        blocks.push(match language {
-            Language::En => format!("Instructions from Maka:\n{instructions}"),
-            Language::ZhCn => format!("来自 Maka 的指令：\n{instructions}"),
-            Language::ZhTw => format!("來自 Maka 的指令：\n{instructions}"),
-        });
+        blocks.push(maka_agent_facts::i18n::history::acp_instructions(
+            language,
+            instructions,
+        ));
     }
     let mut text = content.text.clone();
     if let Some(quotes) = content
@@ -340,11 +338,9 @@ fn prompt(
         );
     }
     for directory in content.directory_references.iter().flatten() {
-        text.push_str(match language {
-            Language::En => "\n\nDirectory: ",
-            Language::ZhCn => "\n\n目录：",
-            Language::ZhTw => "\n\n目錄：",
-        });
+        text.push_str(maka_agent_facts::i18n::history::acp_directory_prefix(
+            language,
+        ));
         text.push_str(&directory.path);
     }
     if content
@@ -352,11 +348,7 @@ fn prompt(
         .as_ref()
         .is_some_and(|items| !items.is_empty())
     {
-        text.push_str(match language {
-            Language::En => "\n\nInline references: ",
-            Language::ZhCn => "\n\n内联引用：",
-            Language::ZhTw => "\n\n行內參照：",
-        });
+        text.push_str(maka_agent_facts::i18n::history::acp_inline_references_prefix(language));
         text.push_str(&serde_json::to_string(&content.inline_references)?);
     }
     blocks.push(text);

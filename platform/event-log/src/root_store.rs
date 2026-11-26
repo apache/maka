@@ -143,6 +143,10 @@ impl SessionStore {
 }
 
 impl RootStore {
+    pub fn checkpoint_execution(&self) -> Option<&crate::checkpoints::execution::Execution> {
+        self.log.checkpoint.as_ref()?.storage()?.execution.as_ref()
+    }
+
     /// Observe the runtime database writer and its independent readers.
     pub async fn sqlite_resource_stats(
         &self,

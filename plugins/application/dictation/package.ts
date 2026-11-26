@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { empty } from '../../shared/package.js';
+import { empty, localizePackage, localizedTitle } from '../../shared/package.js';
 
-export default {
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.dictation',
   displayName: 'Dictation',
   description: 'Speak into Quick Tools to search or ask a question on macOS.',
-  localizations: {
-    'zh-CN': {
-      displayName: '语音听写',
-      description: '在 macOS 快捷面板中说话，输入搜索词或问题。',
-    },
-    'zh-TW': {
-      displayName: '語音聽寫',
-      description: '在 macOS 快捷面板中說話，輸入搜尋詞或問題。',
-    },
-  },
   application: {
     ui: {
       module: 'ui.js',
@@ -43,12 +33,9 @@ export default {
         tool: { kind: 'view', contract: 'maka.quick-launcher.tool' },
         preferences: {
           kind: 'settings',
-          title: {
-            fallback: 'Dictation',
-            translations: { 'zh-CN': '语音听写', 'zh-TW': '語音聽寫' },
-          },
+          title: localizedTitle('Dictation'),
         },
       },
     },
   },
-};
+});

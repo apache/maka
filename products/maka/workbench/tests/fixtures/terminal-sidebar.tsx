@@ -31,6 +31,7 @@ import type {
   HistoryTool,
   TerminalOutputEvent,
 } from '../../../../../packages/plugin-sdk/src/index.js';
+import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
 
 const sessionId = 'workspace-session';
 const cwd = '/work/maka';
@@ -282,4 +283,7 @@ function Fixture() {
   );
 }
 
-mount(Fixture);
+mount(() => {
+  installWorkbenchLocaleCatalog();
+  return <Fixture />;
+});

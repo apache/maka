@@ -157,6 +157,12 @@ Things that were found the hard way. Read the section of the area you change bef
   callbacks. Visibility changes synchronize the newly visible stack after the batch. `TabBar.hidden` and the
   visible stack's request are independent reasons: each updates its own state, and either keeps the bar hidden.
 
+- **A `TabBar`'s element takes no press of its own** (`pointerEvents: box-none`, `mobile.rs`): the bar's view fills it
+  while the bar shows, and the bar takes every press. An element left `auto` answers UIKit's hit test in the strip it
+  keeps while the bar is out of sight (`hidden`, or a pushed page's `hidesBottomBarWhenPushed` moving it below the
+  bottom), and swallows the presses of a control the app draws there (a floating action bar); turning the bar's
+  `userInteractionEnabled` off in `apply_bottom_hidden` does not help, the element still hit-tests to itself (#3043).
+
 - **A standalone `UITabBar` can establish its natural height before its native component host is sized** (verified on
   the iOS 27 simulator). Flexible-height autoresizing then adds the host's height to that initial height. In
   `system_tab_bar.rs`, fill the immediate host's bounds exactly during layout, and report intrinsic height with
@@ -169,6 +175,15 @@ Things that were found the hard way. Read the section of the area you change bef
 
 - **UIFont and CTFont are toll-free bridged**: the text engine gets system fonts with `UIFont::systemFontOfSize_weight` and uses them as
   CTFonts (verified by rendering). CoreText attributes must use CT keys (colors are CGColors), not UIKit's NSForegroundColor.
+- **CoreText synthesizes no italic** (macOS too; verified on macOS 26 and the iOS 26 simulator): a family without an italic face (PingFang,
+  Hiragino, a family shipped without its italic files) has no italic copy (`CTFontCreateCopyWithSymbolicTraits` returns
+  NULL), and the fonts an italic face falls back to stay upright (CJK in SF's italic). A shear in a font's matrix leans
+  it, and CoreText draws the fonts it falls back to from it with the same matrix; a matrix on a cascade list's
+  descriptors (`kCTFontMatrixAttribute`) is ignored. So such a family's italic is the font leaning
+  (`core_text::italic`), and `core_text::slant_fallbacks` typesets an italic span that has characters its font lacks
+  and sets each run in an upright fallback font to that font leaning. `CTLineDraw` draws each run in its font's matrix,
+  `CTRunDraw` in the context's text matrix alone: macOS, which draws run by run (`draw_glyphs`), sets each run's
+  (`CTRunGetTextMatrix`) first.
 - **Catalyst's Mac idiom does not support `UIRefreshControl`** (attaching one throws `_UICatalystUnsupportedMacIdiomBehavior`): in the Mac
   idiom the pull is detected in the scroll delegate and shown with a spinner + contentInset; iOS uses the native control unless the
   app draws its own indicator (`refreshIndicator`), which `UIRefreshControl` cannot give way to: then it takes the Mac idiom's way,
@@ -182,7 +197,11 @@ Things that were found the hard way. Read the section of the area you change bef
   changes. A stack laid out in the frame its first screen arrives leaves the bar at an inline title's height
   (`sizeThatFits` gives the large one). `fit_large_title` sizes the bar when a stack shows a screen whose content is
   at its top. A scroll view on screen that starts to adjust its insets (`contentInsetAdjustmentBehavior` automatic)
-  keeps its offset under the header. The mounter moves it to its top when it switches.
+  keeps its offset under the header. The mounter moves it to its top when it switches. Toggling `headerLargeTitle` in
+  place on the top screen also leaves `UINavigationBar.sizeThatFits` at inline height when enabling large titles, so
+  `follow_large_title` toggles `setNavigationBarHidden` off/on to expand the bar (`fit_large_title` afterwards) and
+  calls `sizeToFit` to shrink it when turning large titles off, while switching `contentInsetAdjustmentBehavior` between
+  `Automatic` and `Never`.
 - **Mac idiom custom pull to refresh**: on release, the system's bounce already targets the old inset (back to 0), so changing only
   `contentInset` hides the spinner; once refreshing starts, the offset is animated to the top inset plus the refresh room on the next main-queue turn. Synthetic
   tests need continuous scroll events with phases (began / changed / ended); plain wheel events never overscroll.
@@ -364,6 +383,13 @@ Things that were found the hard way. Read the section of the area you change bef
   content rect within the view that started it: started from an editor's sink (a sliver at the caret) it sat on the
   caret whatever the rect said, over the selection's start handle, and took that handle's touches; it starts from the
   root view (`InputBox.openEditMenu`).
+- **Android, activities made again for a configuration change**: a change the manifest cannot declare (an overlay
+  changing resource paths: the navigation mode, the wallpaper's colors) destroys and recreates the activity in the
+  same process. `AppActivity` and `DevActivity` keep the running `NshView` across it
+  (`onRetainNonConfigurationInstance`): its views are made with a `MutableContextWrapper` of the activity, which moves
+  to the new one, so nothing keeps the old activity. Windows of the activity's own (modal dialogs, alerts, menus,
+  date pickers) must leave the old activity before it is destroyed, or they leak with it (`WindowLeaked`); code that
+  needs the `Activity` unwraps the context (`SystemUi.activity`), never tests `instanceof Activity`.
 - **Android, API levels and lint**: hosts that compile the Java runtime run Android Lint over it (NewApi,
   WrongConstant), while NSH's own build runs only javac. A class or helper reached only behind `SDK_INT >= N` carries
   `@TargetApi(N)`, as `Backdrop` does; a guard lint cannot see through (a helper that returns the check) is written at
@@ -426,6 +452,18 @@ Things that were found the hard way. Read the section of the area you change bef
   an inset shadow is left out: it lies more than twice the blur from where it casts. A shadow whose bitmaps would
   take more than a quarter of the 8 MiB cache (a spread of the screen's size) is drawn as a shadow layer, as
   before. The same boxes slide at 10 ms a frame.
+- **Android, clipping to continuous corners**: a continuous corner is a path of cubics, not a round rect, and Skia's
+  GPU backend has no analytic clip for such a path: it clips through a coverage mask made in software for each draw
+  inside it, at that draw's bounds, uploaded as a texture of its own and never reused (the clip is new each time the
+  display list plays). The gallery's index, whose banner of ~330 canvas dots and cards clip to continuous corners,
+  uploaded ~440 textures on every frame it drew (8 ms of a Pixel 10 Pro's RenderThread while scrolling, 64 ms in the
+  first frame of a slide that draws it into a layer, #519). Such a box neither clips by outline nor by `clipPath`:
+  `Box.drawInCorners` draws its children clipped to rectangles (the shape's box but its corners' squares, which
+  Skia clips exactly) and into a small layer per corner's square, where it erases what lies outside the corner, a
+  path that stays the same while the box does, so Skia keeps its coverage. Layers of the whole box would do too, a
+  little faster, but on the gallery's index they kept the GPU cache ~50 MB over its 125 MB budget on a Pixel 10 Pro,
+  where the corners' squares bring it under (performance). A box
+  too small for a middle between its corners' squares takes one layer; a software canvas still clips by path.
 - **Android, backdrop blur**: `Backdrop` records what lies behind the view into a `RenderNode` before every frame,
   and hwui draws that whole node into a layer and blurs it every frame. The node is recorded at the size where the
   blur's deviation is 4 px (Skia's GPU blur scales its input down to that before blurring anyway) and stretched
@@ -540,7 +578,9 @@ Things that were found the hard way. Read the section of the area you change bef
   callback, the up marked cancelled; Android 16 QPR2's `predictiveBackStopKeycodeBackForwarding` flag keeps both from the
   views again. `KeyDispatch` reports the release at the callback, from the down it saw, and not again for that key-up
   (`BackRelease`); `NshView` taking the key never doubles its callback, as the cancelled up does not go back (seen on an
-  Android 16 emulator, both settings; the version boundaries are AOSP's source).
+  Android 16 emulator, both settings; the version boundaries are AOSP's source). A modal's dialog, whose key listener
+  takes Back, follows the same rule (`ModalHost`): a key-up that is cancelled, or whose down it did not see, does not go
+  back, or one press would close it (or ask it to) twice.
 - **Android 8 (API 26 and 27) lacks three things the runtime uses from API 28**, and gets each another way, checked with
   `Build.VERSION.SDK_INT` so Android 9 and later draw as before:
   - Weights: `Typeface.create(family, weight, italic)` is API 28. The default family takes the nearest of Roboto's

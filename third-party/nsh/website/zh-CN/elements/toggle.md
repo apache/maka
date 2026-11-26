@@ -9,39 +9,6 @@ demo: el-toggle
 
 开关按钮是一个保持开或关的按钮：文字工具栏里的加粗、收藏的星标、一个视图选项。`Toggle` 负责一个开关按钮的行为：按压、键盘激活、禁用状态，以及屏幕阅读器读到的按钮角色和它的按下状态，屏幕阅读器把它播报为开关按钮。包在几个开关按钮外面的 `ToggleGroup` 是一个工具栏：屏幕阅读器把它当作一个整体播报，键盘一站就进入它，再用方向键在其中的开关按钮之间移动。外观由应用决定：开关按钮没有自己的颜色、尺寸、图标或文字。它的子元素是应用自己的图标或标签，开关按钮上的 `aria-pressed:` 类，以及它里面元素上的 `group-aria-pressed:` 类，跟随它的状态。
 
-```rust tabs
-use nsh_base::{theme, toggle, toggle_group};
-use nsh_core::prelude::*;
-
-fn formatting() -> impl IntoElement {
-    let bold = signal(true);
-    let italic = signal(false);
-    let item = move |label: &'static str, on: Signal<bool>| {
-        toggle()
-            .pressed(on)
-            .accessibility_label(label)
-            .on_change(move |pressed: &bool| on.set(*pressed))
-            .size_8()
-            .items_center()
-            .justify_center()
-            .rounded(move || theme().radius)
-            .border_1()
-            .border_color(transparent_black())
-            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
-            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
-            .child(text(&label[..1]).text_sm().text_color(move || {
-                if on.get() { theme().foreground } else { theme().muted_foreground }
-            }))
-    };
-    toggle_group()
-        .flex_row()
-        .self_start()
-        .gap_1()
-        .child(item("Bold", bold))
-        .child(item("Italic", italic))
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
@@ -74,6 +41,39 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{theme, toggle, toggle_group};
+use nsh_core::prelude::*;
+
+fn formatting() -> impl IntoElement {
+    let bold = signal(true);
+    let italic = signal(false);
+    let item = move |label: &'static str, on: Signal<bool>| {
+        toggle()
+            .pressed(on)
+            .accessibility_label(label)
+            .on_change(move |pressed: &bool| on.set(*pressed))
+            .size_8()
+            .items_center()
+            .justify_center()
+            .rounded(move || theme().radius)
+            .border_1()
+            .border_color(transparent_black())
+            .hover(|s| s.bg(move || theme().foreground.opacity(0.05)))
+            .pressed_style(|s| s.bg(move || theme().foreground.opacity(0.1)).border_color(move || theme().border))
+            .child(text(&label[..1]).text_sm().text_color(move || {
+                if on.get() { theme().foreground } else { theme().muted_foreground }
+            }))
+    };
+    toggle_group()
+        .flex_row()
+        .self_start()
+        .gap_1()
+        .child(item("Bold", bold))
+        .child(item("Italic", italic))
+}
 ```
 
 `Toggle` 和 `ToggleGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值属于应用：每个开关按钮被告知它是否按下，按压时用 `onChange` 报告它想要的值，开关按钮显示应用传回的 `pressed`。这一组也不持有值，所以能按下几个也由应用决定：任意多个（加粗、斜体和下划线），或者恰好一个（对齐方式、视图切换），这时应用按下被请求的那个、松开其他的，并让已按下的那个保持按下。在 Rust 中，`toggle()` 和 `toggle_group()` 创建它们，每个属性一个 setter（`.pressed(..)`），每个事件一个监听器（`.on_change(..)`），加上类型化的样式方法和放内容的 `.child(..)`。

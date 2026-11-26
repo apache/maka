@@ -30,14 +30,18 @@ mod path;
 mod policy;
 pub mod workspace;
 pub use network::{Destination, Network};
+pub use path::{canonical_policy_path, policy_path_from_resolved};
 pub use policy::{Approval, ApprovalKind, Mode, Permissions, Sandbox};
 pub mod launch;
 
 /// Address of the private native-task namespace. This does not grant access.
 pub fn native_task_namespace() -> std::io::Result<std::path::PathBuf> {
-    Ok(std::env::temp_dir()
-        .canonicalize()?
-        .join("maka-native-tasks"))
+    #[cfg(target_os = "linux")]
+    // SAFETY: geteuid has no preconditions.
+    let name = format!("maka-native-tasks-{}", unsafe { libc::geteuid() });
+    #[cfg(not(target_os = "linux"))]
+    let name = "maka-native-tasks";
+    Ok(canonical_policy_path(std::env::temp_dir())?.join(name))
 }
 #[cfg(target_os = "linux")]
 mod linux;
@@ -56,4 +60,28 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("sandbox preparation cleanup is unconfirmed: {0}")]
     CleanupUnconfirmed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filesystem::{Access, Policy, Rule};
+
+    #[test]
+    fn native_task_namespace_can_be_denied_by_policy() {
+        let namespace = native_task_namespace().unwrap();
+        let policy = Policy {
+            default: Access::Write,
+            rules: vec![Rule::subtree(&namespace, Access::Deny)],
+            deny_globs: Vec::new(),
+        }
+        .compile()
+        .unwrap();
+        assert_eq!(policy.access(&namespace), Access::Deny);
+        assert_eq!(policy.access(&namespace.join("task")), Access::Deny);
+        assert_eq!(
+            policy.access(&namespace.parent().unwrap().join("other")),
+            Access::Write
+        );
+    }
 }

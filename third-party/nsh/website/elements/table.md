@@ -14,27 +14,6 @@ column's header cell), `TableCell` and `TableCaption`. The look is the app's: no
 widths of its own, and each takes the app's `class` and `style`. For many rows, sorting, selection and resizable
 columns, [`DataTable`](./data-table.md) is the table.
 
-```rust tabs
-use nsh_base::{table, table_body, table_cell, table_head, table_header, table_row, theme};
-use nsh_core::prelude::*;
-
-fn invoices() -> impl IntoElement {
-    let cell = |label: &'static str| table_cell().w(px(120.0)).px_3().py_2().child(text(label));
-    table()
-        .accessibility_label("Recent invoices")
-        .child(
-            table_header().child(
-                table_row()
-                    .border_b_1()
-                    .border_color(move || theme().border)
-                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Invoice")))
-                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Amount"))),
-            ),
-        )
-        .child(table_body().child(table_row().child(cell("INV001")).child(cell("$250.00"))))
-}
-```
-
 ```tsx tabs
 import { mount, Text } from "nsh";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "nsh/base";
@@ -64,6 +43,27 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{table, table_body, table_cell, table_head, table_header, table_row, theme};
+use nsh_core::prelude::*;
+
+fn invoices() -> impl IntoElement {
+    let cell = |label: &'static str| table_cell().w(px(120.0)).px_3().py_2().child(text(label));
+    table()
+        .accessibility_label("Recent invoices")
+        .child(
+            table_header().child(
+                table_row()
+                    .border_b_1()
+                    .border_color(move || theme().border)
+                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Invoice")))
+                    .child(table_head().w(px(120.0)).px_3().py_2().child(text("Amount"))),
+            ),
+        )
+        .child(table_body().child(table_row().child(cell("INV001")).child(cell("$250.00"))))
+}
 ```
 
 `Table` and its parts come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust, where `table()`,

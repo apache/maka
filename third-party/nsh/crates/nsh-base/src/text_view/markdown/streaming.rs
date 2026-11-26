@@ -4,9 +4,9 @@
 //! table's header as a table, instead of the markers as text until the
 //! rest arrives. Only the last block is touched: the blocks before it are
 //! complete. A last line whose meaning the next characters decide (a list
-//! marker alone, a `-` or `=` line that may underline a heading, a fence
-//! being opened or closed) is held back until its line ends; a finished
-//! document is parsed as written.
+//! marker or an item's task box alone, a `-` or `=` line that may underline
+//! a heading, a fence being opened or closed) is held back until its line
+//! ends; a finished document is parsed as written.
 
 use std::borrow::Cow;
 
@@ -176,8 +176,9 @@ fn closer_typed(line: &str, ch: u8, len: usize) -> bool {
 /// Where the last line of `tail` starts when its end has not arrived and
 /// what it holds so far means nothing yet, or something else once more
 /// arrives: a list marker alone (`-`, `2.`, an empty item now; an item or
-/// text later), digits that may become one, or a line of `-` or `=` (a
-/// heading's underline now; a rule, an item or text later).
+/// text later), digits that may become one, an item's task box alone, or a
+/// line of `-` or `=` (a heading's underline now; a rule, an item or text
+/// later).
 fn held_line(tail: &str) -> Option<usize> {
     if tail.ends_with('\n') {
         return None;
@@ -193,10 +194,14 @@ fn held_line(tail: &str) -> Option<usize> {
     let marker = trimmed.is_empty()
         || matches!(trimmed, "-" | "*" | "+")
         || (!digits.is_empty() && digits.len() < 10 && digits.bytes().all(|b| b.is_ascii_digit()));
+    // An item's task box alone (`- [`, `- [x`, `- [x]`): an item showing
+    // `[x` now, a box once its content arrives.
+    let task_box = trimmed.len() < unquoted.len()
+        && matches!(trimmed, "[" | "[x" | "[X" | "[ ]" | "[x]" | "[X]");
     let underline = trimmed.bytes().all(|b| matches!(b, b'-' | b' ' | b'\t'))
         || trimmed.bytes().all(|b| b == b'=');
     // Whitespace alone is a blank line once it ends: nothing to hold.
-    (!line.trim().is_empty() && (marker || underline)).then_some(start)
+    (!line.trim().is_empty() && (marker || task_box || underline)).then_some(start)
 }
 
 /// A table's header followed by its delimiter row being typed (`| a | b |`
@@ -449,8 +454,9 @@ fn tex(text: &Source) -> Source {
     text.clone()
 }
 
-/// Links and images not finished: `[text` and `[text](partial` as their
-/// text, `![alt` and `![alt](partial` removed.
+/// Links and images not finished: `[text`, `[text]` at the end and
+/// `[text](partial` as their text, `![alt`, `![alt]` and `![alt](partial`
+/// removed.
 fn links(text: &Source) -> Source {
     let mut code = Code::of(text, true);
     let bytes = text.as_bytes();
@@ -471,12 +477,13 @@ fn links(text: &Source) -> Source {
             }
             b'[' => brackets.push(i),
             b']' => {
-                if let Some(start) = brackets.pop()
-                    && bytes.get(i + 1) == Some(&b'(')
-                    && destination_end(bytes, i + 2).is_none()
-                {
+                let Some(start) = brackets.pop() else {
+                    i += 1;
+                    continue;
+                };
+                let image = start > 0 && bytes[start - 1] == b'!';
+                if bytes.get(i + 1) == Some(&b'(') && destination_end(bytes, i + 2).is_none() {
                     // The destination runs to the end: drop it.
-                    let image = start > 0 && bytes[start - 1] == b'!';
                     if image {
                         remove.push((start - 1, bytes.len()));
                     } else {
@@ -485,6 +492,18 @@ fn links(text: &Source) -> Source {
                     }
                     brackets.clear();
                     break;
+                }
+                if i + 1 == bytes.len() && !matches!(bytes.get(start + 1), Some(b'^' | b'!')) {
+                    // Closed at the end, where its destination's `(` may
+                    // come next: shown as while it was open. A footnote's
+                    // reference and an alert's marker (`> [!NOTE]`) are
+                    // complete.
+                    if image {
+                        remove.push((start - 1, bytes.len()));
+                    } else {
+                        remove.push((start, start + 1));
+                        remove.push((i, i + 1));
+                    }
                 }
             }
             _ => {}
@@ -590,6 +609,9 @@ fn close(text: &Source) -> Source {
     let bytes = text.as_bytes();
     let scan_end = open_code.map_or(bytes.len(), |(s, _)| s);
     let mut stack: Vec<(&'static str, usize)> = Vec::new();
+    // The run of markers ending the text, when it neither opened nor
+    // closed anything: its start, length and marker.
+    let mut idle_end = None;
     let mut i = 0;
     while i < scan_end {
         if let Some((start, end)) = code.span_at(i)
@@ -633,15 +655,20 @@ fn close(text: &Source) -> Source {
             _ => &[],
         };
         let mut opened: Vec<&'static str> = Vec::new();
+        let mut closed = false;
         for &token in tokens {
             let open = stack.iter().rposition(|&(t, _)| t == token);
             match open {
                 Some(at) if can_close => {
                     stack.remove(at);
+                    closed = true;
                 }
                 _ if can_open => opened.push(token),
                 _ => {}
             }
+        }
+        if i + len == bytes.len() && !closed && opened.is_empty() {
+            idle_end = Some((i, len, b));
         }
         // Opening `***`: the strong outside, the emphasis inside.
         for token in opened.into_iter().rev() {
@@ -651,12 +678,28 @@ fn close(text: &Source) -> Source {
     }
 
     let mut out = text.clone();
+    // A closer typed in part (`**bold*`, `~~del~`): a run at the end that
+    // did nothing, shorter than an open run of its marker, is the start of
+    // that run's closer. Removed, the whole closer is added below; kept,
+    // its markers would show as text after it.
+    if let Some((at, len, b)) = idle_end
+        && stack
+            .iter()
+            .any(|&(token, _)| token.as_bytes()[0] == b && token.len() > len)
+    {
+        out.truncate(at);
+    }
     // A code span with nothing in it yet: its backticks removed.
     let mut code_closer = None;
     if let Some((s, len)) = open_code {
-        if text[s + len..].trim().is_empty() {
+        // Fewer backticks at the end than opened the span (`` ``a`b` ``)
+        // are the start of its closer, likewise.
+        let typed = text.bytes().rev().take_while(|&b| b == b'`').count();
+        let body_end = text.len() - if typed < len { typed } else { 0 };
+        if text[s + len..body_end].trim().is_empty() {
             out.truncate(s);
         } else {
+            out.truncate(body_end);
             code_closer = Some(len);
         }
     }
@@ -786,7 +829,19 @@ mod tests {
     fn links_and_tags() {
         check("See [the docs](https://exa", "See the docs");
         check("See [the docs", "See the docs");
-        check("See [the docs]", "See [the docs]");
+        // Closed at the end, the `(` of a destination may follow: its text,
+        // as while the label was open.
+        check("See [the docs]", "See the docs");
+        check("See [the docs] now", "See [the docs] now");
+        check("See [a](b) [c]", "See [a](b) c");
+        check("[a] [b]", "[a] b");
+        check("[a [b]", "a b");
+        check("An image ![alt]", "An image");
+        check("`[x]`", "`[x]`");
+        // A footnote's reference and an alert's marker are complete as
+        // they are.
+        check("Note[^1]", "Note[^1]");
+        check("> [!NOTE]", "> [!NOTE]");
         check("See [a](b) and [c](d", "See [a](b) and c");
         check("An image ![alt](http://x", "An image");
         check("An image ![al", "An image");
@@ -835,6 +890,38 @@ mod tests {
         check("a -- b", "a -- b");
         // Ended, the line means what it says.
         check("- one\n-\n", "- one\n-\n");
+        // A task box alone: no item showing `[x` or `[x]` until its
+        // content arrives.
+        check("- one\n- [", "- one");
+        check("- one\n- [x", "- one");
+        check("- one\n- [X]", "- one");
+        check("- one\n- [ ]", "- one");
+        check("- one\n- [x] ", "- one");
+        check("1. one\n2. [x]", "1. one");
+        check("> - [x", "");
+        check("- [x] **", "");
+        check("- one\n- [x] t", "- one\n- [x] t");
+        check("- [x]\n", "- [x]\n");
+        // Not a task box: an item's link, a paragraph's brackets.
+        check("- [link", "- link");
+        check("[x", "x");
+    }
+
+    /// A closer typed in part (`**bold*`): what it will close shows closed,
+    /// not a longer closer whose extra markers show as text.
+    #[test]
+    fn half_typed_closers() {
+        check("**bold*", "**bold**");
+        check("Some ~~del~", "Some ~~del~~");
+        check("__bold_", "__bold__");
+        check("Formula $$x$", "Formula $$x$$");
+        check("**a ~~b~", "**a ~~b~~**");
+        check("``b`c`", "``b`c``");
+        check("x ```a`` b`", "x ```a`` b```");
+        // A run that closed something stays.
+        check("**a *b*", "**a *b***");
+        check("***both**", "***both***");
+        check("*a* b*", "*a* b*");
     }
 
     #[test]

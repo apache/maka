@@ -1,6 +1,6 @@
 ---
 title: 响应式
-description: Rust 与 TSX 中的 signal、computed、effect、resource、batch、untracked、cleanup 和 context：NSH 如何只更新真正变化的部分，以及需要避开的常见错误。
+description: TSX 与 Rust 中的 signal、computed、effect、resource、batch、untracked、cleanup 和 context：NSH 如何只更新真正变化的部分，以及需要避开的常见错误。
 order: 31
 group: ui
 demo: guide-reactivity
@@ -12,25 +12,17 @@ NSH 用 **signal** 更新界面：signal 是知道谁在读取自己的值。sig
 
 Rust 组件从 prelude 中取得本页的所有内容；TSX 从 `nsh` 导入：
 
-```rust tabs
-use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
-```
-
 ```tsx tabs
 import { batch, cleanup, computed, context, effect, resource, signal, untracked } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
 ```
 
 ## signal
 
 `signal(value)` 创建一个 signal。Rust 中用 `get()` 读取，TSX 中调用它来读取；用 `set` 和 `update` 写入：
-
-```rust tabs
-let count = signal(0);
-
-count.get();                    // 0, and tracks the read
-count.set(5);
-count.update(|n| *n += 1);      // 6
-```
 
 ```tsx tabs
 const count = signal(0);
@@ -40,16 +32,15 @@ count.set(5);
 count.update((n) => n + 1);  // 6
 ```
 
-在跟踪作用域（绑定、`computed`、`effect`）中读取，会让该作用域订阅这个 signal。写入时，如果值发生了变化就通知订阅者：Rust 中用 `PartialEq` 比较，TSX 中用 `===` 比较。
-
 ```rust tabs
-fn counter() -> impl IntoElement {
-    let count = signal(0);
-    view()
-        .on_press(move || count.update(|n| *n += 1))
-        .child(text(move || format!("Tapped {} times", count.get())))
-}
+let count = signal(0);
+
+count.get();                    // 0, and tracks the read
+count.set(5);
+count.update(|n| *n += 1);      // 6
 ```
+
+在跟踪作用域（绑定、`computed`、`effect`）中读取，会让该作用域订阅这个 signal。写入时，如果值发生了变化就通知订阅者：Rust 中用 `PartialEq` 比较，TSX 中用 `===` 比较。
 
 ```tsx tabs
 function Counter() {
@@ -62,17 +53,26 @@ function Counter() {
 }
 ```
 
+```rust tabs
+fn counter() -> impl IntoElement {
+    let count = signal(0);
+    view()
+        .on_press(move || count.update(|n| *n += 1))
+        .child(text(move || format!("Tapped {} times", count.get())))
+}
+```
+
 点击只会更新读取 `count` 的那一个文本节点。`counter()` / `Counter` 本身只运行一次。Rust 的 signal 是一个 `Copy` 句柄，闭包用 `move` 获取它即可随意使用。TSX 的 `set` 和 `update` 已绑定到所属的 signal，可以单独传递：`[1, 2].forEach(count.set)`、`attempt(busy.set, …)`。
 
 signal 可以把每次写入都算作变化，TSX 还可以用自己的方式比较值：
 
-```rust tabs
-let tick = signal_with(0, SignalEquals::Never);   // every write notifies
-```
-
 ```tsx tabs
 const tick = signal(0, { equals: false });   // every write notifies
 const position = signal({ x: 0, y: 0 }, { equals: (a, b) => a.x === b.x && a.y === b.y });
+```
+
+```rust tabs
+let tick = signal_with(0, SignalEquals::Never);   // every write notifies
 ```
 
 在 TSX 中，不带初始值的 `signal<T>()` 初始为 `undefined`，类型为 `Signal<T | undefined>`；在 Rust 中，用 `Option` 表达同样的意思（`signal(None::<User>)`）。
@@ -80,6 +80,16 @@ const position = signal({ x: 0, y: 0 }, { equals: (a, b) => a.x === b.x && a.y =
 ### 对象与数组
 
 在 Rust 中，`update` 原地修改值并通知读取者；`set` 替换它。在 TSX 中，signal 用 `===` 比较，原地修改的值不算变化：请写入一个新的对象或数组。
+
+```tsx tabs
+const todos = signal<Todo[]>([]);
+
+todos.update((list) => [...list, { id: 3, title: "New" }]);                 // notifies
+todos.update((list) => list.map((t) => (t.id === id ? { ...t, done: true } : t)));
+
+todos().push(item);    // does not notify anyone
+todos.set(todos());    // still the same array: no change
+```
 
 ```rust tabs
 let todos = signal(Vec::<Todo>::new());
@@ -92,29 +102,11 @@ todos.update(|list| {
 });
 ```
 
-```tsx tabs
-const todos = signal<Todo[]>([]);
-
-todos.update((list) => [...list, { id: 3, title: "New" }]);                 // notifies
-todos.update((list) => list.map((t) => (t.id === id ? { ...t, done: true } : t)));
-
-todos().push(item);    // does not notify anyone
-todos.set(todos());    // still the same array: no change
-```
-
 `each` / `<Each>` 按条目为行设置 key，所以修改一个条目只会重建那一行（[JSX 与组件](./jsx-and-components.md#控制流)）。
 
 ## computed
 
 `computed(fn)` 从其他 signal 派生出一个值。它运行 `fn`、记住结果，并在它读取的 signal 变化时重新运行。读取它和读取 signal 一样：
-
-```rust tabs
-let price = signal(12);
-let quantity = signal(2);
-let total = computed(move || price.get() * quantity.get());
-
-text(move || format!("Total: {}", total.get()))
-```
 
 ```tsx tabs
 const price = signal(12);
@@ -124,16 +116,24 @@ const total = computed(() => price() * quantity());
 <Text>Total: {total()}</Text>
 ```
 
-当派生值在多处被读取，或者计算代价较高时，使用 `computed`：无论有多少读取者，每次变化它只运行一次，并且只有结果变化时才通知读取者。对于只读一次、计算便宜的值，一个普通闭包就够了：
-
 ```rust tabs
-let label = move || format!("{} items", quantity.get());
-text(label)
+let price = signal(12);
+let quantity = signal(2);
+let total = computed(move || price.get() * quantity.get());
+
+text(move || format!("Total: {}", total.get()))
 ```
+
+当派生值在多处被读取，或者计算代价较高时，使用 `computed`：无论有多少读取者，每次变化它只运行一次，并且只有结果变化时才通知读取者。对于只读一次、计算便宜的值，一个普通闭包就够了：
 
 ```tsx tabs
 const label = () => `${quantity()} items`;
 <Text>{label()}</Text>
+```
+
+```rust tabs
+let label = move || format!("{} items", quantity.get());
+text(label)
 ```
 
 在 TSX 中，`fn` 会收到上一次的值（第一次为 `undefined`），适合累积的值：
@@ -145,6 +145,20 @@ const max = computed((prev: number | undefined) => Math.max(prev ?? 0, speed()))
 ## effect
 
 `effect(fn)` 运行 `fn`，并在它读取的任一 signal 变化时再次运行。effect 用于副作用：记录日志、定时器、网络请求、对 [ref](./jsx-and-components.md#ref) 的命令式调用。
+
+```tsx tabs
+function Search(props: { query: string }) {
+  const results = signal<string[]>([]);
+  effect(() => {
+    const q = props.query;          // tracked: runs again when the prop changes
+    if (!q) return;
+    fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`)
+      .then((r) => r.json())
+      .then((data) => results.set(data.items));
+  });
+  return <Each of={results()}>{(item) => <Text>{item()}</Text>}</Each>;
+}
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -171,23 +185,16 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-function Search(props: { query: string }) {
-  const results = signal<string[]>([]);
-  effect(() => {
-    const q = props.query;          // tracked: runs again when the prop changes
-    if (!q) return;
-    fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`)
-      .then((r) => r.json())
-      .then((data) => results.set(data.items));
-  });
-  return <Each of={results()}>{(item) => <Text>{item()}</Text>}</Each>;
-}
-```
-
 effect 只跟踪它同步运行期间的读取。任务中、`.then` 回调中或 `await` 之后的读取不会被跟踪。
 
 调用 [ref](./jsx-and-components.md#ref) 的 effect 作用于 ref 所在的元素；在 TSX 中，effect 在同一轮创建的元素都已存在之后运行，所以 ref 已经设置好：
+
+```tsx tabs
+let input: InputRef | undefined;
+effect(() => {
+  if (editing()) input?.focus();
+});
+```
 
 ```rust tabs
 let input = element_ref();
@@ -198,38 +205,12 @@ effect(move || {
 });
 ```
 
-```tsx tabs
-let input: InputRef | undefined;
-effect(() => {
-  if (editing()) input?.focus();
-});
-```
-
 > [!TIP]
 > 不要用 effect 让一个 signal 与另一个保持同步（`effect(() => b.set(a() * 2))`）。请用 `computed`：它永远不会过期，也不会多引起一轮更新。一个 effect 如果写入了它自己也在读取的 signal，就会一次又一次地重新运行，直到 NSH 报错将其停止。
 
 ## resource
 
 `resource(source, fetcher)` 异步加载一个值，并记录加载进行到哪一步，组件因此可以直接显示数据、加载指示或错误，而不必自己管理这些状态：
-
-```rust tabs
-let url = signal(SharedString::from("https://api.example.com/quote"));
-let quote = resource(move || Some(url.get()), |url, _info| async move {
-    let response = fetch(url.to_string()).await?;
-    if !response.ok() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-    Ok(response.text())
-});
-
-view()
-    .child(text(move || match (quote.get(), quote.error()) {
-        (_, Some(error)) => format!("Failed: {error}"),
-        (Some(quote), None) => quote,
-        (None, None) => "Loading…".to_owned(),
-    }))
-    .child(text("Reload").on_press(move || quote.refetch()))
-```
 
 ```tsx tabs
 import { List, resource, signal, Text } from "nsh";
@@ -255,6 +236,25 @@ const posts = resource(url, async (u, { signal }) => {
 </List>
 ```
 
+```rust tabs
+let url = signal(SharedString::from("https://api.example.com/quote"));
+let quote = resource(move || Some(url.get()), |url, _info| async move {
+    let response = fetch(url.to_string()).await?;
+    if !response.ok() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    Ok(response.text())
+});
+
+view()
+    .child(text(move || match (quote.get(), quote.error()) {
+        (_, Some(error)) => format!("Failed: {error}"),
+        (Some(quote), None) => quote,
+        (None, None) => "Loading…".to_owned(),
+    }))
+    .child(text("Reload").on_press(move || quote.refetch()))
+```
+
 `source` 会被跟踪：每当它给出新值，`fetcher(value, info)` 就重新加载。在 Rust 中它是一个返回 `Option` 的闭包，`None` 表示不加载；在 TSX 中它是一个访问器（signal、函数）或一个值，`undefined`、`null` 或 `false` 表示不加载：适用于用户尚未登录或尚未选择任何内容的情况。没有 source 时，Rust 传入 `|| Some(())`，TSX 的 `resource(fetcher)` 只加载一次，调用 `fetcher(info)`。Rust 的 fetcher 返回 `Result`；TSX 的返回一个值或一个 promise，抛出异常即为失败。
 
 | Rust | TSX | 含义 |
@@ -274,21 +274,6 @@ Rust 的 resource 和 signal 一样是一个 `Copy` 句柄；TSX 的成员已绑
 
 `cleanup(fn)` 注册 `fn`，它会在当前 effect 再次运行之前，或者所属组件或 effect 被移除时运行：
 
-```rust tabs
-effect(move || {
-    if !running.get() {
-        return;
-    }
-    let ticker = spawn(async move {
-        loop {
-            timer(Duration::from_millis(100)).await;
-            tick();
-        }
-    });
-    cleanup(move || ticker.cancel());   // before the next run, or on removal
-});
-```
-
 ```tsx tabs
 function Clock() {
   const now = signal(Date.now());
@@ -301,6 +286,21 @@ effect(() => {
   if (!running()) return;
   const id = setInterval(tick, 100);
   cleanup(() => clearInterval(id));       // before the next run, or on removal
+});
+```
+
+```rust tabs
+effect(move || {
+    if !running.get() {
+        return;
+    }
+    let ticker = spawn(async move {
+        loop {
+            timer(Duration::from_millis(100)).await;
+            tick();
+        }
+    });
+    cleanup(move || ticker.cancel());   // before the next run, or on removal
 });
 ```
 
@@ -333,6 +333,15 @@ effect(() => {
 
 每次写入都会立即通知订阅者。要让多次写入算作一次变化，把它们包在 `batch` 中：依赖方只在最后一次写入之后运行一次。
 
+```tsx tabs
+const save = () =>
+  batch(() => {
+    firstName.set(form.first);
+    lastName.set(form.last);
+    dirty.set(false);
+  });
+```
+
 ```rust tabs
 let save = move || {
     batch(|| {
@@ -343,28 +352,11 @@ let save = move || {
 };
 ```
 
-```tsx tabs
-const save = () =>
-  batch(() => {
-    firstName.set(form.first);
-    lastName.set(form.last);
-    dirty.set(false);
-  });
-```
-
 事件处理函数不会自动批处理：按压处理函数中的两次写入，会让读取这两个 signal 的 effect 运行两次。`batch` 返回其函数的返回值。
 
 ## untracked
 
 `untracked(fn)` 运行 `fn`，但不订阅它读取的内容。在跟踪作用域中用它来读取一个值而不依赖它：
-
-```rust tabs
-effect(move || {
-    let q = query.get();                          // runs again when query changes
-    let filters = untracked(|| active_filters.get());   // read, but not a reason to run again
-    search(q, filters);
-});
-```
 
 ```tsx tabs
 effect(() => {
@@ -374,26 +366,19 @@ effect(() => {
 });
 ```
 
+```rust tabs
+effect(move || {
+    let q = query.get();                          // runs again when query changes
+    let filters = untracked(|| active_filters.get());   // read, but not a reason to run again
+    search(q, filters);
+});
+```
+
 Rust 的 `get_untracked()` 以同样的方式读取单个 signal。组件函数体本身就是不跟踪的：在那里读取 signal 只会读一次。
 
 ## context
 
 context 是组件提供给它所渲染的一切内容（无论多深）的值。在 Rust 中，`provide_context(value)` 提供一个该类型的值，`use_context::<T>()` 查找最近的一个；在 TSX 中，`context(defaultValue)` 创建一个 context，调用它读取最近提供的值（或默认值），渲染 `<Ctx.Provider value>` 来提供值：
-
-```rust tabs
-#[derive(Clone, Copy)]
-struct Dark(bool);
-
-fn label(content: &'static str) -> impl IntoElement {
-    let dark = use_context::<Dark>().is_some_and(|d| d.0);
-    text(content).text_color(if dark { rgb(0xffffff) } else { rgb(0x1f2328) })
-}
-
-fn screen() -> impl IntoElement {
-    provide_context(Dark(true));
-    view().child(label("Hello"))
-}
-```
 
 ```tsx tabs
 const Theme = context<"light" | "dark">("light");
@@ -412,7 +397,40 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+#[derive(Clone, Copy)]
+struct Dark(bool);
+
+fn label(content: &'static str) -> impl IntoElement {
+    let dark = use_context::<Dark>().is_some_and(|d| d.0);
+    text(content).text_color(if dark { rgb(0xffffff) } else { rgb(0x1f2328) })
+}
+
+fn screen() -> impl IntoElement {
+    provide_context(Dark(true));
+    view().child(label("Hello"))
+}
+```
+
 提供的值在查找时只读取一次。要提供会变化的东西，就提供一个 signal（或由 signal 组成的结构），并在绑定中读取它：
+
+```tsx tabs
+const Accent = context(signal("#0969da"));
+
+function App() {
+  const accent = signal("#0969da");
+  return (
+    <Accent.Provider value={accent}>
+      <Swatch />
+    </Accent.Provider>
+  );
+}
+
+function Swatch() {
+  const accent = Accent();
+  return <View onPress={() => accent.set("#8250df")} style={{ width: 40, height: 40, backgroundColor: accent() }} />;
+}
+```
 
 ```rust tabs
 #[derive(Clone, Copy)]
@@ -434,42 +452,11 @@ fn swatch() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-const Accent = context(signal("#0969da"));
-
-function App() {
-  const accent = signal("#0969da");
-  return (
-    <Accent.Provider value={accent}>
-      <Swatch />
-    </Accent.Provider>
-  );
-}
-
-function Swatch() {
-  const accent = Accent();
-  return <View onPress={() => accent.set("#8250df")} style={{ width: 40, height: 40, backgroundColor: accent() }} />;
-}
-```
-
 请在组件函数体中（或在组件创建期间运行的代码中）读取 context，而不是在事件处理函数或定时器中读取：那里没有可供查找的组件。Rust 组件也是这样取得应用主题的：`nsh_base` 的 `theme()`（[主题](./rust.md#主题)）。
 
 ## 错误边界
 
 错误边界把视图中某一部分的失败限制在这一部分之内。它下面的代码在渲染或运行时抛出异常（Rust 中为 panic），例如组件函数体、绑定、effect 或事件处理函数，失败的部分会被移除，错误边界在原处显示它的 fallback；视图的其余部分保持不变。Rust 中使用 `catch_error(view, fallback)`；TSX 中使用 `nsh` 的 `<ErrorBoundary fallback>`。fallback 得到错误（TSX 中就是抛出的值本身，通常是一个 `Error`）和一个重新渲染视图的 reset：
-
-```rust tabs
-fn profile_card(user: Signal<Option<User>>) -> impl IntoElement {
-    catch_error(
-        move || profile(user),
-        |error, reset| {
-            view()
-                .child(text(format!("Something went wrong: {error}")))
-                .child(text("Try again").on_press(move || reset.reset()))
-        },
-    )
-}
-```
 
 ```tsx tabs
 import { ErrorBoundary, Text, View } from "nsh";
@@ -487,6 +474,19 @@ function ProfileCard(props: { user: User | undefined }) {
       <Profile user={props.user} />
     </ErrorBoundary>
   );
+}
+```
+
+```rust tabs
+fn profile_card(user: Signal<Option<User>>) -> impl IntoElement {
+    catch_error(
+        move || profile(user),
+        |error, reset| {
+            view()
+                .child(text(format!("Something went wrong: {error}")))
+                .child(text("Try again").on_press(move || reset.reset()))
+        },
+    )
 }
 ```
 
@@ -509,17 +509,6 @@ function ProfileCard(props: { user: User | undefined }) {
 
 **在组件函数体中读取 signal 并期待它更新。**
 
-```rust tabs
-fn bad() -> impl IntoElement {
-    let n = count.get();                       // read once
-    text(format!("{n}"))                       // never changes
-}
-
-fn good() -> impl IntoElement {
-    text(move || format!("{}", count.get()))   // a binding: follows count
-}
-```
-
 ```tsx tabs
 function Bad() {
   const n = count();           // read once
@@ -528,6 +517,17 @@ function Bad() {
 
 function Good() {
   return <Text>{count()}</Text>;
+}
+```
+
+```rust tabs
+fn bad() -> impl IntoElement {
+    let n = count.get();                       // read once
+    text(format!("{n}"))                       // never changes
+}
+
+fn good() -> impl IntoElement {
+    text(move || format!("{}", count.get()))   // a binding: follows count
 }
 ```
 
@@ -543,7 +543,7 @@ function Good() {
 
 ## 相关内容
 
-- [JSX 与组件](./jsx-and-components.md)：Rust 与 TSX 中的组件、props、`when` / `<If>` 和 `each` / `<Each>`。
+- [JSX 与组件](./jsx-and-components.md)：TSX 与 Rust 中的组件、props、`when` / `<If>` 和 `each` / `<Each>`。
 - [用 Rust 开发](./rust.md)：Rust 应用、任务和主题。
 - [`nsh` 模块参考](../modules/nsh.md)：每个 TSX 函数的签名。
 - [动画](./animation.md)：不经过 signal、在 UI 线程上运行动画的动画值。

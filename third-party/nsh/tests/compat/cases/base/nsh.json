@@ -8,7 +8,10 @@
   "theme": {
     "cssVars": {
       "theme": {
-        "radius-card": "14px"
+        "radius-card": "14px",
+        "press-scale": "0.97",
+        "ring-width": "3px",
+        "ring-gap": "2px"
       },
       "light": {
         "up": "#138a5a"

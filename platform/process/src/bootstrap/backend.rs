@@ -45,6 +45,7 @@ pub enum Launch {
         runner: Runner,
         endpoint: Endpoint,
         capabilities: Vec<uuid::Uuid>,
+        disabled_sids: Vec<String>,
         proxy_address: Option<std::net::SocketAddr>,
     },
     Mxc {
@@ -87,8 +88,13 @@ impl Launch {
                 runner,
                 endpoint,
                 capabilities,
+                disabled_sids,
                 ..
-            } => runner.pipes(endpoint, command, capabilities).await,
+            } => {
+                runner
+                    .pipes(endpoint, command, capabilities, disabled_sids)
+                    .await
+            }
             Self::Mxc {
                 lease,
                 executable,
@@ -110,8 +116,13 @@ impl Launch {
                 runner,
                 endpoint,
                 capabilities,
+                disabled_sids,
                 ..
-            } => runner.terminal(endpoint, command, capabilities, size).await,
+            } => {
+                runner
+                    .terminal(endpoint, command, capabilities, disabled_sids, size)
+                    .await
+            }
             Self::Mxc {
                 lease,
                 executable,

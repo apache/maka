@@ -1,7 +1,7 @@
 //! `Terminal`: reports its size in cells once it is laid out, whatever that
 //! size is, the one its emulator starts at (80 × 24) included.
 
-use nsh_base::{TerminalEvent, terminal};
+use nsh_base::{Terminal, TerminalApi, TerminalEvent, terminal};
 use nsh_core::{Size, element::measure_text, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -91,4 +91,59 @@ fn a_drag_resizes_the_terminal_once_it_settles_not_at_every_column() {
     };
     let mut app = Headless::start(config).expect("the engine starts");
     app.wait_for("text:Sizes 80x24, 90x24").unwrap();
+}
+
+/// A terminal whose ref takes raw byte slices split mid-character and
+/// mid-escape-sequence, displaying the emulator text and last title.
+#[component]
+fn ByteFeed(_props: HarnessProps) -> impl IntoElement {
+    let term_ref = component_ref::<Terminal>();
+    let title = signal(String::new());
+    let output = signal(String::new());
+    view()
+        .child(
+            view().w(px(400.0)).h(px(18.0 * 5.0)).child(
+                terminal()
+                    .font_family("monospace")
+                    .component_ref(&term_ref)
+                    .flex_1()
+                    .on_title_change(move |t: &SharedString| title.set(t.to_string())),
+            ),
+        )
+        .child(
+            view()
+                .test_id("write")
+                .w(px(40.0))
+                .h(px(20.0))
+                .on_press(move || {
+                    let Some(api) = term_ref.api::<TerminalApi>() else {
+                        return;
+                    };
+                    let utf8 = "你好".as_bytes();
+                    api.write_bytes(b"");
+                    api.write_bytes(&utf8[..2]);
+                    api.write_bytes(&utf8[2..4]);
+                    api.write_bytes(&utf8[4..]);
+                    api.write_bytes(b"\x1b]0;Bu");
+                    api.write_bytes(b"ild\x07");
+                    output.set(api.text().trim_end().to_owned());
+                }),
+        )
+        .child(text(move || {
+            format!("Out {} Title {}", output.get(), title.get())
+        }))
+}
+
+#[test]
+fn write_bytes_feeds_split_utf8_and_escape_chunks_without_corruption() {
+    let config = EngineConfig {
+        viewport: Size::new(px(600.0), px(400.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root_with::<ByteFeed>(|| {
+            HarnessProps { cols: 80 }
+        }))
+    };
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("id:write").unwrap();
+    app.press("id:write").unwrap();
+    app.wait_for("text:Out 你好 Title Build").unwrap();
 }

@@ -401,10 +401,38 @@ fn transport_cause(mut error: &(dyn std::error::Error + 'static)) -> (bool, Stri
     }
 }
 
+fn transient_connect_proxy(detail: &str) -> bool {
+    // hyper-util's TunnelError and SocksError are crate-private, and SocksError
+    // does not implement Error::source() for its inner connect/io causes. Match
+    // their transient variants only when reqwest::Error::is_connect() proved
+    // the failure happened during connection setup.
+    // Note: hyper-util collapses all non-200/407 HTTP CONNECT replies (including
+    // 403/400/malformed responses) into "unsuccessful", and SOCKS4 collapses
+    // upstream failures and rejections into code 91; accepting bounded retries
+    // for those matches existing ConnectionRefused/DNS handling.
+    matches!(
+        detail,
+        "tunnel error: unexpected end of file"
+            | "tunnel error: unsuccessful"
+            | "SOCKS error: failed to create underlying connection"
+            | "SOCKS error: io error during SOCKS handshake"
+            | "SOCKS error: general server failure"
+            | "SOCKS error: network unreachable"
+            | "SOCKS error: host unreachable"
+            | "SOCKS error: connection refused"
+            | "SOCKS error: ttl expired"
+            | "SOCKS error: server failed to execute command"
+    )
+}
+
 pub(super) fn failure(error: reqwest::Error) -> Error {
     let error = error.without_url();
     let (source_transient, detail) = transport_cause(&error);
-    if error.is_timeout() || error.is_dns() || source_transient {
+    if error.is_timeout()
+        || error.is_dns()
+        || source_transient
+        || (error.is_connect() && transient_connect_proxy(&detail))
+    {
         Error::Provider(ProviderFailure::new(
             ProviderFailureReason::Network,
             format!("model HTTP transport interrupted: {detail}"),
@@ -413,5 +441,308 @@ pub(super) fn failure(error: reqwest::Error) -> Error {
         ))
     } else {
         Error::Adapter(format!("model HTTP request failed: {detail}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::configuration::policy::{NetworkProxy, ProxyProtocol};
+    use std::{net::SocketAddr, time::Duration};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+
+    const UPSTREAM_URL: &str = "https://upstream.example/?api_key=must-not-appear";
+
+    fn proxy_policy(
+        protocol: ProxyProtocol,
+        addr: SocketAddr,
+        auth: Option<(&str, &str)>,
+    ) -> maka_network::Policy {
+        maka_network::Policy::from_settings(
+            &NetworkProxy {
+                enabled: true,
+                protocol,
+                host: addr.ip().to_string(),
+                port: addr.port(),
+                auth_enabled: auth.is_some(),
+                username: auth.map(|(user, _)| user.to_owned()).unwrap_or_default(),
+                bypass_list: Vec::new(),
+                auto_bypass_domains: Vec::new(),
+            },
+            auth.map(|(_, pass)| pass),
+        )
+        .unwrap()
+    }
+
+    async fn request_error(policy: &maka_network::Policy, url: &str) -> Error {
+        let network = Pool::default().get(policy).unwrap();
+        let error = network
+            .request(
+                http::Request {
+                    method: maka_plugin_core::http::Method::Get,
+                    url: url.into(),
+                    headers: Vec::new(),
+                    body: Default::default(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .err()
+            .expect("connection failure must fail the request");
+        assert!(
+            !error.to_string().contains("must-not-appear"),
+            "request URLs must stay private: {error}"
+        );
+        error
+    }
+
+    fn assert_retryable_network(error: Error, expected_detail: &str) {
+        let message = error.to_string();
+        let Error::Provider(failure) = error else {
+            panic!("transient proxy error must be retryable: {message}");
+        };
+        assert_eq!(failure.reason(), ProviderFailureReason::Network);
+        assert!(failure.retryable() && failure.replay_safe());
+        assert!(
+            failure.message().contains(expected_detail),
+            "expected {expected_detail:?} in {message}"
+        );
+    }
+
+    async fn read_socks5_connect(socket: &mut TcpStream) {
+        let mut neg = [0; 3];
+        socket.read_exact(&mut neg).await.unwrap();
+        assert_eq!(neg, [0x05, 0x01, 0x00]);
+        socket.write_all(&[0x05, 0x00]).await.unwrap();
+
+        let mut head = [0; 5];
+        socket.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head[..4], &[0x05, 0x01, 0x00, 0x03]);
+        let mut domain = vec![0; usize::from(head[4])];
+        socket.read_exact(&mut domain).await.unwrap();
+        assert_eq!(domain, b"upstream.example");
+        assert_eq!(socket.read_u16().await.unwrap(), 443);
+    }
+
+    #[tokio::test]
+    async fn proxy_tunnel_interruptions_retry_while_proxy_auth_and_invalid_tls_do_not() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for (response, expected_retry_detail) in [
+                (
+                    Some(&b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"[..]),
+                    Some("tunnel error: unsuccessful"),
+                ),
+                (None, Some("tunnel error: unexpected end of file")),
+                (
+                    Some(
+                        &b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"
+                            [..],
+                    ),
+                    None,
+                ),
+            ] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_addr = listener.local_addr().unwrap();
+                let proxy = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        if socket.read(&mut byte).await.unwrap() == 0 {
+                            break;
+                        }
+                        head.push(byte[0]);
+                    }
+                    assert!(
+                        head.starts_with(b"CONNECT upstream.example:443 "),
+                        "expected HTTP CONNECT request, got {:?}",
+                        String::from_utf8_lossy(&head)
+                    );
+                    if let Some(reply) = response {
+                        socket.write_all(reply).await.unwrap();
+                    }
+                    let _ = socket.shutdown().await;
+                });
+
+                let policy = proxy_policy(ProxyProtocol::Http, proxy_addr, None);
+                let error = request_error(&policy, UPSTREAM_URL).await;
+                proxy.await.unwrap();
+
+                if let Some(expected_detail) = expected_retry_detail {
+                    assert_retryable_network(error, expected_detail);
+                } else {
+                    assert!(
+                        matches!(error, Error::Adapter(_)),
+                        "proxy auth failure must stay non-retryable: {error}"
+                    );
+                }
+            }
+
+            // Guard that is_connect() matching does not turn invalid TLS into a retryable failure.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "https://{}/?api_key=must-not-appear",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut record = [0; 5];
+                socket.read_exact(&mut record).await.unwrap();
+                let mut hello = vec![0; usize::from(u16::from_be_bytes([record[3], record[4]]))];
+                socket.read_exact(&mut hello).await.unwrap();
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                let _ = socket.shutdown().await;
+            });
+            let error = request_error(&maka_network::Policy::default(), &url).await;
+            server.await.unwrap();
+            assert!(
+                matches!(error, Error::Adapter(_)),
+                "invalid TLS must not become a retryable connection failure: {error}"
+            );
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn socks5_proxy_transient_failures_retry_while_policy_auth_and_protocol_errors_do_not() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            // Unreachable SOCKS5 proxy: SocksError::Inner hides the underlying io::Error.
+            let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let closed_addr = closed.local_addr().unwrap();
+            drop(closed);
+            let error = request_error(
+                &proxy_policy(ProxyProtocol::Socks5, closed_addr, None),
+                UPSTREAM_URL,
+            )
+            .await;
+            assert_retryable_network(error, "SOCKS error: failed to create underlying connection");
+
+            // Abrupt EOF during handshake: SocksError::Io hides UnexpectedEof.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let proxy = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut neg = [0; 3];
+                socket.read_exact(&mut neg).await.unwrap();
+                assert_eq!(neg, [0x05, 0x01, 0x00]);
+                let _ = socket.shutdown().await;
+            });
+            let error = request_error(
+                &proxy_policy(ProxyProtocol::Socks5, proxy_addr, None),
+                UPSTREAM_URL,
+            )
+            .await;
+            proxy.await.unwrap();
+            assert_retryable_network(error, "SOCKS error: io error during SOCKS handshake");
+
+            // SOCKS5 command replies: transient network codes retry, ruleset denial does not.
+            for (status, expected_retry_detail) in [
+                (0x01_u8, Some("SOCKS error: general server failure")),
+                (0x03_u8, Some("SOCKS error: network unreachable")),
+                (0x04_u8, Some("SOCKS error: host unreachable")),
+                (0x05_u8, Some("SOCKS error: connection refused")),
+                (0x06_u8, Some("SOCKS error: ttl expired")),
+                (0x02_u8, None),
+            ] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_addr = listener.local_addr().unwrap();
+                let proxy = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    read_socks5_connect(&mut socket).await;
+                    socket
+                        .write_all(&[0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                        .await
+                        .unwrap();
+                    let _ = socket.shutdown().await;
+                });
+                let error = request_error(
+                    &proxy_policy(ProxyProtocol::Socks5, proxy_addr, None),
+                    UPSTREAM_URL,
+                )
+                .await;
+                proxy.await.unwrap();
+                if let Some(expected_detail) = expected_retry_detail {
+                    assert_retryable_network(error, expected_detail);
+                } else {
+                    assert!(
+                        matches!(error, Error::Adapter(_)),
+                        "SOCKS5 ruleset denial must stay non-retryable: {error}"
+                    );
+                }
+            }
+
+            // Bad credentials must stay non-retryable and never leak proxy secrets.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let proxy = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut neg = [0; 3];
+                socket.read_exact(&mut neg).await.unwrap();
+                assert_eq!(neg, [0x05, 0x01, 0x02]);
+                socket.write_all(&[0x05, 0x02]).await.unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), 0x01);
+                let ulen = usize::from(socket.read_u8().await.unwrap());
+                let mut user = vec![0; ulen];
+                socket.read_exact(&mut user).await.unwrap();
+                let plen = usize::from(socket.read_u8().await.unwrap());
+                let mut pass = vec![0; plen];
+                socket.read_exact(&mut pass).await.unwrap();
+                assert_eq!(user, b"proxy-user");
+                assert_eq!(pass, b"proxy-secret-must-not-appear");
+                socket.write_all(&[0x01, 0x01]).await.unwrap();
+                let _ = socket.shutdown().await;
+            });
+            let error = request_error(
+                &proxy_policy(
+                    ProxyProtocol::Socks5,
+                    proxy_addr,
+                    Some(("proxy-user", "proxy-secret-must-not-appear")),
+                ),
+                UPSTREAM_URL,
+            )
+            .await;
+            proxy.await.unwrap();
+            assert!(
+                matches!(error, Error::Adapter(_)),
+                "SOCKS5 auth failure must stay non-retryable: {error}"
+            );
+            assert!(
+                !error.to_string().contains("proxy-secret-must-not-appear"),
+                "proxy credentials must stay private: {error}"
+            );
+
+            // Non-SOCKS response must stay non-retryable.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let proxy = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut neg = [0; 3];
+                socket.read_exact(&mut neg).await.unwrap();
+                socket
+                    .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                let _ = socket.shutdown().await;
+            });
+            let error = request_error(
+                &proxy_policy(ProxyProtocol::Socks5, proxy_addr, None),
+                UPSTREAM_URL,
+            )
+            .await;
+            proxy.await.unwrap();
+            assert!(
+                matches!(error, Error::Adapter(_)),
+                "malformed non-SOCKS response must stay non-retryable: {error}"
+            );
+        })
+        .await
+        .unwrap();
     }
 }

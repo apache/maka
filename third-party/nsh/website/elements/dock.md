@@ -14,36 +14,6 @@ drops, which run natively frame by frame, resizing splits and docks, opening and
 look is the app's: the tabs, the tab bars, the handles, the drop indicator and each panel's content are what the app
 renders and styles, and the area draws nothing of its own.
 
-```rust tabs
-use nsh_base::{
-    dock::{DockAreaLayout, DockLayout, DockPanel, DockPlacement, DockRegion, DockTab},
-    dock_area, theme,
-};
-use nsh_core::prelude::*;
-
-fn workspace() -> impl IntoElement {
-    let layout = signal(
-        DockAreaLayout::new(
-            DockLayout::h_split()
-                .child(DockLayout::tabs().panel("readme").panel("main"), None)
-                .child(DockLayout::tabs().panel("preview"), Some(px(320.0))),
-        )
-        .with_dock(DockPlacement::Left, DockRegion::new(DockLayout::tabs().panel("files")))
-        .with_dock(DockPlacement::Bottom, DockRegion::new(DockLayout::tabs().panel("terminal"))),
-    );
-    dock_area()
-        .layout(move || layout.get())
-        .on_layout_change(move |next: &DockAreaLayout| layout.set(next.clone()))
-        .handle_style(|s| s.bg(move || theme().border()))
-        .tab_bar_style(|s| s.flex_row().border_b_1().border_color(move || theme().border()))
-        .tab_style(|s| s.px_3().py_1().selected(|s| s.bg(move || theme().muted())))
-        .render_tab(|tab: &DockTab| text(tab.panel.to_string()).text_sm().text_color(move || theme().foreground()))
-        .render_panel(|panel: &DockPanel| {
-            text(format!("{} content", panel.id)).p_4().text_color(move || theme().foreground())
-        })
-}
-```
-
 ```tsx tabs
 import { mount, signal, Text } from "nsh";
 import { DockArea, type DockAreaLayout } from "nsh/base";
@@ -86,6 +56,36 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{
+    dock::{DockAreaLayout, DockLayout, DockPanel, DockPlacement, DockRegion, DockTab},
+    dock_area, theme,
+};
+use nsh_core::prelude::*;
+
+fn workspace() -> impl IntoElement {
+    let layout = signal(
+        DockAreaLayout::new(
+            DockLayout::h_split()
+                .child(DockLayout::tabs().panel("readme").panel("main"), None)
+                .child(DockLayout::tabs().panel("preview"), Some(px(320.0))),
+        )
+        .with_dock(DockPlacement::Left, DockRegion::new(DockLayout::tabs().panel("files")))
+        .with_dock(DockPlacement::Bottom, DockRegion::new(DockLayout::tabs().panel("terminal"))),
+    );
+    dock_area()
+        .layout(move || layout.get())
+        .on_layout_change(move |next: &DockAreaLayout| layout.set(next.clone()))
+        .handle_style(|s| s.bg(move || theme().border()))
+        .tab_bar_style(|s| s.flex_row().border_b_1().border_color(move || theme().border()))
+        .tab_style(|s| s.px_3().py_1().selected(|s| s.bg(move || theme().muted())))
+        .render_tab(|tab: &DockTab| text(tab.panel.to_string()).text_sm().text_color(move || theme().foreground()))
+        .render_panel(|panel: &DockPanel| {
+            text(format!("{} content", panel.id)).p_4().text_color(move || theme().foreground())
+        })
+}
 ```
 
 `DockArea` and the values it takes come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust
@@ -414,6 +414,8 @@ rest of the area.
 
 - Each tab is a tab with its selected state for screen readers, as [`Tab`](./tabs.md) is, and activating it selects
   it. Its label is the text `renderTab` draws.
+- Each group's content is a tab panel, which its tabs name as what they control: screen readers say they enter the
+  panel of the selected tab.
 - Every handle, between a split's groups and at each dock's edge, is an adjustable element labeled
   `handleAccessibilityLabel`. The handles between a split's groups are [Resizable](./resizable.md)'s: a screen reader
   moves them 10 points at a time, reported with `onLayoutChange`.

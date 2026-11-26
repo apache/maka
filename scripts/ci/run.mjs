@@ -196,7 +196,7 @@ async function withArchiveResources(listing, resources, create) {
   return await create();
 }
 
-const helperSuites = new Set(['root', 'windows-shell', 'macos-agent-execution', 'desktop']);
+const helperSuites = new Set(['root', 'windows-shell', 'agent-execution', 'desktop']);
 
 function skipsHelperBuild(extra) {
   const separator = extra.indexOf('--');
@@ -367,11 +367,20 @@ export function executor(
     );
   };
 
+  async function checkRustFormat() {
+    await cargo(['fmt', '--all', '--', '--check']);
+    await run('rustfmt', ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs']);
+  }
+
   async function check(id) {
     if (id === 'format') {
-      await cargo(['fmt', '--all', '--', '--check']);
-      await run('rustfmt', ['--check', '--edition', '2024', 'scripts/ci/archive-lock.rs']);
+      await checkRustFormat();
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
+    } else if (id === 'pr') {
+      await checkRustFormat();
+      await node(['scripts/asf-license-headers.mjs', 'check']);
+      await check('migrations');
+      await check('i18n');
     } else if (id === 'tooling-tests') {
       await node([
         '--test',
@@ -391,6 +400,8 @@ export function executor(
       await node(['scripts/rust/notices.mjs', 'check-reviewed']);
     } else if (id === 'migrations') {
       await node(['scripts/rust/migration-lock.mjs', 'check']);
+    } else if (id === 'i18n') {
+      await node(['scripts/i18n/check.mjs']);
     } else {
       throw new Error(`Unknown check: ${id}`);
     }
@@ -411,13 +422,13 @@ export function executor(
         'windows-skills',
         'windows-nsh',
         'macos-host',
-        'macos-agent-execution',
+        'agent-execution',
         'windows-shell',
       ].includes(id)
     ) {
       await nextest(id, true, filter, extra);
       if (
-        ['windows-shell', 'macos-agent-execution', 'desktop'].includes(id) &&
+        ['windows-shell', 'agent-execution', 'desktop'].includes(id) &&
         !skipsHelperBuild(extra)
       ) {
         await buildRuntimeHelpers(id, extra);
@@ -544,10 +555,11 @@ export function executor(
 
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
-      for (const name of ['format', 'tooling-tests', 'licenses', 'migrations']) await check(name);
+      for (const name of ['format', 'tooling-tests', 'licenses', 'migrations', 'i18n'])
+        await check(name);
     } else if (id === 'windows-ci') {
       await node(['--test', 'scripts/ci.test.mjs']);
-    } else if (id === 'macos-agent-execution' || id === 'desktop') {
+    } else if (id === 'agent-execution' || id === 'desktop') {
       await nextest(id, false, filter ?? suites[id].filter, [
         '--no-tests=fail',
         '--test-threads',

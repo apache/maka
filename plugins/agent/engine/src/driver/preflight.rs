@@ -114,7 +114,7 @@ impl Engine {
                         task.admitted
                             && task.closed.is_none()
                             && task.cleanup == OperationCleanup::Confirmed
-                            && task.effects.values().all(|effect| !effect.pending())
+                            && task.effects.values().all(|effect| !effect.unsettled())
                     })) {
                 Terminal::Cancelled
             } else {
@@ -145,7 +145,7 @@ impl Engine {
                 if let Some(task) = &view.external {
                     if !view.external_terminal_allowed(&Terminal::Failed) {
                         for (operation, effect) in &task.effects {
-                            if effect.pending() {
+                            if effect.unsettled() {
                                 facts.push(Fact::Blocked {
                                     blocker: BlockerId::new(),
                                     reason: BlockerKind::ExternalEffectUnknown {

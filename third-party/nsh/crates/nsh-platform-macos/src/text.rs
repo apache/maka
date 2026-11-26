@@ -1,15 +1,21 @@
 //! CoreText text engine: typesets on the engine thread, draws on the main
 //! thread from finished `CTLine`s, so every text is laid out once.
 
-use std::{cell::RefCell, ffi::c_void, ops::Range, ptr::NonNull};
+use std::{
+    cell::RefCell,
+    ffi::c_void,
+    ops::Range,
+    ptr::NonNull,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use nsh_core::{
     Affinity, AttributedText, Bounds, Color, EllipsizeMode, FamilyName, FontFamily, Point, Points,
     ResolvedTextStyle, Size, TextAlign, TextEngine, TextLayout, TextPosition,
 };
 use nsh_platform_apple::core_text::{
-    background_key, decoration_key, ellipsis_key, flush_factor, run_visual_span, strikethrough_key,
-    stroke_decoration, underline_key,
+    background_key, decoration_key, ellipsis_key, flush_factor, italic, italic_face,
+    run_visual_span, slant_fallbacks, strikethrough_key, stroke_decoration, underline_key,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -23,16 +29,15 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{CGColor, CGContext, CGPath};
 use objc2_core_text::{
-    CTFont, CTFontDescriptor, CTFontManagerRegisterFontsForURL, CTFontManagerScope,
-    CTFontSymbolicTraits, CTFrame, CTFramesetter, CTLine, CTLineBoundsOptions,
-    CTLineTruncationType, CTParagraphStyle, CTParagraphStyleSetting, CTParagraphStyleSpecifier,
-    CTRun, CTRunDelegate, CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter,
-    CTWritingDirection, kCTFontAttributeName, kCTFontCascadeListAttribute,
-    kCTFontFamilyNameAttribute, kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag,
-    kCTFontOpenTypeFeatureValue, kCTFontTraitsAttribute, kCTFontWeightTrait,
-    kCTForegroundColorFromContextAttributeName, kCTKernAttributeName,
-    kCTParagraphStyleAttributeName, kCTRunDelegateAttributeName, kCTRunDelegateCurrentVersion,
-    kCTUnderlineStyleAttributeName,
+    CTFont, CTFontDescriptor, CTFontManagerRegisterFontsForURL, CTFontManagerScope, CTFrame,
+    CTFramesetter, CTLine, CTLineBoundsOptions, CTLineTruncationType, CTParagraphStyle,
+    CTParagraphStyleSetting, CTParagraphStyleSpecifier, CTRun, CTRunDelegate,
+    CTRunDelegateCallbacks, CTRunStatus, CTTextAlignment, CTTypesetter, CTWritingDirection,
+    kCTFontAttributeName, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute,
+    kCTFontFeatureSettingsAttribute, kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue,
+    kCTFontTraitsAttribute, kCTFontWeightTrait, kCTForegroundColorFromContextAttributeName,
+    kCTKernAttributeName, kCTLanguageAttributeName, kCTParagraphStyleAttributeName,
+    kCTRunDelegateAttributeName, kCTRunDelegateCurrentVersion, kCTUnderlineStyleAttributeName,
 };
 use rustc_hash::FxHashMap;
 
@@ -78,21 +83,34 @@ impl FontCache {
     }
 }
 
+/// Fonts registered in the process so far ([`fonts_registered`]).
+static FONTS_REGISTERED: AtomicU32 = AtomicU32::new(0);
+
+/// Changes whenever the app registers a font: a family may resolve to
+/// another font from then on, so fonts and lines made from family names
+/// before (the canvas's, which draws on another thread than the engine
+/// that registers) are made again.
+pub(crate) fn fonts_registered() -> u32 {
+    FONTS_REGISTERED.load(Ordering::Relaxed)
+}
+
 pub(crate) fn make_font(style: &ResolvedTextStyle) -> CFRetained<CTFont> {
     let size = style.font_size.0 as CGFloat;
     let (font, fallbacks) = style
         .font_family
         .and_then(|family| listed_fonts(&family.name(), size, style.font_weight))
         .unwrap_or_else(|| (system_font(size, style.font_weight), Vec::new()));
-    let font = if style.italic {
-        let italic = CTFontSymbolicTraits::TraitItalic;
-        // SAFETY: a valid font; size 0 keeps the size, null matrix keeps it.
-        unsafe { font.copy_with_symbolic_traits(0.0, std::ptr::null(), italic, italic) }
-            // No italic face (CJK fonts): keep the upright one, CoreText
-            // synthesizes no oblique (browsers do).
-            .unwrap_or(font)
+    let (font, fallbacks) = if style.italic {
+        // The listed families' italic faces. A family without one leans
+        // ([`italic`]); as a fallback it stays upright here, where CoreText
+        // would ignore the lean, and `slant_fallbacks` leans its runs.
+        let fallbacks = fallbacks
+            .into_iter()
+            .map(|f| italic_face(&f).unwrap_or(f))
+            .collect();
+        (italic(&font), fallbacks)
     } else {
-        font
+        (font, fallbacks)
     };
     with_cascade(with_features(font, style.font_variant), &fallbacks)
 }
@@ -568,6 +586,17 @@ impl CoreTextEngine {
             unsafe { kCTParagraphStyleAttributeName },
             paragraph.as_ref(),
         );
+        if let Some(locale) = text.locale {
+            let language = CFString::from_str(locale.as_str());
+            set(
+                CFRange {
+                    location: 0,
+                    length,
+                },
+                unsafe { kCTLanguageAttributeName },
+                language.as_ref(),
+            );
+        }
         for span in &text.spans {
             let range = CFRange {
                 location: span.start as CFIndex,
@@ -646,6 +675,15 @@ impl CoreTextEngine {
             }
         }
         CFMutableAttributedString::end_editing(s);
+        // Italic text CoreText takes from fallback fonts without an italic
+        // face (CJK in the system font) leans like the rest.
+        for span in text.spans.iter().filter(|span| span.style.italic) {
+            let range = CFRange {
+                location: span.start as CFIndex,
+                length: (span.end - span.start) as CFIndex,
+            };
+            slant_fallbacks(&string, range, &self.fonts.get(&span.style));
+        }
         string
     }
 }
@@ -1252,6 +1290,7 @@ impl TextEngine for CoreTextEngine {
         };
         // Fonts resolve differently now (a family may have been missing).
         self.fonts.clear();
+        FONTS_REGISTERED.fetch_add(1, Ordering::Relaxed);
         if ok {
             return Ok(());
         }
@@ -3000,6 +3039,9 @@ fn draw_glyphs(cx: &CGContext, line: &LaidLine, stretches: &mut Stretches<'_>) {
     let mut advances = Vec::new();
     pieces.clear();
     let mut fill = None;
+    // The identity text matrix the text is drawn in, which each run's
+    // replaces while it draws.
+    let matrix = CGContext::text_matrix(c);
     // SAFETY: the line's own run array (of CTRuns), drawn by glyph ranges
     // within each run; buffers as long as those ranges.
     unsafe {
@@ -3045,12 +3087,17 @@ fn draw_glyphs(cx: &CGContext, line: &LaidLine, stretches: &mut Stretches<'_>) {
                     fill = Some(style.color);
                     CGContext::set_fill_color_with_color(c, Some(&cg_color(style.color)));
                 }
-                // Glyph positions are relative to the line's origin.
+                // `CTRunDraw` draws in the context's text matrix, not its
+                // font's: the run's own, which holds a leaning font's shear
+                // (`core_text::oblique`). Glyph positions are relative to
+                // the line's origin.
+                CGContext::set_text_matrix(c, run.text_matrix());
                 CGContext::set_text_position(c, line.origin.x, line.origin.y);
                 run.draw(cx, range);
             });
         }
     }
+    CGContext::set_text_matrix(c, matrix);
     if !pieces.is_empty() {
         draw_underlines(cx, line, &pieces);
     }
@@ -3291,6 +3338,139 @@ mod tests {
         );
     }
 
+    /// Italic text without an italic face leans by CSS's oblique angle, as
+    /// browsers and Android draw it: in a family that has none, and in the
+    /// fonts the system font's italic face falls back to (CJK). Upright
+    /// text and text in an italic face keep their fonts' own shapes.
+    #[test]
+    fn italic_text_without_an_italic_face_leans() {
+        use objc2_core_foundation::{CFDictionary, CFRetained, CFString, CFType};
+        use objc2_core_text::{CTFont, CTFontSymbolicTraits, CTRun};
+        let style = |italic: bool, family: Option<&str>| ResolvedTextStyle {
+            font_size: Points(16.0),
+            italic,
+            font_family: family.map(nsh_core::FontFamily::new),
+            ..ResolvedTextStyle::default()
+        };
+        let mut text = AttributedText::default();
+        text.push("正体 ", style(false, None));
+        text.push("Italic 斜体", style(true, None));
+        text.push(" 苹方", style(true, Some("PingFang SC")));
+        let engine = CoreTextEngine::default();
+        let prepared = engine.prepare(&text);
+        let layout = engine.layout(&prepared, engine.measure(&prepared, None));
+        let layout = layout
+            .downcast::<super::CoreTextLayout>()
+            .expect("a CoreText layout");
+        // The font each character (UTF-16 unit) is typeset in.
+        let mut fonts: Vec<Option<CFRetained<CTFont>>> =
+            vec![None; text.text.encode_utf16().count()];
+        for line in &layout.lines {
+            // SAFETY: the line's own run array (of CTRuns) and attribute
+            // dictionaries, whose font values are CTFonts.
+            unsafe {
+                let runs = line.line.glyph_runs();
+                for i in 0..runs.count() {
+                    let run = &*runs.value_at_index(i).cast::<CTRun>();
+                    let attributes = run.attributes();
+                    let attributes: &CFDictionary<CFString, CFType> = attributes.cast_unchecked();
+                    let font = attributes
+                        .get(super::kCTFontAttributeName)
+                        .and_then(|f| f.downcast::<CTFont>().ok());
+                    let range = run.string_range();
+                    for at in range.location..range.location + range.length {
+                        fonts[at as usize] = font.clone();
+                    }
+                }
+            }
+        }
+        // The shear and the italic trait of the font of character `c`.
+        let shape = |c: char| {
+            let at: usize = text
+                .text
+                .chars()
+                .take_while(|&x| x != c)
+                .map(char::len_utf16)
+                .sum();
+            let font = fonts[at].as_ref().expect("typeset");
+            // SAFETY: a valid font.
+            unsafe {
+                (
+                    font.matrix().c,
+                    font.symbolic_traits()
+                        .contains(CTFontSymbolicTraits::TraitItalic),
+                )
+            }
+        };
+        let lean = 14_f64.to_radians().tan();
+        assert_eq!(shape('正'), (0.0, false), "upright CJK");
+        assert_eq!(shape('I'), (0.0, true), "the system font's italic face");
+        let (c, _) = shape('斜');
+        assert!(
+            (c - lean).abs() < 1e-9,
+            "CJK the italic face falls back to: {c}"
+        );
+        let (c, _) = shape('苹');
+        assert!(
+            (c - lean).abs() < 1e-9,
+            "a family without an italic face: {c}"
+        );
+    }
+
+    /// An italic family list takes each family's italic face. A fallback
+    /// family without one stays upright in the cascade list, where CoreText
+    /// would ignore a lean, and its runs lean when typeset.
+    #[test]
+    fn an_italic_family_list_takes_each_familys_italic_face() {
+        use objc2_core_foundation::{CFArray, CFIndex};
+        use objc2_core_text::{CTFont, CTFontDescriptor, CTFontSymbolicTraits};
+        let italic = |family: &str| ResolvedTextStyle {
+            font_size: Points(14.0),
+            italic: true,
+            font_family: Some(nsh_core::FontFamily::new(family)),
+            ..ResolvedTextStyle::default()
+        };
+        // The family and whether it is an italic face, of the first font
+        // and of each one in its cascade list.
+        let faces = |family: &str| {
+            let font = super::make_font(&italic(family));
+            let face = |font: &CTFont| {
+                // SAFETY: a valid font.
+                unsafe {
+                    (
+                        font.family_name().to_string(),
+                        font.symbolic_traits()
+                            .contains(CTFontSymbolicTraits::TraitItalic),
+                    )
+                }
+            };
+            // SAFETY: a valid font; its cascade list holds font descriptors.
+            unsafe {
+                let list = font
+                    .font_descriptor()
+                    .attribute(super::kCTFontCascadeListAttribute)
+                    .and_then(|list| list.downcast::<CFArray>().ok())
+                    .expect("a cascade list");
+                let cascade: Vec<_> = (0..list.len() as CFIndex)
+                    .map(|i| {
+                        let descriptor = &*list.value_at_index(i).cast::<CTFontDescriptor>();
+                        face(&CTFont::with_font_descriptor(
+                            descriptor,
+                            14.0,
+                            std::ptr::null(),
+                        ))
+                    })
+                    .collect();
+                (face(&font), cascade)
+            }
+        };
+        let (first, cascade) = faces("Menlo, Helvetica");
+        assert_eq!(first, ("Menlo".to_owned(), true));
+        assert_eq!(cascade, [("Helvetica".to_owned(), true)]);
+        let (_, cascade) = faces("Menlo, PingFang SC");
+        assert_eq!(cascade, [("PingFang SC".to_owned(), false)]);
+    }
+
     /// Showing words of a long paragraph or recoloring them draws again
     /// only their lines, across the box; anything else that changed draws
     /// all of it.
@@ -3506,6 +3686,101 @@ mod tests {
             blue.iter().min().copied().unwrap_or(0),
         );
         assert!(green_right < blue_left, "{green_right} {blue_left}");
+    }
+
+    /// Text in a leaning font draws leaning: each run draws in its own text
+    /// matrix, which holds the font's shear.
+    #[test]
+    fn leaning_text_draws_leaning() {
+        use objc2_core_foundation::{CGAffineTransform, CGFloat};
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextGetBytesPerRow, CGBitmapContextGetData,
+            CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, kCGColorSpaceSRGB,
+        };
+        // How far right of its bottom half the ink's top half lies, in
+        // pixels, for "斜体中文" drawn in `style`.
+        let lean = |style: ResolvedTextStyle| {
+            let mut text = AttributedText::default();
+            text.push("斜体中文", style);
+            let engine = CoreTextEngine::default();
+            let prepared = engine.prepare(&text);
+            let size = engine.measure(&prepared, None);
+            let layout = engine.layout(&prepared, size);
+            let layout = layout
+                .downcast::<super::CoreTextLayout>()
+                .expect("CoreText");
+            let (w, h) = (
+                size.width.0.ceil() as usize + 20,
+                size.height.0.ceil() as usize + 4,
+            );
+            // SAFETY: a constant of CoreGraphics; CoreGraphics allocates
+            // the pixels (null data) and frees them with the context.
+            let cx = unsafe {
+                let space = CGColorSpace::with_name(Some(kCGColorSpaceSRGB)).expect("sRGB");
+                CGBitmapContextCreate(
+                    std::ptr::null_mut(),
+                    w,
+                    h,
+                    8,
+                    w * 4,
+                    Some(&space),
+                    CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+                )
+            }
+            .expect("a bitmap context");
+            // The bitmap is y up, as CoreText draws.
+            CGContext::set_text_matrix(
+                Some(&cx),
+                CGAffineTransform {
+                    a: 1.0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: 1.0,
+                    tx: 0.0,
+                    ty: 0.0,
+                },
+            );
+            CGContext::translate_ctm(Some(&cx), 10.0, 2.0 as CGFloat);
+            let mut stretches = super::Stretches::new(&text);
+            for line in &layout.lines {
+                super::draw_glyphs(&cx, line, &mut stretches);
+            }
+            let stride = CGBitmapContextGetBytesPerRow(Some(&cx));
+            // SAFETY: the context's `stride * h` bytes, which it keeps.
+            let pixels = unsafe {
+                std::slice::from_raw_parts(
+                    CGBitmapContextGetData(Some(&cx)).cast::<u8>(),
+                    stride * h,
+                )
+            };
+            let ink: Vec<(usize, usize)> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|&(x, y)| pixels[y * stride + x * 4 + 3] > 128)
+                .collect();
+            let top = ink.iter().map(|p| p.1).min().unwrap_or(0);
+            let bottom = ink.iter().map(|p| p.1).max().unwrap_or(0);
+            let middle = (top + bottom) / 2;
+            let mean = |half: &dyn Fn(usize) -> bool| {
+                let xs: Vec<f64> = ink
+                    .iter()
+                    .filter(|p| half(p.1))
+                    .map(|p| p.0 as f64)
+                    .collect();
+                xs.iter().sum::<f64>() / xs.len().max(1) as f64
+            };
+            // Row 0 is the bitmap's top.
+            mean(&|y| y < middle) - mean(&|y| y > middle)
+        };
+        let style = |italic: bool| ResolvedTextStyle {
+            font_size: Points(32.0),
+            italic,
+            ..ResolvedTextStyle::default()
+        };
+        let (upright, italic) = (lean(style(false)), lean(style(true)));
+        assert!(
+            italic - upright > 2.0,
+            "upright {upright:.2}, italic {italic:.2}"
+        );
     }
 
     /// The baseline of the first line, the attachment's top and the line's
@@ -4706,5 +4981,68 @@ mod cut_lines {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cjk_locale_shaping {
+    use super::*;
+    use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext};
+
+    fn rasterize_line(tag: &str, sample: &str) -> Vec<u8> {
+        let engine = CoreTextEngine::default();
+        let mut text = AttributedText {
+            locale: nsh_core::platform::Locale::parse(tag),
+            ..Default::default()
+        };
+        text.push(sample, ResolvedTextStyle::default());
+        let attr = engine.attributed_string(&text, &nsh_core::AttachmentAlignments::default());
+        let line = unsafe { CTLine::with_attributed_string(attr.as_ref()) };
+        let width = 128usize;
+        let height = 32usize;
+        let mut pixels = vec![0u8; width * height];
+        let space = CGColorSpace::new_device_gray().expect("gray colorspace");
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                pixels.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width,
+                Some(&space),
+                0,
+            )
+        }
+        .expect("bitmap context");
+        CGContext::set_gray_fill_color(Some(&ctx), 1.0, 1.0);
+        CGContext::set_text_position(Some(&ctx), 4.0, 8.0);
+        unsafe { line.draw(&ctx) };
+        pixels
+    }
+
+    #[test]
+    fn cjk_locales_render_distinct_han_variant_glyph_bitmaps() {
+        let renders: Vec<(&str, Vec<u8>)> = ["zh-CN", "zh-TW", "zh-HK", "ja", "ko"]
+            .into_iter()
+            .map(|tag| {
+                let pixels = rasterize_line(tag, "直骨海刃");
+                assert!(
+                    pixels.iter().any(|&p| p > 0),
+                    "{tag} rendered an empty bitmap"
+                );
+                (tag, pixels)
+            })
+            .collect();
+        let by_tag = |target: &str| {
+            renders
+                .iter()
+                .find(|(t, _)| *t == target)
+                .map(|(_, p)| p.as_slice())
+                .unwrap()
+        };
+        assert_ne!(by_tag("zh-CN"), by_tag("zh-TW"));
+        assert_ne!(by_tag("zh-TW"), by_tag("zh-HK"));
+        assert_ne!(by_tag("zh-CN"), by_tag("ja"));
+        assert_ne!(by_tag("ja"), by_tag("ko"));
     }
 }

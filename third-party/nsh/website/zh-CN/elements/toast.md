@@ -15,6 +15,51 @@ Toast 是在应用上方显示一段时间的简短消息："已复制"、"草�
 
 外观和内容属于应用，在任意位置显示 toast 的便捷函数也属于应用：应用在这些部分之上构建自己的 `toast(...)`，就像 gallery（`examples/gallery/toast.tsx`）那样，也像 GPUI Kit 的通知构建在 `gpui-base` 的 toast 之上。
 
+```tsx tabs
+import { Overlay, signal, Text, safeArea } from "nsh";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+
+const manager = new ToastManager();
+const shown = signal<ToastEntry[]>([]);
+const expanded = signal(false);
+const sync = () => shown.set(manager.visible(3));
+// Advance the lifecycle on a timer, paused while the stack is expanded.
+setInterval(() => {
+  if (manager.advance(expanded()).changed) sync();
+}, 50);
+
+export function toast(title: string) {
+  manager.push(crypto.randomUUID(), { title }, { timeout: 5000 });
+  sync();
+}
+
+export function Toaster() {
+  return (
+    <Overlay class="inset-x-0 bottom-0 items-center p-4" style={{ paddingBottom: safeArea().bottom + 16 }}>
+      <ToastStack placement="bottomCenter" class="w-80" onExpandedChange={(e) => expanded.set(e.expanded)} onCancel={() => {
+        const newest = shown().filter((t) => t.status !== "ending").at(-1);
+        if (newest) { manager.dismiss(newest.id); sync(); }
+      }}>
+        <Each of={shown()} key={(t: ToastEntry) => t.id}>
+          {(t) => (
+            <Toast
+              transitionStatus={t().status}
+              accessibilityLabel={(t().value as { title: string }).title}
+              onDismissRequest={() => { manager.dismiss(t().id); sync(); }}
+              class="rounded-xl bg-card px-4 py-3 shadow-lg transition-all duration-200"
+              startingClass="opacity-0 translate-y-4"
+              endingClass="opacity-0 scale-95"
+            >
+              <Text class="font-semibold text-card-foreground">{(t().value as { title: string }).title}</Text>
+            </Toast>
+          )}
+        </Each>
+      </ToastStack>
+    </Overlay>
+  );
+}
+```
+
 ```rust tabs
 use std::time::Duration;
 
@@ -79,51 +124,6 @@ fn toasts() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Overlay, signal, Text, safeArea } from "nsh";
-import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
-
-const manager = new ToastManager();
-const shown = signal<ToastEntry[]>([]);
-const expanded = signal(false);
-const sync = () => shown.set(manager.visible(3));
-// Advance the lifecycle on a timer, paused while the stack is expanded.
-setInterval(() => {
-  if (manager.advance(expanded()).changed) sync();
-}, 50);
-
-export function toast(title: string) {
-  manager.push(crypto.randomUUID(), { title }, { timeout: 5000 });
-  sync();
-}
-
-export function Toaster() {
-  return (
-    <Overlay class="inset-x-0 bottom-0 items-center p-4" style={{ paddingBottom: safeArea().bottom + 16 }}>
-      <ToastStack placement="bottomCenter" class="w-80" onExpandedChange={(e) => expanded.set(e.expanded)} onCancel={() => {
-        const newest = shown().filter((t) => t.status !== "ending").at(-1);
-        if (newest) { manager.dismiss(newest.id); sync(); }
-      }}>
-        <Each of={shown()} key={(t: ToastEntry) => t.id}>
-          {(t) => (
-            <Toast
-              transitionStatus={t().status}
-              accessibilityLabel={(t().value as { title: string }).title}
-              onDismissRequest={() => { manager.dismiss(t().id); sync(); }}
-              class="rounded-xl bg-card px-4 py-3 shadow-lg transition-all duration-200"
-              startingClass="opacity-0 translate-y-4"
-              endingClass="opacity-0 scale-95"
-            >
-              <Text class="font-semibold text-card-foreground">{(t().value as { title: string }).title}</Text>
-            </Toast>
-          )}
-        </Each>
-      </ToastStack>
-    </Overlay>
-  );
-}
-```
-
 `Toast`、`ToastStack` 和 `ToastManager` 来自 [`nsh/base`](../modules/nsh-base.md)。在 Rust 中它们是 `nsh_base` 的 `toast`、`toast_stack` 和 `ToastManager`。
 
 <a id="toastmanager"></a>
@@ -153,7 +153,7 @@ Manager 没有界面：它不渲染任何东西，也不运行计时器。应用
 
 Toast 是包裹应用内容的 `alert` 角色。它的 `transitionStatus` 来自 manager，状态类随之叠加在它的 `class` 之上：`startingClass` 在 `"starting"` 时只作用于它的第一帧，它的 `transition` 类从这里开始动画（Tailwind 的 `starting:`、CSS 的 `@starting-style`）；`endingClass` 在 `"ending"` 期间、退出时长内生效；`swipingClass` 在指针滑动它时生效（`transition-none` 让它紧跟手指）。
 
-手指或鼠标朝 `swipeDirection`（默认 `"right"`；`null` 关闭滑动）拖动时，它会在指针移动之后跟随，因此它的按钮仍是按钮；松开时超过 `swipeThreshold` 点（50）或快速甩动，它会继续移出并请求关闭（`onDismissRequest`），不足则回到原位。读屏软件会在它出现时朗读它的 `accessibilityLabel`。
+手指或鼠标朝 `swipeDirection`（默认 `"right"`；`null` 关闭滑动）拖动时，它会在指针移动之后跟随，因此它的按钮仍是按钮；松开时超过 `swipeThreshold` 点（50）或快速甩动，它会继续移出并请求关闭（`onDismissRequest`），不足则回到原位。读屏软件会在它出现时朗读它的 `accessibilityLabel`，只读一次：应用把 toast 移到另一个父节点下（在那里重建，例如有模态打开时把栈画进最上层的模态）不会再读一遍。在拿掉一个同标签 toast 的同一次更新里挂上的 toast，就是被移过去的那一条；其余的 toast 都会读，不论它的 `transitionStatus` 是什么。
 
 <a id="toast-props"></a>
 

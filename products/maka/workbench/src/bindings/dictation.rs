@@ -50,7 +50,6 @@ unsafe extern "C" {
     fn maka_record_message(
         path: *const c_char,
         uid: *const c_char,
-        chinese: bool,
         model_connection: bool,
         quick_launcher: bool,
         context: *mut c_void,
@@ -166,7 +165,6 @@ impl Drop for MessageDictation {
 impl MessageDictation {
     pub async fn start(
         this: Instance<Self>,
-        chinese: bool,
         connection: Option<serde_json::Value>,
         quick_launcher: Option<bool>,
     ) -> Result<bool, String> {
@@ -178,7 +176,7 @@ impl MessageDictation {
             if nsh_core::storage::Storage::get_item(&format!("{prefix}enabled")).as_deref()
                 != Some("true")
             {
-                return Err("Dictation is off".into());
+                return Err("dictation.error.off".into());
             }
             let device = CString::new(
                 nsh_core::storage::Storage::get_item(&format!("{prefix}microphone"))
@@ -206,7 +204,6 @@ impl MessageDictation {
                     maka_record_message(
                         recording.path.as_ptr(),
                         device.as_ptr(),
-                        chinese,
                         model_connection,
                         quick_launcher.unwrap_or(false),
                         Box::into_raw(Box::new(tx)).cast(),
@@ -230,8 +227,8 @@ impl MessageDictation {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (this, chinese, connection, quick_launcher);
-            Err("Dictation requires macOS".into())
+            let _ = (this, connection, quick_launcher);
+            Err("dictation.error.macos_required".into())
         }
     }
 
@@ -269,7 +266,7 @@ impl MessageDictation {
                 )
             });
             if rx.await.map_err(|e| e.to_string())? < 0.0 {
-                return Err("No microphone audio was recorded.".into());
+                return Err("dictation.error.no_audio_recorded".into());
             }
         }
         let (owner, directory, key, model, cancelled) = this.with(|r| {

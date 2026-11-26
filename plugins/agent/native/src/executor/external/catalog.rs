@@ -36,6 +36,7 @@ pub(super) struct Catalog {
 struct Source {
     checked: Instant,
     refreshing: bool,
+    last_failed: bool,
     value: Option<Value>,
 }
 
@@ -87,6 +88,7 @@ impl Catalog {
                 let source = self.sources.entry(runtime).or_insert_with(|| Source {
                     checked: Instant::now() - Duration::from_secs(30),
                     refreshing: false,
+                    last_failed: false,
                     value: None,
                 });
                 if !source.refreshing && source.checked.elapsed() >= Duration::from_secs(30) {
@@ -117,6 +119,7 @@ impl Catalog {
                 let failed = ["installation", "models"]
                     .iter()
                     .any(|field| value[field]["kind"] == "error");
+                source.last_failed = failed;
                 if failed {
                     tracing::warn!(runtime = runtime.as_str(), detail = %value, "Native model discovery failed; retaining the last catalog");
                 }
@@ -125,22 +128,25 @@ impl Catalog {
                 }
             }
             Err(error) => {
+                source.last_failed = true;
                 tracing::warn!(runtime = runtime.as_str(), %error, "Native model discovery failed")
             }
         }
     }
 
-    pub(super) fn snapshot(&self, selected: Option<NativeRuntime>) -> (Vec<Value>, bool) {
+    pub(super) fn snapshot(&self, selected: Option<NativeRuntime>) -> (Vec<Value>, bool, bool) {
         let mut values = Vec::new();
         let mut refreshing = false;
+        let mut last_failed = false;
         for (runtime, source) in &self.sources {
             if selected.is_some_and(|selected| selected != *runtime) {
                 continue;
             }
             values.extend(source.value.clone());
             refreshing |= source.refreshing;
+            last_failed |= source.last_failed;
         }
-        (values, refreshing)
+        (values, refreshing, last_failed)
     }
 }
 
@@ -157,7 +163,7 @@ mod tests {
         assert_eq!(work.len(), 2);
         let codex = json!({"runtime":"codex","models":{"kind":"ok","models":[{"id":"gpt"}]}});
         catalog.publish(generation, NativeRuntime::Codex, Ok(codex.clone()));
-        assert_eq!(catalog.snapshot(None), (vec![codex.clone()], true));
+        assert_eq!(catalog.snapshot(None), (vec![codex.clone()], true, false));
         assert!(
             catalog
                 .prepare("/a", runtimes.into_iter(), true)
@@ -182,7 +188,7 @@ mod tests {
         assert_eq!(work.len(), 2);
         assert_eq!(
             catalog.snapshot(Some(NativeRuntime::Codex)),
-            (vec![codex.clone()], true)
+            (vec![codex.clone()], true, false)
         );
         catalog.publish(
             generation,
@@ -191,8 +197,17 @@ mod tests {
         );
         assert_eq!(
             catalog.snapshot(Some(NativeRuntime::Codex)),
-            (vec![codex], false),
+            (vec![codex.clone()], false, true),
             "a discovery failure must not erase selectable models"
+        );
+        catalog.invalidate();
+        let (_, work) = catalog.prepare("/a", [NativeRuntime::Codex].into_iter(), true);
+        assert_eq!(work, vec![NativeRuntime::Codex]);
+        catalog.publish(generation, NativeRuntime::Codex, Ok(codex.clone()));
+        assert_eq!(
+            catalog.snapshot(Some(NativeRuntime::Codex)),
+            (vec![codex], false, false),
+            "a subsequent successful refresh clears last_failed"
         );
         catalog.prepare("/b", runtimes.into_iter(), true);
         catalog.prepare("/a", runtimes.into_iter(), true);
@@ -203,7 +218,7 @@ mod tests {
         );
         assert_eq!(
             catalog.snapshot(None),
-            (vec![], true),
+            (vec![], true, false),
             "a late result cannot publish into a new workspace generation"
         );
     }

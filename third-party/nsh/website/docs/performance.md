@@ -56,14 +56,30 @@ of native view operations, which reaches the main thread in **one hop**. There i
 serialization per prop.
 
 **For your code:** you do not need to coalesce writes for performance; ten `set` calls in one handler still produce one
-commit, in Rust and in TSX. Use `batch` when you want effects and computed values to see all the writes at once instead of running after
+commit, in TSX and in Rust. Use `batch` when you want effects and computed values to see all the writes at once instead of running after
 each one.
 
 ### 3. Fine-grained updates
 
-Components run **once**, in Rust and in TSX alike. Afterwards, only the bindings that read a signal run again when it
+Components run **once**, in TSX and in Rust alike. Afterwards, only the bindings that read a signal run again when it
 changes: a text, a style property, a branch of `when` (`<If>`), the rows of `each` (`<Each>`). Nothing re-renders a whole
 subtree to find out what changed.
+
+```tsx tabs
+import type { Accessor } from "nsh";
+import { Text } from "nsh";
+
+type Quote = { price: number; change: number };
+
+function Price(props: { quote: Accessor<Quote> }) {
+  // Runs once. When quote() changes, only the text and the color update.
+  return (
+    <Text style={{ color: props.quote().change < 0 ? "#cf222e" : "#1a7f37" }}>
+      {props.quote().price.toFixed(2)}
+    </Text>
+  );
+}
+```
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -82,22 +98,6 @@ fn price(quote: Signal<Quote>) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import type { Accessor } from "nsh";
-import { Text } from "nsh";
-
-type Quote = { price: number; change: number };
-
-function Price(props: { quote: Accessor<Quote> }) {
-  // Runs once. When quote() changes, only the text and the color update.
-  return (
-    <Text style={{ color: props.quote().change < 0 ? "#cf222e" : "#1a7f37" }}>
-      {props.quote().price.toFixed(2)}
-    </Text>
-  );
-}
-```
-
 **For your code:**
 
 - Read signals where they are used (inside bindings, `move ||` closures in Rust and JSX expressions in TSX, and in
@@ -108,16 +108,16 @@ function Price(props: { quote: Accessor<Quote> }) {
 
 Appending a fourth item to a three-item list, as `nsh test --trace` shows it:
 
+```tsx tabs
+{items().map((n) => <Text>{`row ${n}`}</Text>)}                   // 22 mount items: 3 views removed, 4 created
+<Each of={items()}>{(n) => <Text>{`row ${n()}`}</Text>}</Each>      // 4 mount items: 1 view created
+```
+
 ```rust tabs
 // 22 mount items: 3 views removed, 4 created
 dynamic(move || items.get().into_iter().map(|n| text(format!("row {n}"))).collect::<Vec<_>>())
 // 4 mount items: 1 view created
 each(move || items.get(), |n: &u32| *n, |n, _| text(move || format!("row {}", n.get())))
-```
-
-```tsx tabs
-{items().map((n) => <Text>{`row ${n}`}</Text>)}                   // 22 mount items: 3 views removed, 4 created
-<Each of={items()}>{(n) => <Text>{`row ${n()}`}</Text>}</Each>      // 4 mount items: 1 view created
 ```
 
 See [Reactivity](./reactivity.md).
@@ -134,20 +134,6 @@ An animation driven from the engine thread (a signal written on every frame) cos
 in TSX, and stutters when the engine thread is busy. Animated values ([Animation](./animation.md): `animated_value` in
 Rust, [`nsh`'s animation API](../modules/nsh.md#animation) in TSX) run animations natively instead:
 
-```rust tabs
-use nsh_core::prelude::*;
-
-let scroll_y = animated_value(0.0);
-
-view()
-    .bind_opacity(&scroll_y.interpolate(&[0.0, 120.0], &[1.0, 0.35]))
-    .bind_translate_y(&scroll_y.interpolate(&[0.0, 120.0], &[0.0, -6.0]));
-virtual_list(move || photos.with(Vec::len), move |at| photo_row(photos, at))
-    .scroll_value(&scroll_y)
-    .estimated_item_size(px(64.0))
-    .flex_1();
-```
-
 ```tsx tabs
 import { List, View } from "nsh";
 import { createAnimatedValue } from "nsh";
@@ -163,6 +149,20 @@ const scrollY = createAnimatedValue(0);
 <List each={photos()} scrollValue={scrollY} estimatedItemSize={64} style={{ flex: 1 }}>
   {(photo) => <Row photo={photo()} />}
 </List>;
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let scroll_y = animated_value(0.0);
+
+view()
+    .bind_opacity(&scroll_y.interpolate(&[0.0, 120.0], &[1.0, 0.35]))
+    .bind_translate_y(&scroll_y.interpolate(&[0.0, 120.0], &[0.0, -6.0]));
+virtual_list(move || photos.with(Vec::len), move |at| photo_row(photos, at))
+    .scroll_value(&scroll_y)
+    .estimated_item_size(px(64.0))
+    .flex_1();
 ```
 
 - `timing`, `spring` and `decay` run on the platform's UI thread, frame by frame, with no work on the engine thread

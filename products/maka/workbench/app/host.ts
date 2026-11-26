@@ -24,6 +24,7 @@ import { host as nativeHost } from 'maka/host';
 import { context } from 'nsh';
 import type { ApplicationHost, CapturedFile, ScopedHost } from 'maka/host';
 import type {
+  AgentBackendPreference,
   AgentFileKind,
   AgentSessionKind,
   ClientDraft,
@@ -51,6 +52,11 @@ type Services = {
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;
+export type RecentModel = {
+  backend: AgentBackendPreference;
+  label?: string;
+};
+
 export type Method<E extends Endpoint, Mode extends string> = {
   [M in keyof Services[E]]: Services[E][M] extends { mode: Mode } ? M : never;
 }[keyof Services[E]] &
@@ -240,6 +246,9 @@ export function createHost(application: UiHost) {
     stageIntake: (input: ComposerIntake) => nativeHost.stageIntake(input),
     recentWorkspaces: () => nativeHost.recentWorkspaces(),
     setRecentWorkspace: (path: string) => nativeHost.setRecentWorkspace(path),
+    recentModel: () => nativeHost.recentModel() as Promise<RecentModel | null>,
+    setRecentModel: (model: RecentModel) =>
+      nativeHost.setRecentModel(model) as Promise<RecentModel>,
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
     subscribe,

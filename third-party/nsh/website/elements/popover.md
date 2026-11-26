@@ -12,6 +12,29 @@ Pressing the trigger opens and closes it; a press outside, Escape, the Android b
 on a side of the trigger, moves to the other side when there is no room, stays inside the safe area and above the
 software keyboard, and follows the trigger as it scrolls. It draws nothing of its own: the popup and its content are the app's.
 
+```tsx tabs
+import { Text, View } from "nsh";
+import { Popover } from "nsh/base";
+
+function Details() {
+  return (
+    <Popover
+      offset={6}
+      margin={8}
+      popupClass="w-60 gap-1 rounded-lg bg-white p-3 shadow-lg"
+      trigger={
+        <View class="rounded-md bg-gray-200 px-3 py-2">
+          <Text>Details</Text>
+        </View>
+      }
+    >
+      <Text class="font-semibold">Order #1024</Text>
+      <Text>Shipped yesterday, arriving Friday.</Text>
+    </Popover>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
 use nsh_core::prelude::*;
@@ -37,29 +60,6 @@ fn details() -> impl IntoElement {
                 .child(text("Order #1024").font_weight(FontWeight::SEMIBOLD))
                 .child(text("Shipped yesterday, arriving Friday.")),
         )
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Popover } from "nsh/base";
-
-function Details() {
-  return (
-    <Popover
-      offset={6}
-      margin={8}
-      popupClass="w-60 gap-1 rounded-lg bg-white p-3 shadow-lg"
-      trigger={
-        <View class="rounded-md bg-gray-200 px-3 py-2">
-          <Text>Details</Text>
-        </View>
-      }
-    >
-      <Text class="font-semibold">Order #1024</Text>
-      <Text>Shipped yesterday, arriving Friday.</Text>
-    </Popover>
-  );
 }
 ```
 
@@ -93,15 +93,6 @@ during its exit is the trigger's (on macOS, opened by a pointer, it goes back wh
 as a press there gives the trigger no focus); a press outside leaves it where the press put it, and so does a `focus()` of a
 view outside the popover that your app calls in the same turn as it closes the popover.
 
-```rust tabs
-let panel = element_ref();
-
-popover()
-    .on_open(move || panel.focus())
-    .trigger(text("Filters"))
-    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
-```
-
 ```tsx tabs
 let panel!: ViewRef;
 <Popover onOpen={() => panel.focus()} trigger={<Text>Filters</Text>}>
@@ -109,6 +100,15 @@ let panel!: ViewRef;
     <FilterForm />
   </View>
 </Popover>;
+```
+
+```rust tabs
+let panel = element_ref();
+
+popover()
+    .on_open(move || panel.focus())
+    .trigger(text("Filters"))
+    .child(view().element_ref(&panel).focusable(true).child(filter_form()))
 ```
 
 ## Phones and desktops

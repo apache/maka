@@ -61,14 +61,24 @@ impl Target {
                 .relative
                 .file_name()
                 .ok_or_else(|| failed("publication entry needs a basename"))?;
-            match (expected, parent.symlink_metadata(name)) {
+            let read = match (expected, parent.symlink_metadata(name)) {
                 (PublicationEntry::Missing, Err(error))
-                    if error.kind() == io::ErrorKind::NotFound => {}
+                    if error.kind() == io::ErrorKind::NotFound =>
+                {
+                    ReadMode::Required
+                }
                 (PublicationEntry::File { .. }, Ok(metadata)) if metadata.is_file() => {
                     if managed && metadata.nlink() != 1 {
                         return Ok(Capture::Refused(unsupported(
                             PublicationUnsupported::AliasedTarget,
                         )));
+                    }
+                    #[cfg(windows)]
+                    let mode_only = mode_only || metadata.permissions().readonly();
+                    if mode_only {
+                        ReadMode::Permissions
+                    } else {
+                        ReadMode::Required
                     }
                 }
                 (_, Ok(_)) => {
@@ -78,11 +88,6 @@ impl Target {
                     return Ok(Capture::Refused(conflict(PublicationConflict::EntryType)));
                 }
                 (_, Err(error)) => return Err(io_error(error)),
-            }
-            let read = if mode_only {
-                ReadMode::Permissions
-            } else {
-                ReadMode::Required
             };
             match Self::capture_route(root, &route.relative, read, managed) {
                 Ok(target) => Ok(Capture::Ready(target)),
@@ -113,11 +118,16 @@ impl Target {
         match (expected, self.existing.as_mut()) {
             (PublicationEntry::Missing, None) => {}
             (PublicationEntry::File { content, mode }, Some(file)) => {
-                {
+                let permissions = file.metadata().map_err(io_error)?.permissions();
+                #[cfg(unix)]
+                let actual_mode = {
                     use cap_std::fs::PermissionsExt;
-                    if file.metadata().map_err(io_error)?.permissions().mode() & 0o7777 != *mode {
-                        return Ok(Some(PublicationConflict::Mode));
-                    }
+                    permissions.mode() & 0o7777
+                };
+                #[cfg(windows)]
+                let actual_mode = if permissions.readonly() { 0o400 } else { 0o600 };
+                if actual_mode != *mode {
+                    return Ok(Some(PublicationConflict::Mode));
                 }
                 file.rewind().map_err(io_error)?;
                 if hash_reader(file, cancellation)? != *content {
@@ -147,9 +157,8 @@ impl Target {
             .as_ref()
             .expect("mode-only publication captured an existing file");
         let metadata = file.metadata().map_err(io_error)?;
-        let mode = permission_mode(mode)?;
         started.store(true, Ordering::SeqCst);
-        rustix::fs::fchmod(file, mode).map_err(unknown)?;
+        set_mode(file, mode).map_err(unknown)?;
         self.visible(Some(identity(&metadata))).map_err(unknown)?;
         Ok(())
     }
@@ -164,7 +173,6 @@ impl Target {
     ) -> Result<(), ToolError> {
         self.validate()?;
         check_cancelled(cancellation)?;
-        let mode = permission_mode(mode)?;
         let mut file = match self.existing.take() {
             Some(file) => file,
             None => {
@@ -195,6 +203,10 @@ impl Target {
                 started,
                 "publication target changed after admission",
             ));
+        }
+        #[cfg(windows)]
+        if metadata.permissions().readonly() {
+            file = super::windows::open_readonly_for_publication(&file, started)?;
         }
         file.rewind().map_err(|error| mutation_io(started, error))?;
         let mut bytes = 0u64;
@@ -235,7 +247,7 @@ impl Target {
         }
         started.store(true, Ordering::SeqCst);
         file.set_len(bytes).map_err(unknown)?;
-        rustix::fs::fchmod(&file, mode).map_err(unknown)?;
+        set_mode(&file, mode).map_err(unknown)?;
         self.visible(Some(identity(&metadata))).map_err(unknown)?;
         // After the first write, drain the original mutation despite cancellation.
         Ok(())
@@ -257,9 +269,16 @@ fn mutation_failure(started: &AtomicBool, diagnostic: &str) -> ToolError {
     }
 }
 
-fn permission_mode(mode: u32) -> Result<rustix::fs::Mode, ToolError> {
-    if mode & !0o777 != 0 {
-        return Err(failed("publication mode exceeds captured permission bits"));
+fn set_mode(file: &File, mode: u32) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        rustix::fs::fchmod(file, rustix::fs::Mode::from_raw_mode(mode as _))?;
     }
-    Ok(rustix::fs::Mode::from_raw_mode(mode as _))
+    #[cfg(windows)]
+    {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(mode == 0o400);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
 }

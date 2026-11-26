@@ -2,8 +2,8 @@
 //! (decimal, percent, currency and unit styles; fraction and significant
 //! digits; grouping; sign display; standard, scientific, engineering and
 //! compact notation) and `Intl.DateTimeFormat` (the date and time fields,
-//! `dateStyle` / `timeStyle`, 12- and 24-hour cycles; local time, UTC or a
-//! fixed offset), with `format`, `formatToParts` and `resolvedOptions`;
+//! `dateStyle` / `timeStyle`, 12- and 24-hour cycles; local time, UTC, a
+//! fixed offset or a named zone the app ships), with `format`, `formatToParts` and `resolvedOptions`;
 //! and the locale-aware `toLocaleString` of numbers, BigInts and dates.
 //! QuickJS has no `Intl`; this one formats natively, in Rust.
 //!
@@ -25,12 +25,17 @@
 //! (`CET-1CEST,M3.5.0,M10.5.0/3`) is named by its text, so its daylight
 //! saving time stays. A test's zone
 //! (`open({ localeSettings: { timeZone } })`) names the device's zone
-//! without moving local time, so `Intl` keeps naming the machine's. TypeScript declares all of
+//! without moving local time, so `Intl` keeps naming the machine's. Other
+//! named zones (`America/New_York`) are those the app ships (nsh.json
+//! `timeZones`: their rules from the IANA database, `zone.rs`), registered
+//! with the languages ([`add_zones`]); their short names are the
+//! database's abbreviations (`EST`), else the offset (`GMT+10:30`). TypeScript declares all of
 //! it in its ECMAScript library (`lib.es2023`), so `globals.d.ts` does not.
 //!
-//! Not there: `Collator`, `PluralRules`, `RelativeTimeFormat`,
-//! `ListFormat`, `DisplayNames`, `Segmenter`, `Intl.Locale`; time zones
-//! other than the device's, UTC and fixed offsets (no zone database);
+//! Not there: `Collator`, `RelativeTimeFormat`,
+//! `ListFormat`, `DisplayNames`, `Segmenter`, `Intl.Locale`; named time
+//! zones the app does not ship, long zone names (`Eastern Standard Time`),
+//! `Intl.supportedValuesOf`;
 //! calendars other than the Gregorian, non-Latin digits, `currencySign:
 //! "accounting"` (written as `standard`) and currency names (written as
 //! codes). The constructors need `new`.
@@ -38,6 +43,7 @@
 mod date;
 mod locale;
 mod number;
+mod zone;
 
 use std::ffi::c_int;
 
@@ -46,6 +52,7 @@ use locale::Locale;
 #[cfg(not(target_arch = "wasm32"))]
 use nsh_core::platform::TimeZone;
 use rquickjs::qjs;
+pub(crate) use zone::Zones;
 
 use super::{
     Class, Key, Object, Spec, data, instance,
@@ -121,6 +128,11 @@ fn resolve(cx: Ctx, locales: Raw) -> R<Locale> {
 /// Registers the language data the app ships, by language (`"de"`).
 pub(crate) fn add_languages(cx: Ctx, languages: serde_json::Map<String, serde_json::Value>) {
     super::web(cx).languages.add(languages);
+}
+
+/// Registers the named time zones the app ships (`nsh_i18n::zones`' data).
+pub(crate) fn add_zones(cx: Ctx, zones: Vec<serde_json::Value>) {
+    super::web(cx).zones.add(zones);
 }
 
 /// The options object (`undefined`: none).
@@ -747,10 +759,13 @@ fn zone_option(cx: Ctx, o: &Option<V>) -> R<date::Zone> {
     if local_zone_name(cx)?.is_some_and(|local| local.eq_ignore_ascii_case(&name)) {
         return Ok(date::Zone::Local);
     }
+    if let Some(index) = super::web(cx).zones.find(&name) {
+        return Ok(date::Zone::Named(index));
+    }
     Err(js::range_error(
         cx,
         &format!(
-            "Invalid time zone specified: {name} (nsh knows the device's zone, UTC and offsets such as +08:00)"
+            "Invalid time zone specified: {name} (nsh knows the device's zone, UTC, offsets such as +08:00 and the zones nsh.json's timeZones lists)"
         ),
     ))
 }
@@ -963,12 +978,41 @@ fn format_date(
     zone: date::Zone,
     ms: f64,
 ) -> R<Vec<Part>> {
-    let offset = match zone {
-        date::Zone::Local => local_offset(cx, ms)?,
-        date::Zone::Utc => 0,
-        date::Zone::Offset(minutes) => minutes,
+    let (offset, abbr) = match zone {
+        date::Zone::Local => (local_offset(cx, ms)?, None),
+        date::Zone::Utc => (0, None),
+        date::Zone::Offset(minutes) => (minutes, None),
+        date::Zone::Named(index) => {
+            let (seconds, abbr) = super::web(cx).zones.get(index).at(ms);
+            let abbr = writes_abbreviation(locale.tag.as_str(), abbr).then(|| abbr.to_owned());
+            (seconds.div_euclid(60), abbr)
+        }
     };
-    Ok(date::format(ms, offset, zone, f, &locale.dates))
+    Ok(date::format(
+        ms,
+        offset,
+        zone,
+        abbr.as_deref(),
+        f,
+        &locale.dates,
+    ))
+}
+
+/// Whether `locale` writes a named zone's short name as its abbreviation
+/// (`EST`), as browsers do with CLDR's names: North American zones in
+/// English as written in the US and Canada. Any other zone is written by
+/// its offset (`GMT+5:30`).
+fn writes_abbreviation(locale: &str, abbr: &str) -> bool {
+    const NORTH_AMERICAN: &[&str] = &[
+        "EST", "EDT", "CST", "CDT", "MST", "MDT", "PST", "PDT", "AKST", "AKDT", "HST", "HDT",
+    ];
+    let mut tags = locale.split(['-', '_']);
+    let english = tags.next().is_some_and(|l| l.eq_ignore_ascii_case("en"));
+    let region =
+        tags.find(|t| t.len() == 2 || t.len() == 3 && t.bytes().all(|b| b.is_ascii_digit()));
+    english
+        && region.is_none_or(|r| r.eq_ignore_ascii_case("US") || r.eq_ignore_ascii_case("CA"))
+        && NORTH_AMERICAN.contains(&abbr)
 }
 
 fn format_with(cx: Ctx, this: Raw, value: Raw) -> R<Vec<Part>> {
@@ -1028,6 +1072,7 @@ native!(
         let zone = match zone {
             Zone::Utc => "UTC".to_owned(),
             Zone::Offset(m) => format!("{}{:02}:{:02}", if m < 0 { '-' } else { '+' }, m.abs() / 60, m.abs() % 60),
+            Zone::Named(index) => super::web(cx).zones.get(index).name.clone(),
             Zone::Local => match local_zone_name(cx)? {
                 Some(name) => name,
                 None => {
@@ -1195,6 +1240,7 @@ pub(crate) fn namespace(cx: Ctx) -> R<V> {
     for (name, class) in [
         ("NumberFormat", Class::NumberFormat),
         ("DateTimeFormat", Class::DateTimeFormat),
+        ("PluralRules", Class::PluralRules),
     ] {
         let ctor = super::constructor(cx, class)?;
         js::define(cx, global.raw(), name, ctor, false)?;
@@ -1254,7 +1300,420 @@ pub(crate) const SPECS: &[Spec] = &[
         global: false,
         ts: super::ClassTs::NONE,
     },
+    Spec {
+        class: Class::PluralRules,
+        name: c"PluralRules",
+        parent: None,
+        constructor: Some((plural_rules_constructor, 0)),
+        methods: &[
+            (Key::Name(c"select"), plural_rules_select, 1),
+            (
+                Key::Name(c"resolvedOptions"),
+                plural_rules_resolved_options,
+                0,
+            ),
+        ],
+        accessors: &[],
+        statics: &[(c"supportedLocalesOf", supported_locales_of, 1)],
+        constants: &[],
+        global: false,
+        ts: super::ClassTs::NONE,
+    },
 ];
+
+use number::{Rounding, RoundingMode};
+
+#[derive(Clone, Copy)]
+struct PluralRules {
+    tag: nsh_core::platform::Locale,
+    ordinal: bool,
+    min_integer: u8,
+    rounding: Rounding,
+    rounding_mode: RoundingMode,
+    strip_if_integer: bool,
+}
+
+trace!(PluralRules {});
+
+impl Object for PluralRules {}
+
+fn plural_categories(lang: &str, ordinal: bool) -> &'static [&'static str] {
+    if ordinal {
+        return match lang {
+            "en" => &["one", "two", "few", "other"],
+            "fr" | "sv" => &["one", "other"],
+            "it" => &["many", "other"],
+            _ => &["other"],
+        };
+    }
+    match lang {
+        "zh" | "ja" | "ko" | "th" | "vi" | "id" | "ms" => &["other"],
+        "es" | "fr" | "it" | "pt" => &["one", "many", "other"],
+        "ru" | "uk" | "pl" => &["one", "few", "many", "other"],
+        _ => &["one", "other"],
+    }
+}
+
+/// CLDR 45+ plural category selection for cardinal and ordinal rules using
+/// exact ECMA-402 formatted decimal operands.
+fn plural_select(
+    tag: &str,
+    ordinal: bool,
+    rounding: Rounding,
+    rounding_mode: RoundingMode,
+    strip_if_integer: bool,
+    value: f64,
+) -> &'static str {
+    let Some(op) =
+        number::PluralOperands::from_f64(value, rounding, rounding_mode, strip_if_integer)
+    else {
+        return "other";
+    };
+    let mut subtags = tag.split('-');
+    let lang = subtags.next().unwrap_or("en");
+    let is_pt_pt = lang == "pt"
+        && subtags
+            .take_while(|s| s.len() > 1)
+            .any(|s| s.eq_ignore_ascii_case("PT"));
+
+    if ordinal {
+        if op.f_nonzero {
+            return "other";
+        }
+        return match lang {
+            "en" => {
+                if op.mod10 == 1 && op.mod100 != 11 {
+                    "one"
+                } else if op.mod10 == 2 && op.mod100 != 12 {
+                    "two"
+                } else if op.mod10 == 3 && op.mod100 != 13 {
+                    "few"
+                } else {
+                    "other"
+                }
+            }
+            "fr" => {
+                if op.i_is_one {
+                    "one"
+                } else {
+                    "other"
+                }
+            }
+            "sv" => {
+                if matches!(op.mod10, 1 | 2) && !matches!(op.mod100, 11 | 12) {
+                    "one"
+                } else {
+                    "other"
+                }
+            }
+            "it" => {
+                if matches!(op.i_exact, Some(8 | 11 | 80 | 800)) {
+                    "many"
+                } else {
+                    "other"
+                }
+            }
+            _ => "other",
+        };
+    }
+
+    if is_pt_pt {
+        return if op.i_is_one && op.v == 0 {
+            "one"
+        } else if op.div_million && op.v == 0 {
+            "many"
+        } else {
+            "other"
+        };
+    }
+
+    match lang {
+        "zh" | "ja" | "ko" | "th" | "vi" | "id" | "ms" => "other",
+        "fr" | "pt" => {
+            if op.i_is_zero || op.i_is_one {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
+            } else {
+                "other"
+            }
+        }
+        "hi" => {
+            if op.i_is_zero || (op.i_is_one && !op.f_nonzero) {
+                "one"
+            } else {
+                "other"
+            }
+        }
+        "es" => {
+            if op.i_is_one && !op.f_nonzero {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
+            } else {
+                "other"
+            }
+        }
+        "it" => {
+            if op.i_is_one && op.v == 0 {
+                "one"
+            } else if op.div_million && op.v == 0 {
+                "many"
+            } else {
+                "other"
+            }
+        }
+        "ru" | "uk" => {
+            if op.v != 0 {
+                "other"
+            } else if op.mod10 == 1 && op.mod100 != 11 {
+                "one"
+            } else if matches!(op.mod10, 2..=4) && !matches!(op.mod100, 12..=14) {
+                "few"
+            } else {
+                "many"
+            }
+        }
+        "pl" => {
+            if op.v != 0 {
+                "other"
+            } else if op.i_is_one {
+                "one"
+            } else if matches!(op.mod10, 2..=4) && !matches!(op.mod100, 12..=14) {
+                "few"
+            } else {
+                "many"
+            }
+        }
+        _ => {
+            if op.i_is_one && op.v == 0 {
+                "one"
+            } else {
+                "other"
+            }
+        }
+    }
+}
+
+native!(
+    fn plural_rules_constructor(cx, this, args) {
+        let locale = resolve(cx, args.get(0))?;
+        let opts = options(cx, args.get(1))?;
+        let kind = string_option(cx, &opts, "type", &["cardinal", "ordinal"])?;
+        let min_integer = number_option(cx, &opts, "minimumIntegerDigits", 1, 21)?.unwrap_or(1);
+        let mnfd = number_option(cx, &opts, "minimumFractionDigits", 0, 100)?;
+        let mxfd = number_option(cx, &opts, "maximumFractionDigits", 0, 100)?;
+        let mnsd = number_option(cx, &opts, "minimumSignificantDigits", 1, 21)?;
+        let mxsd = number_option(cx, &opts, "maximumSignificantDigits", 1, 21)?;
+        let priority = string_option(
+            cx,
+            &opts,
+            "roundingPriority",
+            &["auto", "morePrecision", "lessPrecision"],
+        )?
+        .unwrap_or("auto");
+        let rounding_mode = string_option(
+            cx,
+            &opts,
+            "roundingMode",
+            &[
+                "ceil",
+                "floor",
+                "expand",
+                "trunc",
+                "halfCeil",
+                "halfFloor",
+                "halfExpand",
+                "halfTrunc",
+                "halfEven",
+            ],
+        )?
+        .and_then(RoundingMode::from_str)
+        .unwrap_or_default();
+        let strip_if_integer = string_option(
+            cx,
+            &opts,
+            "trailingZeroDisplay",
+            &["auto", "stripIfInteger"],
+        )? == Some("stripIfInteger");
+        let has_sd = mnsd.is_some() || mxsd.is_some();
+        let has_fd = mnfd.is_some() || mxfd.is_some();
+        let need_sd = priority != "auto" || has_sd;
+        let need_fd = priority != "auto" || !has_sd;
+        let (min_sig, max_sig) = (mnsd.unwrap_or(1), mxsd.unwrap_or(21));
+        if need_sd && min_sig > max_sig {
+            return Err(js::range_error(
+                cx,
+                "maximumSignificantDigits value is out of range.",
+            ));
+        }
+        let (min_frac, max_frac) = match (mnfd, mxfd) {
+            _ if !has_fd => (0, 3),
+            (Some(min), Some(max)) if min > max => {
+                return Err(js::range_error(
+                    cx,
+                    "maximumFractionDigits value is out of range.",
+                ));
+            }
+            (Some(min), Some(max)) => (min, max),
+            (Some(min), None) => (min, 3u8.max(min)),
+            (None, Some(max)) => (0, max),
+            (None, None) => (0, 3),
+        };
+        let rounding = match (need_sd, need_fd) {
+            (true, false) => Rounding::Significant {
+                min: min_sig,
+                max: max_sig,
+            },
+            (false, true) => Rounding::Fraction {
+                min: min_frac,
+                max: max_frac,
+            },
+            _ => Rounding::Both {
+                min_fraction: min_frac,
+                max_fraction: max_frac,
+                min_significant: min_sig,
+                max_significant: max_sig,
+                more: priority != "lessPrecision",
+            },
+        };
+        instance(
+            cx,
+            this,
+            Class::PluralRules,
+            PluralRules {
+                tag: locale.tag,
+                ordinal: kind == Some("ordinal"),
+                min_integer,
+                rounding,
+                rounding_mode,
+                strip_if_integer,
+            },
+        )
+    }
+);
+
+native!(
+    fn plural_rules_select(cx, this, args) {
+        let rules = *data::<PluralRules>(cx, this, "PluralRules")?;
+        let value = js::to_number(cx, args.get(0))?;
+        js::string(
+            cx,
+            plural_select(
+                rules.tag.as_str(),
+                rules.ordinal,
+                rules.rounding,
+                rules.rounding_mode,
+                rules.strip_if_integer,
+                value,
+            ),
+        )
+    }
+);
+
+native!(
+    fn plural_rules_resolved_options(cx, this, _args) {
+        let rules = *data::<PluralRules>(cx, this, "PluralRules")?;
+        let o = js::new_object(cx)?;
+        js::define(
+            cx,
+            o.raw(),
+            "locale",
+            js::string(cx, rules.tag.as_str())?,
+            true,
+        )?;
+        js::define(
+            cx,
+            o.raw(),
+            "type",
+            js::string(cx, if rules.ordinal { "ordinal" } else { "cardinal" })?,
+            true,
+        )?;
+        js::define(
+            cx,
+            o.raw(),
+            "minimumIntegerDigits",
+            V::num(f64::from(rules.min_integer)),
+            true,
+        )?;
+        let (fraction, significant) = match rules.rounding {
+            Rounding::Fraction { min, max } => (Some((min, max)), None),
+            Rounding::Significant { min, max } => (None, Some((min, max))),
+            Rounding::Both {
+                min_fraction,
+                max_fraction,
+                min_significant,
+                max_significant,
+                ..
+            } => (
+                Some((min_fraction, max_fraction)),
+                Some((min_significant, max_significant)),
+            ),
+        };
+        if let Some((min, max)) = fraction {
+            js::define(
+                cx,
+                o.raw(),
+                "minimumFractionDigits",
+                V::num(f64::from(min)),
+                true,
+            )?;
+            js::define(
+                cx,
+                o.raw(),
+                "maximumFractionDigits",
+                V::num(f64::from(max)),
+                true,
+            )?;
+        }
+        if let Some((min, max)) = significant {
+            js::define(
+                cx,
+                o.raw(),
+                "minimumSignificantDigits",
+                V::num(f64::from(min)),
+                true,
+            )?;
+            js::define(
+                cx,
+                o.raw(),
+                "maximumSignificantDigits",
+                V::num(f64::from(max)),
+                true,
+            )?;
+        }
+        let lang = rules.tag.as_str().split('-').next().unwrap_or("en");
+        let cats = plural_categories(lang, rules.ordinal);
+        let mut items = Vec::with_capacity(cats.len());
+        for cat in cats {
+            items.push(js::string(cx, cat)?);
+        }
+        let arr = js::new_array(cx, items)?;
+        js::define(cx, o.raw(), "pluralCategories", arr, true)?;
+        js::define(
+            cx,
+            o.raw(),
+            "roundingMode",
+            js::string(cx, rules.rounding_mode.as_str())?,
+            true,
+        )?;
+        js::define(
+            cx,
+            o.raw(),
+            "trailingZeroDisplay",
+            js::string(
+                cx,
+                if rules.strip_if_integer {
+                    "stripIfInteger"
+                } else {
+                    "auto"
+                },
+            )?,
+            true,
+        )?;
+        Ok(o)
+    }
+);
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

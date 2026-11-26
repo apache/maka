@@ -17,12 +17,17 @@
  * under the License.
  */
 
-use maka_sandbox::filesystem::{Compiled, Policy};
+#[cfg(unix)]
+use maka_sandbox::filesystem::Compiled;
+use maka_sandbox::filesystem::Policy;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
-    path::{Component, Path, PathBuf},
+    io,
+    path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::{fs, path::Component};
 
 /// Capture facts, not permissions or content hashes. The immutable baseline
 /// owns original bytes; only selected candidates need content hashing later.
@@ -54,7 +59,6 @@ impl SnapshotProof {
     pub fn files(&self) -> &[SnapshotFile] {
         &self.files
     }
-    #[cfg(unix)]
     pub(super) fn baseline_identity(&self) -> FileIdentity {
         self.baseline_identity
     }
@@ -63,7 +67,10 @@ impl SnapshotProof {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileIdentity {
     pub device: u64,
+    #[cfg(unix)]
     pub inode: u64,
+    #[cfg(windows)]
+    pub inode: [u8; 16],
 }
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +100,58 @@ pub enum SnapshotKind {
     },
 }
 
+#[cfg(windows)]
+pub(super) fn capture(
+    source: &Path,
+    resource: &Path,
+    policy: &Policy,
+) -> io::Result<SnapshotProof> {
+    use super::fs::{copy_tree, identity};
+    use maka_event_log::root::windows::open_nofollow;
+    let policy = policy.compile().map_err(io::Error::other)?;
+    let input = open_nofollow(source, false)?;
+    let base = open_nofollow(&resource.join("baseline"), false)?;
+    let work = open_nofollow(&resource.join("workspace"), false)?;
+    let (files, bytes) = copy_tree(&input, &base, |p| policy.access(&source.join(p)).can_read())
+        .map_err(io::Error::other)?;
+    for entry in &files {
+        let name = entry.relative_path.to_string_lossy().replace('\\', "/");
+        if (name.eq_ignore_ascii_case(".git") && !matches!(entry.kind, SnapshotKind::Directory))
+            || name.eq_ignore_ascii_case(".git/commondir")
+            || name.eq_ignore_ascii_case(".git/objects/info/alternates")
+        {
+            return Err(unsupported(
+                "shared git metadata cannot form an independent snapshot",
+            ));
+        }
+    }
+    let (_, working_bytes) = copy_tree(&base, &work, |_| true).map_err(io::Error::other)?;
+    if identity(&input)? != identity(&open_nofollow(source, false)?)? {
+        return Err(io::Error::other(super::Error::CaptureUnstable(
+            source.into(),
+        )));
+    }
+    let count = files
+        .iter()
+        .filter(|f| matches!(f.kind, SnapshotKind::File))
+        .count() as u64;
+    Ok(SnapshotProof {
+        source: source.into(),
+        resource_ref: resource.into(),
+        source_identity: identity(&input)?,
+        baseline_identity: identity(&base)?,
+        read_policy: policy.policy().clone(),
+        files,
+        capture_cost: CaptureCost {
+            cow_clones: 0,
+            byte_copies: 2 * count,
+            copied_bytes: bytes + working_bytes,
+            logical_file_bytes: bytes,
+        },
+    })
+}
+
+#[cfg(unix)]
 pub(super) fn capture(
     source: &Path,
     resource: &Path,
@@ -127,6 +186,7 @@ pub(super) fn capture(
     Ok(proof)
 }
 
+#[cfg(unix)]
 fn copy_directory(
     source: &Path,
     baseline: &Path,
@@ -196,10 +256,10 @@ fn copy_directory(
             if !input.metadata()?.is_file() {
                 return Err(io::Error::other("snapshot source changed type"));
             }
-            clone_file(&input, &base, &mut proof.capture_cost)?;
+            clone_file(&input, &base, &relative, &mut proof.capture_cost)?;
             let base_file = open_file(&base)?;
             proof.capture_cost.logical_file_bytes += base_file.metadata()?.len();
-            clone_file(&base_file, &work, &mut proof.capture_cost)?;
+            clone_file(&base_file, &work, &relative, &mut proof.capture_cost)?;
             set_mode(&work, mode(&original))?;
             set_mode(&base, 0o400)?;
             SnapshotKind::File
@@ -218,43 +278,25 @@ fn copy_directory(
     Ok(())
 }
 
-/// fclonefileat creates a new inode with independently writable COW contents.
-/// Only explicit filesystem/cross-device lack of COW permits a byte copy;
-/// permission and other errors remain errors rather than a disguised fallback.
-fn clone_file(input: &fs::File, output: &Path, cost: &mut CaptureCost) -> io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let parent = fs::File::open(
-            output
-                .parent()
-                .ok_or_else(|| io::Error::other("clone destination parent"))?,
-        )?;
-        match rustix::fs::fclonefileat(
-            input,
-            &parent,
-            output
-                .file_name()
-                .ok_or_else(|| io::Error::other("clone destination name"))?,
-            rustix::fs::CloneFlags::NOOWNERCOPY,
-        ) {
-            Ok(()) => {
-                cost.cow_clones += 1;
-                return Ok(());
-            }
-            Err(rustix::io::Errno::XDEV | rustix::io::Errno::OPNOTSUPP) => {}
-            Err(error) => return Err(error.into()),
+#[cfg(unix)]
+fn clone_file(
+    input: &fs::File,
+    output: &Path,
+    relative: &Path,
+    cost: &mut CaptureCost,
+) -> io::Result<()> {
+    let parent = fs::File::open(output.parent().expect("snapshot entry has a parent"))?;
+    let name = output.file_name().expect("snapshot entry has a name");
+    match super::fs::copy_file(input, &parent, name, relative).map_err(io::Error::other)? {
+        super::fs::Copy::Reflink => cost.cow_clones += 1,
+        super::fs::Copy::Bytes(bytes) => {
+            cost.byte_copies += 1;
+            cost.copied_bytes += bytes;
         }
     }
-    let mut source = input.try_clone()?;
-    let mut destination = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(output)?;
-    let bytes = io::copy(&mut source, &mut destination)?;
-    cost.byte_copies += 1;
-    cost.copied_bytes += bytes;
     Ok(())
 }
+#[cfg(unix)]
 fn open_file(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -265,6 +307,7 @@ fn open_file(path: &Path) -> io::Result<fs::File> {
     }
     options.open(path)
 }
+#[cfg(unix)]
 fn normalized_target(source: &Path, relative: &Path, target: &Path) -> io::Result<PathBuf> {
     let absolute = if target.is_absolute() {
         target.into()
@@ -298,30 +341,15 @@ pub(super) fn identity(metadata: &fs::Metadata) -> FileIdentity {
         inode: metadata.ino(),
     }
 }
-#[cfg(not(unix))]
-pub(super) fn identity(_: &fs::Metadata) -> FileIdentity {
-    FileIdentity {
-        device: 0,
-        inode: 0,
-    }
-}
 #[cfg(unix)]
 fn mode(metadata: &fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o777
 }
-#[cfg(not(unix))]
-fn mode(_: &fs::Metadata) -> u32 {
-    0
-}
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
-}
-#[cfg(not(unix))]
-fn set_mode(_: &Path, _: u32) -> io::Result<()> {
-    Ok(())
 }
 fn unsupported(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, message)

@@ -118,6 +118,10 @@ impl Peers {
         Self::publish(&mut current, next);
         Ok(())
     }
+    pub(in crate::application) fn revoke(&self) {
+        Self::publish(&mut self.approved.lock().unwrap(), BTreeMap::new());
+    }
+
     fn prepare(
         &self,
         current: &Approvals,

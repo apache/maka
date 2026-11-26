@@ -25,6 +25,11 @@ pub use baseline::{BaselineEntry, BaselineReader};
 mod candidate;
 pub use candidate::{CandidateCapture, FrozenCandidate};
 mod evidence;
+#[cfg(unix)]
+mod fs;
+#[cfg(windows)]
+#[path = "isolated/fs/windows.rs"]
+mod fs;
 pub use evidence::{
     CleanupEvidence, ClosedEvidence, EvidenceInterest, EvidenceWatch, cleanup_evidence,
     closed_evidence,
@@ -32,12 +37,13 @@ pub use evidence::{
 mod home;
 pub use home::{FrozenHome, HomeCapture, HomeEntries, HomeEntry, HomeEntryKind};
 mod helper;
-#[cfg(unix)]
+mod os;
 pub(crate) use helper::ExternalOwner;
-#[cfg(unix)]
+pub use os::SandboxRuntime;
+mod program;
 mod session;
+pub use program::{InstalledProgram, ProgramFile};
 mod snapshot;
-#[cfg(unix)]
 pub use session::SessionSpool;
 
 use crate::Command;
@@ -56,6 +62,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const HELPER: &str = "--maka-isolated-task-helper";
+pub const PROBE: &str = "--probe";
+#[cfg(windows)]
+pub use helper::run_snapshot;
 
 const INITIAL_HOME_DIRECTORIES: &[&str] = &[
     ".codex",
@@ -65,6 +74,12 @@ const INITIAL_HOME_DIRECTORIES: &[&str] = &[
     ".local",
     ".local/share",
     ".local/state",
+    #[cfg(windows)]
+    "AppData",
+    #[cfg(windows)]
+    "AppData/Roaming",
+    #[cfg(windows)]
+    "AppData/Local",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -117,10 +132,11 @@ impl std::error::Error for FailedSpawn {
 
 struct SpawnCustody {
     _owner: TaskOwner,
-    #[cfg(unix)]
     directory: Option<std::fs::File>,
     #[cfg(unix)]
     material: LaunchMaterial,
+    #[cfg(windows)]
+    material: Option<std::fs::File>,
 }
 #[cfg(unix)]
 enum LaunchMaterial {
@@ -157,16 +173,26 @@ impl SpawnCustody {
         file.sync_all()?;
         directory.sync_all()
     }
-    #[cfg(not(unix))]
-    fn write_inputs(&mut self, _: &[u8], _: &[u8]) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "private task launch unavailable",
-        ))
+    #[cfg(windows)]
+    fn write_inputs(&mut self, receipt: &[u8], manifest: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        let resource = evidence::open_resource(&self._owner.resource)?;
+        let owner = fs::directory(&resource, "owner".as_ref())?;
+        let mut file = fs::create(&owner, "task.json".as_ref())?;
+        file.write_all(receipt)?;
+        file.sync_all()?;
+        let directory = fs::directory(&resource, "launch".as_ref())?;
+        let file = fs::create(&directory, "material.json".as_ref())?;
+        self.directory = Some(directory);
+        let material = self.material.insert(file);
+        material.write_all(manifest)?;
+        material.sync_all()
     }
     #[cfg(unix)]
     fn remove_material(&mut self) -> io::Result<()> {
         use rustix::fs::{AtFlags, unlinkat};
+        self._owner.bound_command = None;
+        let _ = program::remove_runtime(&self._owner.resource);
         match &self.material {
             LaunchMaterial::NotCreated => return Ok(()),
             LaunchMaterial::Present(file) => {
@@ -196,8 +222,27 @@ impl SpawnCustody {
         self.material = LaunchMaterial::NotCreated;
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     fn remove_material(&mut self) -> io::Result<()> {
+        self._owner.bound_command = None;
+        let _ = program::remove_runtime(&self._owner.resource);
+        let Some(directory) = &self.directory else {
+            return Ok(());
+        };
+        if let Some(file) = &self.material {
+            let current = evidence::open_regular(directory, "material.json")?;
+            if fs::identity(&current)? != fs::identity(file)? {
+                return Err(io::Error::other(
+                    "launch material differs from original file",
+                ));
+            }
+            fs::mark_deleted(file)?;
+            drop(current);
+            drop(self.material.take());
+        }
+        if evidence::open_optional(directory, "material.json")?.is_some() {
+            return Err(io::Error::other("launch material deletion unconfirmed"));
+        }
         Ok(())
     }
 }
@@ -220,10 +265,12 @@ pub struct Descriptor {
 /// Dropping it preserves candidates; it cannot publish anything to the source.
 pub struct TaskOwner {
     resource: PathBuf,
+    #[cfg(windows)]
+    state_root: PathBuf,
     helper_executable: PathBuf,
     read_ceiling: Policy,
     bound_command: Option<BoundCommand>,
-    home_capture: HomeCapture,
+    home_capture: Option<HomeCapture>,
     home_seed: home::SeedState,
     snapshot: Option<SnapshotProof>,
     live_workspace: Option<PathBuf>,
@@ -233,8 +280,15 @@ pub struct TaskOwner {
 
 struct BoundCommand {
     identity: std::sync::Arc<()>,
-    executable: PathBuf,
-    _file: std::fs::File,
+    target: BoundTarget,
+}
+
+enum BoundTarget {
+    Selected {
+        executable: PathBuf,
+        _file: std::fs::File,
+    },
+    Installed(std::sync::Arc<InstalledProgram>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -246,7 +300,7 @@ enum Manifest {
     },
     Task {
         executable: PathBuf,
-        args: Vec<OsString>,
+        args: Vec<crate::command::Argument>,
         environment: Vec<(OsString, OsString)>,
         sandbox: Sandbox,
         size: Option<maka_plugin_core::terminal::TerminalSize>,
@@ -272,7 +326,6 @@ struct Started {
     helper_pid: u32,
 }
 
-#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChildExited {
@@ -281,7 +334,6 @@ struct ChildExited {
 }
 
 /// An OS/process closure only. Native business completion is a separate protocol fact.
-#[cfg(unix)]
 #[derive(Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -307,7 +359,6 @@ enum Closure {
         streams_drained: bool,
     },
 }
-#[cfg(unix)]
 impl Closure {
     fn is_closed(&self) -> bool {
         match self {
@@ -334,30 +385,19 @@ impl NoLaunchSeal {
         let resource = self.owner.resource.clone();
         let frozen = self.snapshot.clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "macos")]
-            {
-                let pinned = evidence::pin(&resource)?;
-                if frozen.get().is_none() {
-                    let _ = frozen.set(evidence::snapshot_identity(&pinned.owner)?);
-                }
-                let snapshot = *frozen.get().expect("original frozen snapshot identity");
-                publish_proof(
-                    &resource,
-                    "closure.json",
-                    &Closure::NeverLaunched {
-                        resource: resource.clone(),
-                        snapshot,
-                    },
-                )
+            let pinned = evidence::pin(&resource)?;
+            if frozen.get().is_none() {
+                let _ = frozen.set(evidence::snapshot_identity(&pinned.owner)?);
             }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = (resource, frozen);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "native no-launch proof unavailable",
-                ))
-            }
+            let snapshot = *frozen.get().expect("original frozen snapshot identity");
+            publish_proof(
+                &resource,
+                "closure.json",
+                &Closure::NeverLaunched {
+                    resource: resource.clone(),
+                    snapshot,
+                },
+            )
         })
         .await
         .map_err(io::Error::other)?
@@ -371,7 +411,6 @@ impl TaskOwner {
     }
 
     /// Record the executable before passing the original Run to a shared protocol owner.
-    #[cfg(unix)]
     pub async fn prepare_session(&self, executable: PathBuf) -> Result<Descriptor, Error> {
         if self.live_workspace.is_none() || self.cancellation.is_cancelled() {
             return Err(Error::IsolationUnavailable(
@@ -389,7 +428,8 @@ impl TaskOwner {
         Ok(self.descriptor())
     }
 
-    pub fn into_no_launch_seal(self) -> NoLaunchSeal {
+    pub fn into_no_launch_seal(mut self) -> NoLaunchSeal {
+        self.bound_command = None;
         NoLaunchSeal {
             owner: self,
             recording: tokio::sync::Mutex::new(()),
@@ -404,6 +444,7 @@ impl TaskOwner {
         helper_executable: &Path,
         actual: &Sandbox,
         privacy: &Policy,
+        runtime: &SandboxRuntime,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
         Self::prepare_owner(
@@ -412,6 +453,7 @@ impl TaskOwner {
             helper_executable,
             actual,
             Some(privacy),
+            runtime,
             cancellation,
         )
         .await
@@ -431,6 +473,7 @@ impl TaskOwner {
             helper_executable,
             &Sandbox::Disabled,
             None,
+            &SandboxRuntime::default(),
             cancellation,
         )
         .await
@@ -442,9 +485,10 @@ impl TaskOwner {
         helper_executable: &Path,
         actual: &Sandbox,
         privacy: Option<&Policy>,
+        runtime: &SandboxRuntime,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
-        if !cfg!(target_os = "macos") {
+        if !os::SUPPORTED {
             return Err(Error::IsolationUnavailable(
                 "this platform has no proven persistent native task boundary".into(),
             ));
@@ -460,8 +504,8 @@ impl TaskOwner {
             .into());
         }
         let helper_executable = helper_executable.to_owned();
-        let source = tokio::fs::canonicalize(source).await?;
-        let state_root = tokio::fs::canonicalize(state_root).await?;
+        let source = os::canonical(source).await?;
+        let state_root = os::canonical(state_root).await?;
         let mut reads = match actual {
             Sandbox::Managed { filesystem, .. } => filesystem.clone(),
             Sandbox::Disabled => Policy::uniform(Access::Read),
@@ -478,21 +522,6 @@ impl TaskOwner {
         // StateRoot is never a source for a private task, even in full access mode.
         reads.deny_globs.push(literal_glob(&state_root)?);
         reads.compile().map_err(sandbox_error)?;
-        if privacy.is_some() {
-            let probe = Sandbox::Managed {
-                filesystem: reads.clone(),
-                network: Network::Denied,
-            };
-            // Execute the real wrapper before copying a byte or starting any CLI.
-            let status = launch_snapshot_command(Path::new("/usr/bin/true"), &source, &probe, &[])?
-                .status()
-                .await?;
-            if !status.success() {
-                return Err(Error::IsolationUnavailable(format!(
-                    "OS sandbox probe failed: {status}"
-                )));
-            }
-        }
         let namespace = tokio::task::spawn_blocking(maka_sandbox::native_task_namespace)
             .await
             .map_err(io::Error::other)??;
@@ -532,55 +561,74 @@ impl TaskOwner {
         })
         .await
         .map_err(io::Error::other)??;
-        let resource = tokio::task::spawn_blocking(move || -> io::Result<PathBuf> {
-            let builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            let builder = {
-                use std::os::unix::fs::DirBuilderExt;
-                let mut builder = builder;
-                builder.mode(0o700);
-                builder
+        // Validate or create the private namespace before running the sandbox
+        // probe so Deny rules target a real owned directory (never a temporary
+        // placeholder) and pre-existing bad permissions fail before any writes.
+        let validated_namespace = namespace.clone();
+        tokio::task::spawn_blocking(move || ensure_namespace(&validated_namespace).map(|_| ()))
+            .await
+            .map_err(io::Error::other)??;
+        if privacy.is_some() {
+            let probe = Sandbox::Managed {
+                filesystem: read_ceiling.clone(),
+                network: Network::Denied,
             };
-            match builder.create(&namespace) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    let metadata = std::fs::symlink_metadata(&namespace)?;
-                    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                        return Err(io::Error::other(
-                            "private task namespace is not an owned directory",
-                        ));
-                    }
-                }
-                Err(e) => return Err(e),
+            let mut command = Command::new(&helper_executable, &source);
+            command.env_clear().arg(HELPER).arg(PROBE);
+            let mut diagnostics = Vec::new();
+            let status = run_sandboxed_helper(
+                runtime.apply(command.sandbox(&probe).map_err(sandbox_error)?),
+                &cancellation,
+                &mut diagnostics,
+            )
+            .await?;
+            if !status.success() {
+                return Err(Error::IsolationUnavailable(format!(
+                    "OS sandbox probe failed: {status}: {}",
+                    String::from_utf8_lossy(&diagnostics).trim(),
+                )));
             }
-            let path = tempfile::Builder::new()
-                .prefix("maka-native-task-")
-                .tempdir_in(&namespace)?
-                .keep();
+        }
+        let resource = tokio::task::spawn_blocking(move || -> io::Result<PathBuf> {
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-            }
-            for child in [
-                "workspace",
-                "baseline",
-                "home",
-                "tmp",
-                "owner",
-                "launch",
-                "inputs",
-            ] {
-                std::fs::create_dir_all(path.join(child))?;
-            }
-            for directory in INITIAL_HOME_DIRECTORIES {
-                std::fs::create_dir_all(path.join("home").join(directory))?;
-            }
+            let path = {
+                use rustix::fs::{Mode, fchmod, mkdirat, openat};
+                let parent = ensure_namespace(&namespace)?;
+                let name = format!("maka-native-task-{}", uuid::Uuid::new_v4());
+                mkdirat(&parent, name.as_str(), Mode::RWXU)?;
+                let resource_fd: std::fs::File = openat(
+                    &parent,
+                    name.as_str(),
+                    evidence::directory_flags(),
+                    Mode::empty(),
+                )?
+                .into();
+                fchmod(&resource_fd, Mode::RWXU)?;
+                evidence::check_directory(&resource_fd, true)?;
+                let path = namespace.join(&name);
+                for child in [
+                    "workspace",
+                    "baseline",
+                    "home",
+                    "tmp",
+                    "owner",
+                    "launch",
+                    "inputs",
+                ] {
+                    std::fs::create_dir_all(path.join(child))?;
+                }
+                for directory in INITIAL_HOME_DIRECTORIES {
+                    std::fs::create_dir_all(path.join("home").join(directory))?;
+                }
+                path
+            };
+            #[cfg(windows)]
+            let path = fs::create_resource(&namespace)?;
             Ok(path)
         })
         .await
         .map_err(io::Error::other)??;
-        let resource = tokio::fs::canonicalize(resource).await?;
+        let resource = os::canonical(&resource).await?;
         if (privacy.is_some() && resource.starts_with(&source)) || resource.starts_with(&state_root)
         {
             return Err(Error::IsolationUnavailable(
@@ -591,15 +639,34 @@ impl TaskOwner {
             let mut copy_policy = reads.clone();
             // These metadata/copy exceptions belong only to trusted private custody,
             // never to the source read ceiling recorded in SnapshotProof.
-            copy_policy.rules.push(Rule::exact(
-                resource
-                    .parent()
-                    .ok_or_else(|| io::Error::other("private namespace"))?,
-                Access::Read,
-            ));
+            let namespace = resource.parent().expect("task resource has a namespace");
+            os::allow_traversal(&mut copy_policy, namespace);
+            #[cfg(unix)]
             copy_policy
                 .rules
                 .push(Rule::subtree(&resource, Access::Write));
+            #[cfg(windows)]
+            {
+                // Keep `resource` private to the Host account and grant the
+                // copier only its dedicated protected boundaries so Account
+                // slots never write Allow ACEs to `resource` root or expose
+                // `owner`/`launch`.
+                copy_policy
+                    .rules
+                    .push(Rule::subtree(&resource, Access::Deny));
+                os::allow_traversal(&mut copy_policy, &resource);
+                for child in ["workspace", "baseline", "snapshot"] {
+                    copy_policy
+                        .rules
+                        .push(Rule::subtree(resource.join(child), Access::Write));
+                }
+                copy_policy
+                    .deny_globs
+                    .push(literal_glob(&resource.join("owner"))?);
+                copy_policy
+                    .deny_globs
+                    .push(literal_glob(&resource.join("launch"))?);
+            }
             // The trusted copier may load its actual helper, not expand the
             // snapshot's source read policy or any caller denial.
             copy_policy
@@ -609,52 +676,148 @@ impl TaskOwner {
                 filesystem: copy_policy,
                 network: Network::Denied,
             };
-            write_json_new(
-                &resource.join("owner/manifest.json"),
-                &Manifest::Snapshot {
-                    source: source.clone(),
-                    policy: reads.clone(),
-                },
-            )
-            .await?;
-            let args = [OsString::from(HELPER), resource.clone().into_os_string()];
-            let mut copy =
-                launch_snapshot_command(&helper_executable, &source, &copy_sandbox, &args)?;
+            let snapshot_manifest = Manifest::Snapshot {
+                source: source.clone(),
+                policy: reads.clone(),
+            };
+            write_json_new(&resource.join("owner/manifest.json"), &snapshot_manifest).await?;
+            #[cfg(windows)]
+            let stderr = {
+                let path = resource.clone();
+                let manifest = serde_json::to_vec(&snapshot_manifest).map_err(io::Error::other)?;
+                let file = tokio::task::spawn_blocking(move || -> io::Result<std::fs::File> {
+                    use std::io::Write;
+                    let pinned = evidence::pin(&path)?;
+                    let exchange = fs::mkdir(&pinned.resource, "snapshot".as_ref())?;
+                    let mut request = fs::create_entry(&exchange, "manifest.json".as_ref(), false)?;
+                    request.write_all(&manifest)?;
+                    request.sync_all()?;
+                    fs::create_entry(&exchange, "reply.json".as_ref(), false)?;
+                    fs::create(&pinned.owner, "snapshot.stderr".as_ref())
+                })
+                .await
+                .map_err(io::Error::other)??;
+                tokio::fs::File::from_std(file)
+            };
+            let mut copy = Command::new(&helper_executable, &source);
+            copy.env_clear().arg(HELPER);
+            #[cfg(windows)]
+            copy.arg("--snapshot");
+            copy.arg(&resource);
+            #[cfg(unix)]
             let stderr = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(resource.join("owner/snapshot.stderr"))
-                .await?
-                .into_std()
-                .await;
-            copy.stderr(std::process::Stdio::from(stderr));
-            copy.kill_on_drop(true);
-            let mut child = copy.spawn()?;
-            let status = tokio::select! {
-                result = child.wait() => result?,
-                _ = cancellation.cancelled() => { child.kill().await?; return Err(Error::Cancelled); }
-            };
-            if !status.success() {
-                return Err(Error::IsolationUnavailable(format!(
-                    "authorized workspace snapshot failed: {status}; evidence {}",
-                    resource.display()
-                )));
-            }
-            let snapshot: SnapshotProof = serde_json::from_slice(
-                &tokio::fs::read(resource.join("owner/snapshot.json")).await?,
+                .await?;
+            let status = run_sandboxed_helper(
+                runtime.apply(copy.sandbox(&copy_sandbox).map_err(sandbox_error)?),
+                &cancellation,
+                stderr,
             )
-            .map_err(io::Error::other)?;
+            .await;
+            #[cfg(windows)]
+            let snapshot: SnapshotProof = {
+                let path = resource.clone();
+                let need_reply = status.as_ref().is_ok_and(|exit| {
+                    exit.success()
+                        || matches!(
+                            exit.code(),
+                            Some(helper::SNAPSHOT_UNSTABLE | helper::SNAPSHOT_UNSUPPORTED)
+                        )
+                });
+                let reply = tokio::task::spawn_blocking(move || -> io::Result<Option<Vec<u8>>> {
+                    use std::io::Read;
+                    let pinned = evidence::pin(&path)?;
+                    match fs::directory(&pinned.resource, "snapshot".as_ref()) {
+                        Ok(exchange) => {
+                            let bytes = if need_reply {
+                                let mut file = fs::read(&exchange, "reply.json".as_ref(), false)?;
+                                let mut bytes = Vec::new();
+                                file.read_to_end(&mut bytes)?;
+                                Some(bytes)
+                            } else {
+                                None
+                            };
+                            drop(exchange);
+                            std::fs::remove_dir_all(path.join("snapshot"))?;
+                            Ok(bytes)
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                        Err(error) => Err(error),
+                    }
+                })
+                .await
+                .map_err(io::Error::other)?;
+                let status = status?;
+                let reply = reply?;
+                if status.code() == Some(helper::SNAPSHOT_UNSTABLE) {
+                    let changed: PathBuf = serde_json::from_slice(
+                        reply
+                            .as_deref()
+                            .ok_or_else(|| io::Error::other("missing unstable snapshot reply"))?,
+                    )
+                    .map_err(io::Error::other)?;
+                    return Err(Error::CaptureUnstable(changed));
+                }
+                if status.code() == Some(helper::SNAPSHOT_UNSUPPORTED) {
+                    let reason: String =
+                        serde_json::from_slice(reply.as_deref().ok_or_else(|| {
+                            io::Error::other("missing unsupported snapshot reply")
+                        })?)
+                        .map_err(io::Error::other)?;
+                    return Err(Error::CaptureUnsupported(reason));
+                }
+                if !status.success() {
+                    return Err(Error::IsolationUnavailable(format!(
+                        "authorized workspace snapshot failed: {status}; evidence {}",
+                        resource.display()
+                    )));
+                }
+                let snapshot: SnapshotProof = serde_json::from_slice(
+                    reply
+                        .as_deref()
+                        .ok_or_else(|| io::Error::other("missing snapshot reply"))?,
+                )
+                .map_err(io::Error::other)?;
+                if snapshot.resource_ref() != resource.as_path()
+                    || snapshot.source() != source.as_path()
+                    || snapshot.read_policy() != &reads
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "snapshot reply differs from original task request",
+                    )
+                    .into());
+                }
+                write_json_new(&resource.join("owner/snapshot.json"), &snapshot).await?;
+                snapshot
+            };
+            #[cfg(unix)]
+            let snapshot: SnapshotProof = {
+                let status = status?;
+                if !status.success() {
+                    return Err(Error::IsolationUnavailable(format!(
+                        "authorized workspace snapshot failed: {status}; evidence {}",
+                        resource.display()
+                    )));
+                }
+                let path = resource.clone();
+                tokio::task::spawn_blocking(move || {
+                    evidence::read_json(evidence::open_regular(
+                        &evidence::pin(&path)?.owner,
+                        "snapshot.json",
+                    )?)
+                })
+                .await
+                .map_err(io::Error::other)??
+            };
             let mut execution = reads;
-            execution.rules.push(Rule::exact(
-                resource
-                    .parent()
-                    .ok_or_else(|| io::Error::other("private namespace"))?,
-                Access::Read,
-            ));
+            os::allow_traversal(&mut execution, namespace);
             // Remove all original writes. Only these independently owned directories
             // may be changed; equal-path or nested source grants cannot reopen them.
             execution.rules.push(Rule::subtree(&resource, Access::Deny));
-            execution.rules.push(Rule::exact(&resource, Access::Read));
+            os::allow_traversal(&mut execution, &resource);
             for child in ["workspace", "home", "tmp"] {
                 execution
                     .rules
@@ -694,13 +857,20 @@ impl TaskOwner {
             .await?;
             (None, Sandbox::Disabled)
         };
-        let home_resource = resource.clone();
-        let home_capture =
-            tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
-                .await
-                .map_err(io::Error::other)??;
+        let home_capture = if snapshot.is_some() {
+            let home_resource = resource.clone();
+            Some(
+                tokio::task::spawn_blocking(move || HomeCapture::from_resource(&home_resource))
+                    .await
+                    .map_err(io::Error::other)??,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             resource,
+            #[cfg(windows)]
+            state_root,
             helper_executable,
             read_ceiling,
             bound_command: None,
@@ -731,11 +901,18 @@ impl TaskOwner {
             .get_or_init(|| std::sync::Arc::new(()))
             .clone();
         let path = selected.executable().to_owned();
+        #[cfg(unix)]
         let search_path = selected
             .environment
             .get(std::ffi::OsStr::new("PATH"))
             .cloned()
             .or_else(|| std::env::var_os("PATH"));
+        #[cfg(windows)]
+        let search_path = selected
+            .environment
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+            .map(|(_, v)| v.clone());
         let workspace = self.workspace();
         let source = self.snapshot.as_ref().map_or_else(
             || workspace.clone(),
@@ -769,8 +946,10 @@ impl TaskOwner {
         }
         self.bound_command = Some(BoundCommand {
             identity,
-            executable,
-            _file: file,
+            target: BoundTarget::Selected {
+                executable,
+                _file: file,
+            },
         });
         Ok(())
     }
@@ -782,8 +961,8 @@ impl TaskOwner {
     }
 
     /// Retain original HOME custody before consuming this owner in spawn.
-    pub fn home_capture(&self) -> HomeCapture {
-        self.home_capture.clone()
+    pub fn home_capture(&self) -> Option<&HomeCapture> {
+        self.home_capture.as_ref()
     }
 
     /// Stream a broker-authorized immutable profile into this fresh HOME.
@@ -854,56 +1033,110 @@ impl TaskOwner {
     ) -> Result<crate::pipe::Spawned, SpawnError> {
         self.spawn(command, Some(size)).await
     }
+    async fn close_spawn(mut self, error: Error) -> SpawnError {
+        self.bound_command = None;
+        let resource = self.resource.clone();
+        let _ = tokio::task::spawn_blocking(move || program::remove_runtime(&resource)).await;
+        SpawnError::Closed(error)
+    }
+
     async fn spawn(
-        self,
+        mut self,
         mut command: Command,
         size: Option<maka_plugin_core::terminal::TerminalSize>,
     ) -> Result<crate::pipe::Spawned, SpawnError> {
         if self.cancellation.is_cancelled() {
-            return Err(SpawnError::Closed(Error::Cancelled));
+            return Err(self.close_spawn(Error::Cancelled).await);
         }
-        if let Some(bound) = &self.bound_command {
-            if selected_identity_differs(&command, &bound.identity) {
-                return Err(SpawnError::Closed(Error::IsolationUnavailable(
+        if let Some(bound) = &self.bound_command
+            && selected_identity_differs(&command, &bound.identity)
+        {
+            return Err(self
+                .close_spawn(Error::IsolationUnavailable(
                     "private spawn changed its original selected command".into(),
-                )));
-            }
-            command.executable = bound.executable.clone();
+                ))
+                .await);
         }
         if matches!(self.home_seed, home::SeedState::Failed) {
-            return Err(SpawnError::Closed(Error::CaptureUnsupported(
-                "private HOME seed failed; launch is forbidden".into(),
-            )));
+            return Err(self
+                .close_spawn(Error::CaptureUnsupported(
+                    "private HOME seed failed; launch is forbidden".into(),
+                ))
+                .await);
         }
         if command.network_route != maka_network::Policy::default() {
-            return Err(SpawnError::Closed(Error::IsolationUnavailable(
-                "a non-transferable custom network route cannot be owned by the helper".into(),
-            )));
+            return Err(self
+                .close_spawn(Error::IsolationUnavailable(
+                    "a non-transferable custom network route cannot be owned by the helper".into(),
+                ))
+                .await);
         }
         // Command is captured data, never authority. Its policy cannot override
         // the Run ceiling or the mandatory private task boundary.
-        let sandbox = self
-            .sandbox
-            .intersect(&command.sandbox)
-            .map_err(|error| SpawnError::Closed(sandbox_error(error)))?;
+        let sandbox = match self.sandbox.intersect(&command.sandbox) {
+            Ok(sandbox) => sandbox,
+            Err(error) => return Err(self.close_spawn(sandbox_error(error)).await),
+        };
+        if let Some(bound) = self.bound_command.take() {
+            match bound.target {
+                BoundTarget::Selected { executable, _file } => {
+                    command.executable = executable.clone();
+                    self.bound_command = Some(BoundCommand {
+                        identity: bound.identity,
+                        target: BoundTarget::Selected { executable, _file },
+                    });
+                }
+                BoundTarget::Installed(program) => {
+                    let directory = self.inputs().join("runtime");
+                    let private = self.resource.join("owner");
+                    let stop = self.cancellation.clone();
+                    let delivered = tokio::task::spawn_blocking(move || {
+                        program.deliver(&private, &directory, &stop)?;
+                        let executable = directory.join(program.executable.name);
+                        let file = std::fs::File::open(&executable)?;
+                        Ok::<_, Error>((executable, file))
+                    })
+                    .await
+                    .map_err(|error| Error::Io(io::Error::other(error)))
+                    .and_then(|result| result);
+                    let (executable, file) = match delivered {
+                        Ok(delivered) => delivered,
+                        Err(error) => return Err(self.close_spawn(error).await),
+                    };
+                    command.executable = executable.clone();
+                    self.bound_command = Some(BoundCommand {
+                        identity: bound.identity,
+                        target: BoundTarget::Selected {
+                            executable,
+                            _file: file,
+                        },
+                    });
+                }
+            }
+        }
         if self.live_workspace.is_none() {
             let home = self.home();
             for (key, path) in [
                 ("HOME", home.clone()),
-                ("USERPROFILE", home),
+                ("USERPROFILE", home.clone()),
                 ("CODEX_HOME", self.codex_home()),
                 ("CLAUDE_CONFIG_DIR", self.claude_config_dir()),
                 ("TMPDIR", self.tmp()),
                 ("TMP", self.tmp()),
                 ("TEMP", self.tmp()),
-                ("XDG_CONFIG_HOME", self.home().join(".config")),
-                ("XDG_CACHE_HOME", self.home().join(".cache")),
-                ("XDG_DATA_HOME", self.home().join(".local/share")),
-                ("XDG_STATE_HOME", self.home().join(".local/state")),
+                ("XDG_CONFIG_HOME", home.join(".config")),
+                ("XDG_CACHE_HOME", home.join(".cache")),
+                ("XDG_DATA_HOME", home.join(".local/share")),
+                ("XDG_STATE_HOME", home.join(".local/state")),
+                #[cfg(windows)]
+                ("APPDATA", home.join("AppData").join("Roaming")),
+                // Account-backed tasks use this private Local path directly; PSEC/MXC
+                // anchors LOCALAPPDATA to the Host and maps the child to its own
+                // ephemeral per-container AppContainer AC directory.
+                #[cfg(windows)]
+                ("LOCALAPPDATA", home.join("AppData").join("Local")),
             ] {
-                command
-                    .environment
-                    .insert(key.into(), path.into_os_string());
+                command.env(key, path);
             }
             for key in [
                 "SSH_AUTH_SOCK",
@@ -921,28 +1154,21 @@ impl TaskOwner {
                 "GIT_ALTERNATE_OBJECT_DIRECTORIES",
                 "GIT_INDEX_FILE",
             ] {
-                command.environment.remove(std::ffi::OsStr::new(key));
+                command.remove_env(std::ffi::OsStr::new(key));
             }
         } else {
             // The process uses the account profile and task-private temporary files.
             for key in ["TMPDIR", "TMP", "TEMP"] {
-                command
-                    .environment
-                    .insert(key.into(), self.tmp().into_os_string());
+                command.env(key, self.tmp());
             }
         }
-        let args = command
-            .args
-            .into_iter()
-            .map(|arg| arg.as_ref().to_owned())
-            .collect();
         let receipt = TaskReceipt::Task {
             executable: command.executable.clone(),
             terminal_size: size,
         };
         let manifest = Manifest::Task {
             executable: command.executable,
-            args,
+            args: command.args,
             environment: command.environment.into_iter().collect(),
             sandbox,
             size,
@@ -958,21 +1184,19 @@ impl TaskOwner {
         // actual CLI changes into the live workspace via the manifest.
         let mut launch = Command::new(&self.helper_executable, self.resource.join("workspace"));
         launch.env_clear().arg(HELPER).arg(&self.resource);
-        #[cfg(target_os = "macos")]
-        {
-            launch.private_stdio = true;
-        }
-        #[cfg(unix)]
-        {
-            launch.external_owner = Some(self.resource.clone());
-        }
+        #[cfg(windows)]
+        launch.arg("--root").arg(&self.state_root);
+        os::set_helper_namespace(&mut launch, &self.resource);
+        os::private_stdio(&mut launch);
+        launch.external_owner = Some(self.resource.clone());
         // The worker and failed result share one custody so a worker panic cannot discard it.
         let custody = std::sync::Arc::new(std::sync::Mutex::new(SpawnCustody {
             _owner: self,
-            #[cfg(unix)]
             directory: None,
             #[cfg(unix)]
             material: LaunchMaterial::NotCreated,
+            #[cfg(windows)]
+            material: None,
         }));
         let work = custody.clone();
         let written = tokio::task::spawn_blocking(move || {
@@ -1120,11 +1344,33 @@ fn default_search_path() -> io::Result<OsString> {
     Ok(OsString::from_vec(bytes))
 }
 
-#[cfg(not(unix))]
-fn configured_executable(_: &Path, _: Option<&std::ffi::OsStr>, _: &Path) -> io::Result<PathBuf> {
+#[cfg(windows)]
+fn configured_executable(
+    path: &Path,
+    search: Option<&std::ffi::OsStr>,
+    workspace: &Path,
+) -> io::Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.into());
+    }
+    if path.components().count() != 1 {
+        return Ok(workspace.join(path));
+    }
+    for directory in std::env::split_paths(search.unwrap_or_default()).filter(|p| p.is_absolute()) {
+        let mut candidate = directory.join(path);
+        if candidate.extension().is_none() {
+            candidate.set_extension("exe");
+        }
+        match candidate.metadata() {
+            Ok(meta) if meta.is_file() => return Ok(candidate),
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
     Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "private task executable resolution is unavailable on this platform",
+        io::ErrorKind::NotFound,
+        "selected executable is absent from captured PATH",
     ))
 }
 
@@ -1139,7 +1385,7 @@ fn selected_executable(
             "selected executable must be absolute".into(),
         ));
     }
-    let canonical = std::fs::canonicalize(path)?;
+    let canonical = maka_sandbox::canonical_policy_path(path)?;
     let original = original.compile().map_err(sandbox_error)?;
     let current = match current {
         Sandbox::Disabled => Policy::uniform(Access::Read),
@@ -1173,8 +1419,9 @@ fn selected_executable(
     } else {
         path
     };
+    let spelling = maka_sandbox::policy_path_from_resolved(spelling).map_err(sandbox_error)?;
     let target = mapped.as_deref().unwrap_or(canonical.as_path());
-    for spelling in [spelling, target] {
+    for spelling in [spelling.as_ref(), target] {
         if !original.access(spelling).can_read() || !current.access(spelling).can_read() {
             return Err(Error::IsolationUnavailable(
                 "selected executable is denied by the original or current caller ceiling".into(),
@@ -1188,7 +1435,29 @@ fn selected_executable(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let file = options.open(&canonical)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if file.metadata()?.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err(Error::IsolationUnavailable(
+                "selected executable is a reparse point".into(),
+            ));
+        }
+    }
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(Error::IsolationUnavailable(
@@ -1223,57 +1492,83 @@ fn sandbox_error(error: maka_sandbox::Error) -> Error {
     Error::IsolationUnavailable(error.to_string())
 }
 
-fn launch_snapshot_command(
-    executable: &Path,
-    cwd: &Path,
-    sandbox: &Sandbox,
-    args: &[OsString],
-) -> Result<tokio::process::Command, Error> {
-    let launch = sandbox.prepare(cwd).map_err(sandbox_error)?;
-    let mut command = match launch {
-        maka_sandbox::launch::Launch::Direct => {
-            return Err(Error::IsolationUnavailable(
-                "snapshot requires OS enforcement".into(),
-            ));
-        }
-        maka_sandbox::launch::Launch::Wrapped {
-            program,
-            args: prefix,
-            ..
-        } => {
-            let mut c = tokio::process::Command::new(program);
-            c.args(prefix).arg(executable);
-            c
+async fn run_sandboxed_helper(
+    mut command: Command,
+    cancellation: &CancellationToken,
+    mut diagnostics: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<std::process::ExitStatus, Error> {
+    use tokio::io::AsyncWriteExt;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    os::private_stdio(&mut command);
+    let crate::pipe::Spawned {
+        mut child,
+        stdin,
+        mut stdout,
+        mut stderr,
+    } = crate::pipe::spawn(command)
+        .await
+        .map_err(io::Error::other)?;
+    drop(stdin);
+    let output = async move {
+        let mut discarded = tokio::io::sink();
+        tokio::try_join!(
+            tokio::io::copy(&mut stdout, &mut discarded),
+            tokio::io::copy(&mut stderr, &mut diagnostics),
+        )?;
+        diagnostics.flush().await
+    };
+    let wait = async {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                child.terminate().await?;
+                child.wait().await?;
+                Ok(None)
+            }
+            status = child.wait() => status.map(Some),
         }
     };
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    Ok(command)
+    let (status, output) = tokio::join!(wait, output);
+    let status = status?;
+    output?;
+    status.ok_or(Error::Cancelled)
 }
 async fn write_json_new(path: &Path, value: &impl Serialize) -> io::Result<()> {
-    use tokio::io::AsyncWriteExt;
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            let owner = path.parent().expect("owner file");
+            let pinned = evidence::pin(owner.parent().expect("task resource"))?;
+            let mut file = fs::create(&pinned.owner, path.file_name().expect("owner file name"))?;
+            file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
     #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path).await?;
-    file.write_all(&bytes).await?;
-    file.sync_all().await
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .await?;
+        file.write_all(&bytes).await?;
+        file.sync_all().await
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     use rustix::fs::{AtFlags, Mode, OFlags, openat, unlinkat};
     use std::io::Write;
-    use std::os::fd::AsRawFd;
     let pinned = evidence::pin(resource)?;
     let owner = &pinned.owner;
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
@@ -1296,23 +1591,7 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
         let written = (|| {
             file.write_all(&bytes)?;
             file.sync_all()?;
-            let from = std::ffi::CString::new(pending.as_str()).map_err(io::Error::other)?;
-            let to = std::ffi::CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: both owned directory FDs are pinned for this call; the C strings
-            // remain live. EXCL atomically refuses replacement of immutable evidence.
-            if unsafe {
-                libc::renameatx_np(
-                    owner.as_raw_fd(),
-                    from.as_ptr(),
-                    owner.as_raw_fd(),
-                    to.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
+            fs::rename_noreplace(owner, &pending, name)
         })();
         if written.is_err() {
             let _ = unlinkat(owner, pending.as_str(), AtFlags::empty());
@@ -1322,10 +1601,81 @@ fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Res
     owner.sync_all()?;
     Ok(())
 }
-#[cfg(all(unix, not(target_os = "macos")))]
-fn publish_proof(_: &Path, _: &str, _: &impl Serialize) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "native physical proof unavailable",
-    ))
+
+#[cfg(windows)]
+fn publish_proof(resource: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
+    use std::io::Read;
+    let owner = evidence::pin(resource)?.owner;
+    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+    if let Some(mut file) = evidence::open_optional(&owner, name)? {
+        let mut original = Vec::new();
+        file.read_to_end(&mut original)?;
+        if original != bytes {
+            return Err(io::Error::other("original immutable evidence differs"));
+        }
+        return Ok(());
+    }
+    fs::publish(&owner, name, &bytes)
+}
+
+#[cfg(unix)]
+fn ensure_namespace(namespace: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(namespace) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let directory: std::fs::File = rustix::fs::open(
+        namespace,
+        evidence::directory_flags(),
+        rustix::fs::Mode::empty(),
+    )?
+    .into();
+    evidence::check_directory(&directory, false)?;
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn ensure_namespace(namespace: &Path) -> io::Result<std::fs::File> {
+    fs::ensure_namespace(namespace)
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests;
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_namespace_rejects_group_writable_and_symlink_directories() -> io::Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir()?;
+        let bad_mode = temp.path().join("group-writable");
+        std::fs::create_dir(&bad_mode)?;
+        std::fs::set_permissions(&bad_mode, std::fs::Permissions::from_mode(0o770))?;
+        assert_eq!(
+            ensure_namespace(&bad_mode).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(std::fs::read_dir(&bad_mode)?.count(), 0);
+
+        let target = temp.path().join("owned");
+        std::fs::create_dir(&target)?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))?;
+        let link = temp.path().join("symlink-namespace");
+        symlink(&target, &link)?;
+        assert!(ensure_namespace(&link).is_err());
+
+        let fresh = temp.path().join("fresh");
+        let _dir = ensure_namespace(&fresh)?;
+        assert_eq!(
+            std::fs::metadata(&fresh)?.permissions().mode() & 0o777,
+            0o700
+        );
+        Ok(())
+    }
 }

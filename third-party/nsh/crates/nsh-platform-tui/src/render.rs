@@ -539,13 +539,28 @@ impl Painter<'_> {
         );
         // A divider's box (a menu's separator, its fill the app's line
         // color) is its line of `─` alone: a line is no band.
+        // A terminal that did not tell its colors has no hover band
+        // (`Bands::new`), so a hovered control uses its resting fill for both
+        // its bandless fill and the ground its children's ink is measured
+        // against; states with marks of their own (focus, press, selection,
+        // disabled) keep theirs.
+        let states = shown_states(view, self.tree.pointer_focus);
+        let hovering = ground.ramp.is_none()
+            && self.bands.hover.is_none()
+            && states & state::HOVERED != 0
+            && states & (state::FOCUSED | state::PRESSED | state::DISABLED) == 0
+            && !view.props.accessibility.state.disabled
+            && !banded(view);
         let fill = if blank || rule_box || scrim {
             nsh_core::Color::TRANSPARENT
         } else {
-            let color = view
-                .animated
-                .background
-                .unwrap_or(view.style.background_color);
+            let color = if hovering {
+                view.rest_fill
+            } else {
+                view.animated
+                    .background
+                    .unwrap_or(view.style.background_color)
+            };
             // A terminal draws one color per Cell: a gradient over no
             // fill of its own fills with its first stop.
             match view.style.effects.as_deref() {
@@ -1509,6 +1524,7 @@ impl Painter<'_> {
                 popup: popup_item,
                 lined_group: layer.lined_group,
                 pointer_focus: self.tree.pointer_focus,
+                neutral_fill: (bandless_fill == Some(Color::DarkGray)).then_some(Color::DarkGray),
             };
             match ground.ramp {
                 Some(ramp) => mark_surface(
@@ -1674,7 +1690,8 @@ fn focus_pane(tree: &Mounter) -> Option<NodeId> {
 
 /// Whether the box `pane` holds rows the keys move through: a scroll view
 /// (a list) or a selected item, in its own content (not inside a framed
-/// box within it, a pane of its own).
+/// box within it, a pane of its own). A chosen tab (a segmented control's)
+/// is a control's value, not a row: a card around one keeps its line.
 fn holds_rows(tree: &Mounter, pane: NodeId) -> bool {
     let mut stack: Vec<NodeId> = tree
         .get(pane)
@@ -1683,7 +1700,9 @@ fn holds_rows(tree: &Mounter, pane: NodeId) -> bool {
         let Some(view) = tree.get(id) else {
             continue;
         };
-        if view.kind == ViewKind::Scroll || view.props.accessibility.state.selected {
+        let row = view.props.accessibility.state.selected
+            && view.props.accessibility.role != AccessibilityRole::Tab;
+        if view.kind == ViewKind::Scroll || row {
             return true;
         }
         let lined = view
@@ -2694,6 +2713,7 @@ fn control(view: &NshView) -> bool {
                 | AccessibilityRole::Adjustable
                 | AccessibilityRole::Combobox
                 | AccessibilityRole::Spinbutton
+                | AccessibilityRole::Textbox
         )
 }
 
@@ -2731,7 +2751,7 @@ fn focused_field_in(tree: &Mounter, id: NodeId, depth: usize) -> bool {
 /// What state marks draw with besides modifiers.
 #[derive(Clone, Copy)]
 struct Marks {
-    /// The hover and press bands.
+    /// The bandless hover band (the 16 colors' gray; none else).
     bands: Bands,
     /// The color of a control whose fill stands out (a primary button):
     /// its accent, or the default foreground.
@@ -2752,6 +2772,10 @@ struct Marks {
     lined_group: bool,
     /// The pointer moved the focus (`Mounter::pointer_focus`).
     pointer_focus: bool,
+    /// The fallback fill of a bandless box without a tone of its own (the
+    /// standard colors' gray, [`palette::bandless_fill`]): a reverse drawn
+    /// over it reads as a band, so the states that mark a row drop it.
+    neutral_fill: Option<Color>,
 }
 
 /// The states a view's marks show: its own and those projected on it as
@@ -2839,10 +2863,18 @@ fn mark_state(
     }
     // A tab the app underlines keeps its underline alone, as with colors.
     let tab = view.props.accessibility.role == AccessibilityRole::Tab;
-    if selected && !inner.is_empty() && !(tab && underlined(buffer, inner)) {
+    let chosen = selected && !inner.is_empty() && !(tab && underlined(buffer, inner));
+    // A selection is reverse video and the focus the accent's or, without
+    // colors, reversed and underlined: the box's fallback fill under either
+    // would show as a band the label fades into.
+    if (chosen || focused) && !inner.is_empty() {
+        clear_fill(buffer, visible, marks.neutral_fill);
+    }
+    if chosen {
         for y in inner.y..inner.bottom() {
             for x in inner.x..inner.right() {
-                buffer[(x, y)].modifier.insert(Modifier::REVERSED);
+                let cell = &mut buffer[(x, y)];
+                cell.modifier = (cell.modifier | Modifier::REVERSED) - Modifier::DIM;
             }
         }
     }
@@ -2893,10 +2925,12 @@ fn mark_state(
             focus_reverse(buffer, inner, marks.mono, !row);
         }
     } else if pressed && !selected {
-        match marks.bands.press {
-            Some(band) => fill(buffer, visible, band),
-            None => label(buffer, inner, Modifier::REVERSED),
-        }
+        // A press is reverse video, as a selection is: the fill under it
+        // (a neutral `activeStyle`) would be a band the label fades into.
+        clear_fill(buffer, visible, marks.neutral_fill);
+        label(buffer, inner, Modifier::REVERSED);
+        // Dim text on that fill would barely read reversed.
+        drawn(buffer, inner, |_| {});
     } else if hovered
         && !selected
         && let Some(band) = marks.bands.hover
@@ -3055,9 +3089,17 @@ fn mark_surface(
     let covered = !(visible.y..visible.bottom())
         .any(|y| (visible.x..visible.right()).any(|x| buffer[(x, y)].bg == own));
     let active = (popup && (focused || hovered || pressed) && pressable(view))
-        || ((dialog || pane) && !popup && highlighted)
-        || (pane && !popup && selected && !tab && !covered && (item || !pressable(view)));
-    if active {
+        || ((dialog || pane) && !popup && highlighted);
+    // The selected row of a list in the focused pane, the keys not on it
+    // (a sidebar's current page): an accent rail down its leading column
+    // and its label in the accent, bold (Bubbles' list), no band, which
+    // would read as where the keys are. Without a free leading column it
+    // is the accent band.
+    let chosen = pane && !popup && selected && !tab && !covered && (item || !pressable(view));
+    if chosen && !active && selection_rail(buffer, visible, inner) {
+        return;
+    }
+    if active || chosen {
         accent_band(buffer, visible, inner, ramp, selected);
         return;
     }
@@ -3145,6 +3187,19 @@ fn mark_surface(
     } else if marked {
         focus_underline(buffer, visible, covered);
     }
+    // A list's selected row out of the focused pane keeps the same rail as
+    // in it, so the current page of a sidebar reads alike either way.
+    let nav = view.props.accessibility.state.current.is_some();
+    if selected
+        && (item || nav)
+        && !popup
+        && !covered
+        && !hued_label
+        && !focused
+        && selection_rail(buffer, visible, inner)
+    {
+        return;
+    }
     if selected {
         if !hued_label {
             band(buffer, visible, step(SELECT), own);
@@ -3228,6 +3283,33 @@ fn focus_rail(buffer: &mut Buffer, visible: Rect, inner: Rect) -> bool {
         }
     }
     any
+}
+
+/// Marks the selected row of a list (Bubbles' list): `▌` in the accent on
+/// its leading column when that column is blank on every row in sight, its
+/// text in the accent and bold. Whether it could (else nothing changes).
+fn selection_rail(buffer: &mut Buffer, visible: Rect, inner: Rect) -> bool {
+    let rows = inner.intersection(visible);
+    if rows.is_empty() || visible.width < 3 {
+        return false;
+    }
+    let x = visible.x;
+    if (rows.y..rows.bottom()).any(|y| buffer[(x, y)].symbol() != " ") {
+        return false;
+    }
+    for y in rows.y..rows.bottom() {
+        let cell = &mut buffer[(x, y)];
+        cell.set_symbol("▌");
+        cell.fg = ACCENT;
+        cell.modifier -= Modifier::DIM;
+    }
+    drawn(buffer, inner, |cell| {
+        if cell.symbol() != "▌" {
+            cell.fg = ACCENT;
+            cell.modifier = (cell.modifier | Modifier::BOLD) - Modifier::DIM;
+        }
+    });
+    true
 }
 
 /// The accent band of what the keys act on (a focused control, the
@@ -3632,6 +3714,28 @@ fn fill(buffer: &mut Buffer, rect: Rect, color: Color) {
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
             buffer[(x, y)].bg = color;
+        }
+    }
+}
+
+/// Drops a bandless box's fallback fill from `rect`, so a reverse over it
+/// stands on the terminal's own ground instead of on a band. A glyph in
+/// the fill's own color takes the default foreground, as on the fill.
+fn clear_fill(buffer: &mut Buffer, rect: Rect, fill: Option<Color>) {
+    let Some(fill) = fill else {
+        return;
+    };
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.bg != fill {
+                continue;
+            }
+            cell.bg = Color::Reset;
+            if cell.fg == fill {
+                cell.fg = Color::Reset;
+                cell.modifier -= Modifier::DIM;
+            }
         }
     }
 }

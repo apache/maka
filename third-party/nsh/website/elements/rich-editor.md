@@ -542,6 +542,9 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
   addresses), and the protocol a bare host gets is `defaultProtocol` (`http`). Links take the protocols `http`,
   `https`, `ftp`, `ftps`, `mailto`, `tel`, `callto`, `sms`, `cid`, `xmpp` and those in `protocols`, so
   `setLink({ href })`, `toggleLink(attrs?)` and autolinking keep scripts (`javascript:`) and data URLs out.
+  The link mark keeps `javascript:`, `vbscript:` and `data:` URLs out of the HTML it reads and writes, in any case and
+  with white space or control characters inside the scheme: such an `<a>` is read as plain text, and such an `href`
+  is not written. Other URLs, an app's own schemes included, are read and written as they are.
   `unsetLink()` removes the link around the selection.
   On the desktops and the web in the desktop idiom, the pointer resting on linked text shows the link's `title` and
   destination below the pointer, as [TextView's links](./text-view.md) do; pressing and typing in the link work as
@@ -628,8 +631,9 @@ next cell; Shift with an arrow, or a drag across cells, selects a rectangle of c
 `"cell"`, whose `anchor` and `head` are the positions before its first and last cells). Backspace and Delete empty
 the selected cells, and delete the table when all its cells are selected.
 
-In the editor a table is a grid of its cells: each column as wide as its cells' `colwidth`, columns without one
-sharing the room (at least `cellMinWidth` wide), each row at least its `height`. Its look starts from the theme: a
+Columns fit the text and components in their cells. Long paragraphs wrap, and a table wider than the editor
+scrolls horizontally inside the document. A saved or dragged column width takes precedence. Each column is at
+least `cellMinWidth` wide and each row is at least its saved `height`. Its look starts from the theme: a
 1-point `border` grid, header cells on `muted`, padded cells, and each selected cell under the `selectedCell` part in
 the selection color. `classes.nodes` (`table`, `tableCell`, `tableHeader`) and the parts restyle
 all of it. Up and Down on a cell's first or last line go to the cell above or below.

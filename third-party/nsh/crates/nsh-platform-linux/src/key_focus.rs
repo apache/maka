@@ -46,6 +46,9 @@ use crate::{surface::Surface, view::NshView};
 thread_local! {
     /// Whether a Tab key is moving the focus right now.
     static TABBING: Cell<bool> = const { Cell::new(false) };
+    /// The input a `captureKeys="text"` rule just focused for the key being
+    /// pressed: the window's key controller forwards that key to it.
+    static TYPE_INTO: RefCell<Option<gtk::Widget>> = const { RefCell::new(None) };
 }
 
 /// Lets a view take part in the Tab GTK is moving the focus for
@@ -165,6 +168,12 @@ pub(crate) fn watch(surface: &Rc<Surface>, window: &gtk::Window) {
                     crate::keyboard::layout(keys.current_event().as_ref()),
                 ) =>
             {
+                // A `captureKeys="text"` rule focused an input for this key:
+                // it types there, through the input's own key handling and
+                // input method, as if the input had had the focus.
+                if let Some(input) = TYPE_INTO.take() {
+                    keys.forward(&input);
+                }
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -479,9 +488,24 @@ pub(crate) fn press(
         crate::keyboard::KeyPhase::Down { repeat },
     );
     let captured = crate::keyboard::captures(surface, &view, &key_event, keycode, modifiers, group);
-    key_event.default_prevented = captured;
+    // A typing key under a `captureKeys="text"` rule moves into its input
+    // before any default: the input then receives this very key.
+    let typed_into = !captured
+        && types_text(keyval, modifiers)
+        && crate::keyboard::text_target(surface, &view).is_some_and(|input| {
+            crate::text_input::focus(&input);
+            let focus = window.as_ref().and_then(GtkWindowExt::focus);
+            let moved = focus.as_ref().is_some_and(|focus| {
+                focus.is_ancestor(&input) || focus == input.upcast_ref::<gtk::Widget>()
+            });
+            if moved {
+                TYPE_INTO.set(focus);
+            }
+            moved
+        });
+    key_event.default_prevented = captured || typed_into;
     crate::keyboard::notify(surface, &view, EventKind::KeyDown, key_event);
-    if captured {
+    if captured || typed_into {
         // The view took the key: no menu shortcut, traversal, activation or
         // context menu.
         return true;
@@ -502,6 +526,29 @@ pub(crate) fn press(
     // Tab's traversal is a default too: it is armed here, then GTK moves the
     // focus right after this, in the same dispatch.
     defaults(surface, &view, keyval, modifiers, repeat)
+}
+
+/// Whether a key types text into an input (`captureKeys="text"`): a
+/// printable character or a dead key, with no Control, Alt or Super held.
+/// An input method composes from these same keys. Space stays: it
+/// activates the focused button.
+fn types_text(keyval: gdk::Key, modifiers: gdk::ModifierType) -> bool {
+    use gdk::ModifierType as M;
+    if modifiers.intersects(M::CONTROL_MASK | M::ALT_MASK | M::SUPER_MASK | M::META_MASK)
+        || keyval == gdk::Key::space
+    {
+        return false;
+    }
+    is_dead_key(keyval) || keyval.to_unicode().is_some_and(|c| !c.is_control())
+}
+
+/// Whether `keyval` is one of the dead keys (`dead_grave` through
+/// `dead_greek`), which compose with the next key.
+fn is_dead_key(keyval: gdk::Key) -> bool {
+    {
+        use glib::translate::IntoGlib;
+        (0xfe50..=0xfe8f).contains(&keyval.into_glib())
+    }
 }
 
 /// Whether `keyval` is a Tab (the app's traversal).
@@ -1484,6 +1531,100 @@ mod tests {
                 None,
                 "the focus leaves with the field"
             );
+            window.destroy();
+        });
+    }
+
+    /// `captureKeys="text"` (#2933): a panel (2) holding a stop (3) and a
+    /// field (4). A typing key (a character, a dead key) pressed on the stop
+    /// focuses the field and is handed to it; a shortcut or a named key is
+    /// not, nor is any key without the rule.
+    #[test]
+    fn a_text_rule_moves_typing_keys_into_its_input() {
+        run(|| {
+            let surface = surface();
+            let mut items = Vec::new();
+            for (id, parent, kind, y) in [
+                (2, ROOT_ID, ViewKind::View, 0.0),
+                (3, 2, ViewKind::View, 0.0),
+                (4, 2, ViewKind::Input, 40.0),
+            ] {
+                items.extend([
+                    MountItem::Create { id, kind },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                    MountItem::Frame {
+                        id,
+                        frame: frame(0.0, y, 100.0, 30.0),
+                    },
+                ]);
+            }
+            let mut events = EventMask::default();
+            events.set(EventKind::Press, true);
+            items.push(MountItem::Events { id: 3, events });
+            items.push(MountItem::Input {
+                id: 4,
+                config: Box::default(),
+            });
+            apply(&surface, &items);
+            let window = show(&surface);
+            let stop = view(&surface, 3);
+            let field = view(&surface, 4);
+            assert!(wait_until(|| stop.is_mapped() && field.is_mapped()));
+            let in_field =
+                |w: &gtk::Window| GtkWindowExt::focus(w).is_some_and(|f| f.is_ancestor(&field));
+            let key = |keyval, modifiers| {
+                press(
+                    &surface,
+                    Some(window.upcast_ref()),
+                    None,
+                    keyval,
+                    0,
+                    modifiers,
+                    0,
+                )
+            };
+            let none = gdk::ModifierType::empty();
+
+            // Without the rule a letter stays with the stop.
+            focus(&stop);
+            assert!(stop.is_focus());
+            assert!(!key(gdk::Key::a, none));
+            assert!(stop.is_focus());
+
+            props(&surface, 2, |props| props.key_capture = KeyCapture::Text);
+            // A shortcut, a named key and a space-free control key stay.
+            assert!(!key(gdk::Key::a, gdk::ModifierType::CONTROL_MASK));
+            assert!(!key(gdk::Key::Escape, none));
+            assert!(!key(gdk::Key::Left, none));
+            // Space stays too: it activates the pressable stop instead.
+            key(gdk::Key::space, none);
+            assert!(stop.is_focus());
+            assert!(TYPE_INTO.take().is_none());
+
+            // A dead key moves into the field and is handed to it.
+            assert!(key(gdk::Key::dead_acute, none));
+            assert!(in_field(&window));
+            let target = TYPE_INTO.take().expect("the key goes to the field");
+            assert!(target.is_ancestor(&field));
+
+            // So does a letter, Shift included.
+            focus(&stop);
+            assert!(stop.is_focus());
+            assert!(key(gdk::Key::E, gdk::ModifierType::SHIFT_MASK));
+            assert!(in_field(&window));
+            assert!(TYPE_INTO.take().is_some());
+
+            // A disabled field is skipped: no field, the key stays.
+            focus(&stop);
+            props(&surface, 4, |props| {
+                props.accessibility.state.disabled = true
+            });
+            assert!(!key(gdk::Key::a, none));
+            assert!(stop.is_focus());
             window.destroy();
         });
     }

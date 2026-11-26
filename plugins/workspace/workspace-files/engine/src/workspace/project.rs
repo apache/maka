@@ -55,6 +55,13 @@ impl ResolvedProject {
 }
 
 pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || resolve_selected_sync(&path))
+        .await
+        .map_err(io::Error::other)?
+}
+
+pub fn resolve_selected_sync(path: &Path) -> io::Result<ResolvedProject> {
     if !path.is_absolute() {
         return Err(invalid("project path must be absolute"));
     }
@@ -69,42 +76,38 @@ pub async fn resolve_selected(path: &Path) -> io::Result<ResolvedProject> {
             other => normalized.push(other.as_os_str()),
         }
     }
-    tokio::task::spawn_blocking(move || {
-        let (path, identity) = crate::directory::capture(&normalized)?;
-        let kind = if git::has_repository(&path)? {
-            let repository = git::discover(&path)?;
-            let root = repository
-                .workdir()
-                .ok_or_else(|| invalid("selected Git repository has no worktree"))?
-                .canonicalize()?;
-            if root == path {
-                let common_dir = repository.common_dir().canonicalize()?;
-                ProjectKind::Git {
-                    is_worktree: repository.git_dir().canonicalize()? != common_dir,
-                    common_dir,
-                }
-            } else {
-                ProjectKind::Folder
+    let (path, identity) = crate::directory::capture(&normalized)?;
+    let kind = if git::has_repository(&path)? {
+        let repository = git::discover(&path)?;
+        let root = repository
+            .workdir()
+            .ok_or_else(|| invalid("selected Git repository has no worktree"))?
+            .canonicalize()?;
+        if root == path {
+            let common_dir = repository.common_dir().canonicalize()?;
+            ProjectKind::Git {
+                is_worktree: repository.git_dir().canonicalize()? != common_dir,
+                common_dir,
             }
         } else {
             ProjectKind::Folder
-        };
-        if path.canonicalize()? != path || crate::directory::open(&path, &identity).is_err() {
-            return Err(invalid("workspace directory changed"));
         }
-        host_path(&path)?;
-        let name = default_name(&path, &kind)?;
-        let resolved = ResolvedProject {
-            path,
-            kind,
-            name,
-            observation: identity,
-        };
-        resolved.identity()?;
-        Ok(resolved)
-    })
-    .await
-    .map_err(io::Error::other)?
+    } else {
+        ProjectKind::Folder
+    };
+    if path.canonicalize()? != path || crate::directory::open(&path, &identity).is_err() {
+        return Err(invalid("workspace directory changed"));
+    }
+    host_path(&path)?;
+    let name = default_name(&path, &kind)?;
+    let resolved = ResolvedProject {
+        path,
+        kind,
+        name,
+        observation: identity,
+    };
+    resolved.identity()?;
+    Ok(resolved)
 }
 
 fn default_name(path: &Path, kind: &ProjectKind) -> io::Result<String> {

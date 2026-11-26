@@ -68,6 +68,8 @@ members = [
     "platform/process",
     "plugins/agent/providers",
     "platform/host-runtime",
+    "platform/remote-pairing",
+    "platform/remote-transport",
     "platform/host-js",
     "platform/sandbox",
     "plugins/agent/scheduler/engine",
@@ -78,11 +80,13 @@ members = [
     "plugins/skills/core",
     "plugins/agent/tool-catalog",
     "plugins/agent/tools",
+    "platform/i18n",
     "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "products/eval",
     "tools/mock-ai",
+    "tools/i18n-build",
     "tools/ui-build",
 ]
 resolver = "3"
@@ -96,8 +100,7 @@ publish = false
 [workspace.dependencies]
 zstd = { version = "0.14.3", default-features = false }
 asyncband = "*"
-mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "05a430bc17a3e1b3fa2131524fc52e4319e07298" }
-flatbuffers = "25.12.19"
+mxc-sdk = "1.1.0"
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
@@ -177,6 +180,8 @@ maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
+maka-remote-pairing = { path = "platform/remote-pairing" }
+maka-remote-transport = { path = "platform/remote-transport" }
 maka-host-js = { path = "platform/host-js" }
 maka-sandbox = { path = "platform/sandbox" }
 maka-scheduler = { path = "plugins/agent/scheduler/engine" }
@@ -189,6 +194,8 @@ maka-tool-catalog = { path = "plugins/agent/tool-catalog" }
 maka-tools = { path = "plugins/agent/tools" }
 maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-updater = { path = "products/maka/updater" }
+maka-i18n = { path = "platform/i18n" }
+maka-i18n-build = { path = "tools/i18n-build" }
 maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
@@ -208,6 +215,7 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "io-util"] }
 tokio-tungstenite = "0.30.0"
 tokio-util = { version = "0.7.20", features = ["rt"] }
+toml = "1.1.8"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 tracing = "0.1.44"
 unicode-segmentation = "1.13.3"

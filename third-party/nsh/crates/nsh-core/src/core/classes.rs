@@ -3,10 +3,13 @@
 //! on changes: the appearance, the window size, the layout direction, the
 //! node's interaction states, its group's states or its sibling position.
 //! A sibling-position change restyles, in one pass over the parent's
-//! children (`positions_changed`), only those whose position bits moved;
-//! ordinary restyling queries its position.
+//! children (`positions_changed`), only those whose position bits moved:
+//! once per parent before the next flush (`flush_positions`), however many
+//! children joined or left, so mounting a long list styles each row once.
+//! Ordinary restyling takes the position its node was last styled at while
+//! its parent's children did not move since (`known_position`).
 
-use super::{Core, Key, Kind, NO_KEY, dirty, disabling_changes};
+use super::{Core, Key, Kind, NO_KEY, Positional, dirty, disabling_changes};
 use crate::{
     element::JsEvent,
     geometry::{Points, Size},
@@ -1364,9 +1367,56 @@ impl<M: TextEngine> Core<M> {
         self.restyle_subtree(key, deps::GROUP);
     }
 
+    /// `parent`'s children moved (one joined or left): their positions are
+    /// looked at before the next flush, once ([`Core::flush_positions`]).
+    pub(super) fn queue_positions(&mut self, parent: Key) {
+        let node = &mut self.nodes[parent as usize];
+        if !node.positional.has(Positional::QUEUED) {
+            node.positional |= Positional::QUEUED;
+            self.position_parents.push(parent);
+        }
+    }
+
+    /// Restyles the children whose position moved, of each parent queued
+    /// since ([`Core::queue_positions`]).
+    pub(super) fn flush_positions(&mut self) {
+        if self.position_parents.is_empty() {
+            return;
+        }
+        let mut parents = std::mem::take(&mut self.position_parents);
+        for &parent in &parents {
+            // A released key is vacant, or another node's: that one is
+            // looked at only if it was queued itself.
+            let Some(node) = self.nodes.get_mut(parent as usize) else {
+                continue;
+            };
+            if node.positional.has(Positional::QUEUED) {
+                node.positional.remove(Positional::QUEUED);
+                self.positions_changed(parent);
+            }
+        }
+        parents.clear();
+        if self.position_parents.is_empty() {
+            self.position_parents = parents;
+        }
+    }
+
+    /// `n` more siblings looked at for positions
+    /// ([`super::components::Components::position_work`]).
+    #[cfg(test)]
+    fn positioning(&self, n: usize) {
+        let work = &self.components.position_work;
+        work.set(work.get() + n);
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn positioning(&self, _n: usize) {}
+
     /// Restyles the children of `parent` that depend on their position.
     pub(super) fn positions_changed(&mut self, parent: Key) {
         let children = self.nodes[parent as usize].children.clone();
+        self.positioning(children.len());
         let count = children
             .iter()
             .filter(|&&c| self.is_element_child(c))
@@ -1405,12 +1455,31 @@ impl<M: TextEngine> Core<M> {
             .is_some_and(|c| c.deps() & deps::RTL != 0)
     }
 
+    /// [`position`] bits of `key`: those it was last styled at while its
+    /// parent's children did not move since, so that restyling a row (its
+    /// hover, its press) does not count its siblings; otherwise counted
+    /// ([`Core::position_bits`]).
+    fn known_position(&self, key: Key) -> u8 {
+        let node = &self.nodes[key as usize];
+        let parent = node.parent;
+        if node.position_used != 0
+            && parent != NO_KEY
+            && !self.nodes[parent as usize]
+                .positional
+                .has(Positional::QUEUED)
+        {
+            return node.position_used;
+        }
+        self.position_bits(key)
+    }
+
     /// [`position`] bits of `key` among its parent's element children.
     fn position_bits(&self, key: Key) -> u8 {
         let parent = self.nodes[key as usize].parent;
         if parent == NO_KEY {
             return position::FIRST | position::LAST | position::ONLY | position::ODD;
         }
+        self.positioning(self.nodes[parent as usize].children.len());
         let siblings: Vec<Key> = self.nodes[parent as usize]
             .children
             .iter()
@@ -1742,7 +1811,7 @@ impl<M: TextEngine> Core<M> {
                 Some(group) => self.group_data(key, group).contains(&name),
             };
             let pos = if classes.deps() & deps::POSITION != 0 {
-                position.unwrap_or_else(|| self.position_bits(key))
+                position.unwrap_or_else(|| self.known_position(key))
             } else {
                 0
             };
@@ -1786,9 +1855,13 @@ impl<M: TextEngine> Core<M> {
             self.nodes[key as usize].position_used = if positional { pos } else { 0 };
             if positional {
                 let parent = self.nodes[key as usize].parent;
-                self.nodes[parent as usize].positional_children = true;
+                self.nodes[parent as usize].positional |= Positional::CHILDREN;
             }
         } else {
+            // Without classes it reads no position: the bits it was styled
+            // at before are no longer kept up to date (`known_position`).
+            self.nodes[key as usize].position_used = 0;
+            let node = &self.nodes[key as usize];
             let current = inline_color(&node.inline_style)
                 .or(node.inherited_color)
                 .unwrap_or(Color::BLACK);

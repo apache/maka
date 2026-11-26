@@ -24,6 +24,8 @@ import type {
   ComputerPermissionClient,
   SystemPermissionRequest,
 } from '../../../workbench/app/computerPermissionSetupState';
+import { currentLocale } from '../../../workbench/app/locale';
+import { installWorkbenchLocaleCatalog } from '../../../workbench/app/localeCatalog';
 import { C, bodyTextStyle } from '../../../workbench/app/ui';
 
 type Mode = 'local' | 'remote' | 'old';
@@ -72,31 +74,35 @@ const clientFor = (current: Mode): ComputerPermissionClient => {
   };
 };
 
-mount(() => (
-  <View style={{ flexGrow: 1, padding: 24, backgroundColor: C.background, gap: 12 }}>
-    <Text style={{ ...bodyTextStyle, color: C.text }}>Computer permission preview</Text>
-    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      <Button accessibilityLabel="Local Host" onPress={() => selectMode('local')}>
-        <Text style={{ ...bodyTextStyle, color: C.text }}>Local Host</Text>
-      </Button>
-      <Button accessibilityLabel="Remote Host" onPress={() => selectMode('remote')}>
-        <Text style={{ ...bodyTextStyle, color: C.text }}>Remote Host</Text>
-      </Button>
-      <Button accessibilityLabel="Older request" onPress={() => selectMode('old')}>
-        <Text style={{ ...bodyTextStyle, color: C.text }}>Older request</Text>
-      </Button>
-      <Button accessibilityLabel={result()} onPress={() => {}}>
-        <Text style={{ ...bodyTextStyle, color: C.text }}>{result()}</Text>
-      </Button>
+mount(() => {
+  currentLocale.set('en');
+  installWorkbenchLocaleCatalog();
+  return (
+    <View style={{ flexGrow: 1, padding: 24, backgroundColor: C.background, gap: 12 }}>
+      <Text style={{ ...bodyTextStyle, color: C.text }}>Computer permission preview</Text>
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button accessibilityLabel="Local Host" onPress={() => selectMode('local')}>
+          <Text style={{ ...bodyTextStyle, color: C.text }}>Local Host</Text>
+        </Button>
+        <Button accessibilityLabel="Remote Host" onPress={() => selectMode('remote')}>
+          <Text style={{ ...bodyTextStyle, color: C.text }}>Remote Host</Text>
+        </Button>
+        <Button accessibilityLabel="Older request" onPress={() => selectMode('old')}>
+          <Text style={{ ...bodyTextStyle, color: C.text }}>Older request</Text>
+        </Button>
+        <Button accessibilityLabel={result()} onPress={() => {}}>
+          <Text style={{ ...bodyTextStyle, color: C.text }}>{result()}</Text>
+        </Button>
+      </View>
+      <Each of={[mode()]} key={(current) => current}>
+        {(current) => (
+          <ComputerPermissionSetup
+            request={request}
+            client={clientFor(current())}
+            presentation="inline"
+          />
+        )}
+      </Each>
     </View>
-    <Each of={[mode()]} key={(current) => current}>
-      {(current) => (
-        <ComputerPermissionSetup
-          request={request}
-          client={clientFor(current())}
-          presentation="inline"
-        />
-      )}
-    </Each>
-  </View>
-));
+  );
+});

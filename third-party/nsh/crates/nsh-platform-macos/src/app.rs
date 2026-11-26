@@ -494,7 +494,6 @@ impl AppView {
             clipboard: None,
             host: options.host.clone(),
             picker: None,
-            speech: None,
             audio: None,
             // The app's windows of its own are this backend's.
             windows: None,
@@ -656,7 +655,6 @@ fn initial_environment() -> Environment {
         file_requests: true,
         native_focus_scopes: true,
         fallback_key_bindings: true,
-        speech: true,
         notifications: true,
         audio: true,
         web_input: true,

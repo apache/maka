@@ -64,6 +64,11 @@ enum Input {
         task_id: String,
         revision: u64,
     },
+    TestScript {
+        source: String,
+        /// Previous script state as JSON (at most 64 KiB compact). Omit or pass null to start without state.
+        state: Option<Value>,
+    },
 }
 #[derive(Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -77,7 +82,15 @@ impl Scheduler {
     pub fn tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         let mut tools = vec![ToolRegistration {
             definition: ToolDefinition { provider: None, name: "ScheduledTask".into(),
-                description: "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. For a model connection, the default is steering; choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. Use a time schedule or a script schedule. Scripts are ordinary JavaScript or TypeScript programs run by Deno from the conversation workspace, under its process sandbox. Scripts can import npm:, jsr:, and node: modules directly. Print true or false on the last stdout line. A script fires when the result becomes true and rearms when false. The default script interval is 60 seconds. A new discovery plan waits for user approval. While handling an approved discovery's report, the Bot can schedule a one-time follow-up using the same tool profile and authority. Set workerTools when requesting a specific profile. Check approved in the result. If false, ask the user to approve the plan in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Only the user can resume a discovery plan they paused. Times are Unix milliseconds; timezone is an IANA name. List returns tasks and revisions.".into(),
+                description: concat!(
+                    "Manage this conversation's automations. Creation activates the rule immediately. When it triggers, intentBody is sent to the agent as the message body. ",
+                    "For a model connection, the default is steering. Choose followup to wait for the next turn, or agent_run for a new conversation. To wake this conversation later, create an automation with the message you want to receive, then end the current turn. For external agents, the trigger starts a new turn in the same conversation. ",
+                    "Use a time schedule or a sandboxed Deno script. Scripts run JavaScript or TypeScript in the conversation workspace, support npm:, jsr:, and node: imports, and default to 60-second checks. ",
+                    "Print true, false, or JSON.stringify({trigger, dedupeKey, summary, data, state}) on the last non-empty stdout line. Only the boolean trigger is required in an object. Boolean checks fire on the first true and rearm on false. A true keyed check fires when its key differs from the last fired key, even across false checks. Summary and data accompany the message. ",
+                    "Read previous JSON state from MAKA_AUTOMATION_STATE. Omit state to keep it or return null to clear it. Preview with mode test_script, source and optional state (executes once without saving a task). ",
+                    "A new discovery plan waits for user approval. While handling an approved discovery's report, the Bot can schedule a one-time follow-up using the same tool profile and authority. Set workerTools when requesting a specific profile. Check approved in the result. If false, ask the user to approve the plan in Proactive Discovery. Keep successful background scheduling confirmations internal and share material findings separately. Only the user can resume a discovery plan they paused. ",
+                    "Times are Unix milliseconds and timezone is an IANA name. List returns tasks and revisions.",
+                ).into(),
                 input_schema: serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).expect("task tool schema"),
                 output_schema: None, freeform: None },
             nesting: ToolNesting::Nestable, semantics: ToolSemantics::ExclusiveStep,
@@ -126,30 +139,34 @@ impl ToolPreparer for Scheduler {
             use maka_agent_facts::display::Text;
             let title = match &input {
                 Input::Create { title, .. } => {
-                    let (en, zh, tw) = ("Create automation", "创建自动化", "建立自動化");
                     if let Some(title) = Text::single_line(title) {
                         let title = title.fallback;
-                        Text::localized(
-                            &format!("{en} · {title}"),
-                            &format!("{zh} · {title}"),
-                            &format!("{tw} · {title}"),
-                        )
+                        Text::for_locales(|locale| {
+                            maka_agent_facts::i18n::tool_title::create_automation_titled(
+                                locale, &title,
+                            )
+                        })
                     } else {
-                        Text::localized(en, zh, tw)
+                        Text::for_locales(|locale| {
+                            maka_agent_facts::i18n::tool_title::create_automation(locale).to_owned()
+                        })
                     }
                 }
-                Input::List { .. } => {
-                    Text::localized("List automations", "列出自动化", "列出自動化")
-                }
-                Input::Pause { .. } => {
-                    Text::localized("Pause automation", "暂停自动化", "暫停自動化")
-                }
-                Input::Resume { .. } => {
-                    Text::localized("Resume automation", "恢复自动化", "恢復自動化")
-                }
-                Input::Delete { .. } => {
-                    Text::localized("Delete automation", "删除自动化", "刪除自動化")
-                }
+                Input::List { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::list_automations(locale).to_owned()
+                }),
+                Input::TestScript { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::test_automation_script(locale).to_owned()
+                }),
+                Input::Pause { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::pause_automation(locale).to_owned()
+                }),
+                Input::Resume { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::resume_automation(locale).to_owned()
+                }),
+                Input::Delete { .. } => Text::for_locales(|locale| {
+                    maka_agent_facts::i18n::tool_title::delete_automation(locale).to_owned()
+                }),
             };
             Ok(PreparedEffect::new(move |cancellation| {
                 Box::pin(async move {
@@ -161,11 +178,11 @@ impl ToolPreparer for Scheduler {
                         return Err(failed("Scheduled tasks unavailable"));
                     }
                     let captured = owner.clone();
-                    let job = owner
-                        .workers
-                        .spawn(async move { captured.scheduled_tool(input, context).await });
+                    let job = owner.workers.spawn(async move {
+                        captured.scheduled_tool(input, context, cancellation).await
+                    });
                     drop(runs);
-                    let value = job.await.map_err(failed)?.map_err(failed)?;
+                    let value = job.await.map_err(failed)??;
                     Ok(value.into())
                 })
             })
@@ -289,26 +306,57 @@ impl Owner {
         &self,
         input: Input,
         context: ToolCallContext,
-    ) -> Result<Value, String> {
-        let _gate = self.scheduler.gate.lock().await;
-        let session = self
-            .tool_store(&context)?
-            .get::<StoredSessionConfiguration>()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or("agent_session_unavailable")?;
-        let view = self
-            .durable
-            .frontier(context.execution.run_id)
-            .await
-            .map_err(reason)?;
-        if view.spec.session_id != context.execution.session_id
-            || view.spec.turn_id != context.execution.turn_id
-            || view.stopped
-            || view.terminal.is_some()
-        {
-            return Err("scheduler_invocation_closed".into());
+        cancellation: CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let _gate = match &input {
+            Input::TestScript { .. } => None,
+            _ => Some(self.scheduler.gate.lock().await),
+        };
+        let (view, session) = async {
+            let session = self
+                .tool_store(&context)?
+                .get::<StoredSessionConfiguration>()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("agent_session_unavailable")?;
+            let view = self
+                .durable
+                .frontier(context.execution.run_id)
+                .await
+                .map_err(reason)?;
+            if view.spec.session_id != context.execution.session_id
+                || view.spec.turn_id != context.execution.turn_id
+                || view.stopped
+                || view.terminal.is_some()
+            {
+                return Err("scheduler_invocation_closed".into());
+            }
+            Ok::<_, String>((view, session))
         }
+        .await
+        .map_err(failed)?;
+        let current_session = || {
+            let session = resolve_session(session)?;
+            if session.archived
+                || session.configuration.permission_basis() != view.spec.permission_basis
+            {
+                return Err("scheduler_authorization_changed".to_string());
+            }
+            Ok(session)
+        };
+        if let Input::TestScript { source, state } = input {
+            let session = current_session().map_err(failed)?;
+            return self
+                .test_script(
+                    &session.configuration,
+                    &view.spec.permission_ceiling.sandbox,
+                    source,
+                    state,
+                    cancellation,
+                )
+                .await;
+        }
+        let result: Result<Value, String> = async {
         let identity = hex::encode(Sha256::digest(
             serde_json::to_vec(&(&context.execution, &context.operation_id)).map_err(reason)?,
         ));
@@ -350,12 +398,7 @@ impl Owner {
                 expires_at,
             } => {
                 let (effect, authorization) = {
-                    let session = resolve_session(session)?;
-                    if session.archived
-                        || session.configuration.permission_basis() != view.spec.permission_basis
-                    {
-                        return Err("scheduler_authorization_changed".into());
-                    }
+                    let session = current_session()?;
                     let basis = {
                         let runs = self.runs.state().await;
                         runs.controls
@@ -561,7 +604,7 @@ impl Owner {
                 };
                 (task_id.clone(), plan)
             }
-            Input::List { .. } => unreachable!(),
+            Input::List { .. } | Input::TestScript { .. } => unreachable!(),
         };
         let revision = catalog
             .plans
@@ -588,8 +631,57 @@ impl Owner {
             .await?;
         self.scheduler.wake.notify_one();
         Ok(result)
+        }
+        .await;
+        result.map_err(failed)
     }
 }
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn scheduled_task_uses_mode_for_test_script_with_object_state_schema_and_specific_errors() {
+        let schema = maka_tool_catalog::input::inline_refs(
+            serde_json::to_value(schemars::schema_for!(ToolRequest<Input>)).unwrap(),
+        );
+        let variants = schema["properties"]["request"]["oneOf"]
+            .as_array()
+            .expect("flat oneOf schema for mode-tagged Input");
+        let test_script = variants
+            .iter()
+            .find(|variant| variant["properties"]["mode"]["const"] == "test_script")
+            .expect("test_script mode variant");
+        assert!(
+            test_script["properties"]["state"].is_object(),
+            "state property must be a schema object, got {}",
+            test_script["properties"]["state"]
+        );
+
+        assert!(
+            serde_json::from_value::<ToolRequest<Input>>(json!({
+                "request": { "mode": "test_script", "source": "console.log(true)" }
+            }))
+            .is_ok()
+        );
+        let missing = serde_json::from_value::<ToolRequest<Input>>(json!({
+            "request": { "mode": "create", "title": "t" }
+        }))
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(missing.contains("intentBody"), "{missing}");
+        let unknown = serde_json::from_value::<ToolRequest<Input>>(json!({
+            "request": { "mode": "list", "extra": 1 }
+        }))
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(unknown.contains("extra"), "{unknown}");
+    }
 }

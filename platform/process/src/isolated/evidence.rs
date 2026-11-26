@@ -17,14 +17,11 @@
  * under the License.
  */
 
-#[cfg(target_os = "macos")]
 use super::ChildExited;
 use super::{BaselineReader, Descriptor, Error, SnapshotProof, TaskReceipt};
-#[cfg(unix)]
 use super::{Closure, Started};
 use std::{fs::File, io, path::PathBuf};
 
-#[cfg(target_os = "macos")]
 mod watch {
     use super::*;
     use notify::{Config, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -110,7 +107,6 @@ mod watch {
             let path = descriptor.resource_ref.clone();
             let runtime = tokio::runtime::Handle::current();
             tokio::task::spawn_blocking(move || {
-                use std::os::unix::fs::MetadataExt;
                 let pinned = Arc::new(pin(&path)?);
                 let owner = path.join("owner");
                 let target = owner.join(match interest {
@@ -148,9 +144,7 @@ mod watch {
                     runtime,
                 };
                 let checked = (|| {
-                    let original = pinned.owner.metadata()?;
-                    let current = pin(&path)?.owner.metadata()?;
-                    if original.dev() != current.dev() || original.ino() != current.ino() {
+                    if file_identity(&pinned.owner)? != file_identity(&pin(&path)?.owner)? {
                         return Err(invalid("original evidence watch directory changed"));
                     }
                     Ok(())
@@ -229,34 +223,7 @@ mod watch {
         }
     }
 }
-#[cfg(target_os = "macos")]
 pub use watch::EvidenceWatch;
-#[cfg(not(target_os = "macos"))]
-pub struct EvidenceWatch {
-    _private: (),
-}
-#[cfg(not(target_os = "macos"))]
-impl EvidenceWatch {
-    pub async fn open(_: &Descriptor, _: EvidenceInterest) -> Result<Self, Error> {
-        Err(Error::IsolationUnavailable(
-            "native evidence notification unavailable".into(),
-        ))
-    }
-    pub async fn wait(&mut self) -> Result<(), Error> {
-        Err(Error::IsolationUnavailable(
-            "native evidence notification unavailable".into(),
-        ))
-    }
-    pub async fn changed(&mut self) -> Result<(), Error> {
-        Err(Error::IsolationUnavailable(
-            "native task evidence unavailable".into(),
-        ))
-    }
-    pub async fn close(self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy)]
 pub enum EvidenceInterest {
     ChildExited,
@@ -280,31 +247,21 @@ impl CleanupEvidence {
         }
     }
 }
-#[cfg(unix)]
 pub(super) struct Pinned {
-    _resource: File,
+    pub(super) resource: File,
     pub(super) owner: File,
     pub(super) path: PathBuf,
 }
-#[cfg(unix)]
 pub(super) fn pin(path: &std::path::Path) -> io::Result<Pinned> {
-    use rustix::fs::{Mode, OFlags, openat};
     let resource = open_resource(path)?;
-    let owner: File = openat(
-        &resource,
-        "owner",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?
-    .into();
+    let owner = directory(&resource, "owner")?;
     check_directory(&owner, false)?;
     Ok(Pinned {
-        _resource: resource,
+        resource,
         owner,
         path: path.to_owned(),
     })
 }
-#[cfg(target_os = "macos")]
 fn snapshot(pinned: &Pinned) -> io::Result<Option<SnapshotProof>> {
     let proof: Option<SnapshotProof> = read_json(open_regular(&pinned.owner, "snapshot.json")?)?;
     if proof
@@ -315,7 +272,6 @@ fn snapshot(pinned: &Pinned) -> io::Result<Option<SnapshotProof>> {
     }
     Ok(proof)
 }
-#[cfg(unix)]
 fn task_receipt(pinned: &Pinned) -> io::Result<TaskReceipt> {
     let started: Started = read_json(open_regular(&pinned.owner, "started.json")?)?;
     if started.helper_pid == 0 {
@@ -323,16 +279,9 @@ fn task_receipt(pinned: &Pinned) -> io::Result<TaskReceipt> {
     }
     read_json(open_regular(&pinned.owner, "task.json")?)
 }
-#[cfg(unix)]
 pub(super) fn snapshot_identity(owner: &File) -> io::Result<super::FileIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = open_regular(owner, "snapshot.json")?.metadata()?;
-    Ok(super::FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
+    file_identity(&open_regular(owner, "snapshot.json")?)
 }
-#[cfg(unix)]
 fn read_closure(pinned: &Pinned) -> io::Result<Option<Closure>> {
     let Some(file) = open_optional(&pinned.owner, "closure.json")? else {
         return Ok(None);
@@ -355,7 +304,6 @@ fn read_closure(pinned: &Pinned) -> io::Result<Option<Closure>> {
     }
     Ok(Some(closure))
 }
-#[cfg(target_os = "macos")]
 fn read_cleanup(pinned: &Pinned) -> io::Result<Option<CleanupEvidence>> {
     let Some(closure) = read_closure(pinned)? else {
         return Ok(None);
@@ -375,7 +323,6 @@ fn read_cleanup(pinned: &Pinned) -> io::Result<Option<CleanupEvidence>> {
         _ => Err(invalid("original task group or streams are not closed")),
     }
 }
-#[cfg(unix)]
 pub(super) fn group_closed(resource: &std::path::Path) -> io::Result<bool> {
     let pinned = pin(resource)?;
     if !matches!(read_closure(&pinned)?, Some(Closure::GroupClosed { .. })) {
@@ -386,22 +333,13 @@ pub(super) fn group_closed(resource: &std::path::Path) -> io::Result<bool> {
 }
 pub async fn cleanup_evidence(descriptor: &Descriptor) -> Result<Option<CleanupEvidence>, Error> {
     let path = descriptor.resource_ref.clone();
-    #[cfg(target_os = "macos")]
     {
         tokio::task::spawn_blocking(move || read_cleanup(&pin(&path)?))
             .await
             .map_err(io::Error::other)?
             .map_err(Error::Io)
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-        Err(Error::IsolationUnavailable(
-            "native task evidence unavailable".into(),
-        ))
-    }
 }
-#[cfg(target_os = "macos")]
 fn ready(pinned: &Pinned, interest: EvidenceInterest) -> io::Result<bool> {
     match interest {
         EvidenceInterest::Cleanup => Ok(read_closure(pinned)?.is_some()),
@@ -453,7 +391,7 @@ impl ClosedEvidence {
 /// The caller must select the descriptor from its admitted original resource
 /// receipt and independently validate the original native protocol identities.
 pub async fn closed_evidence(descriptor: &Descriptor) -> Result<Option<ClosedEvidence>, Error> {
-    if !cfg!(target_os = "macos") {
+    if !super::os::SUPPORTED {
         return Err(Error::IsolationUnavailable(
             "native task evidence is unavailable on this platform".into(),
         ));
@@ -465,13 +403,12 @@ pub async fn closed_evidence(descriptor: &Descriptor) -> Result<Option<ClosedEvi
         .map_err(Error::Io)
 }
 
-#[cfg(unix)]
 fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
-    use rustix::fs::{Mode, OFlags, openat};
-    let resource_fd = open_resource(&resource)?;
-    let directories = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let owner: File = openat(&resource_fd, "owner", directories, Mode::empty())?.into();
-    check_directory(&owner, false)?;
+    let Pinned {
+        resource: resource_fd,
+        owner,
+        ..
+    } = pin(&resource)?;
 
     let Some(closure_file) = open_optional(&owner, "closure.json")? else {
         return Ok(None);
@@ -540,9 +477,7 @@ fn read_closed(resource: PathBuf) -> io::Result<Option<ClosedEvidence>> {
     }))
 }
 
-#[cfg(unix)]
 pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
-    use rustix::fs::{Mode, OFlags, open, openat};
     let namespace = maka_sandbox::native_task_namespace()?;
     let name = resource
         .file_name()
@@ -553,38 +488,63 @@ pub(super) fn open_resource(resource: &std::path::Path) -> io::Result<File> {
         .ok_or_else(|| invalid("invalid task resource name"))?;
     if !resource.is_absolute()
         || resource.parent() != Some(namespace.as_path())
-        || namespace.canonicalize()? != namespace
-        || resource.canonicalize()? != resource
+        || maka_sandbox::canonical_policy_path(&namespace)? != namespace
+        || maka_sandbox::canonical_policy_path(resource)? != resource
     {
         return Err(invalid(
             "task evidence must name its canonical private namespace resource",
         ));
     }
-    let directories = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let namespace_fd: File = open(&namespace, directories, Mode::empty())?.into();
+    #[cfg(unix)]
+    let namespace_fd: File =
+        rustix::fs::open(&namespace, directory_flags(), rustix::fs::Mode::empty())?.into();
+    #[cfg(windows)]
+    let namespace_fd = maka_event_log::root::windows::open_nofollow(&namespace, false)?;
     check_directory(&namespace_fd, false)?;
-    let resource_fd: File = openat(&namespace_fd, name, directories, Mode::empty())?.into();
+    let resource_fd: File = directory(&namespace_fd, name)?;
     check_directory(&resource_fd, true)?;
     Ok(resource_fd)
 }
-#[cfg(not(unix))]
-pub(super) fn open_resource(_: &std::path::Path) -> io::Result<File> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "native task resource unavailable",
-    ))
+#[cfg(unix)]
+pub(super) fn directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
-
-#[cfg(not(unix))]
-fn read_closed(_: PathBuf) -> io::Result<Option<ClosedEvidence>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "native task evidence unavailable",
-    ))
+fn directory(parent: &File, name: &str) -> io::Result<File> {
+    #[cfg(unix)]
+    return Ok(
+        rustix::fs::openat(parent, name, directory_flags(), rustix::fs::Mode::empty())?.into(),
+    );
+    #[cfg(windows)]
+    super::fs::directory(parent, name.as_ref())
+}
+fn file_identity(file: &File) -> io::Result<super::FileIdentity> {
+    #[cfg(unix)]
+    return Ok(super::snapshot::identity(&file.metadata()?));
+    #[cfg(windows)]
+    super::fs::identity(file)
+}
+#[cfg(windows)]
+pub(super) fn check_directory(file: &File, _: bool) -> io::Result<()> {
+    if !file.metadata()?.is_dir() {
+        return Err(invalid("expected private directory"));
+    }
+    maka_event_log::root::windows::validate_protected_private(file)
+}
+#[cfg(windows)]
+pub(super) fn open_optional(owner: &File, name: &str) -> io::Result<Option<File>> {
+    match super::fs::read(owner, name.as_ref(), false) {
+        Ok(file) => {
+            super::fs::private_file(&file)?;
+            Ok(Some(file))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(unix)]
-fn check_directory(file: &File, private: bool) -> io::Result<()> {
+pub(super) fn check_directory(file: &File, private: bool) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     if !metadata.is_dir()
@@ -623,7 +583,6 @@ pub(super) fn open_optional(owner: &File, name: &str) -> io::Result<Option<File>
     }
     Ok(Some(file))
 }
-#[cfg(unix)]
 pub(super) fn open_regular(owner: &File, name: &str) -> io::Result<File> {
     open_optional(owner, name)?.ok_or_else(|| {
         io::Error::new(
@@ -632,9 +591,8 @@ pub(super) fn open_regular(owner: &File, name: &str) -> io::Result<File> {
         )
     })
 }
-#[cfg(unix)]
 pub(super) fn read_json<T: serde::de::DeserializeOwned>(file: File) -> io::Result<T> {
-    serde_json::from_reader(file).map_err(io::Error::other)
+    serde_json::from_reader(io::BufReader::new(file)).map_err(io::Error::other)
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

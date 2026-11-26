@@ -51,11 +51,6 @@ const DEFAULT_CONTRAST: f32 = 75.0;
 /// The CIE L* distance from black, or from the page's foreground, within
 /// which a neutral color is the default foreground whatever its ground.
 const NEAR_DEFAULT: f32 = 4.0;
-/// How far a hovered control's band mixes the terminal's background toward
-/// its foreground.
-const HOVER_SHARE: f32 = 0.10;
-/// How far a pressed control's band mixes it.
-const PRESS_SHARE: f32 = 0.18;
 /// Hue bands (degrees, upper bounds) and the accent each one reads as.
 const HUE_BANDS: [(f32, Color); 6] = [
     (15.0, Color::Red),
@@ -318,50 +313,28 @@ pub(crate) fn stands_out(fill: nsh_core::Color, ground: Ground) -> Option<Color>
     (contrast >= STANDS_OUT).then_some(Color::Reset)
 }
 
-/// The backgrounds of hovered and pressed controls: the standard bright
-/// black for hover at 16 colors, none without colors.
+/// The background a hovered control takes where the terminal has no
+/// surfaces to step from: the standard colors' dark gray at 16 colors, and
+/// none where the terminal does not tell its colors (or shows none).
+///
+/// A terminal that tells its colors, at 256 or more, gets the ramp's bands
+/// instead: `Ramp::new` is `Some` for it, so `mark_surface` draws the
+/// states and a bandless band is never asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct Bands {
     pub(crate) hover: Option<Color>,
-    pub(crate) press: Option<Color>,
 }
 
 impl Bands {
-    /// The bands on a terminal whose own colors are `background` and
-    /// `foreground` (from OSC 11 and 10), else black and white (white and
-    /// black in the light scheme).
-    pub(crate) fn new(
-        scheme: ColorScheme,
-        depth: ColorDepth,
-        background: Option<Rgb>,
-        foreground: Option<Rgb>,
-    ) -> Self {
+    pub(crate) fn new(depth: ColorDepth) -> Self {
         if depth == ColorDepth::Ansi16 {
             // The standard colors have no step between the background and
-            // the text: a hovered control is on the bright black (gray) one,
-            // a pressed one reversed.
+            // the text: a hovered control is on the bright black (gray) one.
             return Self {
                 hover: Some(Color::DarkGray),
-                press: None,
             };
         }
-        if !matches!(depth, ColorDepth::TrueColor | ColorDepth::Ansi256) {
-            return Self::default();
-        }
-        let page = Ground::page(scheme, depth);
-        let background = background.unwrap_or(page.rgb);
-        let foreground = foreground.unwrap_or(page.foreground);
-        let band = |share: f32| {
-            let rgb = std::array::from_fn(|i| {
-                let (b, f) = (f32::from(background[i]), f32::from(foreground[i]));
-                (b + (f - b) * share).round() as u8
-            });
-            Some(convert(rgb, depth))
-        };
-        Self {
-            hover: band(HOVER_SHARE),
-            press: band(PRESS_SHARE),
-        }
+        Self::default()
     }
 }
 
@@ -1085,6 +1058,43 @@ pub(crate) fn strip_colors(buffer: &mut Buffer, area: Rect) {
     }
 }
 
+/// The accent of a terminal that shows any color: an indigo apart from
+/// the hues that mean something (green done, red destructive, yellow
+/// warning), the same in every terminal theme, lighter on a dark page.
+/// Contrast with the page: 6.5:1 on `#1e1e2e`, 6.3:1 on white.
+pub(crate) const BRAND_ACCENT: [Rgb; 2] = [[0x8f, 0x9b, 0xff], [0x4f, 0x46, 0xe5]];
+
+/// Paints the platform's accent ([`crate::render::ACCENT`], ANSI blue, the
+/// fallback of 16 and 256 colors) in [`BRAND_ACCENT`] for a terminal of
+/// true color, where only the platform draws ANSI blue (an app's colors
+/// are RGB there). Text on an accent fill (a menu's open title, a chip)
+/// turns dark on the light indigo and white on the deep one, as the page's
+/// own text would read poorly on either.
+pub(crate) fn brand_accent(buffer: &mut Buffer, area: Rect, scheme: ColorScheme) {
+    let [r, g, b] = BRAND_ACCENT[usize::from(scheme == ColorScheme::Light)];
+    let brand = Color::Rgb(r, g, b);
+    let on = match scheme {
+        ColorScheme::Light => Color::Rgb(0xff, 0xff, 0xff),
+        _ => Color::Rgb(0x11, 0x11, 0x1b),
+    };
+    let accent = crate::render::ACCENT;
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.fg == accent {
+                cell.fg = brand;
+            }
+            if cell.bg == accent {
+                cell.bg = brand;
+                cell.fg = on;
+            }
+            if cell.underline_color == accent {
+                cell.underline_color = brand;
+            }
+        }
+    }
+}
+
 /// The terminal color closest to `rgb` that `depth` can show.
 pub(crate) fn convert(rgb: Rgb, depth: ColorDepth) -> Color {
     match depth {
@@ -1163,6 +1173,37 @@ fn distance(a: Rgb, b: Rgb) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn true_color_paints_the_accent_in_the_brand_indigo_and_its_text_to_read() {
+        for (scheme, brand, on) in [
+            (
+                ColorScheme::Dark,
+                Color::Rgb(0x8f, 0x9b, 0xff),
+                Color::Rgb(0x11, 0x11, 0x1b),
+            ),
+            (
+                ColorScheme::Light,
+                Color::Rgb(0x4f, 0x46, 0xe5),
+                Color::Rgb(0xff, 0xff, 0xff),
+            ),
+        ] {
+            let area = super::Rect::new(0, 0, 3, 1);
+            let mut buffer = super::Buffer::empty(area);
+            buffer[(0, 0)].fg = crate::render::ACCENT;
+            buffer[(1, 0)].bg = crate::render::ACCENT;
+            buffer[(1, 0)].fg = Color::White;
+            buffer[(2, 0)].fg = Color::Red;
+            super::brand_accent(&mut buffer, area, scheme);
+            assert_eq!(buffer[(0, 0)].fg, brand, "a line or text in the accent");
+            assert_eq!(
+                (buffer[(1, 0)].bg, buffer[(1, 0)].fg),
+                (brand, on),
+                "a fill"
+            );
+            assert_eq!(buffer[(2, 0)].fg, Color::Red, "other colors stay");
+        }
+    }
+
     use nsh_core::{Color as Rgba, platform::ColorScheme};
     use ratatui_core::style::{Color, Modifier};
 
@@ -1310,24 +1351,18 @@ mod tests {
     }
 
     #[test]
-    fn hover_and_press_bands_mix_the_terminals_background_toward_its_foreground() {
-        let bands = Bands::new(ColorScheme::Dark, ColorDepth::TrueColor, None, None);
-        assert_eq!(bands.hover, Some(Color::Rgb(26, 26, 26)));
-        assert_eq!(bands.press, Some(Color::Rgb(46, 46, 46)));
-        let known = Bands::new(
-            ColorScheme::Dark,
+    fn a_bandless_hover_band_is_the_standard_gray_or_nothing() {
+        // The 16 colors have no faint step: a hover is their dark gray.
+        assert_eq!(Bands::new(ColorDepth::Ansi16).hover, Some(Color::DarkGray));
+        // Everywhere else a band would be mixed from a page the terminal
+        // did not report, or the ramp's own bands are drawn instead.
+        for depth in [
             ColorDepth::TrueColor,
-            Some([0x10, 0x20, 0x30]),
-            Some([0xf0, 0xf0, 0xf0]),
-        );
-        assert_eq!(known.hover, Some(Color::Rgb(0x26, 0x35, 0x43)));
-        let light = Bands::new(ColorScheme::Light, ColorDepth::Ansi256, None, None);
-        assert!(matches!(light.hover, Some(Color::Indexed(_))));
-        // The 16 colors have no faint step: a hover is their dark gray,
-        // a press has no band (reverse video).
-        let few = Bands::new(ColorScheme::Dark, ColorDepth::Ansi16, None, None);
-        assert_eq!(few.hover, Some(Color::DarkGray));
-        assert_eq!(few.press, None);
+            ColorDepth::Ansi256,
+            ColorDepth::Monochrome,
+        ] {
+            assert_eq!(Bands::new(depth).hover, None, "{depth:?}");
+        }
     }
 
     #[test]

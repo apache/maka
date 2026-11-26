@@ -37,6 +37,10 @@ import { tr } from './locale';
 import {
   C,
   captionTextStyle,
+  composerIconSlot,
+  composerToolbarChevronSize,
+  composerToolbarControlStyle,
+  composerToolbarIconSize,
   controlDisabledStyle,
   floatingStyle,
   menuDetailTextStyle,
@@ -44,7 +48,6 @@ import {
   menuRowHoverStyle,
   menuRowStyle,
   menuSeparatorStyle,
-  toolbarControlStyle,
 } from './ui';
 
 const accessChoices: AgentWorkspaceAccess[] = [
@@ -88,14 +91,19 @@ export function SessionPermissionsSelect(props: {
   owner: SessionPermissions | null;
   pending?: PendingComposerPermissions | null;
 }) {
+  const iconOnly = () =>
+    useToolbarCompact() &&
+    (props.pending !== null && props.pending !== undefined
+      ? true
+      : props.owner?.snapshot()?.permissions.access !== undefined);
   return (
-    <View style={{ minWidth: 0, flexShrink: 1 }}>
+    <View style={{ minWidth: 0, flexShrink: iconOnly() ? 0 : 1 }}>
       <If when={props.owner === null && !props.pending}>
         <Button
           disabled
           accessibilityLabel={tr('Sandbox and approvals')}
           tooltip={textTooltip(() => tr('Choose a conversation to change sandbox settings.'))}
-          style={toolbarControlStyle}
+          style={composerToolbarControlStyle}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Sandbox')}</Text>
@@ -175,6 +183,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
   };
   const access = () => owner.snapshot()?.permissions.access ?? null;
   const tone = () => (access() === 'danger_full_access' ? C.warning : C.secondary);
+  const iconOnly = () => useToolbarCompact() && access() !== null;
   return (
     <Popover
       open={open()}
@@ -185,7 +194,7 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
       align="start"
       offset={8}
       margin={8}
-      style={{ minWidth: 0, flexShrink: 1 }}
+      style={{ minWidth: 0, flexShrink: iconOnly() ? 0 : 1, maxWidth: '100%' }}
       popupStyle={{
         ...floatingStyle(),
         width: 340,
@@ -205,28 +214,38 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                   : tr('Sandbox and approvals')
                 : tr('Loading sandbox settings…'),
           )}
-          style={{
-            ...toolbarControlStyle,
-            minWidth: 0,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-          }}
+          style={
+            iconOnly()
+              ? { ...composerIconSlot, borderRadius: 8 }
+              : {
+                  ...composerToolbarControlStyle,
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                }
+          }
           hoverStyle={{ backgroundColor: C.line }}
           focusStyle={{ backgroundColor: C.line }}
           disabledStyle={controlDisabledStyle}
         >
           <If when={access()}>
-            <Icon name={accessIcon[access()!]} color={tone()} />
+            <Icon name={accessIcon[access()!]} size={composerToolbarIconSize} color={tone()} />
           </If>
-          <If when={!useToolbarCompact() || !access()}>
+          <If when={!iconOnly()}>
             <Text
-              style={[{ ...captionTextStyle, color: tone(), flexShrink: 1 }, { numberOfLines: 1 }]}
+              style={[
+                { ...captionTextStyle, color: tone(), minWidth: 0, flexShrink: 1 },
+                { numberOfLines: 1, textOverflow: 'ellipsis' },
+              ]}
             >
               {access() ? accessLabel(access()!) : tr('Sandbox')}
             </Text>
           </If>
-          <Icon name="down" color={C.muted} />
+          <If when={!iconOnly()}>
+            <Icon name="down" size={composerToolbarChevronSize} color={C.muted} />
+          </If>
         </Button>
       }
     >

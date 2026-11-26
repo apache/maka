@@ -1,6 +1,6 @@
 ---
 title: Reactivity
-description: Signals, computed values, effects, resources, batch, untracked, cleanup and context in Rust and TSX - how NSH updates exactly what changed, and the mistakes to avoid.
+description: Signals, computed values, effects, resources, batch, untracked, cleanup and context in TSX and Rust - how NSH updates exactly what changed, and the mistakes to avoid.
 order: 31
 group: ui
 demo: guide-reactivity
@@ -12,25 +12,17 @@ NSH updates the UI with **signals**: values that know who reads them. When a sig
 
 Rust components take everything on this page from the prelude; TSX imports it from `nsh`:
 
-```rust tabs
-use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
-```
-
 ```tsx tabs
 import { batch, cleanup, computed, context, effect, resource, signal, untracked } from "nsh";
+```
+
+```rust tabs
+use nsh_core::prelude::*;   // signal, computed, effect, resource, batch, untracked, cleanup, provide_context, use_context
 ```
 
 ## Signals
 
 `signal(value)` makes a signal. Read it with `get()` in Rust, by calling it in TSX; `set` and `update` write it:
-
-```rust tabs
-let count = signal(0);
-
-count.get();                    // 0, and tracks the read
-count.set(5);
-count.update(|n| *n += 1);      // 6
-```
 
 ```tsx tabs
 const count = signal(0);
@@ -40,16 +32,15 @@ count.set(5);
 count.update((n) => n + 1);  // 6
 ```
 
-A read inside a tracking scope (a binding, `computed`, `effect`) subscribes that scope to the signal. A write notifies the subscribers when the value changed: compared with `PartialEq` in Rust, with `===` in TSX.
-
 ```rust tabs
-fn counter() -> impl IntoElement {
-    let count = signal(0);
-    view()
-        .on_press(move || count.update(|n| *n += 1))
-        .child(text(move || format!("Tapped {} times", count.get())))
-}
+let count = signal(0);
+
+count.get();                    // 0, and tracks the read
+count.set(5);
+count.update(|n| *n += 1);      // 6
 ```
+
+A read inside a tracking scope (a binding, `computed`, `effect`) subscribes that scope to the signal. A write notifies the subscribers when the value changed: compared with `PartialEq` in Rust, with `===` in TSX.
 
 ```tsx tabs
 function Counter() {
@@ -62,17 +53,26 @@ function Counter() {
 }
 ```
 
+```rust tabs
+fn counter() -> impl IntoElement {
+    let count = signal(0);
+    view()
+        .on_press(move || count.update(|n| *n += 1))
+        .child(text(move || format!("Tapped {} times", count.get())))
+}
+```
+
 Tapping updates the one text node that reads `count`. `counter()` / `Counter` itself runs once. A Rust signal is a `Copy` handle, so closures take it with `move` and use it freely. In TSX `set` and `update` are bound to their signal, so they can be passed on their own: `[1, 2].forEach(count.set)`, `attempt(busy.set, …)`.
 
 A signal can count every write as a change, and TSX can compare values its own way:
 
-```rust tabs
-let tick = signal_with(0, SignalEquals::Never);   // every write notifies
-```
-
 ```tsx tabs
 const tick = signal(0, { equals: false });   // every write notifies
 const position = signal({ x: 0, y: 0 }, { equals: (a, b) => a.x === b.x && a.y === b.y });
+```
+
+```rust tabs
+let tick = signal_with(0, SignalEquals::Never);   // every write notifies
 ```
 
 In TSX, `signal<T>()` without a value starts as `undefined` and is typed `Signal<T | undefined>`; in Rust, an
@@ -81,6 +81,16 @@ In TSX, `signal<T>()` without a value starts as `undefined` and is typed `Signal
 ### Objects and arrays
 
 In Rust, `update` changes the value in place and notifies the readers; `set` replaces it. In TSX, signals compare with `===`, so a value mutated in place is no change: write a new object or array.
+
+```tsx tabs
+const todos = signal<Todo[]>([]);
+
+todos.update((list) => [...list, { id: 3, title: "New" }]);                 // notifies
+todos.update((list) => list.map((t) => (t.id === id ? { ...t, done: true } : t)));
+
+todos().push(item);    // does not notify anyone
+todos.set(todos());    // still the same array: no change
+```
 
 ```rust tabs
 let todos = signal(Vec::<Todo>::new());
@@ -93,29 +103,11 @@ todos.update(|list| {
 });
 ```
 
-```tsx tabs
-const todos = signal<Todo[]>([]);
-
-todos.update((list) => [...list, { id: 3, title: "New" }]);                 // notifies
-todos.update((list) => list.map((t) => (t.id === id ? { ...t, done: true } : t)));
-
-todos().push(item);    // does not notify anyone
-todos.set(todos());    // still the same array: no change
-```
-
 `each` / `<Each>` keys rows by item, so changing one item rebuilds only that row ([JSX and components](./jsx-and-components.md#control-flow)).
 
 ## computed
 
 `computed(fn)` derives a value from other signals. It runs `fn`, remembers the result, and runs it again when a signal it read changes. Reading it is like reading a signal:
-
-```rust tabs
-let price = signal(12);
-let quantity = signal(2);
-let total = computed(move || price.get() * quantity.get());
-
-text(move || format!("Total: {}", total.get()))
-```
 
 ```tsx tabs
 const price = signal(12);
@@ -125,16 +117,24 @@ const total = computed(() => price() * quantity());
 <Text>Total: {total()}</Text>
 ```
 
-Use `computed` when a derived value is read in several places or is expensive: it runs once per change however many readers it has, and readers are notified only when its result changes. For a cheap value read once, a plain closure is enough:
-
 ```rust tabs
-let label = move || format!("{} items", quantity.get());
-text(label)
+let price = signal(12);
+let quantity = signal(2);
+let total = computed(move || price.get() * quantity.get());
+
+text(move || format!("Total: {}", total.get()))
 ```
+
+Use `computed` when a derived value is read in several places or is expensive: it runs once per change however many readers it has, and readers are notified only when its result changes. For a cheap value read once, a plain closure is enough:
 
 ```tsx tabs
 const label = () => `${quantity()} items`;
 <Text>{label()}</Text>
+```
+
+```rust tabs
+let label = move || format!("{} items", quantity.get());
+text(label)
 ```
 
 In TSX, `fn` receives the previous value (`undefined` the first time), for values that accumulate:
@@ -146,6 +146,20 @@ const max = computed((prev: number | undefined) => Math.max(prev ?? 0, speed()))
 ## effect
 
 `effect(fn)` runs `fn`, and again whenever a signal it read changes. Effects are for side effects: logging, timers, network requests, imperative calls on [refs](./jsx-and-components.md#refs).
+
+```tsx tabs
+function Search(props: { query: string }) {
+  const results = signal<string[]>([]);
+  effect(() => {
+    const q = props.query;          // tracked: runs again when the prop changes
+    if (!q) return;
+    fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`)
+      .then((r) => r.json())
+      .then((data) => results.set(data.items));
+  });
+  return <Each of={results()}>{(item) => <Text>{item()}</Text>}</Each>;
+}
+```
 
 ```rust tabs
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -172,23 +186,16 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-function Search(props: { query: string }) {
-  const results = signal<string[]>([]);
-  effect(() => {
-    const q = props.query;          // tracked: runs again when the prop changes
-    if (!q) return;
-    fetch(`https://api.example.com/search?q=${encodeURIComponent(q)}`)
-      .then((r) => r.json())
-      .then((data) => results.set(data.items));
-  });
-  return <Each of={results()}>{(item) => <Text>{item()}</Text>}</Each>;
-}
-```
-
 An effect tracks the reads made while it runs synchronously. Reads in a task, a `.then` callback or after an `await` are not tracked.
 
 An effect that calls a [ref](./jsx-and-components.md#refs) acts on the element the ref is on; in TSX, effects run after the elements created in the same pass exist, so refs are set:
+
+```tsx tabs
+let input: InputRef | undefined;
+effect(() => {
+  if (editing()) input?.focus();
+});
+```
 
 ```rust tabs
 let input = element_ref();
@@ -199,38 +206,12 @@ effect(move || {
 });
 ```
 
-```tsx tabs
-let input: InputRef | undefined;
-effect(() => {
-  if (editing()) input?.focus();
-});
-```
-
 > [!TIP]
 > Do not use effects to keep one signal in sync with another (`effect(() => b.set(a() * 2))`). Use `computed`: it is never out of date and does not cause a second pass. An effect that writes a signal it also reads runs itself again and again until NSH stops it with an error.
 
 ## resource
 
 `resource(source, fetcher)` loads a value asynchronously and keeps where the load is, so a component shows data, a spinner or an error without managing them itself:
-
-```rust tabs
-let url = signal(SharedString::from("https://api.example.com/quote"));
-let quote = resource(move || Some(url.get()), |url, _info| async move {
-    let response = fetch(url.to_string()).await?;
-    if !response.ok() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-    Ok(response.text())
-});
-
-view()
-    .child(text(move || match (quote.get(), quote.error()) {
-        (_, Some(error)) => format!("Failed: {error}"),
-        (Some(quote), None) => quote,
-        (None, None) => "Loading…".to_owned(),
-    }))
-    .child(text("Reload").on_press(move || quote.refetch()))
-```
 
 ```tsx tabs
 import { List, resource, signal, Text } from "nsh";
@@ -256,6 +237,25 @@ const posts = resource(url, async (u, { signal }) => {
 </List>
 ```
 
+```rust tabs
+let url = signal(SharedString::from("https://api.example.com/quote"));
+let quote = resource(move || Some(url.get()), |url, _info| async move {
+    let response = fetch(url.to_string()).await?;
+    if !response.ok() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    Ok(response.text())
+});
+
+view()
+    .child(text(move || match (quote.get(), quote.error()) {
+        (_, Some(error)) => format!("Failed: {error}"),
+        (Some(quote), None) => quote,
+        (None, None) => "Loading…".to_owned(),
+    }))
+    .child(text("Reload").on_press(move || quote.refetch()))
+```
+
 `source` is tracked: whenever it gives a new value, `fetcher(value, info)` loads again. In Rust it is a closure returning an `Option`, and `None` loads nothing; in TSX it is an accessor (a signal, a function) or a value, and `undefined`, `null` or `false` load nothing: for a user not signed in yet or nothing picked. With no source, Rust passes `|| Some(())`, and TSX's `resource(fetcher)` loads once, calling `fetcher(info)`. The Rust fetcher returns a `Result`; the TSX one a value or a promise, and a throw is a failure.
 
 | Rust | TSX | What it is |
@@ -275,21 +275,6 @@ Only the latest load counts. A new one drops the one running, and so does the co
 
 `cleanup(fn)` registers `fn` to run before the current effect runs again, or when the component or effect it belongs to goes away:
 
-```rust tabs
-effect(move || {
-    if !running.get() {
-        return;
-    }
-    let ticker = spawn(async move {
-        loop {
-            timer(Duration::from_millis(100)).await;
-            tick();
-        }
-    });
-    cleanup(move || ticker.cancel());   // before the next run, or on removal
-});
-```
-
 ```tsx tabs
 function Clock() {
   const now = signal(Date.now());
@@ -302,6 +287,21 @@ effect(() => {
   if (!running()) return;
   const id = setInterval(tick, 100);
   cleanup(() => clearInterval(id));       // before the next run, or on removal
+});
+```
+
+```rust tabs
+effect(move || {
+    if !running.get() {
+        return;
+    }
+    let ticker = spawn(async move {
+        loop {
+            timer(Duration::from_millis(100)).await;
+            tick();
+        }
+    });
+    cleanup(move || ticker.cancel());   // before the next run, or on removal
 });
 ```
 
@@ -334,6 +334,15 @@ A component goes away when it is no longer rendered: its `when` / `<If>` branch 
 
 Each write notifies its subscribers right away. To make several writes count as one change, wrap them in `batch`: dependants run once, after the last write.
 
+```tsx tabs
+const save = () =>
+  batch(() => {
+    firstName.set(form.first);
+    lastName.set(form.last);
+    dirty.set(false);
+  });
+```
+
 ```rust tabs
 let save = move || {
     batch(|| {
@@ -344,28 +353,11 @@ let save = move || {
 };
 ```
 
-```tsx tabs
-const save = () =>
-  batch(() => {
-    firstName.set(form.first);
-    lastName.set(form.last);
-    dirty.set(false);
-  });
-```
-
 Event handlers are not batched for you: two writes in a press handler run an effect that reads both signals twice. `batch` returns what its function returns.
 
 ## untracked
 
 `untracked(fn)` runs `fn` without subscribing to what it reads. Use it in a tracking scope to read a value without depending on it:
-
-```rust tabs
-effect(move || {
-    let q = query.get();                          // runs again when query changes
-    let filters = untracked(|| active_filters.get());   // read, but not a reason to run again
-    search(q, filters);
-});
-```
 
 ```tsx tabs
 effect(() => {
@@ -375,26 +367,19 @@ effect(() => {
 });
 ```
 
+```rust tabs
+effect(move || {
+    let q = query.get();                          // runs again when query changes
+    let filters = untracked(|| active_filters.get());   // read, but not a reason to run again
+    search(q, filters);
+});
+```
+
 Rust's `get_untracked()` reads one signal the same way. A component body is already untracked: reading a signal there reads it once.
 
 ## context
 
 A context is a value a component provides to everything it renders, however deep. In Rust, `provide_context(value)` provides a value of its type, and `use_context::<T>()` finds the nearest one; in TSX, `context(defaultValue)` makes a context, calling it reads the nearest provided value (or the default), and `<Ctx.Provider value>` provides one:
-
-```rust tabs
-#[derive(Clone, Copy)]
-struct Dark(bool);
-
-fn label(content: &'static str) -> impl IntoElement {
-    let dark = use_context::<Dark>().is_some_and(|d| d.0);
-    text(content).text_color(if dark { rgb(0xffffff) } else { rgb(0x1f2328) })
-}
-
-fn screen() -> impl IntoElement {
-    provide_context(Dark(true));
-    view().child(label("Hello"))
-}
-```
 
 ```tsx tabs
 const Theme = context<"light" | "dark">("light");
@@ -413,7 +398,40 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+#[derive(Clone, Copy)]
+struct Dark(bool);
+
+fn label(content: &'static str) -> impl IntoElement {
+    let dark = use_context::<Dark>().is_some_and(|d| d.0);
+    text(content).text_color(if dark { rgb(0xffffff) } else { rgb(0x1f2328) })
+}
+
+fn screen() -> impl IntoElement {
+    provide_context(Dark(true));
+    view().child(label("Hello"))
+}
+```
+
 A provided value is read once, when it is looked up. To provide something that changes, provide a signal (or a struct of signals) and read it in a binding:
+
+```tsx tabs
+const Accent = context(signal("#0969da"));
+
+function App() {
+  const accent = signal("#0969da");
+  return (
+    <Accent.Provider value={accent}>
+      <Swatch />
+    </Accent.Provider>
+  );
+}
+
+function Swatch() {
+  const accent = Accent();
+  return <View onPress={() => accent.set("#8250df")} style={{ width: 40, height: 40, backgroundColor: accent() }} />;
+}
+```
 
 ```rust tabs
 #[derive(Clone, Copy)]
@@ -435,42 +453,11 @@ fn swatch() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-const Accent = context(signal("#0969da"));
-
-function App() {
-  const accent = signal("#0969da");
-  return (
-    <Accent.Provider value={accent}>
-      <Swatch />
-    </Accent.Provider>
-  );
-}
-
-function Swatch() {
-  const accent = Accent();
-  return <View onPress={() => accent.set("#8250df")} style={{ width: 40, height: 40, backgroundColor: accent() }} />;
-}
-```
-
 Read a context in a component body (or in code that runs while components are being created), not in an event handler or a timer, where there is no component to look it up from. Rust components also take the app's theme this way: `theme()` from `nsh_base` ([Theme](./rust.md#theme)).
 
 ## Error boundaries
 
 An error boundary keeps a failure in one part of a view to that part. When something under it throws (Rust: panics) while it renders or runs, such as a component's body, a binding, an effect or an event handler, the failed part is removed and the boundary shows its fallback in its place; the rest of the view stays as it is. In Rust it is `catch_error(view, fallback)`; in TSX, `<ErrorBoundary fallback>` from `nsh`. The fallback gets the error (in TSX the thrown value itself, usually an `Error`) and a reset that renders the view again:
-
-```rust tabs
-fn profile_card(user: Signal<Option<User>>) -> impl IntoElement {
-    catch_error(
-        move || profile(user),
-        |error, reset| {
-            view()
-                .child(text(format!("Something went wrong: {error}")))
-                .child(text("Try again").on_press(move || reset.reset()))
-        },
-    )
-}
-```
 
 ```tsx tabs
 import { ErrorBoundary, Text, View } from "nsh";
@@ -488,6 +475,19 @@ function ProfileCard(props: { user: User | undefined }) {
       <Profile user={props.user} />
     </ErrorBoundary>
   );
+}
+```
+
+```rust tabs
+fn profile_card(user: Signal<Option<User>>) -> impl IntoElement {
+    catch_error(
+        move || profile(user),
+        |error, reset| {
+            view()
+                .child(text(format!("Something went wrong: {error}")))
+                .child(text("Try again").on_press(move || reset.reset()))
+        },
+    )
 }
 ```
 
@@ -510,17 +510,6 @@ The environment is reactive the same way: `window()`, `dark()`, `font_scale()`, 
 
 **Reading a signal in the component body and expecting updates.**
 
-```rust tabs
-fn bad() -> impl IntoElement {
-    let n = count.get();                       // read once
-    text(format!("{n}"))                       // never changes
-}
-
-fn good() -> impl IntoElement {
-    text(move || format!("{}", count.get()))   // a binding: follows count
-}
-```
-
 ```tsx tabs
 function Bad() {
   const n = count();           // read once
@@ -529,6 +518,17 @@ function Bad() {
 
 function Good() {
   return <Text>{count()}</Text>;
+}
+```
+
+```rust tabs
+fn bad() -> impl IntoElement {
+    let n = count.get();                       // read once
+    text(format!("{n}"))                       // never changes
+}
+
+fn good() -> impl IntoElement {
+    text(move || format!("{}", count.get()))   // a binding: follows count
 }
 ```
 
@@ -544,7 +544,7 @@ function Good() {
 
 ## Related
 
-- [JSX and components](./jsx-and-components.md): components, props, `when` / `<If>` and `each` / `<Each>`, in Rust and TSX.
+- [JSX and components](./jsx-and-components.md): components, props, `when` / `<If>` and `each` / `<Each>`, in TSX and Rust.
 - [Building with Rust](./rust.md): Rust apps, tasks and the theme.
 - [`nsh` module reference](../modules/nsh.md): every TSX function's signature.
 - [Animation](./animation.md): animated values that animate on the UI thread without signals.

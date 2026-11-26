@@ -62,6 +62,8 @@ pub(crate) struct InputIvars {
     paste_listens: Cell<bool>,
     /// A paste inserts its text (`pasteBehavior`).
     paste_inserts: Cell<bool>,
+    /// The largest pasted file read (`pasteMaxSize`; `None`: all).
+    paste_max_size: Cell<Option<u64>>,
     /// A bar of the app's follows the text area (its built-in bar, or one
     /// that watches it; `InputConfig::report_scroll`): its scrolling is
     /// reported.
@@ -103,6 +105,7 @@ impl Default for InputIvars {
             caret: Cell::new(Bounds::default()),
             paste_listens: Cell::new(false),
             paste_inserts: Cell::new(true),
+            paste_max_size: Cell::new(None),
             scroll_reports: Cell::new(false),
             scroll_reported: Cell::new(None),
             target: RefCell::default(),
@@ -513,7 +516,7 @@ fn pasting(view: &UIView, ivars: &InputIvars) -> bool {
 /// [`pasting`] from `board`.
 fn pasting_from(view: &UIView, ivars: &InputIvars, board: &objc2_ui_kit::UIPasteboard) -> bool {
     if ivars.paste_listens.get() {
-        let paste = crate::system::pasted(board);
+        let paste = crate::system::pasted(board, ivars.paste_max_size.get());
         report_paste(view, paste);
     }
     // SAFETY: a plain getter (no paste notice).
@@ -1361,6 +1364,7 @@ impl Input {
         }
         if let Some(ivars) = ivars_of(self.editor_view()) {
             ivars.select_on_focus.set(config.select_text_on_focus);
+            ivars.paste_max_size.set(config.paste_max_size);
         }
         crate::mount::mirror(self.editor_view(), config.rtl);
         set_paste(

@@ -25,12 +25,12 @@ import {
   type QuickItem,
   type QuickToolInput,
 } from '../../../packages/plugin-sdk/src/workbench-views.js';
-import { currentLocale, tr } from '../../../products/maka/workbench/app/locale';
+import { currentLocale, localizedKeywords, tr } from '../../../products/maka/workbench/app/locale';
 import { search } from '../../shared/quick-search';
 import { DEFAULT_LIMIT, LIMITS, remember, type HistoryEntry, type Limit } from './history';
 import { HistorySettings, type History } from './settings';
 
-const KEYWORDS = ['cb', 'clipboard', '剪贴板', '剪貼簿'];
+const keywords = () => localizedKeywords(['cb', 'clipboard'], 'launcher.keywords.clipboard');
 const POLL_MS = 1000;
 const LIMIT_KEY = 'maka.clipboard-history.limit';
 
@@ -142,7 +142,7 @@ function ClipboardHistory(props: {
     if (history.failure() !== null) input.report(history.failure());
   });
   const items = computed(() =>
-    search(history.entries(), input.query(), KEYWORDS, (entry) =>
+    search(history.entries(), input.query(), keywords(), (entry) =>
       entry.paths.length ? entry.paths : entry.format === TEXT ? [entry.data] : [entryTitle(entry)],
     ).map(
       ({ item: entry, match }): QuickItem => ({
@@ -198,7 +198,7 @@ function ClipboardHistory(props: {
         id: 'history',
         title: tr('Clipboard history'),
         icon: 'clipboard',
-        keywords: KEYWORDS,
+        keywords: keywords(),
       },
     ],
   });
@@ -206,7 +206,6 @@ function ClipboardHistory(props: {
 }
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
-  effect(() => currentLocale.set(context.locale()));
   const history = platform.os === 'macos' || platform.os === 'windows' ? createHistory() : null;
   return {
     exports: {

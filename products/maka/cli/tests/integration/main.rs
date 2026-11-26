@@ -38,9 +38,17 @@ fn executable_tempdir() -> tempfile::TempDir {
 
 mod candidate;
 
+#[cfg(unix)]
+#[allow(dead_code)]
+#[path = "../support/host.rs"]
+mod host_support;
 mod initialize;
 #[cfg(target_os = "linux")]
 mod network_sandbox;
+#[cfg(unix)]
+mod peer_access;
+#[cfg(unix)]
+mod remote_transport;
 
 mod run;
 mod sandbox;

@@ -837,7 +837,8 @@ impl<'p> Reader<'p> {
             .take_while(|i| matches!(i, Inline::Break))
             .count();
         inlines.drain(..leading);
-        apply_patterns(&self.parser.extensions, inlines)
+        let inlines = apply_patterns(&self.parser.extensions, inlines);
+        super::common::without_links_and_images(&self.parser.options, inlines)
     }
 
     // --- Extensions -------------------------------------------------------

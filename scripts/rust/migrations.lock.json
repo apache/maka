@@ -213,6 +213,10 @@
       "plugins/agent/state/migrations/0054_queue_reorder_projection.sql": {
         "version": 54,
         "sha384": "0923ed37f19567d7aa3256be1c41b2b495f551bd7b71c4c97e4491cb3d18ef252c737b8f8f7af5708296778e9c3b0271"
+      },
+      "plugins/agent/state/migrations/0055_external_effect_ended_unknown.sql": {
+        "version": 55,
+        "sha384": "cbbfb24d0a608a0b4ad1175bc65b44e9cc1f3d7033104d43476abc9dc717be00323c7f45ef63848d96c3223c6de6de81"
       }
     },
     "checkpoint-repository": {
@@ -223,6 +227,10 @@
       "platform/event-log/migrations/repository/0002_heads.sql": {
         "version": 2,
         "sha384": "a5171e87fb87fb89d2378e60bbe33beb922f498d706d9d1af5c106f2afeb22255f9ed80d86c02b8ea1869bf4bc623ebb"
+      },
+      "platform/event-log/migrations/repository/0003_execution.sql": {
+        "version": 3,
+        "sha384": "3960aa8017e95726dbd9d162788f681b8e86d0b13e67ddf2d01ad2a24b3ec974f59f72d9deca5a80357fee307afec32a"
       }
     },
     "settings": {
@@ -233,6 +241,18 @@
       "plugins/settings/store/migrations/0002_message_predictions.sql": {
         "version": 2,
         "sha384": "416dafe8f3de289a5cd21611d3c3eaa278db58cf6a5a6d9fc8182748044be01eaa13e34cf24cb1a3201f26a269a9fc8f"
+      },
+      "plugins/settings/store/migrations/0003_host_peer_access.sql": {
+        "version": 3,
+        "sha384": "ac28400bc91b50a65433658e859d8dd4a81da71661ace37b60fe6d4867c2f4e2263e1ab2f4f39b57c84eac10b183af85"
+      },
+      "plugins/settings/store/migrations/0004_host_peer_pairing.sql": {
+        "version": 4,
+        "sha384": "dff70e09bf539ac65a1f794e24c41751269765effdf387f910c3fc09dae3c820062d9e128dc11be1e6abfeb938857eca"
+      },
+      "plugins/settings/store/migrations/0005_project_mcp_decision.sql": {
+        "version": 5,
+        "sha384": "79b64df066f1fa8dcc35ebcac6ecdd4558a12c81d1442bf4f3a904e3882ea4dca685e7bf5929b6e6c38c110a6140e043"
       }
     },
     "deployment": {

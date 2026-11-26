@@ -148,7 +148,7 @@ mod tests {
     fn sample_request(provider_options: Value) -> Request {
         Request {
             operation: Default::default(),
-            language: Language::En,
+            language: Language::EN,
             provider: Provider {
                 kind: model::ProviderKind::OpenaiResponses,
                 model: "gpt-6.2-sol".into(),

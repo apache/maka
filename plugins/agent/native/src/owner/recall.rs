@@ -86,7 +86,7 @@ impl Recall {
             }
             RecallStore::new(data, self.owner.clone(), self.prefix.clone())
                 .map_err(failed)?
-                .validate_execution(execution.clone())
+                .validate_execution(execution.clone(), &call.cancellation)
                 .await
                 .map_err(failed)?;
         }
@@ -500,11 +500,9 @@ impl ToolPreparer for Recall {
                     let query = query.terms.join(", ");
                     maka_agent_facts::display::Text::single_line(&query).map(|query| {
                         let query = query.fallback;
-                        maka_agent_facts::display::Text::localized(
-                            &format!("Search conversation history · {query}"),
-                            &format!("搜索会话历史 · {query}"),
-                            &format!("搜尋對話歷史 · {query}"),
-                        )
+                        maka_agent_facts::display::Text::for_locales(|locale| {
+                            maka_agent_facts::i18n::tool_title::search_history(locale, &query)
+                        })
                     })
                 }
                 Input::More(_) => None,

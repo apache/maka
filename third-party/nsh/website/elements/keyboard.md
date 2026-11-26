@@ -15,35 +15,6 @@ message bar at the bottom of a chat screen; inputs inside a [scroll view](./scro
 scrolled into view natively. With it come `Keyboard.dismiss()`, which hides the keyboard, and the keyboard's height,
 for layouts of your own.
 
-```rust tabs
-use nsh_core::prelude::*;
-
-fn chat() -> impl IntoElement {
-    let draft = signal(String::new());
-    view()
-        .flex_1()
-        .bg(white())
-        .pb_keyboard()
-        .child(scroll().flex_1().child(text("Messages…").p_4()))
-        .child(
-            view()
-                .flex_row()
-                .gap_2()
-                .p_2()
-                .border_t_1()
-                .border_color(rgb(0xe5e5e5))
-                .child(
-                    input()
-                        .value(draft)
-                        .on_change(move |v: &str| draft.set(v.to_owned()))
-                        .placeholder("Message")
-                        .flex_1()
-                        .p_2(),
-                ),
-        )
-}
-```
-
 ```tsx tabs
 import { mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
@@ -75,6 +46,35 @@ mount(() => (
 ));
 ```
 
+```rust tabs
+use nsh_core::prelude::*;
+
+fn chat() -> impl IntoElement {
+    let draft = signal(String::new());
+    view()
+        .flex_1()
+        .bg(white())
+        .pb_keyboard()
+        .child(scroll().flex_1().child(text("Messages…").p_4()))
+        .child(
+            view()
+                .flex_row()
+                .gap_2()
+                .p_2()
+                .border_t_1()
+                .border_color(rgb(0xe5e5e5))
+                .child(
+                    input()
+                        .value(draft)
+                        .on_change(move |v: &str| draft.set(v.to_owned()))
+                        .placeholder("Message")
+                        .flex_1()
+                        .p_2(),
+                ),
+        )
+}
+```
+
 The full keyboard height suits a view that reaches the bottom of the screen, as a screen's content does. When
 something is below it, such as a tab bar, subtract that with a length: `calc(env(keyboard-inset-height) + -49px)`
 keeps a view above a 49 pt tab bar, and `calc(env(keyboard-inset-height) + 12px)` adds spacing above the keyboard. A
@@ -90,6 +90,12 @@ padding is at least 0.
 The keyboard's height is added to the length in the same declaration only, so a view combines it with spacing of its
 own in `calc()`. In Rust, `.pb_keyboard_plus(px(..))` and `.mb_keyboard_plus(px(..))` add a length.
 
+```tsx tabs
+<View class="flex-1 gap-3 p-4 mb-[calc(env(keyboard-inset-height)+-49px)]">
+  <Input placeholder="E-mail" keyboardType="email-address" class="rounded-lg border border-neutral-300 px-3 py-2" />
+</View>
+```
+
 ```rust tabs
 use nsh_core::prelude::*;
 
@@ -103,12 +109,6 @@ fn sign_in() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<View class="flex-1 gap-3 p-4 mb-[calc(env(keyboard-inset-height)+-49px)]">
-  <Input placeholder="E-mail" keyboardType="email-address" class="rounded-lg border border-neutral-300 px-3 py-2" />
-</View>
-```
-
 Here a 49 pt tab bar below the view already covers part of the keyboard's height. To turn the room off, leave the
 variable out of the style, for example with a condition on a signal.
 
@@ -116,6 +116,19 @@ variable out of the style, for example with a condition on a signal.
 
 `Keyboard.dismiss()`, from `nsh`, unfocuses the focused input, which hides the keyboard. With no input focused, it leaves
 everything as it is. Rust components call `dismiss_keyboard()`.
+
+```tsx tabs
+import { Text, Keyboard } from "nsh";
+import { Button } from "nsh/base";
+
+function Done() {
+  return (
+    <Button onPress={() => Keyboard.dismiss()} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
+      <Text class="text-center font-semibold text-white">Done</Text>
+    </Button>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::button;
@@ -132,19 +145,6 @@ fn done() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text, Keyboard } from "nsh";
-import { Button } from "nsh/base";
-
-function Done() {
-  return (
-    <Button onPress={() => Keyboard.dismiss()} class="rounded-lg bg-blue-600 px-4 py-3 active:bg-blue-700">
-      <Text class="text-center font-semibold text-white">Done</Text>
-    </Button>
-  );
-}
-```
-
 > [!TIP]
 > To hide the keyboard when the user drags a scroll view, set `keyboardDismissMode="on-drag"` or `"interactive"` on
 > the [scroll view](./scroll.md) or [List](./list.md).
@@ -157,26 +157,6 @@ function Done() {
 
 Both are reactive: an effect, a JSX expression or a style closure that reads them runs again when the keyboard shows,
 hides or changes height.
-
-```rust tabs
-use nsh_core::prelude::*;
-
-fn message_bar() -> impl IntoElement {
-    view()
-        .flex_row()
-        .p_2()
-        .pb(move || {
-            // The home indicator's inset only matters while the keyboard is hidden.
-            let home = if keyboard_height() > Points::ZERO {
-                Points::ZERO
-            } else {
-                safe_area().bottom
-            };
-            px(8.0) + home
-        })
-        .child(input().placeholder("Message").flex_1())
-}
-```
 
 ```tsx tabs
 import { View, keyboardFrame, safeArea } from "nsh";
@@ -196,6 +176,26 @@ function MessageBar() {
       <Input placeholder="Message" style={{ flex: 1 }} />
     </View>
   );
+}
+```
+
+```rust tabs
+use nsh_core::prelude::*;
+
+fn message_bar() -> impl IntoElement {
+    view()
+        .flex_row()
+        .p_2()
+        .pb(move || {
+            // The home indicator's inset only matters while the keyboard is hidden.
+            let home = if keyboard_height() > Points::ZERO {
+                Points::ZERO
+            } else {
+                safe_area().bottom
+            };
+            px(8.0) + home
+        })
+        .child(input().placeholder("Message").flex_1())
 }
 ```
 
@@ -247,13 +247,22 @@ canonical `nsh/keymap` keystrokes and match the stroke the platform's own shortc
 the reported `key` string or the physical `code`. A key that produces no shortcut stroke (a modifier key, an
 unidentified key, another layout's letter) is taken only by `captureKeys="all"`.
 
-`captureKeys` in TSX (`{"none"}`, `{"all"}` or an array such as `{["mod+k", "escape"]}`), or
+`captureKeys` in TSX (`{"none"}`, `{"all"}`, `{"text"}` or an array such as `{["mod+k", "escape"]}`), or
 `capture_keys(KeyCapture::All)` / `capture_keys(KeyCapture::keys(...))` in Rust, mounts the consumption rule before
 input arrives. The rule is parsed once into canonical shortcut keystrokes (the `nsh/keymap` syntax; `mod` is
 Command on Apple platforms, Control elsewhere), and `defaultPrevented` reports this transition's decision. The rule
 accepts reactive values; omitting it on a retained view restores `"none"`. Eligible app shortcuts keep their
 priority, focused native inputs keep the keys that edit them, and a capture cannot defeat a shortcut the operating
 system never delivers. A captured Tab stays in the view; an observed Tab follows normal traversal.
+`captureKeys="text"` (Rust `KeyCapture::Text`) moves typing into the view's first enabled `Input`: a key that would
+type text (a character, a dead key, or a key an input method composes) with no Control, Alt or platform modifier,
+pressed while a non-input view inside the rule's view has the keyboard, focuses that input and is delivered to it
+before any default, so a dead key or an input method composes there as if the input had the focus. On macOS Option
+types characters (`å`, and the U.S. layout's dead keys such as Option+E), so it moves with them. Space, which activates
+the focused button, and other keys are not captured, and `defaultPrevented` is set on the moved key. A chat screen puts it on the view holding a
+`selectable` transcript and the message `Input`, rather than focusing the input from `onKeyDown`, which runs after
+the platform already handled the key. Linux and macOS implement it today; other platforms treat it as `"none"`
+until they do.
 Inside the top overlay that closes on Escape (a `Popover`, a `Sheet`), a focused view whose rule, or an enabled
 ancestor's within that overlay, captures `escape` takes Escape before the overlay does: an editor in a popover
 clears its selection first, and the overlay closes on Escape again once the rule drops the key. Back and the screen

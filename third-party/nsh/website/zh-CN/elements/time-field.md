@@ -11,23 +11,6 @@ demo: el-date-picker
 
 时间输入框负责行为：时间（应用的，或它自己的）、按键编辑哪一段、输入和步进数字，以及屏幕阅读器听到的内容。外观由应用决定：应用为各段和它们之间的 `:` 设置样式，或者自己绘制各段。
 
-```rust tabs
-use chrono::NaiveTime;
-use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
-use nsh_core::prelude::*;
-
-fn reminder_time() -> impl IntoElement {
-    let at = signal(TimeOfDay(NaiveTime::from_hms_opt(9, 30, 0).unwrap()));
-    time_field()
-        .value(move || Some(at.get()))
-        .on_change(move |next: &TimeOfDay| at.set(*next))
-        .hour_cycle(HourCycle::H12)
-        .accessibility_label("Reminder time")
-        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
-        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
-}
-```
-
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { TimeField } from "nsh/base";
@@ -53,6 +36,23 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use chrono::NaiveTime;
+use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
+use nsh_core::prelude::*;
+
+fn reminder_time() -> impl IntoElement {
+    let at = signal(TimeOfDay(NaiveTime::from_hms_opt(9, 30, 0).unwrap()));
+    time_field()
+        .value(move || Some(at.get()))
+        .on_change(move |next: &TimeOfDay| at.set(*next))
+        .hour_cycle(HourCycle::H12)
+        .accessibility_label("Reminder time")
+        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
+        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
+}
 ```
 
 `TimeField` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。在 Rust 中，`time_field()` 创建一个时间输入框，每个属性有一个设置方法（`.value(..)`、`.precision(..)`、`.hour_cycle(..)`），每个事件有一个监听方法（`.on_change(..)`）。它的时间是 `TimeOfDay`，即一个 `chrono::NaiveTime`。

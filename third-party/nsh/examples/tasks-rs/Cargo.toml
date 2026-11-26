@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 env_logger.workspace = true
 nsh-core.workspace = true
-nsh-base.workspace = true
+nsh-base = { workspace = true, features = ["rich-editor"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux.workspace = true

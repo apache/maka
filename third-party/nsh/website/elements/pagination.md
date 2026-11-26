@@ -13,24 +13,6 @@ Next. It owns the behavior: which pages show, presses, the keyboard, Previous an
 navigation landmark and the current page for screen readers. The look is the app's: the items have no color, size or
 label of their own, and the app styles them or draws them.
 
-```rust tabs
-use nsh_base::{pagination, theme};
-use nsh_core::prelude::*;
-
-fn results() -> impl IntoElement {
-    let page = signal(1u32);
-    pagination()
-        .page(move || page.get())
-        .total_pages(24)
-        .accessibility_label("Search results")
-        .previous_accessibility_label("Previous")
-        .next_accessibility_label("Next")
-        .item_class("min-w-9 h-9 px-2 items-center justify-center rounded-md hover:bg-accent selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
-        .gap_1()
-        .on_change(move |p: &u32| page.set(*p))
-}
-```
-
 ```tsx tabs
 import { mount, signal } from "nsh";
 import { Pagination } from "nsh/base";
@@ -57,6 +39,24 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{pagination, theme};
+use nsh_core::prelude::*;
+
+fn results() -> impl IntoElement {
+    let page = signal(1u32);
+    pagination()
+        .page(move || page.get())
+        .total_pages(24)
+        .accessibility_label("Search results")
+        .previous_accessibility_label("Previous")
+        .next_accessibility_label("Next")
+        .item_class("min-w-9 h-9 px-2 items-center justify-center rounded-md hover:bg-accent selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
+        .gap_1()
+        .on_change(move |p: &u32| page.set(*p))
+}
 ```
 
 `Pagination` comes from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. In Rust,

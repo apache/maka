@@ -35,10 +35,11 @@ use super::{
 };
 use crate::rich_editor::{
     commands::{
-        BoxCommand, CommandFactory, command, lift_list_item, registry::content_fragment,
-        sink_list_item, split_list_item, tiptap, toggle_mark, wrap_in,
+        BoxCommand, CommandFactory, Dispatch, command, lift_list_item, registry::content_fragment,
+        sink_list_item, split_list_item_keep_marks, tiptap, toggle_mark, wrap_in,
     },
-    model::{Attrs, MarkType, NodeType, Schema},
+    model::{Attrs, Fragment, MarkType, NodeType, Schema},
+    state::{EditorState, NodeSelection, TextSelection},
     tables::{
         TableEditingOptions, commands as table_commands, fix_tables_plugin, nodes as table_nodes,
         table_editing,
@@ -231,7 +232,7 @@ pub fn list_item_keys(schema: &Schema) -> Vec<(String, BoxCommand)> {
         return Vec::new();
     };
     vec![
-        ("Enter".into(), split_list_item(ty.clone(), None)),
+        ("Enter".into(), split_list_item_keep_marks(ty.clone(), None)),
         ("Tab".into(), sink_list_item(ty.clone())),
         ("Shift-Tab".into(), lift_list_item(ty)),
     ]
@@ -244,7 +245,7 @@ pub fn task_item_keys(schema: &Schema, nested: bool) -> Vec<(String, BoxCommand)
         return Vec::new();
     };
     let mut keys: Vec<(String, BoxCommand)> =
-        vec![("Enter".into(), split_list_item(ty.clone(), None))];
+        vec![("Enter".into(), split_list_item_keep_marks(ty.clone(), None))];
     if nested {
         keys.push(("Tab".into(), sink_list_item(ty.clone())));
     }
@@ -575,16 +576,81 @@ pub fn blockquote() -> Extension {
         })
 }
 
-/// `horizontalRule`: `---`; `setHorizontalRule`.
+/// `horizontalRule`: `---`; `setHorizontalRule`, which puts the caret
+/// after the rule as Tiptap's does: in the textblock after it, on the
+/// block after it, or in a new block of the parent's default type when
+/// the rule is the parent's last child.
 pub fn horizontal_rule() -> Extension {
     Extension::node("horizontalRule", |_| nodes::horizontal_rule().1)
         .add_input_rules(|cx| horizontal_rule_rules(cx.schema))
         .add_commands(|_| {
             vec![(
                 "setHorizontalRule".into(),
-                factory(|_, s| insert_node(s, json!({ "type": "horizontalRule" }))),
+                factory(|_, s| {
+                    let ty = node_of(s, "horizontalRule")?;
+                    Ok(command(move |state, dispatch| {
+                        set_horizontal_rule(state, dispatch, &ty)
+                    }))
+                }),
             )]
         })
+}
+
+// Tiptap's `setHorizontalRule`: inserts a rule of `ty` after a selected
+// node or over the selection, then moves the caret past it.
+fn set_horizontal_rule(state: &EditorState, dispatch: Dispatch<'_>, ty: &NodeType) -> bool {
+    let selection = state.selection();
+    let from = selection.resolved_from();
+    let fits = (0..=from.depth).rev().any(|d| {
+        from.node(d)
+            .can_replace_with(from.index(d), from.index(d), ty, None)
+    });
+    if !fits {
+        return false;
+    }
+    let Ok(rule) = ty.create(None, Fragment::empty(), vec![]) else {
+        return false;
+    };
+    let (at, to) = match selection.as_node() {
+        Some(_) => (selection.to(), selection.to()),
+        None => (selection.from(), selection.to()),
+    };
+    let mut tr = state.tr();
+    if !tiptap::insert_content_in(&mut tr, at, to, &Fragment::from(rule), Default::default()) {
+        return false;
+    }
+    let after = tr.selection().resolved_to().clone();
+    match after.node_after() {
+        Some(next) if next.is_textblock() => {
+            tr.set_selection(TextSelection::create(tr.doc(), after.pos + 1, None));
+        }
+        Some(next) if next.is_block() => {
+            tr.set_selection(NodeSelection::create(tr.doc(), after.pos));
+        }
+        Some(_) => {
+            tr.set_selection(TextSelection::create(tr.doc(), after.pos, None));
+        }
+        None => {
+            // The rule ends its parent: add a block of the parent's default
+            // type (a paragraph at the top level) for the caret.
+            let end = after.end(after.depth);
+            if let Some(block) = after
+                .parent()
+                .ty()
+                .content_match()
+                .default_type()
+                .and_then(|block| block.create_and_fill(None, Fragment::empty(), vec![]))
+                && tr.insert(end, Fragment::from(block)).is_ok()
+            {
+                tr.set_selection(TextSelection::create(tr.doc(), end + 1, None));
+            }
+        }
+    }
+    tr.scroll_into_view();
+    if let Some(dispatch) = dispatch {
+        dispatch(tr);
+    }
+    true
 }
 
 /// `codeBlock` with Tiptap's options (`exitOnTripleEnter`,
@@ -842,11 +908,15 @@ pub fn superscript() -> Extension {
 }
 
 /// `textStyle` (`color`, `fontFamily`, `fontSize`, `backgroundColor`);
-/// `setTextStyle(attrs)`, `unsetTextStyle`.
+/// `setTextStyle(attrs)`, `unsetTextStyle`, `removeEmptyTextStyle`.
 pub fn text_style() -> Extension {
     Extension::mark("textStyle", |_| marks::text_style().1).add_commands(|_| {
         let mut commands = mark_commands("textStyle", "TextStyle", false);
         commands.retain(|(name, _)| name != "toggleTextStyle");
+        commands.push((
+            "removeEmptyTextStyle".into(),
+            factory(|_, s| Ok(tiptap::remove_empty_text_style(mark_of(s, "textStyle")?))),
+        ));
         commands
     })
 }
@@ -870,6 +940,11 @@ pub fn text_align() -> Extension {
             "defaultAlignment": null,
         }))
         .add_global_attributes(|options| {
+            let alignments = opt_strings(
+                options,
+                "alignments",
+                &["left", "center", "right", "justify"],
+            );
             let mut attr = styled_attr("text-align");
             attr.default = Some(
                 options
@@ -877,6 +952,7 @@ pub fn text_align() -> Extension {
                     .cloned()
                     .unwrap_or(Value::Null),
             );
+            attr.allowed_values = Some(alignments);
             vec![GlobalAttributes::new(
                 opt_strings(options, "types", &["heading", "paragraph"]),
                 vec![("textAlign".into(), attr)],
@@ -1308,5 +1384,220 @@ mod tests {
             assert!(builtin(name).is_some(), "{name}");
         }
         assert_eq!(builtin("document").unwrap().name, "doc");
+    }
+
+    #[test]
+    fn text_style_remove_empty_merge_spans_and_css_validation() {
+        use crate::rich_editor::{
+            formats::{DomParser, ParseOptions, doc_to_html},
+            state::{EditorState, EditorStateConfig, TextSelection},
+        };
+        let manager = ExtensionManager::with_core(vec![starter_kit()]).unwrap();
+        let schema = manager.schema().clone();
+        let parser = DomParser::from_schema(&schema);
+        let cmds = manager.commands();
+        assert!(cmds.contains("removeEmptyTextStyle"));
+
+        // Removing color via setMark(textStyle, { color: null }) drops the empty span.
+        let doc = parser.parse("<p>Example Text</p>", &ParseOptions::default());
+        let state = EditorState::create(EditorStateConfig::new(schema.clone()).doc(doc).selection(
+            TextSelection::create(
+                &parser.parse("<p>Example Text</p>", &ParseOptions::default()),
+                1,
+                Some(13),
+            ),
+        ))
+        .unwrap();
+        let set_color = cmds
+            .make("setTextStyle", &json!({ "color": "#958DF1" }), &schema)
+            .unwrap();
+        let mut out = None;
+        assert!(set_color(&state, Some(&mut |tr| out = Some(tr))));
+        let state = state.apply(out.unwrap()).unwrap();
+        assert!(doc_to_html(state.doc()).contains("<span"));
+
+        let unset_color = cmds
+            .make("setTextStyle", &json!({ "color": null }), &schema)
+            .unwrap();
+        let mut out = None;
+        assert!(unset_color(&state, Some(&mut |tr| out = Some(tr))));
+        let state = state.apply(out.unwrap()).unwrap();
+        assert_eq!(doc_to_html(state.doc()), "<p>Example Text</p>");
+
+        // removeEmptyTextStyle removes a pre-existing all-null textStyle mark.
+        let empty_span_doc = schema
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "Example",
+                        "marks": [{ "type": "textStyle", "attrs": { "color": null } }]
+                    }]
+                }]
+            }))
+            .unwrap();
+        let state = EditorState::create(
+            EditorStateConfig::new(schema.clone())
+                .doc(empty_span_doc.clone())
+                .selection(TextSelection::create(&empty_span_doc, 1, Some(8))),
+        )
+        .unwrap();
+        let clean = cmds
+            .make("removeEmptyTextStyle", &json!(null), &schema)
+            .unwrap();
+        let mut out = None;
+        assert!(clean(&state, Some(&mut |tr| out = Some(tr))));
+        let state = state.apply(out.unwrap()).unwrap();
+        assert_eq!(doc_to_html(state.doc()), "<p>Example</p>");
+
+        // CSS style injection values are rejected on serialize.
+        for attr in ["color", "backgroundColor", "fontFamily"] {
+            let injected = schema
+                .node_from_json(&json!({
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{
+                            "type": "text",
+                            "text": "Example",
+                            "marks": [{ "type": "textStyle", "attrs": { attr: "red; position: fixed" } }]
+                        }]
+                    }]
+                }))
+                .unwrap();
+            assert_eq!(doc_to_html(&injected), "<p><span>Example</span></p>");
+        }
+        let injected_hl = schema
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "Example",
+                        "marks": [{ "type": "highlight", "attrs": { "color": "red; position: fixed" } }]
+                    }]
+                }]
+            }))
+            .unwrap();
+        assert_eq!(doc_to_html(&injected_hl), "<p><mark>Example</mark></p>");
+
+        // Nested span styles merge (inner overrides outer).
+        let nested = parser.parse(
+            r#"<p><span style="color: #FF0000;"><span style="font-family: serif;"><span style="color: #0000FF;">blue serif</span></span></span></p>"#,
+            &ParseOptions::default(),
+        );
+        let text = nested.child(0).child(0);
+        let ts = text
+            .marks()
+            .iter()
+            .find(|m| m.ty().name() == "textStyle")
+            .unwrap();
+        assert_eq!(ts.attrs()["color"], json!("#0000FF"));
+        assert_eq!(ts.attrs()["fontFamily"], json!("serif"));
+    }
+
+    #[test]
+    fn text_align_allowlist_and_sub_sup_styles() {
+        use crate::rich_editor::formats::{DomParser, ParseOptions, doc_to_html};
+        let manager = ExtensionManager::with_core(vec![starter_kit()]).unwrap();
+        let schema = manager.schema().clone();
+        let parser = DomParser::from_schema(&schema);
+
+        // text-align allowlist rejects "start" and CSS injection on both parse and render.
+        let bad_align = schema
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "attrs": { "textAlign": "start" },
+                    "content": [{ "type": "text", "text": "Example" }]
+                }]
+            }))
+            .unwrap();
+        assert_eq!(doc_to_html(&bad_align), "<p>Example</p>");
+        let inj_align = schema
+            .node_from_json(&json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "attrs": { "textAlign": "left; position: fixed" },
+                    "content": [{ "type": "text", "text": "Example" }]
+                }]
+            }))
+            .unwrap();
+        assert_eq!(doc_to_html(&inj_align), "<p>Example</p>");
+        let parsed_start = parser.parse(
+            r#"<p style="text-align: start">Example</p>"#,
+            &ParseOptions::default(),
+        );
+        assert_eq!(parsed_start.child(0).attrs()["textAlign"], Value::Null);
+
+        // Subscript / superscript from vertical-align.
+        assert_eq!(
+            doc_to_html(&parser.parse(
+                r#"<p><span style="vertical-align: sub">a</span><span style="vertical-align: super">b</span></p>"#,
+                &ParseOptions::default(),
+            )),
+            "<p><sub>a</sub><sup>b</sup></p>"
+        );
+    }
+
+    #[test]
+    fn set_horizontal_rule_puts_the_caret_after_the_rule() {
+        use crate::rich_editor::{
+            formats::{DomParser, ParseOptions, doc_to_html},
+            state::EditorStateConfig,
+        };
+        let manager = ExtensionManager::with_core(vec![starter_kit()]).unwrap();
+        let schema = manager.schema().clone();
+        let parser = DomParser::from_schema(&schema);
+        let hr = manager
+            .commands()
+            .make("setHorizontalRule", &json!(null), &schema)
+            .unwrap();
+        // The rule set in the document's first, empty paragraph.
+        let run = |html: &str| {
+            let doc = parser.parse(html, &ParseOptions::default());
+            let state = EditorState::create(
+                EditorStateConfig::new(schema.clone())
+                    .doc(doc.clone())
+                    .selection(TextSelection::create(&doc, 1, None)),
+            )
+            .unwrap();
+            let mut out = None;
+            assert!(hr(&state, Some(&mut |tr| out = Some(tr))));
+            state.apply(out.unwrap()).unwrap()
+        };
+
+        // At the end: a paragraph is added after the rule for the caret.
+        let after = run("<p></p>");
+        assert_eq!(doc_to_html(after.doc()), "<hr><p></p>");
+        assert_eq!(after.selection().from(), 2);
+        assert_eq!(
+            after.selection().resolved_from().parent().ty().name(),
+            "paragraph"
+        );
+
+        // A paragraph after it: the caret goes to its start, nothing is added.
+        let after = run("<p></p><p>next</p>");
+        assert_eq!(doc_to_html(after.doc()), "<hr><p>next</p>");
+        assert_eq!(after.selection().from(), 2);
+        assert!(after.selection().empty());
+
+        // A block after it that is not a textblock: that block is selected.
+        let after = run("<p></p><blockquote><p>q</p></blockquote>");
+        assert_eq!(
+            doc_to_html(after.doc()),
+            "<hr><blockquote><p>q</p></blockquote>"
+        );
+        let selected = after
+            .selection()
+            .as_node()
+            .map(|n| n.node().ty().name().to_owned());
+        assert_eq!(selected.as_deref(), Some("blockquote"));
+        assert_eq!(after.selection().from(), 1);
     }
 }

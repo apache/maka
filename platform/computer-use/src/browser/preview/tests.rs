@@ -262,7 +262,7 @@ fn browser_inventory_runs_through_session_on_a_normal_worker_stack() {
                 .configure(
                     maka_capabilities::computer::Desktop::Local,
                     vec![connection.clone()],
-                    Language::En,
+                    Language::EN,
                 )
                 .unwrap();
             let invocation = crate::InvocationContext::new(
@@ -279,7 +279,7 @@ fn browser_inventory_runs_through_session_on_a_normal_worker_stack() {
                     .unwrap(),
                     &invocation,
                     &stop,
-                    Language::En,
+                    Language::EN,
                 )
                 .await
                 .unwrap();
@@ -292,7 +292,7 @@ fn browser_inventory_runs_through_session_on_a_normal_worker_stack() {
                     .unwrap(),
                     &invocation,
                     &stop,
-                    Language::En,
+                    Language::EN,
                 )
                 .await
                 .unwrap();
@@ -352,7 +352,7 @@ async fn preview_keeps_agent_document_refs_usable_and_does_not_start_or_stop_scr
     let capture = fixture.capture().await;
     let mut browsers = Browsers::new(Arc::new(tokio::sync::Mutex::new(crate::Driver::default())));
     let invocation = crate::InvocationContext::new("session", "turn", capture.execution.clone());
-    let bound = browsers.bind(TabSource { provider: fixture.provider.clone(), generation: fixture.document.generation.clone(), info: serde_json::from_value(json!({"id":"tab","type":"page","title":"fixture","url":"https://example.test/"})).unwrap() }, InitialState::Deferred, &invocation, &CancellationToken::new(), Language::En).await.unwrap();
+    let bound = browsers.bind(TabSource { provider: fixture.provider.clone(), generation: fixture.document.generation.clone(), info: serde_json::from_value(json!({"id":"tab","type":"page","title":"fixture","url":"https://example.test/"})).unwrap() }, InitialState::Deferred, &invocation, &CancellationToken::new(), Language::EN).await.unwrap();
     let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap() else {
         panic!("expected tab")
     };
@@ -363,12 +363,12 @@ async fn preview_keeps_agent_document_refs_usable_and_does_not_start_or_stop_scr
     let nodes = vec![
         json!({"nodeId":"ax","backendDOMNodeId":12,"makaFrame":{"id":"main","loader":"loader","session":null,"parent":null},"role":{"value":"button"},"name":{"value":"Next"}}),
     ];
-    let (state, refs) = tab.ax.render(&frame, &nodes, Language::En).unwrap();
+    let (state, refs) = tab.ax.render(&frame, &nodes, Language::EN).unwrap();
     tab.refs = refs;
     tab.previous = Some(state.clone());
     tab.frame = Some(frame.clone());
     let index = *tab.refs.keys().next().unwrap();
-    tab.before_element_input(Some(index), &CancellationToken::new(), Language::En)
+    tab.before_element_input(Some(index), &CancellationToken::new(), Language::EN)
         .await
         .unwrap();
     let registry = PreviewRegistry::default();
@@ -389,7 +389,7 @@ async fn preview_keeps_agent_document_refs_usable_and_does_not_start_or_stop_scr
         (2, 2)
     );
     let tab = browsers.targets.get_mut(&handle).unwrap();
-    tab.before_element_input(Some(index), &CancellationToken::new(), Language::En)
+    tab.before_element_input(Some(index), &CancellationToken::new(), Language::EN)
         .await
         .unwrap();
     assert_eq!(tab.previous.as_deref(), Some(state.as_str()));

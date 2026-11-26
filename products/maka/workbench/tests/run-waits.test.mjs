@@ -62,4 +62,9 @@ test('the process group asks for a response only for a user wait', () => {
   const unavailable = waiting('retry');
   unavailable.state.authorityUnavailable = true;
   assert.equal(waitActivity('waiting', unavailable), 'waiting_for_user');
+  // A pending question or tool interaction keeps the run running or in a quiet cell wait.
+  assert.equal(waitActivity('running', null, true), 'waiting_for_user');
+  assert.equal(waitActivity('waiting', waiting('cell'), true), 'waiting_for_user');
+  assert.equal(waitActivity('idle', null, true), undefined);
+  assert.equal(waitActivity('failed', null, true), undefined);
 });

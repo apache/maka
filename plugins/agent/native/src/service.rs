@@ -50,6 +50,7 @@ fn complete_control(
     }
 }
 struct CallArgs {
+    method: String,
     owner: Arc<Owner>,
     input: Value,
     context: Context,
@@ -63,6 +64,7 @@ impl Handler for Agent {
         context: Context,
     ) -> BoxFuture<'static, HandlerResult> {
         let mut args = Some(CallArgs {
+            method: method.clone(),
             owner: self.0.clone(),
             input,
             context,
@@ -112,6 +114,23 @@ impl Handler for Agent {
                     .await?
                     .complete(&context)
             }),
+            "changeSessionWorkspace" => {
+                handler_rpc(&mut args, |owner, input, context| async move {
+                    owner
+                        .change_session_workspace(decode(input)?, context.scope())
+                        .await?
+                        .complete(&context)
+                })
+            }
+            "sessionWorkspaceAvailable" => {
+                json_rpc(&mut args, |owner, input, context| async move {
+                    encode(
+                        owner
+                            .session_workspace_available(decode(input)?, context.scope())
+                            .await?,
+                    )
+                })
+            }
             "selectBackend" => handler_rpc(&mut args, |owner, input, context| async move {
                 let operation = context.operation().ok_or("agent_mutation_required")?;
                 owner
@@ -398,8 +417,8 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
-            "list" => json_rpc(&mut args, |owner, input, _context| async move {
-                encode(catalog_page(&owner, &decode(input)?).await?)
+            "list" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(catalog_page(&owner, &decode(input)?, &context.scope().cancellation).await?)
             }),
             "catalog" => json_rpc(&mut args, |owner, input, context| async move {
                 let mut input: List = decode(input)?;
@@ -422,7 +441,7 @@ impl Handler for Agent {
                     };
                     let mut retry_immediately = false;
                     if !unchanged || physical_changed {
-                        match catalog_page(&owner, &input).await {
+                        match catalog_page(&owner, &input, &context.scope().cancellation).await {
                             Ok(page) => {
                                 revision = Some(page.revision.clone());
                                 if !matches!(input.position, SessionPosition::Start) {
@@ -957,6 +976,14 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
+            "declineProjectMcp" => json_rpc(&mut args, |owner, input, context| async move {
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .decline_project_mcp(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
             "mcpConfigurations" => json_rpc(&mut args, |owner, input, context| async move {
                 if context.scope().identity.agent().is_some() {
                     return Err("agent_mcp_user_action_required".into());
@@ -975,6 +1002,17 @@ impl Handler for Agent {
                 encode(
                     owner
                         .manage_mcp_server(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
+            "setProjectMcpDecision" => json_rpc(&mut args, |owner, input, context| async move {
+                if context.scope().identity.agent().is_some() {
+                    return Err("agent_mcp_user_action_required".into());
+                }
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .set_project_mcp_decision(decode(input)?, context.scope())
                         .await?,
                 )
             }),
@@ -1172,6 +1210,43 @@ impl Handler for Agent {
     }
 }
 
+async fn execution_admission(args: &CallArgs) -> Result<(), String> {
+    if args.owner.store.checkpoint_execution().is_none()
+        || (args.context.operation().is_none() && args.method != "executorSetup")
+    {
+        return Ok(());
+    }
+    // Only single-Session mutations belong to this grant. Global and cross-Session
+    // mutations require a separate authority and fail closed in this bootstrap mode.
+    if !matches!(
+        args.method.as_str(),
+        "send"
+            | "metadata"
+            | "selectBackend"
+            | "setCompactionPrompt"
+            | "changeSession"
+            | "saveFile"
+            | "snapshotPatch"
+            | "uploadAttachment"
+            | "markRead"
+            | "editQueue"
+            | "compact"
+            | "continueRun"
+            | "stop"
+            | "stopComputerApp"
+            | "respond"
+            | "publishCheckpoint"
+    ) {
+        return Err("mutation_is_outside_execution_grant".into());
+    }
+    let session = args
+        .input
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("execution_grant_requires_session")?;
+    args.owner.require_execution(session).await
+}
+
 #[inline(never)]
 fn box_rpc<Fut>(
     args: &mut Option<CallArgs>,
@@ -1180,12 +1255,11 @@ fn box_rpc<Fut>(
 where
     Fut: Future<Output = HandlerResult> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move { make(owner, input, context).await })
+    let args = args.take().expect("RPC args consumed once");
+    Box::pin(async move {
+        execution_admission(&args).await.map_err(handler_error)?;
+        make(args.owner, args.input, args.context).await
+    })
 }
 #[inline(never)]
 fn handler_rpc<Fut>(
@@ -1195,12 +1269,9 @@ fn handler_rpc<Fut>(
 where
     Fut: Future<Output = Result<HandlerValue, String>> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move { make(owner, input, context).await.map_err(handler_error) })
+    box_rpc(args, |owner, input, context| async move {
+        make(owner, input, context).await.map_err(handler_error)
+    })
 }
 #[inline(never)]
 fn json_rpc<Fut>(
@@ -1210,18 +1281,14 @@ fn json_rpc<Fut>(
 where
     Fut: Future<Output = Result<Value, String>> + std::marker::Send + 'static,
 {
-    let CallArgs {
-        owner,
-        input,
-        context,
-    } = args.take().expect("RPC args consumed once");
-    Box::pin(async move {
+    box_rpc(args, |owner, input, context| async move {
         make(owner, input, context)
             .await
             .map(HandlerValue::Json)
             .map_err(handler_error)
     })
 }
+
 fn decode<T: DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|_| "agent_input_invalid".into())
 }
@@ -1270,8 +1337,9 @@ impl maka_host_runtime::application::NativeOwner for Agent {
 pub(crate) async fn catalog_page_for_tool(
     owner: &Owner,
     input: &List,
+    stop: &tokio_util::sync::CancellationToken,
 ) -> Result<SessionPage, String> {
-    catalog_page(owner, input).await
+    catalog_page(owner, input, stop).await
 }
 pub(crate) async fn history_observation_for_tool(
     owner: &Owner,

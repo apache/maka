@@ -146,7 +146,7 @@ function reactionBurstColor(emoji: string): string {
  * Ephemeral 56x56 native UI-thread Canvas burst (1 expanding ring + 6 soft sparks)
  * mounted only on reaction add/toggle-on and unmounted after 420ms.
  */
-function RoomReactionBurst(props: { emoji: string; onDone(): void }) {
+export function RoomReactionBurst(props: { emoji: string; onDone(): void }) {
   const p = createAnimatedValue(0);
   const color = reactionBurstColor(props.emoji);
   const ringRadius = p.interpolate({ inputRange: [0, 1], outputRange: [6, 22] });
@@ -224,42 +224,93 @@ function RoomReactionBurst(props: { emoji: string; onDone(): void }) {
 }
 
 /** Curated Chinese + collaboration search annotations augmenting EmojiPicker's built-in CLDR data. */
-const ZH_EMOJI_ANNOTATIONS: EmojiAnnotation[] = [
-  { emoji: '👍', label: '赞', keywords: ['赞', '顶', '好', '同意', 'ok', 'like', 'thumbs up'] },
-  { emoji: '❤️', label: '红心', keywords: ['爱', '喜欢', '赞同', 'heart', 'love'] },
-  { emoji: '🔥', label: '火', keywords: ['火', '燃', '棒', '强', '牛', 'fire', 'hot'] },
+const EMOJI_ANNOTATION_SPECS = [
+  {
+    emoji: '👍',
+    key: 'reaction.thumbs_up',
+    keywords: ['赞', '讚', '顶', '好', '同意', 'ok', 'like', 'thumbs up'],
+  },
+  {
+    emoji: '❤️',
+    key: 'reaction.heart',
+    keywords: ['爱', '愛', '喜欢', '喜歡', '赞同', 'heart', 'love'],
+  },
+  { emoji: '🔥', key: 'reaction.fire', keywords: ['火', '燃', '棒', '强', '牛', 'fire', 'hot'] },
   {
     emoji: '👀',
-    label: '围观',
-    keywords: ['看', '已看', '已阅', '在查', '关注', 'eyes', 'looking'],
+    key: 'reaction.eyes',
+    keywords: ['看', '已看', '已阅', '在查', '关注', '圍觀', 'eyes', 'looking'],
   },
-  { emoji: '✅', label: '完成', keywords: ['完成', '搞定', '通过', '确认', '对', 'done', 'check'] },
-  { emoji: '🤔', label: '思考', keywords: ['思考', '疑问', '想想', '待商榷', 'thinking', 'hmm'] },
-  { emoji: '🎉', label: '庆祝', keywords: ['庆祝', '撒花', '恭喜', '发布', 'party', 'tada'] },
-  { emoji: '🚀', label: '火箭', keywords: ['火箭', '上线', '起飞', '发布', 'rocket', 'ship'] },
-  { emoji: '👏', label: '鼓掌', keywords: ['鼓掌', '厉害', '赞叹', 'clap'] },
-  { emoji: '🙌', label: '举双手', keywords: ['欢呼', '太棒了', '感谢', 'hooray'] },
-  { emoji: '🫶', label: '比心', keywords: ['比心', '感谢', '喜欢', 'heart hands'] },
-  { emoji: '💯', label: '满分', keywords: ['满分', '完全同意', '100', 'perfect'] },
-  { emoji: '😂', label: '笑哭', keywords: ['笑哭', '哈哈', '搞笑', 'laugh', 'lol'] },
-  { emoji: '🥹', label: '感动', keywords: ['感动', '泪目', '暖心', 'touched'] },
-  { emoji: '😮', label: '惊讶', keywords: ['惊讶', '哇', '震惊', 'wow'] },
-  { emoji: '😅', label: '汗', keywords: ['汗', '尴尬', '勉强', 'sweat'] },
-  { emoji: '🙏', label: '感谢', keywords: ['感谢', '拜托', '辛苦', 'thanks', 'please'] },
-  { emoji: '🫡', label: '敬礼', keywords: ['敬礼', '收到', '明白', 'salute', 'roger'] },
-  { emoji: '⚡', label: '闪电', keywords: ['快', '闪电', '高效', 'fast', 'zap'] },
-  { emoji: '💡', label: '灵感', keywords: ['灵感', '主意', '想法', 'idea', 'bulb'] },
-  { emoji: '🐛', label: 'Bug', keywords: ['bug', '虫子', '问题', '缺陷'] },
-  { emoji: '🛠️', label: '修复', keywords: ['修', '工具', '重构', 'fix', 'tools'] },
-  { emoji: '📌', label: '置顶', keywords: ['置顶', '重点', '钉住', 'pin'] },
-  { emoji: '🍉', label: '吃瓜', keywords: ['吃瓜', '围观', 'watermelon'] },
-  { emoji: '☕', label: '咖啡', keywords: ['咖啡', '休息', '提神', 'coffee'] },
-  { emoji: '🎯', label: '命中', keywords: ['目标', '精准', '命中', 'target', 'bullseye'] },
-  { emoji: '🧠', label: '大脑', keywords: ['聪明', '思考', '架构', 'brain'] },
-  { emoji: '🤝', label: '握手', keywords: ['合作', '达成一致', '成交', 'handshake'] },
-  { emoji: '👎', label: '踩', keywords: ['踩', '反对', '不赞同', 'thumbs down'] },
-  { emoji: '❓', label: '问号', keywords: ['问号', '疑问', '不确定', 'question'] },
-];
+  {
+    emoji: '✅',
+    key: 'reaction.check',
+    keywords: ['完成', '搞定', '通过', '确认', '对', 'done', 'check'],
+  },
+  {
+    emoji: '🤔',
+    key: 'reaction.thinking',
+    keywords: ['思考', '疑问', '想想', '待商榷', 'thinking', 'hmm'],
+  },
+  {
+    emoji: '🎉',
+    key: 'reaction.party',
+    keywords: ['庆祝', '慶祝', '撒花', '恭喜', '发布', 'party', 'tada'],
+  },
+  {
+    emoji: '🚀',
+    key: 'reaction.rocket',
+    keywords: ['火箭', '上线', '起飞', '发布', 'rocket', 'ship'],
+  },
+  { emoji: '👏', key: 'reaction.clap', keywords: ['鼓掌', '厉害', '赞叹', 'clap'] },
+  {
+    emoji: '🙌',
+    key: 'reaction.raised_hands',
+    keywords: ['欢呼', '歡呼', '太棒了', '感谢', 'hooray'],
+  },
+  { emoji: '🫶', key: 'reaction.heart_hands', keywords: ['比心', '感谢', '喜欢', 'heart hands'] },
+  {
+    emoji: '💯',
+    key: 'reaction.hundred',
+    keywords: ['满分', '滿分', '完全同意', '100', 'perfect'],
+  },
+  { emoji: '😂', key: 'reaction.joy', keywords: ['笑哭', '哈哈', '搞笑', 'laugh', 'lol'] },
+  { emoji: '🥹', key: 'reaction.touched', keywords: ['感动', '感動', '泪目', '暖心', 'touched'] },
+  { emoji: '😮', key: 'reaction.astonished', keywords: ['惊讶', '驚訝', '哇', '震惊', 'wow'] },
+  { emoji: '😅', key: 'reaction.sweat_smile', keywords: ['汗', '尴尬', '尷尬', '勉强', 'sweat'] },
+  {
+    emoji: '🙏',
+    key: 'reaction.pray',
+    keywords: ['感谢', '感謝', '拜托', '辛苦', 'thanks', 'please'],
+  },
+  {
+    emoji: '🫡',
+    key: 'reaction.salute',
+    keywords: ['敬礼', '敬禮', '收到', '明白', 'salute', 'roger'],
+  },
+  { emoji: '⚡', key: 'reaction.zap', keywords: ['快', '闪电', '閃電', '高效', 'fast', 'zap'] },
+  { emoji: '💡', key: 'reaction.bulb', keywords: ['灵感', '靈感', '主意', '想法', 'idea', 'bulb'] },
+  { emoji: '🐛', key: 'reaction.bug', keywords: ['bug', '虫子', '问题', '缺陷'] },
+  { emoji: '🛠️', key: 'reaction.tools', keywords: ['修', '工具', '重构', '修復', 'fix', 'tools'] },
+  { emoji: '📌', key: 'reaction.pin', keywords: ['置顶', '置頂', '重点', '钉住', 'pin'] },
+  { emoji: '🍉', key: 'reaction.watermelon', keywords: ['吃瓜', '围观', 'watermelon'] },
+  { emoji: '☕', key: 'reaction.coffee', keywords: ['咖啡', '休息', '提神', 'coffee'] },
+  { emoji: '🎯', key: 'reaction.target', keywords: ['目标', '精准', '命中', 'target', 'bullseye'] },
+  { emoji: '🧠', key: 'reaction.brain', keywords: ['聪明', '思考', '架构', '大腦', 'brain'] },
+  { emoji: '🤝', key: 'reaction.handshake', keywords: ['合作', '达成一致', '成交', 'handshake'] },
+  { emoji: '👎', key: 'reaction.thumbs_down', keywords: ['踩', '反对', '不赞同', 'thumbs down'] },
+  {
+    emoji: '❓',
+    key: 'reaction.question',
+    keywords: ['问号', '問號', '疑问', '不确定', 'question'],
+  },
+] as const;
+
+const reactionAnnotations = (): EmojiAnnotation[] =>
+  EMOJI_ANNOTATION_SPECS.map((item) => ({
+    emoji: item.emoji,
+    label: tr(item.key),
+    keywords: [tr(item.key), ...item.keywords],
+  }));
 
 const PICKER_GROUPS: { id: EmojiGroupId; glyph: string }[] = [
   { id: 'recent', glyph: '🕒' },
@@ -338,7 +389,7 @@ export function RoomEmojiPickerPopover(props: {
           backgroundColor: C.floating,
         }}
         recent={recentEmojis()}
-        annotations={ZH_EMOJI_ANNOTATIONS}
+        annotations={reactionAnnotations()}
         skinTone={tone()}
         columns={8}
         emojiVersion="15.1"

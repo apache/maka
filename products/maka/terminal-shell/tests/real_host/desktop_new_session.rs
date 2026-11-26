@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
+use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate, mutate_service};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -1548,6 +1548,135 @@ async fn desktop_edits_a_message_in_place_and_forks_only_when_sent() {
     fixture.finish().await;
 }
 
+async fn desktop_asks_a_side_question_beside_a_reply() {
+    let mut fixture = Fixture::open().await;
+    let (_, appearance, _, _, _) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(820),
+        ),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("How does the cache layer work?").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta(
+            "The cache layer sits between the API handlers and the database.\n\n\
+             Reads go through a **write-through** cache keyed by the request digest. \
+             On a miss the handler loads the row, stores it for five minutes, and returns it.\n\n\
+             Writes invalidate the key first and then update the row, so a reader never \
+             sees a value older than the last committed write. CACHE_LAYER_EXPLAINED",
+        )
+        .await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let listed = desktop.sessions().await.len();
+
+    // The card opens at once; nothing is created until the question is sent.
+    let original = desktop.platform.text_input_target();
+    desktop.press("Ask beside").await;
+    desktop.target_after(original).await;
+    desktop.control("Close side question").await;
+    desktop.artifact("side-1-ask");
+    assert_eq!(desktop.sessions().await.len(), listed);
+    desktop.type_text("Why invalidate before the update?").await;
+    desktop.artifact("side-2-typed");
+    desktop.submit().await;
+    let mut side = desktop.request(&mut fixture).await;
+    let body = side.body.to_string();
+    assert!(
+        body.contains("CACHE_LAYER_EXPLAINED"),
+        "the side question lacks the conversation it was asked beside: {body}"
+    );
+    assert!(body.contains("Why invalidate before the update?"), "{body}");
+    desktop.artifact("side-3-working");
+    side.delta(
+        "If the row were updated first, a reader could cache the **old** value just after \
+         the write and keep it for five minutes. Invalidating first closes that window: \
+         the next read misses and loads the committed row. SIDE_ANSWER",
+    )
+    .await;
+    desktop
+        .wait("the side answer did not finish", side.finish())
+        .await;
+    // Its answer stands: the reactions are offered, and the reply names it.
+    desktop.control("Simpler").await;
+    desktop
+        .control("Side question: Why invalidate before the update?")
+        .await;
+    desktop.artifact("side-4-answered");
+    // A side question is not one of the listed conversations.
+    assert_eq!(desktop.sessions().await.len(), listed);
+
+    // A reaction asks on with what it says.
+    desktop.press("Simpler").await;
+    let mut simpler = desktop.request(&mut fixture).await;
+    let body = simpler.body.to_string();
+    assert!(body.contains("Explain that more simply."), "{body}");
+    desktop.artifact("side-5-follow-up");
+    simpler
+        .delta("A reader must never keep a stale copy, so the copy is thrown away first.")
+        .await;
+    desktop
+        .wait("the follow-up did not finish", simpler.finish())
+        .await;
+    desktop.control("Simpler").await;
+    desktop.artifact("side-6-follow-up-answered");
+
+    // Bringing it back puts a reference in the main draft, not its text.
+    desktop.press("Bring to the main conversation").await;
+    desktop
+        .wait("the reference did not reach the main draft", async {
+            loop {
+                let draft = desktop.copy_input().await;
+                if draft.starts_with("[@Why invalidate before the update?](maka://session/") {
+                    break;
+                }
+            }
+        })
+        .await;
+    desktop.artifact("side-7-attached");
+
+    // Closed, the card comes back from its reply.
+    desktop.press("Got it, close").await;
+    desktop
+        .until("the card did not close", || {
+            desktop
+                .controls("Close side question")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("side-8-closed");
+    desktop
+        .press("Side question: Why invalidate before the update?")
+        .await;
+    desktop.control("Close side question").await;
+    desktop.control("Simpler").await;
+    desktop.artifact("side-9-reopened");
+
+    // Discarded, it leaves its reply too.
+    desktop.press("Discard this side question").await;
+    desktop
+        .until("the discarded side question stayed on its reply", || {
+            (desktop.controls("Close side question").is_empty()
+                && desktop
+                    .controls("Side question: Why invalidate before the update?")
+                    .is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let mut fixture = Fixture::open().await;
     let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
@@ -2561,10 +2690,1242 @@ async fn desktop_workspace_stage_inspector_worktrees_and_fullscreen_review() {
     fixture.finish().await;
 }
 
+async fn desktop_remembers_home_model_across_reopen_and_unavailable_fallback() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop
+        .press_until(
+            "Choose model and effort",
+            "Use fixture-model-alt · NSH fixture",
+        )
+        .await;
+    desktop.press("Use fixture-model-alt · NSH fixture").await;
+    let saved = desktop
+        .wait("selected home model was not saved", async {
+            loop {
+                if let Some(saved) = desktop.client.recent_model().await.unwrap()
+                    && matches!(
+                        &saved.backend,
+                        maka_agent_facts::executor::BackendPreference::Model { model_id, .. }
+                            if model_id == "fixture-model-alt"
+                    )
+                {
+                    break saved;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(saved.label.as_deref(), Some("fixture-model-alt"));
+    assert_eq!(desktop.sessions().await.len(), 1);
+
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("HOME_MODEL_REMEMBERED").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert_eq!(
+        request.body["model"], "fixture-model-alt",
+        "{}",
+        request.body
+    );
+    desktop
+        .wait("remembered-model message did not finish", request.finish())
+        .await;
+
+    desktop
+        .press_until("Choose model and effort", "Use fixture-model · NSH fixture")
+        .await;
+    desktop.press("Use fixture-model · NSH fixture").await;
+    desktop
+        .wait("existing session did not switch to fixture-model", async {
+            loop {
+                let sessions = desktop.sessions().await;
+                let created = sessions
+                    .iter()
+                    .find(|session| session["id"] != fixture.session)
+                    .unwrap();
+                if created["backend"]["modelId"] == "fixture-model" {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(
+        desktop.client.recent_model().await.unwrap(),
+        Some(saved.clone())
+    );
+
+    let mut stale_tier = saved.clone();
+    if let maka_agent_facts::executor::BackendPreference::Model { service_tier, .. } =
+        &mut stale_tier.backend
+    {
+        *service_tier = Some("fast".into());
+    }
+    desktop.client.set_recent_model(stale_tier).await.unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("STALE_SPEED_TIER_NORMALIZED").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert_eq!(
+        request.body["model"], "fixture-model-alt",
+        "{}",
+        request.body
+    );
+    desktop
+        .wait("normalized-tier message did not finish", request.finish())
+        .await;
+
+    let unavailable = maka_app_client::RecentModel {
+        backend: maka_agent_facts::executor::BackendPreference::Executor {
+            selection: maka_agent_facts::executor::Selection {
+                executor: "external".into(),
+                settings: maka_agent_facts::executor::Settings {
+                    runtime: Some("antigravity".into()),
+                    model: Some("gemini-4-neon".into()),
+                    thinking_level: Some(
+                        maka_agent_facts::executor::Effort::try_from("high".to_owned()).unwrap(),
+                    ),
+                },
+            },
+        },
+        label: Some("Gemini 4 Neon".into()),
+    };
+    desktop
+        .client
+        .set_recent_model(unavailable.clone())
+        .await
+        .unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("UNAVAILABLE_HOME_MODEL").await;
+    desktop
+        .retry(
+            "unavailable remembered model did not fall back to Choose a model",
+            || !desktop.controls("Manage models").is_empty(),
+            || {
+                if let [composer] = desktop.controls("Focus message composer").as_slice() {
+                    desktop.press_at(composer.center());
+                }
+                desktop.key("enter", false);
+            },
+        )
+        .await;
+    assert_eq!(
+        desktop.client.recent_model().await.unwrap(),
+        Some(unavailable)
+    );
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_renders_provider_citation_markers_as_clean_inline_chips() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    mutate(
+        &client,
+        "send",
+        json!({"sessionId": fixture.session, "backend": {
+            "kind": "model", "connectionId": fixture.selection["connectionId"],
+            "modelId": fixture.selection["modelId"],
+        }, "message": "排查 Windows VM 重启卡在 Hyper-V STIMER0 的原因，并核对 QEMU 上游记录"}),
+    )
+    .await;
+    let mut reply = fixture.next_request().await;
+
+    let commentary_prefix = "定位到了，卡住的 vCPU 反复在写 Hyper-V 的 `STIMER0`，和 QEMU 已记录的 AMD `hv_passthrough` 启动死锁对上了。我会只改这台 VM 的 CPU 参数，用显式的 Hyper-V 特性列表避开这个组合，保留 KVM 和现有磁盘。";
+    let commentary_marker = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let commentary_text = format!("{commentary_prefix} {commentary_marker}");
+    let commentary_start = format!("{commentary_prefix} ").chars().count() as u64;
+    let commentary_end = commentary_text.chars().count() as u64;
+
+    let gitlab_url = "https://gitlab.com/qemu-project/qemu/-/work_items/3468";
+    let gitlab_title = "hv-passthrough on AMD intermittently deadlocks Windows Server 2022 boot in STIMER0 re-arm loop (#3468) · Issues · QEMU / QEMU · GitLab";
+    let github_url = "https://github.com/trycua/cua/commit/8caf2c5d66e8d9d4db11f5c4089a78cce";
+    let github_title =
+        "fix(ci): drop the linux-kvm (concurrent) quarantine · trycua/cua@8caf2c5 · GitHub";
+
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"reasoning","id":"reason-stimer0",
+            "summary":[{"type":"summary_text","text":"核对 QEMU AMD hv_passthrough 与 Hyper-V STIMER0 死锁 issue"}]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.added","item":{
+            "type":"message","id":"msg-commentary","role":"assistant","phase":"commentary","content":[]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_text.delta","item_id":"msg-commentary","delta":format!("{commentary_prefix} \u{E200}ci")}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_text.delta","item_id":"msg-commentary","delta":"te\u{E202}turn137145search0\u{E201}"}))
+        .await;
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"msg-commentary","role":"assistant","phase":"commentary",
+            "content":[{
+                "type":"output_text",
+                "text": commentary_text,
+                "annotations":[{
+                    "type":"url_citation",
+                    "url": gitlab_url,
+                    "title": gitlab_title,
+                    "start_index": commentary_start,
+                    "end_index": commentary_end
+                }]
+            }]
+        }}))
+        .await;
+
+    let final_p1_a = "已定位根因：\u{E200}entity\u{E202}[\"software\",\"QEMU\",\"emulator\"]\u{E201} 在 AMD 宿主上开启 `hv_passthrough` 时会触发 \u{E203}STIMER0 re-arm loop\u{E204} 死锁";
+    let final_m1 = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let final_m2 = "\u{E200}cite\u{E202}turn903513view0\u{E201}";
+    let final_p1_b = "，导致 Windows Guest 重启卡死。\n\n建议改为显式 Hyper-V 特性列表（关闭 `hv_passthrough`），保留 KVM 与现有磁盘。";
+    let final_m3 = "\u{E200}cite\u{E202}turn137145search0\u{E201}";
+    let final_text = format!("{final_p1_a} {final_m1} {final_m2}{final_p1_b} {final_m3}");
+    let m1_start = format!("{final_p1_a} ").chars().count() as u64;
+    let m1_end = m1_start + final_m1.chars().count() as u64;
+    let m2_start = m1_end + 1;
+    let m2_end = m2_start + final_m2.chars().count() as u64;
+    let m3_start = format!("{final_p1_a} {final_m1} {final_m2}{final_p1_b} ")
+        .chars()
+        .count() as u64;
+    let m3_end = final_text.chars().count() as u64;
+
+    reply
+        .packet(json!({"type":"response.output_item.done","item":{
+            "type":"message","id":"msg-final","role":"assistant","phase":"final_answer",
+            "content":[{
+                "type":"output_text",
+                "text": final_text,
+                "annotations":[
+                    {"type":"url_citation","url":gitlab_url,"title":gitlab_title,"start_index":m1_start,"end_index":m1_end},
+                    {"type":"url_citation","url":github_url,"title":github_title,"start_index":m2_start,"end_index":m2_end},
+                    {"type":"url_citation","url":gitlab_url,"title":gitlab_title,"start_index":m3_start,"end_index":m3_end}
+                ]
+            }]
+        }}))
+        .await;
+    reply
+        .packet(json!({"type":"response.completed","response":{
+            "id":"response-citations","usage":{"input_tokens":42,"output_tokens":96}
+        }}))
+        .await;
+    reply.finish_stream().await;
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1080),
+            nsh_terminal::DevicePixels(760),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    desktop
+        .until(
+            "inline citation chips did not appear on final answer",
+            || {
+                (desktop.controls("gitlab.com").len() == 2
+                    && desktop.controls("github.com").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+
+    desktop.artifact("01-final-answer");
+
+    let copy = desktop.control("Copy message").await;
+    let copied = desktop
+        .copy_at("final answer was not copied", copy.center())
+        .await;
+    assert_eq!(
+        copied,
+        "已定位根因：QEMU 在 AMD 宿主上开启 `hv_passthrough` 时会触发 STIMER0 re-arm loop 死锁，导致 Windows Guest 重启卡死。\n\n建议改为显式 Hyper-V 特性列表（关闭 `hv_passthrough`），保留 KVM 与现有磁盘。"
+    );
+
+    desktop.press("Turn work details").await;
+    desktop
+        .until("expanded commentary citation chip did not appear", || {
+            (desktop.controls("gitlab.com").len() == 3 && desktop.controls("github.com").len() == 1)
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("02-expanded-commentary");
+
+    desktop.press("Sources").await;
+    desktop
+        .until("sources inspector links did not appear", || {
+            (!desktop.controls(gitlab_title).is_empty()
+                && !desktop.controls(github_title).is_empty())
+            .then_some(())
+        })
+        .await;
+    desktop.artifact("03-sources-inspector");
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_external_agent_satisfies_new_session_connection_prompt() {
+    let fixture = Fixture::open_with_configuration(
+        Options {
+            no_connections: true,
+            ..Options::default()
+        },
+        |configuration, directory| {
+            configuration["agent"]["external"] = json!({
+                "commands": {
+                    "antigravity": {
+                        "executable": directory.join("missing-antigravity"),
+                    }
+                }
+            });
+        },
+    )
+    .await;
+
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.control("Add a model connection").await;
+    desktop.new_draft().await;
+    desktop.control("Add a model connection").await;
+
+    desktop.press("Add a model connection").await;
+    desktop.control("Enable Antigravity").await;
+    desktop.press("Enable Antigravity").await;
+    desktop
+        .control("I understand and accept the external agent permissions")
+        .await;
+    desktop
+        .press("I understand and accept the external agent permissions")
+        .await;
+    desktop.press("Confirm permissions and enable").await;
+    desktop.control("Disable Antigravity").await;
+
+    desktop.press("Close settings").await;
+    desktop.control("Focus message composer").await;
+    desktop
+        .until(
+            "enabled external agent did not clear the missing-connection prompt",
+            || {
+                desktop
+                    .controls("Add a model connection")
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await;
+
+    desktop.press("Open settings").await;
+    desktop.control("Disable Antigravity").await;
+    desktop.press("Disable Antigravity").await;
+    desktop.control("Enable Antigravity").await;
+
+    desktop.press("Close settings").await;
+    desktop.control("Add a model connection").await;
+
+    // Enabling an external agent from another client on the same Host updates
+    // the visible start pane without reopening Settings.
+    let other_client = desktop.wait("connect peer client", fixture.client()).await;
+    let deployment = desktop
+        .wait(
+            "management read failed",
+            other_client.query("management", "read", json!({})),
+        )
+        .await
+        .unwrap();
+    let external = desktop
+        .wait(
+            "externalAgents query failed",
+            other_client.query("agent", "externalAgents", json!({"inspect": true})),
+        )
+        .await
+        .unwrap();
+    let mut path = external["target"]["path"].as_array().unwrap().clone();
+    path.push(json!("runtimes"));
+    path.push(json!("antigravity"));
+    let configured = desktop
+        .wait(
+            "management configureBatch failed",
+            mutate_service(
+                &other_client,
+                "management",
+                "configureBatch",
+                json!({
+                    "expectedRevision": deployment["source"]["reference"]["revision"],
+                    "edits": [{
+                        "instance": external["target"]["source"]["namespace"],
+                        "changes": [{
+                            "path": path,
+                            "value": { "kind": "boolean", "value": true },
+                        }],
+                    }],
+                }),
+            ),
+        )
+        .await;
+    assert_eq!(configured["status"], "committed");
+    desktop
+        .until(
+            "external agent enabled by another client did not clear the missing-connection prompt",
+            || {
+                desktop
+                    .controls("Add a model connection")
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_markdown_toc_follows_active_turn_and_jumps_to_headings() {
+    let mut fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1560),
+            nsh_terminal::DevicePixels(600),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop.new_draft().await;
+
+    let long_block = |tag: &str, count: usize| {
+        (1..=count)
+            .map(|i| {
+                format!(
+                    "{tag} paragraph {i}: detailed explanation spanning multiple lines so the reply overflows the visible reading window cleanly."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+
+    // Turn 1: stream across headings in multiple chunks, including a fenced code block
+    // inside a list item and a long sparse middle section + wide single-line JSON block.
+    desktop.type_text("Turn one long markdown").await;
+    desktop.submit().await;
+    let mut reply1 = desktop.request(&mut fixture).await;
+    reply1
+        .delta(&format!(
+            "# Turn One Overview\n\n<details><summary>Overview Marker</summary>Overview details.</details>\n\n{}\n\n1. ```python\n   # code comment ignored\n   print(1)\n   ```\n\n",
+            long_block("overview", 8),
+        ))
+        .await;
+    let wide_json = format!(r#"{{"entries":[{}]}}"#, r#""payload","#.repeat(600));
+    reply1
+        .delta(&format!(
+            "## Architecture\n\n{}\n\n```json\n{wide_json}\n```\n\n",
+            long_block("arch", 28),
+        ))
+        .await;
+    reply1
+        .delta(&format!(
+            "### Deep Dive\n\n<details><summary>Deep Dive Marker</summary>Deep dive details.</details>\n\n{}\n\n<details><summary>Turn One End</summary>End of turn one.</details>",
+            long_block("deep", 10),
+        ))
+        .await;
+    desktop
+        .wait("turn 1 reply did not finish", reply1.finish())
+        .await;
+    desktop
+        .until("turn 1 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+
+    // Wait for all three streamed headings before reading settled TOC bounds.
+    let deep_toc = desktop.control("Jump to section: Deep Dive").await;
+    let arch_toc = desktop.control("Jump to section: Architecture").await;
+    let overview_toc = desktop.control("Jump to section: Turn One Overview").await;
+    assert!(
+        desktop
+            .controls("Jump to section: code comment ignored")
+            .is_empty(),
+        "list-nested fenced code comment must not appear in TOC"
+    );
+    // TOC sits in the left margin beside the reading column.
+    assert!(
+        overview_toc.origin.x < px(520.)
+            && arch_toc.origin.x < px(520.)
+            && deep_toc.origin.x < px(520.),
+        "docked TOC should render in the left margin: overview={overview_toc:?}"
+    );
+    desktop.artifact("toc-turn1-wide");
+
+    // Clicking the first heading scrolls the top section into the viewport.
+    desktop.press("Jump to section: Turn One Overview").await;
+    let overview_marker = desktop.control("▸ Overview Marker").await;
+    assert!(
+        overview_marker.origin.y < px(320.),
+        "Overview Marker should land near the top of the viewport: {overview_marker:?}"
+    );
+    desktop.artifact("toc-turn1-overview");
+
+    // Clicking a distant virtualized heading across 28 paragraphs + wide JSON lands on Deep Dive.
+    desktop.press("Jump to section: Deep Dive").await;
+    let deep_marker = desktop.control("▸ Deep Dive Marker").await;
+    assert!(
+        deep_marker.origin.y < px(320.),
+        "Deep Dive Marker should land near the top of the viewport: {deep_marker:?}"
+    );
+    desktop.artifact("toc-turn1-deep-dive");
+
+    // Turn 2: short Markdown reply with a heading that fits inside the viewport -> TOC hides.
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Turn One End").await;
+    desktop.type_text("Turn two short markdown").await;
+    desktop.submit().await;
+    let mut reply2 = desktop.request(&mut fixture).await;
+    // Fits completely within the 406pt reading viewport while taking >50% of it so Turn 2
+    // becomes the viewed turn instead of Turn 1's tail above it.
+    reply2
+        .delta(
+            "# Short Note\n\n- First concise point.\n- Second concise point.\n- Third concise point.\n\nThis short answer fills most of the screen without overflowing.",
+        )
+        .await;
+    desktop
+        .wait("turn 2 reply did not finish", reply2.finish())
+        .await;
+    desktop
+        .until("turn 2 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop
+        .until("TOC should hide when viewing a short turn", || {
+            (desktop.controls("Jump to section: Short Note").is_empty()
+                && desktop
+                    .controls("Jump to section: Turn One Overview")
+                    .is_empty())
+            .then_some(())
+        })
+        .await;
+
+    // Turn 3: tall Markdown reply with distinct headings -> TOC switches to Turn 3.
+    desktop.type_text("Turn three long markdown").await;
+    desktop.submit().await;
+    let mut reply3 = desktop.request(&mut fixture).await;
+    reply3
+        .delta(&format!(
+            "# Rollout Plan\n\n<details><summary>Rollout Marker</summary>Rollout details.</details>\n\n{}\n\n## Verification\n\n<details><summary>Verify Marker</summary>Verify details.</details>\n\n{}",
+            long_block("rollout", 10),
+            long_block("verify", 10),
+        ))
+        .await;
+    desktop
+        .wait("turn 3 reply did not finish", reply3.finish())
+        .await;
+    desktop
+        .until("turn 3 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("Jump to section: Verification").await;
+    desktop.control("Jump to section: Rollout Plan").await;
+    assert!(
+        desktop
+            .controls("Jump to section: Turn One Overview")
+            .is_empty(),
+        "TOC should reflect Turn 3, not Turn 1"
+    );
+
+    // Jump to top of Turn 3, then Return to latest restores bottom section visibility.
+    desktop.press("Jump to section: Rollout Plan").await;
+    let rollout_marker = desktop.control("▸ Rollout Marker").await;
+    assert!(rollout_marker.origin.y < px(320.));
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Verify Marker").await;
+
+    // Live-resize to a medium desktop width (1180x600 with sidebar open -> ~60pt left margin):
+    // switches from docked TOC to compact left rail + native Popover without overlapping prose.
+    desktop
+        .platform
+        .set_viewport(
+            size(
+                nsh_terminal::DevicePixels(1180),
+                nsh_terminal::DevicePixels(600),
+            ),
+            1.0,
+        )
+        .unwrap();
+    desktop.pump();
+    let rail = desktop.control("Table of contents").await;
+    desktop.artifact("toc-turn3-compact-rail");
+    desktop.hover_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.artifact("toc-turn3-compact-hover");
+    // Pin via click, then dismiss with Escape.
+    desktop.press_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.key("escape", false);
+    desktop
+        .until("compact TOC popover should close on Escape", || {
+            desktop
+                .controls("Jump to section: Rollout Plan")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    // Re-pin via click, then dismiss by pressing outside in the prose column.
+    desktop.press_at(rail.center());
+    desktop.control("Jump to section: Rollout Plan").await;
+    desktop.press_at(point(px(900.), px(260.)));
+    desktop
+        .until("compact TOC popover should close on outside press", || {
+            desktop
+                .controls("Jump to section: Rollout Plan")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    // Narrower viewport (960x600 with sidebar open) has no safe left gutter -> TOC hides cleanly.
+    desktop
+        .platform
+        .set_viewport(
+            size(
+                nsh_terminal::DevicePixels(960),
+                nsh_terminal::DevicePixels(600),
+            ),
+            1.0,
+        )
+        .unwrap();
+    desktop.pump();
+    desktop
+        .until("TOC should hide when left gutter is too narrow", || {
+            desktop
+                .controls("Table of contents")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
+    use nsh_terminal::ScrollWheelEvent;
+
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1560),
+            nsh_terminal::DevicePixels(600),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+
+    let toc_bar_peak_luma = |bounds: Bounds<nsh_terminal::Pixels>| -> u8 {
+        let strip = Bounds::new(
+            bounds.origin,
+            size(px(16.).min(bounds.size.width), bounds.size.height),
+        );
+        desktop
+            .pixels(strip)
+            .unwrap_or_default()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| px[0].max(px[1]).max(px[2]))
+            .max()
+            .unwrap_or(0)
+    };
+
+    let client = fixture.client().await;
+    let session_id = fixture.session.clone();
+    let connection_id = fixture.selection["connectionId"].clone();
+    let model_id = fixture.selection["modelId"].clone();
+    let send_turn = |message: &str| {
+        let client = &client;
+        let session = session_id.clone();
+        let connection_id = connection_id.clone();
+        let model_id = model_id.clone();
+        let message = message.to_string();
+        async move {
+            mutate(
+                client,
+                "send",
+                json!({
+                    "sessionId": session,
+                    "backend": {
+                        "kind": "model",
+                        "connectionId": connection_id,
+                        "modelId": model_id,
+                    },
+                    "message": message,
+                }),
+            )
+            .await;
+        }
+    };
+
+    // Turn 1: one turn split across 7 separate assistant/body final_answer rows so the
+    // outer List virtualizes distant rows of the same turn.
+    send_turn("Multi-row seven chapters").await;
+    let mut reply1 = desktop.request(&mut fixture).await;
+    for chapter in 1..=7 {
+        let paragraphs = (1..=26)
+            .map(|p| {
+                format!(
+                    "Chapter {chapter:02} paragraph {p:02}: sustained multi-line narrative ensuring each outer row spans multiple viewport heights."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let text = format!(
+            "# Chapter {chapter:02}\n\n<details><summary>Start {chapter:02}</summary>Chapter start.</details>\n\n{paragraphs}\n\n<details><summary>End {chapter:02}</summary>Chapter end.</details>"
+        );
+        reply1
+            .packet(json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "id": format!("chapter-{chapter}"),
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [{ "type": "output_text", "text": text }]
+                }
+            }))
+            .await;
+    }
+    reply1
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-multi-row", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply1.finish_stream().await;
+    desktop
+        .until("turn 1 multi-row did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("▸ End 07").await;
+
+    // All 7 chapters appear in the TOC even though Chapters 01..03 are virtualized off-screen.
+    for chapter in 1..=7 {
+        desktop
+            .control(&format!("Jump to section: Chapter {chapter:02}"))
+            .await;
+    }
+    // Chapter 07 (the visible row at the bottom) is highlighted, not an off-screen row like Chapter 05.
+    desktop
+        .until(
+            "Chapter 07 should be active over off-screen Chapter 05",
+            || {
+                let [ch5] = desktop.controls("Jump to section: Chapter 05")[..] else {
+                    return None;
+                };
+                let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(ch7) > toc_bar_peak_luma(ch5).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-multirow-ch7");
+
+    // Clicking unmounted Chapter 01 jumps across outer rows to Start 01 and activates Chapter 01.
+    desktop.press("Jump to section: Chapter 01").await;
+    let start01 = desktop.control("▸ Start 01").await;
+    assert!(
+        start01.origin.y < px(320.),
+        "Start 01 should land near top of viewport: {start01:?}"
+    );
+    desktop
+        .until(
+            "Chapter 01 should become active after cross-row jump",
+            || {
+                let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
+                    return None;
+                };
+                let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(ch1) > toc_bar_peak_luma(ch7).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-multirow-ch1");
+
+    // Clicking now-unmounted Chapter 07 jumps back across outer rows to Start 07 and activates Chapter 07.
+    desktop.press("Jump to section: Chapter 07").await;
+    let start07 = desktop.control("▸ Start 07").await;
+    assert!(
+        start07.origin.y < px(320.),
+        "Start 07 should land near top of viewport: {start07:?}"
+    );
+    desktop
+        .until("Chapter 07 should become active after return jump", || {
+            let [ch1] = desktop.controls("Jump to section: Chapter 01")[..] else {
+                return None;
+            };
+            let [ch7] = desktop.controls("Jump to section: Chapter 07")[..] else {
+                return None;
+            };
+            (toc_bar_peak_luma(ch7) > toc_bar_peak_luma(ch1).saturating_add(40)).then_some(())
+        })
+        .await;
+
+    // Toggling "Show message source" on Chapter 07 removes its un-jumpable headings from the TOC,
+    // and toggling "Show formatted message" restores them.
+    desktop.press("Return to latest").await;
+    let end07 = desktop.control("▸ End 07").await;
+    desktop.hover_at(end07.center());
+    desktop.press("Show message source").await;
+    desktop
+        .until("source-mode row should be excluded from TOC", || {
+            desktop
+                .controls("Jump to section: Chapter 07")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.press("Show formatted message").await;
+    desktop.control("Jump to section: Chapter 07").await;
+    desktop.control("▸ End 07").await;
+
+    // Turn 2: 48-heading reply where the TOC itself overflows and scrolls.
+    // Keep pointer over prose (never hovering TOC) and verify initial positioning reaches Section 48.
+    desktop.hover_at(point(px(900.), px(260.)));
+    send_turn("Forty eight sections").await;
+    let mut reply2 = desktop.request(&mut fixture).await;
+    let mut body48 = String::new();
+    for section in 1..=48 {
+        body48.push_str(&format!(
+            "## Section {section:02}\n\nSection {section:02} body paragraph one explaining the architecture.\n\nSection {section:02} body paragraph two with concrete details.\n\n"
+        ));
+    }
+    body48.push_str("<details><summary>Section 48 End</summary>Bottom marker.</details>");
+    reply2
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "long-48",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{ "type": "output_text", "text": body48 }]
+            }
+        }))
+        .await;
+    reply2
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-long-48", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply2.finish_stream().await;
+    desktop
+        .until("turn 2 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("▸ Section 48 End").await;
+
+    // Without hovering the TOC, Section 48 is immediately scrolled into view and highlighted.
+    let sec48 = desktop.control("Jump to section: Section 48").await;
+    desktop
+        .until(
+            "Section 48 should be active on initial render of long TOC",
+            || {
+                let [s48] = desktop.controls("Jump to section: Section 48")[..] else {
+                    return None;
+                };
+                let [s47] = desktop.controls("Jump to section: Section 47")[..] else {
+                    return None;
+                };
+                (toc_bar_peak_luma(s48) > toc_bar_peak_luma(s47).saturating_add(40)).then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("toc-long48-initial");
+
+    // Manually scroll the TOC list up to Section 01, then move the pointer out over prose:
+    // the TOC must stay at Section 01 instead of snapping back to Section 48.
+    desktop.hover_at(sec48.center());
+    desktop
+        .retry(
+            "manual TOC scroll should reach Section 01",
+            || !desktop.controls("Jump to section: Section 01").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: sec48.center(),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., 24.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.hover_at(point(px(900.), px(260.)));
+    for _ in 0..8 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        desktop.pump();
+    }
+    assert!(
+        !desktop.controls("Jump to section: Section 01").is_empty(),
+        "moving pointer out of TOC must not snap manual TOC scroll back to Section 48"
+    );
+
+    // Re-sync Turn 2 back to Section 48 so the native TOC List sits at the bottom offset,
+    // pause follow while viewing Section 48, add a second 48-section turn, then scroll into
+    // Second 01: the reused TOC List must scroll back to Second 01 instead of staying at 34..48.
+    desktop.press("Jump to section: Section 01").await;
+    desktop.hover_at(point(px(900.), px(260.)));
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Section 48 End").await;
+    desktop.control("Jump to section: Section 48").await;
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+            position: point(px(900.), px(260.)),
+            delta: nsh_terminal::ScrollDelta::Lines(point(0., 3.)),
+        })))
+        .unwrap();
+    desktop.pump();
+
+    let mut body48_second = String::from(
+        "## Second 01\n\n<details><summary>Second 01 Start</summary>Top of second long turn.</details>\n\nSecond 01 body paragraph one.\n\nSecond 01 body paragraph two.\n\n",
+    );
+    for section in 2..=48 {
+        body48_second.push_str(&format!(
+            "## Second {section:02}\n\nSecond {section:02} body paragraph one explaining rollout.\n\nSecond {section:02} body paragraph two with verification details.\n\n"
+        ));
+    }
+    body48_second.push_str("<details><summary>Second 48 End</summary>Bottom marker.</details>");
+    send_turn("Second forty eight sections").await;
+    let mut reply3 = desktop.request(&mut fixture).await;
+    reply3
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "long-48-second",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{ "type": "output_text", "text": body48_second }]
+            }
+        }))
+        .await;
+    reply3
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-long-48-second", "usage": { "input_tokens": 10, "output_tokens": 200 } }
+        }))
+        .await;
+    reply3.finish_stream().await;
+    desktop
+        .until("turn 3 did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    // Scroll down from Turn 2's bottom into Turn 3's top (Second 01).
+    desktop
+        .retry(
+            "scrolling down into Turn 3 did not reveal Second 01 Start",
+            || !desktop.controls("▸ Second 01 Start").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: point(px(900.), px(260.)),
+                        delta: nsh_terminal::ScrollDelta::Lines(point(0., -8.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    desktop.control("Jump to section: Second 01").await;
+
+    // Turn 4: short non-overflowing reply with a heading and a URL citation must NOT show TOC
+    // (folded sourceCitation rows are not standalone unmounted output rows).
+    desktop.press("Return to latest").await;
+    desktop.control("▸ Second 48 End").await;
+    send_turn("Short cited answer").await;
+    let mut reply4 = desktop.request(&mut fixture).await;
+    let cite_marker = "\u{E200}cite\u{E202}turn4search0\u{E201}";
+    let cited_prefix = "# Quick Answer\n\nThe result is 42. ";
+    let cited_text = format!(
+        "{cited_prefix}{cite_marker}\n\nShort line two.\n\nShort line three.\n\nShort line four.\n\nShort line five."
+    );
+    let cite_start = cited_prefix.chars().count() as u64;
+    let cite_end = cite_start + cite_marker.chars().count() as u64;
+    reply4
+        .packet(json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "id": "short-cited",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{
+                    "type": "output_text",
+                    "text": cited_text,
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url": "https://example.com/answer",
+                        "title": "Example Reference",
+                        "start_index": cite_start,
+                        "end_index": cite_end
+                    }]
+                }]
+            }
+        }))
+        .await;
+    reply4
+        .packet(json!({
+            "type": "response.completed",
+            "response": { "id": "response-short-cited", "usage": { "input_tokens": 10, "output_tokens": 20 } }
+        }))
+        .await;
+    reply4.finish_stream().await;
+    desktop
+        .until("turn 4 short cited reply did not settle", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    desktop.control("example.com").await;
+    desktop
+        .until("short cited reply must keep TOC hidden", || {
+            desktop
+                .controls("Table of contents")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[cfg(target_os = "macos")]
+async fn desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom() {
+    let mut fixture = Fixture::configured(Options {
+        responses: true,
+        ..Options::default()
+    })
+    .await;
+    let client = fixture.client().await;
+    // Turn 0 is a tall markdown reply full of verbose file:// links so its
+    // provisional raw-markdown height far exceeds its parsed height, causing a
+    // large positive then negative ScrollBy pair when it enters overscan above
+    // the viewport while scrolling upward.
+    let mut tall_markdown = String::from("## Detailed review findings\n\n");
+    for i in 0..55 {
+        tall_markdown.push_str(&format!(
+            "- **Finding {i}**: inspect [scroll_anchor_module_{i}.rs](file:///Users/example/workspace/products/maka/crates/scroll-engine/src/internal/layout/scroll_anchor_module_{i}.rs#L120-L245) and [history_viewport_{i}.tsx](file:///Users/example/workspace/plugins/agent/conversations/ui/components/history_viewport_{i}.tsx#L410-L520) for anchor drift during async markdown hydration.\n",
+        ));
+    }
+    let filler_reply = |label: &str, paragraphs: usize| {
+        let mut out = format!("### {label}\n\n");
+        for p in 0..paragraphs {
+            out.push_str(&format!(
+                "{label} section {p}: verifying scroll anchoring, history pagination, and markdown rendering across multiple turns in the conversation timeline.\n\n"
+            ));
+        }
+        out
+    };
+    let turns = [
+        ("Review the full diff", tall_markdown),
+        ("Check the first follow-up", filler_reply("Follow-up 1", 6)),
+        ("Check the second follow-up", filler_reply("Follow-up 2", 6)),
+        ("Check the third follow-up", filler_reply("Follow-up 3", 10)),
+        ("Summarize final checks", filler_reply("Final summary", 6)),
+    ];
+
+    for (idx, (prompt, body)) in turns.iter().enumerate() {
+        mutate(
+            &client,
+            "send",
+            json!({"sessionId": fixture.session, "backend": {
+                "kind": "model", "connectionId": fixture.selection["connectionId"],
+                "modelId": fixture.selection["modelId"],
+            }, "message": prompt}),
+        )
+        .await;
+        let mut reply = fixture.next_request().await;
+        for r in 0..4 {
+            reply
+                .packet(json!({"type":"response.output_item.done","item":{
+                    "type":"reasoning","id":format!("r-{idx}-{r}"),
+                    "summary":[{"type":"summary_text","text":format!("Checked step {r} for turn {idx}")}]
+                }}))
+                .await;
+        }
+        reply.delta(body).await;
+        reply.finish().await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1732),
+            nsh_terminal::DevicePixels(1080),
+        ),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop
+        .until("latest reply did not render", || {
+            (!desktop.controls("Copy user message").is_empty()
+                && desktop.controls("Return to latest").is_empty())
+            .then_some(())
+        })
+        .await;
+    let top_visible_prompt = |desktop: &Desktop| {
+        desktop
+            .controls("Copy user message")
+            .into_iter()
+            .filter(|b| b.origin.y >= px(48.) && b.origin.y + b.size.height <= px(960.))
+            .min_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap())
+    };
+    let initial_copy = desktop
+        .until("initial user message copy button not visible", || {
+            top_visible_prompt(&desktop)
+        })
+        .await;
+    let initial_prompt = desktop
+        .copy_at("could not copy initial prompt", initial_copy.center())
+        .await;
+    assert_eq!(initial_prompt, "Summarize final checks");
+
+    use nsh_terminal::{ScrollDelta, ScrollWheelEvent, TouchPhase};
+    let center = point(px(950.), px(500.));
+
+    // Scroll steadily upward all the way to Turn 0, crossing the point where
+    // Turn 0 enters overscan and re-measures from provisional raw markdown to
+    // parsed blocks, verifying the viewport reaches and stays on Turn 0.
+    let mut reached_first_turn = false;
+    for flick in 0..32 {
+        desktop
+            .platform
+            .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                position: center,
+                delta: ScrollDelta::Pixels(point(px(0.), px(10.))),
+                touch_phase: TouchPhase::Started,
+            })))
+            .unwrap();
+        desktop.pump();
+        tokio::time::sleep(Duration::from_millis(12)).await;
+        for _ in 0..8 {
+            desktop
+                .platform
+                .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                    position: center,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(22.))),
+                    touch_phase: TouchPhase::Moved,
+                })))
+                .unwrap();
+            desktop.pump();
+            tokio::time::sleep(Duration::from_millis(12)).await;
+        }
+        desktop
+            .platform
+            .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                position: center,
+                delta: ScrollDelta::Pixels(point(px(0.), px(0.))),
+                touch_phase: TouchPhase::Ended,
+            })))
+            .unwrap();
+        for _ in 0..4 {
+            desktop.pump();
+            tokio::time::sleep(Duration::from_millis(12)).await;
+        }
+        assert!(
+            !desktop.controls("Return to latest").is_empty(),
+            "upward flick #{flick} jumped back to the bottom"
+        );
+        if flick >= 10
+            && let Some(copy) = top_visible_prompt(&desktop)
+            && copy.origin.y < px(260.)
+            && desktop
+                .copy_at("could not copy top prompt", copy.center())
+                .await
+                == "Review the full diff"
+        {
+            reached_first_turn = true;
+            break;
+        }
+    }
+    assert!(
+        reached_first_turn,
+        "upward scrolling never reached Turn 0 (Review the full diff)"
+    );
+
+    // Genuine downward scrolling back to the bottom still resumes following.
+    desktop
+        .retry(
+            "scrolling back down to the tail should resume following",
+            || desktop.controls("Return to latest").is_empty(),
+            || {
+                desktop
+                    .platform
+                    .dispatch_input(PlatformInput::ScrollWheel(native!(ScrollWheelEvent {
+                        position: center,
+                        delta: ScrollDelta::Lines(point(0., -18.)),
+                    })))
+                    .unwrap();
+            },
+        )
+        .await;
+    let tail_copy = desktop
+        .until("tail user message copy button did not return", || {
+            top_visible_prompt(&desktop)
+        })
+        .await;
+    assert_eq!(
+        desktop
+            .copy_at("could not copy tail prompt", tail_copy.center())
+            .await,
+        "Summarize final checks"
+    );
+
+    desktop.close().await;
+    fixture.finish().await;
+}
 /// Native cases run on the process main thread, required by AppKit.
 pub(crate) const CASES: &[&str] = &[
+    "desktop_external_agent_satisfies_new_session_connection_prompt",
     "desktop_room_reply_wakes_an_agent_without_mixing_drafts",
     "desktop_remembers_folders_without_restoring_unsent_drafts",
+    "desktop_remembers_home_model_across_reopen_and_unavailable_fallback",
     "desktop_composer_click_and_ime_follow_the_text_after_a_mention",
     "desktop_composer_previews_markdown_and_sends_its_source",
     "desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot",
@@ -2572,12 +3933,18 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_history_anchors_keep_the_reader_off_live_output_until_latest",
     #[cfg(target_os = "macos")]
     "desktop_resumes_live_activity_when_scrolling_back_to_latest",
+    #[cfg(target_os = "macos")]
+    "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
+    "desktop_asks_a_side_question_beside_a_reply",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_composer_large_paste_keeps_controls_on_screen",
     "desktop_system_permission_guidance_uses_native_actions_without_paths",
     "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review",
+    "desktop_renders_provider_citation_markers_as_clean_inline_chips",
+    "desktop_markdown_toc_follows_active_turn_and_jumps_to_headings",
+    "desktop_markdown_toc_tracks_multi_row_turns_and_long_outline",
 ];
 
 pub(crate) fn run(name: &str) {
@@ -2587,11 +3954,17 @@ pub(crate) fn run(name: &str) {
         .build()
         .unwrap();
     match name {
+        "desktop_external_agent_satisfies_new_session_connection_prompt" => {
+            runtime.block_on(desktop_external_agent_satisfies_new_session_connection_prompt())
+        }
         "desktop_room_reply_wakes_an_agent_without_mixing_drafts" => {
             runtime.block_on(rooms::desktop_room_reply_wakes_an_agent_without_mixing_drafts())
         }
         "desktop_remembers_folders_without_restoring_unsent_drafts" => {
             runtime.block_on(desktop_remembers_folders_without_restoring_unsent_drafts())
+        }
+        "desktop_remembers_home_model_across_reopen_and_unavailable_fallback" => {
+            runtime.block_on(desktop_remembers_home_model_across_reopen_and_unavailable_fallback())
         }
         "desktop_composer_click_and_ime_follow_the_text_after_a_mention" => {
             runtime.block_on(desktop_composer_click_and_ime_follow_the_text_after_a_mention())
@@ -2613,8 +3986,14 @@ pub(crate) fn run(name: &str) {
         "desktop_resumes_live_activity_when_scrolling_back_to_latest" => {
             runtime.block_on(desktop_resumes_live_activity_when_scrolling_back_to_latest())
         }
+        #[cfg(target_os = "macos")]
+        "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom" => runtime
+            .block_on(desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom()),
         "desktop_edits_a_message_in_place_and_forks_only_when_sent" => {
             runtime.block_on(desktop_edits_a_message_in_place_and_forks_only_when_sent())
+        }
+        "desktop_asks_a_side_question_beside_a_reply" => {
+            runtime.block_on(desktop_asks_a_side_question_beside_a_reply())
         }
         "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
             runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())
@@ -2630,6 +4009,15 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_workspace_stage_inspector_worktrees_and_fullscreen_review" => {
             runtime.block_on(desktop_workspace_stage_inspector_worktrees_and_fullscreen_review())
+        }
+        "desktop_renders_provider_citation_markers_as_clean_inline_chips" => {
+            runtime.block_on(desktop_renders_provider_citation_markers_as_clean_inline_chips())
+        }
+        "desktop_markdown_toc_follows_active_turn_and_jumps_to_headings" => {
+            runtime.block_on(desktop_markdown_toc_follows_active_turn_and_jumps_to_headings())
+        }
+        "desktop_markdown_toc_tracks_multi_row_turns_and_long_outline" => {
+            runtime.block_on(desktop_markdown_toc_tracks_multi_row_turns_and_long_outline())
         }
         other => panic!("unknown native desktop case: {other}"),
     }

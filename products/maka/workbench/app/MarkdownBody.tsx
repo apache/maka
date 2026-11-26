@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { JSX } from 'nsh';
 import { cleanup, computed, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { SourceChip } from './AnswerSources';
@@ -28,12 +29,15 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
+import { notePassage, type SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
+import type { BindTextViewToc } from './turnToc';
 import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
   citations?(): readonly InlineCitation[] | undefined;
+  bindToc?: BindTextViewToc;
   sourceId: string;
   sessionId: string;
   compact?: boolean;
@@ -41,6 +45,16 @@ export function MarkdownBody(props: {
   interactiveBlocks?: boolean;
   /** False when the surrounding message owns text selection. */
   selectable?: boolean;
+  /**
+   * Wraps the selectable text in the message's own context menu. A secondary click on
+   * selectable text reaches only a menu bound to the selectable view itself.
+   */
+  menu?(body: JSX.Element): JSX.Element;
+  /** The side questions asked beside this reply, whose passages are underlined. */
+  marks?(): readonly SideMark[];
+  openSide?(sessionId: string): void;
+  /** Reports which mark ids matched a prose passage in the rendered document. */
+  onMarksMatch?(ids: ReadonlySet<string>): void;
   /** Compact size in the full text color, for a message another agent sent. */
   fullColor?: boolean;
   /** The complete text, read apart from the row, shown in place of the row's own. */
@@ -84,7 +98,14 @@ export function MarkdownBody(props: {
     });
   };
 
+  const marks = () => props.marks?.() ?? [];
   const rawMarkdown = () => (props.text ? props.text() : props.row().text);
+  const segmentMatches = new Map<string, readonly string[]>();
+  const reportMatches = () => {
+    const matched = new Set<string>();
+    for (const ids of segmentMatches.values()) for (const id of ids) matched.add(id);
+    props.onMarksMatch?.(matched);
+  };
   const segments = computed(() => {
     const text = rawMarkdown();
     return props.interactiveBlocks === false
@@ -137,8 +158,13 @@ export function MarkdownBody(props: {
   const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
   const blockGap = props.compact ? 6 : 16;
 
-  return (
-    <View selectable={props.selectable ?? true}>
+  const body = (
+    <View
+      selectable={props.selectable ?? true}
+      onSelectionChange={(event: { text: string }) =>
+        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
+      }
+    >
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
         else={
@@ -153,7 +179,17 @@ export function MarkdownBody(props: {
             key={(seg) => (seg.kind === 'spec' ? `${ownerIdentity()}\0${seg.key}` : seg.key)}
           >
             {(seg) => {
+              const segKey = seg().key;
+              cleanup(() => {
+                if (segmentMatches.delete(segKey)) reportMatches();
+              });
               const atSegment = () => segmentMarkers().get(seg().key);
+              const initialSeg = seg();
+              const toc =
+                initialSeg.kind === 'markdown'
+                  ? props.bindToc?.(initialSeg.key, initialSeg.start)
+                  : undefined;
+              if (toc) cleanup(() => toc.dispose());
               const extensions = () => {
                 const base = props.interactiveBlocks === false ? [] : markdownExtensions;
                 const inline = atSegment();
@@ -166,11 +202,28 @@ export function MarkdownBody(props: {
                   when={seg().kind === 'spec'}
                   else={
                     <TextView
+                      ref={toc ? (node) => toc.onRef(node) : undefined}
+                      onHeadingsChange={toc ? (event) => toc.onHeadingsChange(event) : undefined}
+                      onVisibleBlocksChange={
+                        toc ? (event) => toc.onVisibleBlocksChange(event) : undefined
+                      }
                       markdown={(() => {
                         const s = seg();
                         return s.kind === 'markdown' ? s.text : '';
                       })()}
                       extensions={extensions()}
+                      marks={marks().map((mark) => ({
+                        id: mark.id,
+                        title: mark.title,
+                        quotes: [...mark.quotes],
+                        active: mark.open,
+                      }))}
+                      onMarkPress={({ id }) => props.openSide?.(id)}
+                      onMarksMatch={({ ids }) => {
+                        if (ids.length > 0) segmentMatches.set(segKey, ids);
+                        else segmentMatches.delete(segKey);
+                        reportMatches();
+                      }}
                       renderCustom={(node) => {
                         const marker = node.name.startsWith('source-')
                           ? atSegment()?.[Number(node.name.slice(7))]
@@ -240,6 +293,8 @@ export function MarkdownBody(props: {
                         heading6: { fontSize: props.compact ? secondaryTextStyle.fontSize : 14 },
                         blockquote: { borderLeftColor: C.line, color: C.secondary },
                         link: { color: C.accent },
+                        mark: { textDecorationColor: C.accent },
+                        activeMark: { color: C.accent, textDecorationColor: C.accent },
                         code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
                         ...codeBlockStyles(color(), props.compact ? 8 : 12),
                         // On the desktop a table is framed as a code block is and ruled only
@@ -314,6 +369,7 @@ export function MarkdownBody(props: {
       </If>
     </View>
   );
+  return props.menu ? props.menu(body) : body;
 }
 
 /** A desktop table cell's lines: a rule `top` wide above it, none beside or below. */

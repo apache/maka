@@ -1,6 +1,6 @@
 ---
 title: 布局
-description: 默认纵向排列的 Flexbox、CSS 网格、尺寸与百分比、宽高比、绝对定位、用 onLayout 测量、响应式布局以及从右到左布局，用 Rust 和 TSX 编写。
+description: 默认纵向排列的 Flexbox、CSS 网格、尺寸与百分比、宽高比、绝对定位、用 onLayout 测量、响应式布局以及从右到左布局，用 TSX 和 Rust 编写。
 order: 34
 group: ui
 demo: guide-layout
@@ -25,6 +25,17 @@ NSH 使用 [Taffy](https://github.com/DioxusLabs/taffy) 为每个元素做布局
 | `minWidth` / `minHeight` | `0` | `auto` |
 | `position` | `"relative"` | `static` |
 
+```tsx tabs
+<View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: 16 }}>
+  <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
+  <View style={{ flex: 1, gap: 2 }}>
+    <Text style={{ fontWeight: "600" }}>{props.name}</Text>
+    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
+  </View>
+  <Text style={{ color: "#6e7781" }}>{props.time}</Text>
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
@@ -40,17 +51,6 @@ view()
             .child(text(message).text_color(rgb(0x6e7781)).number_of_lines(1)),
     )
     .child(text(time).text_color(rgb(0x6e7781)))
-```
-
-```tsx tabs
-<View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: 16 }}>
-  <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
-  <View style={{ flex: 1, gap: 2 }}>
-    <Text style={{ fontWeight: "600" }}>{props.name}</Text>
-    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
-  </View>
-  <Text style={{ color: "#6e7781" }}>{props.time}</Text>
-</View>
 ```
 
 | 属性 | 取值 | Rust |
@@ -69,6 +69,14 @@ view()
 
 `flex` 是 CSS 的简写，与 Tailwind 的 `flex-*` 类相同：数字 `n` 表示按 `n` 增长、按 1 收缩、基准尺寸为 0，因此 `flex: 1` 的兄弟元素（Rust 中的 `.flex_1()`、类 `flex-1`）无论内容多少都会平分空间；`"none"` 即 `0 0 auto`（视图保持自身尺寸），`"auto"` 即 `1 1 auto`，`"initial"` 即 `0 1 auto`，也可以写出增长、收缩和基准尺寸（`"2 0 50%"`、`"1 1 120px"`）。由于最小尺寸默认为 0，`flex: 0`（`0 1 0`）会把视图压缩到 0，除非用 `minWidth: "auto"` 保留内容的尺寸。
 
+```tsx tabs
+<View style={{ flexDirection: "row", gap: 8 }}>
+  <View style={{ flex: 1, height: 36, backgroundColor: "#c8e1ff" }} />   {/* one share */}
+  <View style={{ flex: 2, height: 36, backgroundColor: "#79b8ff" }} />   {/* two shares */}
+  <View style={{ width: 36, height: 36, backgroundColor: "#0366d6" }} /> {/* fixed */}
+</View>
+```
+
 ```rust tabs
 view()
     .flex_row()
@@ -79,14 +87,6 @@ view()
     .child(view().flex_grow(2.0).flex_shrink(1.0).basis(px(0.0)).h(px(36.0)).bg(rgb(0x79b8ff)))
     // 固定尺寸。
     .child(view().size(px(36.0)).bg(rgb(0x0366d6)))
-```
-
-```tsx tabs
-<View style={{ flexDirection: "row", gap: 8 }}>
-  <View style={{ flex: 1, height: 36, backgroundColor: "#c8e1ff" }} />   {/* one share */}
-  <View style={{ flex: 2, height: 36, backgroundColor: "#79b8ff" }} />   {/* two shares */}
-  <View style={{ width: 36, height: 36, backgroundColor: "#0366d6" }} /> {/* fixed */}
-</View>
 ```
 
 由于最小尺寸默认为 0，行内 `flex: 1` 的文字会收缩并换行，而不会把兄弟元素挤出去。`minWidth: "auto"` / `minHeight: "auto"`（`min-w-auto` / `min-h-auto`，Rust 中为 `.min_w(auto())`）是 CSS 的自动最小尺寸：收缩的元素停在内容的最小尺寸，文字即最长的单词，与 Web 一致。
@@ -112,12 +112,12 @@ view()
 
 `aspectRatio` 根据已知的一边计算另一边：
 
-```rust tabs
-view().w_full().aspect_ratio(16.0 / 9.0).bg(black())
-```
-
 ```tsx tabs
 <View style={{ width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000000" }} />
+```
+
+```rust tabs
+view().w_full().aspect_ratio(16.0 / 9.0).bg(black())
 ```
 
 来自应用资源的图片有自然尺寸，未指定尺寸时按自然尺寸布局（[图片与资源](./images-and-assets.md)）。远程图片在加载完成前没有尺寸：请为它们指定尺寸。
@@ -125,6 +125,15 @@ view().w_full().aspect_ratio(16.0 / 9.0).bg(black())
 ## 网格
 
 `display: "grid"`（Rust 中的 `.grid()`）把子元素排进 CSS 网格轨道：
+
+```tsx tabs
+<View style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+  <View style={{ gridColumn: "span 2", height: 60, backgroundColor: "#d8b9ff" }} />
+  <View style={{ height: 60, backgroundColor: "#b083f0" }} />
+  <View style={{ gridRow: "span 2", backgroundColor: "#8250df" }} />
+  <View style={{ gridColumn: "2 / 4", height: 60, backgroundColor: "#6639ba" }} />
+</View>
+```
 
 ```rust tabs
 view()
@@ -135,15 +144,6 @@ view()
     .child(view().h(px(60.0)).bg(rgb(0xb083f0)))
     .child(view().row_span(2).bg(rgb(0x8250df)))
     .child(view().col_start(2).col_end(4).h(px(60.0)).bg(rgb(0x6639ba)))
-```
-
-```tsx tabs
-<View style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
-  <View style={{ gridColumn: "span 2", height: 60, backgroundColor: "#d8b9ff" }} />
-  <View style={{ height: 60, backgroundColor: "#b083f0" }} />
-  <View style={{ gridRow: "span 2", backgroundColor: "#8250df" }} />
-  <View style={{ gridColumn: "2 / 4", height: 60, backgroundColor: "#6639ba" }} />
-</View>
 ```
 
 | 属性 | 取值 | Rust |
@@ -159,6 +159,13 @@ view()
 
 模板在方括号中为网格线命名，每条线可以有一个或多个名称，项目可以按名称放置，与 CSS 相同（在 Rust 中按线的编号放置）：
 
+```tsx tabs
+<View style={{ display: "grid", gridTemplateColumns: "[full-start] 16px [content-start] 1fr [content-end] 16px [full-end]" }}>
+  <View style={{ gridColumn: "content-start / content-end", height: 60, backgroundColor: "#b083f0" }} />
+  <View style={{ gridColumn: "full-start / full-end", height: 60, backgroundColor: "#8250df" }} />
+</View>
+```
+
 ```rust tabs
 view()
     .grid()
@@ -169,13 +176,6 @@ view()
     .child(view().col_start(1).col_end(4).h(px(60.0)).bg(rgb(0x8250df)))
 ```
 
-```tsx tabs
-<View style={{ display: "grid", gridTemplateColumns: "[full-start] 16px [content-start] 1fr [content-end] 16px [full-end]" }}>
-  <View style={{ gridColumn: "content-start / content-end", height: 60, backgroundColor: "#b083f0" }} />
-  <View style={{ gridColumn: "full-start / full-end", height: 60, backgroundColor: "#8250df" }} />
-</View>
-```
-
 在网格中，`justifyContent` 和 `alignContent` 默认是 CSS 的 `"normal"`：尺寸为 `auto` 的轨道会拉伸以填满容器，因此有高度但没有行模板的网格会把高度分给各行。显式设置的值（`"start"`、`"center"`、`"space-between"` 等）按 CSS 的方式放置轨道。对齐类设置的值与 Tailwind CSS 完全相同：`content-start`（`align-content: flex-start`）和 `place-content-start` 把轨道放在起始处，`content-normal` 和 `justify-normal` 让轨道拉伸，与浏览器中一致。
 
 `display: "block"` 使用 CSS 块布局（子元素依次堆叠，每个都与容器同宽），`display: "none"`（`.hidden()`）则把视图从布局中移除。
@@ -183,6 +183,15 @@ view()
 ## 绝对定位
 
 `position: "absolute"`（`.absolute()`）让视图脱离文档流，并根据 `top`、`right`、`bottom`、`left` 相对父元素定位：
+
+```tsx tabs
+<View style={{ height: 200 }}>
+  <Image src={cover} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }} />
+  <View style={{ position: "absolute", left: 12, right: 12, bottom: 12 }}>
+    <Text style={{ color: "#ffffff", fontWeight: "700" }}>Caption</Text>
+  </View>
+</View>
+```
 
 ```rust tabs
 view()
@@ -198,28 +207,11 @@ view()
     )
 ```
 
-```tsx tabs
-<View style={{ height: 200 }}>
-  <Image src={cover} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }} />
-  <View style={{ position: "absolute", left: 12, right: 12, bottom: 12 }}>
-    <Text style={{ color: "#ffffff", fontWeight: "700" }}>Caption</Text>
-  </View>
-</View>
-```
-
 偏移量接受点和百分比（Rust 中的 `.top(..)`、`.right(..)`、`.bottom(..)`、`.left(..)`、`.inset(..)`）。同时设置了 `left` 和 `right`（或 `top` 和 `bottom`）而没有设置尺寸的视图，会在两者之间拉伸。靠后的兄弟元素绘制在靠前的之上；`zIndex`（`.z_index(n)`）可以改变这个顺序。
 
 ## 测量
 
 `onLayout`（`.on_layout(..)`）在每次布局导致视图 frame 变化后报告它相对父元素的 frame：
-
-```rust tabs
-let width = signal(0.0_f32);
-
-view()
-    .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
-    .child(text(move || format!("{} points wide", width.get())))
-```
 
 ```tsx tabs
 const width = signal(0);
@@ -229,17 +221,25 @@ const width = signal(0);
 </View>
 ```
 
-frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `{ bounds }`，其值是一个 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个 surface 的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和缩放变化，读取它们的样式会随 surface 改变。桌面平台上宿主不可见：窗口自己的尺寸是它的 `WindowRef.state()?.contentBounds`（Rust 为 `WindowRef::state()`），跟随该窗口缩放：
-
 ```rust tabs
-view().style_when(|| window().width > px(600.0), |s| s.flex_row())
+let width = signal(0.0_f32);
+
+view()
+    .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
+    .child(text(move || format!("{} points wide", width.get())))
 ```
+
+frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `{ bounds }`，其值是一个 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个 surface 的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和缩放变化，读取它们的样式会随 surface 改变。桌面平台上宿主不可见：窗口自己的尺寸是它的 `WindowRef.state()?.contentBounds`（Rust 为 `WindowRef::state()`），跟随该窗口缩放：
 
 ```tsx tabs
 import { View } from "nsh";
 import { windowSize } from "nsh";
 
 <View style={{ flexDirection: windowSize().width > 600 ? "row" : "column" }} />
+```
+
+```rust tabs
+view().style_when(|| window().width > px(600.0), |s| s.flex_row())
 ```
 
 Tailwind 的断点（`sm:`、`md:` 等）以及 `portrait:` / `landscape:` 不用写代码就能达到同样的效果。
@@ -257,19 +257,6 @@ Tailwind 的断点（`sm:`、`md:` 等）以及 `portrait:` / `landscape:` 不�
 - 逻辑属性跟随方向，行内起始侧是右侧：`marginStart`、`marginEnd`、`paddingStart`、`paddingEnd`、`start`、`end`、`borderStartWidth`、`borderEndColor`、`borderTopStartRadius` 等，以及 `textAlign: "start"` / `"end"`（类为 `ps-4`、`ms-2`、`start-0`、`border-s`、`rounded-ss-lg`、`text-start`；Rust 中为 `.ms(..)`、`.me(..)`、`.ps(..)`、`.pe(..)`、`.border_s(..)`、`.rounded_ss(..)` 等）；`marginHorizontal` 和 `paddingHorizontal` 同时设置两侧；
 - `textAlign: "auto"` 的文字右对齐，原生控件也会镜像。
 
-```rust tabs
-view()
-    .flex_row()
-    .gap_2()
-    .child(view().ms_4().rounded_ss(px(12.0)).size(px(44.0)).bg(rgb(0x54aeff)))
-
-let rtl = signal(false);
-view()
-    .direction(move || if rtl.get() { LayoutDirection::Rtl } else { LayoutDirection::Ltr })
-    .on_press(move |_: &()| rtl.set(!rtl.get()))
-    .child(text(move || if rtl.get() { "Right to left" } else { "Left to right" }))
-```
-
 ```tsx tabs
 import { signal, Text, View } from "nsh";
 
@@ -283,6 +270,19 @@ const rtl = signal(false);
     <Text>{rtl() ? "Right to left" : "Left to right"}</Text>
   </View>
 </View>
+```
+
+```rust tabs
+view()
+    .flex_row()
+    .gap_2()
+    .child(view().ms_4().rounded_ss(px(12.0)).size(px(44.0)).bg(rgb(0x54aeff)))
+
+let rtl = signal(false);
+view()
+    .direction(move || if rtl.get() { LayoutDirection::Rtl } else { LayoutDirection::Ltr })
+    .on_press(move |_: &()| rtl.set(!rtl.get()))
+    .child(text(move || if rtl.get() { "Right to left" } else { "Left to right" }))
 ```
 
 方向的变化（语言的或视图的）会立即生效，无需重启。`direction` 样式也可以让单个视图及其子元素保持自己的方向，例如让电话号码保持从左到右。在 Android 上，嵌入 NSH 的应用需要在 manifest 中设置 `android:supportsRtl="true"`，原生控件才会镜像。

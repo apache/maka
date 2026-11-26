@@ -161,8 +161,9 @@ fn validate_ranges(
         // The canonical writer maintains pending indexes. Do not replay every
         // completed model item or materialize the source transcript to fork it.
         let view = crate::sql::load(c, range.run, &[], false)?;
-        // Unknown policy is shared with the catalog; its late counter is not used here.
-        let unknown = crate::session_catalog::run_status(&view, 0).unknown_effects;
+        // Unknown policy is shared with the catalog, except a terminal native external
+        // process whose physical exit is confirmed may fork without losing its catalog flag.
+        let unknown = crate::session_catalog::has_unknown_effects(&view, true);
         if view.terminal.is_none()
             || unknown
             || view.attempts.values().any(|attempt| {
@@ -176,9 +177,10 @@ fn validate_ranges(
             })
             || view.external.as_ref().is_some_and(|task| {
                 (task.closed.is_none()
+                    && !view.closed_native_process()
                     && view.terminal != Some(maka_agent_facts::durable::Terminal::Cancelled))
                     || task.cleanup != OperationCleanup::Confirmed
-                    || task.effects.values().any(|effect| effect.pending())
+                    || task.effects.values().any(|effect| effect.unsettled())
             })
         {
             return Err(invalid(

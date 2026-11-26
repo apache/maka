@@ -103,6 +103,7 @@ NSH 通过 `nsh` 的原语、`nsh/base` 的无样式基础组件，以及属于�
 | 移动优先的单列布局 | 手机上单列，桌面上是有最小窗口尺寸定义的可调整 shell |
 | 关键操作只在 hover 时出现 | 键盘、触摸和指针都可达，不依赖 hover 才存在 |
 | 每行放一排 hover-only 图标按钮 | 一个可见主操作，次要命令使用 `Menu` / `ContextMenu` |
+| 菜单里某一行在原位展开它的下级项（accordion） | `Submenu`：桌面上在该行旁级联展开，手机的 sheet 里替换当前菜单 |
 | 用 Link 样式文字执行应用 command | 使用应用的默认、outline 或 ghost 样式的 `Button`；链接样式只用于 URL、网页资源或 Email 地址 |
 | 全局采用很大的触摸密度 | 触摸屏上使用适合手指的目标；有指针时默认 medium，专业数据区域才局部紧凑 |
 | 每个平台都画一个标题栏和提示卡片 | iOS 与 Android 上使用系统标题栏和 `AlertDialog`；桌面与 Web 上使用页面的 `header` 插槽 |
@@ -156,6 +157,13 @@ NSH 通过 `nsh` 的原语、`nsh/base` 的无样式基础组件，以及属于�
 - `chart-1` 到 `chart-5`：数据序列；
 - `border`、`input` 和 `ring`：结构与交互。
 
+```tsx tabs
+<View class="gap-1 rounded-(--radius) border border-border bg-background p-4">
+  <Text class="text-foreground">余额</Text>
+  <Text class="text-sm text-muted-foreground">刚刚更新</Text>
+</View>
+```
+
 ```rust tabs
 use nsh_base::theme;
 
@@ -168,13 +176,6 @@ view()
     .gap_1()
     .child(text("余额").text_color(move || theme().foreground))
     .child(text("刚刚更新").text_sm().text_color(move || theme().muted_foreground))
-```
-
-```tsx tabs
-<View class="gap-1 rounded-(--radius) border border-border bg-background p-4">
-  <Text class="text-foreground">余额</Text>
-  <Text class="text-sm text-muted-foreground">刚刚更新</Text>
-</View>
 ```
 
 不要把状态色当装饰，也不要只依赖颜色表达含义。自定义表面必须在明暗主题和自定义主题（包括嵌入你的应用的宿主应用主题）中验证；不能假设 foreground 一定是黑色或 background 一定是白色。
@@ -367,6 +368,25 @@ NSH 的 flex child 即使设置 `flex-1`，也可能因为长内容拒绝收缩�
 
 每个字段使用可见 label，help 与 validation 放在所描述字段附近。相关字段应对齐，但不要强迫长 label 进入过窄固定列。独立选择用 `Checkbox`，少量可见互斥项用由 `Radio` 组成的 [`RadioGroup`](../elements/radio.md)，较长集合用列出选项的 `Menu`，立即生效的设置用 [`Switch`](../elements/switch.md)。它们的部件（开关的轨道和滑块、复选框的指示器）由应用设置样式，`checked:`、`indeterminate:` 和 `disabled:` 类名跟随控件：
 
+```tsx tabs
+import { Text } from "nsh";
+import { Switch } from "nsh/base";
+
+function SettingSwitch(props: { label: string; on: boolean; onChange: (e: { checked: boolean }) => void }) {
+  return (
+    <Switch
+      checked={props.on}
+      onChange={props.onChange}
+      class="flex-row items-center gap-3"
+      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
+      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+    >
+      <Text class="text-foreground">{props.label}</Text>
+    </Switch>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{switch, theme};
 
@@ -397,26 +417,31 @@ fn setting_switch(label: &'static str, on: Signal<bool>) -> impl IntoElement {
 }
 ```
 
+“全选”复选框用不确定状态表示部分选中：
+
 ```tsx tabs
 import { Text } from "nsh";
-import { Switch } from "nsh/base";
+import { Checkbox } from "nsh/base";
 
-function SettingSwitch(props: { label: string; on: boolean; onChange: (e: { checked: boolean }) => void }) {
+function SelectAll(props: { selected: number; total: number; onChange: (e: { checked: boolean }) => void }) {
   return (
-    <Switch
-      checked={props.on}
+    <Checkbox
+      checked={props.selected === props.total}
+      indeterminate={props.selected > 0 && props.selected < props.total}
       onChange={props.onChange}
-      class="flex-row items-center gap-3"
-      trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
-      thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
+      class="flex-row items-center gap-2"
+      indicatorClass="size-5 items-center justify-center rounded-(--radius) border-2 border-border checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary"
+      indicator={
+        <Text class="text-primary-foreground">
+          {props.selected === props.total ? "✓" : props.selected > 0 ? "–" : ""}
+        </Text>
+      }
     >
-      <Text class="text-foreground">{props.label}</Text>
-    </Switch>
+      <Text class="text-foreground">全选</Text>
+    </Checkbox>
   );
 }
 ```
-
-“全选”复选框用不确定状态表示部分选中：
 
 ```rust tabs
 use nsh_base::{checkbox, theme};
@@ -448,30 +473,6 @@ fn mark(selected: usize, total: usize) -> &'static str {
 }
 ```
 
-```tsx tabs
-import { Text } from "nsh";
-import { Checkbox } from "nsh/base";
-
-function SelectAll(props: { selected: number; total: number; onChange: (e: { checked: boolean }) => void }) {
-  return (
-    <Checkbox
-      checked={props.selected === props.total}
-      indeterminate={props.selected > 0 && props.selected < props.total}
-      onChange={props.onChange}
-      class="flex-row items-center gap-2"
-      indicatorClass="size-5 items-center justify-center rounded-(--radius) border-2 border-border checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary"
-      indicator={
-        <Text class="text-primary-foreground">
-          {props.selected === props.total ? "✓" : props.selected > 0 ? "–" : ""}
-        </Text>
-      }
-    >
-      <Text class="text-foreground">全选</Text>
-    </Checkbox>
-  );
-}
-```
-
 操作进行中禁用重复提交，保留用户输入，并在操作附近显示结果。让输入框保持在软键盘上方（`env(keyboard-inset-height)`）。Dialog 只用于短而聚焦的决策；需要探索或大量字段的流程使用完整页面或 sheet。
 
 加载表现必须对应真实的等待。设置面板内容已经可用时，切换应立即完成；只有内容确实在加载且轮廓已知时，才使用骨架图。
@@ -485,8 +486,28 @@ function SelectAll(props: { selected: number; total: number; onChange: (e: { che
 - 跨产品重复且带有领域语言或规则的模式，应封装为应用组件。
 - 按语义角色使用标准组件。`Menu`、`ContextMenu`、`Popover`、`Sheet`、`Dialog` 与 `AlertDialog` 不是可以互换的容器；它们分别拥有选择、焦点、键盘操作、关闭方式和布局契约，在每种设备上也有各自的形式。
 - 保留同类组件的几何规则。菜单行的上下左右内边距、高度、图标槽、勾选槽、分隔线、圆角和状态样式必须统一；不能用自定义弹出层模仿一个间距仅仅接近标准组件的菜单。
+- 菜单的下级项用 `Submenu`。菜单中某一行下面的一组项（语言、外观、最近打开、导出为）是一个 `Submenu`，触发行末尾带向右的箭头：桌面上指针移到该行时在旁边级联展开，第一项与该行对齐，与 macOS、Windows、GTK 的菜单一致；手机上在 sheet 中替换当前菜单。不要用向下转的箭头加缩进行把下级项在原位展开：没有哪个平台的菜单这样做，菜单会在指针下变高、移位，这些行也失去子菜单的左右方向键和读屏角色。需要一直可见的少量选项改用分组：平铺、不缩进，一个不可选的标题，下面是带勾选的项，前后用分隔线隔开。
 - 不要仅为重命名每个 prop 或冻结所有能力而包装一层组件。
 - 无产品样式的复用行为放入 `nsh/base`，或放入应用各产品共享的 crate；有主题观点的表现留在应用的组件中。
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Button } from "nsh/base";
+
+// 表单底部：默认样式的取消，以及主要的提交。
+function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
+  return (
+    <View class="flex-row justify-end gap-2">
+      <Button onPress={props.onCancel} class="rounded-(--radius) border border-border px-4 py-2 active:bg-muted">
+        <Text class="text-foreground">取消</Text>
+      </Button>
+      <Button onPress={props.onCreate} class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
+        <Text class="text-primary-foreground">创建</Text>
+      </Button>
+    </View>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{button, theme};
@@ -518,25 +539,6 @@ fn form_actions(cancel: impl Fn() + 'static, create: impl Fn() + 'static) -> imp
                 .active(|s| s.bg(move || theme().primary.opacity(0.9)))
                 .child(text("创建").text_color(move || theme().primary_foreground)),
         )
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Button } from "nsh/base";
-
-// 表单底部：默认样式的取消，以及主要的提交。
-function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
-  return (
-    <View class="flex-row justify-end gap-2">
-      <Button onPress={props.onCancel} class="rounded-(--radius) border border-border px-4 py-2 active:bg-muted">
-        <Text class="text-foreground">取消</Text>
-      </Button>
-      <Button onPress={props.onCreate} class="rounded-(--radius) bg-primary px-4 py-2 active:bg-primary/90">
-        <Text class="text-primary-foreground">创建</Text>
-      </Button>
-    </View>
-  );
 }
 ```
 
@@ -579,6 +581,23 @@ function FormActions(props: { onCancel: () => void; onCreate: () => void }) {
 
 选中状态是信息模型的一部分，不是可选润色。标签页、分段选择、可选行、筛选项与导航入口必须持续显示选中状态（`selected`，读屏软件会读出）。拥有菜单的按钮在弹出层关闭前必须保持按下或打开外观；悬停无法说明触发按钮与弹出层之间的关系。
 
+```tsx tabs
+import { Text } from "nsh";
+import { Tab } from "nsh/base";
+
+function SectionTab(props: { label: string; selected: boolean; onPress: () => void }) {
+  return (
+    <Tab
+      selected={props.selected}
+      onPress={props.onPress}
+      class="group rounded-(--radius) px-3 py-2 selected:bg-muted"
+    >
+      <Text class="text-muted-foreground group-selected:text-foreground">{props.label}</Text>
+    </Tab>
+  );
+}
+```
+
 ```rust tabs
 use nsh_base::{tab, theme};
 
@@ -594,23 +613,6 @@ fn section_tab(label: &'static str, id: Section, current: Signal<Section>) -> im
         .child(text(label).text_color(move || {
             if selected() { theme().foreground } else { theme().muted_foreground }
         }))
-}
-```
-
-```tsx tabs
-import { Text } from "nsh";
-import { Tab } from "nsh/base";
-
-function SectionTab(props: { label: string; selected: boolean; onPress: () => void }) {
-  return (
-    <Tab
-      selected={props.selected}
-      onPress={props.onPress}
-      class="group rounded-(--radius) px-3 py-2 selected:bg-muted"
-    >
-      <Text class="text-muted-foreground group-selected:text-foreground">{props.label}</Text>
-    </Tab>
-  );
 }
 ```
 
@@ -637,6 +639,35 @@ Hover 应克制，因为触摸、键盘和 accessibility 操作没有 hover。�
 - 悬停时出现的图标只能是快捷入口，同一命令必须在其他位置仍可到达。
 
 这不只是视觉偏好。`nsh/base` 的菜单已经拥有在触发者旁的定位、桌面上层叠展开的子菜单与手机上原地替换的表单页子菜单、通过选中项目、点按外部、Escape 或返回键关闭，以及面向读屏软件的 menu 与 menu item 角色。自定义 hover button strip 必须重新实现这些行为，而且触摸、keyboard-only 与许多 assistive technology workflow 根本看不到它。
+
+```tsx tabs
+import { Text, View } from "nsh";
+import { Menu, MenuItem, MenuSeparator } from "nsh/base";
+
+/** 应用的弹出层表面，菜单、弹出框和工具提示共用。 */
+export const popup = "min-w-48 rounded-(--radius) border border-border bg-popover p-1 shadow-lg";
+const item = "rounded-(--radius) px-3 py-2 hover:bg-muted active:bg-muted";
+
+function MoreMenu(props: { onRename: () => void; onDuplicate: () => void; onDelete: () => void }) {
+  return (
+    <Menu
+      offset={4}
+      popupClass={popup}
+      backdropClass="bg-black/50"
+      trigger={
+        <View accessibilityLabel="更多操作" class="size-11 items-center justify-center rounded-full active:bg-muted">
+          <Text class="text-foreground">⋯</Text>
+        </View>
+      }
+    >
+      <MenuItem onSelect={props.onRename} class={item}><Text class="text-foreground">重命名…</Text></MenuItem>
+      <MenuItem onSelect={props.onDuplicate} class={item}><Text class="text-foreground">复制</Text></MenuItem>
+      <MenuSeparator class="my-1 h-px bg-border" />
+      <MenuItem onSelect={props.onDelete} class={item}><Text class="text-foreground">删除…</Text></MenuItem>
+    </Menu>
+  );
+}
+```
 
 ```rust tabs
 use nsh_base::{menu, menu_item, menu_separator, theme};
@@ -683,35 +714,6 @@ fn more_menu(rename: impl Fn() + 'static, duplicate: impl Fn() + 'static, delete
         .child(item("复制", duplicate))
         .child(menu_separator().h(px(1.0)).my_1().bg(move || theme().border))
         .child(item("删除…", delete))
-}
-```
-
-```tsx tabs
-import { Text, View } from "nsh";
-import { Menu, MenuItem, MenuSeparator } from "nsh/base";
-
-/** 应用的弹出层表面，菜单、弹出框和工具提示共用。 */
-export const popup = "min-w-48 rounded-(--radius) border border-border bg-popover p-1 shadow-lg";
-const item = "rounded-(--radius) px-3 py-2 hover:bg-muted active:bg-muted";
-
-function MoreMenu(props: { onRename: () => void; onDuplicate: () => void; onDelete: () => void }) {
-  return (
-    <Menu
-      offset={4}
-      popupClass={popup}
-      backdropClass="bg-black/50"
-      trigger={
-        <View accessibilityLabel="更多操作" class="size-11 items-center justify-center rounded-full active:bg-muted">
-          <Text class="text-foreground">⋯</Text>
-        </View>
-      }
-    >
-      <MenuItem onSelect={props.onRename} class={item}><Text class="text-foreground">重命名…</Text></MenuItem>
-      <MenuItem onSelect={props.onDuplicate} class={item}><Text class="text-foreground">复制</Text></MenuItem>
-      <MenuSeparator class="my-1 h-px bg-border" />
-      <MenuItem onSelect={props.onDelete} class={item}><Text class="text-foreground">删除…</Text></MenuItem>
-    </Menu>
-  );
 }
 ```
 
@@ -852,16 +854,16 @@ Footer 不是无处安放 capability 的收纳区。它可以显示适用于整�
 - **标签变化** 时新文字上升几个点淡入，而不是原地替换。
 - 卡片 hover 时不抬起、不改尺寸：一层底色、封面放大约 1%、浮出的操作按钮已经足够。
 
+```tsx tabs
+<View onPress={open} class="transition-transform duration-150 active:scale-[0.97] motion-reduce:active:scale-100" />
+```
+
 ```rust tabs
 view()
     .on_press(open)
     .transition_transform()
     .duration(150.0)
     .when(!reduce_motion(), |v| v.active(|s| s.scale(0.97)))
-```
-
-```tsx tabs
-<View onPress={open} class="transition-transform duration-150 active:scale-[0.97] motion-reduce:active:scale-100" />
 ```
 
 ### 弹层、列表与导航
@@ -878,13 +880,13 @@ view()
 
 用户移动的东西在同一帧 1:1 跟随指针或手指：拖动的滑块、滚动条、resizer、滑动都是直接设置，绝不缓动地追赶指针。用户松手时，把手势速度交给 spring（或 decay），让元素延续抛出的动作并停稳；被打断时从当前值继续。
 
+```tsx tabs
+x.spring(0, { velocity: e.velocity.x });
+```
+
 ```rust tabs
 let spring = |velocity| Spring { velocity: Some(velocity), ..Spring::default() };
 x.spring(0.0, spring(e.velocity_x));
-```
-
-```tsx tabs
-x.spring(0, { velocity: e.velocity.x });
 ```
 
 结构性动效（sheet、抽屉、吸附）使用临界阻尼或接近临界阻尼的 spring；明显的回弹（stiffness 约 180、damping 小于 12）留给点赞这类小而愉悦的确认。
@@ -928,18 +930,18 @@ x.spring(0, { velocity: e.velocity.x });
 
 声音确认眼睛已经看到的变化，从不单独承载含义。保留一小组短而轻、同属一个家族的声音，每个只做一件事，让音色先告诉用户这是哪一类事件：一次选择、一次状态切换、打开或关闭、成功、警告、错误、结果到达、需要用户回应的提示。按职责选声音，而不是按控件：开关和复选框共用一个声音，分段控件和单选共用另一个。只在变化完成时播放（开关拨动、消息发出、toast 给出结果），不要在悬停、每次按键、每个流式 token 或持续刷新的数字上播放。默认是安静；用户操作时反复出现的声音很快就成了噪音。
 
-```rust tabs
-const TOGGLE: FileAsset = asset!("sounds/toggle.wav");
-
-let toggle = load_sound(TOGGLE.uri).await?; // 一次，在第一次按下之前
-toggle.play(0.6, if on { 1.0 } else { 0.9 }); // 关闭时略低
-```
-
 ```tsx tabs
 import toggleFile from "./sounds/toggle.wav";
 
 const toggle = await Sound.load(toggleFile); // 一次，在第一次按下之前
 toggle.play({ volume: 0.6, rate: on ? 1 : 0.9 }); // 关闭时略低
+```
+
+```rust tabs
+const TOGGLE: FileAsset = asset!("sounds/toggle.wav");
+
+let toggle = load_sound(TOGGLE.uri).await?; // 一次，在第一次按下之前
+toggle.play(0.6, if on { 1.0 } else { 0.9 }); // 关闭时略低
 ```
 
 提前加载一次声音，让它在所伴随的变化的同一帧内响起。先用 `rate` 变化同一个声音（开关的开与关），再考虑增加文件。音量低于系统自身的声音；关掉声音时界面也必须完全可理解：iOS 上声音跟随静音开关，很多人从来听不到。
@@ -1040,6 +1042,14 @@ NSH 应用运行在手机、平板、桌面和 Web 上，也经常运行在宿�
 - **从右到左。** 布局方向跟随语言区域，`direction` 样式可以为一个视图及其子树单独设置；start 与 end 属性随之镜像（[从右到左](./layout.md#从右到左)）。
 - **触摸与指针。** 触摸目标至少 44 × 44 点；悬停和工具提示只在有指针时出现。
 
+```tsx tabs
+import { NavPage } from "nsh/base";
+
+<NavPage title="收件箱" header={<PageHeader title="收件箱" />}>
+  <Inbox />
+</NavPage>
+```
+
 ```rust tabs
 use nsh_base::nav_page;
 
@@ -1047,14 +1057,6 @@ nav_page()
     .title("收件箱")
     .header(page_header("收件箱"))
     .child(inbox())
-```
-
-```tsx tabs
-import { NavPage } from "nsh/base";
-
-<NavPage title="收件箱" header={<PageHeader title="收件箱" />}>
-  <Inbox />
-</NavPage>
 ```
 
 ## AI 生成界面的规则

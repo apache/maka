@@ -35,6 +35,11 @@ mod event_write;
 pub mod execution;
 pub mod executor;
 pub mod history;
+#[allow(unused_imports)]
+pub mod i18n {
+    include!(concat!(env!("OUT_DIR"), "/i18n_catalog.rs"));
+    pub use i18n_catalog::*;
+}
 pub mod import;
 pub mod input;
 pub mod interaction;

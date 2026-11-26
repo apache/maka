@@ -121,10 +121,8 @@ pub(crate) struct Windows {
     /// A signal of a number counting changes to the list (owned; made on
     /// first use): `windows()` reads it.
     version: Cell<JsValue>,
-    /// The app root's `WindowRef` (owned; made on first use): the main
-    /// window of a released app, which the app root renders in when it
-    /// declares no window of its own.
-    main: Cell<JsValue>,
+    /// The host surface's `WindowRef` (owned; made on first use).
+    surface: Cell<JsValue>,
     /// The implicit first window `mount` declared but has not opened yet
     /// (its node, the attributes the app set while the root rendered, and
     /// the requests it made): opened when the root turns out to return
@@ -150,7 +148,7 @@ impl Default for Windows {
         Windows {
             key: Cell::new(UNDEFINED),
             version: Cell::new(UNDEFINED),
-            main: Cell::new(UNDEFINED),
+            surface: Cell::new(UNDEFINED),
             pending: RefCell::default(),
             unopened: RefCell::default(),
             list: RefCell::default(),
@@ -178,7 +176,7 @@ impl Windows {
     pub(crate) fn free_all(&mut self, raw: *mut JsContext) {
         // SAFETY: owned values; no JS runs from here on.
         unsafe {
-            for c in [&self.key, &self.version, &self.main] {
+            for c in [&self.key, &self.version, &self.surface] {
                 qjs::JS_FreeValue(raw, c.replace(UNDEFINED));
             }
             for v in self.unopened.get_mut().drain(..) {
@@ -391,14 +389,18 @@ fn main_ref(cx: *mut JsContext) -> JsValue {
         .iter()
         .find(|w| w.key == "main")
         .map(|w| dup(cx, w.handle));
-    if let Some(handle) = open {
-        return handle;
-    }
+    open.unwrap_or_else(|| surface_ref(cx))
+}
+
+/// The host surface's `WindowRef` (owned), even when a separate window
+/// has the name `"main"`.
+fn surface_ref(cx: *mut JsContext) -> JsValue {
     let w = windows(cx);
-    if nullish(w.main.get()) {
-        w.main.set(make_handle(cx, "main", ROOT_ID, qjs::JS_NULL));
+    if nullish(w.surface.get()) {
+        w.surface
+            .set(make_handle(cx, "main", ROOT_ID, qjs::JS_NULL));
     }
-    dup(cx, w.main.get())
+    dup(cx, w.surface.get())
 }
 
 /// The node of the window with `key`, if it is open.
@@ -1570,13 +1572,19 @@ pub(crate) fn window_export(cx: *mut JsContext) -> JsValue {
 }
 
 /// The window the calling code renders in (owned); `None` outside a
-/// reactive owner. In the app root it is the main window: the implicit
-/// first window a plain root renders in, as released apps expect.
+/// reactive owner. In the app root it is the host surface when inline,
+/// otherwise the main window as released apps expect.
 fn current(cx: *mut JsContext) -> Option<JsValue> {
     if !reactive::has_owner(cx) {
         return None;
     }
-    Some(reactive::lookup(cx, context_key(cx)).unwrap_or_else(|| main_ref(cx)))
+    Some(reactive::lookup(cx, context_key(cx)).unwrap_or_else(|| {
+        if dom::inline_root(cx) {
+            surface_ref(cx)
+        } else {
+            main_ref(cx)
+        }
+    }))
 }
 
 /// The root node of the focused window of the app's own, if one has the

@@ -79,13 +79,15 @@ pub struct ExportDescription {
     pub kind: ExportKind,
 }
 
-/// A file a set ships ([`Registry::assets`]).
+/// A file a set ships ([`Registry::assets`], [`Registry::assets_for`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetDescription {
     /// Its path among the app's assets (`@gallery-native/logo@2x.png`).
     pub path: String,
     /// The file, where the set's crate was built.
     pub source: String,
+    /// The targets it is for; none: every target.
+    pub targets: Vec<crate::platform::Os>,
 }
 
 /// A UI set as data: everything the toolchain reads from a [`Registry`].
@@ -168,10 +170,11 @@ impl SetDescription {
             reexported_types: strings(types),
             native_values: strings(registry.native_value_names()),
             assets: registry
-                .asset_files()
-                .map(|file| AssetDescription {
+                .scoped_asset_files()
+                .map(|(targets, file)| AssetDescription {
                     path: file.path().to_owned(),
                     source: file.source.to_owned(),
+                    targets: targets.to_vec(),
                 })
                 .collect(),
             undocumented: registry.undocumented(),
@@ -202,6 +205,7 @@ impl SetDescription {
             "assets": self.assets.iter().map(|a| json!({
                 "path": a.path,
                 "source": a.source,
+                "targets": a.targets.iter().map(|t| t.name()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "undocumented": self.undocumented,
         })
@@ -239,9 +243,22 @@ impl SetDescription {
             .map(|(i, a)| {
                 let at = format!("{at}.assets[{i}]");
                 let a = object(a, &at)?;
+                // A description from before `assets_for` has no targets:
+                // every target.
+                let targets = match a.get("targets") {
+                    None => Vec::new(),
+                    Some(_) => strings(a, "targets", &at)?
+                        .iter()
+                        .map(|name| {
+                            crate::platform::Os::from_name(name)
+                                .ok_or_else(|| format!("{at}: unknown target {name}"))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                };
                 Ok(AssetDescription {
                     path: string(a, "path", &at)?,
                     source: string(a, "source", &at)?,
+                    targets,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -488,10 +505,63 @@ mod tests {
         description.sets[0].assets.push(AssetDescription {
             path: "@app/logo@2x.png".into(),
             source: "C:\\app\\assets\\logo@2x.png".into(),
+            targets: Vec::new(),
+        });
+        description.sets[0].assets.push(AssetDescription {
+            path: "@app/zh-CN.json".into(),
+            source: "C:\\app\\assets\\zh-CN.json".into(),
+            targets: vec![crate::platform::Os::Web],
         });
         let json = description.to_json();
         assert_eq!(Description::from_json(&json).unwrap(), description);
         assert_eq!(description.nsh, VERSION);
+    }
+
+    /// A description from before `assets_for` has no `targets`: its files
+    /// are for every target.
+    #[test]
+    fn an_asset_without_targets_is_for_every_target() {
+        let mut description = Description::of(&[set()]);
+        description.sets[0].assets.push(AssetDescription {
+            path: "@app/logo@2x.png".into(),
+            source: "/app/assets/logo@2x.png".into(),
+            targets: Vec::new(),
+        });
+        let mut json: Value = serde_json::from_str(&description.to_json()).unwrap();
+        let asset = json["sets"][0]["assets"][0].as_object_mut().unwrap();
+        assert!(asset.remove("targets").is_some());
+        let parsed = Description::from_json(&json.to_string()).unwrap();
+        assert_eq!(parsed, description);
+    }
+
+    #[test]
+    fn assets_for_scopes_files_to_targets() {
+        use super::super::{AssetFile, AssetKind};
+        use crate::platform::Os;
+        static ALL: &[AssetFile] = &[AssetFile {
+            uri: "asset:/@app/a.png",
+            source: "/app/assets/a.png",
+            kind: AssetKind::Image,
+        }];
+        static WEB: &[AssetFile] = &[AssetFile {
+            uri: "asset:/@app/zh-CN.json",
+            source: "/app/assets/zh-CN.json",
+            kind: AssetKind::File,
+        }];
+        let mut registry = Registry::ui_set("test/assets");
+        registry.assets(ALL).assets_for(&[Os::Web], WEB);
+        let set = SetDescription::of(&registry).unwrap();
+        let scoped: Vec<_> = set
+            .assets
+            .iter()
+            .map(|a| (a.path.as_str(), a.targets.as_slice()))
+            .collect();
+        assert_eq!(
+            scoped,
+            [("@app/a.png", &[][..]), ("@app/zh-CN.json", &[Os::Web][..])]
+        );
+        // Every file stays among `asset_files`, whatever its targets.
+        assert_eq!(registry.asset_files().count(), 2);
     }
 
     #[test]

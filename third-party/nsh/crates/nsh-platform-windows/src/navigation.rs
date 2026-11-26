@@ -245,6 +245,7 @@ fn record(surface: &Surface, view: &NshView) -> Option<Picture> {
         let previous = dc.GetTarget().ok();
         dc.SetTarget(&list);
         dc.SetDpi(96.0 * scale, 96.0 * scale);
+        dc.SetTextRenderingParams(crate::text::rendering_params(surface.hwnd()).as_ref());
         dc.BeginDraw();
         dc.SetTransform(&Matrix3x2::identity());
         let drawn = match DrawCx::new(&gfx, scale, dark, surface.now()) {

@@ -83,11 +83,28 @@ impl ExternalEffect {
         }
     }
 
+    /// A Host operation whose call physically ended (cleanup confirmed),
+    /// even though its external side effect outcome could not be confirmed.
+    pub fn ended_unknown(&self) -> bool {
+        self.cleanup == OperationCleanup::Confirmed
+            && self
+                .observation
+                .as_ref()
+                .and_then(maka_agent_facts::tool_output::ended_unknown_diagnostic)
+                .is_some()
+    }
+
     pub fn pending(&self) -> bool {
         if self.rejected.is_some() {
             return false;
         }
         !self.known() || self.returned.is_none() || self.cleanup != OperationCleanup::Confirmed
+    }
+
+    /// Whether this effect still has an unsettled execution or unconfirmed
+    /// cleanup that blocks settlement or retirement.
+    pub fn unsettled(&self) -> bool {
+        self.pending() && !self.ended_unknown()
     }
 
     fn prepared(descriptor: &ContentRef) -> Self {

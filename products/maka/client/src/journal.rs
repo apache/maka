@@ -38,7 +38,7 @@ use uuid::Uuid;
 // Keep admission and pending observations on the same immutable Settings owner.
 macro_rules! settings_owner_sql {
     () => {
-        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','createPreset','updatePreset','deletePreset','changeMemory','reconcileMemories','saveGitHubToken','deleteGitHubToken')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch','installUrl','editComposition')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
+        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method') IN ('updateGlobalInstructions','selectWorkspace','manageMcpServer','setProjectMcpDecision','createPreset','updatePreset','deletePreset','changeMemory','reconcileMemories','saveGitHubToken','deleteGitHubToken')) OR (json_extract(context,'$.endpoint')='skills' AND json_extract(context,'$.method') IN ('install','update','delete')) OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure','configureBatch','installUrl','editComposition')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential') OR (json_extract(context,'$.endpoint')='web' AND json_extract(context,'$.method') IN ('save','saveKey','deleteKey','checkKey')))"
     };
 }
 
@@ -195,6 +195,7 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+mod model;
 #[cfg(test)]
 mod quote_tests;
 mod recovery;
@@ -202,6 +203,7 @@ mod recovery;
 mod room_tests;
 mod workspaces;
 mod write;
+pub use model::RecentModel;
 pub use workspaces::RecentWorkspace;
 
 impl Journal {
@@ -452,6 +454,8 @@ impl Journal {
                 }
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(error)?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS recent_model (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()

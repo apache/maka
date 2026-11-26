@@ -1,7 +1,7 @@
 //! Sound on Apple platforms (`Command::Audio`, `nsh`'s `Sound` and
 //! `AudioPlayer`; `docs/dev/audio-design.md`). Shared by macOS and iOS (both
 //! backends depend on this crate): AVFoundation is loaded and messaged
-//! dynamically, as the video and speech code do.
+//! dynamically, as the video code does.
 //!
 //! - **Sounds** decode once, at their load, into an `AVAudioPCMBuffer`
 //!   (`AVAudioFile` over a temporary file of their bytes, at most the

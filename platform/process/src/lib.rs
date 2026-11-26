@@ -148,7 +148,9 @@ impl ShellExecutor {
     pub fn new(cwd: impl AsRef<Path>, sandbox: maka_sandbox::Sandbox) -> Result<Self, ToolError> {
         let cwd = std::fs::canonicalize(cwd).map_err(|e| failed(e.to_string()))?;
         #[cfg(windows)]
-        let cwd = dunce::simplified(&cwd).to_owned();
+        let cwd = maka_sandbox::policy_path_from_resolved(&cwd)
+            .map_err(|error| failed(error.to_string()))?
+            .into_owned();
         if !cwd.is_dir() || cwd.to_str().is_none() {
             return Err(failed("Shell cwd must be a UTF-8 directory"));
         }
@@ -177,6 +179,10 @@ impl ShellExecutor {
             return Err(failed("Shell cwd must be an absolute UTF-8 directory"));
         }
         let directory = directory::Directory::capture(&cwd, directory).map_err(failed)?;
+        #[cfg(windows)]
+        let cwd = maka_sandbox::policy_path_from_resolved(&cwd)
+            .map_err(|error| failed(error.to_string()))?
+            .into_owned();
         Ok(Self {
             cwd,
             directory: Some(std::sync::Arc::new(directory)),
@@ -293,21 +299,30 @@ impl ShellExecutor {
 }
 
 impl Command {
-    /// Run a program with standard input and collect its output after its process tree exits.
+    /// Run a protocol program with standard input, bounded stdout tail, and full process-tree wait.
     pub async fn run_with_input(
         self,
         input: Vec<u8>,
+        stdout_limit: usize,
         timeout_ms: u64,
         cancellation: CancellationToken,
     ) -> Result<PipeResult, ToolError> {
         validate_timeout(timeout_ms)?;
-        self.run_captured(Some(input), Some(timeout_ms), cancellation, None)
-            .await
+        self.run_captured(
+            process::Mode::Protocol {
+                input,
+                stdout_limit,
+            },
+            Some(timeout_ms),
+            cancellation,
+            None,
+        )
+        .await
     }
 
     async fn run_captured(
         self,
-        input: Option<Vec<u8>>,
+        mode: process::Mode,
         timeout_ms: Option<u64>,
         cancellation: CancellationToken,
         observer: Option<tokio::sync::mpsc::Sender<PipeEvent>>,
@@ -315,15 +330,9 @@ impl Command {
         // The worker owns termination even if its caller drops the future.
         let cancellation = cancellation.child_token();
         let _cancel_on_drop = cancellation.clone().drop_guard();
-        tokio::spawn(process::run(
-            self,
-            input,
-            timeout_ms,
-            cancellation,
-            observer,
-        ))
-        .await
-        .map_err(|e| ToolError::CleanupUnconfirmed(format!("Process worker lost: {e}")))?
+        tokio::spawn(process::run(self, mode, timeout_ms, cancellation, observer))
+            .await
+            .map_err(|e| ToolError::CleanupUnconfirmed(format!("Process worker lost: {e}")))?
     }
 
     /// No native resources exist until completion is polled. The accepted worker
@@ -337,8 +346,12 @@ impl Command {
             return Err(failed("invalid background shell command or timeout"));
         }
         let (observer, events) = tokio::sync::mpsc::channel(8);
-        let completion =
-            Box::pin(self.run_captured(None, timeout_ms, cancellation, Some(observer)));
+        let completion = Box::pin(self.run_captured(
+            process::Mode::Shell,
+            timeout_ms,
+            cancellation,
+            Some(observer),
+        ));
         Ok(ObservedProcess { events, completion })
     }
 }
@@ -364,7 +377,12 @@ impl ToolExecutor for ShellExecutor {
             let executor = executor.with_login_shell(input.login);
             let plan = executor.prepare(&input.command, false)?;
             let captured = plan
-                .run_captured(None, Some(input.timeout_ms), cancellation, None)
+                .run_captured(
+                    process::Mode::Shell,
+                    Some(input.timeout_ms),
+                    cancellation,
+                    None,
+                )
                 .await?;
             Ok(captured.into_output(executor.cwd, input.command))
         })

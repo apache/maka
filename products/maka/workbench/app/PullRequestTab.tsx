@@ -370,7 +370,7 @@ export function PullRequestTab(props: {
     if (s.kind === 'error') return s.message;
     if (s.kind === 'ready' && s.result.kind !== 'ready') {
       if (s.result.kind === 'not_found')
-        return tr('Pull request #{number} was not found.', { number: props.number });
+        return tr('Pull request #{number} was not found.', { number: String(props.number) });
       return s.result.message;
     }
     return '';
@@ -535,11 +535,7 @@ export function PullRequestTab(props: {
                 />
                 <If when={pendingDrafts().length > 0}>
                   <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {pendingDrafts().length === 1
-                      ? tr('1 pending inline comment will be published.')
-                      : tr('{count} pending inline comments will be published.', {
-                          count: pendingDrafts().length,
-                        })}
+                    {tr('pr.pending_inline_comments', { count: pendingDrafts().length })}
                   </Text>
                 </If>
                 <View style={{ gap: 2 }}>

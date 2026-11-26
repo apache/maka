@@ -27,12 +27,14 @@ import { createTrajectoryRequests } from './trajectoryRequests';
 import {
   DRAFT_QUOTE_LIMIT,
   appendDraftQuote,
+  confirmAfterProjectMcp,
   mergeRestoredIntoHeldDraft,
   restoredDraftQuotes,
   sendReceiptFailure,
   shouldHideAcceptedQueuedStatus,
   shouldProjectPendingSend,
   unsettledSends,
+  workingRowActive,
 } from './sendReceipt';
 import { createHistoryPrefetch, HISTORY_LOOKAHEAD_VIEWPORTS } from './historyPrefetch';
 import { quietWaits, retrying, waitActivity } from './runWaits';
@@ -49,6 +51,7 @@ import {
   createText,
   createTransientText,
   UiError,
+  errorMessage,
   errorText,
   isObservationCancelled,
   renderText,
@@ -56,6 +59,10 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
+import {
+  formatCompactCount,
+  formatDecimal,
+} from '../../../../products/maka/workbench/app/numberFormat';
 import type { StagedFile } from 'maka/host';
 import type {
   AgentContinuationRejection,
@@ -68,13 +75,14 @@ import {
   Canvas,
   cleanup,
   computed,
+  createAnimatedValue,
   effect,
   inputAction,
+  List,
   signal,
   Text,
   untracked,
   View,
-  List,
 } from 'nsh';
 import type { ListRef, ReadonlyListSource, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
@@ -112,6 +120,8 @@ import {
 import {
   acceptedSend,
   activityMessage,
+  applyWorkTailThought,
+  hasTextPrefix,
   sameHistoryRow,
   compareHistoryOrder,
   historyTurnKey,
@@ -127,6 +137,7 @@ import {
   type ConversationHistoryPage,
   openingUserMessage,
   replayStartCursor,
+  groupStepsFollowCursor,
   senderSession,
   stableRowId,
   replaceHistoryMetadata,
@@ -189,6 +200,7 @@ import {
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
+import { createScopedCatalog } from '../../../../products/maka/workbench/app/scopedCatalog';
 import {
   BotNote,
   BotReply,
@@ -201,12 +213,26 @@ import { sameValue } from '../../../shared/value';
 import { DiscoveryPanel } from '../../../../products/maka/workbench/app/DiscoveryPanel';
 import { quoteBotMessage } from '../../../../products/maka/workbench/app/botTranscriptCore';
 import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
+import type { SideQuestionRequest } from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import {
+  clearGathered,
+  dropGathered,
+  type GatheredPassage,
+  gatheredPassages,
+  gatherPassage,
+  sideAnchor,
+  sideQuestionsAt,
+  sideTitle,
+} from '../../../../products/maka/workbench/app/sideQuestions';
 import {
   MessageRow,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
+import { MarkdownToc } from '../../../../products/maka/workbench/app/MarkdownToc';
+import { createTurnToc } from '../../../../products/maka/workbench/app/turnToc';
 import { compactTranscriptSize } from '../../../../products/maka/workbench/app/QuickBar';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import { SideNotes, SideQuoteTray } from '../../../../products/maka/workbench/app/SideQuestionCard';
 import {
   MessageEdit,
   MessageEditor,
@@ -225,6 +251,7 @@ import {
 import {
   groupWork,
   TurnPanel,
+  liveActivityTitle,
   TurnSummary,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
@@ -235,6 +262,7 @@ import type {
   TurnViewState,
 } from '../../../../products/maka/workbench/app/TurnPanel';
 import {
+  groupLatestIsThought,
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
@@ -320,11 +348,14 @@ export type ConversationHandle = Omit<
   /** A null target follows the current live turn; `reload` reads the tail again. */
   jumpLatest(turnId: string | null, reload?: boolean): void;
   refresh(): Promise<any>;
+  sessionRevision(): number;
+  workspaceUnavailable(): boolean;
+  refreshWorkspace(): Promise<void>;
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
-  /** The title its header shows. */
-  title(): string;
+  /** The title its header shows, or null until the session metadata has loaded. */
+  title(): string | null;
   /** Latest user/assistant messages for the fullscreen floating mini-preview. */
   recentMessages?(): readonly { id: string; role: 'user' | 'assistant'; text: string }[];
 };
@@ -359,12 +390,19 @@ type ConversationProps = {
     text: string,
     send: boolean,
   ): Promise<boolean>;
+  /** The message this conversation was opened to send, before `takePrefill` takes it. */
+  firstMessage?(): {
+    text: string;
+    quotes?: readonly QuoteRef[];
+    files?: readonly { name: string; bytes: number; image?: boolean }[];
+  } | null;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
   takePrefill?(available: boolean): {
     text: string;
     send: boolean;
     files?: StagedFile[];
     first?: boolean;
+    quotes?: readonly QuoteRef[];
   } | null;
   commands(): void;
   openPreset?(
@@ -390,6 +428,13 @@ type ConversationProps = {
   previewTerminal?(ref: string, restoreFocus: () => boolean): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
+  /** With `compact`, a side question's card: only what was asked in it shows. */
+  side?: boolean;
+  /** Opens the card where a side question is asked beside this conversation. */
+  askBeside?(request: SideQuestionRequest): void;
+  openSideQuestion?(sessionId: string): void;
+  /** The side question whose card is open beside this conversation. */
+  sideQuestionId?(): string | null;
   knownSession?(sessionId: string): AgentSession | undefined;
   /** Opens a conversation in this pane, for when no side pane fits. */
   openSessionHere?(sessionId: string): void;
@@ -475,7 +520,7 @@ export function Conversation(props: ConversationProps) {
   const queued = signal<AgentQueue | null>(null);
   // Held messages wait for the user's next message; they do not keep the Session busy.
   const runnableQueued = () => queued()?.entries.some((entry) => entry.kind !== 'held') ?? false;
-  const title = signal(sessionId);
+  const title = signal<string | null>(null);
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const runId = signal<RunId | null>(null);
@@ -497,10 +542,33 @@ export function Conversation(props: ConversationProps) {
   const executionRevision = signal(0);
   const stoppingRun = signal<RunId | null>(null);
   const stopping = () => runId() !== null && stoppingRun() === runId();
+  const sessionRevision = signal(0);
   const workspace = signal('');
+  const workspaceUnavailable = signal(false);
+  let workspaceCheck = 0;
+  const refreshWorkspace = async () => {
+    const check = ++workspaceCheck;
+    const available = await host.query('agent', 'sessionWorkspaceAvailable', { sessionId });
+    if (alive && check === workspaceCheck) workspaceUnavailable.set(!available);
+  };
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => goalBackend());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
+  let lastMcpProbeKey = '';
+  effect(() => {
+    const current = permissions.snapshot();
+    const unavailable = workspaceUnavailable();
+    if (!current || unavailable) return;
+    if (current.permissions.access === 'read_only') {
+      lastMcpProbeKey = '';
+      projectMcp.dismiss();
+      return;
+    }
+    const key = `${current.workspace.path}\0${current.workspace.worktree ?? ''}\0${current.permissions.access}`;
+    if (key === lastMcpProbeKey) return;
+    lastMcpProbeKey = key;
+    void projectMcp.check().catch(() => {});
+  });
   const runTurn = signal<string | null>(null);
   const lastCompletedTurn = signal<string | null>(null);
   const backend = signal<BackendIdentity>(null);
@@ -570,30 +638,75 @@ export function Conversation(props: ConversationProps) {
   // row took over.
   const settledSends = signal<ReadonlySet<string>>(new Set());
   const startsRun = (frozen: FrozenSend) => frozen.selection.expectedRunId === undefined;
+  type OptimisticAttachment = {
+    name: string;
+    bytes: number;
+    mimeType?: string;
+    image?: boolean;
+  };
+  // Local optimistic user rows carry the full text from byte zero, so they lay
+  // out in the same Markdown/plain form as their saved transcript row.
+  const localUserRow = (input: {
+    key: string;
+    messageId: string;
+    text: string;
+    quotes?: readonly QuoteRef[];
+    files?: readonly OptimisticAttachment[];
+  }): Row => ({
+    key: input.key,
+    quotes: input.quotes ? [...input.quotes] : [],
+    messageId: input.messageId,
+    field: 'body',
+    role: 'user',
+    text: input.text,
+    prefix: true,
+    attachments: (input.files ?? []).map((file): AgentHistoryAttachment => {
+      const isImage = file.image === true || (file.mimeType?.startsWith('image/') ?? false);
+      return {
+        name: file.name,
+        mimeType: file.mimeType ?? (isImage ? 'image/*' : ''),
+        bytes: file.bytes,
+        kind: isImage ? 'image' : 'other',
+      };
+    }),
+  });
+  // A conversation opened to send a message shows it from its first frame, while
+  // its draft and model are still being read; the send itself takes over from it.
+  const opening = signal(props.firstMessage?.() ?? null);
+  // Opened to send, the conversation comes in over the page it was sent from
+  // instead of replacing it in one frame.
+  const openingFade = untracked(opening) !== null && !reduceMotion();
+  const arriving = createAnimatedValue(openingFade ? 0 : 1);
+  if (openingFade) void arriving.timing(1, { duration: 200, easing: 'easeOut' });
+  cleanup(() => arriving.stop());
   const outgoing = computed<Row[]>(() => {
     const freezing = freezeState();
+    const first = opening();
+    if (first !== null)
+      return [
+        localUserRow({
+          key: 'pending/local/opening',
+          messageId: 'local/opening',
+          text: first.text,
+          quotes: first.quotes,
+          files: first.files,
+        }),
+      ];
     return unsettledSends(
       freezing.kind === 'reserving' ? freezing.frozen : undefined,
       activeSends(),
       settledSends(),
     )
       .filter(startsRun)
-      .map((frozen) => ({
-        key: `pending/local/${frozen.id}`,
-        quotes: frozen.edit.quotes,
-        messageId: `local/${frozen.id}`,
-        field: 'body',
-        role: 'user',
-        text: frozen.text,
-        attachments: frozen.files.map(
-          (file): AgentHistoryAttachment => ({
-            name: file.name,
-            mimeType: file.mimeType,
-            bytes: file.bytes,
-            kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
-          }),
-        ),
-      }));
+      .map((frozen) =>
+        localUserRow({
+          key: `pending/local/${frozen.id}`,
+          messageId: `local/${frozen.id}`,
+          text: frozen.text,
+          quotes: frozen.edit.quotes,
+          files: frozen.files,
+        }),
+      );
   });
   const shownPending = () => [...pendingMessages(), ...outgoing()];
   const sendErrors = signal<Map<string, UiText>>(new Map());
@@ -667,7 +780,10 @@ export function Conversation(props: ConversationProps) {
   const turnState = (id: string) => {
     let state = turnStates.get(id);
     if (!state) {
-      state = { expanded: signal<boolean | null>(null), ran: false };
+      state = {
+        expanded: signal<boolean | null>(null),
+        ran: false,
+      };
       turnStates.set(id, state);
     }
     return state;
@@ -716,7 +832,7 @@ export function Conversation(props: ConversationProps) {
   );
   const activity = computed<LiveActivity>(
     () => {
-      const wait = waitActivity(run(), execution());
+      const wait = waitActivity(run(), execution(), interactions().entries.length > 0);
       if (wait) return { kind: wait, detail: '' };
       let latest: { part: LivePart; row: Row; sequence: number } | undefined;
       for (const part of parts()) {
@@ -837,7 +953,11 @@ export function Conversation(props: ConversationProps) {
     const sections = [...durableSections().values()];
     const live = processLive();
     const activity = processActivity();
-    const pending = atHistoryTail() ? shownPending() : undefined;
+    const pending = atHistoryTail()
+      ? shownPending()
+      : historyWindow() === null && opening() !== null
+        ? outgoing()
+        : undefined;
     const active = runId() === null ? null : runTurn();
     const answer = answerTurn();
     // A live preview, including a late one, belongs to the same ordered
@@ -962,6 +1082,161 @@ export function Conversation(props: ConversationProps) {
   );
   // A worker or sender opens beside this conversation when a side pane fits, otherwise in
   // this pane (the Bot stays pinned in the sidebar to switch back).
+  // Side questions asked beside this conversation's replies. Its lists leave
+  // them out, so they are read here for the replies that show them.
+  const sideQuestions = signal<AgentSession[]>([]);
+  // What each side question quotes, read once from its first message: the
+  // branch records where it was asked, not about which words. A passage
+  // gathered as this view was open names its reply's turn; the history does
+  // not, so quotes read from it are looked for in the reply asked beside.
+  type SideQuote = { text: string; turnId?: string };
+  const sideQuotes = signal<ReadonlyMap<string, readonly SideQuote[]>>(new Map());
+  const loadSideQuotes = async (sessions: readonly AgentSession[]) => {
+    for (const session of sessions) {
+      if (!alive) return;
+      if (sideQuotes().has(session.id)) continue;
+      let quotes: SideQuote[] = [];
+      try {
+        const readPage = (through: number | null, position: HistoryPosition) =>
+          host.query('agent', 'history', {
+            sessionId: session.id,
+            through,
+            position,
+            includeThinking: false,
+            view: 'conversation',
+          });
+        let first: AgentHistoryChunk | undefined;
+        let position: HistoryPosition = { kind: 'tail' };
+        let through: number | null = null;
+        for (let pages = 0; pages < 8; pages += 1) {
+          const page = await readPage(through, position);
+          if (!alive) return;
+          if (page.kind !== 'ready') break;
+          const liveUser = page.chunks.find(
+            (chunk) =>
+              chunk.role === 'user' && chunk.position.kind === 'live' && chunk.offset === 0,
+          );
+          if (liveUser) first = liveUser;
+          const earliest = page.chunks[0];
+          if (!page.before || !earliest || earliest.position.kind !== 'live') break;
+          through = page.through;
+          position = { kind: 'before', cursor: page.before };
+        }
+        quotes = (first?.quotes ?? []).map((quote) => ({
+          text: quote.truncated ? quote.text.replace(/(…|\.\.\.)$/, '') : quote.text,
+        }));
+      } catch (reason) {
+        console.warn("A side question's quotes were not read:", reason);
+        continue;
+      }
+      if (!alive) return;
+      sideQuotes.set(new Map(sideQuotes()).set(session.id, quotes));
+    }
+  };
+  // A side question about several replies forks through the latest of them.
+  const latestOf = (positions: readonly HistoryRowAddress[]) => {
+    const at = (position: HistoryRowAddress) =>
+      rows().findIndex((row) => row.position && sameHistoryRow(row.position, position));
+    return positions.reduce((best, next) => (at(best) >= at(next) ? best : next));
+  };
+  const askAbout = (position: HistoryRowAddress, passages: readonly GatheredPassage[]) =>
+    props.askBeside!({
+      quotes: passages.map((passage) => ({
+        text: passage.text,
+        ...(passage.turnId ? { sourceTurnId: passage.turnId } : {}),
+      })),
+      ask: async (question) => {
+        const observed = await host.query('agent', 'observe', { sessionId });
+        const forked = await props.control('fork', {
+          sessionId,
+          expectedRevision: observed.session.revision,
+          position: { kind: 'through_source_turn', position },
+          title: sideTitle(question),
+          labels: [],
+          side: true,
+        });
+        if (forked.kind !== 'forked')
+          throw new UiError('Conversation creation rejected: {reason}', {
+            reason: forked.reason ?? forked.kind,
+          });
+        clearGathered(sessionId);
+        sideQuotes.set(
+          new Map(sideQuotes()).set(
+            forked.session.id,
+            passages.map((passage) => ({ text: passage.text, turnId: passage.turnId })),
+          ),
+        );
+        sideQuestions.set([
+          forked.session,
+          ...sideQuestions().filter((session) => session.id !== forked.session.id),
+        ]);
+        return forked.session.id as string;
+      },
+      discard: async (id) => {
+        const observed = await host.query('agent', 'observe', { sessionId: id });
+        await props.control('changeSession', {
+          sessionId: id,
+          expectedRevision: observed.session.revision,
+          action: 'remove',
+        });
+        if (alive) sideQuestions.set(sideQuestions().filter((session) => session.id !== id));
+      },
+    });
+  const sideActions =
+    props.askBeside && !props.side
+      ? {
+          ask: (row: Row, passage: string | null) => {
+            if (!row.position) return;
+            const here = passage
+              ? [{ position: row.position, turnId: row.turnId, text: passage }]
+              : [];
+            const passages = [...gatheredPassages(sessionId), ...here];
+            askAbout(latestOf([row.position, ...passages.map((item) => item.position)]), passages);
+          },
+          gather: (row: Row, passage: string) => {
+            if (row.position)
+              gatherPassage(sessionId, {
+                position: row.position,
+                turnId: row.turnId,
+                text: passage,
+              });
+          },
+          askGathered: () => {
+            const passages = gatheredPassages(sessionId);
+            if (passages.length > 0)
+              askAbout(latestOf(passages.map((item) => item.position)), passages);
+          },
+          asked: (position: HistoryRowAddress) => sideQuestionsAt(sideQuestions(), position),
+          // A side question marks the reply it was asked beside, and each
+          // other reply a passage of it was gathered from.
+          marks: (row: Row) =>
+            sideQuestions()
+              .toReversed()
+              .flatMap((item) => {
+                const anchor = sideAnchor(item);
+                const beside =
+                  anchor !== null && !!row.position && sameHistoryRow(anchor, row.position);
+                const quotes = (sideQuotes().get(item.id) ?? [])
+                  .filter((quote) => (quote.turnId ? quote.turnId === row.turnId : beside))
+                  .map((quote) => quote.text);
+                return beside || quotes.length > 0 ? [{ item, quotes }] : [];
+              }),
+          open: (id: string) => {
+            props.openSideQuestion?.(id);
+          },
+          shown: () => props.sideQuestionId?.() ?? null,
+        }
+      : undefined;
+  if (sideActions) {
+    // What a side question is doing follows the catalog, also with its card
+    // closed: one that works, waits for the user or has an unread reply says so.
+    const listed = createScopedCatalog(host, () => ({ kind: 'side_questions', sessionId }));
+    effect(() => {
+      const sessions = [...listed()];
+      sideQuestions.set(sessions);
+      void loadSideQuotes(sessions);
+    });
+  }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
@@ -1065,8 +1340,15 @@ export function Conversation(props: ConversationProps) {
     }
   >();
   // A retry or a child run keeps the run at work; an approval has its own card.
-  const runAtWork = () =>
-    run() === 'running' || (run() === 'waiting' && quietWaits(execution()).length > 0);
+  // An accepted pending send bridges the gap until the run is admitted.
+  const atWork = () =>
+    workingRowActive({
+      run: run(),
+      quietWait: quietWaits(execution()).length > 0,
+      waitingForUser: interactions().entries.length > 0,
+      pendingCount: pendingMessages().length,
+      outgoingCount: outgoing().length,
+    });
   const chatDisplaySections = computed(() =>
     projectionSections().map((section) => {
       const cache = chatSections.get(section);
@@ -1144,7 +1426,7 @@ export function Conversation(props: ConversationProps) {
   const ordinaryChatSections = computed(() => {
     const sections = chatDisplaySections();
     // A message on its way out is answered by the same row a run at work shows.
-    if (!runAtWork() && outgoing().length === 0) return sections;
+    if (!atWork()) return sections;
     const running = runTurn();
     const headed =
       running !== null &&
@@ -1174,12 +1456,7 @@ export function Conversation(props: ConversationProps) {
     // this row in place instead of arriving above an already shown reply.
     const working = (turnId: string | undefined) => {
       const running = runTurn();
-      if (
-        !(runAtWork() || outgoing().length > 0) ||
-        workingShown ||
-        (turnId !== undefined && turnId !== running)
-      )
-        return;
+      if (!atWork() || workingShown || (turnId !== undefined && turnId !== running)) return;
       const headed = result.some(
         (item) =>
           running !== null &&
@@ -1377,8 +1654,37 @@ export function Conversation(props: ConversationProps) {
       }
     }
   });
+  // A side question's card shows what was asked in it. What its conversation
+  // inherited is read from a snapshot, so those turns have wrapped keys.
+  const ownEntries = new WeakMap<DisplayEntry[], DisplayEntry[]>();
+  const ownSections = (sections: DisplayEntry[][]) =>
+    sections.map((entries) => {
+      let own = ownEntries.get(entries);
+      if (own) return own;
+      const inherited = (entry: DisplayEntry) =>
+        (entry.kind === 'summary' || entry.kind === 'row'
+          ? entry.turnKey
+          : entry.kind === 'process'
+            ? entry.group.turnKey
+            : undefined
+        )?.startsWith('[');
+      // An entry with no turn of its own goes with the one before it.
+      let kept = !entries.some((entry) => inherited(entry) === true);
+      own = entries.filter((entry) => {
+        const from = inherited(entry);
+        if (from !== undefined) kept = !from;
+        return kept;
+      });
+      if (own.length === entries.length) own = entries;
+      ownEntries.set(entries, own);
+      return own;
+    });
   const displaySections = computed(() =>
-    ordinaryChat() ? ordinaryChatSections() : [otherDisplay()],
+    ordinaryChat()
+      ? props.side
+        ? ownSections(ordinaryChatSections())
+        : ordinaryChatSections()
+      : [otherDisplay()],
   );
   const entriesByKey = new Map<string, DisplayEntry>();
   const indexedSections = computed((previous: Set<DisplayEntry[]> | undefined) => {
@@ -1516,6 +1822,7 @@ export function Conversation(props: ConversationProps) {
   const entryTurn = (key: string) => {
     const entry = displayEntry(key);
     if (entry?.kind === 'process') return entry.group.turnKey;
+    if (entry?.kind === 'bot') return entry.turnId;
     if (entry && 'turnKey' in entry) return entry.turnKey ?? null;
     return null;
   };
@@ -1766,6 +2073,7 @@ export function Conversation(props: ConversationProps) {
     through: number | null,
     position: HistoryPosition,
     view: HistoryListView | 'turn' | 'steps' = 'conversation',
+    thought?: HistoryCursor,
   ) => {
     const page = await host.query('agent', 'history', {
       sessionId,
@@ -1773,6 +2081,7 @@ export function Conversation(props: ConversationProps) {
       position,
       includeThinking: true,
       view,
+      ...(thought ? { thought } : {}),
     });
     if (page.kind !== 'ready') throw new Error('Expected conversation history.');
     if (page.through === null || (through !== null && page.through !== through))
@@ -1976,10 +2285,12 @@ export function Conversation(props: ConversationProps) {
           return;
         }
         position = { kind: direction, cursor };
-      } else if (!state.after && state.last && state.through < (row.metadataThrough ?? through)) {
-        position = { kind: 'after', cursor: state.last };
       } else {
-        return;
+        const cursor = groupStepsFollowCursor(row, state, through, (stepKey) =>
+          historyRows().byKey.get(stepKey),
+        );
+        if (!cursor) return;
+        position = { kind: 'after', cursor };
       }
     }
     const window = state;
@@ -2123,11 +2434,16 @@ export function Conversation(props: ConversationProps) {
     acceptReadState(observed.session, observed.through);
     latestKnown = Math.max(latestKnown, observed.through);
     readLandmarks(observed.through);
-    title.set(observed.session.title);
-    archived.set(observed.session.archived);
-    workspace.set(observed.session.workspace.path);
-    permissions.observe(observed.session);
-    backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+    if (observed.session.revision >= sessionRevision()) {
+      batch(() => {
+        sessionRevision.set(observed.session.revision);
+        title.set(observed.session.title);
+        archived.set(observed.session.archived);
+        workspace.set(observed.session.workspace.path);
+        permissions.observe(observed.session);
+        backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
+      });
+    }
     if (observed.through >= runThrough) {
       if (subscription === null) {
         overlay.observe(observed);
@@ -2210,17 +2526,41 @@ export function Conversation(props: ConversationProps) {
               position = { kind: 'after', cursor: page.after };
             }
           }
+          const thoughtCursor: HistoryCursor | undefined =
+            owner.view === 'chat' && initial.kind === 'after' && tail?.work?.lastThought
+              ? {
+                  position: tail.work.lastThought.position,
+                  field: 'thinking',
+                  offset: tail.work.lastThought.offset,
+                }
+              : undefined;
+          let tailThought: ConversationHistoryPage['tailThought'] = null;
           let position = initial;
           for (;;) {
-            const page = await history(fence, position, owner.view);
+            const page = await history(
+              fence,
+              position,
+              owner.view,
+              position === initial ? thoughtCursor : undefined,
+            );
             if (!ownsWindow(owner.identity)) return;
             chunks.push(...page.chunks);
+            if (page.tailThought) tailThought = page.tailThought;
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
           batch(() => {
             historyWindow.set({ ...historyWindow()!, through: fence, after: null });
             publishHistory(chunks, fence, false, coveredFrom, windowStart);
+            if (tailThought && tail?.work) {
+              const current = historyRows();
+              const target = current.byKey.get(tail.key);
+              const next = target && applyWorkTailThought(target, tailThought);
+              if (next && next !== target) {
+                current.put([next]);
+                historyRows.set(current);
+              }
+            }
           });
         }
         const last = rows().at(-1);
@@ -2543,6 +2883,10 @@ export function Conversation(props: ConversationProps) {
   const loadNewer = () => extendHistory('after');
   const pagingOwner = (edge: 'before' | 'after') => {
     const owner = historyWindow();
+    // A side question's card hides inherited snapshot turns; stop paging back
+    // once the loaded window already reaches the snapshot boundary.
+    if (edge === 'before' && props.side && historyRows().ordered[0]?.position?.kind !== 'live')
+      return null;
     return (edge === 'before' ? !deferOlderUntilScroll : historyScrolled) &&
       owner?.[edge] &&
       ownsWindow(owner.identity) &&
@@ -3159,6 +3503,14 @@ export function Conversation(props: ConversationProps) {
     quoted: QuoteRef[] = [],
     immediate = false,
   ) => {
+    const outcome = reply?.receipt?.outcome;
+    if (
+      outcome?.kind === 'returned' &&
+      outcome.result.kind === 'success' &&
+      outcome.result.value?.kind === 'rejected' &&
+      outcome.result.value.reason === 'workspace_unavailable'
+    )
+      void refreshWorkspace().catch(report);
     const accepted = acceptedSend(reply, sessionId);
     if (!accepted) return;
     if (
@@ -3172,22 +3524,13 @@ export function Conversation(props: ConversationProps) {
     ) {
       pendingMessages.set([
         ...pendingMessages().filter((row) => row.messageId !== accepted.messageId),
-        {
+        localUserRow({
           key: `pending/${accepted.messageId}`,
-          quotes: quoted,
           messageId: accepted.messageId,
-          field: 'body',
-          role: 'user',
           text,
-          attachments: files.map(
-            (file): AgentHistoryAttachment => ({
-              name: file.name,
-              mimeType: file.mimeType,
-              bytes: file.bytes,
-              kind: file.mimeType.startsWith('image/') ? 'image' : 'other',
-            }),
-          ),
-        },
+          quotes: quoted,
+          files,
+        }),
       ]);
     }
   };
@@ -3240,6 +3583,7 @@ export function Conversation(props: ConversationProps) {
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
       );
+    if (workspaceUnavailable()) return tr('The workspace for this task is unavailable.');
     if (!draftReady() || restoringSends().size > 0) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
@@ -3273,23 +3617,35 @@ export function Conversation(props: ConversationProps) {
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
     try {
-      if (frozen.selection.backend?.kind === 'model' && !(await projectMcp.check())) {
-        await abandonSend(client, id);
-        sendError(id, new UiError('Approve workspace connections, then retry this message.'));
-        return;
-      }
-      const sent = await confirmSend(client, id);
-      if (alive) settledSends.set(new Set(settledSends()).add(id));
-      if (alive)
-        settleReply(
-          sent.reply,
-          frozen.text,
-          frozen.files,
-          frozen.edit.quotes,
-          frozen.selection.expectedRunId === undefined,
+      let sent;
+      if (frozen.selection.backend?.kind === 'model') {
+        const result = await confirmAfterProjectMcp(
+          projectMcp.check,
+          async () => {
+            await abandonSend(client, id);
+          },
+          () => confirmSend(client, id),
         );
+        if (result.kind === 'approval_required') {
+          sendError(id, new UiError('Approve workspace connections, then retry this message.'));
+          return;
+        }
+        sent = result.value;
+      } else {
+        sent = await confirmSend(client, id);
+      }
+      if (alive)
+        batch(() => {
+          settledSends.set(new Set(settledSends()).add(id));
+          settleReply(sent.reply, frozen.text, frozen.files, frozen.edit.quotes, startsRun(frozen));
+        });
     } catch (reason) {
-      sendError(id, reason);
+      if (alive && errorMessage(reason) === 'agent_workspace_unavailable') {
+        sendError(id, new UiError('The workspace for this task is unavailable.'));
+        void refreshWorkspace().catch(report);
+      } else {
+        sendError(id, reason);
+      }
     } finally {
       try {
         if (alive) await refreshSends();
@@ -3467,6 +3823,7 @@ export function Conversation(props: ConversationProps) {
     }
   };
   const retryOriginal = async (id: string) => {
+    if (workspaceUnavailable()) return;
     const freezing = freezeState();
     if (freezing.kind !== 'idle' && freezing.frozen.id === id) {
       await freezeSend(freezing.frozen);
@@ -3720,7 +4077,7 @@ export function Conversation(props: ConversationProps) {
                     : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
                       ? tr('Received · waiting for the next step')
                       : tr('Delivery not confirmed. Check status before retrying.'),
-        retryable: canRetry && !busy,
+        retryable: canRetry && !busy && !workspaceUnavailable(),
         busy,
       });
     }
@@ -3917,6 +4274,12 @@ export function Conversation(props: ConversationProps) {
     return true;
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  effect(() => {
+    const check = connected() && !archived() && !!workspace();
+    workspaceUnavailable.set(false);
+    if (check) void refreshWorkspace().catch(report);
+    else workspaceCheck++;
+  });
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
   const messagePrediction = createMessagePrediction({
     sessionId,
@@ -4018,7 +4381,7 @@ export function Conversation(props: ConversationProps) {
   const ownHandle: ConversationHandle = {
     sessionId,
     prediction,
-    title: () => title() || tr('Untitled conversation'),
+    title: () => (title() === null ? null : title() || tr('Untitled conversation')),
     recentMessages() {
       const merged: { id: string; role: 'user' | 'assistant'; text: string }[] = [];
       for (const row of [...rows(), ...live()]) {
@@ -4068,12 +4431,16 @@ export function Conversation(props: ConversationProps) {
     goal,
     projectMcp,
     workspace,
+    sessionRevision,
+    workspaceUnavailable,
+    refreshWorkspace,
     empty: () =>
       ready() &&
       runId() === null &&
       rows().length === 0 &&
       live().length === 0 &&
       unresolved().length === 0 &&
+      opening() === null &&
       activeSends().size === 0 &&
       freezeState().kind === 'idle' &&
       pendingMessages().length === 0 &&
@@ -4398,11 +4765,28 @@ export function Conversation(props: ConversationProps) {
   // A fork made to regenerate a reply sends its prefilled text once sending is possible,
   // unless the draft was changed first.
   effect(() => {
+    if (opening() === null) return;
+    const attachmentFailed =
+      attachments.error() !== '' ||
+      attachments
+        .rows()
+        .some(
+          (row) => row.kind !== 'unknown' && row.kind !== 'reading' && row.kind !== 'uploading',
+        );
+    if (attachmentFailed || savingFailed() || archived()) {
+      batch(() => {
+        opening.set(null);
+        if (attachmentFailed) autoSend.set(null);
+      });
+    }
+  });
+  effect(() => {
     const pending = autoSend();
     if (pending === null || sendBlockedReasonFor(false) || modelLoading()) return;
     untracked(() => {
       batch(() => {
         autoSend.set(null);
+        opening.set(null);
         if (pending.first || draft() === pending.text)
           void send(pending.text, undefined, pending.first);
       });
@@ -4444,9 +4828,11 @@ export function Conversation(props: ConversationProps) {
         draftReady.set(true);
         const empty = !hasComposerContent(stored.text, stored.attachments, stored.quotes);
         const prefill = props.takePrefill?.(empty) ?? null;
+        if (!empty || !prefill?.send) opening.set(null);
         if (prefill) {
           try {
             if (empty) {
+              if (prefill.quotes?.length) quotes.set([...prefill.quotes]);
               changeDraft(prefill.text);
               for (const file of prefill.files ?? [])
                 attachments.observeIntake(client.beginStagedUpload(file), () => {});
@@ -4465,7 +4851,10 @@ export function Conversation(props: ConversationProps) {
         unresolved.set(operations);
         receiptsKnown.set(true);
         if (operations.length) await recover();
-      })().catch(report);
+      })().catch((reason) => {
+        if (alive) opening.set(null);
+        report(reason);
+      });
     }),
   );
 
@@ -4528,18 +4917,70 @@ export function Conversation(props: ConversationProps) {
       cancel={inputAction(cancelNavigation, navigatingTurn())}
     />
   );
+  const turnToc = createTurnToc({
+    enabled: () => !props.compact && ready() && reading() === 'chat',
+    listRef: () => list,
+    listWidth: historyWidth,
+    viewportHeight: () => readingSize().height,
+    railInset,
+    atBottom: () => !historyBelow(),
+    isTerminal: () => platform.idiom === 'terminal',
+    rowTurnKey: entryTurn,
+    turnOutputRowKeys: (turnKey) => {
+      if (botView() === 'bot') {
+        return bot.forTurn(turnKey).length > 0 ? [`bot/${turnKey}`] : [];
+      }
+      const turn = projectedTurn(turnKey);
+      if (!turn) return [];
+      const ids = turn.finalOutputIds.length > 0 ? turn.finalOutputIds : turn.answerOutputIds;
+      return ids.filter((id) => !currentRow(id)?.sourceCitation);
+    },
+    rowOutputSources: (rowKey) => {
+      if (rowKey.startsWith('bot/')) {
+        const turnKey = rowKey.slice(4);
+        return bot.forTurn(turnKey).map((message) => ({
+          keyPrefix: `${message.sequence}:`,
+          text: message.text,
+          streaming: false,
+        }));
+      }
+      if (rowStates.get(rowKey)?.sourceMode()) return [];
+      const row = currentRow(rowKey);
+      if (
+        !row ||
+        row.role !== 'assistant' ||
+        row.field !== 'body' ||
+        row.tool ||
+        row.sourceCitation ||
+        !hasTextPrefix(row)
+      ) {
+        return [];
+      }
+      return [{ keyPrefix: '', text: row.text, streaming: true }];
+    },
+    scrollToRow: (rowKey) => {
+      const index = displayKeys().indexOf(rowKey);
+      if (index < 0 || !list) return false;
+      list.scrollToIndex({ index, viewPosition: 0, animated: false });
+      return true;
+    },
+    onBeforeJump: () => {
+      cancelNavigation();
+      historyScrollInput = 'idle';
+      batch(() => {
+        historyFollowPaused.set(true);
+        innerReader.set(null);
+      });
+    },
+  });
   const transcriptSize = props.compact ? compactTranscriptSize() : undefined;
   const entryRow = (key: () => string) => (
-    <View
-      style={readingColumn}
-      onLayout={
-        transcriptSize
-          ? ({ bounds }) => transcriptSize.measure(key(), bounds.size.height)
-          : undefined
-      }
-    >
-      <Each of={[key()]} key={(id: string) => id}>
-        {(ownedKey) => {
+    <Each of={[key()]} key={(id: string) => id}>
+      {(ownedKey) => {
+        const rowId = ownedKey();
+        const tocRow = !props.compact ? turnToc.bindRow(rowId) : undefined;
+        if (tocRow) cleanup(tocRow.dispose);
+        const renderEntryBody = () => {
           const initial = displayEntry(ownedKey());
           if (!initial) return <View />;
           const entry = () => displayEntry(ownedKey()) ?? initial;
@@ -4666,6 +5107,20 @@ export function Conversation(props: ConversationProps) {
                 row={currentRow}
                 expanded={() => turnExpanded(turn())}
                 canFold={() => workFold(turn()) !== 'unavailable'}
+                doing={() => {
+                  if (initial.turnKey !== runTurn()) return null;
+                  const live = activity();
+                  const tool = latestToolActivity(toolActivity(), runId(), runTurn());
+                  if (live.kind === 'working' && !tool) {
+                    const open = groups().findLast((group) => !group.closed);
+                    if (open && groupLatestIsThought(open, currentRow))
+                      return tr('Analyzing the request');
+                  }
+                  return liveActivityTitle(live, tool);
+                }}
+                waiting={() =>
+                  initial.turnKey === runTurn() && activity().kind === 'waiting_for_user'
+                }
                 images={{
                   sessionId,
                   through: () => latestKnown,
@@ -4805,6 +5260,7 @@ export function Conversation(props: ConversationProps) {
             };
             return (
               <BotReply
+                bindToc={tocRow?.bindTextView}
                 metrics={
                   props.compact
                     ? (at) => {
@@ -4828,7 +5284,9 @@ export function Conversation(props: ConversationProps) {
                     quoteBotMessage(
                       message,
                       sessionId,
-                      message.discovery ? tr('Proactive discovery') : title(),
+                      message.discovery
+                        ? tr('Proactive discovery')
+                        : (title() ?? tr('New conversation')),
                       text,
                       Date.now(),
                     ),
@@ -4871,10 +5329,20 @@ export function Conversation(props: ConversationProps) {
           const first = currentRow(initial.rowId);
           if (!first) return <View />;
           const row = () => currentRow(initial.rowId) ?? first;
+          const bindToc =
+            tocRow &&
+            first.role === 'assistant' &&
+            first.field === 'body' &&
+            !first.tool &&
+            !first.sourceCitation
+              ? tocRow.bindTextView
+              : undefined;
           return (
             <MessageRow
               item={row}
               compactChat={props.compact}
+              beside={props.side}
+              bindToc={bindToc}
               hasSources={() => {
                 const item = entry();
                 return item.kind === 'row' && Boolean(item.sources?.length);
@@ -4912,6 +5380,43 @@ export function Conversation(props: ConversationProps) {
                   return;
                 innerReader.set(key);
               }}
+              sideMarks={
+                sideActions
+                  ? (row) =>
+                      sideActions.marks(row).map(({ item, quotes }) => ({
+                        id: item.id as string,
+                        title: item.title as string,
+                        quotes,
+                        open: sideActions.shown() === item.id,
+                      }))
+                  : undefined
+              }
+              openSide={sideActions?.open}
+              replyNotes={
+                sideActions
+                  ? (row, marked) => (
+                      <SideNotes
+                        questions={() => {
+                          const position = row().position;
+                          // An underlined one is listed too while it works, waits for the
+                          // user or has an unread reply: the underline cannot show that.
+                          return position
+                            ? sideActions
+                                .asked(position)
+                                .filter(
+                                  (item) =>
+                                    !marked().has(item.id) ||
+                                    item.activity !== 'idle' ||
+                                    item.hasUnread,
+                                )
+                            : [];
+                        }}
+                        shown={sideActions.shown}
+                        open={sideActions.open}
+                      />
+                    )
+                  : undefined
+              }
               finalActions={(row, ownerKey, menu) => (
                 <FinalActions
                   compact={props.compact}
@@ -4919,8 +5424,9 @@ export function Conversation(props: ConversationProps) {
                   ownerKey={ownerKey}
                   sessionId={sessionId}
                   through={() => latestKnown}
-                  fork={props.fork}
+                  fork={props.side ? undefined : props.fork}
                   menu={menu}
+                  side={sideActions}
                   extra={
                     platform.idiom !== 'terminal' && props.edit ? (
                       <MessageEdit
@@ -4991,9 +5497,22 @@ export function Conversation(props: ConversationProps) {
               }
             />
           );
-        }}
-      </Each>
-    </View>
+        };
+        const body = renderEntryBody();
+        return (
+          <View
+            ref={tocRow ? tocRow.onRef : undefined}
+            style={readingColumn}
+            onLayout={({ bounds }) => {
+              if (transcriptSize) transcriptSize.measure(rowId, bounds.size.height);
+              tocRow?.onHeight(bounds.size.height);
+            }}
+          >
+            {body}
+          </View>
+        );
+      }}
+    </Each>
   );
   if (props.compact)
     return (
@@ -5003,7 +5522,7 @@ export function Conversation(props: ConversationProps) {
         style={{
           flexShrink: 1,
           minHeight: 0,
-          borderTopWidth: historyList().length ? 1 : 0,
+          borderTopWidth: historyList().length && !props.side ? 1 : 0,
           borderTopColor: C.line,
         }}
       >
@@ -5049,10 +5568,11 @@ export function Conversation(props: ConversationProps) {
         flexShrink: 0,
         minHeight: 0,
         backgroundColor: C.panel,
+        opacity: arriving,
       }}
     >
       <Header
-        title={title() || tr('Untitled conversation')}
+        title={title() === null ? tr('New conversation') : title() || tr('Untitled conversation')}
         workspace={workspace()}
         commands={props.commands}
         browser={props.browser()}
@@ -5240,11 +5760,13 @@ export function Conversation(props: ConversationProps) {
                   if (index >= 0) list?.scrollToIndex({ index, viewPosition: 0, animated: false });
                 }
                 changedReadExposure();
+                turnToc.onViewportChange();
               }}
               each={historyList()}
               loadMoreAtStartThreshold={HISTORY_LOOKAHEAD_VIEWPORTS}
               onLoadMoreAtStart={prefetchOlder}
               onScrollDragStart={({ offset }) => {
+                turnToc.cancelPendingJump();
                 cancelNavigation();
                 historyScrollInput = 'dragging';
                 historyScrolled = true;
@@ -5256,6 +5778,7 @@ export function Conversation(props: ConversationProps) {
                   historyScrollInput = offset.y === historyOffset ? 'idle' : 'pending';
               }}
               onScrollIntent={(event) => {
+                turnToc.cancelPendingJump();
                 if (event.intent === 'start') void navigateStart().catch(report);
                 else {
                   cancelNavigation();
@@ -5280,15 +5803,17 @@ export function Conversation(props: ConversationProps) {
               }}
               onViewableItemsChange={(event) => {
                 const turns = new Set<string>();
-                for (const { item } of event.viewableItems) {
+                const keys = event.viewableItems.map(({ item }) => {
                   const turn = entryTurn(item);
                   if (turn !== null) turns.add(turn);
-                }
+                  return item;
+                });
                 if (turns.size > 0) {
                   visibleTurns.set(turns);
                 }
-                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+                visibleRows.set(new Set(keys));
                 changedReadExposure();
+                turnToc.onVisibleRowsChange(keys);
               }}
               estimatedItemSize={
                 reading() === 'trajectory' ? (platform.idiom === 'terminal' ? 16 : 32) : 96
@@ -5315,7 +5840,7 @@ export function Conversation(props: ConversationProps) {
                 const offset = event.offset.y;
                 const end = Math.max(0, event.contentSize.height - event.size.height);
                 const distance = end - offset;
-                const movement = offset - historyOffset;
+                const movement = event.delta.y;
                 // Programmatic jumps and native prepend corrections must not
                 // change whether the reader is following the live tail.
                 const scrolled = historyScrollInput !== 'idle';
@@ -5352,6 +5877,7 @@ export function Conversation(props: ConversationProps) {
                 )
                   innerReader.set(null);
                 changedReadExposure();
+                turnToc.onScroll();
               }}
               empty={
                 <If
@@ -5379,6 +5905,22 @@ export function Conversation(props: ConversationProps) {
             </If>
             <If when={platform.idiom !== 'terminal' && historyBelow()}>
               <HistoryEdgeFade inset={railInset} bottom />
+            </If>
+            <If when={turnToc.shown()}>
+              <View
+                style={[
+                  { position: 'absolute', top: 0, bottom: 0, left: 0 },
+                  { pointerEvents: 'box-none', flexDirection: 'row' },
+                ]}
+              >
+                <MarkdownToc
+                  turnKey={turnToc.turnKey}
+                  items={turnToc.items}
+                  active={turnToc.activeId}
+                  mode={turnToc.mode}
+                  select={(item) => turnToc.jumpTo(item.id)}
+                />
+              </View>
             </If>
             <If when={railShown()}>
               <View
@@ -5410,7 +5952,10 @@ export function Conversation(props: ConversationProps) {
                   (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
                 }
                 paused={pausedAtEnd()}
-                activate={inputAction(ownHandle.jumpLatest, null)}
+                activate={inputAction(() => {
+                  turnToc.cancelPendingJump();
+                  ownHandle.jumpLatest(null);
+                }, null)}
               />
             </View>
           </View>
@@ -5423,6 +5968,18 @@ export function Conversation(props: ConversationProps) {
               </View>
             )}
           </Each>
+          <If when={sideActions !== undefined && gatheredPassages(sessionId).length > 0}>
+            <View style={{ paddingLeft: railInset() }}>
+              <View style={[readingColumn, { paddingRight: 16 }]}>
+                <SideQuoteTray
+                  quotes={() => gatheredPassages(sessionId).map((passage) => passage.text)}
+                  ask={() => sideActions?.askGathered()}
+                  remove={(index) => dropGathered(sessionId, index)}
+                  clear={() => clearGathered(sessionId)}
+                />
+              </View>
+            </View>
+          </If>
         </View>
         <Each
           of={selectedTrajectory() === null ? [] : [selectedTrajectory()!]}
@@ -5554,13 +6111,13 @@ function HistoryEdgeFade(props: { inset: () => number; bottom?: boolean }) {
 
 function metricText(value: any): string {
   if (!value) return '';
-  const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   const parts: string[] = [];
   if (value.outputTokensPerSecond != null)
-    parts.push(tr('{speed} tok/s', { speed: value.outputTokensPerSecond.toFixed(1) }));
+    parts.push(tr('{speed} tok/s', { speed: formatDecimal(value.outputTokensPerSecond, 1, 1) }));
   if (value.contextTokens != null) {
-    const context = `${value.approximate || value.contextLastKnown ? '≈' : ''}${compact(value.contextTokens)}`;
-    const total = value.contextWindow != null ? ` / ${compact(value.contextWindow)}` : '';
+    const context = `${value.approximate || value.contextLastKnown ? '≈' : ''}${formatCompactCount(value.contextTokens)}`;
+    const total =
+      value.contextWindow != null ? ` / ${formatCompactCount(value.contextWindow)}` : '';
     const percent =
       value.contextWindow > 0
         ? ` · ${Math.round((value.contextTokens / value.contextWindow) * 100)}%`

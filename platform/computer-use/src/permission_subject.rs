@@ -89,7 +89,6 @@ pub(crate) fn macos_target(
 ) -> Result<ComputerAppTarget, maka_agent_facts::tools::ToolError> {
     use maka_agent_facts::{
         interaction::{ComputerAppPlatform, ComputerAppRisk},
-        language::Language,
         tools::ToolError,
     };
     if name.trim().is_empty() || application_id.trim().is_empty() || !app_path.starts_with('/') {
@@ -119,18 +118,14 @@ pub(crate) fn macos_target(
             | "com.apple.ScreenContinuity"
     )
     .then_some(ComputerAppRisk::High);
-    let warning = Some(match (risk, language) {
-        (Some(_), Language::En) => {
-            "This app can expose sensitive information and perform actions on your behalf. Watch the agent while it uses the app."
+    let warning = Some(
+        if risk.is_some() {
+            crate::language::i18n_catalog::permission::high_risk_warning(language)
+        } else {
+            crate::language::i18n_catalog::permission::unknown_risk_warning(language)
         }
-        (Some(_), Language::ZhCn) => "此应用可能展示敏感信息并代表你执行操作。请留意代理使用应用时的行为。",
-        (Some(_), Language::ZhTw) => "此應用程式可能顯示敏感資訊並代表你執行操作。請留意代理使用應用程式時的行為。",
-        (None, Language::En) => {
-            "This app's risk classification has not been established. Approve access only if you trust the app and the requested work."
-        }
-        (None, Language::ZhCn) => "此应用的风险分类尚未确定。请仅在信任该应用和请求的操作时授权。",
-        (None, Language::ZhTw) => "此應用程式的風險分類尚未確定。請僅在信任此應用程式和要求的操作時授權。",
-    }.to_owned());
+        .to_owned(),
+    );
     Ok(ComputerAppTarget {
         identity: ComputerAppIdentity {
             platform: ComputerAppPlatform::Macos,
@@ -159,7 +154,7 @@ mod tests {
             "Safari".into(),
             "org.example.Editor".into(),
             "/Applications/Editor.app".into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap();
         assert_eq!(unknown.identity.application_id, "org.example.Editor");
@@ -171,7 +166,7 @@ mod tests {
             "A localized browser name".into(),
             "com.apple.Safari".into(),
             "/Applications/Safari.app".into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap();
         assert_eq!(browser.display.risk, Some(ComputerAppRisk::High));
@@ -184,7 +179,7 @@ mod tests {
             "Notes".into(),
             "com.apple.Terminal".into(),
             "/Applications/Notes.app".into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap_err();
         assert!(error.to_string().contains("com.apple.Terminal"));
@@ -193,7 +188,7 @@ mod tests {
                 "Editor".into(),
                 String::new(),
                 "/Applications/Editor.app".into(),
-                Language::En,
+                Language::EN,
             )
             .is_err()
         );
@@ -205,7 +200,7 @@ mod tests {
             "Editor".into(),
             "org.example.Editor".into(),
             "/Applications/Editor.app".into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap();
         let mut running = approved.clone();
@@ -230,7 +225,7 @@ mod tests {
             "Editor".into(),
             "org.example.Editor".into(),
             "/Applications/Editor.app".into(),
-            Language::En,
+            Language::EN,
         )
         .unwrap();
         approved.binding = Some(ComputerAppBinding {

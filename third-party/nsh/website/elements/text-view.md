@@ -19,33 +19,6 @@ alerts as tinted boxes with an icon in GitHub's alert colors. Its colors are the
 it. Each part takes the app's styles over these defaults: `classes` and `styles` in TSX, typed styles by part
 (`TextViewParts`) in Rust. Rust makes one with `nsh_base::text_view()`, TSX with `<TextView>` from `nsh/base`.
 
-```rust tabs
-use nsh_base::{TextViewLinkPressEvent, text_view, theme};
-use nsh_core::prelude::*;
-
-const README: &str = "# Release notes
-
-**Faster lists** and a new `TextView`:
-
-- Markdown and HTML
-- [x] Streaming replies
-- [ ] Your own syntax
-
-> [!TIP]
-> Style every part with `TextViewParts`.";
-
-fn release_notes() -> impl IntoElement {
-    scroll().flex_1().child(
-        text_view()
-            .markdown(README)
-            .on_link_press(|TextViewLinkPressEvent { url, .. }: &TextViewLinkPressEvent| log::info!("open {url}"))
-            .p_5()
-            .text_base()
-            .text_color(theme().foreground),
-    )
-}
-```
-
 ```tsx tabs
 import { mount, Scroll } from "nsh";
 import { TextView } from "nsh/base";
@@ -85,6 +58,33 @@ mount(() => (
     <App />
   </Window>
 ));
+```
+
+```rust tabs
+use nsh_base::{TextViewLinkPressEvent, text_view, theme};
+use nsh_core::prelude::*;
+
+const README: &str = "# Release notes
+
+**Faster lists** and a new `TextView`:
+
+- Markdown and HTML
+- [x] Streaming replies
+- [ ] Your own syntax
+
+> [!TIP]
+> Style every part with `TextViewParts`.";
+
+fn release_notes() -> impl IntoElement {
+    scroll().flex_1().child(
+        text_view()
+            .markdown(README)
+            .on_link_press(|TextViewLinkPressEvent { url, .. }: &TextViewLinkPressEvent| log::info!("open {url}"))
+            .p_5()
+            .text_base()
+            .text_color(theme().foreground),
+    )
+}
 ```
 
 In Rust, `text_view()` makes one as `view()` makes a view: a setter per prop (`.markdown(..)`, `.options(..)`,
@@ -130,6 +130,17 @@ The content is one of three props, read in this order:
 - **`document`**: blocks the app builds or keeps: plain objects in TSX, `nsh_base::text_view::Document` in Rust
   ([The document model](#the-document-model)).
 
+```tsx tabs
+<TextView html={`<h2>Shipping</h2><p>Orders ship in <b>2 days</b>. <a href="/faq">FAQ</a></p>`} />
+
+<TextView document={{
+  blocks: [
+    { type: "heading", level: 2, content: [{ type: "text", text: "Total" }] },
+    { type: "paragraph", content: [{ type: "strong", content: [{ type: "text", text: "$42.00" }] }] },
+  ],
+}} />
+```
+
 ```rust tabs
 use nsh_base::text_view;
 use nsh_base::text_view::{Block, Document, Inline};
@@ -147,17 +158,6 @@ fn total() -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<TextView html={`<h2>Shipping</h2><p>Orders ship in <b>2 days</b>. <a href="/faq">FAQ</a></p>`} />
-
-<TextView document={{
-  blocks: [
-    { type: "heading", level: 2, content: [{ type: "text", text: "Total" }] },
-    { type: "paragraph", content: [{ type: "strong", content: [{ type: "text", text: "$42.00" }] }] },
-  ],
-}} />
-```
-
 `TextView` grows with its content. Put it in a [`Scroll`](./scroll.md) (or a row of a [`List`](./list.md)) for long
 documents.
 
@@ -170,6 +170,26 @@ default styles, so they win; its `styles` win over its classes. In Rust, the par
 gives each `TextViewPart` a function refining its style, for every `TextView` below the view that provides it
 ([Typed part styles](#typed-part-styles)), and the root takes the style methods. Line heights in the defaults are set in points: a
 class that changes a part's size sets its line height too (Tailwind's `text-*` classes do).
+
+```tsx tabs
+<TextView
+  markdown={reply()}
+  class="gap-3 text-[15px] leading-6 text-neutral-800"
+  classes={{
+    heading: "text-neutral-950",
+    heading2: "text-xl mt-2",
+    blockquote: "border-l-2 border-neutral-300 pl-3 text-neutral-600",
+    codeBlock: "rounded-lg bg-neutral-100",
+    codeBlockHeader: "px-3 pt-2",
+    codeBlockCode: "p-3 text-[13px]",
+    table: "rounded-lg border border-neutral-200",
+    tableHead: "bg-neutral-50",
+    tableCell: "px-3 py-2 border-t border-neutral-200",
+    taskMarkerChecked: "text-green-600",
+  }}
+  styles={{ root: { fontFamily: "Inter" }, link: { color: "#2563eb" } }}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextViewPart, TextViewParts, text_view, theme};
@@ -202,26 +222,6 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
         .text_color(rgb(0x262626))
         .font_family("Inter")
 }
-```
-
-```tsx tabs
-<TextView
-  markdown={reply()}
-  class="gap-3 text-[15px] leading-6 text-neutral-800"
-  classes={{
-    heading: "text-neutral-950",
-    heading2: "text-xl mt-2",
-    blockquote: "border-l-2 border-neutral-300 pl-3 text-neutral-600",
-    codeBlock: "rounded-lg bg-neutral-100",
-    codeBlockHeader: "px-3 pt-2",
-    codeBlockCode: "p-3 text-[13px]",
-    table: "rounded-lg border border-neutral-200",
-    tableHead: "bg-neutral-50",
-    tableCell: "px-3 py-2 border-t border-neutral-200",
-    taskMarkerChecked: "text-green-600",
-  }}
-  styles={{ root: { fontFamily: "Inter" }, link: { color: "#2563eb" } }}
-/>
 ```
 
 Some nodes are several parts, which apply in order: a level 2 heading is `heading` then `heading2`; an alert is
@@ -283,10 +283,10 @@ Some nodes are several parts, which apply in order: a level 2 heading is `headin
 ## Streaming AI replies
 
 Pass the reply as it grows, with `options={{ streaming: true }}` (`MarkdownOptions { streaming: true, .. }` in Rust). The end of a text that is still arriving often leaves
-syntax open (`**bold`, `` `code ``, `[a link](htt`, a table whose header just arrived); streaming shows it as it will
-look once closed, so the reader never sees stray `**` or `[`. A last line whose meaning the next characters decide
-appears once its line ends: a list marker alone, a `-` or `=` line under a paragraph, a code fence's opening line or a
-closer half typed, so each list item, heading and code block appears as what it will be. A `*` inside a word (`a*b`)
+syntax open (`**bold`, `**bold*`, `` `code ``, `[a link]` before its `(`, `[a link](htt`, a table whose header just
+arrived); streaming shows it as it will look once closed, so the reader never sees stray `**` or `[`. A last line whose
+meaning the next characters decide appears once its line ends: a list marker alone, a task box alone (`- [x]`), a `-`
+or `=` line under a paragraph, a code fence's opening line or a closer half typed, so each list item, heading and code block appears as what it will be. A `*` inside a word (`a*b`)
 stays as written. Once the reply ends (`streaming` off), the text is read as written. Blocks are kept by position: the
 blocks that are complete are read once and keep their views, and each update reads and makes again only the block
 being written, so a long reply stays cheap to update.
@@ -294,22 +294,6 @@ being written, so a long reply stays cheap to update.
 `streamingCaret` follows the end of the document: inline at the end of the last text, wherever the last block ends (a
 paragraph, a list item, a code block, a table's last cell), else on a line of its own after the last block (a rule,
 content of a render function). Remove it when the reply is done.
-
-```rust tabs
-use nsh_base::{MarkdownOptions, text_view};
-use nsh_core::prelude::*;
-
-/// A reply the app appends to as chunks arrive, with `done` set at the end.
-fn reply(text: Signal<SharedString>, done: Signal<bool>) -> impl IntoElement {
-    text_view()
-        .markdown(move || text.get())
-        .options(move || MarkdownOptions { streaming: !done.get(), ..Default::default() })
-        .streaming_caret(when(
-            move || !done.get(),
-            || view().ml_0p5().h_4().w_2().rounded_sm().bg(rgb(0xa3a3a3)),
-        ))
-}
-```
 
 ```tsx tabs
 import { signal, View } from "nsh";
@@ -332,6 +316,22 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 }
 ```
 
+```rust tabs
+use nsh_base::{MarkdownOptions, text_view};
+use nsh_core::prelude::*;
+
+/// A reply the app appends to as chunks arrive, with `done` set at the end.
+fn reply(text: Signal<SharedString>, done: Signal<bool>) -> impl IntoElement {
+    text_view()
+        .markdown(move || text.get())
+        .options(move || MarkdownOptions { streaming: !done.get(), ..Default::default() })
+        .streaming_caret(when(
+            move || !done.get(),
+            || view().ml_0p5().h_4().w_2().rounded_sm().bg(rgb(0xa3a3a3)),
+        ))
+}
+```
+
 The caret is the app's own view, so it can blink or pulse with [`nsh`'s animation API](../modules/nsh.md#animation), and new
 blocks can fade in with the app's animations.
 
@@ -344,6 +344,16 @@ Links are [pressable spans](./text.md#links). A press on one calls `onLinkPress`
 one: `onLinkPress` hears it as it hears a press. The event also has the modifier keys held when the press began
 (`modifiers`, as a press's), so an app can open a Command-click (Control off macOS) in the browser and route a plain
 one itself; a press from the keyboard or an assistive technology holds none.
+
+```tsx tabs
+<TextView
+  markdown={doc}
+  onLinkPress={({ url }) => {
+    if (url.startsWith("#")) scrollToAnchor(url.slice(1));
+    else nav.push({ name: "web", url });
+  }}
+/>
+```
 
 ```rust tabs
 use nsh_base::{TextViewLinkPressEvent, text_view};
@@ -359,16 +369,6 @@ fn doc(markdown: &'static str) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-<TextView
-  markdown={doc}
-  onLinkPress={({ url }) => {
-    if (url.startsWith("#")) scrollToAnchor(url.slice(1));
-    else nav.push({ name: "web", url });
-  }}
-/>
-```
-
 `scroll_to_anchor` and `open_web` (`scrollToAnchor` and `nav` in TSX) stand for the app's own functions.
 
 With `links="open"`, a press on a link to another site or app (a URL with a scheme: `https:`, `mailto:`, ...) also
@@ -376,14 +376,14 @@ opens it outside the app with [`openUrl`](../modules/nsh.md#openurl), under the 
 after `onLinkPress` reported it; anchors in the document (`#…`) are only reported. The default, `"report"`, opens
 nothing.
 
+```tsx tabs
+<TextView markdown={doc} links="open" />
+```
+
 ```rust tabs
 use nsh_base::{TextViewLinks, text_view};
 
 text_view().markdown(doc).links(TextViewLinks::Open)
-```
-
-```tsx tabs
-<TextView markdown={doc} links="open" />
 ```
 
 On the desktops and the web in the desktop idiom, the pointer resting on a link shows where it goes, below the
@@ -393,6 +393,14 @@ port always whole (an international host in its ASCII form, so a look-alike lett
 cut in the middle; a path or an anchor of the document (`#…`) shows as written. An image in a link shows the link's
 destination and title the same way, below the image. It is the same check as a
 [Link's](./link.md#where-it-goes).
+
+On the web, a link to a web page, a path of the site, an e-mail address or a phone number (`https:`, `http:`, a path,
+`mailto:`, `tel:`) is an `<a href>` in the page, as a [Link](./link.md#platform-notes) with an `href` is: crawlers follow
+it, the browser shows where it goes, and a click with a modifier key or the middle button opens it in a new tab or
+window as the browser does, with no `onLinkPress`; a right click shows the browser's menu for links. A plain click is
+the app's, reported by `onLinkPress`. A path goes under the site's base, as a `Link`'s `href` does. Anchors of the
+document (`#…`) and links to the app's own routes (a scheme of the app's, such as `myapp:`) are pressable text,
+reported on every click with its modifier keys.
 
 ## Render functions
 
@@ -415,6 +423,21 @@ in: it copies the code and shows a check for a moment. Other actions are the app
 their icon and `onCodeBlockAction` reports their presses (the built-in `copy` too, after it copied). `copy` writes the
 clipboard as `Clipboard` does, so it needs the app's `clipboard` capability (`nsh.json`).
 
+```tsx tabs
+import { Text } from "nsh";
+import { TextView } from "nsh/base";
+
+<TextView
+  markdown={reply()}
+  codeBlockActions={[
+    { id: "copy", label: "Copy code" },
+    { id: "run", label: "Run" },
+  ]}
+  renderCodeBlockAction={(action) => <Text class="text-xs">▶</Text>}
+  onCodeBlockAction={({ id, code }) => id === "run" && run(code.code)}
+/>
+```
+
 ```rust tabs
 use nsh_base::{TextViewCodeAction, TextViewCodeActionEvent, text_view};
 use nsh_core::prelude::*;
@@ -435,27 +458,25 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 }
 ```
 
-```tsx tabs
-import { Text } from "nsh";
-import { TextView } from "nsh/base";
-
-<TextView
-  markdown={reply()}
-  codeBlockActions={[
-    { id: "copy", label: "Copy code" },
-    { id: "run", label: "Run" },
-  ]}
-  renderCodeBlockAction={(action) => <Text class="text-xs">▶</Text>}
-  onCodeBlockAction={({ id, code }) => id === "run" && run(code.code)}
-/>
-```
-
 Code blocks are highlighted out of the box: for a language named on the fence (`ts`, `tsx`, `rust`, `python`, `bash`,
 `json`, `toml`, `yaml`, `diff` and about two hundred more), the code shows in Allsum's code palette, light or dark with the
 appearance; a block without a language shows plain. An app with highlighting of its own shows its code with
 `renderCodeBlock`, from its own component or one of its Rust crate; a Rust view gives `TextView` its highlighter with
 [`CodeHighlighter`](#syntax-highlighting). Here code with highlighting of the app's own, and an image that fills the
 width:
+
+```tsx tabs
+import { Image, View } from "nsh";
+
+<TextView
+  markdown={reply()}
+  renderCodeBlock={(code) => <Highlighted language={code.language} code={code.code} />}
+  renderImage={(image) => (
+    <Image src={image.src} accessibilityLabel={image.alt} class="aspect-video w-full rounded-lg" />
+  )}
+  renderMath={(math) => <MathView tex={math.tex} display={math.display} />}
+/>
+```
 
 ```rust tabs
 use nsh_base::text_view;
@@ -476,19 +497,6 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
         })
         .render_math(|math: &TextViewMath| math_view(math.tex.to_string(), math.display))
 }
-```
-
-```tsx tabs
-import { Image, View } from "nsh";
-
-<TextView
-  markdown={reply()}
-  renderCodeBlock={(code) => <Highlighted language={code.language} code={code.code} />}
-  renderImage={(image) => (
-    <Image src={image.src} accessibilityLabel={image.alt} class="aspect-video w-full rounded-lg" />
-  )}
-  renderMath={(math) => <MathView tex={math.tex} display={math.display} />}
-/>
 ```
 
 An image that stands on its own (a paragraph or a table cell of images) is laid out in a box as wide as the text:
@@ -516,6 +524,56 @@ view it returns has that as its [`copyText`](./text.md#inline-views-and-images):
 | `language` | `MarkdownExtension::language(name, language)` | Fenced code blocks of that language (```` ```chart ````) | A block; `text` is the code, `attributes.meta` the rest of the info string |
 | `tag` | `MarkdownExtension::tag(name, tag)` | HTML or MDX elements of that tag, any case (`<Callout kind="tip">`) | Its attributes, its content parsed: `children` (blocks) for an element on its own lines, `content` (inline) inside text |
 | `container` | `MarkdownExtension::container(name, container)` | Containers `:::name` … `:::` | A block of the Markdown inside (`children`); `:::note[Heads up]` gives `attributes.label`, `{key=value}` the other attributes |
+
+````tsx tabs
+import { Text, View } from "nsh";
+import { TextView } from "nsh/base";
+import type { MarkdownExtension, TextViewCustomNode } from "nsh/base";
+
+const extensions: MarkdownExtension[] = [
+  { name: "mention", pattern: "@(\\w+)" },
+  { name: "chart", language: "chart" },
+  { name: "callout", tag: "callout" },
+  { name: "note", container: "note" },
+];
+
+const message = `Thanks @ada! Here are the numbers:
+
+\`\`\`chart
+12, 19, 7, 25
+\`\`\`
+
+<Callout kind="tip">Charts update live.</Callout>
+
+:::note[Heads up]
+Numbers are in thousands.
+:::`;
+
+function Custom(props: { node: TextViewCustomNode }) {
+  const node = props.node;
+  switch (node.name) {
+    case "mention":
+      return <Text class="font-semibold text-blue-600">{node.text}</Text>;
+    case "chart":
+      return <BarChart values={node.text!.split(",").map(Number)} />;
+    case "callout":
+      return (
+        <View class="rounded-lg bg-amber-50 p-3">
+          <TextView document={{ blocks: node.children ?? [] }} />
+        </View>
+      );
+    default:
+      return (
+        <View class="gap-1 border-l-4 border-blue-500 pl-3">
+          <Text class="font-semibold">{node.attributes?.label ?? "Note"}</Text>
+          <TextView document={{ blocks: node.children ?? [] }} />
+        </View>
+      );
+  }
+}
+
+<TextView markdown={message} extensions={extensions} renderCustom={(node) => <Custom node={node} />} />;
+````
 
 ````rust tabs
 use nsh_base::text_view::{CustomNode, Document};
@@ -575,56 +633,6 @@ fn message() -> impl IntoElement {
 }
 ````
 
-````tsx tabs
-import { Text, View } from "nsh";
-import { TextView } from "nsh/base";
-import type { MarkdownExtension, TextViewCustomNode } from "nsh/base";
-
-const extensions: MarkdownExtension[] = [
-  { name: "mention", pattern: "@(\\w+)" },
-  { name: "chart", language: "chart" },
-  { name: "callout", tag: "callout" },
-  { name: "note", container: "note" },
-];
-
-const message = `Thanks @ada! Here are the numbers:
-
-\`\`\`chart
-12, 19, 7, 25
-\`\`\`
-
-<Callout kind="tip">Charts update live.</Callout>
-
-:::note[Heads up]
-Numbers are in thousands.
-:::`;
-
-function Custom(props: { node: TextViewCustomNode }) {
-  const node = props.node;
-  switch (node.name) {
-    case "mention":
-      return <Text class="font-semibold text-blue-600">{node.text}</Text>;
-    case "chart":
-      return <BarChart values={node.text!.split(",").map(Number)} />;
-    case "callout":
-      return (
-        <View class="rounded-lg bg-amber-50 p-3">
-          <TextView document={{ blocks: node.children ?? [] }} />
-        </View>
-      );
-    default:
-      return (
-        <View class="gap-1 border-l-4 border-blue-500 pl-3">
-          <Text class="font-semibold">{node.attributes?.label ?? "Note"}</Text>
-          <TextView document={{ blocks: node.children ?? [] }} />
-        </View>
-      );
-  }
-}
-
-<TextView markdown={message} extensions={extensions} renderCustom={(node) => <Custom node={node} />} />;
-````
-
 `BarChart` (`bar_chart` in Rust) stands for the app's own chart. The mention pattern's group is in
 `node.attributes?.["1"]` (`node.attributes["1"]` in Rust: `ada`) and the whole match in `node.text` (`@ada`). A custom node with no render function shows its content.
 A view returned for an inline node (a chip) sits in its line by its own `verticalAlign`: `align-middle`
@@ -640,6 +648,8 @@ same fields (`MarkdownOptions { streaming: true, ..Default::default() }`):
 | `math` | `boolean` | `true` | Formulas: `$…$` and `\(…\)` in text, `$$…$$` and `\[…\]` blocks. Escaped brackets around a reference number or CJK words (`\[1\]\[3\]`, `\[注\]`) show as text. |
 | `html` | `boolean` | `true` | HTML inside the Markdown is read as the `html` prop reads it; `false` shows it as text. |
 | `alerts` | `boolean` | `true` | GitHub's alerts: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`. |
+| `links` | `boolean` | `true` | Links: `[text](url)`, bare URLs and `<a href>`; `false` shows their text, not a link. |
+| `images` | `boolean` | `true` | Images: `![alt](src)` and `<img>`; `false` shows their `alt` text. |
 | `frontmatter` | `boolean` | `false` | YAML front matter (`---` … `---` first) becomes a custom node `frontmatter` whose `text` is the YAML. |
 | `mdx` | `boolean` | `false` | MDX: JSX elements are custom nodes named by their tag, `{expressions}` custom nodes `expression`; raw HTML is then read as text. |
 | `streaming` | `boolean` | `false` | The text is still arriving: syntax its end leaves open shows as if it were closed. |
@@ -698,6 +708,12 @@ A code block's `id` is the app's: `onCodeBlockAction` hands the block back with 
 
 A copy button for a whole reply:
 
+```tsx tabs
+<Button onPress={() => Clipboard.writeText(TextView.plainText(TextView.parse(reply())))}>
+  <Text>Copy</Text>
+</Button>
+```
+
 ```rust tabs
 use nsh_base::{TextView, button};
 use nsh_core::prelude::*;
@@ -710,12 +726,6 @@ fn copy_reply(reply: Signal<SharedString>) -> impl IntoElement {
         })
         .child(text("Copy"))
 }
-```
-
-```tsx tabs
-<Button onPress={() => Clipboard.writeText(TextView.plainText(TextView.parse(reply())))}>
-  <Text>Copy</Text>
-</Button>
 ```
 
 An app can also parse once and keep the document (`document={doc}`), or change it before showing it.

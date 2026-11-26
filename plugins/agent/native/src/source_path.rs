@@ -64,24 +64,33 @@ pub(crate) fn file_path(source: &HistorySource, workspace: &str) -> Option<Strin
     let tool = source.tool.as_ref()?;
     let call = tool.call.as_ref()?;
     let key = call.presentation.as_deref()?;
-    let patch = match key {
-        "maka.workspace.Files@1/read"
-        | "maka.workspace.Files@1/write"
-        | "maka.workspace.Files@1/edit" => false,
-        "maka.workspace.Files@1/applyPatch" => true,
-        _ => return None,
-    };
-    let arguments = source.role == SourceRole::ToolCall
+    let is_call_args = source.role == SourceRole::ToolCall
         && source.field == SourceField::Arguments
-        && source.position == call.position
-        && selector(
-            source,
-            if patch {
-                &["operation", "path"]
-            } else {
-                &["path"]
-            },
-        );
+        && source.position == call.position;
+    if key == "maka.workspace.Files@1/applyPatch" {
+        if !is_call_args {
+            return None;
+        }
+        if selector(source, &["patch"]) {
+            let paths = maka_fs_tools::patch_paths(&source.text).ok()?;
+            return match paths.as_slice() {
+                [only] => absolute(only, workspace),
+                _ => None,
+            };
+        }
+        return selector(source, &["operation", "path"])
+            .then(|| absolute(&source.text, workspace))
+            .flatten();
+    }
+    if !matches!(
+        key,
+        "maka.workspace.Files@1/read"
+            | "maka.workspace.Files@1/write"
+            | "maka.workspace.Files@1/edit"
+    ) {
+        return None;
+    }
+    let arguments = is_call_args && selector(source, &["path"]);
     let result = source.role == SourceRole::ToolResult
         && source.field == SourceField::Result
         && matches!(
@@ -96,4 +105,94 @@ pub(crate) fn file_path(source: &HistorySource, workspace: &str) -> Option<Strin
     (arguments || result)
         .then(|| absolute(&source.text, workspace))
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn patch_source(path: &[&str], text: &str) -> HistorySource {
+        serde_json::from_value(json!({
+            "position": {
+                "kind": "live",
+                "sequence": 1,
+                "fact": "11111111-1111-4111-8111-111111111111",
+                "itemIndex": 0
+            },
+            "timestamp": null,
+            "role": "tool_call",
+            "fields": ["arguments"],
+            "field": "arguments",
+            "path": path,
+            "format": "text",
+            "offset": 0,
+            "totalBytes": text.len(),
+            "text": text,
+            "tool": {
+                "toolUseId": "call-1",
+                "call": {
+                    "ancestorToolUseIds": [],
+                    "origin": "provider",
+                    "presentation": "maka.workspace.Files@1/applyPatch",
+                    "position": {
+                        "kind": "live",
+                        "sequence": 1,
+                        "fact": "11111111-1111-4111-8111-111111111111",
+                        "itemIndex": 0
+                    },
+                    "name": "ApplyPatch",
+                    "title": null,
+                    "pending": false,
+                    "dispatched": true
+                },
+                "result": null
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn resolves_single_multi_and_legacy_apply_patch_paths() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_str = workspace.path().to_str().unwrap();
+
+        let single = patch_source(
+            &["patch"],
+            "*** Begin Patch\n*** Add File: src/a.rs\n+hi\n*** End Patch",
+        );
+        assert_eq!(
+            file_path(&single, workspace_str),
+            Some(
+                workspace
+                    .path()
+                    .join("src/a.rs")
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            )
+        );
+
+        let multi = patch_source(
+            &["patch"],
+            "*** Begin Patch\n*** Add File: src/a.rs\n+hi\n*** Delete File: src/b.rs\n*** End Patch",
+        );
+        assert_eq!(file_path(&multi, workspace_str), None);
+
+        let legacy = patch_source(&["operation", "path"], "src/legacy.rs");
+        assert_eq!(
+            file_path(&legacy, workspace_str),
+            Some(
+                workspace
+                    .path()
+                    .join("src/legacy.rs")
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            )
+        );
+
+        let missing_envelope = patch_source(&["patch"], "*** Add File: src/a.rs\n+hi");
+        assert_eq!(file_path(&missing_envelope, workspace_str), None);
+    }
 }

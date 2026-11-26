@@ -159,7 +159,7 @@ fn data_specs_interpolate_and_merge_attributes() {
         .unwrap();
     assert_eq!(
         doc_to_html(&doc),
-        r#"<aside class="note" data-tone="warn" tone="warn" style="color: red" data-id="7"><div><mark class="base x">a</mark><span class="chip" label="?">?</span></div></aside>"#
+        r#"<aside class="note" data-tone="warn" tone="warn" style="color: red;" data-id="7"><div><mark class="base x">a</mark><span class="chip" label="?">?</span></div></aside>"#
     );
     // `parse_html` reads the attributes back.
     let parsed = DomParser::from_schema(&s).parse(&doc_to_html(&doc), &ParseOptions::default());
@@ -250,7 +250,7 @@ fn callbacks_render() {
         .unwrap();
     assert_eq!(
         doc_to_html(&doc),
-        r#"<span style="font-size: 12px" px="12">&lt;</span>"#
+        r#"<span style="font-size: 12px;" px="12">&lt;</span>"#
     );
 }
 

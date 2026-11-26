@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyRoomWatchUpdate,
+  buildRoomMentionChoices,
   createSerialQueue,
   extractInlineMentionIds,
   formatInlineMention,
@@ -57,10 +58,16 @@ test('roomMentionAt triggers seamlessly after CJK, punctuation, whitespace, or s
 test('inline mention formatting, extraction, and stripping preserve surrounding prose', () => {
   const tokenA = formatInlineMention('ma_alpha', 'Frontend [v2]');
   const tokenB = formatInlineMention('ma_beta', 'Backend');
+  const roomRef = formatInlineMention('ma_room', '设计群 [Q4]', 'room');
+  assert.equal(roomRef, '[#设计群 \\[Q4\\]](maka://session/ma_room) ');
+  assert.equal(formatRoomPreviewText(roomRef), '#设计群 [Q4]');
+  assert.equal(roomTextNeedsMarkdown(roomRef), true);
   const draft =
     '请 ' +
     tokenA +
-    '改样式，并参考 [详情](maka://session/ma_plain) 和 [#设计群](maka://session/ma_room) 给 ' +
+    '改样式，并参考 [详情](maka://session/ma_plain) 和 ' +
+    roomRef +
+    '给 ' +
     tokenB +
     '对接口';
 
@@ -69,6 +76,71 @@ test('inline mention formatting, extraction, and stripping preserve surrounding 
   assert.equal(removed.includes('ma_alpha'), false);
   assert.equal(removed.includes('改样式'), true);
   assert.deepEqual(extractInlineMentionIds(removed), ['ma_beta']);
+});
+
+test('buildRoomMentionChoices includes other active rooms separately from members and conversations', () => {
+  const makeSession = (id, title, kind, archived = false) => ({
+    id,
+    kind,
+    title,
+    archived,
+    activity: 'idle',
+    workspace: { path: '/tmp/' + id },
+    appliedPreset: null,
+  });
+  const members = [
+    {
+      sessionId: 'ma_m1',
+      title: 'Alice',
+      presetName: 'Frontend',
+      workspacePath: '/tmp/w',
+      activity: 'idle',
+      unavailable: false,
+      archived: false,
+    },
+    {
+      sessionId: 'ma_m2',
+      title: 'Bob',
+      presetName: null,
+      workspacePath: '/tmp/w',
+      activity: 'working',
+      unavailable: false,
+      archived: false,
+    },
+  ];
+  const sessions = [
+    makeSession('ma_self_room', 'Current Room', 'room'),
+    makeSession('ma_other_room', 'Design Sync', 'room'),
+    makeSession('ma_archived_room', 'Old Room', 'room', true),
+    makeSession('ma_m1', 'Alice', 'agent'),
+    makeSession('ma_c1', 'Conv 1', 'agent'),
+    makeSession('ma_c2', 'Conv 2', 'agent'),
+    makeSession('ma_c3', 'Conv 3', 'agent'),
+    makeSession('ma_archived_conv', 'Old Conv', 'agent', true),
+  ];
+
+  const rows = buildRoomMentionChoices({
+    roomId: 'ma_self_room',
+    members,
+    sessions,
+    alreadyMentioned: new Set(['ma_c2']),
+    query: '',
+    allLabel: 'All room members',
+    allKeywords: ['all', '全体'],
+    sectionLimit: 2,
+  });
+
+  assert.deepEqual(
+    rows.map((r) => [r.kind, r.id, r.kind === 'agent' ? r.isMember : null]),
+    [
+      ['all', '__all__', null],
+      ['agent', 'ma_m1', true],
+      ['agent', 'ma_m2', true],
+      ['room', 'ma_other_room', null],
+      ['agent', 'ma_c1', false],
+      ['agent', 'ma_c3', false],
+    ],
+  );
 });
 
 test('isGroupContinuation groups same-author messages within 5 minutes and breaks on replies, gaps, or deletions', () => {

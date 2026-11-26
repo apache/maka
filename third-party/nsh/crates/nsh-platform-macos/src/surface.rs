@@ -20,16 +20,18 @@
 //! taking them all. An idle surface applies a batch as soon as it lands.
 //!
 //! The one exception to "the main thread never waits for JS": when the
-//! window resizes the root ([`Surface::resized`]), the main thread waits
-//! for the engine's layout at the new size, at most [`RESIZE_WAIT`], and
-//! applies it before AppKit draws the window at that size. Without it the
-//! content shows a frame late during a live resize, and not at all during
-//! AppKit's animated resizes (zoom, full screen): those run the run loop
-//! in a private mode (`_NSMoveTimerRunLoopMode`) where the main queue
-//! does not drain, so the window grew around stale content and showed its
-//! background in the new area until the animation ended. An engine that
-//! misses the deadline (JS busy) is not waited for again until it catches
-//! up, so a slow app resizes as before, a frame or more behind.
+//! window resizes the root ([`Surface::resized`]) or a window of the
+//! app's own resizes its root ([`crate::window::resized`]), the main
+//! thread waits for the engine's layout at the new size, at most
+//! [`RESIZE_WAIT`], and applies it before AppKit draws the window at that
+//! size. Without it the content shows a frame late during a live resize,
+//! and not at all during AppKit's animated resizes (zoom, full screen):
+//! those run the run loop in a private mode (`_NSMoveTimerRunLoopMode`)
+//! where the main queue does not drain, so the window grew around stale
+//! content and showed its background in the new area until the animation
+//! ended. An engine that misses the deadline (JS busy) is not waited for
+//! again until it catches up, so a slow app resizes as before, a frame or
+//! more behind.
 
 use std::{
     cell::{Cell, RefCell},
@@ -70,8 +72,10 @@ enum Message {
     Error(String),
     Frame,
     HotUpdateFailed,
-    /// The engine laid the app out at this size ([`MountSink::resized`]).
-    Resized(Size<Points>),
+    /// The engine laid root `id` out at this size: the app's root
+    /// ([`ROOT_ID`], [`MountSink::resized`]) or a window of the app's own
+    /// ([`MountSink::root_resized`]).
+    Resized(NodeId, Size<Points>),
     /// The app imports chunk `id` (`import()` of a split bundle), which its
     /// bundle does not hold ([`MountSink::load_chunk`]).
     LoadChunk(String),
@@ -175,7 +179,11 @@ impl MountSink for Sink {
     }
 
     fn resized(&self, size: Size<Points>) {
-        self.send(Message::Resized(size));
+        self.send(Message::Resized(ROOT_ID, size));
+    }
+
+    fn root_resized(&self, id: NodeId, size: Size<Points>) {
+        self.send(Message::Resized(id, size));
     }
 
     fn load_chunk(&self, id: &str) -> bool {
@@ -362,8 +370,6 @@ pub(crate) struct Surface {
     pub(crate) image_assets: RefCell<crate::image::AssetSource>,
     /// The engine's sounds and players ([`crate::audio`]).
     pub(crate) audio: crate::audio::Speaker,
-    /// The engine's speech recognition session ([`crate::speech`]).
-    pub(crate) speech: crate::speech::Listener,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// The roots the app's `<Image>` files are read under
@@ -485,7 +491,6 @@ impl Surface {
             asset_base: RefCell::new(None),
             image_assets: RefCell::default(),
             audio: Default::default(),
-            speech: Default::default(),
             image_cache: RefCell::new(None),
             media_files: RefCell::default(),
             native: Default::default(),
@@ -602,15 +607,13 @@ impl Surface {
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
-        // The core's abort dies with the engine: the microphone goes off
-        // here.
-        self.speech.end();
         self.rx.borrow_mut().take();
         self.events_handled.set(0);
         crate::text_input::stopped(self);
         self.mounter.borrow_mut().clear();
         self.native.clear();
         crate::system::clear(self);
+        crate::panels::close(self);
         *self.anim.borrow_mut() = UiAnimation::default();
         self.nav.borrow_mut().reset();
         crate::window::close_all(self);
@@ -749,13 +752,19 @@ impl Surface {
         crate::navigation::surface_resized(self, width, height);
         // Full screen and the window's size change the title bar's area.
         crate::chrome::update_area(self);
-        self.await_layout(Size::new(Points(width), Points(height)));
+        self.await_layout(ROOT_ID, Size::new(Points(width), Points(height)));
     }
 
-    /// Waits for the engine's layout at `size` and applies what it sent
-    /// meanwhile ([`Surface::resized`]).
-    fn await_layout(self: &Rc<Self>, size: Size<Points>) {
-        if self.resize_late.get() || self.mounter.try_borrow_mut().is_err() {
+    /// Waits for the engine's layout of root `id` at `size` and applies
+    /// what it sent meanwhile: the app's root ([`Surface::resized`]) or a
+    /// window of the app's own ([`crate::window::resized`]). Not while
+    /// batches are being applied or the windows are borrowed: a resize
+    /// from there would apply batches inside them.
+    pub(crate) fn await_layout(self: &Rc<Self>, id: NodeId, size: Size<Points>) {
+        if self.resize_late.get()
+            || self.mounter.try_borrow_mut().is_err()
+            || self.windows.try_borrow_mut().is_err()
+        {
             return;
         }
         let Some(rx) = self.rx.borrow().clone() else {
@@ -780,7 +789,7 @@ impl Surface {
                         self.resize_late.set(true);
                         break;
                     };
-                    let done = matches!(message, Message::Resized(s) if s == size);
+                    let done = matches!(message, Message::Resized(i, s) if i == id && s == size);
                     applied |= self.handle(message, monitor.as_deref());
                     if done {
                         break;
@@ -899,7 +908,7 @@ impl Surface {
                     f();
                 }
             }
-            Message::Resized(_) => self.resize_late.set(false),
+            Message::Resized(..) => self.resize_late.set(false),
             Message::Run(task) => task.run(),
             Message::LoadChunk(id) => {
                 // The chunk's file name is its id: `is_chunk_name`
@@ -1530,11 +1539,12 @@ impl Drop for Surface {
         crate::text_input::disposed(key);
         crate::tray::release(key);
         crate::global_shortcut::release(key);
-        // A surface dropped without stopping takes its alerts with it: a
-        // sheet left on an embedding app's window, or an alert shown on
-        // its own (an app-modal loop), would wait for an answer no one
-        // hears.
+        // A surface dropped without stopping takes its alerts and panels
+        // with it: a sheet left on an embedding app's window, or an alert
+        // shown on its own (an app-modal loop), would wait for an answer no
+        // one hears.
         crate::system::clear(self);
+        crate::panels::close(self);
         let _ = SURFACES.try_with(|s| s.borrow_mut().remove(&key));
     }
 }

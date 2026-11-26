@@ -200,6 +200,7 @@ Web 上它沿用页面的协议，按补全后的 URL 检查；原生应用没�
 | `hosts` | `string[]` | [web view](./web-view-and-video.md) 可以显示和导航到的主机（`http` 和 `https`）。没有 `webview` 时，应用完全不能显示网页。 |
 | `input` | `boolean` | web view 的 ref 可以向页面发送可信输入（[`sendInput`](./web-view-and-video.md#像用户一样输入)）。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
 | `media` | `string[]` | 网页可以通过 `getUserMedia` 采集的媒体：`"microphone"`、`"camera"`。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
+| `runtimeOrigin` | `boolean` | web view 的 `allowOrigin` 可以在应用运行时为这个 web view 增加一个可显示的源（[`allowOrigin`](../elements/web-view.md)）。只有声明了才会授予，没有 `"capabilities"` 的应用也不例外。 |
 
 web view 内的顶层导航也会在加载前由平台的导航代理检查。页面自身的子资源（脚本、图片、XHR）属于网页内容自己的事，
 不做检查。`about:blank` 和内联 HTML（`html`）只要求 web view 被授予即可：`"webview": { "hosts": [] }`
@@ -248,7 +249,7 @@ blob（`blob:null/…`），都不允许。所有平台的检查方式相同。
 
 ### `speech`
 
-`"speech": true` 允许应用识别用户说的话（[`Speech`](../modules/nsh.md#speech)）：使用麦克风和系统的语音识别器，转写文本交给应用。系统仍会向用户请求一次权限。
+`"speech": true` 允许应用识别用户说的话（`nsh-extra` 的 [`Speech`](./nshm.md#speech)）：使用麦克风和系统的语音识别器，转写文本交给应用。系统仍会向用户请求一次权限。
 
 ### `audio`
 

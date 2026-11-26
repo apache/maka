@@ -23,6 +23,8 @@ import {
   completionToken,
   fileInvocation,
   referenceEdit,
+  sessionInvocation,
+  stripSessionReference,
 } from '../../../../plugins/agent/composer/ui/composerCompletionSyntax.ts';
 
 test('composer completion replaces the caret token while preserving Unicode prose and paths', () => {
@@ -99,4 +101,20 @@ test('composer completion replaces the caret token while preserving Unicode pros
   });
   assert.equal(completionToken('https://host/src', { start: 16, end: 16 }), null);
   assert.equal(completionToken('/usr/bin', { start: 8, end: 8 }), null);
+});
+
+test('a side question reference leaves the draft with the spaces it brought', () => {
+  const ref = sessionInvocation({ id: 's1', title: 'Why [x]?', kind: 'agent' });
+  const other = sessionInvocation({ id: 's2', title: 'Other', kind: 'agent' });
+  // As the card adds it: alone, after a space-separated word, or after a trailing space.
+  assert.equal(stripSessionReference(`${ref} `, 's1'), '');
+  assert.equal(stripSessionReference(`Check this ${ref} `, 's1'), 'Check this');
+  assert.equal(stripSessionReference(`Check this\n${ref} `, 's1'), 'Check this\n');
+  // Then edited around.
+  assert.equal(stripSessionReference(`Check this ${ref}, please`, 's1'), 'Check this, please');
+  assert.equal(stripSessionReference(`Ask ${ref} and ${other}`, 's1'), `Ask and ${other}`);
+  // Added twice, once under an older title.
+  const renamed = sessionInvocation({ id: 's1', title: 'Old', kind: 'agent' });
+  assert.equal(stripSessionReference(`A ${renamed} B ${ref} `, 's1'), 'A B');
+  assert.equal(stripSessionReference(`${ref} ${ref} `, 's1'), '');
 });

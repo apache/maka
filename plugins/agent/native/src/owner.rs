@@ -91,11 +91,12 @@ mod system_permission;
 mod title;
 mod todo;
 mod work;
+mod workspace_change;
 mod worktrees;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;
 use maka_agent_facts::configuration::policy::RuntimePolicySnapshot;
-use maka_agent_facts::durable::ExecutionIdentity;
+use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, RunSpec};
 use maka_agent_facts::execution::*;
 use maka_agent_facts::input::DeliveredMessage;
 use maka_agent_facts::input::MessageInput;
@@ -191,11 +192,33 @@ impl Runs {
             || self.retained_cleanup.contains_key(session)
     }
 }
-struct CreationPolicy {
+struct AgentCaller {
+    session_id: String,
     incognito: bool,
     permissions: WorkspacePermissions,
     tools: Option<Vec<String>>,
-    caller: Option<maka_agent_state::CallerFence>,
+    fence: maka_agent_state::CallerFence,
+}
+
+fn cap_permissions(
+    base: WorkspacePermissions,
+    ceiling: &WorkspacePermissions,
+) -> WorkspacePermissions {
+    let access = match (base.access, ceiling.access) {
+        (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
+            WorkspaceAccess::ReadOnly
+        }
+        (WorkspaceAccess::WorkspaceWrite, _) | (_, WorkspaceAccess::WorkspaceWrite) => {
+            WorkspaceAccess::WorkspaceWrite
+        }
+        (WorkspaceAccess::DangerFullAccess, WorkspaceAccess::DangerFullAccess) => {
+            WorkspaceAccess::DangerFullAccess
+        }
+    };
+    WorkspacePermissions {
+        access,
+        request_permissions: base.request_permissions && ceiling.request_permissions,
+    }
 }
 
 fn intersect_tools(
@@ -272,6 +295,55 @@ pub(crate) struct Owner {
     stop: CancellationToken,
 }
 impl Owner {
+    pub(super) fn execution_contains_session(&self, session: &str) -> bool {
+        self.store
+            .checkpoint_execution()
+            .is_none_or(|execution| execution.grant().binding.source.session == session)
+    }
+
+    pub(super) async fn require_execution_spec(&self, spec: &RunSpec) -> Result<(), String> {
+        self.require_execution(&spec.session_id).await?;
+        if let Some(execution) = self.store.checkpoint_execution() {
+            if !matches!(spec.backend, BackendSpec::Model { .. }) {
+                return Err("execution_grant_requires_native_model_backend".into());
+            }
+            if !execution
+                .grant()
+                .permissions
+                .sandbox
+                .contains(&spec.approval_ceiling())
+                .map_err(|error| error.to_string())?
+            {
+                return Err("restored_run_exceeds_execution_grant".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn require_execution(&self, session: &str) -> Result<(), String> {
+        if let Some(execution) = self.store.checkpoint_execution() {
+            execution
+                .check_session(session)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn isolated_runtime(
+        &self,
+        _state_root: &std::path::Path,
+    ) -> maka_process::isolated::SandboxRuntime {
+        let runtime = maka_process::isolated::SandboxRuntime::default();
+        #[cfg(target_os = "linux")]
+        let runtime = runtime.with_network_helper(self.helper.clone());
+        #[cfg(windows)]
+        let runtime = runtime.with_backend(Arc::new(
+            maka_host_runtime::sandbox::windows::Backend::new(_state_root, &self.helper),
+        ));
+        runtime
+    }
+
     pub(crate) fn preview_epoch(&self) -> &str {
         &self.revision.activation
     }
@@ -306,7 +378,8 @@ impl Owner {
         snapshot
             .policy
             .language
-            .unwrap_or(self.configured_locale)
+            .as_ref()
+            .unwrap_or(&self.configured_locale)
             .resolve(self.native_language)
     }
 
@@ -345,7 +418,7 @@ impl Owner {
         if !jsonschema_valid(&input) {
             return Err("agent_configuration_invalid".into());
         }
-        let settings: Configuration =
+        let mut settings: Configuration =
             serde_json::from_value(input).map_err(|_| "agent_configuration_invalid")?;
         let persistence = context.persistence().ok_or("agent_requires_persistence")?;
         durable
@@ -365,6 +438,20 @@ impl Owner {
             deployment: persistence.source().deployment,
             namespace: context.activation().instance().clone(),
         };
+        if let Some(execution) = persistence.store().checkpoint_execution() {
+            let source = &execution.grant().binding.source;
+            if source.scope.state_domain != data_source.state_domain
+                || source.scope.deployment != data_source.deployment
+                || source.scope.namespace != data_source.namespace
+            {
+                return Err("agent_execution_scope_mismatch".into());
+            }
+            execution.check().await.map_err(|e| e.to_string())?;
+            // Managed execution owns one ordinary Session, not Root-wide producers or tools.
+            settings.goals = false;
+            settings.scheduled_tasks = false;
+            settings.bot = false;
+        }
         let prefix = maka_agent_authority::session_namespace(
             &persistence.source().state_domain,
             persistence.source().deployment,
@@ -385,7 +472,11 @@ impl Owner {
         .map_err(|_| "agent_workspace_configuration_worker_failed")??;
         let home = std::env::home_dir();
         let workers = TaskTracker::new();
-        let stop = CancellationToken::new();
+        let stop = persistence
+            .store()
+            .checkpoint_execution()
+            .map(|execution| execution.cancellation().child_token())
+            .unwrap_or_default();
         let revision = SourceRevision {
             kind: SourceKind::ModelProvider,
             name: IMPLEMENTATION.into(),
@@ -412,7 +503,7 @@ impl Owner {
             })
             .map_err(|_| "agent_executor_unavailable")?;
         let configured_locale = LanguagePreference::from_locale(&settings.locale);
-        let native_language = maka_config::language::native_language();
+        let native_language = maka_agent_facts::language::Language::system();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
         let instruction_home = assistant::open_home(settings.assistant.as_ref())?;
         let executors = crate::executor::Executors::capture(
@@ -485,6 +576,7 @@ impl Owner {
         if settings.bot {
             additional.extend(bot.tools());
         }
+        additional.extend(mcp::tools::declarations());
         let mut mcp = match crate::mcp::Servers::open(&settings.mcp_servers, &configuration).await {
             Ok(mcp) => mcp,
             Err(error) => {
@@ -553,6 +645,19 @@ impl Owner {
                 revision: None,
                 client_mcp: None,
                 live_bindings: mcp.live_bindings.clone(),
+                live_servers: Arc::new(
+                    mcp.server_connections()
+                        .map(|(name, connection)| {
+                            (
+                                name.to_owned(),
+                                crate::mcp::LiveServer::new(
+                                    crate::mcp::McpLayerOrigin::Installation,
+                                    connection.clone(),
+                                ),
+                            )
+                        })
+                        .collect(),
+                ),
                 _parent: None,
                 _layer_owner: None,
                 tools: tools.clone(),
@@ -772,17 +877,12 @@ impl Owner {
             .map_err(|error| error.to_string())
     }
 
-    async fn creation_policy(
+    async fn agent_caller(
         &self,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<CreationPolicy, String> {
+    ) -> Result<Option<AgentCaller>, String> {
         let Some(invocation) = scope.identity.agent() else {
-            return Ok(CreationPolicy {
-                incognito: false,
-                permissions: self.settings.permissions.clone(),
-                tools: None,
-                caller: None,
-            });
+            return Ok(None);
         };
         let store = self.caller_store(scope)?;
         let caller = store
@@ -824,7 +924,8 @@ impl Owner {
             execution: invocation.clone(),
             expected_basis: Some(view.spec.permission_basis),
         };
-        Ok(CreationPolicy {
+        Ok(Some(AgentCaller {
+            session_id: invocation.session_id.clone(),
             incognito: caller.incognito,
             permissions: caller.permissions,
             // The Bot delegates workers; its own conversational tool list is not their ceiling.
@@ -833,8 +934,8 @@ impl Owner {
             } else {
                 caller.tools
             },
-            caller: Some(fence),
-        })
+            fence,
+        }))
     }
 
     pub async fn create(
@@ -962,23 +1063,35 @@ impl Owner {
         if admission.state().await.closing {
             return Ok(creation::PreparedCreation::Rejected(Rejection::Closed));
         }
-        let policy = self.creation_policy(scope).await?;
-        let mut permissions = policy.permissions;
-        if scope.identity.agent().is_none() {
-            let defaults = self
-                .configuration
-                .runtime_policy()
-                .await
-                .map_err(|_| "agent_settings_unavailable")?
-                .policy
-                .chat_defaults;
-            permissions.access = match defaults.sandbox_mode {
-                SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
-                SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
-                SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+        let (incognito, parent_session_id, permissions, tool_ceiling, caller_fence) =
+            match self.agent_caller(scope).await? {
+                None => {
+                    let defaults = self
+                        .configuration
+                        .runtime_policy()
+                        .await
+                        .map_err(|_| "agent_settings_unavailable")?
+                        .policy
+                        .chat_defaults;
+                    let permissions = WorkspacePermissions {
+                        access: match defaults.sandbox_mode {
+                            SandboxMode::ReadOnly => WorkspaceAccess::ReadOnly,
+                            SandboxMode::WorkspaceWrite => WorkspaceAccess::WorkspaceWrite,
+                            SandboxMode::DangerFullAccess => WorkspaceAccess::DangerFullAccess,
+                        },
+                        request_permissions: self.settings.permissions.request_permissions,
+                    };
+                    (input.incognito, None, permissions, None, None)
+                }
+                Some(caller) => (
+                    input.incognito || caller.incognito,
+                    Some(caller.session_id),
+                    caller.permissions,
+                    caller.tools,
+                    Some(caller.fence),
+                ),
             };
-        }
-        let mut tools = intersect_tools(input.tools, policy.tools);
+        let mut tools = intersect_tools(input.tools, tool_ceiling);
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {
             names
@@ -1042,7 +1155,7 @@ impl Owner {
                 let session = resolve_session(session)?;
                 // A user may start a conversation in the workspace of one they archived;
                 // an Agent may not derive from a conversation that was put away.
-                if (session.archived && scope.identity.agent().is_some())
+                if (session.archived && parent_session_id.is_some())
                     || !self
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
@@ -1095,17 +1208,13 @@ impl Owner {
                 ));
             }
         }
-        let parent_session_id = scope
-            .identity
-            .agent()
-            .map(|source| source.session_id.clone());
         self.prepare_created_session(
             &id,
             operation,
             &selected,
             project,
             scope,
-            policy.caller,
+            caller_fence,
             purpose,
             applied_preset.as_ref().map(|p| presets::CreationFence {
                 scope: self.prefix.clone(),
@@ -1113,7 +1222,7 @@ impl Owner {
                 revision: p.revision,
             }),
             move |binding| StoredSessionConfiguration {
-                incognito: input.incognito || policy.incognito,
+                incognito,
                 parent_session_id,
                 backend,
                 applied_preset,

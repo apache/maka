@@ -18,16 +18,13 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
+import { native, localizePackage } from '../../shared/package.js';
+export default localizePackage({
   schemaVersion: 1,
   id: 'maka.agent.receipts',
   displayName: 'Operation results',
   description: 'Look up the result of an operation without repeating it.',
-  localizations: {
-    'zh-CN': { displayName: '操作结果', description: '查询操作的执行结果，避免重复执行。' },
-  },
   application: {
     host: native(sdk.nativeImplementations.receiptReader),
   },
-};
+});
