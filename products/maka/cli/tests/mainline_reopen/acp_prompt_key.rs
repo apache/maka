@@ -320,6 +320,14 @@ async fn acp_prompt_key_reconnect_during_independent_host_work() {
         let sent = call(&client, "agent", "send", json!({"sessionId":session,"message":"Hold.","delivery":"queue","backend":{"kind":"model","connectionId":connection,"modelId":"gpt-4.1-mini"}}), Attachments::new()).await;
         assert_eq!(sent["kind"], "queued", "{sent}");
         let blocked = server.next_turn().await.unwrap();
+        // Dropping one read-only observer must leave the original Host work running.
+        let detach = CancellationToken::new();
+        let (mut spectator, spectator_task) = connect(Client::connect(&address, Some(client.epoch())).await.unwrap(), &detach).await;
+        let (resumed, _) = rpc(&mut spectator, 2, "session/resume", json!({"sessionId":session,"cwd":sandbox.workspace})).await;
+        assert!(resumed["result"].is_object(), "{resumed}");
+        detach.cancel();
+        spectator_task.await.unwrap().unwrap();
+
         let stop = CancellationToken::new();
         let (mut b, task) = connect(Client::connect(&address, Some(client.epoch())).await.unwrap(), &stop).await;
         let (resumed, notes) = rpc(&mut b, 2, "session/resume", json!({"sessionId":session,"cwd":sandbox.workspace,"replayFrom":{"type":"start"}})).await;
@@ -338,6 +346,18 @@ async fn acp_prompt_key_reconnect_during_independent_host_work() {
         assert!(blocked.delta("Done.").await);
         blocked.finish().await;
         work(&client, session, json!({"kind":"message","messageId":sent["messageId"]}), Some("completed")).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let note = frame(&mut b).await;
+                assert_eq!(note["params"]["sessionId"], session, "{note}");
+                let update = &note["params"]["update"];
+                if update["sessionUpdate"] == "state_update" {
+                    assert_eq!(update["state"], "idle", "{note}");
+                    assert_eq!(update["stopReason"], "end_turn", "{note}");
+                    break;
+                }
+            }
+        }).await.expect("resumed ACP connection never saw the Host go idle");
         stop.cancel();
         task.await.unwrap().unwrap();
         host.quit(&mut client).await.unwrap();

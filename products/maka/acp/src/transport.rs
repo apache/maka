@@ -147,27 +147,24 @@ impl Peer {
         }
         Ok(())
     }
-    pub async fn state(
-        &self,
-        session: &str,
-        state: crate::presentation::State,
-    ) -> Result<(), Error> {
+    pub fn state(&self, session: &str, activity: SessionActivity) -> Result<(), Error> {
         if let Connection::V2(client) = &self.connection {
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.to_owned(),
-                acp::SessionUpdate::StateUpdate(match state {
-                    crate::presentation::State::Running => {
+                acp::SessionUpdate::StateUpdate(match activity {
+                    SessionActivity::Working => {
                         acp::StateUpdate::Running(acp::RunningStateUpdate::new())
                     }
-                    crate::presentation::State::RequiresAction => {
+                    SessionActivity::Waiting => {
                         acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new())
                     }
+                    SessionActivity::Idle => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
                 }),
             ))?;
         }
         Ok(())
     }
-    pub async fn synchronize(
+    pub fn synchronize(
         &self,
         session: &maka_agent_api::contract::Session,
         replayed: bool,
@@ -179,18 +176,7 @@ impl Peer {
                     acp::SessionUpdate::ReplayComplete(acp::ReplayComplete::new()),
                 ))?;
             }
-            client.send_notification(acp::UpdateSessionNotification::new(
-                session.id.clone(),
-                acp::SessionUpdate::StateUpdate(match session.activity {
-                    SessionActivity::Working => {
-                        acp::StateUpdate::Running(acp::RunningStateUpdate::new())
-                    }
-                    SessionActivity::Waiting => {
-                        acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new())
-                    }
-                    SessionActivity::Idle => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
-                }),
-            ))?;
+            self.state(&session.id, session.activity)?;
             client.send_notification(acp::UpdateSessionNotification::new(
                 session.id.clone(),
                 acp::SessionUpdate::SessionInfoUpdate(

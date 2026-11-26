@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+mod follow;
 pub(crate) mod list;
 pub(crate) mod prompt;
 use crate::client::Client;
@@ -50,6 +51,7 @@ pub(crate) struct Session {
     pub gate: Arc<AsyncMutex<()>>,
     pub preferences: AsyncMutex<configuration::Preferences>,
     mcp: AsyncMutex<Option<crate::client::Subscription>>,
+    follow: Mutex<Option<follow::Follow>>,
     prompts: Mutex<prompt::Pending>,
     closed: AtomicBool,
 }
@@ -64,6 +66,7 @@ impl Session {
             gate: Arc::default(),
             preferences: AsyncMutex::default(),
             mcp: AsyncMutex::default(),
+            follow: Mutex::default(),
             prompts: Mutex::default(),
             closed: AtomicBool::new(false),
         })
@@ -100,6 +103,7 @@ impl Registry {
         let mut guards = Vec::with_capacity(sessions.len());
         for session in sessions {
             guards.push(session.gate.clone().lock_owned().await);
+            session.stop_following().await?;
             if let Some(lease) = session.mcp.lock().await.take() {
                 lease.close().await?;
             }
@@ -186,6 +190,7 @@ impl Registry {
             *mcp = crate::mcp::attach(client, &id, servers).await?;
         }
         drop(mcp);
+        local.stop_following().await?;
         if replay_history {
             peer.reset(&id);
             replay(client, peer, &id, observation.through, &active.cancel).await?;
@@ -197,14 +202,18 @@ impl Registry {
                 .await?;
             check(&observation.session)?;
         }
-        let session = observation.session;
-        let options =
-            configuration::options(client, &session, &local.preferences.lock().await.clone())
-                .await?;
+        let options = configuration::options(
+            client,
+            &observation.session,
+            &local.preferences.lock().await.clone(),
+        )
+        .await?;
         if peer.stop.is_cancelled() {
             return Err("ACP transport closed".into());
         }
-        peer.synchronize(&session, replay_history).await?;
+        local
+            .publish_resume(client, peer, observation, replay_history)
+            .await?;
         peer.reset(&id);
         self.sessions
             .lock()
@@ -236,6 +245,7 @@ impl Registry {
             tokio::time::timeout(Duration::from_secs(20), session.gate.clone().lock_owned())
                 .await
                 .map_err(|_| "ACP session cancellation has not settled")?;
+        session.stop_following().await?;
         if let Some(lease) = session.mcp.lock().await.take() {
             lease.close().await?;
         }

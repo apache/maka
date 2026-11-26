@@ -937,7 +937,7 @@ pub struct Session {
     pub tail_message_id: Option<String>,
     pub activity: SessionActivity,
 }
-#[derive(Clone, Serialize, JsonSchema, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSessionActivity")]
 pub enum SessionActivity {

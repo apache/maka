@@ -25,10 +25,7 @@ use crate::{
     session::{Active, Session},
     transport::Peer,
 };
-use crate::{
-    interaction::Capabilities,
-    presentation::{Completion, State},
-};
+use crate::{interaction::Capabilities, presentation::Completion};
 use maka_agent_api::contract::*;
 use maka_agent_facts::{
     durable::{ModelAttemptId, RunId, StepId},
@@ -122,6 +119,7 @@ impl Foreground {
         Ok(())
     }
     async fn observe(&mut self) -> Result<Completion, Error> {
+        self.session.stop_following().await?;
         let mut subscription = self
             .client
             .subscribe(
@@ -157,7 +155,8 @@ impl Foreground {
             }
         }
         self.refresh().await?;
-        self.state(State::Running).await?;
+        self.peer
+            .state(&self.session.id, SessionActivity::Working)?;
         let mut callbacks = JoinSet::<Result<String, Error>>::new();
         let mut seen = HashSet::new();
         // Cancel only the client prompt wait; never abort an in-flight Host call.
@@ -244,7 +243,8 @@ impl Foreground {
                     }
                 });
                 live.insert(request_id, cancel);
-                self.state(State::RequiresAction).await?;
+                self.peer
+                    .state(&self.session.id, SessionActivity::Waiting)?;
             }
             // Pull writes once; retain this future across callbacks and heartbeats.
             let next = subscription.next::<DeliveryPage>();
@@ -265,7 +265,7 @@ impl Foreground {
                         let request_id = callback.ok_or("ACP callback task missing")???;
                         live.remove(&request_id);
                         if callbacks.is_empty() {
-                            self.state(State::Running).await?;
+                            self.peer.state(&self.session.id, SessionActivity::Working)?;
                         }
                     },
                     _ = heartbeat.tick() => {
@@ -521,9 +521,6 @@ impl Foreground {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }).await.map_err(|_| "Agent cancellation has not physically settled")?
-    }
-    async fn state(&self, state: State) -> Result<(), Error> {
-        self.peer.state(&self.session.id, state).await
     }
     async fn publish(&self, updates: Vec<crate::presentation::Update>) -> Result<(), Error> {
         for update in updates {
