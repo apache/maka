@@ -39,6 +39,7 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
   await writeFile(join(dir, 'Maka-nightly-linux-arm64.tar.gz'), 'fake-linux-arm64');
   await writeFile(join(dir, 'Maka-nightly-windows-x64-setup.exe'), 'fake-setup');
   await writeFile(join(dir, 'Maka-nightly-windows-x64.zip'), 'fake-win-zip');
+  await writeFile(join(dir, 'Maka-nightly-ios-arm64.ipa'), 'fake-ipa');
   await writeFile(join(dir, 'install.sh'), '#!/bin/sh\n');
 
   const keys = generateKeypair();
@@ -99,6 +100,7 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
       assets: [
         'Maka-nightly-macos-arm64.dmg',
         'Maka-nightly-windows-x64-setup.exe',
+        'Maka-nightly-ios-arm64.ipa',
         'SHA256SUMS.txt',
       ],
     },
@@ -122,12 +124,16 @@ test('nightly-manifest generates SHA256SUMS, signed latest.json, and release not
   const checksums = await readFile(join(dir, 'SHA256SUMS.txt'), 'utf8');
   assert.match(checksums, /Maka-nightly-macos-arm64\.dmg/);
   assert.match(checksums, /Maka-nightly-linux-arm64\.tar\.gz/);
+  assert.match(checksums, /Maka-nightly-ios-arm64\.ipa/);
+  assert.ok(result.assets.includes('Maka-nightly-ios-arm64.ipa'));
 
   const notes = await readFile(join(dir, 'RELEASE_NOTES.md'), 'utf8');
   assert.match(notes, /NOT AN APACHE SOFTWARE FOUNDATION RELEASE/);
   assert.doesNotMatch(notes, /\p{Script=Han}/u);
   assert.match(notes, /## Previous Nightly/);
+  assert.match(notes, /releases\/download\/nightly\/Maka-nightly-ios-arm64\.ipa/);
   assert.match(notes, /nightly-previous\/Maka-nightly-macos-arm64\.dmg/);
+  assert.match(notes, /nightly-previous\/Maka-nightly-ios-arm64\.ipa/);
   assert.match(notes, /@maka-agent\/cli@0\.2\.0-nightly\.20261121\.42/);
   assert.match(notes, /maka-agent@0\.2\.0-nightly\.20261121\.42/);
 });

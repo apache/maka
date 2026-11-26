@@ -187,6 +187,13 @@ export function renderReleaseNotes({
         '/Maka-nightly-linux-arm64.tar.gz) | glibc 2.28+ archive; run `./maka/install.sh` after extracting |',
     );
   }
+  if (assetSet.has('Maka-nightly-ios-arm64.ipa')) {
+    out.push(
+      '| iOS (arm64) | [Maka-nightly-ios-arm64.ipa](' +
+        baseUrl +
+        '/Maka-nightly-ios-arm64.ipa) | Unsigned IPA for developer sideloading (re-sign before installing on device) |',
+    );
+  }
 
   if (assetSet.has('install.sh')) {
     out.push(
