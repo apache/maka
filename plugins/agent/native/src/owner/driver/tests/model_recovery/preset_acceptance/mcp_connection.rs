@@ -700,6 +700,11 @@ async fn workspace_write_mcp_consent_prefix_cache_and_read_only_isolation() -> T
         // do not invalidate project decision; Settings setProjectMcpDecision flips to trusted.
         let proj_starts = base.join("proj-starts.log");
         let proj_path = base.join("workspace/.maka/mcp.json");
+        write_mcp_json(&proj_path, json!({"http": {
+            "type": "http", "url": "https://example.test/mcp?token=fixture-secret"
+        }}))?;
+        let http_view = call(client, "agent", "projectMcp", json!({"sessionId": session})).await?;
+        assert_eq!(http_view["servers"][0]["launch"], "https://example.test/mcp");
         write_mcp_json(&proj_path, json!({ "proj": stdio_entry(&script, &proj_starts, None, &base) }))?;
         {
             let owner = rig.captured.lock().unwrap().clone().unwrap();

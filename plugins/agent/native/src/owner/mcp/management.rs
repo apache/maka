@@ -28,11 +28,16 @@ use std::{
 };
 
 fn settings_projection(configuration: &Value, redacted: bool) -> (Value, bool) {
-    let has_literal_credentials = ["env", "headers"].iter().any(|key| {
-        configuration.get(key).is_some_and(|value| {
-            !value.is_null() && !value.as_object().is_some_and(|fields| fields.is_empty())
-        })
-    });
+    let url = configuration.get("url");
+    let display_url = url
+        .and_then(Value::as_str)
+        .and_then(crate::mcp::display_http_url);
+    let has_literal_credentials = (url.is_some() && !matches!(display_url, Some((_, false))))
+        || ["env", "headers"].iter().any(|key| {
+            configuration.get(key).is_some_and(|value| {
+                !value.is_null() && !value.as_object().is_some_and(|fields| fields.is_empty())
+            })
+        });
     let configuration = if redacted {
         serde_json::Value::Object(
             [
@@ -47,9 +52,12 @@ fn settings_projection(configuration: &Value, redacted: bool) -> (Value, bool) {
             ]
             .into_iter()
             .filter_map(|key| {
-                configuration
-                    .get(key)
-                    .map(|value| (key.to_owned(), value.clone()))
+                let value = if key == "url" {
+                    Value::String(display_url.as_ref()?.0.clone())
+                } else {
+                    configuration.get(key)?.clone()
+                };
+                Some((key.to_owned(), value))
             })
             .collect(),
         )
@@ -434,6 +442,20 @@ mod tests {
             serde_json::json!({
                 "type":"http", "url":"https://example.test/mcp", "headerEnv":{"X-API-Key":"API_TOKEN"}
             })
+        );
+        assert_eq!(settings_projection(&document, false), (document, true));
+    }
+    #[test]
+    fn mobile_mcp_inventory_omits_http_query_credentials_without_changing_the_saved_url() {
+        let document = serde_json::json!({
+            "type": "http", "url": "https://example.test/mcp?token=literal-url-token"
+        });
+        assert_eq!(
+            settings_projection(&document, true),
+            (
+                serde_json::json!({"type":"http","url":"https://example.test/mcp"}),
+                true
+            )
         );
         assert_eq!(settings_projection(&document, false), (document, true));
     }

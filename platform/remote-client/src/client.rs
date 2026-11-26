@@ -335,8 +335,25 @@ async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
 async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
     reader: &mut BufReader<R>,
 ) -> Result<T, RemoteClientError> {
+    read_optional_frame(reader)
+        .await?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof).into())
+}
+
+async fn read_optional_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<T>, RemoteClientError> {
     let mut prefix = [0u8; 4];
-    reader.read_exact(&mut prefix).await?;
+    if reader.read(&mut prefix[..1]).await? == 0 {
+        return Ok(None);
+    }
+    if let Err(error) = reader.read_exact(&mut prefix[1..]).await {
+        return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
+            RemoteClientError::Protocol("Host closed channel mid-frame header".into())
+        } else {
+            error.into()
+        });
+    }
     let length = u32::from_be_bytes(prefix) as usize;
     if !(1..=MAX_CONTROL_FRAME_BYTES).contains(&length) {
         return Err(RemoteClientError::Protocol(format!(
@@ -347,16 +364,15 @@ async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
     while body.len() < length {
         let chunk = reader.fill_buf().await?;
         if chunk.is_empty() {
-            return Err(RemoteClientError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Host closed channel mid-frame",
-            )));
+            return Err(RemoteClientError::Protocol(
+                "Host closed channel mid-frame body".into(),
+            ));
         }
         let take = chunk.len().min(length - body.len());
         body.extend_from_slice(&chunk[..take]);
         reader.consume(take);
     }
-    Ok(serde_json::from_slice(&body)?)
+    Ok(Some(serde_json::from_slice(&body)?))
 }
 
 pub(crate) async fn redeem_pairing_invite(
@@ -1005,7 +1021,7 @@ impl RemoteHostConnection {
     pub async fn disconnected(&mut self) -> Result<(), RemoteClientError> {
         // Both transports must observe the session anchor: QUIC can close one
         // session without closing its shared peer connection.
-        let reply = read_frame::<_, WireResponse>(&mut self.anchor);
+        let reply = read_optional_frame::<_, WireResponse>(&mut self.anchor);
         let result = match &self.handle.link {
             Link::Peer(peer) => tokio::select! {
                 biased;
@@ -1015,12 +1031,9 @@ impl RemoteHostConnection {
             Link::WebSocket(_) => reply.await,
         };
         match result {
-            Err(RemoteClientError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                Ok(())
-            }
             Err(error) => Err(error),
-            Ok(WireResponse::Closed) => Ok(()),
-            Ok(WireResponse::PeerAccessRevoked) => Err(RemoteClientError::HostRejected(
+            Ok(None | Some(WireResponse::Closed)) => Ok(()),
+            Ok(Some(WireResponse::PeerAccessRevoked)) => Err(RemoteClientError::HostRejected(
                 "peer access revoked".into(),
             )),
             Ok(_) => Err(RemoteClientError::Protocol(
@@ -1051,6 +1064,25 @@ impl RemoteHostConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_eof_at_a_frame_boundary_is_a_clean_anchor_disconnect() {
+        let mut closed = BufReader::new(&[][..]);
+        assert!(
+            read_optional_frame::<_, WireResponse>(&mut closed)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        for truncated in [&[0, 0][..], &[0, 0, 0, 20, b'{'][..]] {
+            let mut anchor = BufReader::new(truncated);
+            assert!(matches!(
+                read_optional_frame::<_, WireResponse>(&mut anchor).await,
+                Err(RemoteClientError::Protocol(_))
+            ));
+        }
+    }
 
     #[test]
     fn legacy_hosts_cannot_dispatch_root_bound_finalization() {
