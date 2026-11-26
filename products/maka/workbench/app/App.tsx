@@ -70,6 +70,7 @@ import {
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { Toaster } from './Feedback';
+import { ConversationSkeleton, SidebarListSkeleton } from './Loading';
 import { currentLocale, tr } from './locale';
 import { toast } from './toastStore';
 import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
@@ -142,16 +143,21 @@ function App(
       render: () => {
         const opening = first;
         first = undefined;
-        return runtime.renderView(configuration.session, conversationSessionView, {
-          shell: paneShell(pane),
-          active: () => workspaceMode() === 'conversations',
-          firstMessage: opening?.text,
-          firstQuotes: opening?.quotes,
-          compact,
-          attach(handle) {
-            if (pane.handle() !== handle) pane.handle.set(handle);
+        return runtime.renderView(
+          configuration.session,
+          conversationSessionView,
+          {
+            shell: paneShell(pane),
+            active: () => workspaceMode() === 'conversations',
+            firstMessage: opening?.text,
+            firstQuotes: opening?.quotes,
+            compact,
+            attach(handle) {
+              if (pane.handle() !== handle) pane.handle.set(handle);
+            },
           },
-        });
+          { loading: () => <ConversationSkeleton /> },
+        );
       },
     };
     return pane;
@@ -725,13 +731,18 @@ function App(
           sides={sides}
           card={() => (workspaceMode() === 'conversations' ? sideCard() : null)}
           navigation={(temporary) =>
-            runtime.renderView(configuration.navigation, conversationNavigationView, {
-              shell,
-              openRooms: () => void switchWorkspace('rooms'),
-              suppressSidebarHover: sidebarHover.suppressUntilExit,
-              holdSidebarHover: temporary ? sidebarHover.hold : undefined,
-              pinSidebar: temporary ? shell.showSidebar : undefined,
-            })
+            runtime.renderView(
+              configuration.navigation,
+              conversationNavigationView,
+              {
+                shell,
+                openRooms: () => void switchWorkspace('rooms'),
+                suppressSidebarHover: sidebarHover.suppressUntilExit,
+                holdSidebarHover: temporary ? sidebarHover.hold : undefined,
+                pinSidebar: temporary ? shell.showSidebar : undefined,
+              },
+              { loading: () => <SidebarListSkeleton /> },
+            )
           }
           preview={(docked) =>
             plugins.panel() !== null ? (
@@ -748,12 +759,17 @@ function App(
             )
           }
         >
-          {runtime.renderView(configuration.session, conversationSessionView, {
-            shell,
-            attach(handle) {
-              if (session() !== handle) session.set(handle);
+          {runtime.renderView(
+            configuration.session,
+            conversationSessionView,
+            {
+              shell,
+              attach(handle) {
+                if (session() !== handle) session.set(handle);
+              },
             },
-          })}
+            { loading: () => <ConversationSkeleton /> },
+          )}
         </Workbench>
       </WorkspaceSurface>
       <WorkspaceSurface visible={() => workspaceMode() === 'rooms'}>

@@ -3346,6 +3346,7 @@ export interface ServiceMethods {
       mode: 'query';
       input: {
         runtime: Runtime.AgentNativeRuntime;
+        refresh?: boolean;
       };
       output:
         | {

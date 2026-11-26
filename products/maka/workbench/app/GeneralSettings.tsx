@@ -48,7 +48,7 @@ import {
 import { trayIconArtwork } from './trayIcon';
 import { unchanged } from './look';
 import { lookLabel, ThemeEditor, themeLabel } from './ThemeEditor';
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SettingsSkeleton } from './Loading';
 import { ProfileAvatar } from './ProfileAvatar';
 import { Icon } from './Icon';
 import {
@@ -160,7 +160,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         when={facts()}
         else={
           <If when={owner.loading()} else={<SettingsProblem retry={owner.refresh} />}>
-            <LoadingIndicator label={tr('Reading preferences…')} />
+            <SettingsSkeleton padded={false} rows={3} label={tr('Reading preferences…')} />
           </If>
         }
       >
@@ -503,8 +503,8 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
         />
       }
     >
-      <If when={owner.loading()}>
-        <LoadingIndicator label={tr('Reading global instructions…')} />
+      <If when={owner.loading() && !document()}>
+        <SettingsSkeleton padded={false} rows={2} label={tr('Reading global instructions…')} />
       </If>
       <If when={document()}>
         <SettingsSection

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { LoadingIndicator } from './Loading';
+import { LoadingIndicator, SidebarListSkeleton } from './Loading';
 import { SidebarTitleRow, textTooltip } from './ui';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { message, renderText } from './text';
@@ -1116,12 +1116,16 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         estimatedItemSize={rowHeight()}
         empty={() => (
           <View
-            style={{ height: viewportHeight(), alignItems: 'center', justifyContent: 'center' }}
+            style={{
+              height: viewportHeight(),
+              alignItems: browser.loading() ? 'stretch' : 'center',
+              justifyContent: browser.loading() ? 'flex-start' : 'center',
+            }}
           >
             <If
               when={!props.connectionLost() && Boolean(browser.error() || browser.projectError())}
               else={
-                <If when={!browser.loading()}>
+                <If when={!browser.loading()} else={<SidebarListSkeleton />}>
                   <Text style={{ color: C.muted }}>
                     {browser.filter() === 'archived'
                       ? tr('No archived conversations.')
@@ -1761,7 +1765,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           </Each>
         )}
       </List>
-      <If when={browser.loading()}>
+      <If when={browser.loading() && rowIds().length > 0}>
         <LoadingIndicator />
       </If>
 

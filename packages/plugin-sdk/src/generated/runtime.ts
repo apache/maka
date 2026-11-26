@@ -6293,6 +6293,7 @@ export interface AgentExecutors {
 }
 export interface AgentExternalAgentsRead {
   inspect?: boolean;
+  refresh?: boolean;
 }
 export interface AgentExternalAgents {
   target: AgentExternalAgentsTarget;

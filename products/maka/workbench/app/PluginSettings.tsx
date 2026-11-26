@@ -29,7 +29,7 @@ import { pluginDescription, pluginTitle, settingCaption } from './pluginSettings
 import type { PluginSettingsOwner, PluginAction } from './pluginSettingsState.ts';
 import { PluginIcon } from './PluginIcon';
 import { ChoiceIndicator } from './ChoiceIndicator';
-import { LoadingIndicator } from './Loading';
+import { SettingsSkeleton } from './Loading';
 import { RootUiSettings } from './RootUiSettings';
 import {
   SettingsBody,
@@ -76,7 +76,12 @@ export function PluginSettings(props: { owner: PluginSettingsOwner; quickTool: Q
                 />
               }
             >
-              <LoadingIndicator label={tr('Reading plugins…')} />
+              <SettingsSkeleton
+                padded={false}
+                sections={2}
+                rows={3}
+                label={tr('Reading plugins…')}
+              />
             </If>
           </SettingsBody>
         }
