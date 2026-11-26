@@ -1001,11 +1001,24 @@ impl RemoteHostConnection {
         // session without closing its shared peer connection.
         let reply = read_frame::<_, WireResponse>(&mut self.anchor);
         let result = match &self.handle.link {
-            Link::Peer(peer) => tokio::select! {
-                biased;
-                error = peer.wait_for_disconnect() => return Err(error),
-                result = reply => result,
-            },
+            Link::Peer(peer) => {
+                let anchor = tokio::select! {
+                    biased;
+                    error = peer.wait_for_disconnect() => return Err(error),
+                    result = reply => result,
+                };
+                // Host revocation fences session anchors before closing the
+                // QUIC connection with an application reason ("peer access
+                // revoked"). Give a companion connection close a brief window
+                // so revocation is not masked as an ordinary clean disconnect.
+                if let Ok(error) =
+                    tokio::time::timeout(Duration::from_millis(500), peer.wait_for_disconnect())
+                        .await
+                {
+                    return Err(error);
+                }
+                anchor
+            }
             Link::WebSocket(_) => reply.await,
         };
         match result {
