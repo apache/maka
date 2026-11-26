@@ -35,6 +35,7 @@ The `latest` tags remain empty placeholders, including the separate `maka-agent`
 
 - `maka` / `maka terminal-shell` — Open the NSH terminal workbench against `~/.maka/application/host` (override with `--root <path>` or `--session <id>`).
 - `maka desktop --root <path>` — Open the native desktop window against the given State Root; closing the window detaches while accepted Host runs finish in the background.
+- For a Windows shortcut with a custom State Root, target `maka-desktop-shell.exe --root "C:\path to\root"` to start directly without a console window.
 - `maka --help` — List Host daemon (`host`), deployment (`application`), `code`, `checkpoint`, `inspect`, `sandbox`, and `acp` subcommands.
 
 See [products/maka](../../products/maka/README.md) for shell architecture and [products/maka/bundle](../../products/maka/bundle/README.md) for deployment composition.

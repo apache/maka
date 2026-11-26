@@ -35,6 +35,7 @@ npm install --global @maka-agent/cli@rust-preview
 
 - `maka` / `maka terminal-shell` — 启动 NSH 终端工作台，默认连接 `~/.maka/application/host`（可用 `--root <path>` 切换目录，`--session <id>` 打开指定会话）。
 - `maka desktop --root <path>` — 针对指定 State Root 打开原生桌面窗口；关闭窗口仅断开前端，后台已接纳的任务会继续跑完。
+- 在 Windows 快捷方式中指定数据目录时，可以用 `maka-desktop-shell.exe --root "C:\path to\root"` 直接打开桌面窗口，全程无控制台黑窗。
 - `maka --help` — 查看 `host`、`application`、`code`、`checkpoint`、`inspect`、`sandbox` 与 `acp` 等全部子命令。
 
 壳层结构见 [products/maka](../../products/maka/README.zh-CN.md)，部署与插件组合见 [products/maka/bundle](../../products/maka/bundle/README.zh-CN.md)。

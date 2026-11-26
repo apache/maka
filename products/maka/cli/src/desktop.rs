@@ -62,6 +62,8 @@ pub(super) struct Args {
 impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
+        #[cfg(windows)]
+        crate::windows::detach_private_desktop_console()?;
         let _signals = crate::signals::watch(stop.clone())?;
         #[cfg(windows)]
         if let Some(distro) = self.wsl {
