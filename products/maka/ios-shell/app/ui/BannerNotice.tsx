@@ -18,6 +18,7 @@
  */
 
 import { Text, View, token } from 'nsh';
+import { tr } from '../locale';
 import { spacing, type } from '../theme/tokens';
 import { Icon } from './Icon';
 
@@ -125,11 +126,11 @@ export function BannerNotice(props: {
       <If when={props.onDismiss}>
         <View
           role="button"
-          accessibilityLabel="Dismiss"
+          accessibilityLabel={tr('Dismiss')}
           onPress={props.onDismiss}
           style={{
-            width: 32,
-            height: 32,
+            width: 44,
+            height: 44,
             alignItems: 'center',
             justifyContent: 'center',
           }}

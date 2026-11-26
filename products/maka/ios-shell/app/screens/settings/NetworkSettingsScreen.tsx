@@ -36,7 +36,7 @@ import {
 
 export function NetworkSettingsScreen(props: SettingsPageProps) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const basis = signal<SettingsNetworkSnapshot | null>(null);
   const draft = signal<NetworkProxy | null>(null);
   const port = signal('');

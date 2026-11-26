@@ -1142,3 +1142,26 @@ test('scheduled CI events plan full validation across all maintained workers', a
     workers.map((worker) => worker.id),
   );
 });
+
+test('an iOS app-only change runs the TypeScript contracts suite', () => {
+  const pkg = {
+    id: 'ios',
+    name: 'maka-ios-shell',
+    manifest_path: join(root, 'products/maka/ios-shell/Cargo.toml'),
+  };
+  const plan = createPlan({
+    root,
+    changes: ['products/maka/ios-shell/app/Entry.tsx'],
+    metadata: {
+      root: {
+        packages: [pkg],
+        workspace_members: [pkg.id],
+        resolve: { nodes: [{ id: pkg.id, deps: [] }] },
+      },
+    },
+    revision: 'test',
+    baseline: 'base',
+  });
+  assert.equal(plan.full, false);
+  assert.ok(plan.suites.contracts);
+});

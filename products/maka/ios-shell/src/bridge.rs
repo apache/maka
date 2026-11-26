@@ -632,6 +632,9 @@ impl Bridge {
         };
         let rpc: Rpc = decode(data)?;
         let attachments = credential_attachments(&rpc, secret)?;
+        if rpc.root_id.is_some() && rpc.generation.is_none() {
+            return Err("root-scoped mutations require a connection generation".into());
+        }
         let (root, id, calls, receipt_scope, progress) = {
             let mut state = self.state.lock().await;
             let (root, host) = Self::target(&state, &rpc)?;
@@ -1666,10 +1669,10 @@ mod tests {
                 admit_anchor(&b, "b", session_b),
             );
             a_state.unwrap();
-            b_state.unwrap();
+            let b_generation = b_state.unwrap()["connections"]["b"]["connection"]["generation"].clone();
             let args = |method| {
                 json!({
-                    "rootId": "b", "endpoint": "agent", "method": method, "input": {}
+                    "rootId": "b", "generation": b_generation, "endpoint": "agent", "method": method, "input": {}
                 })
             };
             let (query, mutation, ()) =

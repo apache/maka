@@ -43,7 +43,7 @@ export function SubagentsSettingsScreen(
   props: SettingsPageProps & { open: (presetId: string | null) => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const rows = signal<ServiceMethods['agent']['presets']['output'] | null>(null);
   const reload = () => void work.run(async () => rows.set(await rpc.query('agent', 'presets', {})));
   effect(() => {
@@ -101,7 +101,7 @@ const modelKey = (model: PresetDraft['model']) =>
 
 export function SubagentEditor(props: SettingsPageProps & { presetId: string | null }) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const original = signal<Preset | null>(null);
   const draft = signal<PresetDraft | null>(null);
   const models = signal<Awaited<ReturnType<typeof modelChoices>>>([]);

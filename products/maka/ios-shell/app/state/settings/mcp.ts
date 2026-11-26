@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { tr } from '../../locale';
+import type { ServiceMethods } from '../../../../../../packages/plugin-sdk/src/generated/methods';
 import type {
   AgentMcpConfigurationChange,
   AgentMcpConfigurationEntry,
@@ -45,4 +47,51 @@ export async function changeMcp(rpc: SettingsRpc, input: AgentMcpConfigurationCh
   const result = await rpc.mutate('agent', 'manageMcpServer', input);
   if (result.kind !== 'saved')
     throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+}
+
+type ProjectMcp = Extract<
+  ServiceMethods['agent']['projectMcp']['output'],
+  { kind: 'configuration' }
+>;
+
+export function projectMcpSummary(proposal: ProjectMcp): string | null {
+  const readable = (value: unknown): value is string => typeof value === 'string' && !!value.trim();
+  const names = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every(readable);
+  if (
+    !readable(proposal.path) ||
+    !Array.isArray(proposal.servers) ||
+    !proposal.servers.length ||
+    !names(proposal.disabled)
+  )
+    return null;
+  const rows = [
+    proposal.path,
+    tr(
+      'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
+    ),
+  ];
+  for (const server of proposal.servers) {
+    if (
+      !readable(server?.name) ||
+      !readable(server.launch) ||
+      !names(server.environment) ||
+      !names(server.headers) ||
+      !names(server.readOnlyTools) ||
+      typeof server.preapproved !== 'boolean'
+    )
+      return null;
+    rows.push(
+      [
+        server.name + ': ' + server.launch,
+        tr('Environment variables') + ': ' + (server.environment.join(', ') || tr('None')),
+        tr('HTTP headers') + ': ' + (server.headers.join(', ') || tr('None')),
+        tr('Tools declared read-only') + ': ' + (server.readOnlyTools.join(', ') || tr('None')),
+        ...(server.preapproved ? [tr('Tool calls are preapproved.')] : []),
+      ].join('\n'),
+    );
+  }
+  if (proposal.disabled.length)
+    rows.push(tr('Disabled servers') + ': ' + proposal.disabled.join(', '));
+  return rows.join('\n\n');
 }

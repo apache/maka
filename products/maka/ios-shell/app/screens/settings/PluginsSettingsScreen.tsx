@@ -43,7 +43,7 @@ export function PluginsSettingsScreen(
   props: SettingsPageProps & { open: (instance: string[]) => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const inventory = signal<Awaited<ReturnType<typeof readPlugins>> | null>(null);
   const packages = signal<PackageRef[]>([]);
   const url = signal('');
@@ -182,7 +182,7 @@ export function PluginsSettingsScreen(
 
 export function PluginDetailScreen(props: SettingsPageProps & { instance: string[] }) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const details = signal<Awaited<ReturnType<typeof readPlugin>> | null>(null);
   const load = async () => details.set(await readPlugin(rpc, props.instance));
   const reload = () => void work.run(load);

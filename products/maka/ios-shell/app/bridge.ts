@@ -430,14 +430,7 @@ export type AgentInteractionRequest =
   | {
       kind: 'client_capability';
       toolUseId: string;
-      target: {
-        providerId?: string;
-        contractId?: string;
-        scope?: string;
-        toolName?: string;
-        capability?: string;
-        serverId?: string;
-      };
+      target: import('../../../../packages/plugin-sdk/src/generated/runtime').GrantTarget;
     }
   | {
       kind: 'computer_app';
@@ -630,17 +623,24 @@ export async function hostMutate<T = unknown>(
   input: Record<string, unknown> = {},
   {
     rootId,
+    generation,
     secret,
     progressId,
     onProgress,
   }: {
     rootId?: string;
+    generation?: number;
     secret?: string;
     progressId?: string;
     onProgress?: ProgressListener;
   } = {},
 ): Promise<T> {
   const target = connection(rootId);
+  if (
+    (rootId !== undefined && target?.generation === undefined) ||
+    (generation !== undefined && target?.generation !== generation)
+  )
+    throw new Error(tr('Computer is offline'));
   let key: string | undefined;
   if (onProgress) {
     if (!target) throw new Error('remote Host is not connected');
@@ -655,7 +655,7 @@ export async function hostMutate<T = unknown>(
       {
         anchorSession: rootId ? undefined : hostState?.active?.session,
         rootId,
-        generation: target?.generation,
+        generation: generation ?? target?.generation,
         endpoint,
         method,
         input,

@@ -27,6 +27,7 @@ import type {
 import { tr } from '../../locale';
 import { settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { manageSkill, readSkill, readSkills } from '../../state/settings/skills';
+import { credentialFreeUrl } from '../../state/settings/sourceUrl';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   confirmSettingAction,
@@ -45,7 +46,7 @@ export function SkillsSettingsScreen(
   props: SettingsPageProps & { open: (target: SkillTarget) => void },
 ) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const scope = workspaceScope(props.rootId, work.canWrite);
   const inventory = signal<Awaited<ReturnType<typeof readSkills>> | null>(null);
   const source = signal('');
@@ -63,11 +64,19 @@ export function SkillsSettingsScreen(
   });
   const discover = () =>
     void work.run(async () => {
+      const address = source().trim();
+      const check = (value: string) => {
+        if (credentialFreeUrl(value, 'skill')) return true;
+        work.error.set(tr('Use a URL without credentials.'));
+        return false;
+      };
+      if (!check(address)) return;
       const value = await rpc.query('skillLibrary', 'discoverSource', {
         workspace: scope.workspace(),
-        source: source().trim(),
+        source: address,
       });
       if (!work.canWrite()) return;
+      if (value.source.kind === 'git' && !check(value.source.url)) return;
       discovered.set(value);
       selection.set([]);
       location.set(inventory()?.targets[0]?.location ?? '');
@@ -226,7 +235,7 @@ export function SkillsSettingsScreen(
 
 export function SkillDetailScreen(props: SettingsPageProps & { target: SkillTarget }) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const document = signal<Awaited<ReturnType<typeof readSkill>> | null>(null);
   const { workspace, reference } = props.target;
   const load = () => void work.run(async () => document.set(await readSkill(rpc, props.target)));

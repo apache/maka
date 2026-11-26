@@ -33,7 +33,7 @@ import {
 
 export function GeneralSettingsScreen(props: SettingsPageProps) {
   const work = settingsWork(props.rootId, props.active);
-  const rpc = settingsRpc(props.rootId, work.canWrite);
+  const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const data = signal<Awaited<ReturnType<typeof readGeneral>> | null>(null);
   const instructions = signal('');
   const prompt = signal('');
