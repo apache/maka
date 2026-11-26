@@ -115,6 +115,9 @@ jobs:
           compression-level: 0
 
   build:
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -123,28 +126,48 @@ jobs:
             runner: macos-latest
           - target: win32-x64
             runner: windows-latest
-    uses: ./.github/workflows/build-distribution-target.yml
-    with:
-      target: ${{ matrix.target }}
-      runner: ${{ matrix.runner }}
-      channel: ${{ inputs.channel }}
-      version: ${{ inputs.version }}
-      commit: ${{ inputs.commit }}
-      environment: ${{ inputs.environment }}
-      pack_npm: ${{ inputs.pack_npm }}
-    secrets: inherit
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MAKA_UPDATE_REPO: ${{ github.repository }}
+      MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/build-distribution-target
+        with:
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: ${{ matrix.target }}
+          pack_npm: ${{ inputs.pack_npm }}
+          csc_link: ${{ secrets.CSC_LINK }}
+          csc_key_password: ${{ secrets.CSC_KEY_PASSWORD }}
+          apple_api_key: ${{ secrets.APPLE_API_KEY }}
+          apple_api_key_id: ${{ secrets.APPLE_API_KEY_ID }}
+          apple_api_issuer: ${{ secrets.APPLE_API_ISSUER }}
 
   build-linux-x64:
-    uses: ./.github/workflows/build-distribution-target.yml
-    with:
-      target: linux-x64-gnu
-      runner: ubuntu-latest
-      channel: ${{ inputs.channel }}
-      version: ${{ inputs.version }}
-      commit: ${{ inputs.commit }}
-      environment: ${{ inputs.environment }}
-      pack_npm: ${{ inputs.pack_npm }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 300
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MAKA_UPDATE_REPO: ${{ github.repository }}
+      MAKA_UPDATE_PUBLIC_KEY: ${{ vars.MAKA_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/build-distribution-target
+        with:
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: linux-x64-gnu
+          pack_npm: ${{ inputs.pack_npm }}
 
   build-linux-arm64:
     needs: [v8-linux-arm64]
@@ -164,200 +187,17 @@ jobs:
           ref: ${{ inputs.commit }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/build-distribution-target
         with:
-          node-version: "26"
-
-      - name: Update Rust
-        run: rustup update stable --no-self-update
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.x"
-
-      - name: Install Linux native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config clang libclang-dev llvm-dev libssl-dev libglib2.0-dev libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libfontconfig1-dev libfreetype6-dev libx11-dev libxi-dev libxtst-dev libxext-dev libxcb1-dev libxrandr-dev libxfixes-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-          echo "LIBCLANG_PATH=$(/usr/bin/llvm-config --libdir)" >> "$GITHUB_ENV"
-
-      - name: Set up Zig (Linux glibc 2.28 baseline)
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: latest
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        with:
-          tool: cargo-zigbuild
-
-      - name: Install JavaScript build dependencies
-        run: |
-          npm ci --include=dev --include=optional --ignore-scripts --no-audit --no-fund
-          node scripts/apply-dependency-patches.mjs
-
-      - name: Identify Cargo download cache
-        id: rust-cache-keys
-        env:
-          MAKA_CI_ROLE: nightly-release-linux-arm64-gnu
-          MAKA_CI_WORKSPACE: root
-          MAKA_CI_PROFILE: dist
-        run: node scripts/ci/setup.mjs keys
-
-      - name: Restore shared Cargo downloads
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ~/.cargo/.rusty_v8
-          key: ${{ steps.rust-cache-keys.outputs.downloads }}
-          restore-keys: ${{ steps.rust-cache-keys.outputs.downloads_prefix }}
-          enableCrossOsArchive: true
-
-      - name: Compute V8 cache key
-        id: v8-key
-        run: echo "key=$(node scripts/rust/build-v8.mjs --cache-key)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore V8 cache
-        id: v8-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: target/v8/${{ steps.v8-key.outputs.key }}
-          key: maka-v8-linux-arm64-gnu-${{ steps.v8-key.outputs.key }}
-
-      - name: Download cross-built Linux ARM64 V8 bundle
-        if: >-
-          inputs.v8_linux_arm64_pinned != 'true' &&
-          steps.v8-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: v8-linux-arm64-staged
-          path: v8-staged
-
-      - name: Stage Linux ARM64 V8 bundle into cache
-        if: >-
-          inputs.v8_linux_arm64_pinned != 'true' &&
-          steps.v8-cache.outputs.cache-hit != 'true'
-        env:
-          V8_KEY: ${{ steps.v8-key.outputs.key }}
-        run: |
-          dest="target/v8/$V8_KEY"
-          mkdir -p "$dest"
-          tar -xzf "v8-staged/v8-aarch64-unknown-linux-gnu-${V8_KEY}.tar.gz" -C "$dest"
-
-      - name: Build, smoke test, and package artifacts
-        id: build
-        env:
-          V8_CACHE_KEY: ${{ steps.v8-key.outputs.key }}
-          RELEASE_CHANNEL: ${{ inputs.channel }}
-          PACK_NPM: ${{ inputs.pack_npm }}
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          npm_args=()
-          if [[ "$PACK_NPM" == "true" ]]; then
-            npm_args+=(--npm-output npm-out)
-          fi
-          node scripts/rust/package-nightly.mjs build \
-            --channel "$RELEASE_CHANNEL" \
-            --target "linux-arm64-gnu" \
-            --version "$RELEASE_VERSION" \
-            --output dist-out \
-            "${npm_args[@]}" \
-            --v8-output v8-out
-
-      - name: Upload installers and update archives
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ inputs.channel }}-pkg-linux-arm64-gnu
-          path: dist-out/*
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload npm platform package
-        if: inputs.pack_npm
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ inputs.channel }}-npm-linux-arm64-gnu
-          path: npm-out/*.tgz
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload newly built V8 prebuilt (when not yet pinned)
-        if: ${{ hashFiles('v8-out/*.json') != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: v8-prebuilt-linux-arm64-gnu
-          path: v8-out/*
-          if-no-files-found: error
-          compression-level: 0
-
-  compat-harness:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.commit }}
-          persist-credentials: false
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "26"
-          package-manager-cache: false
-
-      - name: Update Rust
-        run: rustup update stable --no-self-update
-
-      - name: Identify harness caches
-        id: cache-keys
-        env:
-          MAKA_CI_ROLE: compat-harness
-          MAKA_CI_WORKSPACE: root
-        run: node scripts/ci/setup.mjs keys
-
-      - name: Restore shared Cargo downloads
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ~/.cargo/.rusty_v8
-          key: ${{ steps.cache-keys.outputs.downloads }}
-          restore-keys: ${{ steps.cache-keys.outputs.downloads_prefix }}
-          enableCrossOsArchive: true
-
-      - name: Cache harness compiler outputs
-        id: harness-cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            target/debug/.fingerprint
-            target/debug/build
-            target/debug/deps/*.*
-          key: ${{ steps.cache-keys.outputs.compiled }}
-
-      - name: Stabilize third-party timestamps on exact cache hit
-        if: steps.harness-cache.outputs.cache-hit == 'true'
-        run: node scripts/ci/setup.mjs stamp-third-party
-
-      - name: Build upgrade compatibility harness
-        run: cargo build --locked -p maka-upgrade-compat
-
-      - name: Upload upgrade compatibility harness
-        uses: actions/upload-artifact@v7
-        with:
-          name: compat-harness-linux-x64
-          path: target/debug/maka-upgrade-compat
-          if-no-files-found: error
+          channel: ${{ inputs.channel }}
+          version: ${{ inputs.version }}
+          target: linux-arm64-gnu
+          pack_npm: ${{ inputs.pack_npm }}
+          staged_v8_artifact: ${{ inputs.v8_linux_arm64_pinned != 'true' && 'v8-linux-arm64-staged' || '' }}
+          save_v8_cache: "false"
 
   compat-gate:
-    needs: [build-linux-x64, compat-harness]
+    needs: [build-linux-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -368,15 +208,15 @@ jobs:
           ref: ${{ inputs.commit }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/ci-setup
         with:
-          node-version: "26"
+          role: compat-gate
+          cache_role: root
+          dependencies: headless
+          javascript: "true"
 
       - name: Verify immutable migration ledger
         run: node scripts/ci.mjs check migrations
-
-      - name: Install Linux runtime libraries for the candidate
-        run: sudo apt-get install -y --no-install-recommends libx11-6 libxi6 libxkbcommon0
 
       - name: Download built Linux x64 archive
         uses: actions/download-artifact@v8
@@ -399,14 +239,8 @@ jobs:
           echo "bin=$bin_path" >> "$GITHUB_OUTPUT"
           "$bin_path" --version
 
-      - name: Download upgrade compatibility harness
-        uses: actions/download-artifact@v8
-        with:
-          name: compat-harness-linux-x64
-          path: compat-harness
-
-      - name: Make the downloaded harness executable
-        run: chmod +x compat-harness/maka-upgrade-compat
+      - name: Build upgrade compatibility harness
+        run: cargo test --locked -p maka-cli --test upgrade_compat --no-run
 
       - name: Produce candidate time capsule and verify self-roundtrip
         env:
@@ -415,11 +249,9 @@ jobs:
         run: |
           node scripts/rust/compat-capsule.mjs produce \
             --bin "$MAKA_BIN" \
-            --test-bin compat-harness/maka-upgrade-compat \
             --out compat-capsule.tar.gz
           node scripts/rust/compat-capsule.mjs verify \
             --bin "$MAKA_BIN" \
-            --test-bin compat-harness/maka-upgrade-compat \
             --capsule compat-capsule.tar.gz
 
       - name: Verify upgrade from all retained historical time capsules
@@ -429,7 +261,6 @@ jobs:
         run: |
           node scripts/rust/compat-capsule.mjs verify-release \
             --bin "$MAKA_BIN" \
-            --test-bin compat-harness/maka-upgrade-compat \
             --repo "$GITHUB_REPOSITORY"
 
       - name: Upload verified candidate time capsule

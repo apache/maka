@@ -88,17 +88,28 @@ function runUpgradeHarness({ bin, testBin, envExtra }) {
     ...envExtra,
   };
   if (testBin) {
-    execFileSync(resolve(testBin), [], {
+    execFileSync(resolve(testBin), ['--exact', 'upgrade_compat_capsule_roundtrip', '--nocapture'], {
       cwd: repoRoot,
       env,
       stdio: 'inherit',
     });
   } else {
-    execFileSync('cargo', ['run', '--locked', '-p', 'maka-upgrade-compat'], {
-      cwd: repoRoot,
-      env,
-      stdio: 'inherit',
-    });
+    execFileSync(
+      'cargo',
+      [
+        'test',
+        '--locked',
+        '-p',
+        'maka-cli',
+        '--test',
+        'upgrade_compat',
+        '--',
+        '--exact',
+        'upgrade_compat_capsule_roundtrip',
+        '--nocapture',
+      ],
+      { cwd: repoRoot, env, stdio: 'inherit' },
+    );
   }
 }
 

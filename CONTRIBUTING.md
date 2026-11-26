@@ -49,7 +49,7 @@ cargo nextest run -p <crate> --lib
 - Test observable behavior and real failure boundaries—avoid brittle source-text assertions, redundant fixtures, and fixed sleeps.
 - Validate inputs at system boundaries and trust typed internal contracts. Represent closed state machines with enums and derive wire schemas with `schemars`.
 - Keep domain policy in plugins; the Host owns admission, capabilities, and resource cleanup.
-- Evolve persisted state via forward, append-only `maka_event_log::migration::Migration` steps (locked by `scripts/rust/migrations.lock.json`). Rewrite old SQLite rows or JSON payloads in place inside a migration (`Migration::with_data`) rather than accumulating legacy read branches or external migration scripts; derived indexes (such as Recall/FTS) may be dropped and rebuilt. Update `tools/upgrade-compat/src/upgrade_compat.rs` whenever persisted features or formats change.
+- Evolve persisted state via forward, append-only `maka_event_log::migration::Migration` steps (locked by `scripts/rust/migrations.lock.json`). Rewrite old SQLite rows or JSON payloads in place inside a migration (`Migration::with_data`) rather than accumulating legacy read branches or external migration scripts; derived indexes (such as Recall/FTS) may be dropped and rebuilt. Update `products/maka/cli/tests/upgrade_compat.rs` whenever persisted features or formats change.
 - Keep wire fields separate from UI copy, and maintain all three product locales (`en`, `zh-CN`, `zh-TW`) when adding UI strings.
 - Write documentation only where it saves reader time. Keep maintained English and Chinese guides aligned, and link to types/schemas instead of duplicating field lists.
 

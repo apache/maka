@@ -1,0 +1,333 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Build distribution target
+description: Build, smoke-test, and upload distribution artifacts for one native target.
+inputs:
+  channel:
+    description: Distribution channel (nightly or release).
+    required: true
+  version:
+    description: Exact package version.
+    required: true
+  target:
+    description: Native distribution target.
+    required: true
+  pack_npm:
+    description: Whether to build and upload the npm platform package.
+    required: true
+  staged_v8_artifact:
+    description: Optional workflow artifact containing a cross-built V8 bundle.
+    default: ""
+  save_v8_cache:
+    description: Whether to save the V8 build cache after building.
+    default: "true"
+  csc_link:
+    description: Optional macOS signing certificate bundle.
+    default: ""
+  csc_key_password:
+    description: Optional macOS signing certificate password.
+    default: ""
+  apple_api_key:
+    description: Optional App Store Connect API key content.
+    default: ""
+  apple_api_key_id:
+    description: Optional App Store Connect API key ID.
+    default: ""
+  apple_api_issuer:
+    description: Optional App Store Connect API issuer ID.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: "26"
+
+    - name: Update Rust
+      shell: bash
+      run: rustup update stable --no-self-update
+
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.x"
+
+    - name: Install Linux native build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config clang libclang-dev llvm-dev libssl-dev libglib2.0-dev libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libfontconfig1-dev libfreetype6-dev libx11-dev libxi-dev libxtst-dev libxext-dev libxcb1-dev libxrandr-dev libxfixes-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+        echo "LIBCLANG_PATH=$(/usr/bin/llvm-config --libdir)" >> "$GITHUB_ENV"
+
+    - name: Set up Zig (Linux glibc 2.28 baseline)
+      if: runner.os == 'Linux'
+      uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      with:
+        version: latest
+
+    - name: Install cargo-zigbuild
+      if: runner.os == 'Linux'
+      uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      with:
+        tool: cargo-zigbuild
+
+    - name: Select libclang on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: echo "LIBCLANG_PATH=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib" >> "$GITHUB_ENV"
+
+    - name: Configure Windows build environment
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target"
+        Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+        "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Import macOS signing certificate and notarization key
+      if: runner.os == 'macOS'
+      shell: bash
+      env:
+        CSC_LINK: ${{ inputs.csc_link }}
+        CSC_KEY_PASSWORD: ${{ inputs.csc_key_password }}
+        APPLE_API_KEY_CONTENT: ${{ inputs.apple_api_key }}
+        APPLE_API_KEY_ID: ${{ inputs.apple_api_key_id }}
+        APPLE_API_ISSUER: ${{ inputs.apple_api_issuer }}
+      run: |
+        if [[ -z "$CSC_LINK" ]]; then
+          echo "CSC_LINK not set; building ad-hoc signed macOS artifacts."
+          exit 0
+        fi
+        KEYCHAIN="$RUNNER_TEMP/maka-signing.keychain-db"
+        KEYCHAIN_PASS=$(openssl rand -hex 24)
+        P12="$RUNNER_TEMP/maka-cert.p12"
+        umask 077
+        if [[ "$CSC_LINK" == file://* ]]; then
+          cp "${CSC_LINK#file://}" "$P12"
+        elif [[ -f "$CSC_LINK" ]]; then
+          cp "$CSC_LINK" "$P12"
+        else
+          printf '%s' "$CSC_LINK" | base64 --decode > "$P12"
+        fi
+        security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+        security import "$P12" -P "$CSC_KEY_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+        IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -nE 's/.*"(Developer ID Application:[^"]*)".*/\1/p' | head -n 1)
+        if [[ -z "$IDENTITY" ]]; then
+          echo "::error::No Developer ID Application identity found in CSC_LINK"
+          exit 1
+        fi
+        echo "MAKA_CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+        if [[ -n "$APPLE_API_KEY_CONTENT" ]]; then
+          KEY_PATH="$RUNNER_TEMP/AuthKey_Maka.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+          # Avoid HTTP/3 UDP 443 ticket delivery stalls on macOS runners.
+          echo 'block return out quick proto udp from any to any port 443' | sudo pfctl -f - || true
+          sudo pfctl -E || true
+        fi
+
+    - name: Install JavaScript build dependencies
+      shell: bash
+      run: |
+        npm ci --include=dev --include=optional --ignore-scripts --no-audit --no-fund
+        node scripts/apply-dependency-patches.mjs
+
+    - name: Identify Rust release cache
+      id: rust-cache-keys
+      shell: bash
+      env:
+        # Share the dist dependency cache across nightly and release builds.
+        MAKA_CI_ROLE: nightly-release-${{ inputs.target }}
+        MAKA_CI_WORKSPACE: root
+        MAKA_CI_PROFILE: dist
+      run: |
+        node scripts/ci/setup.mjs keys
+        echo "target=$(node --input-type=module -e 'import { rustTarget } from "./scripts/rust/build-cli.mjs"; console.log(rustTarget());')" >> "$GITHUB_OUTPUT"
+
+    - name: Restore shared Cargo downloads
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cargo/.rusty_v8
+        key: ${{ steps.rust-cache-keys.outputs.downloads }}
+        restore-keys: ${{ steps.rust-cache-keys.outputs.downloads_prefix }}
+        enableCrossOsArchive: true
+
+    - name: Compute V8 cache key
+      id: v8-key
+      shell: bash
+      run: echo "key=$(node scripts/rust/build-v8.mjs --cache-key)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore V8 cache
+      id: v8-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: target/v8/${{ steps.v8-key.outputs.key }}
+        key: maka-v8-${{ inputs.target }}-${{ steps.v8-key.outputs.key }}
+
+    - name: Download cross-built V8 bundle
+      if: >-
+        inputs.staged_v8_artifact != '' &&
+        steps.v8-cache.outputs.cache-hit != 'true'
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.staged_v8_artifact }}
+        path: v8-staged
+
+    - name: Stage cross-built V8 bundle into cache
+      if: >-
+        inputs.staged_v8_artifact != '' &&
+        steps.v8-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        V8_KEY: ${{ steps.v8-key.outputs.key }}
+        RUST_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+      run: |
+        dest="target/v8/$V8_KEY"
+        mkdir -p "$dest"
+        tar -xzf "v8-staged/v8-${RUST_TARGET}-${V8_KEY}.tar.gz" -C "$dest"
+
+    - name: Restore Rust release dependencies
+      id: rust-cache
+      if: runner.os != 'Linux'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          target/CACHEDIR.TAG
+          target/dist/.fingerprint
+          target/dist/build
+          target/dist/deps/*.*
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/.fingerprint
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/build
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/deps/*.*
+          !target/**/deps/*.exe
+          !target/**/deps/*.pdb
+        key: ${{ steps.rust-cache-keys.outputs.compiled }}
+        restore-keys: ${{ steps.rust-cache-keys.outputs.compiled_prefix }}
+
+    - name: Stabilize third-party timestamps on exact cache hit
+      if: runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: node scripts/ci/setup.mjs stamp-third-party
+
+    - name: Clean vendored third-party outputs on fallback restore
+      if: runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        MAKA_CI_WORKSPACE: root
+        MAKA_CI_PROFILE: dist
+        MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+      run: node scripts/ci/setup.mjs clean-third-party
+
+    - name: Build, smoke test, and package artifacts
+      id: build
+      shell: bash
+      env:
+        V8_CACHE_KEY: ${{ steps.v8-key.outputs.key }}
+        RELEASE_CHANNEL: ${{ inputs.channel }}
+        RELEASE_TARGET: ${{ inputs.target }}
+        PACK_NPM: ${{ inputs.pack_npm }}
+        RELEASE_VERSION: ${{ inputs.version }}
+      run: |
+        npm_args=()
+        if [[ "$PACK_NPM" == "true" ]]; then
+          npm_args+=(--npm-output npm-out)
+        fi
+        node scripts/rust/package-nightly.mjs build \
+          --channel "$RELEASE_CHANNEL" \
+          --target "$RELEASE_TARGET" \
+          --version "$RELEASE_VERSION" \
+          --output dist-out \
+          "${npm_args[@]}" \
+          --v8-output v8-out
+        echo "succeeded=true" >> "$GITHUB_OUTPUT"
+
+    - name: Clean up temporary macOS signing material
+      if: always() && runner.os == 'macOS'
+      shell: bash
+      run: |
+        security delete-keychain "$RUNNER_TEMP/maka-signing.keychain-db" 2>/dev/null || true
+        rm -f "$RUNNER_TEMP/maka-cert.p12" "$RUNNER_TEMP/AuthKey_Maka.p8"
+
+    - name: Save V8 cache
+      uses: actions/cache/save@v6
+      if: ${{ !cancelled() && inputs.save_v8_cache == 'true' && steps.v8-cache.outputs.cache-hit != 'true' && hashFiles(format('target/v8/{0}/receipt.json', steps.v8-key.outputs.key)) != '' }}
+      with:
+        path: target/v8/${{ steps.v8-key.outputs.key }}
+        key: maka-v8-${{ inputs.target }}-${{ steps.v8-key.outputs.key }}
+
+    - name: Upload installers and update archives
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.channel }}-pkg-${{ inputs.target }}
+        path: dist-out/*
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Upload npm platform package
+      if: inputs.pack_npm == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.channel }}-npm-${{ inputs.target }}
+        path: npm-out/*.tgz
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Upload newly built V8 prebuilt (when not yet pinned)
+      if: ${{ hashFiles('v8-out/*.json') != '' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: v8-prebuilt-${{ inputs.target }}
+        path: v8-out/*
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Prune workspace crates from Rust release cache
+      if: ${{ !cancelled() && runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outputs.succeeded == 'true' }}
+      shell: bash
+      env:
+        MAKA_CI_WORKSPACE: root
+        MAKA_CI_PROFILE: dist
+        MAKA_CI_TARGET: ${{ steps.rust-cache-keys.outputs.target }}
+      run: node scripts/ci/setup.mjs prune
+
+    - name: Save Rust release dependencies
+      uses: actions/cache/save@v6
+      if: ${{ !cancelled() && runner.os != 'Linux' && steps.rust-cache.outputs.cache-hit != 'true' && steps.build.outputs.succeeded == 'true' }}
+      with:
+        path: |
+          target/CACHEDIR.TAG
+          target/dist/.fingerprint
+          target/dist/build
+          target/dist/deps/*.*
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/.fingerprint
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/build
+          target/${{ steps.rust-cache-keys.outputs.target }}/dist/deps/*.*
+          !target/**/deps/*.exe
+          !target/**/deps/*.pdb
+        key: ${{ steps.rust-cache-keys.outputs.compiled }}
