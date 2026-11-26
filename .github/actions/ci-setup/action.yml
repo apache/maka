@@ -36,9 +36,6 @@ inputs:
   compile:
     description: Cache compiler outputs.
     default: "true"
-  stage_v8:
-    description: Stage a prebuilt V8 archive for Rust builds that use it.
-    default: "true"
   nextest:
     description: Producer version for archive consumers; otherwise resolve latest.
     default: ""
@@ -154,7 +151,7 @@ runs:
       shell: bash
       run: node scripts/ci/setup.mjs clean-third-party
     - name: Stage prebuilt V8 archive
-      if: inputs.stage_v8 == 'true' && inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
+      if: inputs.workspace == 'root' && inputs.role != 'replay' && steps.compiled.outputs.cache-hit != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

@@ -305,11 +305,46 @@ jobs:
           ref: ${{ inputs.commit }}
           persist-credentials: false
 
-      - uses: ./.github/actions/ci-setup
-        id: setup
+      - uses: actions/setup-node@v7
         with:
-          role: compat-harness
-          stage_v8: "false"
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      - name: Identify harness caches
+        id: cache-keys
+        env:
+          MAKA_CI_ROLE: compat-harness
+          MAKA_CI_WORKSPACE: root
+        run: node scripts/ci/setup.mjs keys
+
+      - name: Restore shared Cargo downloads
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/.rusty_v8
+          key: ${{ steps.cache-keys.outputs.downloads }}
+          restore-keys: ${{ steps.cache-keys.outputs.downloads_prefix }}
+          enableCrossOsArchive: true
+
+      - name: Cache harness compiler outputs
+        id: harness-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            target/debug/.fingerprint
+            target/debug/build
+            target/debug/deps/*.*
+          key: ${{ steps.cache-keys.outputs.compiled }}
+
+      - name: Stabilize third-party timestamps on exact cache hit
+        if: steps.harness-cache.outputs.cache-hit == 'true'
+        run: node scripts/ci/setup.mjs stamp-third-party
 
       - name: Build upgrade compatibility harness
         run: cargo build --locked -p maka-upgrade-compat
@@ -320,19 +355,6 @@ jobs:
           name: compat-harness-linux-x64
           path: target/debug/maka-upgrade-compat
           if-no-files-found: error
-
-      - name: Save harness dependencies
-        uses: actions/cache/save@v6
-        if: steps.setup.outputs.compiled_hit != 'true'
-        with:
-          path: |
-            target/CACHEDIR.TAG
-            target/**/.fingerprint
-            target/**/build
-            target/**/gn_out
-            target/**/deps/*.*
-            !target/**/deps/*.exe
-          key: ${{ steps.setup.outputs.compiled_key }}
 
   compat-gate:
     needs: [build-linux-x64, compat-harness]
