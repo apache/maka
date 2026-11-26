@@ -43,6 +43,8 @@ enum Command {
     Desktop(crate::desktop::Args),
     /// Open the NSH terminal shell (connects to or starts the selected Host).
     TerminalShell(crate::terminal_args::Args),
+    /// Open the NSH control plane TUI for managing Hosts, Relays, Access and Logs.
+    Admin(crate::admin::Args),
     /// Run a headless Agent prompt, or continue, wait on or answer its Session.
     Run(crate::run::Args),
     /// Author, inspect and serve plugin applications.
@@ -237,6 +239,7 @@ impl Cli {
             Command::TerminalShell(args) => {
                 command_exit(async move { args.run().await.map_err(Into::into) })
             }
+            Command::Admin(args) => Box::pin(args.run()),
             Command::Run(args) => Box::pin(args.run()),
             Command::Application(args) => command_exit(args.run()),
             Command::Relay(args) => command_exit(args.run()),

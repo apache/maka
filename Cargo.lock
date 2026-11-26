@@ -8786,6 +8786,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-admin-tui"
+version = "0.3.0"
+dependencies = [
+ "base64 0.23.1",
+ "clap",
+ "crossterm",
+ "hex",
+ "jiff 1.0.3",
+ "maka-config",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-plugin-core",
+ "maka-remote-pairing",
+ "maka-remote-transport",
+ "maka-sandbox",
+ "maka-updater",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "nsh-platform-tui",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "maka-agent-api"
 version = "0.3.0"
 dependencies = [
