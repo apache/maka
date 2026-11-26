@@ -509,6 +509,26 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_takes_the_palette_of_its_scheme() {
+        let mut app = headless_fixture_in(
+            "tests/fixtures/terminal-palette.tsx",
+            Size::new(px(480.0), px(200.0)),
+            true,
+            nsh_core::platform::Idiom::Terminal,
+        );
+        app.set_environment("light", |env| {
+            env.color_scheme = nsh_core::platform::ColorScheme::Light;
+        })
+        .unwrap();
+        app.wait_for("text:background #ffffff").unwrap();
+        app.set_environment("dark", |env| {
+            env.color_scheme = nsh_core::platform::ColorScheme::Dark;
+        })
+        .unwrap();
+        app.wait_for("text:background #161719").unwrap();
+    }
+
+    #[test]
     fn stopping_an_agent_terminal_requires_confirmation() {
         let mut app = fixture("terminal-sidebar.tsx");
         app.set_viewport(Size::new(px(480.0), px(420.0))).unwrap();
