@@ -44,7 +44,10 @@ import {
   SideHeader,
   SideReactions,
 } from '../../../../products/maka/workbench/app/SideQuestionCard';
-import { sessionInvocation } from '../../composer/ui/composerCompletionSyntax';
+import {
+  sessionInvocation,
+  stripSessionReference,
+} from '../../composer/ui/composerCompletionSyntax';
 import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { ComputerStageView } from './ComputerStageView';
 import { createComputerStage, type ComputerSnapshot } from './computerStageController';
@@ -85,6 +88,7 @@ import {
   type ConversationNavigationInput,
   type ConversationSessionInput,
   type ConversationPreviewInput,
+  type ConversationCompact,
   type ConversationSessionHandle,
   type ComposerSession,
   type ComposerCompletionSource,
@@ -2414,7 +2418,7 @@ export function createConversationUi(
       session.draft().trim() === ''
     );
   };
-  const discardSide = async (close: () => void) => {
+  const discardSide = async (card: ConversationCompact) => {
     const id = selected();
     if (id === null) return;
     const observed = await host.query('agent', 'observe', { sessionId: id });
@@ -2427,7 +2431,9 @@ export function createConversationUi(
       throw new UiError('The side question could not be discarded: {reason}', {
         reason: removed.reason ?? removed.kind,
       });
-    close();
+    // A reference to it in the main draft would lead nowhere now.
+    card.side?.detach(id);
+    if (alive && selected() === id) card.close();
   };
   const sessionHandle: ConversationSessionHandle = {
     title: () => handle()?.title() ?? null,
@@ -2438,6 +2444,13 @@ export function createConversationUi(
       owner.changeDraft(draft === '' || /\s$/.test(draft) ? draft + text : `${draft} ${text}`);
       owner.focus();
       return true;
+    },
+    removeSessionReference(sessionId) {
+      const owner = handle();
+      if (!owner?.editable()) return;
+      const draft = owner.draft();
+      const stripped = stripSessionReference(draft, sessionId);
+      if (stripped !== draft) owner.changeDraft(stripped);
     },
     floatingComposer: () =>
       selected() === null ? null : (
@@ -3139,7 +3152,7 @@ export function createConversationUi(
                       sideAttached.set(true);
                   }}
                   resolve={input.compact!.close}
-                  archive={() => void discardSide(input.compact!.close).catch(report)}
+                  archive={() => void discardSide(input.compact!).catch(report)}
                 />
               </If>
               <SideComposer

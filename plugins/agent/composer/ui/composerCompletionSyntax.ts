@@ -181,3 +181,25 @@ export function sessionInvocation(session: Pick<AgentSession, 'id' | 'title' | '
   const marker = session.kind === 'room' ? '#' : '@';
   return `[${marker}${label}](maka://session/${session.id})`;
 }
+
+/**
+ * Takes every reference to one session out of a draft, whatever title it shows, with the
+ * spaces around it: one space stays only where two words met.
+ */
+export function stripSessionReference(draft: string, sessionId: string): string {
+  const id = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reference = new RegExp(
+    `[ \\t]*\\[[@#](?:\\\\[^\\r\\n]|[^\\]\\\\\\r\\n])+\\]\\(maka://session/${id}\\)[ \\t]*`,
+    'g',
+  );
+  return draft.replace(reference, (found, at: number) => {
+    const before = draft[at - 1];
+    const after = draft[at + found.length];
+    return before !== undefined &&
+      after !== undefined &&
+      !/\s/.test(before) &&
+      !/[\s.,;:!?)\]}]/.test(after)
+      ? ' '
+      : '';
+  });
+}

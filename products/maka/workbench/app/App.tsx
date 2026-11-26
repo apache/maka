@@ -276,7 +276,10 @@ function App(
             if (sideRoom() > 0) openBeside(id);
             else void openSession(id);
           }),
-        side: { attach: (reference) => session()?.appendToDraft?.(reference) ?? false },
+        side: {
+          attach: (reference) => session()?.appendToDraft?.(reference) ?? false,
+          detach: (sessionId) => session()?.removeSessionReference?.(sessionId),
+        },
       },
       first?.quotes,
     );
