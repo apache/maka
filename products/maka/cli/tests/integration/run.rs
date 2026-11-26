@@ -36,7 +36,10 @@ use maka_mock_ai::{
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 #[cfg(unix)]
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt},
+    net::TcpStream,
+};
 
 struct TestEnv {
     _root: tempfile::TempDir,
@@ -1056,24 +1059,45 @@ async fn run_sigterm_detaches_a_wait_without_cancelling_the_run() {
 
     let mut wait = tokio::process::Command::from(session_command(&env, &root, session));
     wait.arg("--wait")
+        .env("MAKA_RUN_TRACE_WATCH", "1")
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = wait.spawn().expect("spawn maka run --wait");
-    // Give the wait time to attach to the Session.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mut child = wait.spawn().expect("spawn maka run --wait");
+    let mut stderr = tokio::io::BufReader::new(child.stderr.take().expect("piped stderr"));
+    let attached = format!("session watch attached: {session}\n");
+    let mut diagnostic = String::new();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let start = diagnostic.len();
+            let n = stderr
+                .read_line(&mut diagnostic)
+                .await
+                .expect("read waiter stderr");
+            assert_ne!(n, 0, "waiter exited before attaching: {diagnostic}");
+            if diagnostic[start..] == attached {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("waiter did not attach");
     let pid = child.id().expect("child pid");
     // SAFETY: `pid` is a live child process spawned by this test.
     let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
     assert_eq!(rc, 0, "failed to send SIGTERM");
-    let out = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
         .await
         .expect("maka run --wait did not exit promptly on SIGTERM")
         .expect("wait child");
-    assert_eq!(out.status.code(), Some(1), "expected exit 1 on SIGTERM");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("interrupted by signal"), "{stderr}");
+    assert_eq!(status.code(), Some(1), "expected exit 1 on SIGTERM");
+    diagnostic.clear();
+    stderr
+        .read_to_string(&mut diagnostic)
+        .await
+        .expect("read waiter error");
+    assert!(diagnostic.contains("interrupted by signal"), "{diagnostic}");
 
     // Detaching left the Run running: releasing the model completes it.
     turn.reply_text("released reply");

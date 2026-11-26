@@ -605,6 +605,10 @@ async fn follow_target(
         Err(err) => return Err(withdraw(host, session_id, &target, err.to_string()).await),
     };
 
+    if std::env::var_os("MAKA_RUN_TRACE_WATCH").is_some() {
+        eprintln!("session watch attached: {session_id}");
+    }
+
     let outcome = match follow(host, session_id, &target, &mut watch, on_pending, stop).await {
         Ok(Followed::Finished {
             run_id,
