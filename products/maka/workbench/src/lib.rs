@@ -2253,7 +2253,7 @@ mod tests {
         })
         .unwrap();
         assert!(app.screen().matches("label:Disable Codex").unwrap());
-        assert!(!app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(app.screen().enabled("label:Disable Codex").unwrap());
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
