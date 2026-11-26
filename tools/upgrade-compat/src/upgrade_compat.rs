@@ -24,12 +24,12 @@
 //!   binary and immediately verifies cold upgrade, exhaustive deserialization,
 //!   and live continuation against a copy of that capsule.
 //! - Produce (`MAKA_COMPAT_PRODUCE_CAPSULE=<dir>`): runs the complex scenario
-//!   using `MAKA_COMPAT_BIN` (or `CARGO_BIN_EXE_maka`) and seals the resulting
+//!   using the supplied `maka` binary and seals the resulting
 //!   State Root, isolated `$HOME`, portable checkpoint, and `capsule-manifest.json`
 //!   into `<dir>`.
 //! - Verify (`MAKA_COMPAT_VERIFY_CAPSULE=<dir>`): copies the historical capsule
-//!   in `<dir>` into a temp directory, boots `MAKA_COMPAT_BIN` (or
-//!   `CARGO_BIN_EXE_maka`) against the copied old State Root, and verifies:
+//!   in `<dir>` into a temp directory, boots the supplied `maka` binary
+//!   against the copied old State Root, and verifies:
 //!     1. Cold startup and atomic schema/data migrations.
 //!     2. Exhaustive read/deserialization sweep across every persisted domain.
 //!     3. Live continuation (updating settings, continuing the old conversation
@@ -41,9 +41,8 @@
 
 #![cfg(unix)]
 
-#[path = "support/execution_compat.rs"]
 mod execution_compat;
-#[path = "support/host.rs"]
+#[path = "../../../products/maka/cli/tests/support/host.rs"]
 mod host;
 
 use futures_util::FutureExt;
@@ -80,7 +79,6 @@ use tokio::process::Command;
 
 const PRODUCE_ENV: &str = "MAKA_COMPAT_PRODUCE_CAPSULE";
 const VERIFY_ENV: &str = "MAKA_COMPAT_VERIFY_CAPSULE";
-const BIN_ENV: &str = "MAKA_COMPAT_BIN";
 const ATTACHMENT_BYTES: &[u8] = "compat capsule attachment — 兼容性附件\n".as_bytes();
 const COMPACTION_PROMPT: &str = "Preserve upgrade compatibility markers across restarts.";
 const PRESET_NAME: &str = "Compat Reviewer";
@@ -228,16 +226,6 @@ impl ReadResource for FixtureAttachment {
             .map(<[u8]>::to_vec)
             .ok_or_else(|| "invalid fixture attachment range".into())
     }
-}
-
-fn maka_binary() -> PathBuf {
-    if let Some(path) = std::env::var_os(BIN_ENV) {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(
-        std::env::var_os("CARGO_BIN_EXE_maka")
-            .expect("set MAKA_COMPAT_BIN or run under Cargo/nextest with CARGO_BIN_EXE_maka"),
-    )
 }
 
 struct EnvDirs {
@@ -2009,11 +1997,9 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn upgrade_compat_capsule_roundtrip() {
-    let bin = maka_binary();
+pub async fn roundtrip(bin: &Path) {
     if let Some(out_dir) = std::env::var_os(PRODUCE_ENV) {
-        let manifest = produce_capsule(&bin, Path::new(&out_dir)).await;
+        let manifest = produce_capsule(bin, Path::new(&out_dir)).await;
         eprintln!(
             "Produced compat capsule ({}, {} DB ledger(s)) at {}",
             manifest.maka_version,
@@ -2023,7 +2009,7 @@ async fn upgrade_compat_capsule_roundtrip() {
         return;
     }
     if let Some(in_dir) = std::env::var_os(VERIFY_ENV) {
-        verify_capsule(&bin, Path::new(&in_dir)).await;
+        verify_capsule(bin, Path::new(&in_dir)).await;
         eprintln!(
             "Verified compat capsule at {} with {}",
             Path::new(&in_dir).display(),
@@ -2034,6 +2020,6 @@ async fn upgrade_compat_capsule_roundtrip() {
 
     // Default self-check mode: produce a capsule and verify upgrading a copy of it.
     let capsule_tmp = tempfile::tempdir().unwrap();
-    let _manifest = produce_capsule(&bin, capsule_tmp.path()).await;
-    verify_capsule(&bin, capsule_tmp.path()).await;
+    let _manifest = produce_capsule(bin, capsule_tmp.path()).await;
+    verify_capsule(bin, capsule_tmp.path()).await;
 }

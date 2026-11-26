@@ -159,6 +159,10 @@ export const suites = {
         packages: ['maka-workbench', 'maka-terminal-shell', 'maka-cli'],
       },
       { inputs: [externalCodexFixture], packages: ['maka-cli'] },
+      {
+        inputs: ['products/maka/cli/tests/support/host.rs'],
+        packages: ['maka-upgrade-compat'],
+      },
       { inputs: [externalAgentFixture], packages: ['maka-terminal-shell'] },
     ],
     affectedFilter: true,

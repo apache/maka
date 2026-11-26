@@ -9150,6 +9150,7 @@ dependencies = [
  "maka-transport",
  "maka-ui-build",
  "maka-updater",
+ "maka-upgrade-compat",
  "maka-workbench",
  "maka-wsl-bridge",
  "nsh-core",
@@ -10474,6 +10475,30 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "maka-upgrade-compat"
+version = "0.3.0"
+dependencies = [
+ "futures-util",
+ "libc",
+ "maka-agent-facts",
+ "maka-capabilities",
+ "maka-config",
+ "maka-event-log",
+ "maka-fs-tools",
+ "maka-host-runtime",
+ "maka-mock-ai",
+ "maka-plugin-core",
+ "maka-remote-pairing",
+ "maka-sandbox",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]

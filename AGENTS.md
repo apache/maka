@@ -41,7 +41,7 @@
 - Upgrade forward in place—do not accumulate legacy read-time branches in business logic. When changing SQLite schemas or persisted JSON payloads, upgrade existing databases directly to the current shape via atomic migrations so runtime reads/writes target one schema, without external migration scripts.
 - Published migrations are immutable: SHA-384 digests of `migrations/*.sql` (`event-log`, `agent/state`, `settings/store`, `cli/deployment`) are locked in `scripts/rust/migrations.lock.json` (`node scripts/ci.mjs check migrations`). Append higher-numbered migrations only; use `Migration::with_data` for JSON/data rewrites that SQL cannot express cleanly, committing or rolling back atomically inside the same `SAVEPOINT`.
 - Distinguish authoritative facts from derived state: `RootMarker`, event facts/history, Settings/Vault, Deployment, Checkpoints, and unsettled `application_operations` must migrate forward; derived indexes (such as Recall/FTS) may use versioned drop-and-rebuild.
-- Whenever persisted tables, on-disk JSON payloads, or core stateful features change, update the full-scenario upgrade harness [upgrade_compat.rs](products/maka/cli/tests/upgrade_compat.rs). Post-merge `compat-post-merge.yml` on `main` and pre-release `nightly.yml` `compat-gate` replay historical time capsules to verify cold migrations, exhaustive reads, and live continuation.
+- Whenever persisted tables, on-disk JSON payloads, or core stateful features change, update the full-scenario upgrade harness [upgrade_compat.rs](tools/upgrade-compat/src/upgrade_compat.rs). Post-merge `compat-post-merge.yml` on `main` and the shared pre-release `compat-gate` replay historical time capsules to verify cold migrations, exhaustive reads, and live continuation.
 
 ## CI Maintenance
 

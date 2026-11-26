@@ -52,12 +52,12 @@ jobs:
         run: node scripts/ci.mjs check migrations
 
       - name: Build maka binary and upgrade compatibility harness
-        run: |
-          cargo build --locked -p maka-cli --bin maka
-          cargo test --locked -p maka-cli --test upgrade_compat --no-run
+        run: cargo build --locked -p maka-cli --bin maka -p maka-upgrade-compat --bin maka-upgrade-compat
 
       - name: Run current-HEAD self-roundtrip scenario
-        run: cargo test --locked -p maka-cli --test upgrade_compat -- --exact upgrade_compat_capsule_roundtrip --nocapture
+        run: |
+          bin_dir="$(realpath "${CARGO_TARGET_DIR:-target}/debug")"
+          MAKA_COMPAT_BIN="$bin_dir/maka" "$bin_dir/maka-upgrade-compat"
 
       - name: Replay all published historical time capsules against current HEAD
         env:
@@ -65,4 +65,5 @@ jobs:
         run: |
           node scripts/rust/compat-capsule.mjs verify-release \
             --bin "${CARGO_TARGET_DIR:-target}/debug/maka" \
+            --test-bin "${CARGO_TARGET_DIR:-target}/debug/maka-upgrade-compat" \
             --repo "$GITHUB_REPOSITORY"

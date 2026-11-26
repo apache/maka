@@ -105,6 +105,7 @@ jobs:
     uses: ./.github/workflows/build-release-artifacts.yml
     with:
       channel: nightly
+      pack_npm: ${{ inputs.publish_npm }}
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}
       environment: nightly

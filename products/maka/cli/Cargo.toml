@@ -65,7 +65,7 @@ path = "tests/producer_reopen.rs"
 
 [[test]]
 name = "upgrade_compat"
-path = "tests/upgrade_compat.rs"
+path = "tests/upgrade_compat_roundtrip.rs"
 
 [[test]]
 name = "native-desktop"
@@ -168,6 +168,7 @@ tempfile.workspace = true
 rustix = { version = "1.1.6", features = ["fs"] }
 
 [target.'cfg(unix)'.dev-dependencies]
+maka-upgrade-compat = { path = "../../../tools/upgrade-compat" }
 iroh = { version = "=1.5.0", default-features = false, features = ["tls-aws-lc-rs"] }
 iroh-relay = { version = "=1.5.0", default-features = false, features = ["server", "tls-aws-lc-rs"] }
 

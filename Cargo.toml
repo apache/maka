@@ -88,6 +88,7 @@ members = [
     "plugins/workspace/workspace-computer/native",
     "products/eval",
     "tools/mock-ai",
+    "tools/upgrade-compat",
     "tools/i18n-build",
     "tools/ui-build",
 ]
