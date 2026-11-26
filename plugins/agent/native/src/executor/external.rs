@@ -177,7 +177,6 @@ pub(crate) struct External {
     catalog: tokio::sync::Mutex<Catalog>,
     catalog_changes: tokio::sync::watch::Sender<()>,
     usage_limits: tokio::sync::Mutex<UsageLimitsCache>,
-    usage_limits_changes: tokio::sync::watch::Sender<()>,
     stop: CancellationToken,
     endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
@@ -253,7 +252,6 @@ impl External {
             catalog: tokio::sync::Mutex::new(Catalog::default()),
             catalog_changes: tokio::sync::watch::channel(()).0,
             usage_limits: tokio::sync::Mutex::new(UsageLimitsCache::default()),
-            usage_limits_changes: tokio::sync::watch::channel(()).0,
             stop: CancellationToken::new(),
             endpoints: tokio::sync::Mutex::new(BTreeMap::new()),
             root: persistence.store().clone(),
@@ -467,7 +465,11 @@ impl External {
                         "Usage limits require a supported runtime".into(),
                     ));
                 };
-                self.usage_limits(cwd, runtime, cancellation).await
+                let refresh = request
+                    .get("refresh")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                self.usage_limits(cwd, runtime, refresh, cancellation).await
             }
             _ => Err(Error::Invalid("Unsupported external query kind".into())),
         }
@@ -593,19 +595,19 @@ impl External {
         self: &Arc<Self>,
         cwd: String,
         runtime: NativeRuntime,
+        force_refresh: bool,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
         self.catalog.lock().await.failure()?;
-        let mut changes = self.usage_limits_changes.subscribe();
-        let target_generation = {
+        let mut completion = {
             let mut cache = self.usage_limits.lock().await;
             if cancellation.is_cancelled() || self.stop.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            match cache.prepare(&cwd, runtime) {
+            match cache.prepare(&cwd, runtime, force_refresh, Instant::now()) {
                 UsagePlan::Cached(value) => return Ok(value),
-                UsagePlan::Wait { generation } => generation,
-                UsagePlan::Fetch { generation } => {
+                UsagePlan::Wait(rx) => rx,
+                UsagePlan::Fetch { tx, rx } => {
                     let owner = self.clone();
                     let fetch_cwd = cwd.clone();
                     tokio::spawn(async move {
@@ -616,30 +618,30 @@ impl External {
                                 owner.stop.child_token(),
                             )
                             .await;
-                        owner
-                            .usage_limits
-                            .lock()
-                            .await
-                            .publish(&fetch_cwd, runtime, generation, result);
-                        owner.usage_limits_changes.send_modify(|_| {});
+                        owner.usage_limits.lock().await.complete(
+                            &fetch_cwd,
+                            runtime,
+                            tx,
+                            result,
+                            Instant::now(),
+                        );
                     });
-                    generation
+                    rx
                 }
             }
         };
         loop {
-            changes.borrow_and_update();
-            self.catalog.lock().await.failure()?;
-            {
-                let cache = self.usage_limits.lock().await;
-                if let Some(result) = cache.finished(&cwd, runtime, target_generation) {
-                    return result;
-                }
+            if let Some(result) = completion.borrow_and_update().clone() {
+                return result;
             }
             tokio::select! { biased;
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
                 () = self.stop.cancelled() => return Err(Error::Retired),
-                result = changes.changed() => result.map_err(|_| Error::Retired)?,
+                changed = completion.changed() => {
+                    if changed.is_err() {
+                        return Err(Error::Retired);
+                    }
+                }
             }
         }
     }
@@ -1141,113 +1143,96 @@ enum DiscoverWork {
 const USAGE_LIMITS_TTL: Duration = Duration::from_secs(30);
 const USAGE_LIMITS_MAX_ENTRIES: usize = 16;
 
+type UsageOutcome = Option<Result<Value, Error>>;
+
 #[derive(Default)]
 struct UsageLimitsCache {
-    entries: BTreeMap<(String, NativeRuntime), UsageEntry>,
+    entries: BTreeMap<(String, NativeRuntime), UsageState>,
 }
 
-struct UsageEntry {
-    checked: Instant,
-    value: Option<Value>,
-    refreshing: bool,
-    generation: u64,
-    last_result: Option<Result<Value, Error>>,
+enum UsageState {
+    Ready {
+        value: Value,
+        checked: Instant,
+    },
+    Fetching {
+        result: tokio::sync::watch::Receiver<UsageOutcome>,
+    },
 }
 
 enum UsagePlan {
     Cached(Value),
-    Wait { generation: u64 },
-    Fetch { generation: u64 },
+    Wait(tokio::sync::watch::Receiver<UsageOutcome>),
+    Fetch {
+        tx: tokio::sync::watch::Sender<UsageOutcome>,
+        rx: tokio::sync::watch::Receiver<UsageOutcome>,
+    },
 }
 
 impl UsageLimitsCache {
-    fn prepare(&mut self, cwd: &str, runtime: NativeRuntime) -> UsagePlan {
-        let key = (cwd.to_owned(), runtime);
-        let now = Instant::now();
-        if let Some(entry) = self.entries.get_mut(&key) {
-            if !entry.refreshing
-                && let Some(value) = &entry.value
-                && now.saturating_duration_since(entry.checked) < USAGE_LIMITS_TTL
-            {
-                return UsagePlan::Cached(value.clone());
-            }
-            if entry.refreshing {
-                return UsagePlan::Wait {
-                    generation: entry.generation,
-                };
-            }
-            entry.refreshing = true;
-            entry.generation += 1;
-            entry.last_result = None;
-            return UsagePlan::Fetch {
-                generation: entry.generation,
-            };
-        }
-        if self.entries.len() >= USAGE_LIMITS_MAX_ENTRIES {
-            self.entries.retain(|_, entry| {
-                entry.refreshing || now.saturating_duration_since(entry.checked) < USAGE_LIMITS_TTL
-            });
-        }
-        self.entries.insert(
-            key,
-            UsageEntry {
-                checked: now - USAGE_LIMITS_TTL,
-                value: None,
-                refreshing: true,
-                generation: 1,
-                last_result: None,
-            },
-        );
-        UsagePlan::Fetch { generation: 1 }
-    }
-
-    fn publish(
+    fn prepare(
         &mut self,
         cwd: &str,
         runtime: NativeRuntime,
-        generation: u64,
-        result: Result<Value, Error>,
-    ) {
-        let Some(entry) = self.entries.get_mut(&(cwd.to_owned(), runtime)) else {
-            return;
-        };
-        if entry.generation != generation {
-            return;
+        force_refresh: bool,
+        now: Instant,
+    ) -> UsagePlan {
+        let key = (cwd.to_owned(), runtime);
+        if let Some(state) = self.entries.get(&key) {
+            match state {
+                UsageState::Fetching { result } => return UsagePlan::Wait(result.clone()),
+                UsageState::Ready { value, checked }
+                    if !force_refresh
+                        && now.saturating_duration_since(*checked) < USAGE_LIMITS_TTL =>
+                {
+                    return UsagePlan::Cached(value.clone());
+                }
+                UsageState::Ready { .. } => {}
+            }
         }
-        entry.refreshing = false;
-        if let Ok(value) = &result
-            && value.get("kind").and_then(Value::as_str) == Some("ready")
-        {
-            entry.value = Some(value.clone());
-            entry.checked = Instant::now();
+        if self.entries.len() >= USAGE_LIMITS_MAX_ENTRIES {
+            self.entries.retain(|_, state| match state {
+                UsageState::Fetching { .. } => true,
+                UsageState::Ready { checked, .. } => {
+                    now.saturating_duration_since(*checked) < USAGE_LIMITS_TTL
+                }
+            });
         }
-        entry.last_result = Some(result);
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.entries
+            .insert(key, UsageState::Fetching { result: rx.clone() });
+        UsagePlan::Fetch { tx, rx }
     }
 
-    fn finished(
-        &self,
+    fn complete(
+        &mut self,
         cwd: &str,
         runtime: NativeRuntime,
-        target_generation: u64,
-    ) -> Option<Result<Value, Error>> {
-        let Some(entry) = self.entries.get(&(cwd.to_owned(), runtime)) else {
-            return Some(Err(Error::Provider(
-                "Usage limits cache entry is no longer available".into(),
-            )));
-        };
-        if entry.generation > target_generation {
-            if let Some(value) = &entry.value {
-                return Some(Ok(value.clone()));
+        tx: tokio::sync::watch::Sender<UsageOutcome>,
+        result: Result<Value, Error>,
+        now: Instant,
+    ) {
+        let key = (cwd.to_owned(), runtime);
+        let is_current = matches!(
+            self.entries.get(&key),
+            Some(UsageState::Fetching { result: rx }) if rx.same_channel(&tx.subscribe())
+        );
+        if is_current {
+            if let Ok(value) = &result
+                && value.get("kind").and_then(Value::as_str) == Some("ready")
+            {
+                self.entries.insert(
+                    key,
+                    UsageState::Ready {
+                        value: value.clone(),
+                        checked: now,
+                    },
+                );
+            } else {
+                self.entries.remove(&key);
             }
-            if !entry.refreshing {
-                return entry.last_result.clone();
-            }
-            return None;
         }
-        if entry.refreshing {
-            return None;
-        }
-        entry.last_result.clone()
+        let _ = tx.send(Some(result));
     }
 }
 
@@ -1257,50 +1242,81 @@ mod usage_cache_tests {
     use serde_json::json;
 
     #[test]
-    fn usage_cache_coalesces_inflight_caches_ready_and_skips_errors() {
+    fn coalesced_readers_all_receive_same_failure_even_after_a_newer_fetch_starts() {
         let mut cache = UsageLimitsCache::default();
-        let gen1 = match cache.prepare("/repo", NativeRuntime::Antigravity) {
-            UsagePlan::Fetch { generation } => generation,
-            _ => panic!("first read must fetch"),
-        };
-        match cache.prepare("/repo", NativeRuntime::Antigravity) {
-            UsagePlan::Wait { generation } => assert_eq!(generation, gen1),
-            _ => panic!("concurrent read must coalesce onto in-flight fetch"),
-        }
-        assert!(
-            cache
-                .finished("/repo", NativeRuntime::Antigravity, gen1)
-                .is_none()
-        );
+        let t0 = Instant::now();
+        let ready_v1 = json!({"kind": "ready", "limits": [{"usedPercent": 30}]});
 
-        let ready = json!({"kind": "ready", "limits": []});
-        cache.publish("/repo", NativeRuntime::Antigravity, gen1, Ok(ready.clone()));
-        assert_eq!(
-            cache
-                .finished("/repo", NativeRuntime::Antigravity, gen1)
-                .unwrap()
-                .unwrap(),
-            ready
+        // Seed a ready entry, then let its TTL expire.
+        let UsagePlan::Fetch { tx: tx1, rx: rx1 } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t0)
+        else {
+            panic!("initial read must fetch");
+        };
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx1,
+            Ok(ready_v1.clone()),
+            t0,
         );
-        match cache.prepare("/repo", NativeRuntime::Antigravity) {
-            UsagePlan::Cached(value) => assert_eq!(value, ready),
+        assert_eq!(rx1.borrow().as_ref().unwrap().as_ref().unwrap(), &ready_v1);
+
+        let t_expired = t0 + USAGE_LIMITS_TTL + Duration::from_secs(1);
+        let UsagePlan::Fetch { tx: tx2, rx: rx2_a } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired)
+        else {
+            panic!("expired entry must refetch");
+        };
+        let UsagePlan::Wait(rx2_b) =
+            cache.prepare("/repo", NativeRuntime::Antigravity, true, t_expired)
+        else {
+            panic!("concurrent reader (even with force_refresh) must join in-flight fetch");
+        };
+
+        // The coalesced fetch fails; a third reader immediately starts a newer fetch.
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx2,
+            Err(Error::Provider("cli offline".into())),
+            t_expired,
+        );
+        let UsagePlan::Fetch { tx: tx3, rx: rx3 } =
+            cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired)
+        else {
+            panic!("failed fetch must not be cached");
+        };
+
+        // Both callers from the failed batch observe the same failure, never stale ready_v1.
+        for reader in [&rx2_a, &rx2_b] {
+            let outcome = reader.borrow().clone().expect("batch outcome settled");
+            assert!(
+                matches!(outcome, Err(Error::Provider(ref msg)) if msg == "cli offline"),
+                "every coalesced reader must observe the failed batch error, got {outcome:?}"
+            );
+        }
+
+        // Newer fetch succeeds; subsequent normal read hits TTL, while force_refresh bypasses it.
+        let ready_v2 = json!({"kind": "ready", "limits": [{"usedPercent": 80}]});
+        cache.complete(
+            "/repo",
+            NativeRuntime::Antigravity,
+            tx3,
+            Ok(ready_v2.clone()),
+            t_expired,
+        );
+        assert_eq!(rx3.borrow().as_ref().unwrap().as_ref().unwrap(), &ready_v2);
+        match cache.prepare("/repo", NativeRuntime::Antigravity, false, t_expired) {
+            UsagePlan::Cached(value) => assert_eq!(value, ready_v2),
             _ => panic!("fresh ready response must hit cache"),
         }
-
-        // Errors and non-ready responses are not cached for subsequent callers.
-        let gen_err = match cache.prepare("/other", NativeRuntime::Antigravity) {
-            UsagePlan::Fetch { generation } => generation,
-            _ => panic!("different cwd must fetch independently"),
-        };
-        cache.publish(
-            "/other",
-            NativeRuntime::Antigravity,
-            gen_err,
-            Ok(json!({"kind": "unavailable"})),
+        assert!(
+            matches!(
+                cache.prepare("/repo", NativeRuntime::Antigravity, true, t_expired),
+                UsagePlan::Fetch { .. }
+            ),
+            "force_refresh must bypass a settled TTL entry"
         );
-        assert!(matches!(
-            cache.prepare("/other", NativeRuntime::Antigravity),
-            UsagePlan::Fetch { .. }
-        ));
     }
 }

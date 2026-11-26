@@ -72,6 +72,8 @@ pub fn runtime_options(
 #[schemars(rename = "AgentExternalUsageLimitsRead")]
 pub struct ExternalUsageLimitsRead {
     pub runtime: NativeRuntime,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Serialize, JsonSchema)]

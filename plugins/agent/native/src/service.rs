@@ -591,7 +591,7 @@ impl Handler for Agent {
             "externalUsageLimits" => json_rpc(&mut args, |owner, input, context| async move {
                 let input: maka_agent_api::external::ExternalUsageLimitsRead = decode(input)?;
                 owner
-                    .external_usage_limits(input.runtime, context.scope())
+                    .external_usage_limits(input.runtime, input.refresh, context.scope())
                     .await
             }),
             "executors" => json_rpc(&mut args, |owner, input, _context| async move {

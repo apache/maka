@@ -65,11 +65,11 @@ hooks.deregister();
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-const deploymentRef = {
+const makeDeploymentRef = (revision) => ({
   stateDomain: 'domain-1',
   deployment: 'deploy-1',
-  revision: 3,
-};
+  revision,
+});
 
 const target = {
   source: {
@@ -80,30 +80,32 @@ const target = {
   path: ['external'],
 };
 
-const runtimes = [
-  { id: 'antigravity', name: 'Antigravity', enabled: true, usageLimits: true },
+const makeRuntimes = (antigravityEnabled) => [
+  { id: 'antigravity', name: 'Antigravity', enabled: antigravityEnabled, usageLimits: true },
   { id: 'codex', name: 'Codex', enabled: false, usageLimits: false },
 ];
 
-const readyStatus = (count = 5) => ({
+const readyStatus = (antigravityEnabled, count = 5) => ({
   target,
   configured: true,
-  runtimes,
+  runtimes: makeRuntimes(antigravityEnabled),
   state: {
     kind: 'ready',
-    runtimes: [
-      {
-        id: 'antigravity',
-        name: 'Antigravity',
-        installation: { kind: 'available' },
-        authentication: { kind: 'authenticated', source: 'agy' },
-        models: { kind: 'ready', count },
-      },
-    ],
+    runtimes: antigravityEnabled
+      ? [
+          {
+            id: 'antigravity',
+            name: 'Antigravity',
+            installation: { kind: 'available' },
+            authentication: { kind: 'authenticated', source: 'agy' },
+            models: { kind: 'ready', count },
+          },
+        ]
+      : [],
   },
 });
 
-function createOperations() {
+function createOperations(onMutate) {
   const pendingKnown = () => true;
   const pending = () => [];
   const busy = () => false;
@@ -115,112 +117,196 @@ function createOperations() {
     error,
     report() {},
     run: (fn) => fn(),
-    mutate: async () => ({ status: 'committed' }),
+    mutate: onMutate ?? (async () => ({ status: 'committed' })),
   };
 }
 
-test('renders runtimes immediately after inspect while status probe runs concurrently', async () => {
-  const statusResolvers = [];
-  const externalCalls = [];
+test('disabling a runtime during a slow status probe keeps controls visible with committed state', async () => {
+  let revision = 3;
+  let antigravityEnabled = true;
+  const pendingStatuses = [];
+
   const host = {
     async query(endpoint, method, input) {
       if (endpoint === 'management' && method === 'read') {
-        return { source: { reference: deploymentRef } };
+        return { source: { reference: makeDeploymentRef(revision) } };
       }
       if (endpoint === 'agent' && method === 'externalAgents') {
-        externalCalls.push(input);
         if (input.inspect) {
-          return { target, configured: true, runtimes, state: { kind: 'enabled' } };
+          return {
+            target,
+            configured: true,
+            runtimes: makeRuntimes(antigravityEnabled),
+            state: { kind: 'enabled' },
+          };
         }
-        return await new Promise((resolve) => statusResolvers.push(resolve));
+        return await new Promise((resolve) => pendingStatuses.push(resolve));
       }
       throw new Error(`Unexpected query ${endpoint}.${method}`);
     },
     refresh: async () => {},
   };
+
+  const operations = createOperations(async () => {
+    revision = 4;
+    antigravityEnabled = false;
+    return { status: 'committed' };
+  });
+
+  const owner = createExternalAgentSettings(host, operations, () => true);
+  owner.activate();
+  await flush();
+
+  // First stage is already rendered and interactive while slow status probe is in flight.
+  assert.equal(owner.loading(), false);
+  assert.equal(owner.checking(), true);
+  assert.equal(owner.disabled(), false);
+  assert.equal(owner.runtimes().find((r) => r.id === 'antigravity')?.enabled, true);
+
+  // User disables Antigravity before the initial status probe resolves.
+  await owner.disable({ ...owner.action(), runtime: 'antigravity' });
+  await flush();
+
+  assert.equal(owner.loading(), false);
+  assert.equal(owner.checking(), false);
+  assert.equal(owner.failure(), null);
+  assert.equal(owner.runtimes().length, 2);
+  assert.equal(owner.runtimes().find((r) => r.id === 'antigravity')?.enabled, false);
+
+  // Late arrival of the pre-save status probe must not overwrite or hide the committed state.
+  pendingStatuses.shift()(readyStatus(true, 7));
+  await flush();
+
+  assert.equal(owner.runtimes().length, 2);
+  assert.equal(owner.runtimes().find((r) => r.id === 'antigravity')?.enabled, false);
+  assert.equal(owner.status('antigravity'), undefined);
+});
+
+test('re-inspects instead of splicing status from a newer deployment revision onto an older basis', async () => {
+  let revision = 3;
+  let antigravityEnabled = true;
+  let releaseStatus;
+
+  const host = {
+    async query(endpoint, method, input) {
+      if (endpoint === 'management' && method === 'read') {
+        return { source: { reference: makeDeploymentRef(revision) } };
+      }
+      if (endpoint === 'agent' && method === 'externalAgents') {
+        if (input.inspect) {
+          return {
+            target,
+            configured: true,
+            runtimes: makeRuntimes(antigravityEnabled),
+            state: { kind: 'enabled' },
+          };
+        }
+        return await new Promise((resolve) => {
+          releaseStatus = resolve;
+        });
+      }
+      throw new Error(`Unexpected query ${endpoint}.${method}`);
+    },
+    refresh: async () => {},
+  };
+
+  const owner = createExternalAgentSettings(host, createOperations(), () => true);
+  owner.activate();
+  await flush();
+  assert.equal(owner.runtimes().find((r) => r.id === 'antigravity')?.enabled, true);
+
+  // Another client disables Antigravity while the status probe is running.
+  revision = 4;
+  antigravityEnabled = false;
+  releaseStatus(readyStatus(false, 0));
+  await flush();
+  await flush();
+
+  assert.equal(owner.checking(), false);
+  assert.equal(owner.failure(), null);
+  assert.equal(owner.runtimes().find((r) => r.id === 'antigravity')?.enabled, false);
+  assert.equal(owner.status('antigravity'), undefined);
+});
+
+test('retains cached runtimes across deactivate and propagates force refresh to status and usage limits', async () => {
+  const externalCalls = [];
+  const usageCalls = [];
+  let cachedUsagePercent = 30;
+  let liveUsagePercent = 30;
+
+  const host = {
+    async query(endpoint, method, input) {
+      if (endpoint === 'management' && method === 'read') {
+        return { source: { reference: makeDeploymentRef(3) } };
+      }
+      if (endpoint === 'agent' && method === 'externalAgents') {
+        externalCalls.push(input);
+        if (input.inspect) {
+          return {
+            target,
+            configured: true,
+            runtimes: makeRuntimes(true),
+            state: { kind: 'enabled' },
+          };
+        }
+        return readyStatus(true, input.refresh ? 9 : 4);
+      }
+      if (endpoint === 'agent' && method === 'externalUsageLimits') {
+        usageCalls.push(input);
+        if (input.refresh) cachedUsagePercent = liveUsagePercent;
+        return {
+          kind: 'ready',
+          limits: [
+            {
+              kind: 'window',
+              period: { kind: 'duration', seconds: 18000 },
+              usedPercent: cachedUsagePercent,
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query ${endpoint}.${method}`);
+    },
+    refresh: async () => {},
+  };
+
+  const observedUsage = [];
+  const stopWatch = watchUsageLimits(host, { kind: 'external', runtime: 'antigravity' }, (obs) => {
+    observedUsage.push(obs);
+  });
 
   let isActive = true;
   const owner = createExternalAgentSettings(host, createOperations(), () => isActive);
   owner.activate();
   await flush();
-
-  assert.equal(owner.loading(), false);
-  assert.equal(owner.checking(), true);
-  assert.equal(owner.disabled(), false);
-  assert.equal(owner.runtimes().length, 2);
-  assert.equal(owner.status('antigravity'), undefined);
-  assert.deepEqual(externalCalls, [{ inspect: true }, {}]);
-
-  statusResolvers.shift()(readyStatus(7));
   await flush();
 
-  assert.equal(owner.checking(), false);
-  assert.equal(owner.status('antigravity')?.models.kind, 'ready');
-  assert.equal(owner.status('antigravity')?.models.count, 7);
+  assert.equal(owner.status('antigravity')?.models.count, 4);
+  assert.equal(observedUsage.at(-1)?.reading.result.limits[0].usedPercent, 30);
 
-  // Deactivate retains cached runtimes and status for SWR, while clearing confirmation state.
+  // Deactivate preserves cached view state for SWR while clearing pending confirmation.
   owner.requestEnable({ ...owner.action(), runtime: 'codex' });
   assert.ok(owner.confirmation());
   isActive = false;
   owner.deactivate();
-
   assert.equal(owner.confirmation(), null);
   assert.equal(owner.runtimes().length, 2);
-  assert.equal(owner.status('antigravity')?.models.count, 7);
+  assert.equal(owner.status('antigravity')?.models.count, 4);
 
-  // Re-activating keeps showing cached data immediately while passively revalidating.
+  // Re-activate keeps showing cached rows immediately; explicit reload forces both status and usage refresh.
   isActive = true;
   owner.activate();
   await flush();
-
-  assert.equal(owner.loading(), false);
-  assert.equal(owner.runtimes().length, 2);
-  assert.equal(owner.status('antigravity')?.models.count, 7);
-  assert.deepEqual(externalCalls.at(-1), {});
-
-  statusResolvers.shift()(readyStatus(9));
-  await flush();
-  assert.equal(owner.status('antigravity')?.models.count, 9);
-});
-
-test('explicit reload requests force refresh and invalidates external usage limits', async () => {
-  const externalCalls = [];
-  let usageCalls = 0;
-  const host = {
-    async query(endpoint, method, input) {
-      if (endpoint === 'management' && method === 'read') {
-        return { source: { reference: deploymentRef } };
-      }
-      if (endpoint === 'agent' && method === 'externalAgents') {
-        externalCalls.push(input);
-        if (input.inspect) {
-          return { target, configured: true, runtimes, state: { kind: 'enabled' } };
-        }
-        return readyStatus(4);
-      }
-      if (endpoint === 'agent' && method === 'externalUsageLimits') {
-        usageCalls += 1;
-        return { kind: 'ready', limits: [] };
-      }
-      throw new Error(`Unexpected query ${endpoint}.${method}`);
-    },
-    refresh: async () => {},
-  };
-
-  const stopWatch = watchUsageLimits(host, { kind: 'external', runtime: 'antigravity' }, () => {});
-  const owner = createExternalAgentSettings(host, createOperations(), () => true);
-  owner.activate();
-  await flush();
   await flush();
 
-  assert.equal(usageCalls, 1);
-  assert.deepEqual(externalCalls, [{ inspect: true }, {}]);
-
+  liveUsagePercent = 80;
   owner.reload(owner.action());
   await flush();
   await flush();
 
   assert.deepEqual(externalCalls.at(-1), { refresh: true });
-  assert.equal(usageCalls, 2);
+  assert.deepEqual(usageCalls.at(-1), { runtime: 'antigravity', refresh: true });
+  assert.equal(owner.status('antigravity')?.models.count, 9);
+  assert.equal(observedUsage.at(-1)?.reading.result.limits[0].usedPercent, 80);
   stopWatch();
 });

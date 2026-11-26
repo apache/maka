@@ -95,14 +95,17 @@ export function createExternalAgentSettings(
     };
   };
   const invalidate = () => {
+    read += 1;
+    loading.set(false);
+    checking.set(false);
     view.set(view() + 1);
     basis.set(null);
     confirmation.set(null);
     catalog.set(null);
   };
-  const load = async (forceRefresh = false) => {
+  const load = async (forceRefresh = false, retried = false): Promise<void> => {
     if (!alive || !active()) return;
-    if (!forceRefresh && (loading() || checking())) return;
+    if (!forceRefresh && !retried && (loading() || checking())) return;
     const generation = ++read;
     const hasBasis = basis() !== null;
     if (!hasBasis) {
@@ -132,6 +135,17 @@ export function createExternalAgentSettings(
         forceRefresh ? { refresh: true } : {},
       );
       if (!alive || !active() || generation !== read) return;
+      const latest = await source();
+      if (!alive || !active() || generation !== read) return;
+      if (!sameValue(next.source, latest)) {
+        if (!retried) {
+          checking.set(false);
+          await load(forceRefresh, true);
+          return;
+        }
+        invalidate();
+        throw new UiError('These settings changed elsewhere. Reload before saving again.');
+      }
       catalog.set(status);
     } catch (error) {
       if (alive && active() && generation === read) {
@@ -252,9 +266,6 @@ export function createExternalAgentSettings(
     view.set(view() + 1);
   };
   const reset = () => {
-    read += 1;
-    loading.set(false);
-    checking.set(false);
     invalidate();
     if (active()) void load(false);
   };

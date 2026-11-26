@@ -11307,6 +11307,10 @@ export const contracts: {
               runtime: {
                 $ref: '#/$defs/AgentNativeRuntime',
               },
+              refresh: {
+                type: 'boolean',
+                default: false,
+              },
             },
             additionalProperties: false,
             required: ['runtime'],

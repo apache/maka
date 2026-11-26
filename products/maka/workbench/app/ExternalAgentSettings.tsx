@@ -100,7 +100,19 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
   return (
     <>
       <If when={filtered().length > 0}>
-        <SettingsSection title={tr('External agents')}>
+        <SettingsSection
+          title={tr('External agents')}
+          trailing={
+            <If when={owner.runtimes().some((runtime) => runtime.enabled)}>
+              <SettingsButton
+                label={tr('Refresh')}
+                tone="quiet"
+                disabled={owner.disabled() || owner.checking()}
+                onPress={inputAction(owner.reload, owner.action())}
+              />
+            </If>
+          }
+        >
           <Each of={filtered()} key={(runtime) => runtime.id}>
             {(runtime) => (
               <SettingsSwitch

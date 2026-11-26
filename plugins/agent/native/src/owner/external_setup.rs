@@ -52,6 +52,7 @@ impl Owner {
     pub(crate) async fn external_usage_limits(
         &self,
         runtime: NativeRuntime,
+        refresh: bool,
         scope: &maka_capabilities::call::Scope,
     ) -> Result<serde_json::Value, String> {
         let encode = |result| serde_json::to_value(result).map_err(|error| error.to_string());
@@ -76,7 +77,7 @@ impl Owner {
         match self
             .inspect_external(
                 cwd,
-                serde_json::json!({"kind":"usage_limits", "runtime":runtime}),
+                serde_json::json!({"kind":"usage_limits", "runtime":runtime, "refresh":refresh}),
                 scope,
             )
             .await

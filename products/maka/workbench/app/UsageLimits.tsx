@@ -24,6 +24,7 @@ import { useHost } from './host';
 import { currentLocale, tr } from './locale';
 import { formatDecimal } from './numberFormat';
 import {
+  peekUsageLimits,
   usageTargetKey,
   watchUsageLimits,
   type UsageLimitsHost,
@@ -113,7 +114,7 @@ export function useUsageLimits(target: () => UsageTarget | null) {
       if (key !== activeKey || revision !== activeRevision) {
         activeKey = key;
         activeRevision = revision;
-        observation.set(null);
+        observation.set(peekUsageLimits(host, current));
       }
       return;
     }

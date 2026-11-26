@@ -52,7 +52,7 @@ export interface UsageLimitsHost {
   query(
     endpoint: 'agent',
     method: 'externalUsageLimits',
-    input: { runtime: AgentNativeRuntime },
+    input: { runtime: AgentNativeRuntime; refresh?: boolean },
   ): Promise<UsageResult>;
 }
 
@@ -89,6 +89,7 @@ type SharedEntry = {
   lastKnownRevision: number | null;
   freshUntil: number;
   inFlight: boolean;
+  forceRefresh: boolean;
   generation: number;
   timer: ReturnType<typeof setTimeout> | undefined;
 };
@@ -134,10 +135,16 @@ async function queryEntry(
   generation: number,
 ): Promise<{ result: UsageResult; sourceName?: string }> {
   if (entry.target.kind === 'external') {
+    const refresh = entry.forceRefresh;
+    entry.forceRefresh = false;
     return {
-      result: await entry.host.query('agent', 'externalUsageLimits', {
-        runtime: entry.target.runtime,
-      }),
+      result: await entry.host.query(
+        'agent',
+        'externalUsageLimits',
+        refresh
+          ? { runtime: entry.target.runtime, refresh: true }
+          : { runtime: entry.target.runtime },
+      ),
       sourceName: EXTERNAL_USAGE_RUNTIME_NAMES[entry.target.runtime],
     };
   }
@@ -234,6 +241,11 @@ function hostEntries(host: object, create: boolean): Map<string, SharedEntry> | 
   return entries;
 }
 
+export function peekUsageLimits(host: object, target: UsageTarget): UsageObservation | null {
+  const entries = hostEntries(host, false);
+  return entries?.get(usageTargetKey(target))?.observation ?? null;
+}
+
 export function invalidateUsageLimits(host: object, target: UsageTarget) {
   const entries = hostEntries(host, false);
   const key = usageTargetKey(target);
@@ -241,6 +253,7 @@ export function invalidateUsageLimits(host: object, target: UsageTarget) {
   if (!entry) return;
   entry.generation++;
   entry.inFlight = false;
+  entry.forceRefresh = true;
   clearTimer(entry);
   entry.observation = null;
   entry.freshUntil = 0;
@@ -284,6 +297,7 @@ export function watchUsageLimits(
       lastKnownRevision: null,
       freshUntil: 0,
       inFlight: false,
+      forceRefresh: false,
       generation: 0,
       timer: undefined,
     };
