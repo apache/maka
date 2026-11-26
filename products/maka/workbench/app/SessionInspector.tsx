@@ -29,6 +29,7 @@ import { type AnswerSource, AnswerSourceList } from './AnswerSources';
 import { useHost } from './host';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { createText, errorText } from './text';
 import {
   basenameLabel,
   type GitHubPullSummary,
@@ -89,6 +90,8 @@ export function SessionInspector(props: {
   const host = useHost();
   const revisions = signal<GitRevisions | null>(null);
   const diffStats = signal<{ files: number; added: number; deleted: number } | null>(null);
+  const changesError = createText();
+  const repositoryError = createText();
   const pulls = signal<GitHubPullSummary[]>([]);
   const githubRepo = signal<GitHubRepoRef | null>(null);
   const repoMenuOpen = signal(false);
@@ -107,6 +110,9 @@ export function SessionInspector(props: {
   const effectivePath = () => selectedWorktree() ?? props.workspacePath ?? '';
 
   const refreshGit = async () => {
+    const seq = ++loadSeq;
+    changesError.set('');
+    repositoryError.set('');
     if (!props.workspacePath) {
       revisions.set(null);
       diffStats.set(null);
@@ -114,25 +120,16 @@ export function SessionInspector(props: {
       githubRepo.set(null);
       return;
     }
-    const seq = ++loadSeq;
     const wt = selectedWorktree();
-    try {
-      const [rev, st, wsDiff] = await Promise.all([
-        host.query('agent', 'gitRevisions', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
-        host.query('agent', 'gitStatus', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
-        host.query('agent', 'gitWorkspaceDiff', {
-          sessionId: props.sessionId,
-          ...(wt ? { worktreePath: wt } : {}),
-        }),
+    const input = { sessionId: props.sessionId, ...(wt ? { worktreePath: wt } : {}) };
+    const current = () => alive && seq === loadSeq;
+
+    const loadChanges = async () => {
+      const [st, wsDiff] = await Promise.all([
+        host.query('agent', 'gitStatus', input),
+        host.query('agent', 'gitWorkspaceDiff', input),
       ]);
-      if (!alive || seq !== loadSeq) return;
-      revisions.set(rev);
+      if (!current()) return;
       if (wsDiff || st) {
         const counts = wsDiff ? countPatchLines(wsDiff.patch) : { added: 0, deleted: 0 };
         diffStats.set({
@@ -143,6 +140,15 @@ export function SessionInspector(props: {
       } else {
         diffStats.set(null);
       }
+    };
+
+    const loadRepository = async () => {
+      const rev = await host.query('agent', 'gitRevisions', input).catch((reason) => {
+        if (current()) repositoryError.set(errorText(reason, 'Workspace is unavailable'));
+        return null;
+      });
+      if (!current()) return;
+      revisions.set(rev);
       const ghRemote =
         rev?.remotes.find((r) => r.host.toLowerCase() === 'github.com' && r.remote === 'origin') ??
         rev?.remotes.find((r) => r.host.toLowerCase() === 'github.com');
@@ -154,11 +160,11 @@ export function SessionInspector(props: {
         };
         githubRepo.set(repoRef);
         const prRes = await host.query('agent', 'githubPullRequests', {
-          sessionId: props.sessionId,
+          sessionId: input.sessionId,
           repo: repoRef,
           state: 'open',
         });
-        if (!alive || seq !== loadSeq) return;
+        if (!current()) return;
         if (prRes.kind === 'ready') {
           const headBranch = rev?.headBranch ?? null;
           const sorted = [...prRes.pulls].sort((a, b) => {
@@ -174,9 +180,20 @@ export function SessionInspector(props: {
         githubRepo.set(null);
         pulls.set([]);
       }
-    } catch {
-      if (!alive || seq !== loadSeq) return;
-    }
+    };
+
+    await Promise.all([
+      loadRepository().catch((reason) => {
+        if (!current()) return;
+        pulls.set([]);
+        repositoryError.set(errorText(reason, 'Could not load GitHub pull requests.'));
+      }),
+      loadChanges().catch((reason) => {
+        if (!current()) return;
+        diffStats.set(null);
+        changesError.set(errorText(reason, 'Could not read file changes.'));
+      }),
+    ]);
   };
 
   effect(() => {
@@ -299,6 +316,9 @@ export function SessionInspector(props: {
                   <Icon name="refresh" size={12} color={C.muted} />
                 </Button>
               </View>
+              <If when={Boolean(repositoryError())}>
+                <Text style={captionTextStyle}>{repositoryError()}</Text>
+              </If>
               <If
                 when={worktrees().length > 1 && props.selectWorktree !== undefined}
                 else={
@@ -472,6 +492,9 @@ export function SessionInspector(props: {
                   </Text>
                 </If>
               </Button>
+              <If when={Boolean(changesError())}>
+                <Text style={captionTextStyle}>{changesError()}</Text>
+              </If>
             </View>
             {divider()}
           </If>
