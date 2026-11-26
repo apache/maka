@@ -21,7 +21,7 @@ import type {
   AgentToolImageRead,
   HistoryRowAddress,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { cleanup, platform, signal, Text, View } from 'nsh';
+import { cleanup, computed, platform, signal, Text, View } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { HistoryTool, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
@@ -142,55 +142,87 @@ export function ToolImageStrip(props: {
   // Each image keeps the selector it was first read with, so the viewer reuses that load.
   // Summaries and loaded tools key the same image differently, so it is kept by address.
   const sources = new Map<string, { read: AgentToolImageRead; uri: string }>();
+  const address = (ref: ToolImageRef) => `${historyRowKey(ref.position)}/${ref.image ?? 'content'}`;
   const source = (ref: ToolImageRef) => {
-    const address = `${historyRowKey(ref.position)}/${ref.image ?? 'content'}`;
-    let known = sources.get(address);
+    const key = address(ref);
+    let known = sources.get(key);
     if (!known) {
       const read = toolImageRead(props.sessionId, props.through(), ref);
       known = { read, uri: host.assetUri(immutableAsset('tool-image', read)) };
-      sources.set(address, known);
+      sources.set(key, known);
     }
     return known;
   };
-  const everything = signal<{ ref: ToolImageRef; title: string }[] | null>(null);
-  let loading: { total: number | undefined; task: Promise<void> } | undefined;
-  // A running Turn adds images, so a later opening reads the list again.
-  const load = () => {
-    const total = props.total?.();
-    if (!props.all || (loading && loading.total === total)) return loading?.task;
-    const task = props.all().then((tools) => {
-      if (!alive || loading?.task !== task || tools.length === 0) return;
-      everything.set(
-        tools.flatMap((tool) =>
-          toolImages(tool).map((ref) => ({ ref, title: activityTitle(tool.call) })),
-        ),
-      );
-    });
-    loading = { total, task };
+  type Item = { ref: ToolImageRef; title: string };
+  const version = computed(() => {
+    const refs = props.images();
+    return `${props.total?.()}/${refs.length}/${refs.at(-1)?.key}`;
+  });
+  const loaded = signal<{ version: string; items: Map<string, Item> } | null>(null);
+  // The live window may omit earlier images and already contain results beyond the last read.
+  const extra = computed(() => {
+    const known = loaded()?.items;
+    return known ? props.images().filter((ref) => !known.has(address(ref))) : props.images();
+  });
+  const items = () => [
+    ...(loaded()?.items.values() ?? []),
+    ...extra().map((ref) => ({ ref, title: tr('Original image') })),
+  ];
+  let pending: { version: string; task: Promise<boolean> } | undefined;
+  const load = (all: () => Promise<HistoryTool[]>) => {
+    const key = version();
+    if (loaded()?.version === key) return true;
+    if (pending?.version === key) return pending.task;
+    const task = all()
+      .then((tools) => {
+        if (!alive || pending?.task !== task) return false;
+        const result = new Map<string, Item>();
+        for (const tool of tools) {
+          const title = activityTitle(tool.call);
+          for (const ref of toolImages(tool)) result.set(address(ref), { ref, title });
+        }
+        if (!result.size) return false;
+        loaded.set({ version: key, items: result });
+        return true;
+      })
+      .finally(() => {
+        if (pending?.task === task) pending = undefined;
+      });
+    pending = { version: key, task };
     return task;
   };
-  const viewing = signal<{ start: string; opened?: ImagePreview } | null>(null);
   const shown = () => props.images().slice(-stripLimit);
-  // Once read, the full list is what the viewer pages through, so it is what is counted.
-  const count = () => everything()?.length ?? props.total?.() ?? props.images().length;
+  const count = () => {
+    const page = loaded();
+    const known = (page?.items.size ?? 0) + extra().length;
+    return page?.version === version() ? known : Math.max(props.total?.() ?? 0, known);
+  };
   const hidden = () => count() - shown().length;
-  const gallery = () => {
-    const opened = viewing()?.opened;
-    return (
-      everything() ?? props.images().map((ref) => ({ ref, title: tr('Original image') }))
-    ).map(({ ref, title }) => {
+  const viewing = signal<{ start: string; opened?: ImagePreview } | null>(null);
+  const gallery = computed(() => {
+    const view = viewing();
+    if (!view) return [];
+    return items().map(({ ref, title }) => {
       const { uri } = source(ref);
+      const opened = view.opened;
       return {
         uri,
         title,
         ...(opened?.uri === uri ? { width: opened.width, height: opened.height } : {}),
       };
     });
-  };
-  const showAll = async () => {
-    await load();
-    const first = gallery()[0];
-    if (alive && !viewing() && first) viewing.set({ start: first.uri });
+  });
+  let opening = 0;
+  const open = async (opened?: ImagePreview) => {
+    const request = ++opening;
+    if (opened) viewing.set({ start: opened.uri, opened });
+    if (props.all && props.images().some((ref) => ref.position.kind === 'live')) {
+      if (!(await load(props.all))) return;
+    }
+    if (!opened && alive && opening === request) {
+      const first = loaded()?.items.values().next().value?.ref ?? props.images()[0];
+      if (first) viewing.set({ start: source(first).uri });
+    }
   };
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
@@ -201,7 +233,7 @@ export function ToolImageStrip(props: {
           }}
           accessibilityLabel={tr('Show all {count} images', { count: String(count()) })}
           tooltip={textTooltip(() => tr('Show all {count} images', { count: String(count()) }))}
-          onPress={() => void showAll()}
+          onPress={() => void open()}
           style={{ height: 24, paddingHorizontal: 4, justifyContent: 'center', borderRadius: 4 }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.line }}
@@ -216,9 +248,7 @@ export function ToolImageStrip(props: {
             source={{ kind: 'tool-image', read: source(value()).read }}
             uri={source(value()).uri}
             preview={(opened) => {
-              if (!alive) return;
-              viewing.set({ start: opened.uri, opened });
-              void load();
+              if (alive) void open(opened);
             }}
           />
         )}
@@ -228,6 +258,7 @@ export function ToolImageStrip(props: {
           images={gallery}
           start={viewing()!.start}
           close={() => {
+            ++opening;
             const opened = viewing()?.opened;
             viewing.set(null);
             if (opened) opened.restoreFocus?.();

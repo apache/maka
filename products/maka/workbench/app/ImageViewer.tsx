@@ -382,7 +382,9 @@ export function ImageViewer(props: {
                 ...(images().length > 1 ? [`${index() + 1} / ${images().length}`] : []),
                 ...(size()
                   ? [`${size()!.width} × ${size()!.height}`, `${zoomPercent()}%`]
-                  : [tr('Loading image…')]),
+                  : error()
+                    ? []
+                    : [tr('Loading image…')]),
               ].join(' · ')}
             </Text>
             <If when={error()}>

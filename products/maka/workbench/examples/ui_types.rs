@@ -54,6 +54,7 @@ const SOURCES: &[&str] = &[
     "products/maka/workbench/tests/fixtures/spec-view.tsx",
     "products/maka/workbench/tests/fixtures/request-metrics.tsx",
     "products/maka/workbench/tests/fixtures/turn-usage.tsx",
+    "products/maka/workbench/tests/fixtures/tool-image-gallery.tsx",
     "products/maka/terminal-shell/tests/real_host/permission_preview.tsx",
     "plugins/agent/conversations/ui/index.tsx",
     "plugins/agent/composer/ui/index.tsx",

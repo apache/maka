@@ -594,6 +594,53 @@ mod tests {
     }
 
     #[test]
+    fn turn_image_gallery_retries_empty_reads_and_adds_live_screenshots() {
+        use nsh_core::{EventKind, EventPayload, ViewKind, prelude::DevicePixels};
+        let mut app = fixture("tool-image-gallery.tsx");
+        let all = "label:Show all 5 images";
+        app.wait_for(all).unwrap();
+        app.press(all).unwrap();
+        assert!(
+            !app.screen()
+                .matches("label:Full screen image viewer")
+                .unwrap()
+        );
+        app.press(all).unwrap();
+        app.wait_for("text:1 / 7 · Loading image…").unwrap();
+        app.fail_images("asset:/*").unwrap();
+        app.wait_for("text:/failed to load asset:/").unwrap();
+        app.wait_for("text:1 / 7").unwrap();
+        app.press("label:Close full screen image").unwrap();
+        app.press("label:New screenshot").unwrap();
+        app.wait_for("text:+4").unwrap();
+        // Headless renders the image views but has no native decoder.
+        for image in app
+            .screen()
+            .layout_nodes()
+            .iter()
+            .filter(|node| node.kind == ViewKind::Image)
+        {
+            app.engine().control().dispatch_event(
+                image.id,
+                EventKind::Load,
+                EventPayload::Image(Size::new(DevicePixels(16), DevicePixels(16))),
+            );
+        }
+        app.settle();
+        app.press("label:Open image preview >> nth=3").unwrap();
+        app.wait_for("text:/8 / 8/").unwrap();
+    }
+
+    #[test]
+    fn imported_turn_opens_its_loaded_images() {
+        let mut app = fixture("tool-image-gallery.tsx");
+        let all = "label:Show all 9 images";
+        app.wait_for(all).unwrap();
+        app.press(all).unwrap();
+        app.wait_for("text:/1 / 9/").unwrap();
+    }
+
+    #[test]
     fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
         let mut app = headless_fixture_with_locales(
             "tests/fixtures/tool-card-order.tsx",
