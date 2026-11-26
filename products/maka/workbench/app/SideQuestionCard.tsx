@@ -388,9 +388,9 @@ function Reaction(props: {
           height: 28,
           paddingHorizontal: props.labelled ? 10 : 7,
           borderRadius: 14,
-          backgroundColor: props.labelled ? C.panel : 'transparent',
+          backgroundColor: props.labelled ? C.card : 'transparent',
         }}
-        hoverStyle={{ backgroundColor: C.card }}
+        hoverStyle={{ backgroundColor: props.labelled ? C.cardRaised : C.card }}
         activeStyle={{ backgroundColor: C.pressed }}
         focusStyle={quietFocusStyle()}
         disabledStyle={controlDisabledStyle}
@@ -437,8 +437,12 @@ export function SideReactions(props: {
         alignItems: 'center',
         gap: 6,
         paddingHorizontal: INSET - 4,
-        paddingTop: 4,
+        paddingTop: 8,
         paddingBottom: 8,
+        // With the input under it, a band apart from the answer that scrolls above.
+        borderTopWidth: 1,
+        borderTopColor: C.line,
+        backgroundColor: C.panel,
       }}
     >
       <Each of={sideFollowUps()} key={(item) => item.emoji}>
@@ -492,7 +496,7 @@ export function SideComposer(props: {
     if (!reason) session.submit({ text });
   };
   return (
-    <View style={{ borderTopWidth: 1, borderTopColor: C.line }}>
+    <View style={{ borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.panel }}>
       <InputRow
         attach={props.attach}
         label={tr('Ask in the side question')}
