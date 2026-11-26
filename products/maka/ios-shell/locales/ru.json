@@ -1,5 +1,6 @@
 {
   "A friendly label to help identify this iPhone in your computer settings.": "Понятное имя, чтобы отличать этот iPhone в настройках компьютера.",
+  "A server with this name already exists at this location.": "Сервер с таким именем уже существует в этом расположении.",
   "API Key": "Ключ API",
   "Access key ID": "ID ключа доступа",
   "Action Needed": "Требуется действие",
@@ -140,6 +141,7 @@
   "Description": "Описание",
   "Desktop App": "Настольное приложение",
   "Device name": "Имя устройства",
+  "Device name must be 128 UTF-8 bytes or fewer.": "Имя устройства должно занимать не более 128 байт в UTF-8.",
   "Diagnostics": "Диагностика",
   "Diff truncated for large workspace changes.": "Diff обрезан из-за большого объёма изменений.",
   "Diff: {path}": "Diff: {path}",
@@ -398,6 +400,7 @@
   "Target computer": "Целевой компьютер",
   "Team ID": "ID команды",
   "Test connection": "Проверить подключение",
+  "The proxy address or username changed. Enter the password again or turn off proxy authentication.": "Адрес прокси или имя пользователя изменилось. Введите пароль ещё раз или отключите аутентификацию прокси.",
   "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Эти серверы работают вне песочницы диалога и могут выполнять команды от вашего имени или обращаться к внешним службам. Сессии с полным доступом могут вызывать их инструменты без дополнительного подтверждения.",
   "These settings apply directly to {name} and stay synchronized with Maka Desktop.": "Эти настройки применяются напрямую к {name} и синхронизируются с Maka Desktop.",
   "Thinking · {count, plural, one {# tool running} other {# tools running}}…": "Размышление · {count, plural, one {# инструмент работает} few {# инструмента работают} many {# инструментов работают} other {# инструмента работают}}…",

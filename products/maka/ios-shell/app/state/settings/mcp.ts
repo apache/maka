@@ -61,12 +61,17 @@ export function projectMcpSummary(proposal: ProjectMcp): string | null {
   if (
     !readable(proposal.path) ||
     !Array.isArray(proposal.servers) ||
-    !proposal.servers.length ||
+    (!proposal.servers.length && !proposal.disabled?.length) ||
     !names(proposal.disabled)
   )
     return null;
+  const clean = (value: string) =>
+    value.replace(
+      /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+      (character) => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'),
+    );
   const rows = [
-    proposal.path,
+    clean(proposal.path),
     tr(
       'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
     ),
@@ -83,15 +88,19 @@ export function projectMcpSummary(proposal: ProjectMcp): string | null {
       return null;
     rows.push(
       [
-        server.name + ': ' + server.launch,
-        tr('Environment variables') + ': ' + (server.environment.join(', ') || tr('None')),
-        tr('HTTP headers') + ': ' + (server.headers.join(', ') || tr('None')),
-        tr('Tools declared read-only') + ': ' + (server.readOnlyTools.join(', ') || tr('None')),
+        clean(server.name) + ': ' + clean(server.launch),
+        tr('Environment variables') +
+          ': ' +
+          (server.environment.map(clean).join(', ') || tr('None')),
+        tr('HTTP headers') + ': ' + (server.headers.map(clean).join(', ') || tr('None')),
+        tr('Tools declared read-only') +
+          ': ' +
+          (server.readOnlyTools.map(clean).join(', ') || tr('None')),
         ...(server.preapproved ? [tr('Tool calls are preapproved.')] : []),
       ].join('\n'),
     );
   }
   if (proposal.disabled.length)
-    rows.push(tr('Disabled servers') + ': ' + proposal.disabled.join(', '));
+    rows.push(tr('Disabled servers') + ': ' + proposal.disabled.map(clean).join(', '));
   return rows.join('\n\n');
 }

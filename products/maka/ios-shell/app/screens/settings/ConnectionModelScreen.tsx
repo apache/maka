@@ -56,6 +56,10 @@ export function ConnectionModelScreen(
   });
   const thinkingLevels = signal<ThinkingLevel[]>([]);
   const enabled = signal(false);
+  const inherited = signal<
+    | import('../../../../../../packages/plugin-sdk/src/generated/runtime').SettingsModelDefaults
+    | null
+  >(null);
   const original = () => detail()?.editing.modelOverrides?.[props.modelId] ?? {};
   const load = async () => {
     const value = await readConnection(rpc, props.connectionId);
@@ -63,6 +67,7 @@ export function ConnectionModelScreen(
       connectionId: props.connectionId,
       modelId: props.modelId,
     });
+    inherited.set(resolved.kind === 'ready' ? resolved.defaults : null);
     detail.set(value);
     draft.set(original());
     enabled.set(value.editing.enabledModelIds.includes(props.modelId));
@@ -131,6 +136,7 @@ export function ConnectionModelScreen(
         <SettingField
           label={tr('Name')}
           value={draft().displayName ?? ''}
+          placeholder={inherited()?.label}
           edit={(displayName) => edit({ displayName: displayName || undefined })}
           disabled={work.busy()}
           divider
@@ -156,14 +162,14 @@ export function ConnectionModelScreen(
         </If>
         <SettingSwitch
           title={tr('Code Mode')}
-          checked={draft().codeMode ?? true}
+          checked={draft().codeMode ?? inherited()?.codeMode ?? true}
           change={(codeMode) => edit({ codeMode })}
           disabled={work.busy()}
           divider
         />
         <SettingSwitch
           title={tr('Apply Patch')}
-          checked={draft().applyPatch ?? false}
+          checked={draft().applyPatch ?? inherited()?.applyPatch ?? false}
           change={(applyPatch) => edit({ applyPatch })}
           disabled={work.busy()}
         />
@@ -174,6 +180,7 @@ export function ConnectionModelScreen(
             <SettingField
               label={labels()[key()]}
               value={limits()[key()]}
+              placeholder={String(inherited()?.[key()] ?? '')}
               edit={(value) => limits.update((prev) => ({ ...prev, [key()]: value }))}
               keyboard="number-pad"
               disabled={work.busy()}

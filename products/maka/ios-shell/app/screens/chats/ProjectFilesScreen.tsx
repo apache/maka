@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import { cleanup, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import { tr } from '../../locale';
@@ -29,7 +29,7 @@ import {
 } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
-import { listHostDirectoryChildren, type ScopedSession } from '../../state/sessions';
+import { listHostFiles, type ScopedSession } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
 import { BannerNotice, EmptyState, GroupRow, Icon, InsetGroup, ScreenHeader } from '../../ui';
 
@@ -60,10 +60,7 @@ export function ProjectFilesScreen(props: {
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const rootPath = props.item.session.workspace?.path || '';
-  const workspaceName =
-    props.item.session.workspace?.name ||
-    rootPath.split('/').filter(Boolean).pop() ||
-    tr('Workspace');
+  const workspaceName = rootPath.split('/').filter(Boolean).pop() || tr('Workspace');
 
   const segment = signal(0); // 0 = Changes, 1 = Files
   const diffFiles = signal<ParsedDiffFile[]>([]);
@@ -71,9 +68,9 @@ export function ProjectFilesScreen(props: {
   const diffLoading = signal(true);
   const diffError = signal<string | null>(null);
 
-  const currentDir = signal<string>(rootPath);
+  const currentDir = signal<string>('');
   const dirStack = signal<string[]>([]);
-  const dirEntries = signal<{ name: string; path: string }[]>([]);
+  const dirEntries = signal<{ name: string; path: string; kind: string }[]>([]);
   const dirLoading = signal(false);
   const dirError = signal<string | null>(null);
 
@@ -96,20 +93,42 @@ export function ProjectFilesScreen(props: {
     }
   };
 
+  let directoryRequest = 0;
+  cleanup(() => {
+    directoryRequest += 1;
+  });
   const loadDirectory = async (path: string) => {
-    if (!path) {
-      dirEntries.set([]);
-      return;
-    }
+    const request = ++directoryRequest;
+    dirEntries.set([]);
     dirLoading.set(true);
     dirError.set(null);
+    let after:
+      | import('../../../../../../packages/plugin-sdk/src/generated/runtime').AgentFileCursor
+      | null = null;
     try {
-      const page = await listHostDirectoryChildren(rootId, path);
-      dirEntries.set(page.children ?? []);
+      do {
+        const page: import('../../../../../../packages/plugin-sdk/src/generated/runtime').AgentFilePage =
+          await listHostFiles(rootId, {
+            sessionId,
+            path: path ? { bytesBase64: path } : null,
+            after,
+          });
+        if (request !== directoryRequest) return;
+        dirEntries.update((previous) => [
+          ...previous,
+          ...page.entries.map(({ path, kind }) => ({
+            path: path.bytesBase64,
+            kind,
+            name: Buffer.from(path.bytesBase64, 'base64').toString('utf8').split('/').at(-1) ?? '',
+          })),
+        ]);
+        after = page.next;
+      } while (after !== null);
     } catch (cause) {
-      dirError.set(cause instanceof Error ? cause.message : String(cause));
+      if (request === directoryRequest)
+        dirError.set(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      dirLoading.set(false);
+      if (request === directoryRequest) dirLoading.set(false);
     }
   };
 
@@ -124,12 +143,10 @@ export function ProjectFilesScreen(props: {
   const changesLabel = () =>
     diffFiles().length > 0 ? tr('Changes ({count})', { count: diffFiles().length }) : tr('Changes');
 
-  const enterDir = (entry: { name: string; path: string }) => {
+  const enterDir = (entry: { name: string; path: string; kind: string }) => {
     hapticSelection();
-    // Heuristic: entries with a file extension can be quoted directly; directories drill down.
-    const looksLikeFile = /\.[a-zA-Z0-9]{1,8}$/.test(entry.name);
-    if (looksLikeFile) {
-      appendQuoteToDraft(rootId, sessionId, entry.path, 1);
+    if (entry.kind !== 'directory') {
+      appendQuoteToDraft(rootId, sessionId, Buffer.from(entry.path, 'base64').toString('utf8'), 1);
       hapticNotification('success');
       showToast(tr('Quoted {path}', { path: entry.name }));
       props.onQuotedBackToChat();
@@ -366,7 +383,7 @@ export function ProjectFilesScreen(props: {
                 <GroupRow
                   leading={<Icon name="chevronLeft" color={token('primary')} size={18} />}
                   title={tr('Parent directory')}
-                  subtitle={currentDir()}
+                  subtitle={Buffer.from(currentDir(), 'base64').toString('utf8')}
                   tone="primary"
                   onPress={goUpDir}
                 />
@@ -381,18 +398,22 @@ export function ProjectFilesScreen(props: {
                     icon="folder"
                     tint="muted"
                     title={dirLoading() ? tr('Loading files…') : tr('Folder is empty')}
-                    subtitle={currentDir() || tr('No workspace path configured for this chat.')}
+                    subtitle={
+                      currentDir() || rootPath || tr('No workspace path configured for this chat.')
+                    }
                   />
                 </View>
               }
             >
               <InsetGroup
-                header={currentDir() || tr('Files')}
+                header={
+                  currentDir() ? Buffer.from(currentDir(), 'base64').toString('utf8') : tr('Files')
+                }
                 footer={tr('Tap a folder to browse or tap a file to quote it into chat.')}
               >
                 <Each of={dirEntries()} key={(e) => e.path}>
                   {(entry, index) => {
-                    const isFile = () => /\.[a-zA-Z0-9]{1,8}$/.test(entry().name);
+                    const isFile = () => entry().kind !== 'directory';
                     return (
                       <GroupRow
                         leading={

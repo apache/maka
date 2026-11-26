@@ -1,5 +1,6 @@
 {
   "A friendly label to help identify this iPhone in your computer settings.": "用于在电脑设置中识别这台 iPhone 的名称。",
+  "A server with this name already exists at this location.": "此位置已存在同名服务器。",
   "API Key": "API 密钥",
   "Access key ID": "访问密钥 ID",
   "Action Needed": "需要处理",
@@ -140,6 +141,7 @@
   "Description": "描述",
   "Desktop App": "桌面应用",
   "Device name": "设备名称",
+  "Device name must be 128 UTF-8 bytes or fewer.": "设备名称不得超过 128 个 UTF-8 字节。",
   "Diagnostics": "诊断信息",
   "Diff truncated for large workspace changes.": "工作区改动较大，差异内容已截断。",
   "Diff: {path}": "差异：{path}",
@@ -398,6 +400,7 @@
   "Target computer": "目标电脑",
   "Team ID": "团队 ID",
   "Test connection": "测试连接",
+  "The proxy address or username changed. Enter the password again or turn off proxy authentication.": "代理地址或用户名已更改。请重新输入密码，或关闭代理认证。",
   "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "这些服务器在会话沙箱外运行，可以用你的身份执行命令或访问远程服务。完全访问会话调用其工具时无需再次确认。",
   "These settings apply directly to {name} and stay synchronized with Maka Desktop.": "这些设置直接作用于 {name}，并与桌面端保持实时同步。",
   "Thinking · {count, plural, one {# tool running} other {# tools running}}…": "思考中 · {count, plural, other {# 项工具运行中}}…",

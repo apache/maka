@@ -96,6 +96,13 @@ export function SettingsForm(
             onAction={!props.ready ? props.reload : undefined}
           />
         </If>
+        <If when={!props.ready && !props.work.busy() && !props.work.error()}>
+          <BannerNotice
+            title={tr('Unavailable')}
+            actionLabel={tr('Retry')}
+            onAction={props.reload}
+          />
+        </If>
         <If when={props.work.busy()}>
           <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
             <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
@@ -123,6 +130,7 @@ export function SettingsForm(
 export function SettingField(props: {
   label: string;
   value: string;
+  placeholder?: string;
   edit: (value: string) => void;
   multiline?: boolean;
   secret?: boolean;
@@ -143,6 +151,7 @@ export function SettingField(props: {
         <Input
           accessibilityLabel={props.label}
           value={props.value}
+          placeholder={props.placeholder}
           multiline={props.multiline}
           masked={props.secret}
           disabled={props.disabled}

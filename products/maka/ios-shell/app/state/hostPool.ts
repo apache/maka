@@ -360,6 +360,10 @@ export async function startPairingFromUri(
 export async function confirmPendingPairing(): Promise<boolean> {
   const ticket = pendingTicket();
   if (!ticket || pairingBusy()) return false;
+  if (new TextEncoder().encode(pendingDeviceLabel().trim()).length > 128) {
+    pairingError.set(tr('Device name must be 128 UTF-8 bytes or fewer.'));
+    return false;
+  }
   const gen = ++pairingGeneration;
   pairingBusy.set(true);
   pairingError.set(null);
@@ -381,7 +385,9 @@ export async function confirmPendingPairing(): Promise<boolean> {
     if (gen === pairingGeneration) {
       pendingTicket.set(null);
       hapticNotification('error');
-      pairingError.set(cause instanceof Error ? cause.message : String(cause));
+      const message = cause instanceof Error ? cause.message : String(cause);
+      pairingError.set(message);
+      showToast(message);
     }
     return false;
   } finally {

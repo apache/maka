@@ -1,5 +1,6 @@
 {
   "A friendly label to help identify this iPhone in your computer settings.": "Un nome chiaro per identificare questo iPhone nelle impostazioni del computer.",
+  "A server with this name already exists at this location.": "Esiste già un server con questo nome in questa posizione.",
   "API Key": "Chiave API",
   "Access key ID": "ID chiave di accesso",
   "Action Needed": "Azione richiesta",
@@ -140,6 +141,7 @@
   "Description": "Descrizione",
   "Desktop App": "App desktop",
   "Device name": "Nome dispositivo",
+  "Device name must be 128 UTF-8 bytes or fewer.": "Il nome del dispositivo non può superare 128 byte UTF-8.",
   "Diagnostics": "Diagnostica",
   "Diff truncated for large workspace changes.": "Diff troncato per modifiche estese.",
   "Diff: {path}": "Diff: {path}",
@@ -398,6 +400,7 @@
   "Target computer": "Computer di destinazione",
   "Team ID": "ID team",
   "Test connection": "Prova connessione",
+  "The proxy address or username changed. Enter the password again or turn off proxy authentication.": "L’indirizzo o il nome utente del proxy è cambiato. Reinserisci la password o disattiva l’autenticazione del proxy.",
   "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Questi server vengono eseguiti fuori dalla sandbox della conversazione e possono eseguire comandi come il tuo utente o contattare servizi remoti. Le sessioni con accesso completo possono chiamarne gli strumenti senza ulteriori conferme.",
   "These settings apply directly to {name} and stay synchronized with Maka Desktop.": "Queste impostazioni si applicano direttamente a {name} e restano sincronizzate con Maka Desktop.",
   "Thinking · {count, plural, one {# tool running} other {# tools running}}…": "Ragionamento · {count, plural, one {# strumento in esecuzione} other {# strumenti in esecuzione}}…",

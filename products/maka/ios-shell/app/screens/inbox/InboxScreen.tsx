@@ -20,7 +20,13 @@
 import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
-import { approvalControls, approvalDetail } from '../../approval';
+import {
+  approvalControls,
+  approvalDetail,
+  approvalOutcome,
+  interactionBadge,
+  interactionTitle,
+} from '../../approval';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
 import { savedHosts } from '../../state/hostPool';
@@ -45,46 +51,6 @@ import {
 
 type CategoryFilter = 'all' | 'approvals' | 'questions';
 
-function interactionBadge(kind: InboxItem['summary']['kind']): string {
-  switch (kind) {
-    case 'permissions':
-      return tr('Permission');
-    case 'service_approval':
-      return tr('Service');
-    case 'session_approval':
-      return tr('Approval');
-    case 'question':
-      return tr('Question');
-    case 'computer_app':
-      return tr('Desktop App');
-    case 'form':
-      return tr('Form');
-    default:
-      return tr('Action Needed');
-  }
-}
-
-function interactionTitle(item: InboxItem): string {
-  const req = item.record?.request;
-  if (!req) return item.sessionTitle;
-  switch (req.kind) {
-    case 'permissions':
-      return req.request.reason || tr('Additional permissions requested');
-    case 'service_approval':
-      return tr('Allow service call {name}?', { name: req.toolName || req.service });
-    case 'question':
-      return req.questions[0]?.question || tr('Question waiting for answer');
-    case 'computer_app':
-      return tr('Allow control of {name}?', { name: req.display.name });
-    case 'session_approval':
-      return tr('Approve delegated action?');
-    case 'client_capability':
-      return tr('Allow client capability?');
-    default:
-      return item.sessionTitle;
-  }
-}
-
 export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
   const category = signal<CategoryFilter>('all');
@@ -96,8 +62,9 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
     kind: 'success' | 'warning',
   ) => {
     const index = allInboxItems().findIndex(({ key }) => key === item.key);
-    if (await respondInboxItem(item, answer, kind))
-      feedback.show({ item, index, accepted: kind === 'success' });
+    const result = await respondInboxItem(item, answer);
+    const accepted = approvalOutcome(result?.outcome);
+    if (accepted !== null) feedback.show({ item, index, accepted });
   };
 
   const visibleItems = () => {
@@ -205,7 +172,7 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
                     <ApprovalCard
                       badge={interactionBadge(item().summary.kind)}
                       sourceLine={source()}
-                      title={interactionTitle(item())}
+                      title={interactionTitle(item().record?.request, item().sessionTitle)}
                       detail={[detail().command, detail().permissions].filter(Boolean).join('\n')}
                       monospaceDetail={!detail().permissions}
                       busy={isInboxItemBusy(item().key)}

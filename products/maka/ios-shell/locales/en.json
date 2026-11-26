@@ -1,5 +1,6 @@
 {
   "A friendly label to help identify this iPhone in your computer settings.": "A friendly label to help identify this iPhone in your computer settings.",
+  "A server with this name already exists at this location.": "A server with this name already exists at this location.",
   "API Key": "API Key",
   "Access key ID": "Access key ID",
   "Action Needed": "Action Needed",
@@ -140,6 +141,7 @@
   "Description": "Description",
   "Desktop App": "Desktop App",
   "Device name": "Device name",
+  "Device name must be 128 UTF-8 bytes or fewer.": "Device name must be 128 UTF-8 bytes or fewer.",
   "Diagnostics": "Diagnostics",
   "Diff truncated for large workspace changes.": "Diff truncated for large workspace changes.",
   "Diff: {path}": "Diff: {path}",
@@ -398,6 +400,7 @@
   "Target computer": "Target computer",
   "Team ID": "Team ID",
   "Test connection": "Test connection",
+  "The proxy address or username changed. Enter the password again or turn off proxy authentication.": "The proxy address or username changed. Enter the password again or turn off proxy authentication.",
   "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.",
   "These settings apply directly to {name} and stay synchronized with Maka Desktop.": "These settings apply directly to {name} and stay synchronized with Maka Desktop.",
   "Thinking · {count, plural, one {# tool running} other {# tools running}}…": "Thinking · {count, plural, one {# tool running} other {# tools running}}…",

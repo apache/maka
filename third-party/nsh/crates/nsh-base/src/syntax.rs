@@ -56,7 +56,7 @@ impl Token {
         let s = StyleRefinement::default();
         let color = AdaptiveColor::rgb;
         match self {
-            Self::Comment => s.text_color(color(0x6e7781, 0xb2b0a9)).italic(),
+            Self::Comment => s.text_color(color(0x6e7781, 0x7d7a72)).italic(),
             Self::Keyword => s.text_color(color(0x8250df, 0xc4a7ff)),
             Self::String => s.text_color(color(0x116329, 0x9fd68a)),
             Self::Number => s.text_color(color(0x953800, 0xf5b27a)),

@@ -21,7 +21,9 @@
 export function credentialFreeUrl(value: string, mode: 'skill' | 'mcp'): boolean {
   // Reject ASCII control characters (including tab/CR/LF that WHATWG URL strips before parsing).
   if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+  if (mode === 'mcp' && value.includes('#')) return false;
   if (mode === 'skill') {
+    if (/^git@[^@/:\s]+:[^@\s]+$/.test(value)) return true;
     if (/^[^/\s]+@[^/:\s]+:/.test(value)) return false;
     if (value.startsWith('//')) return false;
     // Single-letter Windows drive path (e.g. C:\skills) without a URL scheme.

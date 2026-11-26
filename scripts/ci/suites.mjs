@@ -209,6 +209,7 @@ export const suites = {
     extraInputs: [
       ...productInputs,
       'products/maka/ios-shell/app',
+      'products/maka/ios-shell/locales',
       'products/maka/terminal-shell/tests/real_host',
       'skills/maka-plugin-authoring/assets',
     ],

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { approvalOutcome } from '../approval';
 import type { AgentInteractionResult } from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { computed, effect, signal } from 'nsh';
 import {
@@ -119,10 +120,7 @@ export async function refreshHostInbox(rootId: string, hostName: string) {
         if (record.outcome !== null && record.outcome !== undefined) {
           continue;
         }
-        const workspaceName =
-          session.workspace?.name ||
-          session.workspace?.path?.split('/').filter(Boolean).pop() ||
-          '';
+        const workspaceName = session.workspace?.path?.split('/').filter(Boolean).pop() || '';
         results.push({
           key: rootId + '::' + session.id + '::' + summary.requestId,
           rootId,
@@ -158,12 +156,8 @@ export async function refreshAllInbox() {
   }
 }
 
-export async function respondInboxItem(
-  item: InboxItem,
-  answer: Record<string, unknown>,
-  successKind: 'success' | 'warning' = 'success',
-): Promise<boolean> {
-  if (isInboxItemBusy(item.key)) return false;
+export async function respondInboxItem(item: InboxItem, answer: Record<string, unknown>) {
+  if (isInboxItemBusy(item.key)) return null;
   busyKeys.update((prev) => ({ ...prev, [item.key]: true }));
   try {
     const result = await hostMutate<AgentInteractionResult>(
@@ -187,13 +181,13 @@ export async function respondInboxItem(
       void refreshHostInbox(item.rootId, item.hostName);
       throw new Error(result.reason);
     }
-    hapticNotification(successKind);
+    hapticNotification(approvalOutcome(result.record.outcome) === false ? 'warning' : 'success');
     await Promise.all([refreshHostInbox(item.rootId, item.hostName), refreshAllSessions()]);
-    return true;
+    return result.record;
   } catch (cause) {
     hapticNotification('error');
     showToast(cause instanceof Error ? cause.message : String(cause));
-    return false;
+    return null;
   } finally {
     busyKeys.update((prev) => {
       const next = { ...prev };

@@ -102,12 +102,7 @@ export class LivePreviewAccumulator {
   /** Apply an incremental AgentPreviewPage::Cut or PreviewPage::Empty frame. */
   applyPreviewPage(page: AgentPreviewPage): LivePreviewSnapshot {
     if (page.kind === 'empty') {
-      // Hold rendered fragments until canonical agent.history completes so
-      // the streaming bubble hands off seamlessly with zero blank flash.
-      this.identity = '';
-      this.revision = -1;
-      this.awaitingHistoryHandoff = true;
-      return this.snapshot();
+      return this.beginHandoff();
     }
 
     const identity = page.hostEpoch + '/' + page.runId + '/' + page.stepId + '/' + page.attemptId;
@@ -169,8 +164,10 @@ export class LivePreviewAccumulator {
         nextText = prev.text + part.text;
         nextBytes = part.offset + chunkBytes;
       } else if (prev && part.offset < prev.bytes) {
-        // Ignore already-applied overlapping cut slices cleanly.
-        continue;
+        const overlap = prev.bytes - part.offset;
+        if (overlap >= chunkBytes) continue;
+        nextText = prev.text + Buffer.from(part.text, 'utf8').subarray(overlap).toString('utf8');
+        nextBytes = part.offset + chunkBytes;
       } else {
         // Resync conservatively if an earlier slice was dropped before join.
         nextText = (prev ? prev.text : '') + part.text;
@@ -191,6 +188,13 @@ export class LivePreviewAccumulator {
       });
     }
 
+    return this.snapshot();
+  }
+
+  beginHandoff(): LivePreviewSnapshot {
+    this.identity = '';
+    this.revision = -1;
+    this.awaitingHistoryHandoff = true;
     return this.snapshot();
   }
 

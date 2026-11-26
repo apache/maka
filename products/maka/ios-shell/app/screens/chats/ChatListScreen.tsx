@@ -102,15 +102,14 @@ function SessionRow(props: {
   onRequestRename: (item: ScopedSession) => void;
 }) {
   const s = () => props.item.session;
-  const workspaceName = () =>
-    s().workspace?.name || s().workspace?.path?.split('/').filter(Boolean).pop() || '';
+  const workspaceName = () => s().workspace?.path?.split('/').filter(Boolean).pop() || '';
   const showComputer = () => savedHosts().length > 1 && selectedScopeRootId() === 'all';
   const attribution = () =>
     [showComputer() ? props.item.hostName : '', workspaceName()].filter(Boolean).join(' · ');
 
   const memberSummary = signal('');
+  const { rootId, session } = props.item;
   effect(() => {
-    const { rootId, session } = props.item;
     if (session.kind !== 'room' || !isHostConnected(rootId)) return;
     let cancelled = false;
     cleanup(() => {

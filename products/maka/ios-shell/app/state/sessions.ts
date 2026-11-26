@@ -138,12 +138,7 @@ export const filteredSessions = computed<ScopedSession[]>(() => {
     if (scope !== 'all' && item.rootId !== scope) return false;
     if (Boolean(item.session.archived) !== archived) return false;
     if (!q) return true;
-    const hay = [
-      item.session.title,
-      item.session.workspace?.name ?? '',
-      item.session.workspace?.path ?? '',
-      item.hostName,
-    ]
+    const hay = [item.session.title, item.session.workspace?.path ?? '', item.hostName]
       .join(' ')
       .toLowerCase();
     return hay.includes(q);
@@ -249,9 +244,11 @@ export async function togglePinSession(item: ScopedSession): Promise<boolean> {
       },
       { rootId: item.rootId },
     );
-    if (res?.kind === 'rejected') {
-      throw new Error(String(res.reason ?? 'rejected'));
+    if (res.kind === 'revision_conflict') {
+      await refreshHostSessions(item.rootId, item.hostName);
+      throw new Error(res.kind);
     }
+    if (res.kind === 'rejected') throw new Error(String(res.reason ?? 'rejected'));
     hapticSelection();
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
@@ -278,9 +275,11 @@ export async function renameSession(item: ScopedSession, nextTitle: string): Pro
       },
       { rootId: item.rootId },
     );
-    if (res?.kind === 'rejected') {
-      throw new Error(String(res.reason ?? 'rejected'));
+    if (res.kind === 'revision_conflict') {
+      await refreshHostSessions(item.rootId, item.hostName);
+      throw new Error(res.kind);
     }
+    if (res.kind === 'rejected') throw new Error(String(res.reason ?? 'rejected'));
     hapticNotification('success');
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
@@ -379,29 +378,17 @@ export async function roomMembers(rootId: string, sessionId: string) {
   return result.page.participants ?? [];
 }
 
-export async function listHostDirectoryChildren(
+export function listHostFiles(
   rootId: string,
-  path: string,
-  after: string | null = null,
-): Promise<{
-  directory: { name: string; path: string } | null;
-  children: { name: string; path: string }[];
-  after: string | null;
-}> {
-  const page = await hostQuery<{
-    kind: string;
-    directory?: { name: string; path: string };
-    children?: { name: string; path: string }[];
-    after?: string | null;
-  }>('agent', 'directories', { kind: 'children', path, after }, undefined, rootId);
-  if (page && page.kind === 'children' && Array.isArray(page.children)) {
-    return {
-      directory: page.directory ?? null,
-      children: page.children,
-      after: page.after ?? null,
-    };
-  }
-  return { directory: null, children: [], after: null };
+  input: ServiceMethods['agent']['listFiles']['input'],
+) {
+  return hostQuery<ServiceMethods['agent']['listFiles']['output']>(
+    'agent',
+    'listFiles',
+    { ...input },
+    undefined,
+    rootId,
+  );
 }
 
 export async function createHostSession(params: {

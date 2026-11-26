@@ -55,7 +55,7 @@ export function McpSettingsScreen(
   const inventory = signal<AgentMcpConfigurationList | null>(null);
   const load = async () => {
     const workspace = scope.workspace();
-    const result = await rpc.query('agent', 'mcpConfigurations', { workspace });
+    const result = await rpc.query('agent', 'mcpConfigurations', { workspace, redacted: true });
     inventory.set(result);
   };
   const reload = () =>
@@ -220,7 +220,12 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
   const work = settingsWork(props.rootId, props.active);
   const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const target = props.target;
-  const basis = signal<{ revision: string; configuration: McpConfig } | null>(null);
+  const basis = signal<{
+    revision: string;
+    configuration: McpConfig;
+    names: string[];
+    hasLiteralCredentials: boolean;
+  } | null>(null);
   const name = signal(target.name ?? '');
   const transport = signal<'stdio' | 'http'>('stdio');
   const address = signal('');
@@ -238,6 +243,7 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
     void work.run(async () => {
       const inventory = await rpc.query('agent', 'mcpConfigurations', {
         workspace: target.workspace,
+        redacted: true,
       });
       const location = inventory.locations.find((row) => row.location === target.location);
       const entry = location?.servers.find((row) => row.name === target.name);
@@ -254,12 +260,15 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
           : (configuration.passEnv?.join('\n') ?? ''),
       );
       baseline = draft();
-      basis.set({ revision: location.revision, configuration });
+      basis.set({
+        revision: location.revision,
+        configuration,
+        names: location.servers.map(({ name }) => name),
+        hasLiteralCredentials: entry?.hasLiteralCredentials ?? false,
+      });
     });
   load();
-  const requiresDesktop = () =>
-    Object.keys(basis()?.configuration.env ?? {}).length > 0 ||
-    Object.keys(basis()?.configuration.headers ?? {}).length > 0;
+  const requiresDesktop = () => basis()?.hasLiteralCredentials === true;
   const save = () =>
     void work.run(async () => {
       if (!name().trim() || !address().trim())
@@ -270,6 +279,10 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
             'Use an HTTP URL without credentials or query parameters. Use environment references or edit on Desktop.',
           ),
         );
+        return;
+      }
+      if (!target.name && basis()!.names.includes(name().trim())) {
+        work.error.set(tr('A server with this name already exists at this location.'));
         return;
       }
       const original = basis()!.configuration;
@@ -285,12 +298,16 @@ export function McpServerEditor(props: SettingsPageProps & { target: McpTarget }
               type: 'stdio',
               command: address().trim(),
               cwd: cwd() || undefined,
-              args: args().split('\n').filter(Boolean),
+              args:
+                args() === (original.args?.join('\n') ?? '')
+                  ? (original.args ?? [])
+                  : args()
+                    ? args().split('\n')
+                    : [],
               passEnv: environment().split('\n').filter(Boolean),
               disabled: !enabled(),
             };
-      if (Object.keys(original.env ?? {}).length || Object.keys(original.headers ?? {}).length)
-        throw new Error(tr('Review on Desktop'));
+      if (requiresDesktop()) throw new Error(tr('Review on Desktop'));
       await changeMcp(rpc, {
         ...target,
         name: name().trim(),

@@ -343,7 +343,22 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
           {resultField('snippet', tr('Result snippet path (optional)'))}
         </InsetGroup>
       </If>
-      <If when={settings().source === 'custom'}>
+      <If when={settings().source === 'custom' && custom() && !custom()?.auth}>
+        <InsetGroup>
+          <GroupRow
+            title={tr('Test connection')}
+            tone="primary"
+            disabled={work.busy() || dirty()}
+            trailing={
+              checkStatus() ? (
+                <SettingStatus label={checkStatus()!.label} tone={checkStatus()!.tone} />
+              ) : undefined
+            }
+            onPress={() => credential('checkKey')}
+          />
+        </InsetGroup>
+      </If>
+      <If when={settings().source === 'custom' && (!custom() || custom()?.auth)}>
         <InsetGroup
           header={tr('API Key')}
           footer={

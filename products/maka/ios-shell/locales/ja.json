@@ -1,5 +1,6 @@
 {
   "A friendly label to help identify this iPhone in your computer settings.": "コンピュータの設定でこの iPhone を識別するための表示名です。",
+  "A server with this name already exists at this location.": "この場所には同じ名前のサーバーが既に存在します。",
   "API Key": "API キー",
   "Access key ID": "アクセスキー ID",
   "Action Needed": "要対応",
@@ -140,6 +141,7 @@
   "Description": "説明",
   "Desktop App": "デスクトップアプリ",
   "Device name": "デバイス名",
+  "Device name must be 128 UTF-8 bytes or fewer.": "デバイス名は UTF-8 で 128 バイト以内にしてください。",
   "Diagnostics": "診断情報",
   "Diff truncated for large workspace changes.": "変更が大きいため差分の一部を省略しました。",
   "Diff: {path}": "差分：{path}",
@@ -398,6 +400,7 @@
   "Target computer": "対象コンピュータ",
   "Team ID": "チーム ID",
   "Test connection": "接続をテスト",
+  "The proxy address or username changed. Enter the password again or turn off proxy authentication.": "プロキシのアドレスまたはユーザー名が変更されました。パスワードを再入力するか、プロキシ認証を無効にしてください。",
   "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "これらのサーバーは会話のサンドボックス外で実行され、あなたのユーザー権限でコマンドを実行したりリモートサービスへ通信したりできます。フルアクセスセッションでは追加の確認なしにツールを呼び出せます。",
   "These settings apply directly to {name} and stay synchronized with Maka Desktop.": "これらの設定は {name} に直接適用され、Maka Desktop と同期されます。",
   "Thinking · {count, plural, one {# tool running} other {# tools running}}…": "思考中 · {count, plural, other {# 個のツールを実行中}}…",

@@ -112,17 +112,6 @@ export function describeChildDecision(value: unknown): string | null {
           detail,
         ].join('\n');
   }
-  if (
-    answer.kind === 'computer_app' &&
-    (answer.decision === 'once' || answer.decision === 'session' || answer.decision === 'always')
-  )
-    return tr('Allow control of the desktop application · Scope: {scope}', {
-      scope: scopeLabel(answer.decision),
-    });
-  if (answer.decision !== 'allow') return null;
-  if (answer.kind === 'service_approval') return tr('Allow this service call only');
-  if (answer.kind === 'client_capability')
-    return tr('Allow the requested client capability for this interaction');
   return null;
 }
 
@@ -177,7 +166,10 @@ export function approvalDetail(request: AgentInteractionRequest): {
     case 'session_approval':
       return { permissions: describeChildDecision(request.answer) ?? tr('Review on Desktop') };
     case 'service_approval':
-      return { command: request.service + '.' + request.method + ' (' + request.binding + ')' };
+      return {
+        command: request.service + '.' + request.method + ' (' + request.binding + ')',
+        permissions: tr('Review on Desktop'),
+      };
     case 'client_capability': {
       const target = request.target;
       const scope = describeGrantScope(target?.scope);
@@ -262,8 +254,70 @@ export function approvalControls(request: AgentInteractionRequest | undefined) {
       if (describeGrantScope(request.target?.scope) === null) return { deny };
       return { primary: allow(tr('Allow'), { kind: request.kind, decision: 'allow' }), deny };
     case 'service_approval':
-      return { primary: allow(tr('Allow'), { kind: request.kind, decision: 'allow' }), deny };
+      return { deny };
     default:
       return {};
+  }
+}
+
+export function approvalOutcome(
+  outcome:
+    | import('../../../../packages/plugin-sdk/src/generated/runtime').InteractionOutcome
+    | null
+    | undefined,
+): boolean | null {
+  switch (outcome?.kind) {
+    case 'session_approval_decision':
+    case 'service_approval_decision':
+    case 'client_capability_decision':
+      return outcome.decision === 'allow';
+    case 'permissions_decision':
+      return outcome.decision.decision === 'allow';
+    case 'computer_app_decision':
+      return outcome.decision !== 'deny';
+    default:
+      return null;
+  }
+}
+
+export function interactionBadge(kind: string): string {
+  switch (kind) {
+    case 'permissions':
+      return tr('Permission');
+    case 'service_approval':
+      return tr('Service');
+    case 'session_approval':
+      return tr('Approval');
+    case 'question':
+      return tr('Question');
+    case 'computer_app':
+      return tr('Desktop App');
+    case 'form':
+      return tr('Form');
+    default:
+      return tr('Action Needed');
+  }
+}
+
+export function interactionTitle(
+  req: AgentInteractionRequest | undefined,
+  fallback: string,
+): string {
+  if (!req) return fallback;
+  switch (req.kind) {
+    case 'permissions':
+      return req.request.reason || tr('Additional permissions requested');
+    case 'service_approval':
+      return tr('Allow service call {name}?', { name: req.toolName || req.service });
+    case 'question':
+      return req.questions[0]?.question || tr('Question waiting for answer');
+    case 'computer_app':
+      return tr('Allow control of {name}?', { name: req.display.name });
+    case 'session_approval':
+      return tr('Approve delegated action?');
+    case 'client_capability':
+      return tr('Allow client capability?');
+    default:
+      return fallback;
   }
 }

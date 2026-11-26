@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { hostQuery, type AgentObservation } from './bridge';
 import { effect, Overlay, safeAreaInsets, signal, Text, View, token } from 'nsh';
 import { createNavStack, NavStack, Toast, ToastStack } from 'nsh/base';
 import { isAvailable, TabBar, type TabBarItem } from 'nsh/mobile';
@@ -66,6 +67,7 @@ import type { ParsedDiffFile } from './state/chat';
 import {
   closeAddComputerFlow,
   currentDeepLink,
+  showToast,
   clearDeepLink,
   currentPendingTicket,
   currentToastMessage,
@@ -214,34 +216,20 @@ function MainTabShell() {
     activeTab.set(index);
   };
 
-  const jumpToConversation = (
-    rootId: string,
-    sessionId: string,
-    hostName: string,
-    sessionTitle: string,
-  ) => {
-    const existing = findScopedSession(rootId, sessionId);
-    const target: ScopedSession = existing ?? {
-      key: rootId + '::' + sessionId,
-      rootId,
-      hostName,
-      session: {
-        id: sessionId,
-        title: sessionTitle,
-        kind: 'agent',
-        parentSessionId: null,
-        labels: [],
-        workspace: {},
-        revision: 0,
-        updatedAt: Date.now(),
-        archived: false,
-        pinned: false,
-        hasUnread: false,
-        activity: 'idle',
-      },
-    };
-    chatsNav.setRoutes([{ name: 'list' }, { name: 'chat', item: target }]);
-    activeTab.set(0);
+  const jumpToConversation = (rootId: string, sessionId: string, hostName: string) => {
+    void (async () => {
+      const existing = findScopedSession(rootId, sessionId);
+      const item: ScopedSession = existing ?? {
+        key: rootId + '::' + sessionId,
+        rootId,
+        hostName,
+        session: (
+          await hostQuery<AgentObservation>('agent', 'observe', { sessionId }, undefined, rootId)
+        ).session,
+      };
+      chatsNav.setRoutes([{ name: 'list' }, { name: 'chat', item }]);
+      activeTab.set(0);
+    })().catch((cause) => showToast(cause instanceof Error ? cause.message : String(cause)));
   };
 
   return (
