@@ -529,6 +529,7 @@ impl Rig {
                 "roomManage",
                 "markRead",
                 "toolImage",
+                "historyImages",
                 "tools",
                 "predictNextMessage",
                 "askQuickQuestion",

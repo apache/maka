@@ -1654,6 +1654,30 @@ pub struct HistoryRequestsRead {
     pub after: Option<u64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentHistoryImagesRead")]
+pub struct HistoryImagesRead {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub through: u64,
+    /// Any original row in the Run whose images are listed.
+    pub position: RowPosition,
+    #[serde(default)]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub after: Option<u64>,
+}
+
+/// The Run's tool results that produced images, oldest first, each with its call.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "AgentHistoryImages")]
+pub struct HistoryImages {
+    pub tools: Vec<maka_agent_ports::session::history::Tool>,
+    pub next: Option<u64>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "AgentHistoryRequests")]
@@ -2471,6 +2495,10 @@ pub fn contract() -> Contract {
                 (
                     "historyRequests".into(),
                     method::<HistoryRequestsRead, HistoryRequests>(MethodMode::Query),
+                ),
+                (
+                    "historyImages".into(),
+                    method::<HistoryImagesRead, HistoryImages>(MethodMode::Query),
                 ),
                 (
                     "search".into(),

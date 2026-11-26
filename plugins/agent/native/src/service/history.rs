@@ -208,6 +208,71 @@ async fn restrictions(
         .map_err(|e| e.to_string())
 }
 
+pub(super) async fn images(
+    owner: &Owner,
+    scope: &Scope,
+    input: ui::HistoryImagesRead,
+) -> Result<ui::HistoryImages, String> {
+    use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
+    const LIMIT: u32 = 24;
+    let history = open(owner, scope, &input.session_id).await?;
+    let cut = cut(&history, Some(input.through)).await?;
+    let tree = SourceTree::live(&history, &cut)
+        .await
+        .map_err(|error| error.to_string())?;
+    let item = tree
+        .item(&input.position)
+        .await
+        .map_err(|error| error.to_string())?;
+    let SourceItem::Canonical(item) = item else {
+        authorize(owner, scope, &input.session_id).await?;
+        return Ok(ui::HistoryImages {
+            tools: Vec::new(),
+            next: None,
+        });
+    };
+    let data = tree
+        .source_for_path(input.position.path(), source::snapshot_id(&input.position))
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut sources = data
+        .image_sources(item.recorded.run, input.after.unwrap_or(0), LIMIT + 1)
+        .await
+        .map_err(|error| error.to_string())?;
+    let next = if sources.len() > LIMIT as usize {
+        sources.truncate(LIMIT as usize);
+        match sources.last() {
+            Some(wire::HistoryRowAddress::Live { sequence, .. }) => Some(*sequence),
+            _ => return Err("agent_history_source_missing".into()),
+        }
+    } else {
+        None
+    };
+    let mut cache = source::Cache::default();
+    let mut tools = Vec::new();
+    for position in sources {
+        if scope.cancellation.is_cancelled() {
+            return Err("agent_history_cancelled".into());
+        }
+        let selected = source::selected(&tree, &position, &mut cache, &scope.cancellation).await?;
+        if let Some(tool) = selected.row.chunk.tool
+            && tool
+                .result
+                .as_ref()
+                .is_some_and(|result| result.image || result.images > 0)
+        {
+            tools.push(tool);
+        }
+    }
+    if scope.identity.agent().is_some() {
+        let positions = tools.iter().flat_map(tool_positions).cloned().collect();
+        let restricted = restrictions(owner, scope, &tree, positions).await?;
+        tools.retain_mut(|tool| !filter_tool(tool, &restricted));
+    }
+    authorize(owner, scope, &input.session_id).await?;
+    Ok(ui::HistoryImages { tools, next })
+}
+
 pub(super) async fn requests(
     owner: &Owner,
     scope: &Scope,

@@ -92,18 +92,32 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
   );
 }
 
+/**
+ * A list given as a function may be replaced while it is shown; the viewer
+ * stays on the image it shows, by URI.
+ */
 export function ImageViewer(props: {
-  images: readonly GalleryImage[];
-  index?: number;
+  images: readonly GalleryImage[] | (() => readonly GalleryImage[]);
+  /** The URI shown first; the first image when absent. */
+  start?: string;
   close(): void;
 }) {
-  const images = props.images;
-  const index = signal(Math.min(Math.max(props.index ?? 0, 0), images.length - 1));
-  const image = () => images[index()]!;
-  const measured = signal<{ width: number; height: number } | null>(null);
+  const given = props.images;
+  const images = typeof given === 'function' ? given : () => given;
+  const current = signal(props.start ?? images()[0]!.uri);
+  const index = () =>
+    Math.max(
+      0,
+      images().findIndex((item) => item.uri === current()),
+    );
+  const image = () => images()[index()]!;
+  // A replaced list may drop a size the first list carried; the loaded one is kept.
+  const measured = signal<{ uri: string; width: number; height: number } | null>(null);
   const size = () => {
-    const { width, height } = image();
-    return width !== undefined && height !== undefined ? { width, height } : measured();
+    const { uri, width, height } = image();
+    if (width !== undefined && height !== undefined) return { width, height };
+    const known = measured();
+    return known?.uri === uri ? { width: known.width, height: known.height } : null;
   };
   const viewport = signal({ width: 0, height: 0 });
   const error = createText();
@@ -161,11 +175,10 @@ export function ImageViewer(props: {
     }
   };
   const go = (step: -1 | 1) => {
-    const next = index() + step;
-    if (!alive || next < 0 || next >= images.length) return;
+    const next = images()[index() + step];
+    if (!alive || !next) return;
     error.set('');
-    measured.set(null);
-    index.set(next);
+    current.set(next.uri);
     if (size()) reset(Math.min(1, fit()));
   };
   const move = (dx: number, dy: number) => {
@@ -229,8 +242,8 @@ export function ImageViewer(props: {
       'mod+1': () => control({ uri: image().uri, kind: 'actual' }),
       '1': () => control({ uri: image().uri, kind: 'actual' }),
       // With several images the arrows page through them; dragging still pans.
-      left: () => (images.length > 1 ? go(-1) : move(KEY_PAN_STEP, 0)),
-      right: () => (images.length > 1 ? go(1) : move(-KEY_PAN_STEP, 0)),
+      left: () => (images().length > 1 ? go(-1) : move(KEY_PAN_STEP, 0)),
+      right: () => (images().length > 1 ? go(1) : move(-KEY_PAN_STEP, 0)),
       up: () => move(0, KEY_PAN_STEP),
       down: () => move(0, -KEY_PAN_STEP),
     },
@@ -317,9 +330,10 @@ export function ImageViewer(props: {
                     role="image"
                     accessibilityLabel={item().title}
                     onLoad={({ size: dimensions }) => {
-                      if (!alive || image().uri !== item().uri || size()) return;
-                      measured.set(dimensions);
-                      reset(Math.min(1, fit()));
+                      if (!alive || image().uri !== item().uri) return;
+                      const unknown = !size();
+                      measured.set({ uri: item().uri, ...dimensions });
+                      if (unknown) reset(Math.min(1, fit()));
                     }}
                     onError={(reason) => {
                       if (alive && image().uri === item().uri) error.set(reason.message);
@@ -365,7 +379,7 @@ export function ImageViewer(props: {
             </Text>
             <Text style={{ ...captionTextStyle, color: DARK.muted }}>
               {[
-                ...(images.length > 1 ? [`${index() + 1} / ${images.length}`] : []),
+                ...(images().length > 1 ? [`${index() + 1} / ${images().length}`] : []),
                 ...(size()
                   ? [`${size()!.width} × ${size()!.height}`, `${zoomPercent()}%`]
                   : [tr('Loading image…')]),
@@ -402,7 +416,7 @@ export function ImageViewer(props: {
           key={(item) => item.step}
         >
           {(item) => (
-            <If when={images[index() + item().step] !== undefined}>
+            <If when={images()[index() + item().step] !== undefined}>
               <View
                 style={[
                   {

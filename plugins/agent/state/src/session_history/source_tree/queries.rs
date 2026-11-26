@@ -364,6 +364,52 @@ impl Query for CompletedWorkAt {
     }
 }
 
+/// The tool results of one Run that produced images, oldest first, after a sequence.
+pub(super) struct ImageSourcesAt {
+    pub(super) namespace: HistoryNamespace,
+    pub(super) cut: HistoryCut,
+    pub(super) run: RunId,
+    pub(super) after: u64,
+    pub(super) limit: u32,
+}
+
+impl Query for ImageSourcesAt {
+    type Output = Vec<HistoryRowAddress>;
+
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        sql::validate_cut(c, &self.namespace.owner, &self.namespace.session, &self.cut)?;
+        c.prepare_cached(
+            "SELECT DISTINCT h.sequence,h.fact_id
+             FROM agent_artifact_run_bindings b
+             JOIN agent_artifacts a ON a.session=b.session AND a.artifact=b.artifact
+             JOIN agent_session_history h ON h.fact_id=b.fact
+             WHERE b.run=?1 AND b.session=?2 AND h.sequence<=?3 AND h.sequence>?4
+               AND b.origin IN ('tool','cell')
+               AND json_extract(a.record_json,'$.artifact.mimeType') LIKE 'image/%'
+             ORDER BY h.sequence LIMIT ?5",
+        )?
+        .query_map(
+            params![
+                self.run.to_string(),
+                self.namespace.session,
+                sql::bind_u64(self.cut.through_sequence)?,
+                sql::bind_u64(self.after)?,
+                self.limit
+            ],
+            |row| Ok((sql::read_u64(row, 0)?, row.get::<_, String>(1)?)),
+        )?
+        .map(|row| {
+            let (sequence, fact) = row?;
+            Ok(HistoryRowAddress::Live {
+                sequence,
+                fact: sql::identity(fact)?,
+                item_index: 0,
+            })
+        })
+        .collect()
+    }
+}
+
 pub(super) struct ReportedModelAt(
     pub(super) HistoryNamespace,
     pub(super) HistoryCut,

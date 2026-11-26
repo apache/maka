@@ -21,12 +21,15 @@ import type {
   AgentToolImageRead,
   HistoryRowAddress,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { platform, signal, Text, View } from 'nsh';
+import { cleanup, platform, signal, Text, View } from 'nsh';
+import type { ViewRef } from 'nsh';
+import { Button } from 'nsh/base';
 import type { HistoryTool, HistoryOrder } from '../../../../packages/plugin-sdk/src/index.js';
 import { ImageThumbnail } from './ImageThumbnail';
 import { ImageViewer } from './ImageViewer';
 import { tr } from './locale';
-import { C, captionTextStyle } from './ui';
+import { C, captionTextStyle, textTooltip } from './ui';
+import { activityTitle } from './toolActivityPresentation';
 import type { ImagePreview } from './ImageThumbnail';
 export type { ImagePreview } from './ImageThumbnail';
 
@@ -122,36 +125,89 @@ export function ToolImageStrip(props: {
   through: () => number;
   images: () => ToolImageRef[];
   total?: () => number | undefined;
+  /**
+   * Every image-bearing tool of the Turn, oldest first, when `images` holds only the
+   * latest. It reports its own failure and then resolves empty.
+   */
+  all?(): Promise<HistoryTool[]>;
 }) {
   // Terminal cells are too coarse for thumbnails; expanded tools still show each image.
   if (platform.idiom === 'terminal') return <View />;
   const host = useHost();
+  let alive = true;
+  let more: ViewRef | undefined;
+  cleanup(() => {
+    alive = false;
+  });
   // Each image keeps the selector it was first read with, so the viewer reuses that load.
+  // Summaries and loaded tools key the same image differently, so it is kept by address.
   const sources = new Map<string, { read: AgentToolImageRead; uri: string }>();
   const source = (ref: ToolImageRef) => {
-    let known = sources.get(ref.key);
+    const address = `${historyRowKey(ref.position)}/${ref.image ?? 'content'}`;
+    let known = sources.get(address);
     if (!known) {
       const read = toolImageRead(props.sessionId, props.through(), ref);
       known = { read, uri: host.assetUri(immutableAsset('tool-image', read)) };
-      sources.set(ref.key, known);
+      sources.set(address, known);
     }
     return known;
   };
-  const viewing = signal<{ index: number; opened: ImagePreview } | null>(null);
+  const everything = signal<{ ref: ToolImageRef; title: string }[] | null>(null);
+  let loading: { total: number | undefined; task: Promise<void> } | undefined;
+  // A running Turn adds images, so a later opening reads the list again.
+  const load = () => {
+    const total = props.total?.();
+    if (!props.all || (loading && loading.total === total)) return loading?.task;
+    const task = props.all().then((tools) => {
+      if (!alive || loading?.task !== task || tools.length === 0) return;
+      everything.set(
+        tools.flatMap((tool) =>
+          toolImages(tool).map((ref) => ({ ref, title: activityTitle(tool.call) })),
+        ),
+      );
+    });
+    loading = { total, task };
+    return task;
+  };
+  const viewing = signal<{ start: string; opened?: ImagePreview } | null>(null);
   const shown = () => props.images().slice(-stripLimit);
-  const hidden = () => (props.total?.() ?? props.images().length) - shown().length;
+  // Once read, the full list is what the viewer pages through, so it is what is counted.
+  const count = () => everything()?.length ?? props.total?.() ?? props.images().length;
+  const hidden = () => count() - shown().length;
   const gallery = () => {
-    const { index, opened } = viewing()!;
-    return props.images().map((ref, at) => ({
-      uri: source(ref).uri,
-      title: tr('Original image'),
-      ...(at === index ? { width: opened.width, height: opened.height } : {}),
-    }));
+    const opened = viewing()?.opened;
+    return (
+      everything() ?? props.images().map((ref) => ({ ref, title: tr('Original image') }))
+    ).map(({ ref, title }) => {
+      const { uri } = source(ref);
+      return {
+        uri,
+        title,
+        ...(opened?.uri === uri ? { width: opened.width, height: opened.height } : {}),
+      };
+    });
+  };
+  const showAll = async () => {
+    await load();
+    const first = gallery()[0];
+    if (alive && !viewing() && first) viewing.set({ start: first.uri });
   };
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
       <If when={hidden() > 0}>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{`+${hidden()}`}</Text>
+        <Button
+          ref={(node) => {
+            more = node;
+          }}
+          accessibilityLabel={tr('Show all {count} images', { count: String(count()) })}
+          tooltip={textTooltip(() => tr('Show all {count} images', { count: String(count()) }))}
+          onPress={() => void showAll()}
+          style={{ height: 24, paddingHorizontal: 4, justifyContent: 'center', borderRadius: 4 }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.line }}
+        >
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{`+${hidden()}`}</Text>
+        </Button>
       </If>
       <Each of={shown()} key={(value: ToolImageRef) => value.key}>
         {(value) => (
@@ -160,20 +216,22 @@ export function ToolImageStrip(props: {
             source={{ kind: 'tool-image', read: source(value()).read }}
             uri={source(value()).uri}
             preview={(opened) => {
-              const index = props.images().findIndex((ref) => ref.key === value().key);
-              if (index >= 0) viewing.set({ index, opened });
+              if (!alive) return;
+              viewing.set({ start: opened.uri, opened });
+              void load();
             }}
           />
         )}
       </Each>
       <If when={viewing()}>
         <ImageViewer
-          images={gallery()}
-          index={viewing()!.index}
+          images={gallery}
+          start={viewing()!.start}
           close={() => {
             const opened = viewing()?.opened;
             viewing.set(null);
-            opened?.restoreFocus?.();
+            if (opened) opened.restoreFocus?.();
+            else if (alive) more?.focus();
           }}
         />
       </If>

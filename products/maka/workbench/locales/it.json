@@ -2167,6 +2167,7 @@
   "Show Markdown source": "Mostra sorgente Markdown",
   "Show active conversations": "Mostra conversazioni attive",
   "Show all ({count})": "Mostra tutto ({count})",
+  "Show all {count} images": "Mostra tutte le {count} immagini",
   "Show approved tool names": "Mostra strumenti selezionati",
   "Show archived conversations": "Mostra conversazioni archiviate",
   "Show compact token count": "Mostra conteggio token compatto",

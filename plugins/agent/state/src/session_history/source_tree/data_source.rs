@@ -148,6 +148,29 @@ impl HistoryDataSource {
             Self::Snapshot(_) => Ok(None),
         }
     }
+    /// Tool results of `run` that produced images, oldest first; live history only.
+    pub async fn image_sources(
+        &self,
+        run: RunId,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<HistoryRowAddress>, StoreError> {
+        match self {
+            Self::Live { history, cut } => {
+                history
+                    .data
+                    .query(queries::ImageSourcesAt {
+                        namespace: history.namespace.clone(),
+                        cut: cut.clone(),
+                        run,
+                        after,
+                        limit,
+                    })
+                    .await
+            }
+            Self::Snapshot(_) => Ok(Vec::new()),
+        }
+    }
     pub async fn reported_model(
         &self,
         run: RunId,

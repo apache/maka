@@ -653,6 +653,14 @@ async fn tool_matrix(code: bool) -> TestResult<()> {
                 use base64::Engine as _;
                 let bytes = base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap())?;
                 assert_eq!(bytes, std::fs::read(base.join("workspace/input.png"))?);
+                // The Turn's image list names that same result, with the call that made it.
+                let listed = call(client,"agent","historyImages",json!({
+                    "sessionId":id,"through":history["through"],"position":result["position"]
+                })).await?;
+                let tools = listed["tools"].as_array().unwrap();
+                assert_eq!(tools.len(), 1, "{listed}");
+                assert_eq!((&tools[0]["call"]["name"], &tools[0]["result"]), (&json!("Read"), result), "{listed}");
+                assert!(listed["next"].is_null(), "{listed}");
                 let write = tool_round(&rig,&mut provider,id,code,"Write",json!({"path":"output.txt","content":if allowed {"allowed"} else {"forbidden"}})).await?;
                 let before_web = web_calls.load(Ordering::SeqCst);
                 let web = tool_round(&rig,&mut provider,id,code,"WebFetch",json!({"url":format!("{address}/page")})).await?;

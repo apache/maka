@@ -395,6 +395,9 @@ impl Handler for Agent {
             "historyRequests" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::requests(&owner, context.scope(), decode(input)?).await?)
             }),
+            "historyImages" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(history::images(&owner, context.scope(), decode(input)?).await?)
+            }),
             "search" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(history::search(&owner, context.scope(), decode(input)?).await?)
             }),

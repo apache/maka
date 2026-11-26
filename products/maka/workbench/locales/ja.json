@@ -2167,6 +2167,7 @@
   "Show Markdown source": "Markdown ソースを表示",
   "Show active conversations": "アクティブな会話を表示",
   "Show all ({count})": "すべて表示（{count}）",
+  "Show all {count} images": "すべての画像（{count} 枚）を表示",
   "Show approved tool names": "選択されたツールを表示",
   "Show archived conversations": "アーカイブ済みの会話を表示",
   "Show compact token count": "トークン数を短縮表示",
