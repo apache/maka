@@ -19,6 +19,11 @@
 
 #![cfg(not(target_os = "ios"))]
 
+use maka_agent_api::contract::{
+    DeliveryPage, PendingInteractions, PreviewPage, Queue, QueueAction, QueueEntry, QueueKind,
+    QueueMutation, QueueMutationResult,
+};
+use maka_agent_facts::interaction::{Decision, InteractionAnswer, InteractionOutcome};
 use maka_event_log::{
     ROOT_MIGRATIONS,
     root::{RootNamespaces, RootOwner, private_directory},
@@ -970,7 +975,10 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         let value = if data["method"] == "editQueue" {
-            json!({"kind":"revision_conflict","expected":2,"actual":3})
+            json!(QueueMutationResult::RevisionConflict {
+                expected: 2,
+                actual: 3
+            })
         } else {
             json!({"kind":"recorded"})
         };
@@ -1033,11 +1041,9 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.press("label:Remove queued message").unwrap();
     let retract = send_rx.recv().await.unwrap();
     assert_eq!(retract["method"], "editQueue");
-    assert_eq!(retract["input"]["expectedRevision"], 2);
-    assert_eq!(
-        retract["input"]["edit"],
-        json!({"kind":"retract","messageId":"q1"})
-    );
+    let retract: QueueMutation = serde_json::from_value(retract["input"].clone()).unwrap();
+    assert_eq!(retract.expected_revision, 2);
+    assert!(matches!(retract.edit, QueueAction::Retract { message_id } if message_id == "q1"));
     app.wait_for("text:Authoritative queue entry").unwrap();
     app.press("label:Done").unwrap();
 
@@ -1187,7 +1193,7 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "req-1", "kind": "service_approval", "toolUseId": "tu-1" }] }),
             "interaction" => json!({
                 "requestId": "req-1",
-                "outcome": if is_resolved { json!({ "kind":"service_approval_decision","decision":"allow","committedAt":1 }) } else { Value::Null },
+                "outcome": if is_resolved { json!(InteractionOutcome::ServiceApprovalDecision { decision: Decision::Allow, committed_at: 1 }) } else { Value::Null },
                 "request": {
                     "kind": "service_approval", "toolUseId": "tu-1", "toolName": "ReleaseTool",
                     "service": "release", "method": "publish", "binding": "prod", "through": 1
@@ -1241,7 +1247,19 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
             "subscriptionId": sub_id,
             "rootId": "root-a",
             "generation": 1,
-            "item": {"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}
+            "item": DeliveryPage::Preview { page: PreviewPage::Empty { host_epoch: "ea".into() } }
+        }),
+    )
+    .unwrap();
+    app.wait(Duration::from_millis(50)).unwrap();
+    app.wait_for("label:Deny").unwrap();
+    app.send_host_event(
+        "ios.subscriptionItem",
+        json!({
+            "subscriptionId": sub_id,
+            "rootId": "root-a",
+            "generation": 1,
+            "item": DeliveryPage::Interactions { pending: PendingInteractions { revision: 2, entries: vec![] } }
         }),
     )
     .unwrap();
@@ -1786,19 +1804,25 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             ]}),
             "Which release?",
             "Submit Answer",
-            json!({"kind":"question","answers":["Stable",null]}),
+            json!(InteractionAnswer::Question {
+                answers: vec![Some("Stable".into()), None]
+            }),
         ),
         (
             capability(json!({"kind":"browser_origin","origin":"https://example.test"})),
             "https://example.test",
             "Allow",
-            json!({"kind":"client_capability","decision":"allow"}),
+            json!(InteractionAnswer::ClientCapability {
+                decision: Decision::Allow
+            }),
         ),
         (
             capability(json!({"kind":"future_scope","scope":"everything"})),
             "Review on Desktop",
             "Deny",
-            json!({"kind":"client_capability","decision":"deny"}),
+            json!(InteractionAnswer::ClientCapability {
+                decision: Decision::Deny
+            }),
         ),
         (
             json!({"kind":"permissions","toolUseId":"tool","request":{"reason":"Future wire permission",
@@ -1824,7 +1848,9 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
                 "answer":{"kind":"computer_app","decision":"always"}}),
             "Review on Desktop",
             "Deny",
-            json!({"kind":"session_approval","decision":"deny"}),
+            json!(InteractionAnswer::SessionApproval {
+                decision: Decision::Deny
+            }),
         ),
     ];
 
@@ -1865,8 +1891,15 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
             tx.send(data["input"]["answer"].clone()).unwrap();
             settled.store(true, std::sync::atomic::Ordering::SeqCst);
             let answer = &data["input"]["answer"];
-            let outcome = json!({"kind":format!("{}_decision", answer["kind"].as_str().unwrap()),
-                "decision":answer["decision"],"committedAt":1});
+            let outcome = if answer["kind"] == "question" {
+                json!(InteractionOutcome::QuestionAnswer {
+                    answers: serde_json::from_value(answer["answers"].clone()).unwrap(),
+                    committed_at: 1,
+                })
+            } else {
+                json!({"kind":format!("{}_decision", answer["kind"].as_str().unwrap()),
+                    "decision":answer["decision"],"committedAt":1})
+            };
             call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":outcome}}}));
         });
         let mut config = engine_config(channel, tokio::runtime::Handle::current());
@@ -2046,4 +2079,110 @@ async fn room_watch_keeps_paginated_history_and_room_sends_have_no_backend() {
     let input = send_rx.try_recv().unwrap();
     assert!(input["backend"].is_null());
     assert_eq!(input["message"], "Hi Room");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refreshes() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let prefix = "é".repeat(30); // 60 UTF-8 bytes, not 60 JS code units.
+    let original = format!("{prefix}{}", "a".repeat(40));
+    let refreshed = format!("{prefix}{}", "b".repeat(40));
+    let final_text = format!("{prefix}{}", "c".repeat(40));
+    let history = |position: u64, offset, text: &str, before| {
+        json!({"kind":"ready","through":2,"before":before,"after":null,"chunks":[{
+            "importedTurn":null,"field":"body","position":{"kind":"live","sequence":position,
+                "fact":Uuid::from_u128(u128::from(position)),"itemIndex":0},
+            "order":{"path":[position],"itemIndex":0},"offset":offset,"totalBytes":if position == 1 { text.len() } else { 100 },"messageId":format!("m{position}"),
+            "role":if position == 1 { "user" } else { "assistant" },"turnId":"t1","text":text,"tool":null
+        }]})
+    };
+    let initial = history(2, 0, &original, Some(json!({"fixture":"older"})));
+    let older = history(1, 0, "Earlier user message", None);
+    let (tail_tx, mut tail_rx) = mpsc::unbounded_channel();
+    let tail_requests = std::sync::atomic::AtomicUsize::new(0);
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let session = json!({"id":"agent-1","title":"Agent History","kind":"agent","parentSessionId":null,
+            "workspace":{"path":"/work"},"updatedAt":1700000000000u64,"activity":"idle"});
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[session],"needsYouCount":0}),
+            "observe" => json!({"session":session,"through":2,"run":null}),
+            "botOutbox" => json!({"isBot":false}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "history" if data["input"]["position"]["kind"] == "before" => older.clone(),
+            "history" if tail_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => initial.clone(),
+            "history" => {
+                tail_tx.send(call).unwrap();
+                return;
+            }
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        if data["method"] == "watch" {
+            watch_tx.send(data["subscriptionId"].clone()).unwrap();
+        }
+        call.resolve(
+            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":1}),
+        );
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Agent History").unwrap();
+    app.press("label:Conversation: Agent History").unwrap();
+    app.wait_for(&format!("text:/^{original}$/")).unwrap();
+    app.press("label:Load earlier messages").unwrap();
+    app.wait_for("text:Earlier user message").unwrap();
+    let watch = watch_rx.try_recv().unwrap();
+    let delivery = |through| {
+        json!({"rootId":"root","generation":1,"subscriptionId":watch,
+        "item":{"kind":"events","through":through,"nextAfter":through,
+            "events":[{"sequence":through,"runId":Uuid::nil(),"turnId":"t1","fact":{
+                "kind":"executor_text_changed","messageId":"m2","thinking":false
+            }}]}})
+    };
+    for through in 3..=12 {
+        app.host()
+            .send("ios.subscriptionItem", delivery(through))
+            .unwrap();
+    }
+    // A visible delivery after the burst proves all earlier events were handled.
+    app.host().send("ios.subscriptionItem", json!({
+        "rootId":"root","generation":1,"subscriptionId":watch,
+        "item": DeliveryPage::Queue { queue: Queue { revision: 1, entries: vec![QueueEntry {
+            message_id: "queued".into(), kind: QueueKind::Followup, preview: "Queued".into(), origin: None,
+        }] }}
+    })).unwrap();
+    app.wait_for("text:1 message queued").unwrap();
+    let first = tail_rx.try_recv().unwrap();
+    assert!(
+        tail_rx.try_recv().is_err(),
+        "parallel tail query while one is in flight"
+    );
+
+    first.resolve(json!({"value":history(2,60,&"b".repeat(40),None)}));
+    app.wait_for(&format!("text:/^{refreshed}$/")).unwrap();
+    let followup = tail_rx.try_recv().unwrap();
+    followup.resolve(json!({"value":history(2,60,&"c".repeat(40),None)}));
+    app.wait_for(&format!("text:/^{final_text}$/")).unwrap();
+    app.wait_for("text:Earlier user message").unwrap();
+    assert!(
+        tail_rx.try_recv().is_err(),
+        "burst should schedule just one catch-up query"
+    );
 }

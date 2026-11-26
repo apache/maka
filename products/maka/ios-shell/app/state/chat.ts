@@ -261,21 +261,40 @@ export function createConversationController(
     }
   };
 
-  const compare = (a: AgentHistoryChunk, b: AgentHistoryChunk) => {
+  const compareRows = (a: AgentHistoryChunk, b: AgentHistoryChunk) => {
     for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
       const order = a.order.path[i] - b.order.path[i];
       if (order) return order;
     }
-    return (
-      a.order.path.length - b.order.path.length ||
-      a.order.itemIndex - b.order.itemIndex ||
-      a.offset - b.offset
-    );
+    return a.order.path.length - b.order.path.length || a.order.itemIndex - b.order.itemIndex;
   };
-  let tailRequest = 0;
+  const joinHistory = (older: AgentHistoryChunk[], tail: AgentHistoryChunk[]) => {
+    const first = tail[0];
+    if (!first) return older;
+    const prefix: AgentHistoryChunk[] = [];
+    for (const row of older) {
+      const order = compareRows(row, first);
+      if (order > 0 || (order === 0 && row.offset >= first.offset)) break;
+      if (order < 0) {
+        prefix.push(row);
+        continue;
+      }
+      // Host offsets are UTF-8 byte offsets on character boundaries.
+      let remaining = first.offset - row.offset;
+      let end = 0;
+      for (const character of row.text) {
+        if (remaining <= 0) break;
+        const code = character.codePointAt(0)!;
+        remaining -= code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+        end += character.length;
+      }
+      prefix.push(end === row.text.length ? row : { ...row, text: row.text.slice(0, end) });
+    }
+    return [...prefix, ...tail];
+  };
   let pagedHistory = false;
-  const loadHistory = async () => {
-    const request = ++tailRequest;
+  const refreshTail = async () => {
+    const generation = activeHostInfo(rootId)?.generation;
     try {
       const page = await hostQuery<AgentHistoryPage>(
         'agent',
@@ -290,7 +309,7 @@ export function createConversationController(
         undefined,
         rootId,
       );
-      if (disposed || request !== tailRequest) return;
+      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
       if (page?.kind === 'room') {
         isRoom.set(true);
         const tail = page.page.items;
@@ -309,22 +328,38 @@ export function createConversationController(
         const tail = page.chunks;
         if (tail.length || !pagedHistory)
           chunks.update((previous) =>
-            pagedHistory && tail.length
-              ? [...previous.filter((item) => compare(item, tail[0]) < 0), ...tail]
-              : tail,
+            pagedHistory && tail.length ? joinHistory(previous, tail) : tail,
           );
         if (!pagedHistory) beforeCursor.set(page.before ?? null);
         if (typeof page.through === 'number') {
           lastThrough = Math.max(lastThrough ?? 0, page.through);
         }
       }
-      const handoff = accumulator.completeHandoffIfPending();
+      const handoff = !historyDirty && accumulator.completeHandoffIfPending();
       if (handoff) livePreview.set(handoff);
     } catch (cause) {
-      if (!disposed) {
+      if (!disposed && activeHostInfo(rootId)?.generation === generation) {
         error.set(cause instanceof Error ? cause.message : String(cause));
       }
     }
+  };
+
+  let historyDirty = false;
+  let historyFlight: Promise<void> | undefined;
+  const loadHistory = () => {
+    if (disposed) return Promise.resolve();
+    historyDirty = true;
+    historyFlight ??= (async () => {
+      try {
+        while (historyDirty && !disposed) {
+          historyDirty = false;
+          await refreshTail();
+        }
+      } finally {
+        historyFlight = undefined;
+      }
+    })();
+    return historyFlight;
   };
 
   const loadModels = async () => {
@@ -425,7 +460,7 @@ export function createConversationController(
         beforeCursor.set(page.page?.before ?? null);
       } else if (page?.kind === 'ready') {
         const older = page.chunks ?? [];
-        chunks.update((existing) => [...older, ...existing]);
+        chunks.update((existing) => joinHistory(older, existing));
         beforeCursor.set(page.before ?? null);
       }
     } catch (cause) {

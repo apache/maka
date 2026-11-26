@@ -384,16 +384,23 @@ export function ChatScreen(props: {
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
+  const sameExecutor = (
+    left: AgentModelChoice['selection'],
+    right: AgentModelChoice['selection'],
+  ) =>
+    left.kind === 'executor' &&
+    right.kind === 'executor' &&
+    left.selection.executor === right.selection.executor &&
+    (left.selection.settings?.runtime ?? null) === (right.selection.settings?.runtime ?? null) &&
+    (left.selection.settings?.model ?? null) === (right.selection.settings?.model ?? null);
+
   const currentModelLabel = () => {
     const chosen = getSelectedBackend(rootId, sessionId);
     const list = ctrl.models();
     if (chosen?.kind === 'executor')
       return (
-        list.find(
-          ({ selection }) =>
-            selection.kind === 'executor' &&
-            selection.selection.executor === chosen.selection.executor,
-        )?.label ?? chosen.selection.executor
+        list.find(({ selection }) => sameExecutor(selection, chosen))?.label ??
+        chosen.selection.executor
       );
     if (chosen && chosen.kind === 'model') {
       const match = list.find(
@@ -418,9 +425,7 @@ export function ChatScreen(props: {
           ? chosen.connectionId === m.selection.connectionId &&
             chosen.modelId === m.selection.modelId &&
             chosen.thinkingLevel === m.selection.thinkingLevel
-          : chosen.kind === 'executor' &&
-            m.selection.kind === 'executor' &&
-            chosen.selection.executor === m.selection.selection.executor);
+          : sameExecutor(chosen, m.selection));
       return {
         id,
         label: m.label,

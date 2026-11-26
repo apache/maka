@@ -9555,6 +9555,8 @@ dependencies = [
  "futures-util",
  "hex",
  "log",
+ "maka-agent-api",
+ "maka-agent-facts",
  "maka-event-log",
  "maka-host-runtime",
  "maka-packages",

@@ -32,6 +32,7 @@ import {
   subscribe,
   unsubscribe,
   type SubscriptionHandle,
+  type AgentDeliveryPage,
   type AgentInteractionRecord,
 } from '../../bridge';
 import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
@@ -95,7 +96,8 @@ export function ReviewDetailScreen(props: {
   const offSub = onSubscriptionItem((payload) => {
     if (disposed) return;
     if (payload.rootId !== props.item.rootId || payload.subscriptionId !== watchId) return;
-    void refreshAuthoritativeRecord();
+    const page = payload.item as AgentDeliveryPage | undefined;
+    if (page?.kind === 'interactions' && !liveRecord()?.outcome) void refreshAuthoritativeRecord();
   });
 
   void subscribe(
