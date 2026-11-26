@@ -464,35 +464,6 @@ export function ChatScreen(props: {
       title={sessionTitle()}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
-      headerTitle={
-        isAvailable ? (
-          <View style={{ alignItems: 'center', width: 200 }}>
-            <Text
-              style={{
-                ...type.headline,
-                fontSize: 15,
-                color: token('foreground'),
-                textAlign: 'center',
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {sessionTitle()}
-            </Text>
-            <Text
-              style={{
-                ...type.caption,
-                color: token('muted-foreground'),
-                textAlign: 'center',
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {subtitleLine()}
-            </Text>
-          </View>
-        ) : undefined
-      }
       ios={{
         headerRightItems: [
           {
@@ -551,32 +522,33 @@ export function ChatScreen(props: {
       }
     >
       <View style={{ flex: 1, backgroundColor: token('canvas') }}>
-        {/* Compact attribution strip on non-iOS header projection */}
-        <If when={!isAvailable}>
-          <View
+        {/* The native nav bar fits its own title between the actual UIKit items. */}
+        <View
+          style={{
+            paddingLeft: Math.max(spacing.pageX, insets().left),
+            paddingRight: Math.max(spacing.pageX, insets().right),
+            paddingBottom: 6,
+            backgroundColor: token('grouped-bg'),
+            flexDirection: 'row',
+            justifyContent: isAvailable ? 'center' : 'flex-start',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <StatusDot kind={hostStatusKind(rootId)} size={7} />
+          <Text
             style={{
-              paddingHorizontal: spacing.pageX,
-              paddingBottom: 6,
-              backgroundColor: token('grouped-bg'),
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
+              ...type.footnote,
+              color: token('muted-foreground'),
+              minWidth: 0,
+              flexShrink: 1,
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
             }}
           >
-            <StatusDot kind={hostStatusKind(rootId)} size={7} />
-            <Text
-              style={{
-                ...type.footnote,
-                color: token('muted-foreground'),
-                flex: 1,
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {subtitleLine()}
-            </Text>
-          </View>
-        </If>
+            {subtitleLine()}
+          </Text>
+        </View>
 
         {/* Scrollable Transcript */}
         <Scroll

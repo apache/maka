@@ -3387,8 +3387,14 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     // Headless hosts the iOS view tree, not UIKit's native menu. Read the
     // displayed items and return the chosen ID through the native select event.
     let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    let (header_tx, mut headers) = mpsc::unbounded_channel();
     app.observe(move |_, batch| {
         for item in &batch.items {
+            if let MountItem::ScreenConfig { config, .. } = item
+                && config.title.as_deref() == Some("Chat")
+            {
+                header_tx.send(config.clone()).unwrap();
+            }
             if let MountItem::ComponentProps { id, props } = item {
                 for (name, value) in props {
                     if name.as_ref() == "items"
@@ -3404,7 +3410,16 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         }
     });
     app.wait_for("label:Conversation: Chat").unwrap();
+    app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
     app.press("label:Conversation: Chat").unwrap();
+    app.wait_for("text:work").unwrap();
+    let header = headers.try_recv().unwrap();
+    assert!(
+        header.title_view.is_none(),
+        "UIKit must fit the title to its actual buttons"
+    );
+    assert!(header.back_visible);
+    assert_eq!(header.right_items.len(), 2);
     app.wait_for("text:Shared model · First connector").unwrap();
     let (node, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
     let checked: Vec<_> = items
