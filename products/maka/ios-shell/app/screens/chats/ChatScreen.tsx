@@ -39,19 +39,16 @@ import {
   interactionBadge,
   interactionTitle,
 } from '../../approval';
-import type {
-  AgentHistoryChunk,
-  AgentInteractionRecord,
-  AgentModelChoice,
-  AgentRoomMessage,
-} from '../../bridge';
+import type { AgentHistoryChunk, AgentInteractionRecord, AgentRoomMessage } from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { currentLocale, tr } from '../../locale';
 import {
+  backendKey,
   compareHistoryRows,
   createConversationController,
+  displayModelKey,
   getDraft,
   getSavedScrollOffset,
   saveScrollOffset,
@@ -389,40 +386,27 @@ export function ChatScreen(props: {
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
-  const backendKey = (backend: AgentModelChoice['selection']) =>
-    JSON.stringify(
-      backend.kind === 'model'
-        ? [
-            'model',
-            backend.connectionId,
-            backend.modelId,
-            backend.serviceTier ?? null,
-            backend.thinkingLevel ?? null,
-          ]
-        : [
-            'executor',
-            backend.selection.executor,
-            backend.selection.settings?.runtime ?? null,
-            backend.selection.settings?.model ?? null,
-          ],
-    );
-
   const currentModelLabel = () => {
     const chosen = ctrl.selectedBackend();
     if (!chosen) return tr('Default');
-    const key = backendKey(chosen);
+    const key = displayModelKey(chosen);
     return (
-      ctrl.models().find((model) => backendKey(model.selection) === key)?.label ??
+      ctrl.models().find((model) => displayModelKey(model.selection) === key)?.label ??
       (chosen.kind === 'model' ? chosen.modelId : chosen.selection.executor)
     );
   };
 
   const modelMenuItems = (): MenuButtonItem[] => {
     const chosen = ctrl.selectedBackend();
-    const selectedKey = chosen ? backendKey(chosen) : null;
+    const selectedKey = chosen ? displayModelKey(chosen) : null;
     return ctrl.models().map((model) => {
       const id = backendKey(model.selection);
-      return { id, label: model.label, checked: id === selectedKey, singleSelection: true };
+      return {
+        id,
+        label: model.label,
+        checked: displayModelKey(model.selection) === selectedKey,
+        singleSelection: true,
+      };
     });
   };
 
