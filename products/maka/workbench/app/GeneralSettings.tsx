@@ -47,7 +47,7 @@ import {
 } from './appearance';
 import { trayIconArtwork } from './trayIcon';
 import { unchanged } from './look';
-import { lookLabel, ThemeEditor } from './ThemeEditor';
+import { lookLabel, ThemeEditor, themeLabel } from './ThemeEditor';
 import { LoadingIndicator } from './Loading';
 import { ProfileAvatar } from './ProfileAvatar';
 import { Icon } from './Icon';
@@ -434,7 +434,7 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
                       {tr(item().label)}
                     </Text>
                     <If when={item().avatar === avatar()}>
-                      <Icon name="check" size={14} color={C.accent} />
+                      <Icon name="check" size={14} color={C.accentText} />
                     </If>
                   </MenuItem>
                 )}
@@ -538,8 +538,6 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
   );
 }
 
-const themeLabel = (theme: (typeof colorThemes)[number]) =>
-  ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
 function UpdatesSection() {
   appUpdater.init();
   const channelLabel = () => {

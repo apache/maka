@@ -391,7 +391,7 @@ function Reaction(props: {
           backgroundColor: props.labelled ? C.panel : 'transparent',
         }}
         hoverStyle={{ backgroundColor: C.card }}
-        activeStyle={{ backgroundColor: C.line }}
+        activeStyle={{ backgroundColor: C.pressed }}
         focusStyle={quietFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >

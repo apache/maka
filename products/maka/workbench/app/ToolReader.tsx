@@ -640,7 +640,7 @@ function Sections(props: {
                       backgroundColor: C.cardRaised,
                       marginTop: 8,
                     }}
-                    hoverStyle={isDark() ? { opacity: 0.82 } : { backgroundColor: C.line }}
+                    hoverStyle={isDark() ? { opacity: 0.82 } : { backgroundColor: C.pressed }}
                     activeStyle={{ opacity: 0.68 }}
                     focusStyle={quietFocusStyle()}
                   >

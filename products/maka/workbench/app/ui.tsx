@@ -95,6 +95,10 @@ const DARK = {
   warning: '#e7b86b',
   danger: '#f48a8a',
   line: '#37393e',
+  /** A fill one step above `raised`: a control pressed or hovered there. Never a look's lines. */
+  pressed: '#37393e',
+  /** The sidebar's fill. */
+  sidebar: '#161719',
   success: '#9bd5a5',
   added: '#203527',
   removed: '#382528',
@@ -117,6 +121,8 @@ const LIGHT: typeof DARK = {
   warning: '#9a5b00',
   danger: '#c43c3c',
   line: '#dcdde0',
+  pressed: '#dcdde0',
+  sidebar: '#f5f5f6',
   success: '#1f7a3a',
   added: '#e3f3e7',
   removed: '#fbe8e9',
@@ -151,12 +157,12 @@ type Tone = keyof typeof DARK;
 // rows' hover `floatingRaised`) sits one step above the panel. The dark panel is `surface`, so
 // there each step is one token higher; terminals keep the light steps.
 const REGIONS = {
-  chrome: ['surface', 'background'],
+  chrome: ['sidebar', 'sidebar'],
   panel: ['background', 'surface'],
   card: ['surface', 'raised'],
-  cardRaised: ['raised', 'line'],
+  cardRaised: ['raised', 'pressed'],
   floating: ['background', 'raised'],
-  floatingRaised: ['raised', 'line'],
+  floatingRaised: ['raised', 'pressed'],
 } satisfies Record<string, [Tone, Tone]>;
 /** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
 export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
@@ -648,7 +654,7 @@ export function Header(props: {
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
-          activeStyle={{ backgroundColor: C.line }}
+          activeStyle={{ backgroundColor: C.pressed }}
         >
           <Icon name="command" color={C.secondary} />
         </Button>

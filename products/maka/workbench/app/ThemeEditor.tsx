@@ -25,7 +25,6 @@ import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
 import {
   contrast,
-  darkBackground,
   derivedColors,
   fontChoice,
   fontChoices,
@@ -89,7 +88,7 @@ const fontLabel = (choice: FontChoice | 'other') =>
     other: tr('Other font…'),
   })[choice];
 
-const themeLabel = (theme: (typeof colorThemes)[number]) =>
+export const themeLabel = (theme: (typeof colorThemes)[number]) =>
   ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
 
 /** The appearance whose colors are edited: the one the window shows. */
@@ -98,17 +97,10 @@ const mode = () => (colorScheme() === 'light' ? 'light' : 'dark');
 /** The color a key has in effect for the appearance edited, picked or derived. */
 function effective(look: Look, key: LookColor): string {
   const colors = look.cssVars[mode()];
-  const picked = colors[key];
-  if (picked) return picked;
   const tokens = lookTokens(colors);
-  const dark = darkBackground(colors.background);
-  return key === 'card'
-    ? dark
-      ? tokens.background
-      : tokens.surface
-    : key === 'border'
-      ? tokens.line
-      : tokens.muted;
+  return (
+    colors[key] ?? (key === 'card' ? tokens.sidebar : key === 'border' ? tokens.line : tokens.muted)
+  );
 }
 
 /** The shown look with `key` set to `value`, or derived again when `value` is undefined. */
@@ -219,9 +211,6 @@ function ThemeStatus() {
 function PresetCard(props: { id: LookId }) {
   const colors = () => presetLooks[props.id].cssVars[mode()];
   const tokens = () => lookTokens(colors());
-  // A dark window's content is on `surface` and its sidebar on `background`.
-  const sidebar = () =>
-    darkBackground(colors().background) ? tokens().background : tokens().surface;
   const selected = () => appearance.shown().base === props.id;
   return (
     <Button
@@ -242,7 +231,7 @@ function PresetCard(props: { id: LookId }) {
           backgroundColor: colors().background,
         }}
       >
-        <View style={{ width: 28, backgroundColor: sidebar() }} />
+        <View style={{ width: 28, backgroundColor: tokens().sidebar }} />
         <View style={{ flex: 1, padding: 8, gap: 5, backgroundColor: colors().background }}>
           <View
             style={{ height: 5, width: '80%', borderRadius: 2, backgroundColor: tokens().text }}
@@ -489,9 +478,11 @@ function ColorWell(props: {
 function FontRows() {
   const family = () => appearance.shown().cssVars.theme['font-sans'];
   const choice = (): FontChoice | 'other' => fontChoice(family()) ?? 'other';
-  // Other was chosen with no name typed yet.
-  const naming = signal(false);
-  const shownChoice = () => (naming() ? 'other' : choice());
+  // The look Other was chosen on with no name typed yet; any other look shows its own font.
+  const naming = signal<Look | null>(null);
+  const shownChoice = () => (naming() === appearance.shown() ? 'other' : choice());
+  // A name is shown as it is typed and saved once it is submitted or left.
+  let typed = '';
   return (
     <>
       <SettingsSelect
@@ -502,8 +493,8 @@ function FontRows() {
           title: fontLabel(value),
         }))}
         change={(value) => {
-          if (value === 'other') return naming.set(true);
-          naming.set(false);
+          if (value === 'other') return naming.set(appearance.shown());
+          naming.set(null);
           const picked = value as FontChoice;
           appearance.changeLook(
             withFont(picked === 'system' ? undefined : fontFamilies[picked]),
@@ -517,8 +508,12 @@ function FontRows() {
           value={choice() === 'other' ? (family() ?? '') : ''}
           placeholder="Avenir Next"
           change={(value) => {
-            naming.set(!value.trim());
-            appearance.changeLook(withFont(value.trim() || undefined), true);
+            typed = value.trim();
+            if (typed) appearance.changeLook(withFont(typed), false);
+          }}
+          commit={() => {
+            if (typed) appearance.changeLook(withFont(typed), true);
+            typed = '';
           }}
         />
       </If>

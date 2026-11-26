@@ -22,7 +22,15 @@
 import { host as shell, platform, setColorScheme, setTheme, signal, Storage } from 'nsh';
 import { ownTitleBar } from './chrome';
 import { parseHex, presetRecipes, type PaletteRecipe } from './colorPalette';
-import { lookFromRecipe, presetLooks, readLook, unchanged, type Look, type LookId } from './look';
+import {
+  lookFromRecipe,
+  presetLooks,
+  readLook,
+  sameLook,
+  unchanged,
+  type Look,
+  type LookId,
+} from './look';
 
 export type ColorTheme = 'system' | 'light' | 'dark';
 export const colorThemes: ColorTheme[] = ['system', 'light', 'dark'];
@@ -142,9 +150,43 @@ function createAppearanceOwner() {
     const before = committed;
     showLook(next);
     committed = look();
-    if (JSON.stringify(before) === JSON.stringify(committed)) return;
+    if (sameLook(before, committed)) return;
     history.set([...history(), before].slice(-UNDO_LIMIT));
     saveLook();
+  };
+  /** The palette Settings kept before looks, as the look it showed; null for none. */
+  const legacyLook = async (): Promise<Look | null> => {
+    const id = await Storage.getItem(PALETTE);
+    if (id === null) return null;
+    if (id !== 'custom') {
+      const recipe = presetRecipes[id as keyof typeof presetRecipes];
+      return recipe ? lookFromRecipe(recipe) : null;
+    }
+    const saved = await Storage.getItem(CUSTOM_PALETTE);
+    let custom: unknown = null;
+    try {
+      custom = saved === null ? null : JSON.parse(saved);
+    } catch {}
+    return validRecipe(custom) ? lookFromRecipe(custom) : null;
+  };
+  /** The saved look; without one, the earlier palette's, saved as the look before the palette's
+   * keys go. A look chosen meanwhile wins. */
+  const restoreLook = async () => {
+    if (initialization.kind !== 'loading' || !initialization.pending.has(LOOK)) return;
+    try {
+      const saved = await Storage.getItem(LOOK);
+      const value = saved === null ? await legacyLook() : readLook(JSON.parse(saved));
+      if (initialization.kind !== 'loading' || !initialization.pending.delete(LOOK)) return;
+      showLook(value);
+      committed = look();
+      if (saved !== null) return;
+      // Written once, so later starts read no palette keys; `null` is the default look.
+      const migrated = look();
+      await Storage.setItem(LOOK, JSON.stringify(migrated));
+      // A look chosen during that write may have been saved before it.
+      if (!sameLook(look(), migrated)) saveLook();
+      await Promise.all([Storage.removeItem(PALETTE), Storage.removeItem(CUSTOM_PALETTE)]);
+    } catch {}
   };
   const restore = (key: StorageKey, apply: (value: string | null) => void) => {
     if (initialization.kind === 'ready' || !initialization.pending.has(key))
@@ -209,43 +251,18 @@ function createAppearanceOwner() {
     },
     saving: () => persistence.kind === 'saving',
     whenIdle: () => (persistence.kind === 'saving' ? persistence.completion : Promise.resolve()),
-    initialize() {
-      if (initialization.kind !== 'uninitialized' || !ownTitleBar) return;
+    /** Reads the saved choices; settles once they are applied. */
+    initialize(): Promise<void> {
+      if (initialization.kind !== 'uninitialized' || !ownTitleBar) return Promise.resolve();
       initialization = { kind: 'loading', pending: initialization.pending };
-      void Promise.all([
+      return Promise.all([
         restore(THEME, (value) => {
           if (value === 'light' || value === 'dark' || value === 'system') {
             theme.set(value);
             setColorScheme(value);
           }
         }),
-        restore(LOOK, (value) => {
-          if (value !== null) {
-            showLook(readLook(JSON.parse(value)));
-            committed = look();
-            return;
-          }
-          // Before looks: the palette chosen, and the custom one's recipe.
-          void Promise.all([Storage.getItem(PALETTE), Storage.getItem(CUSTOM_PALETTE)])
-            .then(([id, saved]) => {
-              if (look() !== null || history().length) return;
-              const custom: unknown = saved === null ? null : JSON.parse(saved);
-              const recipe =
-                id === 'custom'
-                  ? validRecipe(custom)
-                    ? custom
-                    : null
-                  : (presetRecipes[id as keyof typeof presetRecipes] ?? null);
-              if (recipe) {
-                showLook(lookFromRecipe(recipe));
-                committed = look();
-                saveLook();
-              }
-              void Storage.removeItem(PALETTE).catch(() => undefined);
-              void Storage.removeItem(CUSTOM_PALETTE).catch(() => undefined);
-            })
-            .catch(() => undefined);
-        }),
+        restoreLook(),
         restore(TRAY_ICON, (value) => {
           if (trayIcons.includes(value as TrayIcon)) trayIcon.set(value as TrayIcon);
         }).then(() => trayIconKnown.set(true)),

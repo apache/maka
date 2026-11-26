@@ -179,8 +179,8 @@ export function ModelSelect(props: {
             alignItems: 'center',
             gap: platform.idiom === 'terminal' ? 8 : 4,
           }}
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
           activeStyle={{ backgroundColor: C.surface }}
         >
           <Text

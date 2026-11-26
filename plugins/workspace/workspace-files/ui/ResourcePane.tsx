@@ -331,7 +331,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
-                      hoverStyle={{ backgroundColor: C.line }}
+                      hoverStyle={{ backgroundColor: C.pressed }}
                       focusStyle={quietFocusStyle()}
                     >
                       <Icon name="close" size={12} color={C.muted} />
@@ -429,7 +429,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}
-                      hoverStyle={{ backgroundColor: C.line }}
+                      hoverStyle={{ backgroundColor: C.pressed }}
                       focusStyle={quietFocusStyle()}
                     >
                       <Icon name="close" size={12} color={C.muted} />

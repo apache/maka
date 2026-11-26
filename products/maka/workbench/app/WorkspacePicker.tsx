@@ -641,7 +641,7 @@ export function WorkspacePicker(props: {
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 12,
-                      backgroundColor: isSelected(entry()) ? C.line : C.surface,
+                      backgroundColor: isSelected(entry()) ? C.pressed : C.surface,
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ backgroundColor: C.raised }}
@@ -680,7 +680,7 @@ export function WorkspacePicker(props: {
                   style={{ ...controlStyle, backgroundColor: C.accent }}
                   hoverStyle={{ backgroundColor: C.accentHover }}
                   focusStyle={{ backgroundColor: C.accentHover }}
-                  disabledStyle={{ ...controlDisabledStyle, backgroundColor: C.line }}
+                  disabledStyle={{ ...controlDisabledStyle, backgroundColor: C.pressed }}
                 >
                   <Text
                     style={{

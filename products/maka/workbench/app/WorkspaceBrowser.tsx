@@ -653,7 +653,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             borderRadius: 8,
           }}
           hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="plus" color={navIcon()} />
@@ -669,7 +669,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             onPress={inputAction(toggleScopes, null)}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Icon name="folder" color={C.secondary} />
             <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
@@ -696,7 +696,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
           }
           focusStyle={
-            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.line }
+            platform.idiom === 'terminal' ? controlFocusStyle() : { backgroundColor: C.pressed }
           }
         >
           <Icon name="search" color={navIcon()} />
@@ -736,7 +736,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               borderRadius: 8,
             }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="bot" color={navIcon()} />
@@ -1793,7 +1793,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             paddingHorizontal: 8,
           }}
           hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           <Icon name="settings" color={navIcon()} />
           <Text style={{ color: C.secondary }}>{tr('Settings')}</Text>
@@ -1814,7 +1814,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             style={{ ...controlStyle, width: 32, alignItems: 'center', justifyContent: 'center' }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Icon name="archive" color={navIcon()} />
           </Button>

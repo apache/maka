@@ -5658,7 +5658,7 @@ export function Conversation(props: ConversationProps) {
           })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
-          activeStyle={{ backgroundColor: C.line }}
+          activeStyle={{ backgroundColor: C.pressed }}
         >
           <Text
             style={{
@@ -5680,7 +5680,7 @@ export function Conversation(props: ConversationProps) {
           })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
-          activeStyle={{ backgroundColor: C.line }}
+          activeStyle={{ backgroundColor: C.pressed }}
         >
           <Text
             style={{

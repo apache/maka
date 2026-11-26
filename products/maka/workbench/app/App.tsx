@@ -796,7 +796,7 @@ function App(
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
-            activeStyle={{ backgroundColor: C.line }}
+            activeStyle={{ backgroundColor: C.pressed }}
           >
             <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Details')}</Text>
           </Button>
@@ -806,7 +806,7 @@ function App(
             style={controlStyle}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
-            activeStyle={{ backgroundColor: C.line }}
+            activeStyle={{ backgroundColor: C.pressed }}
           >
             <Text style={{ ...bodyTextStyle, color: C.accentText }}>{tr('Retry')}</Text>
           </Button>

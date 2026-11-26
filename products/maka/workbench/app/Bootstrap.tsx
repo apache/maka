@@ -36,7 +36,7 @@ import { nativeDesktop } from './nativeDesktop';
 function Bootstrap() {
   installWorkbenchLocaleCatalog();
   nativeDesktop();
-  initializeAppearance();
+  void initializeAppearance();
   initializeComposerToolbar();
   initializeSidebarPreferences();
   const plugins = createPlugins();

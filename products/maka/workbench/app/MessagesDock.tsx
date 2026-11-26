@@ -323,7 +323,7 @@ export function createMessagesDock(
               onPress={inputAction(clearError, null)}
               style={actionStyle}
               hoverStyle={{ backgroundColor: C.cardRaised }}
-              focusStyle={{ backgroundColor: C.line }}
+              focusStyle={{ backgroundColor: C.pressed }}
             >
               <Icon name="close" color={C.muted} />
             </Button>
@@ -402,7 +402,7 @@ export function createMessagesDock(
                         onPress={inputAction(act, request('edit'))}
                         style={actionStyle}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
-                        focusStyle={{ backgroundColor: C.line }}
+                        focusStyle={{ backgroundColor: C.pressed }}
                       >
                         <Icon name="edit" color={C.muted} />
                       </Button>
@@ -415,7 +415,7 @@ export function createMessagesDock(
                         onPress={inputAction(act, request('retract'))}
                         style={actionStyle}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
-                        focusStyle={{ backgroundColor: C.line }}
+                        focusStyle={{ backgroundColor: C.pressed }}
                       >
                         <Icon name="close" color={C.muted} />
                       </Button>
@@ -428,7 +428,7 @@ export function createMessagesDock(
                         onPress={inputAction(act, request('promote'))}
                         style={actionStyle}
                         hoverStyle={{ backgroundColor: C.cardRaised }}
-                        focusStyle={{ backgroundColor: C.line }}
+                        focusStyle={{ backgroundColor: C.pressed }}
                       >
                         <Icon name="send" color={C.muted} />
                       </Button>
@@ -536,7 +536,7 @@ export function createMessagesDock(
                       onPress={inputAction(save, null)}
                       style={controlStyle}
                       hoverStyle={{ backgroundColor: C.cardRaised }}
-                      focusStyle={{ backgroundColor: C.line }}
+                      focusStyle={{ backgroundColor: C.pressed }}
                     >
                       <Text style={{ color: C.accentText }}>{tr('Save')}</Text>
                     </Button>

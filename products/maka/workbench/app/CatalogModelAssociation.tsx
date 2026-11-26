@@ -216,7 +216,7 @@ function CatalogModelPicker(props: {
               backgroundColor: selected() === index() ? C.raised : C.surface,
             }}
             hoverStyle={controlHoverStyle()}
-            activeStyle={{ backgroundColor: C.line }}
+            activeStyle={{ backgroundColor: C.pressed }}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >

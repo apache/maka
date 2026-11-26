@@ -149,10 +149,7 @@ test('a palette from before looks becomes a look with the colors it showed', asy
       saved.delete(key);
     },
   });
-  root.initializeAppearance();
-  await setImmediate();
-  await setImmediate();
-  await root.appearance.whenIdle();
+  await root.initializeAppearance();
   const shown = root.appearance.look();
   const before = palette.paletteTokens({ hue: 20, tint: 0.1, accent: '#00ff00' }, false);
   assert.equal(shown.cssVars.light.background, before.background);
@@ -180,6 +177,11 @@ test('saved changes to a look undo in order, and the default unchanged is no loo
   assert.equal(appearance.look(), null);
 });
 
+test('a color made readable on a mid-gray background reaches the ratio', () => {
+  for (const gray of ['#787878', '#808080'])
+    assert.ok(look.contrast(look.readable(gray, gray, 4.5), gray) >= 4.5, gray);
+});
+
 test('every preset reads in both appearances', () => {
   for (const id of look.lookIds)
     for (const mode of ['light', 'dark']) {
@@ -189,7 +191,10 @@ test('every preset reads in both appearances', () => {
       const at = `${id} ${mode}`;
       assert.ok(look.contrast(tokens.text, content) >= 4.5, `${at} text`);
       assert.ok(look.contrast(tokens.secondary, content) >= 4.5, `${at} secondary`);
-      assert.ok(look.contrast(tokens.muted, content) >= 3, `${at} muted`);
+      assert.ok(look.contrast(tokens.muted, content) >= 4.5, `${at} muted`);
+      // Hovered rows and inline code sit a step or two up, whatever color the lines are.
+      for (const step of ['raised', 'pressed'])
+        assert.ok(look.contrast(tokens.text, tokens[step]) >= 4.5, `${at} text on ${step}`);
       assert.ok(look.contrast(tokens.accentText, content) >= 4.5, `${at} accent text`);
       assert.ok(look.contrast(tokens.onAccent, tokens.accent) >= 4.5, `${at} text on accent`);
     }

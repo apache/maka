@@ -105,8 +105,8 @@ export function RecentWorkspaces(props: {
                   flexShrink: 1,
                 }
           }
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={{ backgroundColor: C.pressed }}
+          focusStyle={{ backgroundColor: C.pressed }}
         >
           <Icon name="folder" size={composerToolbarIconSize} color={C.muted} />
           <If when={!iconOnly()}>

@@ -264,7 +264,7 @@ export function ImageThumbnail(props: {
             onPress={inputAction(retry, action)}
             style={controlStyle}
             hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
+            focusStyle={{ backgroundColor: C.pressed }}
           >
             <Text style={{ color: C.accentText }}>{tr('Retry image')}</Text>
           </Button>

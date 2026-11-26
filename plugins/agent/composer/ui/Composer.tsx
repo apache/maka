@@ -436,7 +436,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       hoverStyle={{ backgroundColor: C.accentHover }}
       focusStyle={{ backgroundColor: C.accentHover }}
       activeStyle={{ backgroundColor: C.accent }}
-      disabledStyle={{ backgroundColor: C.line }}
+      disabledStyle={{ backgroundColor: C.pressed }}
     >
       <If
         when={stopPrimary() ? props.session()!.stopping() : confirming()}
@@ -1024,8 +1024,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     ...composerIconSlot,
                     borderRadius: composerIconSlot.height / 2,
                   }}
-                  hoverStyle={{ backgroundColor: C.line }}
-                  focusStyle={{ backgroundColor: C.line }}
+                  hoverStyle={{ backgroundColor: C.pressed }}
+                  focusStyle={{ backgroundColor: C.pressed }}
                   activeStyle={{ backgroundColor: C.surface }}
                 >
                   <Icon name="plus" size={composerToolbarIconSize} color={C.secondary} />
@@ -1123,8 +1123,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       ...composerIconSlot,
                       borderRadius: composerIconSlot.height / 2,
                     }}
-                    hoverStyle={{ backgroundColor: C.line }}
-                    focusStyle={{ backgroundColor: C.line }}
+                    hoverStyle={{ backgroundColor: C.pressed }}
+                    focusStyle={{ backgroundColor: C.pressed }}
                   >
                     <Icon name="mic" size={composerToolbarIconSize} color={C.secondary} />
                   </Button>

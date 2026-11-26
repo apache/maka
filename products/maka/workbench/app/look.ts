@@ -53,10 +53,11 @@ export type Look = {
 
 export type FontChoice = 'system' | 'serif' | 'mono' | 'geometric';
 export const fontChoices: FontChoice[] = ['system', 'serif', 'mono', 'geometric'];
+// Lists as CSS writes them: each platform draws with the first family it has.
 export const fontFamilies: Record<Exclude<FontChoice, 'system'>, string> = {
-  serif: '"Songti SC", "New York", Georgia, serif',
-  mono: '"SF Mono", Menlo, "PingFang SC", monospace',
-  geometric: 'Futura, "PingFang SC", sans-serif',
+  serif: '"Songti SC", Georgia, "Noto Serif CJK SC", serif',
+  mono: 'Menlo, Consolas, "PingFang SC", monospace',
+  geometric: 'Futura, "Century Gothic", "PingFang SC", sans-serif',
 };
 /** The choice a font family is, or null for one typed by name. */
 export const fontChoice = (family: string | undefined): FontChoice | null =>
@@ -128,15 +129,16 @@ export const presetLooks: Record<LookId, Look> = {
 
 const sameColors = (a: LookColors, b: LookColors) =>
   pickedColors.concat(derivedColors).every((key) => a[key] === b[key]);
+/** Whether two looks draw alike: the same colors and font, from whichever preset. */
+export const sameAppearance = (a: Look, b: Look) =>
+  sameColors(a.cssVars.light, b.cssVars.light) &&
+  sameColors(a.cssVars.dark, b.cssVars.dark) &&
+  a.cssVars.theme['font-sans'] === b.cssVars.theme['font-sans'];
+/** Whether two looks, or the absence of one, are the same. */
+export const sameLook = (a: Look | null, b: Look | null) =>
+  a === b || (!!a && !!b && a.base === b.base && sameAppearance(a, b));
 /** Whether a look is its preset unchanged. */
-export const unchanged = (value: Look) => {
-  const preset = presetLooks[value.base];
-  return (
-    sameColors(value.cssVars.light, preset.cssVars.light) &&
-    sameColors(value.cssVars.dark, preset.cssVars.dark) &&
-    value.cssVars.theme['font-sans'] === preset.cssVars.theme['font-sans']
-  );
-};
+export const unchanged = (value: Look) => sameAppearance(value, presetLooks[value.base]);
 
 const hex = (value: unknown): value is string =>
   typeof value === 'string' && /^#[0-9a-f]{6}$/.test(value);
@@ -230,7 +232,9 @@ export const darkBackground = (color: string) => lab(color)[0] < 0.6;
 /** `color` lightened or darkened as little as it takes to reach `ratio` against `against`. */
 export function readable(color: string, against: string, ratio: number): string {
   if (contrast(color, against) >= ratio) return color;
-  const target = darkBackground(against) ? '#ffffff' : '#000000';
+  // Toward the pole farther from `against`: white or black reaches 4.58:1 on any color.
+  const target =
+    contrast('#ffffff', against) >= contrast('#000000', against) ? '#ffffff' : '#000000';
   let [low, high] = [0, 1];
   for (let i = 0; i < 16; i++) {
     const middle = (low + high) / 2;
@@ -240,11 +244,11 @@ export function readable(color: string, against: string, ratio: number): string 
   return mix(color, target, high);
 }
 
-/** The readable minimum of each picked color against the background. */
+/** The readable minimum of each picked text color against the background. The accent has
+ * none: text in it (`accentText`) and on it (`onAccent`) is made readable from it. */
 export const minimumContrast: Partial<Record<LookColor, number>> = {
   foreground: 4.5,
   'muted-foreground': 4.5,
-  primary: 3,
 };
 
 /** The window's colors a look sets, made from what was picked for one appearance. */
@@ -252,7 +256,9 @@ export type LookTokens = {
   background: string;
   surface: string;
   raised: string;
+  sidebar: string;
   line: string;
+  pressed: string;
   text: string;
   secondary: string;
   muted: string;
@@ -263,26 +269,24 @@ export type LookTokens = {
 };
 
 /** The tokens of one appearance's colors. Regions follow whether its background is dark: the
- * content sits on `background` in a light window, on `surface` in a dark one. */
+ * content sits on `background` in a light window, on `surface` in a dark one. The sidebar is
+ * the picked `card`, else the step below the content. */
 export function lookTokens(colors: LookColors): LookTokens {
   const { background: content, foreground: text, primary: accent } = colors;
   const dark = darkBackground(content);
-  const muted = colors['muted-foreground'] ?? mix(text, content, dark ? 0.38 : 0.42);
-  const line = colors.border ?? mix(content, text, dark ? 0.13 : 0.14);
+  const muted =
+    colors['muted-foreground'] ?? readable(mix(text, content, dark ? 0.38 : 0.42), content, 4.5);
+  // A picked border may be as strong as the text; the fills a step up keep to the derived tone.
+  const pressed = mix(content, text, dark ? 0.13 : 0.14);
+  const below = dark ? mix(content, '#000000', 0.16) : mix(content, text, 0.04);
   const tones = dark
-    ? {
-        background: colors.card ?? mix(content, '#000000', 0.16),
-        surface: content,
-        raised: mix(content, text, 0.06),
-      }
-    : {
-        background: content,
-        surface: colors.card ?? mix(content, text, 0.04),
-        raised: mix(content, text, 0.08),
-      };
+    ? { background: below, surface: content, raised: mix(content, text, 0.06) }
+    : { background: content, surface: below, raised: mix(content, text, 0.08) };
   return {
     ...tones,
-    line,
+    sidebar: colors.card ?? below,
+    line: colors.border ?? pressed,
+    pressed,
     text,
     secondary: mix(text, muted, 0.5),
     muted,

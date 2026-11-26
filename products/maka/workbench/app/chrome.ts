@@ -212,7 +212,7 @@ export function applicationMenu(actions: MenuActions) {
             shortcut: 'mod+0',
             onSelect: () => actions.textSize(0),
           },
-          { label: tr('Reset theme'), onSelect: actions.resetTheme },
+          { label: tr('Reset theme'), shortcut: 'mod+shift+0', onSelect: actions.resetTheme },
           { type: 'separator' },
           { role: 'toggleFullScreen' },
         ],

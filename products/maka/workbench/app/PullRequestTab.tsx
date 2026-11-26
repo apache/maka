@@ -359,7 +359,7 @@ export function PullRequestTab(props: {
   };
 
   const statusBadge = (d: GitHubPullDetail) => {
-    if (d.merged) return { label: tr('Merged'), color: C.accent };
+    if (d.merged) return { label: tr('Merged'), color: C.accentText };
     if (d.state === 'closed') return { label: tr('Closed'), color: C.danger };
     if (d.draft) return { label: tr('Draft'), color: C.muted };
     return { label: tr('Open'), color: C.success };

@@ -45,7 +45,7 @@ function ComputerPermissionSetupEntry() {
     params.languagePreference.resolvedLanguage,
   );
   installWorkbenchLocaleCatalog();
-  initializeAppearance();
+  void initializeAppearance();
   const host = createHost(uiHost);
   const owner = params.systemPermission;
   if (!owner?.sessionId || !owner.requestId)
