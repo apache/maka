@@ -65,6 +65,15 @@ pub enum PairingError {
     Json(#[from] serde_json::Error),
 }
 
+/// RFC 6750 b64token, with optional trailing padding.
+pub fn valid_relay_bearer(token: &str) -> bool {
+    let value = token.trim_end_matches('=');
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._~+/".contains(&b))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RelayEndpoint {

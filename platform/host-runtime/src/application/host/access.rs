@@ -202,8 +202,9 @@ impl Host {
                 host.revoke_sessions(|principal| {
                     matches!(principal, Principal::AuthenticatedPeer(id) if id == &peer_id)
                 });
-                let _ = host.revoked_peers.send(peer_id);
+                let _ = host.revoked_peers.send(peer_id.clone());
             }
+            host.clear_peer_sas(&peer_id);
             Ok(changed)
         })
         .await
@@ -304,6 +305,7 @@ pub struct PeerPairingInvite {
     pub root_id: String,
     pub invite_id: String,
     pub expires_at_ms: u64,
+    pub relays: Vec<RelayEndpoint>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -398,6 +400,7 @@ impl Host {
             root_id: payload.root_id.clone(),
             invite_id: payload.invite_id.clone(),
             expires_at_ms,
+            relays: payload.relays.clone(),
         })
     }
 
@@ -437,6 +440,7 @@ impl Host {
         {
             return Err("pairing invite is invalid, expired, or already redeemed".into());
         }
+        self.clear_peer_sas(peer_id);
         Ok(PeerPairingReceipt {
             root_id: self.root_id().into(),
             peer_id: peer_id.as_str().into(),

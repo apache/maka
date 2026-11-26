@@ -147,6 +147,10 @@ impl Cli {
         self.command.is_none() || matches!(self.command, Some(Command::TerminalShell(_)))
     }
 
+    pub(super) fn is_relay(&self) -> bool {
+        matches!(self.command, Some(Command::Relay(_)))
+    }
+
     pub(super) fn logs_to_stderr(&self) -> bool {
         // Interactive products own the terminal; only headless roles write logs
         // to stderr. Libraries never install a process-global subscriber.

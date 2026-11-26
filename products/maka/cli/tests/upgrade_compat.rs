@@ -94,6 +94,39 @@ const COMPAT_MCP_REVISION: &str =
 const COMPAT_MCP_NEXT_REVISION: &str =
     "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
+const COMPAT_RELAY_TOKEN: &str = "compat-test-relay-token";
+
+async fn save_compat_relay(
+    settings: &ConfigurationStore,
+    auth: maka_config::remote_access::RelayAuthUpdate,
+) {
+    use maka_config::remote_access::{RemoteAccessUpdate, RemoteRelayUpdate};
+    let config = settings
+        .update_remote_access(
+            RemoteAccessUpdate {
+                enabled: false,
+                relay_only: true,
+                relays: vec![RemoteRelayUpdate {
+                    endpoint: maka_remote_pairing::RelayEndpoint {
+                        url: "https://relay.example.test/".into(),
+                        quic_port: Some(8443),
+                        cert_sha256: None,
+                    },
+                    ca_der_path: None,
+                    auth,
+                }],
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&config)
+            .unwrap()
+            .contains(COMPAT_RELAY_TOKEN)
+    );
+}
+
 async fn seed_pairing_invite(settings: &ConfigurationStore) {
     settings
         .create_host_peer_pairing_invite(
@@ -149,6 +182,8 @@ struct CapsuleManifest {
     host_pairing_invite: bool,
     #[serde(default)]
     project_mcp_trusted: bool,
+    #[serde(default)]
+    remote_relay_configured: bool,
 }
 
 struct FixtureSecret;
@@ -1224,6 +1259,11 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             )
             .await
             .unwrap();
+        save_compat_relay(
+            &settings,
+            maka_config::remote_access::RelayAuthUpdate::Replace(COMPAT_RELAY_TOKEN.into()),
+        )
+        .await;
         seed_pairing_invite(&settings).await;
         settings
             .trust_project_mcp(
@@ -1262,6 +1302,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             host_peer_id: Some(host_peer_id),
             host_pairing_invite: true,
             project_mcp_trusted: true,
+            remote_relay_configured: true,
         }
     })
     .catch_unwind()
@@ -1755,6 +1796,20 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         // Cold startup preserves historical device rows but must prune
         // invitations for a publication this Host is not serving.
         let settings = open_compat_settings(&dirs.root).await;
+        use maka_config::remote_access::RelayAuthUpdate;
+        let config = settings.remote_access_config().await.unwrap();
+        assert!(!config.enabled);
+        if manifest.remote_relay_configured {
+            assert!(config.relays[0].has_auth_token);
+            assert_eq!(config.relays[0].endpoint.quic_port, Some(8443));
+            let transport = settings.remote_transport().await.unwrap();
+            assert!(transport.relays[0].auth_token.as_deref() == Some(COMPAT_RELAY_TOKEN));
+        } else {
+            assert!(config.relays.is_empty());
+        }
+        save_compat_relay(&settings, RelayAuthUpdate::Clear).await;
+        assert!(!settings.remote_access_config().await.unwrap().relays[0].has_auth_token);
+
         let peer = PeerId::new(
             manifest
                 .host_peer_id
@@ -1797,6 +1852,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         assert_eq!(device.grant, COMPAT_PEER_GRANT);
         assert_eq!(device.label, "Compat device");
         assert!(!device.created_at.is_empty());
+        assert_eq!(device.last_active_at.as_deref(), Some(device.created_at.as_str()));
         assert!(settings.revoke_host_peer_access(peer).await.unwrap());
         if manifest.project_mcp_trusted {
             assert_eq!(

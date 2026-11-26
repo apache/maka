@@ -9286,6 +9286,7 @@ dependencies = [
  "maka-capabilities",
  "maka-event-log",
  "maka-plugin-core",
+ "maka-remote-pairing",
  "rusqlite",
  "serde",
  "serde_json",

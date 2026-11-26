@@ -65,6 +65,13 @@ static MIGRATIONS: &[Migration] = &[
         configure: None,
         data: None,
     },
+    Migration {
+        version: 6,
+        description: "host remote transport",
+        sql: include_str!("../migrations/0006_host_remote_transport.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 pub(crate) fn unsigned(value: i64) -> Result<u64> {
@@ -178,4 +185,44 @@ fn initialize_schema(connection: &Connection) -> std::result::Result<(), StoreEr
     }
     migration::run(connection, MIGRATIONS)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrades_v5_remote_access_to_disabled_without_losing_paired_devices() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("PRAGMA application_id = 1296124739")
+            .unwrap();
+        migration::run(&connection, &MIGRATIONS[..5]).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO host_peer_access (peer_id, host_grant, label, created_at)
+             VALUES ('device', 'published', 'Phone', '2026-07-01T10:20:30Z')",
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+
+        let entry: (String, String, String) = connection
+            .query_row(
+                "SELECT label, created_at, last_active_at FROM host_peer_access WHERE peer_id = 'device'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(entry.0, "Phone");
+        assert_eq!(entry.1, entry.2);
+        let config: (bool, String) = connection
+            .query_row(
+                "SELECT enabled, relays FROM host_remote_transport",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(config, (false, "[]".into()));
+    }
 }

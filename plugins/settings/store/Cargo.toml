@@ -30,6 +30,7 @@ maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 maka-capabilities.workspace = true
 maka-event-log.workspace = true
+maka-remote-pairing.workspace = true
 rusqlite.workspace = true
 time = { version = "0.3.55", features = ["formatting"] }
 serde.workspace = true

@@ -27,6 +27,7 @@ pub mod startup;
 pub mod websocket;
 pub use access::{Pairing, PeerPairingInvite, PeerPairingOptions, PeerPairingReceipt};
 pub mod protocol;
+pub mod remote_access;
 pub use client::{CallChannelOpener, Channel, Client, LocalCall, OpenChannel};
 pub use discovery::Registration;
 pub use protocol::{Configuration, LifecycleMode, Publication, Status, VERSION};
@@ -92,6 +93,7 @@ pub struct Host {
     access_grant: Mutex<String>,
     access_gate: tokio::sync::Mutex<()>,
     native_relays: Mutex<Vec<RelayEndpoint>>,
+    remote_access: remote_access::Runtime,
     revoked_peers: broadcast::Sender<PeerId>,
     epoch: Uuid,
     source: DeploymentRef,
@@ -243,6 +245,7 @@ impl Host {
             access_grant: Mutex::new(access_grant),
             access_gate: tokio::sync::Mutex::new(()),
             native_relays: Mutex::new(Vec::new()),
+            remote_access: remote_access::Runtime::default(),
             // Keep room for a burst of peer revocations without disconnecting
             // healthy peers. Subscribers still fail closed if they fall behind.
             revoked_peers: broadcast::channel(64).0,
@@ -651,6 +654,22 @@ impl Host {
                 wire::write(
                     &mut output,
                     &Response::Revoked(self.revoke_access(credential).await),
+                )
+                .await
+            }
+            Request::RemoteAccessStatus { invite_id } => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::RemoteAccessStatus(self.remote_access_status(invite_id).await),
+                )
+                .await
+            }
+            Request::UpdateRemoteAccess(update) => {
+                authority.local()?;
+                wire::write(
+                    &mut output,
+                    &Response::RemoteAccessUpdated(self.request_remote_access_update(update).await),
                 )
                 .await
             }
