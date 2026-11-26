@@ -197,7 +197,7 @@ function PluginDetail(props: { owner: PluginSettingsOwner; request: PluginAction
       <SettingsSection
         note={tr(
           'Saved configuration · revision {revision}. Enabled shows the saved setting. Changes may take a moment to apply.',
-          { revision: owner.inventory()!.source.revision },
+          { revision: String(owner.inventory()!.source.revision) },
         )}
       >
         <SettingsSwitch

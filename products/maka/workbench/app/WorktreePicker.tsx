@@ -32,6 +32,7 @@ import {
 import { Button, Input, Popover } from 'nsh/base';
 import { Icon } from './Icon';
 import { tr } from './locale';
+import { formatCount } from './numberFormat';
 import type { GitWorktreeEntry } from './reviewState';
 import {
   C,
@@ -183,7 +184,7 @@ export function WorktreePicker(props: {
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}>
               <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted }}>
-                {String(ordered().length)}
+                {formatCount(ordered().length)}
               </Text>
               <Icon name="down" size={12} color={C.muted} />
             </View>
@@ -396,8 +397,8 @@ function WorktreeMenu(props: {
         />
         <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted, flexShrink: 0 }}>
           {query().trim().length > 0
-            ? filtered().length + '/' + props.entries().length
-            : String(props.entries().length)}
+            ? `${formatCount(filtered().length)}/${formatCount(props.entries().length)}`
+            : formatCount(props.entries().length)}
         </Text>
         <If when={query().length > 0}>
           <Button

@@ -48,7 +48,7 @@ export const columns = (text: string) => {
   for (const char of text) total += width(char);
   return total;
 };
-const note = (count: number) => ` ${tr('… {count} more characters', { count: String(count) })}`;
+const note = (count: number) => ` ${tr('… {count} more characters', { count })}`;
 
 function cut(line: string, limit: number) {
   // Each code unit takes at most three columns.

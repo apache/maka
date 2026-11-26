@@ -23,6 +23,7 @@ import type { ComposerBackend } from '../../../../packages/plugin-sdk/src/compos
 import { composerToolbar, useToolbarCompact } from './composerToolbar';
 import { summarizeComposerUsage, type ComposerUsageSummary } from './composerUsageSummary';
 import { tr } from './locale';
+import { formatDecimal } from './numberFormat';
 import {
   C,
   captionTextStyle,
@@ -31,13 +32,7 @@ import {
   menuDetailTextStyle,
   textTooltip,
 } from './ui';
-import {
-  usageLabel,
-  UsageLimitsList,
-  usageNumber,
-  useUsageLimits,
-  type UsageLimit,
-} from './UsageLimits';
+import { usageLabel, UsageLimitsList, useUsageLimits, type UsageLimit } from './UsageLimits';
 import { isExternalUsageRuntime, type UsageTarget } from './usageLimitsReading';
 
 function targetForBackend(backend: ComposerBackend): UsageTarget | null {
@@ -60,7 +55,9 @@ function usageTooltip(source: string, summary: ComposerUsageSummary | null): str
   if (summary.kind === 'balance') {
     return [source, `${usageLabel(summary.limit)} ${summary.text}`].filter(Boolean).join(' · ');
   }
-  const remaining = tr('{percent}% remaining', { percent: usageNumber(summary.remainingPercent) });
+  const remaining = tr('{percent}% remaining', {
+    percent: formatDecimal(summary.remainingPercent, 2),
+  });
   return [source, `${usageLabel(summary.limit)} · ${remaining}`].filter(Boolean).join(' · ');
 }
 
@@ -228,7 +225,8 @@ export function ComposerUsageLimits(props: {
     const result = observation()?.reading.result;
     return result?.kind === 'ready' ? result.limits : [];
   };
-  const summary = () => summarizeComposerUsage(limits(), usageNumber, props.model());
+  const summary = () =>
+    summarizeComposerUsage(limits(), (value) => formatDecimal(value, 2), props.model());
 
   return (
     <If when={composerToolbar.usageLimits() && summary() !== null}>

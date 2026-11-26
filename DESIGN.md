@@ -41,6 +41,7 @@ The [NSH design guide](third-party/nsh/website/docs/design-guides.md) sets the f
 - Foreground hierarchy uses `text`, `secondary`, and `muted`, reinforced by size, weight, and spacing.
 - A single accent color marks interactive affordances and current selection. Semantic status colors (`warning`, `danger`, `success`) appear only to communicate actual state.
 - Components read colors from `C`; literal color values belong only in theme definitions or data-driven content.
+- Display numbers pass `number` values to `tr()` (or use [`numberFormat.ts`](products/maka/workbench/app/numberFormat.ts) outside `tr()`) for locale grouping and decimals; pass identifiers, line numbers, exit codes, revisions, and pixel dimensions as `string` to keep them ungrouped.
 
 ## Geometry and alignment
 

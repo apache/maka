@@ -89,7 +89,10 @@ export function CapabilityRequest(props: {
           <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
             {tr('{tool} · Permission boundary: {revision}', {
               tool: props.request.target.toolName,
-              revision: props.request.basis?.boundaryRevision ?? tr('unavailable'),
+              revision:
+                props.request.basis?.boundaryRevision != null
+                  ? String(props.request.basis.boundaryRevision)
+                  : tr('unavailable'),
             })}
           </Text>
           <If when={computerCapability(props.request)}>

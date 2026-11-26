@@ -61,6 +61,7 @@ import { Icon } from './Icon';
 import { ImageViewerButton, type OpenImageViewer } from './ImageViewer';
 import { toast } from './toastStore';
 import { tr } from './locale';
+import { formatCount } from './numberFormat';
 import { formatReviewNote, InlineReviewComposer, InlineReviewNoteCard } from './ReviewComposer';
 import type {
   CodeDefinitionResult as AgentCodeDefinitionResult,
@@ -1025,7 +1026,7 @@ function SourceEditorView(props: {
             }}
           />
           <Text style={{ ...captionTextStyle, color: C.muted, paddingHorizontal: 4 }}>
-            {findQuery().length > 0 ? String(searchResult().count) : ''}
+            {findQuery().length > 0 ? formatCount(searchResult().count) : ''}
           </Text>
           <Button
             accessibilityLabel={tr('Match case')}
@@ -1539,8 +1540,8 @@ function FileImage(props: {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
                 {tr('{width} × {height} · Captured image', {
-                  width: dimensions()!.width,
-                  height: dimensions()!.height,
+                  width: String(dimensions()!.width),
+                  height: String(dimensions()!.height),
                 })}
               </Text>
               <ImageViewerButton

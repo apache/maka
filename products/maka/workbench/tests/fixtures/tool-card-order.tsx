@@ -27,8 +27,10 @@ import type {
 import type { UiRuntime } from '../../../../../packages/plugin-sdk/src/workbench';
 import type { Row } from '../../app/history';
 import { HostProvider, type Host } from '../../app/host';
-import { viewRuntimeContext } from '../../app/plugins/viewContext';
+import { currentLocale } from '../../app/locale';
 import { installWorkbenchLocaleCatalog } from '../../app/localeCatalog';
+import { viewRuntimeContext } from '../../app/plugins/viewContext';
+import { InlineReviewNoteCard } from '../../app/ReviewComposer';
 import { ToolCard } from '../../app/ToolCard';
 
 const sessionId = 'tool-card-order';
@@ -113,7 +115,12 @@ const sources: Record<
     format: 'json',
     text: JSON.stringify({
       kind: 'completed',
-      value: { content: 'const a = 1;\n', offset: 0, returnedLines: 1, totalLines: 10 },
+      value: {
+        content: 'const a = 1;\nconst b = 2;\n',
+        offset: 1233,
+        returnedLines: 2,
+        totalLines: 12345,
+      },
     }),
     role: 'tool_result',
   },
@@ -132,7 +139,13 @@ const sources: Record<
     format: 'json',
     text: JSON.stringify({
       kind: 'completed',
-      value: { ok: true, path: 'src/ToolCard.tsx', replacements: 1, startLine: 521, endLine: 521 },
+      value: {
+        ok: true,
+        path: 'src/ToolCard.tsx',
+        replacements: 1234,
+        startLine: 1234,
+        endLine: 1234,
+      },
     }),
     role: 'tool_result',
   },
@@ -209,12 +222,17 @@ mount(() => {
       <ViewRuntime value={runtime}>
         <View style={{ width: '100%', height: '100%', padding: 16, gap: 16 }}>
           <Text>{`read-result-fetches:${readResultFetches()}`}</Text>
-          <Button
-            accessibilityLabel="Toggle read original"
-            onPress={() => readOriginal.set(!readOriginal())}
-          >
-            <Text>Toggle read original</Text>
-          </Button>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button
+              accessibilityLabel="Toggle read original"
+              onPress={() => readOriginal.set(!readOriginal())}
+            >
+              <Text>Toggle read original</Text>
+            </Button>
+            <Button accessibilityLabel="Switch to German" onPress={() => currentLocale.set('de')}>
+              <Text>Switch to German</Text>
+            </Button>
+          </View>
           {[scriptTool, readTool, editTool, failingReadTool].map((tool) => (
             <ToolCard
               row={() => row(tool)}
@@ -233,6 +251,25 @@ mount(() => {
               userScroll={() => {}}
             />
           ))}
+          <InlineReviewNoteCard
+            note={{
+              id: 'note-range',
+              sessionId,
+              path: { bytesBase64: '' },
+              pathLabel: 'src/ToolCard.tsx',
+              side: 'new',
+              startLine: 1233,
+              endLine: 1234,
+              realStartLine: 1234,
+              realEndLine: 1235,
+              excerpt: '',
+              comment: 'Review note',
+            }}
+            canPrompt={false}
+            onEdit={() => {}}
+            onRemove={() => {}}
+            onSendNow={() => {}}
+          />
         </View>
       </ViewRuntime>
     </HostProvider>

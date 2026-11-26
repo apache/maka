@@ -446,11 +446,12 @@ mod tests {
         assert!(app.shows("4,000,000"));
     }
 
-    fn headless_fixture_in(
+    fn headless_fixture_with_locales(
         entry: &str,
         viewport: Size<Points>,
         native_focus_scopes: bool,
         idiom: nsh_core::platform::Idiom,
+        locales: Option<Vec<String>>,
     ) -> nsh_testing::Headless {
         let mut registry = crate::bindings::ui_registry();
         registry.value("host", || Instance::new(CompletionHost));
@@ -467,6 +468,7 @@ mod tests {
             asset_root_from: Some(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
             ),
+            locales,
             ..Default::default()
         })
         .unwrap();
@@ -482,6 +484,15 @@ mod tests {
             ..nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(bundle.code))
         })
         .unwrap()
+    }
+
+    fn headless_fixture_in(
+        entry: &str,
+        viewport: Size<Points>,
+        native_focus_scopes: bool,
+        idiom: nsh_core::platform::Idiom,
+    ) -> nsh_testing::Headless {
+        headless_fixture_with_locales(entry, viewport, native_focus_scopes, idiom, None)
     }
 
     fn headless_fixture(
@@ -584,17 +595,19 @@ mod tests {
 
     #[test]
     fn tool_cards_show_inputs_before_outputs_and_fold_long_scripts() {
-        let mut app = headless_fixture(
+        let mut app = headless_fixture_with_locales(
             "tests/fixtures/tool-card-order.tsx",
             Size::new(px(900.0), px(1400.0)),
             false,
+            Environment::default().idiom,
+            Some(vec!["en".into(), "de".into()]),
         );
         app.wait_for("text:/const line1 = 1;/").unwrap();
         app.wait_for(r#"text:/"kind":"changed"/"#).unwrap();
         app.wait_for("label:Show 4 more lines").unwrap();
         app.wait_for("label:Copy Script").unwrap();
         app.wait_for("label:Copy Output").unwrap();
-        app.wait_for("text:Recorded edit · 1 replacement · Recorded line 521")
+        app.wait_for("text:Recorded edit · 1,234 replacements · Recorded line 1234")
             .unwrap();
         app.wait_for("text:/read arguments timed out/").unwrap();
 
@@ -610,7 +623,7 @@ mod tests {
             "script should appear before output: {texts:?}"
         );
         assert!(
-            pos("arguments") < pos("Recorded edit · 1 replacement · Recorded line 521"),
+            pos("arguments") < pos("Recorded edit · 1,234 replacements · Recorded line 1234"),
             "edit diff should appear before recorded receipt: {texts:?}"
         );
         assert!(
@@ -619,9 +632,14 @@ mod tests {
         );
         assert!(
             texts.contains(&"src/ToolCard.tsx")
-                && texts.contains(&"Read lines 1–1 / 10")
+                && texts.contains(&"Read lines 1234–1235 / 12,345")
+                && texts.contains(&"1234\n1235")
                 && !texts.contains(&"File"),
             "read card should merge path into header instead of rendering a trailing File section: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Lines 1234–1235"),
+            "review note should keep line numbers ungrouped: {texts:?}"
         );
         assert!(
             texts.contains(&"read-result-fetches:1"),
@@ -652,6 +670,12 @@ mod tests {
         };
         assert!(raw_pos("Original arguments") < raw_pos("Original result"));
         assert!(raw_texts.contains(&"read-result-fetches:1"));
+
+        app.press("label:Switch to German").unwrap();
+        app.wait_for(
+            "text:Aufgezeichnete Bearbeitung · 1.234 Ersetzungen · Aufgezeichnete Zeile 1234",
+        )
+        .unwrap();
     }
 
     #[test]

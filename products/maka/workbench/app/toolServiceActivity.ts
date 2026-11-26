@@ -54,7 +54,10 @@ function healthResult(value: unknown): ToolSection[] | null {
   const sections: ToolSection[] = [
     {
       label: tr('Background process'),
-      text: [tr(processStates[status]), exit === null ? '' : tr('Exit {code}', { code: exit })]
+      text: [
+        tr(processStates[status]),
+        exit === null ? '' : tr('Exit {code}', { code: String(exit) }),
+      ]
         .filter(Boolean)
         .join(' · '),
       tone: failed ? 'error' : status === 'orphaned' ? 'warning' : undefined,

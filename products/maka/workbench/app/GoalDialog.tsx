@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { formatCount } from './numberFormat';
 import {
   batch,
   cleanup,
@@ -193,7 +192,7 @@ export function createGoalContent(props: {
                 </If>
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr(goalStatusLabel(current()!.status))} ·{' '}
-                  {tr('Iteration {count}', { count: formatCount(current()!.iterations) })}
+                  {tr('Iteration {count}', { count: current()!.iterations })}
                 </Text>
               </View>
               <Text style={{ ...bodyTextStyle, color: C.text }}>{current()!.objective}</Text>

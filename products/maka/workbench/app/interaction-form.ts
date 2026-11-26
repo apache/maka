@@ -121,8 +121,8 @@ function problem(field: FormField, value: FormValue | undefined): UiText | null 
           : uiMessage('Enter a finite number.');
       if (value < (field.minimum ?? -Infinity) || value > (field.maximum ?? Infinity))
         return uiMessage('Use a number from {minimum} to {maximum}.', {
-          minimum: field.minimum ?? '−∞',
-          maximum: field.maximum ?? '∞',
+          minimum: field.minimum != null ? String(field.minimum) : '−∞',
+          maximum: field.maximum != null ? String(field.maximum) : '∞',
         });
       return null;
     case 'boolean':

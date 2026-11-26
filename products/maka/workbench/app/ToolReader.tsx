@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { formatCount } from './numberFormat';
 import { tr } from './locale';
 import { platform, Scroll, signal, Text, View } from 'nsh';
 import { Button, DiffView } from 'nsh/base';
@@ -177,8 +176,8 @@ function Read(props: {
     value.partialLine
       ? tr('Read lines · partial line · {total} total', { total: value.totalLines })
       : tr('Read lines {first}–{last} / {total}', {
-          first: value.returnedLines ? value.offset + 1 : value.offset,
-          last: value.offset + value.returnedLines,
+          first: String(value.returnedLines ? value.offset + 1 : value.offset),
+          last: String(value.offset + value.returnedLines),
           total: value.totalLines,
         });
   return (
@@ -494,19 +493,19 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
         {tr('Patch applied')}
       </Text>
     );
-  const summary =
+  const summary = () =>
     value.operation === 'write'
-      ? [tr('Recorded write'), tr('{count} bytes', { count: formatCount(value.bytes) })]
+      ? [tr('Recorded write'), tr('{count} bytes', { count: value.bytes })]
       : [
           tr('Recorded edit'),
-          tr('tool.replacements_count', {
-            count: value.replacements,
-            formatted: formatCount(value.replacements),
-          }),
+          tr('tool.replacements_count', { count: value.replacements }),
           value.startLine !== null && value.endLine !== null
             ? value.startLine === value.endLine
-              ? tr('Recorded line {line}', { line: value.startLine })
-              : tr('Recorded lines {first}–{last}', { first: value.startLine, last: value.endLine })
+              ? tr('Recorded line {line}', { line: String(value.startLine) })
+              : tr('Recorded lines {first}–{last}', {
+                  first: String(value.startLine),
+                  last: String(value.endLine),
+                })
             : '',
         ];
   return (
@@ -514,7 +513,7 @@ function Change(props: { value: ToolChange; source: ToolSource; userScroll(): vo
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="check" color={C.accent} />
         <Text style={[{ ...captionTextStyle, color: C.secondary }, { userSelect: 'none' }]}>
-          {summary.filter(Boolean).join(' · ')}
+          {summary().filter(Boolean).join(' · ')}
         </Text>
       </View>
       <If when={value.operation === 'write' && value.previous === null}>

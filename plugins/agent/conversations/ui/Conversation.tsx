@@ -59,6 +59,10 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
+import {
+  formatCompactCount,
+  formatDecimal,
+} from '../../../../products/maka/workbench/app/numberFormat';
 import type { StagedFile } from 'maka/host';
 import type {
   AgentContinuationRejection,
@@ -6107,13 +6111,13 @@ function HistoryEdgeFade(props: { inset: () => number; bottom?: boolean }) {
 
 function metricText(value: any): string {
   if (!value) return '';
-  const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   const parts: string[] = [];
   if (value.outputTokensPerSecond != null)
-    parts.push(tr('{speed} tok/s', { speed: value.outputTokensPerSecond.toFixed(1) }));
+    parts.push(tr('{speed} tok/s', { speed: formatDecimal(value.outputTokensPerSecond, 1, 1) }));
   if (value.contextTokens != null) {
-    const context = `${value.approximate || value.contextLastKnown ? '≈' : ''}${compact(value.contextTokens)}`;
-    const total = value.contextWindow != null ? ` / ${compact(value.contextWindow)}` : '';
+    const context = `${value.approximate || value.contextLastKnown ? '≈' : ''}${formatCompactCount(value.contextTokens)}`;
+    const total =
+      value.contextWindow != null ? ` / ${formatCompactCount(value.contextWindow)}` : '';
     const percent =
       value.contextWindow > 0
         ? ` · ${Math.round((value.contextTokens / value.contextWindow) * 100)}%`

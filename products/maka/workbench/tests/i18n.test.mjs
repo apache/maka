@@ -35,6 +35,7 @@ const {
   createI18n,
   extractIcuParams,
   formatMessage,
+  formatNumber,
   negotiateLocale,
   normalizeLocaleTag,
   pluralCategory,
@@ -85,6 +86,35 @@ test('CLDR plural rules and ICU formatting cover CJK, French, and 4-form Russian
   assert.equal(formatMessage(ruTpl, 'ru', { count: 5 }), '5 инструментов');
   assert.equal(formatMessage(ruTpl, 'ru', { count: 21 }), '21 инструмент');
   assert.equal(formatMessage("Literal '{raw}' it''s ok", 'en', {}), "Literal {raw} it's ok");
+
+  // Numeric placeholders and '#' follow locale grouping/decimals while strings stay verbatim.
+  assert.equal(formatMessage('{count} files', 'en', { count: 1_234 }), '1,234 files');
+  assert.equal(formatMessage('{count} files', 'de', { count: 1_234 }), '1.234 files');
+  assert.equal(formatMessage('{count} files', 'fr', { count: 1_234 }), '1\u202f234 files');
+  assert.equal(formatMessage('{count} files', 'zh-CN', { count: 1_234 }), '1,234 files');
+  const pluralEn = '{count, plural, one {# item} other {# items}}';
+  assert.equal(formatMessage(pluralEn, 'en', { count: 1_234 }), '1,234 items');
+  assert.equal(formatMessage(pluralEn, 'de', { count: 1_234 }), '1.234 items');
+  assert.equal(formatMessage(pluralEn, 'fr', { count: 1_234 }), '1\u202f234 items');
+  assert.equal(formatMessage(pluralEn, 'zh-CN', { count: 1_234 }), '1,234 items');
+  assert.equal(
+    formatMessage('Pull request #{number}', 'en', { number: String(7251) }),
+    'Pull request #7251',
+  );
+  assert.equal(
+    formatMessage('{width} × {height}', 'en', { width: String(1920), height: String(1080) }),
+    '1920 × 1080',
+  );
+  assert.equal(formatMessage('{n} items', 'en', { n: -0 }), '0 items');
+  assert.equal(formatMessage('{n} items', 'en', { n: Number.NaN }), 'NaN items');
+  assert.equal(formatMessage('{n} items', 'en', { n: Number.POSITIVE_INFINITY }), 'Infinity items');
+  assert.equal(formatNumber(1_234, 'en'), '1,234');
+  assert.equal(formatNumber(1_234, 'de'), '1.234');
+  assert.equal(formatNumber(1_234, 'fr'), '1\u202f234');
+  assert.equal(formatNumber(1_234, 'zh-CN'), '1,234');
+  assert.equal(formatNumber(-0, 'en'), '0');
+  assert.equal(formatNumber(Number.NaN, 'en'), 'NaN');
+  assert.equal(formatNumber(Number.POSITIVE_INFINITY, 'en'), 'Infinity');
 });
 
 test('zh-HK overlay inherits from zh-TW and never falls back to zh-CN simplified', () => {
@@ -245,7 +275,9 @@ test('importing workbench locale.ts never mutates nsh/i18n and resolves UI local
   try {
     globalThis.__testSetLocaleCount = 0;
     const { currentLocale, resolveUiLocale } = await import(new URL('locale.ts', appUrl));
-    const { formatCompactCount } = await import(new URL('numberFormat.ts', appUrl));
+    const { formatCompactCount, formatCount, formatDecimal } = await import(
+      new URL('numberFormat.ts', appUrl)
+    );
     setLocaleCalls = globalThis.__testSetLocaleCount;
     assert.equal(setLocaleCalls, 0);
     assert.equal(resolveUiLocale('yue-Hant-HK'), 'zh-HK');
@@ -255,9 +287,15 @@ test('importing workbench locale.ts never mutates nsh/i18n and resolves UI local
     assert.equal(resolveUiLocale('ar-SA'), 'en');
 
     currentLocale.set('en');
+    assert.equal(formatCount(1_234_567), '1,234,567');
     assert.equal(formatCompactCount(1_500), '1.5k');
+    assert.equal(formatDecimal(1_234.5, 1, 1), '1,234.5');
+    assert.equal(formatDecimal(-0, 2), '0');
+    assert.equal(formatDecimal(Number.NaN, 2), 'NaN');
     currentLocale.set('de');
+    assert.equal(formatCount(1_234_567), '1.234.567');
     assert.match(formatCompactCount(1_500_000), /Mio./);
+    assert.equal(formatDecimal(1_234.5, 1, 1), '1.234,5');
   } finally {
     delete globalThis.__testSetLocaleCount;
     delete globalThis[Symbol.for('maka.workbench.i18n')];

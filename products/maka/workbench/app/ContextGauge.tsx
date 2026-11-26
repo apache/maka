@@ -30,7 +30,7 @@ import {
   quietHoverStyle,
   textTooltip,
 } from './ui';
-import { formatCompactCount } from './numberFormat';
+import { formatCompactCount, formatDecimal } from './numberFormat';
 import { TokenCount } from './TokenCount';
 
 // A ring for how much of the model's context the conversation uses; the
@@ -44,7 +44,7 @@ export function ContextGauge(props: { usage: () => ComposerContextUsage }) {
   };
   const speed = () => {
     const speed = props.usage().outputTokensPerSecond;
-    return speed === null ? '' : tr('{speed} tok/s', { speed: speed.toFixed(1) });
+    return speed === null ? '' : tr('{speed} tok/s', { speed: formatDecimal(speed, 1, 1) });
   };
   const summary = () =>
     [
