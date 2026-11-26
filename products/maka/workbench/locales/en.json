@@ -806,6 +806,7 @@
   "Dismiss this notice": "Dismiss this notice",
   "Dispatched": "Dispatched",
   "Display name": "Display name",
+  "Don't load": "Don't load",
   "Download location": "Download location",
   "Download update": "Download update",
   "Downloading update {version}…": "Downloading update {version}…",
@@ -1628,6 +1629,7 @@
   "Process output": "Process output",
   "Process reference": "Process reference",
   "Project": "Project",
+  "Project MCP configuration skipped for this workspace.": "Project MCP configuration skipped for this workspace.",
   "Project MCP configuration trusted. Send your draft when ready.": "Project MCP configuration trusted. Send your draft when ready.",
   "Project paging did not advance. Refresh to try again.": "Project paging did not advance. Refresh to try again.",
   "Project: {name}": "Project: {name}",
@@ -2406,7 +2408,7 @@
   "The workspace for this task is unavailable.": "The workspace for this task is unavailable.",
   "The workspace may have changed. Refresh for current contents.": "The workspace may have changed. Refresh for current contents.",
   "There is no stopped response to continue.": "There is no stopped response to continue.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.",
   "These settings changed elsewhere. Reload before saving again.": "These settings changed elsewhere. Reload before saving again.",
   "Thick": "Thick",
   "Thin": "Thin",
@@ -2907,5 +2909,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} requests)",
   "{viewed} / {total} viewed": "{viewed} / {total} viewed",
   "{width} × {height} · Captured image": "{width} × {height} · Captured image",
-  "… {count} more characters": "… {count} more characters"
+  "… {count} more characters": "… {count} more characters",
+  "Project MCP trust": "Project MCP trust",
+  "Trusted": "Trusted",
+  "Not loaded": "Not loaded",
+  "Needs confirmation": "Needs confirmation",
+  "Project MCP configuration changed on disk. Review and try again.": "Project MCP configuration changed on disk. Review and try again.",
+  "Project MCP configuration trusted.": "Project MCP configuration trusted.",
+  "Project MCP configuration will not be loaded.": "Project MCP configuration will not be loaded."
 }

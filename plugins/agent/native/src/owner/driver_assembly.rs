@@ -635,6 +635,8 @@ impl Owner {
                 self.retain_original_scope(view.spec.session_id.clone(), lease, driver_cleanup::OriginalScope::Driver { driver: original_driver, effects, state: publication_store, pending: None }).await;
                 return result.and(Err(RunError::Store(error)));
             }
+            drop(original_driver);
+            let _ = self.mcp_projects.prune().await;
             lease.finish();
             scope_cleanup = maka_plugin_core::operation::OperationCleanup::Confirmed;
             result

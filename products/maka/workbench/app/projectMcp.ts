@@ -25,6 +25,7 @@ import { createTransientText, createText, errorText, message } from './text';
 
 type AgentMcpView = ServiceMethods['agent']['projectMcp']['output'];
 type AgentMcpTrustResult = ServiceMethods['agent']['trustProjectMcp']['output'];
+type AgentMcpDeclineResult = ServiceMethods['agent']['declineProjectMcp']['output'];
 
 type Configuration = Extract<AgentMcpView, { kind: 'configuration' }>;
 export type ProjectMcp = ReturnType<typeof createProjectMcp>;
@@ -34,15 +35,17 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
   const error = createText();
   const notice = createTransientText();
   let alive = true;
+  let serial = 0;
   cleanup(() => {
     alive = false;
   });
   const check = async () => {
+    const token = ++serial;
     const view = await host.query('agent', 'projectMcp', { sessionId });
-    if (!alive) return false;
+    if (!alive || token !== serial) return false;
     error.set('');
-    notice.set('');
-    const required = view.kind === 'configuration' && !view.trusted;
+    const required = view.kind === 'configuration' && !view.trusted && !view.declined;
+    if (required) notice.set('');
     proposal.set(required ? view : null);
     return !required;
   };
@@ -67,6 +70,30 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
       if (alive) pending.set(false);
     }
   };
+  const decline = async (revision: string) => {
+    if (!alive || pending() || proposal()?.revision !== revision) return;
+    pending.set(true);
+    error.set('');
+    try {
+      const result: AgentMcpDeclineResult = await control('declineProjectMcp', {
+        sessionId,
+        revision,
+      });
+      if (!alive) return;
+      if (result.kind === 'changed') {
+        await check();
+        if (alive)
+          error.set(message('The MCP configuration changed. Review it again before trusting it.'));
+      } else {
+        proposal.set(null);
+        notice.set(message('Project MCP configuration skipped for this workspace.'));
+      }
+    } catch (reason) {
+      if (alive) error.set(errorText(reason, 'Could not load project MCP servers.'));
+    } finally {
+      if (alive) pending.set(false);
+    }
+  };
   return {
     proposal,
     pending,
@@ -74,6 +101,7 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
     notice,
     check,
     trust,
+    decline,
     dismiss() {
       if (!pending()) {
         proposal.set(null);

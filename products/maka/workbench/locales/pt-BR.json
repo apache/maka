@@ -806,6 +806,7 @@
   "Dismiss this notice": "Dispensar este aviso",
   "Dispatched": "Enviado",
   "Display name": "Nome de exibição",
+  "Don't load": "Não carregar",
   "Download location": "Local de download",
   "Download update": "Baixar atualização",
   "Downloading update {version}…": "Baixando atualização {version}…",
@@ -1628,6 +1629,7 @@
   "Process output": "Saída do processo",
   "Process reference": "Referência do processo",
   "Project": "Projeto",
+  "Project MCP configuration skipped for this workspace.": "Configuração MCP do projeto ignorada para este espaço de trabalho.",
   "Project MCP configuration trusted. Send your draft when ready.": "Configuração MCP do projeto confiável. Envie seu rascunho quando estiver pronto.",
   "Project paging did not advance. Refresh to try again.": "A paginação de projetos não avançou. Atualize para tentar novamente.",
   "Project: {name}": "Projeto: {name}",
@@ -2406,7 +2408,7 @@
   "The workspace for this task is unavailable.": "O espaço de trabalho desta tarefa está indisponível.",
   "The workspace may have changed. Refresh for current contents.": "O workspace pode ter mudado. Atualize para ver o conteúdo atual.",
   "There is no stopped response to continue.": "Não há nenhuma resposta interrompida para continuar.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Estes servidores são executados fora da sandbox da conversa e podem executar comandos como seu usuário ou acessar serviços remotos. Sessões com acesso total podem chamar suas ferramentas sem confirmação adicional.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Estes servidores são executados fora da sandbox da conversa e podem executar comandos como seu usuário ou acessar serviços remotos. Depois de carregados, esta sessão pode chamar suas ferramentas.",
   "These settings changed elsewhere. Reload before saving again.": "Estas configurações foram alteradas em outro lugar. Recarregue antes de salvar novamente.",
   "Thick": "Grosso",
   "Thin": "Fino",
@@ -2907,5 +2909,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} solicitações)",
   "{viewed} / {total} viewed": "{viewed} / {total} visualizados",
   "{width} × {height} · Captured image": "{width} × {height} · Imagem capturada",
-  "… {count} more characters": "… mais {count} caracteres"
+  "… {count} more characters": "… mais {count} caracteres",
+  "Project MCP trust": "Confiança de MCP do projeto",
+  "Trusted": "Confiável",
+  "Not loaded": "Não carregado",
+  "Needs confirmation": "Requer confirmação",
+  "Project MCP configuration changed on disk. Review and try again.": "A configuração de MCP do projeto mudou no disco. Revise e tente novamente.",
+  "Project MCP configuration trusted.": "Configuração de MCP do projeto marcada como confiável.",
+  "Project MCP configuration will not be loaded.": "A configuração de MCP do projeto não será carregada."
 }

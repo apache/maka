@@ -773,6 +773,8 @@ export function SettingsButton(props: {
   autoFocus?: boolean;
 }) {
   const primary = () => props.tone === 'primary';
+  const primaryFill = () => primary() && !(terminal && props.disabled);
+  const terminalDisabled = () => terminal && Boolean(props.disabled);
   const quiet = () => props.tone === 'quiet';
   return (
     <Button
@@ -792,7 +794,7 @@ export function SettingsButton(props: {
         alignItems: 'center',
         gap: 6,
         flexShrink: 0,
-        backgroundColor: primary() ? C.accent : quiet() ? undefined : C.raised,
+        backgroundColor: primaryFill() ? C.accent : quiet() ? undefined : C.raised,
       }}
       hoverStyle={primary() ? { backgroundColor: C.accentHover } : controlHoverStyle()}
       activeStyle={primary() ? { backgroundColor: C.accentHover } : { backgroundColor: C.line }}
@@ -800,7 +802,11 @@ export function SettingsButton(props: {
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.icon}>
-        <Icon name={props.icon!} color={primary() ? C.background : C.secondary} size={14} />
+        <Icon
+          name={props.icon!}
+          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
+          size={14}
+        />
       </If>
       <If when={!props.iconOnly}>
         <Text
@@ -808,13 +814,15 @@ export function SettingsButton(props: {
             ...captionTextStyle,
             lineHeight: terminal ? 16 : 20,
             fontWeight: primary() ? '500' : undefined,
-            color: primary()
+            color: primaryFill()
               ? C.background
-              : props.tone === 'danger'
-                ? C.danger
-                : quiet()
-                  ? C.secondary
-                  : C.text,
+              : terminalDisabled()
+                ? C.muted
+                : props.tone === 'danger'
+                  ? C.danger
+                  : quiet()
+                    ? C.secondary
+                    : C.text,
           }}
         >
           {props.label}

@@ -200,6 +200,7 @@ export interface ComposerProjectMcp {
   error(): string;
   notice(): string;
   trust(revision: string): Promise<void>;
+  decline(revision: string): Promise<void>;
   dismiss(): void;
 }
 

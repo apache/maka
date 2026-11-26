@@ -2258,6 +2258,7 @@ pub fn contract() -> Contract {
                 ("sessionMcp".into(), method::<SessionMcp, SessionMcpAttached>(MethodMode::Subscription)),
                 ("projectMcp".into(), method::<McpRead, McpView>(MethodMode::Query)),
                 ("trustProjectMcp".into(), method::<McpTrust, McpTrustResult>(MethodMode::Mutation)),
+                ("declineProjectMcp".into(), method::<McpTrust, McpDeclineResult>(MethodMode::Mutation)),
                 (
                     "globalInstructions".into(),
                     method::<GlobalInstructionsRead, GlobalInstructionsView>(MethodMode::Query),
@@ -2384,6 +2385,7 @@ pub fn contract() -> Contract {
                 ),
                 ("mcpConfigurations".into(), method::<McpConfigurations, McpConfigurationList>(MethodMode::Query)),
                 ("manageMcpServer".into(), method::<McpConfigurationChange, McpConfigurationResult>(MethodMode::Mutation)),
+                ("setProjectMcpDecision".into(), method::<McpProjectTrustChange, McpProjectTrustChangeResult>(MethodMode::Mutation)),
                 (
                     "directories".into(),
                     method::<Directories, DirectoryPage>(MethodMode::Query),

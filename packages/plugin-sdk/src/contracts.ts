@@ -8937,6 +8937,53 @@ export const contracts: {
           },
           resources: {},
         },
+        declineProjectMcp: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpTrust',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              revision: {
+                type: 'string',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpDeclineResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'declined',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+          },
+          resources: {},
+        },
         deleteGitHubToken: {
           mode: 'mutation',
           input: {
@@ -29958,6 +30005,16 @@ export const contracts: {
                   $ref: '#/$defs/AgentMcpConfigurationLocation',
                 },
               },
+              projectTrust: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentProjectMcpTrustStatus',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
             },
             additionalProperties: false,
             required: ['locations'],
@@ -30010,6 +30067,26 @@ export const contracts: {
                 },
                 additionalProperties: false,
                 required: ['name', 'configuration'],
+              },
+              AgentProjectMcpTrustStatus: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  decision: {
+                    $ref: '#/$defs/AgentProjectMcpTrustDecision',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'revision', 'decision'],
+              },
+              AgentProjectMcpTrustDecision: {
+                type: 'string',
+                enum: ['undecided', 'trusted', 'declined'],
               },
             },
           },
@@ -34375,6 +34452,10 @@ export const contracts: {
                   },
                   trusted: {
                     type: 'boolean',
+                  },
+                  declined: {
+                    type: 'boolean',
+                    default: false,
                   },
                   servers: {
                     type: 'array',
@@ -53554,6 +53635,113 @@ export const contracts: {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        setProjectMcpDecision: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpProjectTrustChange',
+            type: 'object',
+            properties: {
+              workspace: {
+                $ref: '#/$defs/AgentWorkspace',
+              },
+              revision: {
+                type: 'string',
+              },
+              decision: {
+                $ref: '#/$defs/AgentProjectMcpDecisionInput',
+              },
+            },
+            additionalProperties: false,
+            required: ['workspace', 'revision', 'decision'],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'common_dir', 'source', 'base_commit', 'directory'],
+              },
+              AgentProjectMcpDecisionInput: {
+                type: 'string',
+                enum: ['trusted', 'declined'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpProjectTrustChangeResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
           },
           resources: {},
         },

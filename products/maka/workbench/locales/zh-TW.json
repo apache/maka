@@ -806,6 +806,7 @@
   "Dismiss this notice": "忽略這則提示",
   "Dispatched": "已派發",
   "Display name": "顯示名稱",
+  "Don't load": "不載入",
   "Download location": "下載位置",
   "Download update": "下載更新",
   "Downloading update {version}…": "正在下載更新 {version}…",
@@ -1628,6 +1629,7 @@
   "Process output": "程序輸出",
   "Process reference": "程序參照",
   "Project": "專案",
+  "Project MCP configuration skipped for this workspace.": "已略過此工作區的專案 MCP 設定。",
   "Project MCP configuration trusted. Send your draft when ready.": "已信任專案 MCP 設定。準備好後可傳送草稿。",
   "Project paging did not advance. Refresh to try again.": "專案分頁未前進。請重新整理後重試。",
   "Project: {name}": "專案：{name}",
@@ -2406,7 +2408,7 @@
   "The workspace for this task is unavailable.": "目前任務的工作區無法使用。",
   "The workspace may have changed. Refresh for current contents.": "工作區可能已變更。請重新整理以查看目前內容。",
   "There is no stopped response to continue.": "沒有可繼續的已停止回覆。",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "這些伺服器在對話沙箱外執行，可以用你的身分執行命令或連線遠端服務。完整存取對話呼叫其工具時無需再次確認。",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "這些伺服器在對話沙箱外執行，可以用你的身分執行命令或連線遠端服務。載入後，此對話可以直接呼叫它們的工具。",
   "These settings changed elsewhere. Reload before saving again.": "這些設定已在別處變更，請重新載入後再儲存。",
   "Thick": "粗",
   "Thin": "細",
@@ -2907,5 +2909,12 @@
   "{value} ({reported}/{requests} requests)": "{value}（已統計 {reported}/{requests} 個請求）",
   "{viewed} / {total} viewed": "已審閱 {viewed} / {total}",
   "{width} × {height} · Captured image": "{width} × {height} · 擷取的影像",
-  "… {count} more characters": "…還有 {count} 個字元"
+  "… {count} more characters": "…還有 {count} 個字元",
+  "Project MCP trust": "專案 MCP 信任狀態",
+  "Trusted": "已信任",
+  "Not loaded": "未載入",
+  "Needs confirmation": "待確認",
+  "Project MCP configuration changed on disk. Review and try again.": "磁碟上的專案 MCP 設定已變更，請檢查後重試。",
+  "Project MCP configuration trusted.": "已信任專案 MCP 設定。",
+  "Project MCP configuration will not be loaded.": "已設定不載入專案 MCP 設定。"
 }

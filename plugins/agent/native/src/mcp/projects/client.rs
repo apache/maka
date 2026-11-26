@@ -164,6 +164,7 @@ impl Projects {
                 snapshot
             }
         };
+        snapshots.pending_retirement.remove(&scope);
         snapshots.current.insert(scope, revision);
         Ok(snapshot.catalog.clone())
     }

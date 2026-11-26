@@ -83,6 +83,36 @@ function ServerList(props: { owner: McpSettingsOwner }) {
       <If when={!owner.loading() && !owner.inventory()}>
         <SettingsProblem retry={owner.refresh} />
       </If>
+      <If when={owner.inventory()?.projectTrust}>
+        <SettingsSection title={tr('Project MCP trust')}>
+          <SettingsRow
+            label={
+              owner.inventory()!.projectTrust!.decision === 'trusted'
+                ? tr('Trusted')
+                : owner.inventory()!.projectTrust!.decision === 'declined'
+                  ? tr('Not loaded')
+                  : tr('Needs confirmation')
+            }
+            description={owner.inventory()!.projectTrust!.path}
+            trailing={
+              owner.inventory()!.projectTrust!.decision === 'trusted' ? (
+                <SettingsButton
+                  label={tr("Don't load")}
+                  disabled={disabled()}
+                  onPress={() => owner.setProjectTrust('declined')}
+                />
+              ) : (
+                <SettingsButton
+                  tone="primary"
+                  label={tr('Trust configuration')}
+                  disabled={disabled()}
+                  onPress={() => owner.setProjectTrust('trusted')}
+                />
+              )
+            }
+          />
+        </SettingsSection>
+      </If>
       <If when={owner.inventory()}>
         <SettingsSection title={tr('MCP servers')}>
           <Each of={owner.rows()} key={(row) => `${row.location.location}:${row.entry.name}`}>

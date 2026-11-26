@@ -29,7 +29,7 @@ import {
   message as uiMessage,
 } from './text';
 import { tr } from './locale';
-import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, platform, signal, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
 import { useHost } from './host';
@@ -96,6 +96,8 @@ export function InteractionAction(props: {
   iconOnly?: boolean;
   tooltip?: string;
 }) {
+  const primaryFill = () => Boolean(props.primary && !props.disabled);
+  const terminalDisabled = () => platform.idiom === 'terminal' && Boolean(props.disabled);
   return (
     <Button
       accessibilityLabel={props.accessibilityLabel ?? props.label}
@@ -110,8 +112,11 @@ export function InteractionAction(props: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        backgroundColor:
-          props.primary && !props.disabled ? C.accent : props.selected ? C.cardRaised : C.card,
+        backgroundColor: primaryFill()
+          ? C.accent
+          : props.selected || (props.primary && props.disabled)
+            ? C.cardRaised
+            : C.card,
       }}
       hoverStyle={{ backgroundColor: props.primary ? C.accentHover : C.cardRaised }}
       focusStyle={props.primary ? { backgroundColor: C.accentHover } : cardFocusStyle()}
@@ -123,7 +128,7 @@ export function InteractionAction(props: {
       <If when={props.icon}>
         <Icon
           name={props.icon!}
-          color={props.disabled ? C.muted : props.primary ? C.background : C.secondary}
+          color={primaryFill() ? C.background : terminalDisabled() ? C.muted : C.secondary}
         />
       </If>
       <If when={!props.iconOnly}>
@@ -131,7 +136,7 @@ export function InteractionAction(props: {
           style={{
             ...bodyTextStyle,
             flexShrink: 1,
-            color: props.disabled ? C.muted : props.primary ? C.background : C.text,
+            color: primaryFill() ? C.background : terminalDisabled() ? C.muted : C.text,
             fontWeight: props.primary ? '600' : '400',
           }}
         >

@@ -806,6 +806,7 @@
   "Dismiss this notice": "忽略这条提示",
   "Dispatched": "已派发",
   "Display name": "显示名称",
+  "Don't load": "不加载",
   "Download location": "下载地址",
   "Download update": "下载更新",
   "Downloading update {version}…": "正在下载更新 {version}…",
@@ -1628,6 +1629,7 @@
   "Process output": "进程输出",
   "Process reference": "进程标识",
   "Project": "项目",
+  "Project MCP configuration skipped for this workspace.": "已跳过此工作区的项目 MCP 配置。",
   "Project MCP configuration trusted. Send your draft when ready.": "已信任项目 MCP 配置。准备好后可发送草稿。",
   "Project paging did not advance. Refresh to try again.": "项目分页没有前进。请刷新后重试。",
   "Project: {name}": "项目：{name}",
@@ -2406,7 +2408,7 @@
   "The workspace for this task is unavailable.": "当前任务的工作区不可用。",
   "The workspace may have changed. Refresh for current contents.": "工作区可能已更改。请刷新以查看当前内容。",
   "There is no stopped response to continue.": "没有可继续的已停止回复。",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "这些服务器在会话沙箱外运行，可以用你的身份执行命令或访问远程服务。完全访问会话调用其工具时无需再次确认。",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "这些服务器在会话沙箱外运行，可以用你的身份执行命令或访问远程服务。加载后，当前会话可以直接调用它们的工具。",
   "These settings changed elsewhere. Reload before saving again.": "这些设置已在别处更改，请重新加载后再保存。",
   "Thick": "粗",
   "Thin": "细",
@@ -2907,5 +2909,12 @@
   "{value} ({reported}/{requests} requests)": "{value}（已统计 {reported}/{requests} 个请求）",
   "{viewed} / {total} viewed": "已审阅 {viewed} / {total}",
   "{width} × {height} · Captured image": "{width} × {height} · 捕获的图像",
-  "… {count} more characters": "…还有 {count} 个字符"
+  "… {count} more characters": "…还有 {count} 个字符",
+  "Project MCP trust": "项目 MCP 信任状态",
+  "Trusted": "已信任",
+  "Not loaded": "未加载",
+  "Needs confirmation": "待确认",
+  "Project MCP configuration changed on disk. Review and try again.": "磁盘上的项目 MCP 配置已变更，请检查后重试。",
+  "Project MCP configuration trusted.": "已信任项目 MCP 配置。",
+  "Project MCP configuration will not be loaded.": "已设置不加载项目 MCP 配置。"
 }

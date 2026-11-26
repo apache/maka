@@ -976,6 +976,14 @@ impl Handler for Agent {
                         .await?,
                 )
             }),
+            "declineProjectMcp" => json_rpc(&mut args, |owner, input, context| async move {
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .decline_project_mcp(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
             "mcpConfigurations" => json_rpc(&mut args, |owner, input, context| async move {
                 if context.scope().identity.agent().is_some() {
                     return Err("agent_mcp_user_action_required".into());
@@ -994,6 +1002,17 @@ impl Handler for Agent {
                 encode(
                     owner
                         .manage_mcp_server(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
+            "setProjectMcpDecision" => json_rpc(&mut args, |owner, input, context| async move {
+                if context.scope().identity.agent().is_some() {
+                    return Err("agent_mcp_user_action_required".into());
+                }
+                context.operation().ok_or("agent_mutation_required")?;
+                encode(
+                    owner
+                        .set_project_mcp_decision(decode(input)?, context.scope())
                         .await?,
                 )
             }),

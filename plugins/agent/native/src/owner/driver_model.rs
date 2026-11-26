@@ -98,7 +98,8 @@ struct ReplayedTail {
     compaction_request: Option<ToolKey>,
     last_emitted_attempt: Option<ModelAttemptId>,
 }
-type ProjectedHistory = (Option<String>, ReplayedTail);
+type LastMcpTools = Option<std::collections::BTreeSet<String>>;
+type ProjectedHistory = (Option<String>, ReplayedTail, LastMcpTools);
 
 fn native_compaction(
     options: &CompactionOptions,
@@ -1213,6 +1214,7 @@ impl DriverModel {
                                 &mut messages,
                             )
                             .await?
+                            .0
                         }
                         _ => {
                             self.canonical_messages(
@@ -1223,6 +1225,7 @@ impl DriverModel {
                                 &mut messages,
                             )
                             .await?
+                            .0
                         }
                     }
                 };
@@ -1237,7 +1240,7 @@ impl DriverModel {
                     )
                     .await?;
                 }
-                (previous_checkpoint_id, tail) = self
+                let (checkpoint, replayed_tail, _) = self
                     .project_history(
                         target,
                         reader,
@@ -1247,6 +1250,8 @@ impl DriverModel {
                         &mut messages,
                     )
                     .await?;
+                previous_checkpoint_id = checkpoint;
+                tail = replayed_tail;
             } else if let Some((after, request)) = self.latest_replan(reader, view).await? {
                 let (source, baseline) =
                     Box::pin(self.request_base(target, reader, view.run, &request, &mut messages))
@@ -1269,7 +1274,7 @@ impl DriverModel {
                     )
                     .await?;
             } else {
-                previous_checkpoint_id = match input {
+                let (checkpoint, mut last_mcp_tools) = match input {
                     RunInput::Continuation { claim, .. } => {
                         self.inherited_messages(
                             target,
@@ -1293,12 +1298,14 @@ impl DriverModel {
                         .await?
                     }
                 };
+                previous_checkpoint_id = checkpoint;
                 Box::pin(self.project_message_input(
                     reader,
                     view,
                     input,
                     model.supports_vision,
                     false,
+                    Some(&mut last_mcp_tools),
                     &mut messages,
                 ))
                 .await?;
@@ -1456,6 +1463,73 @@ impl DriverModel {
         Ok(dependencies)
     }
 
+    async fn selected_mcp_servers(
+        &self,
+        reader: &HistorySource<'_>,
+        view: &RunView,
+    ) -> Result<std::collections::BTreeMap<String, Vec<String>>, RunError> {
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct McpSelection {
+            #[serde(default)]
+            definitions: Vec<ToolName>,
+            #[serde(default)]
+            internal_bindings: std::collections::BTreeMap<String, Option<String>>,
+        }
+        #[derive(Deserialize)]
+        struct ToolName {
+            name: String,
+        }
+        let selection: McpSelection = reader.decode(view.run, &view.spec.tool_selection).await?;
+        let mut servers: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for definition in selection.definitions {
+            if !definition.name.starts_with("mcp__") {
+                continue;
+            }
+            let Some(Some(generation)) = selection.internal_bindings.get(&definition.name) else {
+                continue;
+            };
+            let Some(server) = generation
+                .strip_prefix("mcp:")
+                .and_then(|rest| rest.rsplit_once(':'))
+                .map(|(server, _)| server)
+            else {
+                continue;
+            };
+            servers
+                .entry(server.to_owned())
+                .or_default()
+                .push(definition.name);
+        }
+        for tools in servers.values_mut() {
+            tools.sort();
+        }
+        Ok(servers)
+    }
+
+    async fn selected_mcp_tool_names(
+        &self,
+        reader: &HistorySource<'_>,
+        run: RunId,
+    ) -> Result<LastMcpTools, RunError> {
+        let view = reader.view(run).await?;
+        if !matches!(view.spec.backend, BackendSpec::Model { .. }) {
+            return Ok(None);
+        }
+        let servers = self.selected_mcp_servers(reader, &view).await?;
+        Ok(Some(
+            servers
+                .into_values()
+                .flat_map(|tools| tools.into_iter())
+                .collect(),
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Message projection tracks source history, model capabilities, and predecessor MCP tool selection"
+    )]
     fn project_message_input<'a>(
         &'a self,
         reader: &'a HistorySource<'_>,
@@ -1463,6 +1537,7 @@ impl DriverModel {
         input: &'a RunInput,
         vision: bool,
         steering: bool,
+        last_mcp_tools: Option<&'a mut LastMcpTools>,
         messages: &'a mut preparation::PromptBuilder,
     ) -> BoxFuture<'a, Result<(), RunError>> {
         Box::pin(async move {
@@ -1471,11 +1546,27 @@ impl DriverModel {
                     "history-source-requires-bound-snapshot-projection",
                 ));
             }
+            let mcp_section = if !steering
+                && matches!(view.spec.backend, BackendSpec::Model { .. })
+                && let Some(previous) = last_mcp_tools
+            {
+                let servers = self.selected_mcp_servers(reader, view).await?;
+                let (section, current) = mcp_context_section(&servers, previous.as_ref());
+                *previous = Some(current);
+                section
+            } else {
+                None
+            };
             if matches!(
                 input,
                 RunInput::Continuation { .. } | RunInput::CheckpointHandoff { .. }
             ) {
                 append_continuation_cue(view.spec.language, messages).await?;
+                if let Some(section) = mcp_section {
+                    messages
+                        .append(maka_model::prompt::Message::user(section))
+                        .await?;
+                }
                 return Ok(());
             }
             if let RunInput::Message {
@@ -1489,11 +1580,19 @@ impl DriverModel {
                     session: view.spec.session_id.clone(),
                 };
                 if source_messages.is_empty() {
+                    let projected_content = match mcp_section.as_deref() {
+                        Some(section) => {
+                            let mut cloned = content.clone();
+                            append_mcp_section(&mut cloned, section);
+                            std::borrow::Cow::Owned(cloned)
+                        }
+                        None => std::borrow::Cow::Borrowed(content),
+                    };
                     messages
                         .append(
                             preparation::project_input_from(
                                 reader.media_source(scope.clone().into()),
-                                content,
+                                projected_content.as_ref(),
                                 view.spec.language,
                                 vision,
                                 steering,
@@ -1505,12 +1604,25 @@ impl DriverModel {
                         )
                         .await?;
                 } else {
-                    for source in source_messages {
+                    let last = source_messages.len().saturating_sub(1);
+                    for (index, source) in source_messages.iter().enumerate() {
+                        let projected_content = if index == last {
+                            match mcp_section.as_deref() {
+                                Some(section) => {
+                                    let mut cloned = source.message.content.clone();
+                                    append_mcp_section(&mut cloned, section);
+                                    std::borrow::Cow::Owned(cloned)
+                                }
+                                None => std::borrow::Cow::Borrowed(&source.message.content),
+                            }
+                        } else {
+                            std::borrow::Cow::Borrowed(&source.message.content)
+                        };
                         messages
                             .append(
                                 preparation::project_input_from(
                                     reader.media_source(scope.clone().into()),
-                                    &source.message.content,
+                                    projected_content.as_ref(),
                                     view.spec.language,
                                     vision,
                                     steering,
@@ -1813,12 +1925,12 @@ impl DriverModel {
         vision: bool,
         language: maka_agent_facts::language::Language,
         messages: &'a mut preparation::PromptBuilder,
-    ) -> BoxFuture<'a, Result<Option<String>, RunError>> {
+    ) -> BoxFuture<'a, Result<(Option<String>, LastMcpTools), RunError>> {
         Box::pin(async move {
             let reader = HistorySource::live(&self.state, cut);
             self.project_history(target, &reader, None, vision, language, messages)
                 .await
-                .map(|(previous, _)| previous)
+                .map(|(previous, _, last_mcp)| (previous, last_mcp))
         })
     }
 
@@ -1853,6 +1965,7 @@ impl DriverModel {
                 covered: u64,
                 order: std::collections::BTreeMap<u64, (RunId, u64)>,
             }
+            let mut last_mcp_tools = None;
             let (mut current, mut frames, mut covered, previous_checkpoint_id, mut order) =
                 Box::pin(async {
                     let mut current = std::borrow::Cow::Borrowed(reader);
@@ -1953,6 +2066,7 @@ impl DriverModel {
                             }) => {
                                 self.request_base(target, reader, run, &request, messages)
                                     .await?;
+                                last_mcp_tools = self.selected_mcp_tool_names(reader, run).await?;
                                 (
                                     Some(sequence),
                                     self.request_checkpoint(reader, run, &request).await?,
@@ -2032,8 +2146,16 @@ impl DriverModel {
                     let view = reader.view(run).await?;
                     if !covered.is_some_and(|covered| admission <= covered) {
                         let input: RunInput = reader.decode(run, &view.spec.input).await?;
-                        self.project_message_input(reader, &view, &input, vision, false, messages)
-                            .await?;
+                        self.project_message_input(
+                            reader,
+                            &view,
+                            &input,
+                            vision,
+                            false,
+                            Some(&mut last_mcp_tools),
+                            messages,
+                        )
+                        .await?;
                     }
                     let attempt = (run == self.execution.run_id)
                         .then_some(prefix_attempt)
@@ -2056,7 +2178,7 @@ impl DriverModel {
                     }
                 }
                 let Some(frame) = frames.pop() else {
-                    return Ok((previous_checkpoint_id, tail));
+                    return Ok((previous_checkpoint_id, tail, last_mcp_tools));
                 };
                 current = frame.reader;
                 covered = Some(frame.covered);
@@ -2089,7 +2211,7 @@ impl DriverModel {
         vision: bool,
         system: &'a mut Option<SystemPrompt>,
         messages: &'a mut preparation::PromptBuilder,
-    ) -> BoxFuture<'a, Result<Option<String>, RunError>> {
+    ) -> BoxFuture<'a, Result<(Option<String>, LastMcpTools), RunError>> {
         Box::pin(async move {
             let mut ancestry = Vec::new();
             let mut seen = std::collections::BTreeSet::new();
@@ -2161,16 +2283,18 @@ impl DriverModel {
             }
             if let Some((index, base)) = selected {
                 let run = ancestry[index].0.run;
-                let (previous, covered, request_after) = match base {
+                let (previous, covered, request_after, mut last_mcp_tools) = match base {
                     Base::Request { after, request } => {
                         let (_, baseline) = self
                             .request_base(target, reader, run, &request, messages)
                             .await?;
                         *system = baseline;
+                        let last_mcp = self.selected_mcp_tool_names(reader, run).await?;
                         (
                             self.request_checkpoint(reader, run, &request).await?,
                             None,
                             Some(after),
+                            last_mcp,
                         )
                     }
                     Base::Compacted { id, baseline } => {
@@ -2194,6 +2318,7 @@ impl DriverModel {
                             Some(id.to_string()),
                             Some(capture.current.through_sequence),
                             None,
+                            None,
                         )
                     }
                 };
@@ -2214,8 +2339,16 @@ impl DriverModel {
                     if !(position == index && request_after.is_some())
                         && !covered.is_some_and(|through| admission <= through)
                     {
-                        self.project_message_input(reader, &prior, &input, vision, false, messages)
-                            .await?;
+                        self.project_message_input(
+                            reader,
+                            &prior,
+                            &input,
+                            vision,
+                            false,
+                            Some(&mut last_mcp_tools),
+                            messages,
+                        )
+                        .await?;
                     }
                     let _ = self
                         .semantic_tail(
@@ -2231,7 +2364,7 @@ impl DriverModel {
                         )
                         .await?;
                 }
-                Ok(previous)
+                Ok((previous, last_mcp_tools))
             } else {
                 let (root, root_input) = ancestry.last().expect("source ancestry");
                 let history = self
@@ -2245,13 +2378,21 @@ impl DriverModel {
                 ) {
                     inherit_prior_skills(&self.state, &history, cut.clone(), system).await?;
                 }
-                let previous = self
+                let (previous, mut last_mcp_tools) = self
                     .canonical_messages(target, &cut, vision, language, messages)
                     .await?;
                 for (prior, input) in ancestry.into_iter().rev() {
                     merge_input_skills(system, &input)?;
-                    self.project_message_input(reader, &prior, &input, vision, false, messages)
-                        .await?;
+                    self.project_message_input(
+                        reader,
+                        &prior,
+                        &input,
+                        vision,
+                        false,
+                        Some(&mut last_mcp_tools),
+                        messages,
+                    )
+                    .await?;
                     let _ = self
                         .semantic_tail(
                             target,
@@ -2266,7 +2407,7 @@ impl DriverModel {
                         )
                         .await?;
                 }
-                Ok(previous)
+                Ok((previous, last_mcp_tools))
             }
         })
     }
@@ -4365,6 +4506,48 @@ fn recovery_for_failure(
         recovery: AttemptRecovery::ContinueFromHistory { not_before },
         contents: vec![],
     })
+}
+
+/// Format a concise MCP tool inventory only on the first Model turn with
+/// selected MCP tools or when a Run's frozen selected `mcp__*` tool set
+/// differs from its actual predecessor Run in session history. Computing this
+/// during model-input projection keeps queued edits/removals accurate, leaves
+/// persisted user messages clean, and preserves byte-identical KV prefix caches.
+fn mcp_context_section(
+    servers: &std::collections::BTreeMap<String, Vec<String>>,
+    previous: Option<&std::collections::BTreeSet<String>>,
+) -> (Option<String>, std::collections::BTreeSet<String>) {
+    let current: std::collections::BTreeSet<String> = servers
+        .values()
+        .flat_map(|tools| tools.iter().cloned())
+        .collect();
+    let changed = match previous {
+        None => !current.is_empty(),
+        Some(prev) => prev != &current,
+    };
+    if !changed {
+        return (None, current);
+    }
+    let mut section = String::from("<mcp_servers>\n");
+    if servers.is_empty() {
+        section.push_str("No external MCP servers are currently connected.\n");
+    } else {
+        section.push_str(
+            "Connected MCP servers available as tools (inspect schemas via ALL_TOOLS or tool_search):\n",
+        );
+        for (server, tools) in servers {
+            section.push_str(&format!("- {server}: {}\n", tools.join(", ")));
+        }
+    }
+    section.push_str("</mcp_servers>");
+    (Some(section), current)
+}
+
+fn append_mcp_section(content: &mut maka_agent_facts::input::MessageInput, section: &str) {
+    if !content.text.is_empty() {
+        content.text.push_str("\n\n");
+    }
+    content.text.push_str(section);
 }
 
 pub(crate) async fn append_continuation_cue(

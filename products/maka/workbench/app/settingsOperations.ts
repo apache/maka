@@ -177,7 +177,9 @@ export function createSettingsOperations(host: Host) {
               if (
                 original.endpoint === 'skills' ||
                 (original.endpoint === 'agent' &&
-                  ['selectWorkspace', 'manageMcpServer'].includes(original.method))
+                  ['selectWorkspace', 'manageMcpServer', 'setProjectMcpDecision'].includes(
+                    original.method,
+                  ))
               ) {
                 await afterKnown(original, value);
                 if (record(value) && (value.kind === 'rejected' || value.kind === 'changed'))

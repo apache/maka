@@ -204,21 +204,29 @@ impl Availability {
         if !self.enabled() {
             return None;
         }
+        // Keep dynamic MCP server tool names out of the static tool_search
+        // description so installing or removing MCP servers preserves the
+        // model prompt prefix cache. Search still indexes the full catalog.
         let names = self
             .catalog
             .definitions()
-            .filter(|d| !self.direct(&d.name))
+            .filter(|d| !self.direct(&d.name) && !d.name.starts_with("mcp__"))
             .map(|d| d.name.as_str())
             .collect::<Vec<_>>();
+        let description = if names.is_empty() {
+            "Find tools by name or description, including connected MCP server tools (mcp__*). Matches become callable on the next model step. Accepted loaded names persist in this Session across Host restarts; current permissions and availability apply.".to_owned()
+        } else {
+            format!(
+                "Find tools by name or description. Matches become callable on the next model step. Accepted loaded names persist in this Session across Host restarts; current permissions and availability apply. Inventory: {}. Connected MCP server tools (mcp__*) are also searchable here.",
+                names.join(", ")
+            )
+        };
         Some(ToolDefinition {
             freeform: None,
             output_schema: None,
             provider: None,
             name: SEARCH.into(),
-            description: format!(
-                "Find tools by name or description. Matches become callable on the next model step. Accepted loaded names persist in this Session across Host restarts; current permissions and availability apply. Inventory: {}.",
-                names.join(", ")
-            ),
+            description,
             input_schema: crate::input::inline_refs(schemars::schema_for!(SearchInput).into()),
         })
     }
@@ -400,5 +408,39 @@ mod tests {
             names(availability.definitions(false).await.unwrap()),
             vec!["Read", SEARCH]
         );
+    }
+
+    #[tokio::test]
+    async fn dynamic_mcp_tools_preserve_tool_search_prefix_while_remaining_searchable() {
+        let reader = Arc::new(OrderedReader(Mutex::new(Vec::new())));
+        let without_mcp = Availability::new(
+            ToolCatalog::new([registration("Read"), registration("Lookup")])
+                .unwrap()
+                .with_discovery(),
+            LoadedTools::new(maka_session_state::Session::new(reader.clone())),
+        );
+        let with_mcp = Availability::new(
+            ToolCatalog::new([
+                registration("Read"),
+                registration("Lookup"),
+                registration("mcp__playwright__navigate"),
+            ])
+            .unwrap()
+            .with_discovery(),
+            LoadedTools::new(maka_session_state::Session::new(reader.clone())),
+        );
+        assert_eq!(
+            without_mcp.definitions(true).await.unwrap(),
+            with_mcp.definitions(true).await.unwrap(),
+            "adding dynamic MCP tools must not mutate static tool definitions"
+        );
+        let found = with_mcp
+            .search(&SearchInput {
+                query: "playwright navigate".into(),
+                limit: 5,
+            })
+            .await
+            .unwrap();
+        assert_eq!(found.activated, vec!["mcp__playwright__navigate"]);
     }
 }

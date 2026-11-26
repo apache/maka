@@ -2208,6 +2208,7 @@ export type CatalogMutationResult =
  * Standard user/project configuration locations, ordered from highest precedence.
  */
 export type ConfigurationLocation = 'project:maka' | 'project:agents' | 'user:maka' | 'user:agents';
+export type AgentProjectMcpTrustDecision = 'undecided' | 'trusted' | 'declined';
 export type AgentMcpServerChange =
   | {
       kind: 'save';
@@ -7333,6 +7334,7 @@ export interface Binding {
 }
 export interface AgentMcpConfigurationList {
   locations: AgentMcpConfigurationLocation[];
+  projectTrust?: AgentProjectMcpTrustStatus | null;
 }
 export interface AgentMcpConfigurationLocation {
   location: ConfigurationLocation;
@@ -7344,6 +7346,11 @@ export interface AgentMcpConfigurationEntry {
   name: string;
   configuration: unknown;
   shadowedBy?: ConfigurationLocation | null;
+}
+export interface AgentProjectMcpTrustStatus {
+  path: string;
+  revision: string;
+  decision: AgentProjectMcpTrustDecision;
 }
 export interface AgentMcpConfigurationChange {
   workspace?: AgentWorkspace | null;
