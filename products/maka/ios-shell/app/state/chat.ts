@@ -219,6 +219,11 @@ export function createConversationController(rootId: string, initialSession: Age
   const loadingEarlier = () =>
     earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
   const sending = signal(false);
+  const modelSelection = signal<{ generation: number; done: Promise<boolean> } | null>(null);
+  const selectingModel = () => {
+    const pending = modelSelection();
+    return pending?.generation === activeHostInfo(rootId)?.generation ? pending : null;
+  };
   const error = signal<string | null>(null);
   const queue = signal<AgentQueue>({ revision: 0, entries: [] });
   const pendingInteractions = signal<AgentInteractionRecord[]>([]);
@@ -499,7 +504,10 @@ export function createConversationController(rootId: string, initialSession: Age
       const { generation } = connection;
       let backend: AgentBackendPreference | null = null;
       if (!isRoom()) {
-        if (!observation()) await loadObserve();
+        const pending = selectingModel();
+        if (pending && !(await pending.done)) return false;
+        if (!observation() && activeHostInfo(rootId)?.generation === generation)
+          await loadObserve();
         if (disposed) return false;
         if (activeHostInfo(rootId)?.generation !== generation)
           throw new Error(tr('Computer is offline'));
@@ -561,24 +569,36 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  const selectModel = async (backend: AgentBackendPreference) => {
+  const selectModel = (backend: AgentBackendPreference) => {
     const generation = activeHostInfo(rootId)?.generation;
-    if (isRoom() || generation === undefined) return;
-    try {
-      const result = await hostMutate<
-        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
-      >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
-      if (result.kind !== 'committed') throw new Error(result.kind);
-      if (disposed || activeHostInfo(rootId)?.generation !== generation) return;
-      const current = observation();
-      if (!current) await loadObserve();
-      else if (result.session.revision >= current.session.revision) {
-        observed.set({ generation, value: { ...current, session: result.session } });
+    if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
+    const done = (async () => {
+      try {
+        if (!observation()) await loadObserve();
+        if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
+        if (!observation()) throw new Error(error() ?? tr('Select model'));
+        const result = await hostMutate<
+          import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
+        >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
+        if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
+        if (result.kind !== 'committed') throw new Error(result.kind);
+        const current = observation()!;
+        if (result.session.revision >= current.session.revision) {
+          observed.set({ generation, value: { ...current, session: result.session } });
+        }
+        hapticSelection();
+        return true;
+      } catch (cause) {
+        if (!disposed && activeHostInfo(rootId)?.generation === generation) {
+          showToast(cause instanceof Error ? cause.message : String(cause));
+        }
+        return false;
+      } finally {
+        if (modelSelection()?.generation === generation) modelSelection.set(null);
       }
-      hapticSelection();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
-    }
+    })();
+    modelSelection.set({ generation, done });
+    return done;
   };
 
   const cancelQueuedMessage = async (messageId: string) => {
@@ -739,6 +759,7 @@ export function createConversationController(rootId: string, initialSession: Age
   return {
     observation,
     selectedBackend,
+    selectingModel,
     chunks,
     roomMessages,
     isRoom,

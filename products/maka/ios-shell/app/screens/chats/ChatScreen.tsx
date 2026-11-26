@@ -1062,6 +1062,7 @@ export function ChatScreen(props: {
             >
               <MenuButton
                 accessibilityLabel={tr('Select model')}
+                disabled={!!ctrl.selectingModel() || ctrl.sending()}
                 title={tr('Model')}
                 items={modelMenuItems()}
                 onSelect={({ id }) => handleSelectModel(id)}
