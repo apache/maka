@@ -59,30 +59,6 @@ fn settings_projection(configuration: &Value, redacted: bool) -> (Value, bool) {
     (configuration, has_literal_credentials)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mobile_mcp_inventory_omits_literal_credentials_but_preserves_environment_references() {
-        let document = serde_json::json!({
-            "type": "http", "url": "https://example.test/mcp",
-            "headers": {"Authorization": "literal-token"},
-            "env": {"TOKEN": "literal-env"},
-            "headerEnv": {"X-API-Key": "API_TOKEN"},
-        });
-        let (mobile, has_literal_credentials) = settings_projection(&document, true);
-        assert!(has_literal_credentials);
-        assert_eq!(
-            mobile,
-            serde_json::json!({
-                "type":"http", "url":"https://example.test/mcp", "headerEnv":{"X-API-Key":"API_TOKEN"}
-            })
-        );
-        assert_eq!(settings_projection(&document, false), (document, true));
-    }
-}
-
 #[derive(Clone)]
 pub(super) struct Location {
     pub(super) id: LocationId,
@@ -436,5 +412,29 @@ impl Owner {
             })
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_mcp_inventory_omits_literal_credentials_but_preserves_environment_references() {
+        let document = serde_json::json!({
+            "type": "http", "url": "https://example.test/mcp",
+            "headers": {"Authorization": "literal-token"},
+            "env": {"TOKEN": "literal-env"},
+            "headerEnv": {"X-API-Key": "API_TOKEN"},
+        });
+        let (mobile, has_literal_credentials) = settings_projection(&document, true);
+        assert!(has_literal_credentials);
+        assert_eq!(
+            mobile,
+            serde_json::json!({
+                "type":"http", "url":"https://example.test/mcp", "headerEnv":{"X-API-Key":"API_TOKEN"}
+            })
+        );
+        assert_eq!(settings_projection(&document, false), (document, true));
     }
 }

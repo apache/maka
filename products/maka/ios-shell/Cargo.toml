@@ -65,6 +65,8 @@ nsh-platform-ios = { path = "../../../third-party/nsh/crates/nsh-platform-ios", 
 [target.'cfg(not(target_os = "ios"))'.dev-dependencies]
 nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing" }
 tempfile.workspace = true
+maka-agent-api.workspace = true
+maka-agent-facts.workspace = true
 maka-event-log.workspace = true
 maka-host-runtime.workspace = true
 maka-packages.workspace = true

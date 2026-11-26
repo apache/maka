@@ -292,7 +292,7 @@ export async function renameSession(item: ScopedSession, nextTitle: string): Pro
 
 export async function deleteSession(item: ScopedSession): Promise<boolean> {
   try {
-    const res = await hostMutate<{ kind: string; reason?: unknown }>(
+    const res = await hostMutate<ServiceMethods['agent']['changeSession']['output']>(
       'agent',
       'changeSession',
       {
@@ -302,9 +302,11 @@ export async function deleteSession(item: ScopedSession): Promise<boolean> {
       },
       { rootId: item.rootId },
     );
-    if (res?.kind === 'rejected') {
-      throw new Error(String(res.reason ?? 'rejected'));
+    if (res.kind === 'revision_conflict') {
+      await refreshHostSessions(item.rootId, item.hostName);
+      throw new Error(res.kind);
     }
+    if (res.kind !== 'removed') throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
     hapticNotification('warning');
     await refreshHostSessions(item.rootId, item.hostName);
     return true;
