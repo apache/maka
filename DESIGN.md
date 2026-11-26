@@ -84,8 +84,8 @@ Menus, selects, context menus, popovers, and modal dialogs are the only surfaces
 
 All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/workbench/app/SettingsPage.tsx) without custom per-page layouts:
 
-- Left rail selects the category; the panel header shows the category title (with Back navigation when nested) and at most one primary page action.
-- Grouped rows sit on `surface` over `background` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
+- Settings occupies the window's inverted-L shell as a peer workspace surface alongside Conversations and Rooms (keeping them mounted so drafts and streaming turns survive). The left rail leads with `Back to app` followed by category destinations (folding above the panel on narrow viewports); the panel header shows the category title (with Back navigation when nested) and at most one primary page action, without a modal close button. `Escape` steps back through nested subpages and unsaved-draft prompts before returning to the app.
+- Grouped rows sit on `card` over `panel` with aligned left text edges: label on the left, control on the right, and helper copy only when the label alone would be ambiguous.
 - Switches and discrete pickers apply immediately; text inputs (names, keys, URLs, prompts) and coupled multi-field forms (server/model/proxy configs) commit via a sticky footer `Save` bar that appears once dirty. Navigating away with unsaved edits prompts for confirmation.
 - Pages load on mount and window focus without manual Refresh buttons; failed loads surface an inline `Retry` action and error reason. Healthy rows stay quiet; actionable issues highlight in `warning`.
 

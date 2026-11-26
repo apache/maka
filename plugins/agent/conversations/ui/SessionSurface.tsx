@@ -37,7 +37,8 @@ import {
   type Signal,
   type JSX,
 } from 'nsh';
-import { Button, Dialog, TextView } from 'nsh/base';
+import { Button, TextView } from 'nsh/base';
+import { WindowDialog } from '../../../../products/maka/workbench/app/ModalDialog';
 import { CompactComposer } from './CompactComposer';
 import { currentWindow, isAvailable as desktopAvailable } from 'nsh/desktop';
 import {
@@ -902,8 +903,15 @@ export function createConversationUi(
   const open = (request: OverlayTarget) => {
     const { sessionId } = request;
     if (!alive || selected() !== sessionId) return;
+    const target: OverlayTarget =
+      request.kind === 'models' && sessionId === null ? { kind: 'settings', sessionId } : request;
+    if (target.kind === 'settings') {
+      overlay.set(null);
+      shell()?.openSettings(target.model, target.page);
+      return;
+    }
     if (!(shell()?.visible() ?? false) && !shell()?.dismissRoute()) return;
-    if (request.kind === 'sessions') {
+    if (target.kind === 'sessions') {
       resources.hide();
       status.set('');
       if (overlay()?.kind === 'sessions') {
@@ -916,15 +924,6 @@ export function createConversationUi(
         browserFocus.set(true);
         return;
       }
-    }
-    const target =
-      request.kind === 'models' && sessionId === null
-        ? { kind: 'settings' as const, sessionId }
-        : request;
-    if (target.kind === 'settings') {
-      overlay.set(null);
-      shell()?.openSettings(target.model, target.page);
-      return;
     }
     status.set('');
     browserFocus.set(target.kind === 'sessions');
@@ -3380,7 +3379,7 @@ export function createConversationUi(
                   );
                 if (current.kind === 'sessions')
                   return (
-                    <Dialog
+                    <WindowDialog
                       animation="none"
                       onOpenChange={() => closeOverlay(current.instance)}
                       style={{
@@ -3419,7 +3418,7 @@ export function createConversationUi(
                           close={() => closeOverlay(current.instance)}
                         />
                       </View>
-                    </Dialog>
+                    </WindowDialog>
                   );
                 if (current.kind === 'workspaces' || current.kind === 'change-workspace')
                   return (

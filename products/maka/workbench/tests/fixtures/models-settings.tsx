@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, keymap, mount, signal, type JSX } from 'nsh';
+import { cleanup, keymap, mount, signal, Text, View, type JSX } from 'nsh';
 import type {
   UiContext,
   UiHost,
@@ -287,6 +287,10 @@ function Fixture() {
   cleanup(
     keymap.bind(
       {
+        f5: () => {
+          targetPage = undefined;
+          opened.set(true);
+        },
         f6: () => {
           holdExternal = true;
         },
@@ -318,7 +322,13 @@ function Fixture() {
     ),
   );
 
-  return settingsView.render({ context, runtime: context.runtime, input: viewInput });
+  return (
+    <View style={{ flex: 1, minHeight: 0 }}>
+      <If when={opened()} else={<Text>Back in app</Text>}>
+        {settingsView.render({ context, runtime: context.runtime, input: viewInput })}
+      </If>
+    </View>
+  );
 }
 
 mount(() => <Fixture />);

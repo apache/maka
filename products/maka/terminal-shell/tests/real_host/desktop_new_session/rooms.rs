@@ -160,7 +160,7 @@ pub(super) async fn desktop_room_reply_wakes_an_agent_without_mixing_drafts() {
         .unwrap();
     assert_eq!(preferences["displayName"], "Ada");
     assert_eq!(preferences["avatar"], "green");
-    desktop.press("Close settings").await;
+    desktop.press("Back to app").await;
 
     let reply = desktop.control("Reply to message").await;
     reply_at(

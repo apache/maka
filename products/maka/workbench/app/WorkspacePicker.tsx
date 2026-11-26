@@ -23,7 +23,7 @@ import { tr } from './locale';
 import { batch, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ListRef, Signal } from 'nsh';
-import { Button, Dialog } from 'nsh/base';
+import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
 import { host as shell, platform } from 'nsh';
@@ -48,7 +48,7 @@ import { InlineCallout, RegionEmptyError } from './Feedback';
 import { Icon } from './Icon';
 import { WorkspaceLocations } from './WorkspaceLocations';
 import { dialogTop, ownTitleBar } from './chrome';
-import { dialogCardStyle } from './ModalDialog';
+import { dialogCardStyle, WindowDialog } from './ModalDialog';
 import { createSettingsOperations } from './settingsOperations';
 
 type Location = {
@@ -337,7 +337,7 @@ export function WorkspacePicker(props: {
   });
   void load();
   return (
-    <Dialog
+    <WindowDialog
       animation="none"
       closeOnEscape={!managing()}
       closeOnBackdropPress={!managing()}
@@ -698,6 +698,6 @@ export function WorkspacePicker(props: {
           );
         }}
       </Each>
-    </Dialog>
+    </WindowDialog>
   );
 }
