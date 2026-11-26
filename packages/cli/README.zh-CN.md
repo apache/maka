@@ -21,37 +21,29 @@
 
 [English](README.md)
 
-**`rust-preview` 为独立发布的实验性预览渠道，并非 Apache 软件基金会（ASF）官方发行版，未经 ASF 批准、背书或支持。**
-
 ```sh
-npm install --global @maka-agent/cli@rust-preview
+# 正式版（发布到 @latest 后）：
+npm install --global @maka-agent/cli
+# 开发者 nightly 构建（非官方预览，非 ASF 发行版）：
+npm install --global @maka-agent/cli@nightly
+# 别名包：
+npm install --global maka-agent@nightly
 ```
 
-`@maka-agent/cli` 是平台分发薄封装：通过精确版本号的 `optionalDependencies` 拉取对应平台原生包（`darwin-arm64`、`linux-x64-gnu`、`win32-x64`），并将命令行参数、标准输入输出与退出码直接透传给 Rust `maka` 可执行文件（macOS 附带 `Maka.app`，Linux/Windows 附带 `maka-desktop-shell`）。WSL 下使用 Linux 二进制配合同版本 Windows Computer Use 辅助进程。
+`@maka-agent/cli` 是平台分发薄封装：通过精确版本号的 `optionalDependencies` 拉取对应平台原生包（`darwin-arm64`、`linux-x64-gnu`、`linux-arm64-gnu`、`win32-x64`），并将命令行参数、标准输入输出与退出码直接透传给 Rust `maka` 可执行文件（macOS 附带 `Maka.app`，Linux/Windows 附带 `maka-desktop-shell`）。WSL 下使用 Linux 二进制配合同版本 Windows Computer Use 辅助进程。
 
-`latest` 标签（含独立的 `maka-agent` 包）保持为空占位包，不含 CLI、运行时、依赖或安装脚本；占位包源码见 [`placeholder/`](placeholder/README.md)，预览构建仅发布到 `rust-preview`。
+Apache 软件基金会官方发行版为 [maka.apache.org/zh-CN/downloads](https://maka.apache.org/zh-CN/downloads/) 发布的带签名源码归档；npm 预编译包为便利分发，`@nightly` 为未经 ASF 投票的非官方开发者预览版。
 
 ## 常用命令
 
 - `maka` / `maka terminal-shell` — 启动 NSH 终端工作台，默认连接 `~/.maka/application/host`（可用 `--root <path>` 切换目录，`--session <id>` 打开指定会话）。
 - `maka desktop --root <path>` — 针对指定 State Root 打开原生桌面窗口；关闭窗口仅断开前端，后台已接纳的任务会继续跑完。
 - 在 Windows 快捷方式中指定数据目录时，可以用 `maka-desktop-shell.exe --root "C:\path to\root"` 直接打开桌面窗口，全程无控制台黑窗。
+- `maka update` — 检查并安装当前发布渠道的更新。
 - `maka --help` — 查看 `host`、`application`、`code`、`checkpoint`、`inspect`、`sandbox` 与 `acp` 等全部子命令。
 
 壳层结构见 [products/maka](../../products/maka/README.zh-CN.md)，部署与插件组合见 [products/maka/bundle](../../products/maka/bundle/README.zh-CN.md)。
 
-## 构建与发布预览包
+## 打包与发布
 
-先从已提交版本生成源码归档（`just source <version>`），基于同一份归档分别构建三个平台的原生包后执行汇总、离线验收与发布：
-
-```sh
-just package <source.tar.gz> <target> <build-id> native-preview
-
-just release-prepare native-preview
-just release-check native-preview
-just publish native-preview
-```
-
-`release-check` 会在各目标平台上离线安装打包产物并跑通冒烟校验。发布流程按“先上传各平台原生包、再发布启动器”的顺序推进并核验 dist-tag；中途中断可由同一发布者幂等重试同一批产物。
-
-非官方 `rust-preview` 渠道仅在个人仓库 `M4n5ter/maka-agent` 的 `npm-rust-preview` 环境显式开启 `publish=true` 时发布，绝不从 `apache/maka` 仓库直接发包。V8 预编译缓存与第三方许可证审计见 [scripts/rust](../../scripts/rust/README.zh-CN.md)，ASF 源码发布规范见 [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md)。
+正式版与 nightly 二进制、安装包与 npm 包统一由 [`.github/workflows/release.yml`](../../.github/workflows/release.yml)、[`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml) 与 [`scripts/rust/package-nightly.mjs`](../../scripts/rust/package-nightly.mjs) 构建发布。V8 预编译缓存与第三方许可证审计见 [scripts/rust](../../scripts/rust/README.zh-CN.md)，ASF 源码发布规范见 [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md)。

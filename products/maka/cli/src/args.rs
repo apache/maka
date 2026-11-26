@@ -90,7 +90,7 @@ enum HostCommand {
     Update(crate::deployment::Update),
     /// Download a verified native release and update at a safe boundary.
     Upgrade(crate::deployment::Upgrade),
-    /// Observe or configure unattended native preview updates.
+    /// Observe or configure unattended native nightly updates.
     UpdatePolicy(crate::deployment::UpdatePolicy),
     #[command(hide = true)]
     AutoUpdate(crate::deployment::AutoUpdate),

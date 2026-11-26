@@ -109,10 +109,14 @@ pub(super) async fn commit(
     }
     // Keep both authorities in the worker through actual database close, including
     // a dropped caller, a failed COMMIT or a queued transaction rollback.
-    let connection = store::open_writer(directory, lease, Some(owner)).await?;
+    let connection =
+        store::open_deferred_writer(directory, lease, Some(owner), store::MIGRATIONS).await?;
     let result = connection
         .run(move |connection| {
             let transaction = connection.transaction()?;
+            // Migrate inside the commit transaction so a conflict never leaves
+            // the prior deployment on a newer schema it cannot open.
+            store::migrate_with(&transaction, store::MIGRATIONS)?;
             let (active, pending) = load(&transaction)?;
             if active != expected || pending.as_ref() != Some(&target) {
                 return Err(conflict());
@@ -249,7 +253,7 @@ mod tests {
         let manual = policy::read(&directory).await.unwrap();
         assert_eq!(manual.policy, policy::Policy::Manual);
         let automatic = policy::Record {
-            policy: policy::Policy::RustPreview,
+            policy: policy::Policy::Nightly,
             revision: 1,
             ..manual.clone()
         };
@@ -657,5 +661,286 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn v2_migration_resets_retired_rust_preview_policy_to_manual() {
+        let v1: &'static [Migration] = &store::MIGRATIONS[..1];
+
+        let temporary = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: temporary.path().join("ownership"),
+            control: temporary.path().join("control"),
+        };
+        let root_path = temporary.path().join("root");
+        let owner = RootOwner::create(&root_path, &namespaces).unwrap();
+        let directory = temporary.path().join("deployment");
+        root::private_directory(&directory).unwrap();
+        let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock")).unwrap());
+        let current = Deployment {
+            deployment_id: uuid::Uuid::new_v4(),
+            config_revision: 1,
+            root_id: owner.root_id().into(),
+            root_path: owner.canonical_path().into(),
+            executable: package::path(&directory, &"a".repeat(64)),
+            sha256: "a".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: super::super::Admission::Active,
+        };
+        store::install_with(
+            &directory,
+            lease.clone(),
+            Arc::new(owner),
+            current.clone(),
+            v1,
+        )
+        .await
+        .unwrap();
+
+        // Seed a persisted v1 row carrying the retired rust_preview policy.
+        let writer = store::open_writer_with(&directory, lease.clone(), None, v1)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute(
+                    "INSERT INTO deployment_update_policy(singleton, configuration) VALUES (1, ?)",
+                    [r#"{"revision":3,"policy":"rust_preview","nextCheckMs":999999,"lastError":"stale"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+
+        // Read-only compatible inspection sees v1 deployment without mutating schema version.
+        assert!(store::read(&directory).await.is_err());
+        let store::Installation::Installed(observed) =
+            store::read_compatible(&directory).await.unwrap()
+        else {
+            panic!("expected v1 deployment via read_compatible");
+        };
+        assert_eq!(observed, current);
+        let version_before: i64 = store::read_database(directory.join("deployment.sqlite"), |c| {
+            Ok(c.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+        assert_eq!(version_before, 1);
+
+        // Real update preparation upgrades v1 -> v2 atomically and resets retired policy.
+        let mut next = current.clone();
+        next.config_revision = 2;
+        next.sha256 = "b".repeat(64);
+        next.executable = package::path(&directory, &next.sha256);
+        prepare(
+            &directory,
+            lease.clone(),
+            current,
+            Pending {
+                deployment: next,
+                roots: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let migrated = policy::read(&directory).await.unwrap();
+        assert_eq!(
+            migrated,
+            policy::Record {
+                revision: 3,
+                policy: policy::Policy::Manual,
+                next_check_ms: 0,
+                last_error: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_revoked_reinstall_migrates_atomically_and_rolls_back_on_conflict() {
+        let v1: &'static [Migration] = &store::MIGRATIONS[..1];
+
+        let temporary = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: temporary.path().join("ownership"),
+            control: temporary.path().join("control"),
+        };
+        let root_path = temporary.path().join("root");
+        let owner = Arc::new(RootOwner::create(&root_path, &namespaces).unwrap());
+        let directory = temporary.path().join("deployment");
+        root::private_directory(&directory).unwrap();
+        let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock")).unwrap());
+        let revoked = Deployment {
+            deployment_id: uuid::Uuid::new_v4(),
+            config_revision: 2,
+            root_id: owner.root_id().into(),
+            root_path: owner.canonical_path().into(),
+            executable: package::path(&directory, &"a".repeat(64)),
+            sha256: "a".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: super::super::Admission::Revoked,
+        };
+        store::install_with(
+            &directory,
+            lease.clone(),
+            owner.clone(),
+            revoked.clone(),
+            v1,
+        )
+        .await
+        .unwrap();
+
+        let writer = store::open_writer_with(&directory, lease.clone(), None, v1)
+            .await
+            .unwrap();
+        writer
+            .run(|connection| {
+                connection.execute(
+                    "INSERT INTO deployment_update_policy(singleton, configuration) VALUES (1, ?)",
+                    [r#"{"revision":4,"policy":"rust_preview","nextCheckMs":999999,"lastError":"stale"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+
+        // Lease-held install read sees the v1 Revoked tombstone without mutating schema version.
+        let store::Installation::Installed(observed) =
+            store::read_for_update(&directory, &lease).await.unwrap()
+        else {
+            panic!("expected v1 revoked deployment");
+        };
+        assert_eq!(observed, revoked);
+
+        let requested = Deployment {
+            deployment_id: uuid::Uuid::new_v4(),
+            config_revision: 1,
+            root_id: owner.root_id().into(),
+            root_path: owner.canonical_path().into(),
+            executable: package::path(&directory, &"b".repeat(64)),
+            sha256: "b".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: super::super::Admission::Active,
+        };
+
+        // A stale expected revision rolls back both the change and the v1 -> v2 migration.
+        let mut stale_expected = revoked.clone();
+        stale_expected.config_revision = 99;
+        assert!(
+            store::change(
+                &directory,
+                lease.clone(),
+                owner.clone(),
+                stale_expected,
+                store::Change::Reinstall(requested.clone()),
+            )
+            .await
+            .is_err()
+        );
+        let version_after_conflict: i64 =
+            store::read_database(directory.join("deployment.sqlite"), |c| {
+                Ok(c.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(version_after_conflict, 1);
+
+        // Matching expected revision atomically migrates v1 -> v2 and installs the active deployment.
+        let installed = store::change(
+            &directory,
+            lease.clone(),
+            owner,
+            revoked,
+            store::Change::Reinstall(requested.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed, requested);
+        let store::Installation::Installed(active) = store::read(&directory).await.unwrap() else {
+            panic!("expected strict v2 store::read to succeed after reinstall");
+        };
+        assert_eq!(active, requested);
+        assert_eq!(
+            policy::read(&directory).await.unwrap(),
+            policy::Record {
+                revision: 4,
+                policy: policy::Policy::Manual,
+                next_check_ms: 0,
+                last_error: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_rolls_back_migration_on_conflict() {
+        let v1: &'static [Migration] = &store::MIGRATIONS[..1];
+
+        let temporary = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: temporary.path().join("ownership"),
+            control: temporary.path().join("control"),
+        };
+        let root_path = temporary.path().join("root");
+        let owner = Arc::new(RootOwner::create(&root_path, &namespaces).unwrap());
+        let directory = temporary.path().join("deployment");
+        root::private_directory(&directory).unwrap();
+        let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock")).unwrap());
+        let current = Deployment {
+            deployment_id: uuid::Uuid::new_v4(),
+            config_revision: 1,
+            root_id: owner.root_id().into(),
+            root_path: owner.canonical_path().into(),
+            executable: package::path(&directory, &"a".repeat(64)),
+            sha256: "a".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: super::super::Admission::Active,
+        };
+        store::install_with(
+            &directory,
+            lease.clone(),
+            owner.clone(),
+            current.clone(),
+            v1,
+        )
+        .await
+        .unwrap();
+
+        let mut target = current.clone();
+        target.config_revision = 2;
+        target.sha256 = "b".repeat(64);
+        target.executable = package::path(&directory, &target.sha256);
+
+        // No pending row exists in deployment_update, so commit conflicts and must
+        // roll back the v1 -> v2 schema migration atomically.
+        assert!(
+            commit(
+                &directory,
+                lease,
+                owner,
+                current,
+                Pending {
+                    deployment: target,
+                    roots: None,
+                },
+            )
+            .await
+            .is_err()
+        );
+        let version: i64 = store::read_database(directory.join("deployment.sqlite"), |c| {
+            Ok(c.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+        assert_eq!(version, 1);
     }
 }

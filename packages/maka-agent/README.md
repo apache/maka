@@ -19,14 +19,13 @@
 
 # `maka-agent`
 
-> **Unofficial Developer Nightly Build — Not an Apache Software Foundation Release.**
->
-> Nightly pre-built binaries are provided strictly for developer testing. They have not been approved by an ASF release vote and are not intended for general production use.
-
 `maka-agent` is a convenience alias for [`@maka-agent/cli`](https://www.npmjs.com/package/@maka-agent/cli). Installing either package provides the `maka` command backed by the matching native platform binary (`darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, or `win32-x64`).
 
 ```sh
+# Stable release (once published on @latest):
+npm install --global maka-agent
+# Developer nightly build (unofficial, NOT an ASF release):
 npm install --global maka-agent@nightly
-# equivalent to:
-npm install --global @maka-agent/cli@nightly
 ```
+
+Official Apache Software Foundation releases are the signed source archives at [maka.apache.org/en/downloads](https://maka.apache.org/en/downloads/). Pre-built npm packages are convenience binaries, and `@nightly` builds are unofficial developer previews not approved by an ASF release vote.

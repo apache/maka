@@ -75,7 +75,9 @@ impl Control {
             return Err("Host deployment is not installed".into());
         }
         let lease = Arc::new(FileLease::acquire(&directory.join("executor.lock"))?);
-        let store::Installation::Installed(current) = store::read(&directory).await? else {
+        let store::Installation::Installed(current) =
+            store::read_for_update(&directory, &lease).await?
+        else {
             return Err("Host deployment is absent or incomplete".into());
         };
         let root = root::resolve(&current.root_path)?;
@@ -92,6 +94,13 @@ impl Control {
         if action != ControlAction::Uninstall {
             current.require_active()?;
         }
+        if action == ControlAction::Restart
+            && super::query::pending(&directory, &current).await?.is_some()
+        {
+            return Err(
+                "cannot restart while an update is pending; run `maka host reconcile`".into(),
+            );
+        }
         let Some(owner) = update::retire(&current, false).await? else {
             println!(
                 "{}",
@@ -104,6 +113,12 @@ impl Control {
         let owner = Arc::new(owner);
         let outcome = if action == ControlAction::Uninstall {
             let deployment = if current.admission == Admission::Revoked {
+                // Retry of a previously revoked deployment may still be on an older
+                // schema; migrate under the held lease + RootOwner before reading policy.
+                store::open_writer(&directory, lease.clone(), Some(owner.clone()))
+                    .await?
+                    .close()
+                    .await?;
                 current
             } else {
                 store::change(

@@ -350,12 +350,11 @@ pub(crate) fn validate_windows_service(path: &Path) -> Result<(), HostError> {
     Target::Win32X64.validate_binary(&mut regular_file(path)?, true)
 }
 
-/// Resolve the preview channel once; subsequent retries use this exact version.
-pub(crate) async fn preview_version() -> Result<Version, HostError> {
+/// Resolve the nightly channel once; subsequent retries use this exact version.
+pub(crate) async fn nightly_version() -> Result<Version, HostError> {
     #[derive(Deserialize)]
     struct Tags {
-        #[serde(rename = "rust-preview")]
-        preview: String,
+        nightly: String,
     }
     let name = Target::current()?.package_name().replace('/', "%2f");
     let mut response = client()?
@@ -372,9 +371,9 @@ pub(crate) async fn preview_version() -> Result<Version, HostError> {
         bytes.extend_from_slice(&chunk);
     }
     let tags: Tags = serde_json::from_slice(&bytes)?;
-    let version = Version::parse(&tags.preview)?;
-    if !version.pre.as_str().starts_with("rust-preview.") || !version.build.is_empty() {
-        return Err("rust-preview points outside the native preview channel".into());
+    let version = Version::parse(&tags.nightly)?;
+    if !version.pre.as_str().starts_with("nightly.") || !version.build.is_empty() {
+        return Err("nightly points outside the native nightly channel".into());
     }
     Ok(version)
 }

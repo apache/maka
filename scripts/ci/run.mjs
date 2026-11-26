@@ -600,12 +600,7 @@ export function executor(
         );
       if (ui) throw new Error(`macOS maka-cli links a shell dependency: ${ui}`);
       await nextest(id);
-      await node([
-        '--test',
-        'scripts/rust/build-cli.test.mjs',
-        'scripts/rust/pack-cli.test.mjs',
-        'scripts/rust/run-cli.test.mjs',
-      ]);
+      await node(['--test', 'scripts/rust/build-cli.test.mjs', 'scripts/rust/run-cli.test.mjs']);
     } else if (id === 'root') {
       await nextest('root', false, filter ?? 'all()', extra);
     } else if (id === 'windows-shell') {

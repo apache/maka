@@ -21,37 +21,29 @@
 
 [简体中文](README.zh-CN.md)
 
-**The `rust-preview` distribution is an independent, experimental preview. It is not an official Apache Software Foundation release and is not approved, endorsed or supported by the ASF.**
-
 ```sh
-npm install --global @maka-agent/cli@rust-preview
+# Stable release (once published on @latest):
+npm install --global @maka-agent/cli
+# Developer nightly build (unofficial, NOT an ASF release):
+npm install --global @maka-agent/cli@nightly
+# Alias package:
+npm install --global maka-agent@nightly
 ```
 
-`@maka-agent/cli` is a thin platform launcher: it resolves an exact-version optional native dependency (`darwin-arm64`, `linux-x64-gnu`, or `win32-x64`) and forwards arguments, stdio, and exit codes to the Rust `maka` executable (plus `Maka.app` on macOS or `maka-desktop-shell` on Linux/Windows). WSL uses the Linux binary alongside a matching Windows helper for Computer Use.
+`@maka-agent/cli` is a thin platform launcher: it resolves an exact-version optional native dependency (`darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, or `win32-x64`) and forwards arguments, stdio, and exit codes to the Rust `maka` executable (plus `Maka.app` on macOS or `maka-desktop-shell` on Linux/Windows). WSL uses the Linux binary alongside a matching Windows helper for Computer Use.
 
-The `latest` tags remain empty placeholders, including the separate `maka-agent` package. They contain no CLI, runtime, dependencies or install scripts. Placeholder source lives in [`placeholder/`](placeholder/README.md); preview builds publish exclusively under `rust-preview`.
+Official Apache Software Foundation releases are the signed source archives at [maka.apache.org/en/downloads](https://maka.apache.org/en/downloads/); pre-built npm packages are convenience binaries. Nightly builds on `@nightly` are unofficial developer previews not approved by an ASF release vote.
 
 ## Usage
 
 - `maka` / `maka terminal-shell` — Open the NSH terminal workbench against `~/.maka/application/host` (override with `--root <path>` or `--session <id>`).
 - `maka desktop --root <path>` — Open the native desktop window against the given State Root; closing the window detaches while accepted Host runs finish in the background.
 - For a Windows shortcut with a custom State Root, target `maka-desktop-shell.exe --root "C:\path to\root"` to start directly without a console window.
+- `maka update` — Check for and apply updates on this build's release channel.
 - `maka --help` — List Host daemon (`host`), deployment (`application`), `code`, `checkpoint`, `inspect`, `sandbox`, and `acp` subcommands.
 
 See [products/maka](../../products/maka/README.md) for shell architecture and [products/maka/bundle](../../products/maka/bundle/README.md) for deployment composition.
 
-## Building and publishing previews
+## Packaging and releases
 
-Export a verified source archive from a committed Git revision (`just source <version>`), build all three platform packages from that exact tarball, then stage, verify, and publish:
-
-```sh
-just package <source.tar.gz> <target> <build-id> native-preview
-
-just release-prepare native-preview
-just release-check native-preview
-just publish native-preview
-```
-
-`release-check` installs and smoke-tests the staged tarballs offline on each target OS. Native platform packages upload before the launcher, and interrupted runs retry the same staged artifacts under a single publisher.
-
-Unofficial `rust-preview` npm publishing runs only from `M4n5ter/maka-agent` (`npm-rust-preview` environment, explicit `publish=true`), never from the `apache/maka` repository. See [scripts/rust](../../scripts/rust/README.md) for V8 prebuilts and license notices, and [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md) for ASF source release verification.
+Release and nightly binaries, installers, and npm packages are built and published via [`.github/workflows/release.yml`](../../.github/workflows/release.yml), [`.github/workflows/nightly.yml`](../../.github/workflows/nightly.yml), and [`scripts/rust/package-nightly.mjs`](../../scripts/rust/package-nightly.mjs). See [scripts/rust](../../scripts/rust/README.md) for V8 prebuilts and license notices, and [.github/ASF_SOURCE_RELEASE.md](../../.github/ASF_SOURCE_RELEASE.md) for ASF source release verification.
