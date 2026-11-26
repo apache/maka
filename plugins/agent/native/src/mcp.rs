@@ -323,8 +323,21 @@ struct RunBinding {
     binding: Binding,
     access: Arc<RunAccess>,
 }
+pub(crate) fn floor_allows_mcp(floor: &maka_sandbox::Sandbox) -> bool {
+    match floor {
+        maka_sandbox::Sandbox::Disabled => true,
+        maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+            filesystem.default == maka_sandbox::filesystem::Access::Write
+                || filesystem
+                    .rules
+                    .iter()
+                    .any(|rule| rule.access == maka_sandbox::filesystem::Access::Write)
+        }
+        maka_sandbox::Sandbox::External { .. } => false,
+    }
+}
 pub(crate) fn require_compatible_floor(floor: &maka_sandbox::Sandbox) -> Result<(), &'static str> {
-    if matches!(floor, maka_sandbox::Sandbox::Disabled) {
+    if floor_allows_mcp(floor) {
         Ok(())
     } else {
         Err(
@@ -333,11 +346,13 @@ pub(crate) fn require_compatible_floor(floor: &maka_sandbox::Sandbox) -> Result<
     }
 }
 fn permitted(configuration: &ResolvedConfiguration, name: &str) -> bool {
-    configuration.permissions.access == WorkspaceAccess::DangerFullAccess
-        && configuration
-            .tools
-            .as_ref()
-            .is_none_or(|names| names.iter().any(|allowed| allowed == name))
+    matches!(
+        configuration.permissions.access,
+        WorkspaceAccess::WorkspaceWrite | WorkspaceAccess::DangerFullAccess
+    ) && configuration
+        .tools
+        .as_ref()
+        .is_none_or(|names| names.iter().any(|allowed| allowed == name))
 }
 impl ToolPreparer for RunBinding {
     fn names(&self) -> Vec<String> {

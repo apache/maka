@@ -60,7 +60,7 @@ export function ProjectMcp(props: { owner: Owner }) {
           </Text>
           <Text style={{ ...captionTextStyle, color: C.warning }}>
             {tr(
-              'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.',
+              'These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.',
             )}
           </Text>
           <Scroll
@@ -130,14 +130,14 @@ export function ProjectMcp(props: { owner: Owner }) {
             </Button>
             <Button
               disabled={owner.pending()}
-              accessibilityLabel={tr('Cancel')}
-              onPress={owner.dismiss}
+              accessibilityLabel={tr("Don't load")}
+              onPress={inputAction(owner.decline, proposal().revision)}
               style={controlStyle}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Cancel')}</Text>
+              <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr("Don't load")}</Text>
             </Button>
           </View>
         </View>

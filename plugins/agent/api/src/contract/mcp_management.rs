@@ -30,11 +30,56 @@ pub struct McpConfigurations {
     pub workspace: Option<Workspace>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentProjectMcpTrustDecision")]
+pub enum ProjectMcpTrustDecision {
+    Undecided,
+    Trusted,
+    Declined,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentProjectMcpTrustStatus")]
+pub struct ProjectMcpTrustStatus {
+    pub path: String,
+    pub revision: String,
+    pub decision: ProjectMcpTrustDecision,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentProjectMcpDecisionInput")]
+pub enum ProjectMcpDecisionInput {
+    Trusted,
+    Declined,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentMcpProjectTrustChange")]
+pub struct McpProjectTrustChange {
+    pub workspace: Workspace,
+    pub revision: String,
+    pub decision: ProjectMcpDecisionInput,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentMcpProjectTrustChangeResult")]
+pub enum McpProjectTrustChangeResult {
+    Saved,
+    Changed,
+}
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentMcpConfigurationList")]
 pub struct McpConfigurationList {
     pub locations: Vec<McpConfigurationLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_trust: Option<ProjectMcpTrustStatus>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

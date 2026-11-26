@@ -48,7 +48,7 @@ impl Location {
             Err(error) => Err(error.to_string()),
         }
     }
-    fn read(&self) -> Result<files::DocumentFile, String> {
+    pub(super) fn read(&self) -> Result<files::DocumentFile, String> {
         match self.directory(false)? {
             Some(directory) => files::document(&directory),
             None => Ok(files::DocumentFile {
@@ -56,6 +56,41 @@ impl Location {
                 revision: maka_agent_facts::artifact::content_digest(b""),
             }),
         }
+    }
+    pub(super) fn write(&self, value: &Value) -> Result<(), String> {
+        let directory = self
+            .directory(true)?
+            .ok_or("MCP configuration directory unavailable")?;
+        let name = format!(".mcp-{}.json", Uuid::new_v4());
+        let result = (|| {
+            let mut file = directory
+                .open_with(
+                    &name,
+                    cap_std::fs::OpenOptions::new().write(true).create_new(true),
+                )
+                .map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use cap_std::fs::PermissionsExt;
+                file.set_permissions(cap_std::fs::Permissions::from_mode(0o600))
+                    .map_err(|error| error.to_string())?;
+            }
+            let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
+            file.write_all(
+                b"
+",
+            )
+            .map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            directory
+                .rename(&name, &directory, "mcp.json")
+                .map_err(|error| error.to_string())
+        })();
+        if result.is_err() {
+            let _ = directory.remove_file(&name);
+        }
+        result
     }
 }
 impl Owner {
@@ -108,7 +143,33 @@ impl Owner {
     ) -> Result<McpConfigurationList, String> {
         self.resource_work(scope, move |owner, _scope| {
             Box::pin(async move {
+                let workspace = input.workspace.clone();
                 let locations = owner.mcp_locations(input.workspace).await?;
+                let project_trust = if let Some(workspace) = workspace.as_ref() {
+                    if let Ok(proposal) = owner.mcp_projects.proposal(workspace).await
+                        && let (Some(path), Some(revision)) =
+                            (proposal.project_path(), proposal.project_revision.as_ref())
+                    {
+                        let decision = match owner.mcp_projects.decision(&proposal).await? {
+                            Some(maka_config::ProjectMcpDecision::Trusted) => {
+                                ProjectMcpTrustDecision::Trusted
+                            }
+                            Some(maka_config::ProjectMcpDecision::Declined) => {
+                                ProjectMcpTrustDecision::Declined
+                            }
+                            None => ProjectMcpTrustDecision::Undecided,
+                        };
+                        Some(ProjectMcpTrustStatus {
+                            path,
+                            revision: revision.clone(),
+                            decision,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 tokio::task::spawn_blocking(move || {
                     let mut selected = BTreeMap::new();
                     let mut output = Vec::new();
@@ -137,10 +198,52 @@ impl Owner {
                             servers,
                         });
                     }
-                    Ok(McpConfigurationList { locations: output })
+                    Ok(McpConfigurationList {
+                        locations: output,
+                        project_trust,
+                    })
                 })
                 .await
                 .map_err(|error| error.to_string())?
+            })
+        })
+        .await
+    }
+    pub(crate) async fn set_project_mcp_decision(
+        self: &Arc<Self>,
+        input: McpProjectTrustChange,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<McpProjectTrustChangeResult, String> {
+        self.resource_work(scope, move |owner, _scope| {
+            Box::pin(async move {
+                workspace::validate(
+                    &owner.workspace_roots,
+                    &input.workspace,
+                    &owner.managed_worktrees,
+                )
+                .await?;
+                let proposal = owner.mcp_projects.proposal(&input.workspace).await?;
+                if proposal.project_revision.as_deref() != Some(input.revision.as_str()) {
+                    return Ok(McpProjectTrustChangeResult::Changed);
+                }
+                match input.decision {
+                    ProjectMcpDecisionInput::Trusted => {
+                        owner.mcp_projects.trust(&proposal).await?;
+                    }
+                    ProjectMcpDecisionInput::Declined => {
+                        owner.mcp_projects.decline(&proposal).await?;
+                        let _ = owner
+                            .mcp_projects
+                            .drop_stale_for_scope(Some(&input.workspace))
+                            .await;
+                    }
+                }
+                owner
+                    .store
+                    .owned_root()
+                    .map_err(|_| "agent_root_unavailable")?
+                    .capability_source_changed();
+                Ok(McpProjectTrustChangeResult::Saved)
             })
         })
         .await
@@ -152,6 +255,7 @@ impl Owner {
     ) -> Result<McpConfigurationResult, String> {
         self.resource_work(scope, move |owner, scope| {
             Box::pin(async move {
+                let workspace = input.workspace.clone();
                 let locations = owner.mcp_locations(input.workspace).await?;
                 let location = locations
                     .into_iter()
@@ -161,7 +265,7 @@ impl Owner {
                     .store
                     .owned_root()
                     .map_err(|error| error.to_string())?;
-                tokio::task::spawn_blocking(move || {
+                let outcome = tokio::task::spawn_blocking(move || {
                     let result = (|| {
                         root.validate_current().map_err(|error| error.to_string())?;
                         let _lease = maka_event_log::root::FileLease::acquire(
@@ -221,46 +325,24 @@ impl Owner {
                         if scope.cancellation.is_cancelled() {
                             return Err("MCP configuration change cancelled".into());
                         }
-                        let directory = location
-                            .directory(true)?
-                            .ok_or("MCP configuration directory unavailable")?;
-                        let name = format!(".mcp-{}.json", Uuid::new_v4());
-                        let result = (|| {
-                            let mut file = directory
-                                .open_with(
-                                    &name,
-                                    cap_std::fs::OpenOptions::new().write(true).create_new(true),
-                                )
-                                .map_err(|error| error.to_string())?;
-                            #[cfg(unix)]
-                            {
-                                use cap_std::fs::PermissionsExt;
-                                file.set_permissions(cap_std::fs::Permissions::from_mode(0o600))
-                                    .map_err(|error| error.to_string())?;
-                            }
-                            let bytes = serde_json::to_vec_pretty(&value)
-                                .map_err(|error| error.to_string())?;
-                            file.write_all(&bytes).map_err(|error| error.to_string())?;
-                            file.write_all(b"\n").map_err(|error| error.to_string())?;
-                            file.sync_all().map_err(|error| error.to_string())?;
-                            directory
-                                .rename(&name, &directory, "mcp.json")
-                                .map_err(|error| error.to_string())
-                        })();
-                        if result.is_err() {
-                            let _ = directory.remove_file(&name);
-                        }
-                        result?;
+                        location.write(&value)?;
                         root.capability_source_changed();
                         Ok(McpConfigurationResult::Saved)
                     })();
-                    Ok(match result {
+                    Ok::<_, String>(match result {
                         Ok(result) => result,
                         Err(reason) => McpConfigurationResult::Rejected { reason },
                     })
                 })
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())??;
+                if matches!(outcome, McpConfigurationResult::Saved) {
+                    let _ = owner
+                        .mcp_projects
+                        .drop_stale_for_scope(workspace.as_ref())
+                        .await;
+                }
+                Ok(outcome)
             })
         })
         .await

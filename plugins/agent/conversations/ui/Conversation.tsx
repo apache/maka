@@ -548,6 +548,21 @@ export function Conversation(props: ConversationProps) {
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => goalBackend());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
+  let lastMcpProbeKey = '';
+  effect(() => {
+    const current = permissions.snapshot();
+    const unavailable = workspaceUnavailable();
+    if (!current || unavailable) return;
+    if (current.permissions.access === 'read_only') {
+      lastMcpProbeKey = '';
+      projectMcp.dismiss();
+      return;
+    }
+    const key = `${current.workspace.path}\0${current.workspace.worktree ?? ''}\0${current.permissions.access}`;
+    if (key === lastMcpProbeKey) return;
+    lastMcpProbeKey = key;
+    void projectMcp.check().catch(() => {});
+  });
   const runTurn = signal<string | null>(null);
   const lastCompletedTurn = signal<string | null>(null);
   const backend = signal<BackendIdentity>(null);

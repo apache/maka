@@ -28,6 +28,7 @@ mod database;
 mod effect_snapshot;
 mod mcp_trust;
 pub use effect_snapshot::{ConnectionObservation, UsageObservation};
+pub use mcp_trust::ProjectMcpDecision;
 pub mod model_catalog;
 pub mod model_fetch;
 pub mod network;

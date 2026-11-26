@@ -806,6 +806,7 @@
   "Dismiss this notice": "Diesen Hinweis verwerfen",
   "Dispatched": "Übermittelt",
   "Display name": "Anzeigename",
+  "Don't load": "Nicht laden",
   "Download location": "Download-Speicherort",
   "Download update": "Update herunterladen",
   "Downloading update {version}…": "Update {version} wird heruntergeladen…",
@@ -1627,6 +1628,7 @@
   "Process output": "Prozessausgabe",
   "Process reference": "Prozessreferenz",
   "Project": "Projekt",
+  "Project MCP configuration skipped for this workspace.": "Projekt-MCP-Konfiguration für diesen Arbeitsbereich übersprungen.",
   "Project MCP configuration trusted. Send your draft when ready.": "Projekt-MCP-Konfiguration als vertrauenswürdig eingestuft. Senden Sie Ihren Entwurf, sobald Sie bereit sind.",
   "Project paging did not advance. Refresh to try again.": "Die Seitennavigation der Projekte ist nicht weitergegangen. Zum erneuten Versuch aktualisieren.",
   "Project: {name}": "Projekt: {name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "Der Arbeitsbereich für diese Aufgabe ist nicht verfügbar.",
   "The workspace may have changed. Refresh for current contents.": "Der Arbeitsbereich hat sich möglicherweise geändert. Aktualisieren Sie für den aktuellen Inhalt.",
   "There is no stopped response to continue.": "Es gibt keine gestoppte Antwort zum Fortsetzen.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Diese Server laufen außerhalb der Unterhaltungs-Sandbox und können Befehle als Ihr Benutzer ausführen oder entfernte Dienste kontaktieren. Sitzungen mit Vollzugriff können ihre Werkzeuge ohne weitere Bestätigung aufrufen.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Diese Server laufen außerhalb der Unterhaltungs-Sandbox und können Befehle als Ihr Benutzer ausführen oder entfernte Dienste kontaktieren. Nach dem Laden kann diese Sitzung ihre Werkzeuge aufrufen.",
   "These settings changed elsewhere. Reload before saving again.": "Diese Einstellungen wurden anderweitig geändert. Vor erneutem Speichern neu laden.",
   "Thick": "Dick",
   "Thin": "Dünn",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} Anfragen)",
   "{viewed} / {total} viewed": "{viewed} / {total} angesehen",
   "{width} × {height} · Captured image": "{width} × {height} · Erfasstes Bild",
-  "… {count} more characters": "… {count} weitere Zeichen"
+  "… {count} more characters": "… {count} weitere Zeichen",
+  "Project MCP trust": "Vertrauen für Projekt-MCP",
+  "Trusted": "Vertrauenswürdig",
+  "Not loaded": "Nicht geladen",
+  "Needs confirmation": "Bestätigung erforderlich",
+  "Project MCP configuration changed on disk. Review and try again.": "Die Projekt-MCP-Konfiguration auf der Festplatte wurde geändert. Bitte prüfen und erneut versuchen.",
+  "Project MCP configuration trusted.": "Projekt-MCP-Konfiguration als vertrauenswürdig gespeichert.",
+  "Project MCP configuration will not be loaded.": "Projekt-MCP-Konfiguration wird nicht geladen."
 }

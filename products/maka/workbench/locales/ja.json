@@ -806,6 +806,7 @@
   "Dismiss this notice": "この通知を閉じる",
   "Dispatched": "送信済み",
   "Display name": "表示名",
+  "Don't load": "読み込まない",
   "Download location": "ダウンロード先",
   "Download update": "アップデートをダウンロード",
   "Downloading update {version}…": "アップデート {version} をダウンロード中…",
@@ -1627,6 +1628,7 @@
   "Process output": "プロセス出力",
   "Process reference": "プロセス参照",
   "Project": "プロジェクト",
+  "Project MCP configuration skipped for this workspace.": "このワークスペースのプロジェクト MCP 構成をスキップしました。",
   "Project MCP configuration trusted. Send your draft when ready.": "プロジェクトの MCP 構成を信頼しました。準備ができたら下書きを送信できます。",
   "Project paging did not advance. Refresh to try again.": "プロジェクトのページ送りが進みませんでした。更新してやり直してください。",
   "Project: {name}": "プロジェクト：{name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "このタスクのワークスペースは利用できません。",
   "The workspace may have changed. Refresh for current contents.": "ワークスペースが変更された可能性があります。最新の内容を見るには更新してください。",
   "There is no stopped response to continue.": "続行できる停止済みの応答はありません。",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "これらのサーバーは会話のサンドボックス外で実行され、あなたのユーザー権限でコマンドを実行したりリモートサービスへ通信したりできます。フルアクセスセッションでは追加の確認なしにツールを呼び出せます。",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "これらのサーバーは会話のサンドボックス外で実行され、あなたのユーザー権限でコマンドを実行したりリモートサービスへ通信したりできます。読み込むと、このセッションからツールを呼び出せるようになります。",
   "These settings changed elsewhere. Reload before saving again.": "これらの設定は別の場所で変更されました。再度保存する前に再読み込みしてください。",
   "Thick": "太い",
   "Thin": "細い",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value}（{reported}/{requests} 件のリクエスト）",
   "{viewed} / {total} viewed": "{viewed} / {total} 閲覧済み",
   "{width} × {height} · Captured image": "{width} × {height} · キャプチャ画像",
-  "… {count} more characters": "… あと {count} 文字"
+  "… {count} more characters": "… あと {count} 文字",
+  "Project MCP trust": "プロジェクト MCP の信頼設定",
+  "Trusted": "信頼済み",
+  "Not loaded": "未読み込み",
+  "Needs confirmation": "確認が必要",
+  "Project MCP configuration changed on disk. Review and try again.": "ディスク上のプロジェクト MCP 設定が変更されました。確認して再試行してください。",
+  "Project MCP configuration trusted.": "プロジェクト MCP 設定を信頼しました。",
+  "Project MCP configuration will not be loaded.": "プロジェクト MCP 設定を読み込まないよう設定しました。"
 }

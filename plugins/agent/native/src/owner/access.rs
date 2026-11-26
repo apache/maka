@@ -205,7 +205,7 @@ impl RunAccess {
     pub(crate) fn claim(&self) -> &maka_agent_state::DriverClaim {
         &self.claim
     }
-    fn owner(&self) -> Result<Arc<Owner>, String> {
+    pub(in crate::owner) fn owner(&self) -> Result<Arc<Owner>, String> {
         self.owner
             .upgrade()
             .ok_or_else(|| "agent_run_owner_closed".into())
@@ -979,6 +979,14 @@ impl RunAccess {
                 ));
             }
         }
+        let owner = self.owner().map_err(ToolError::Failed)?;
+        let through = owner
+            .durable
+            .session_history(owner.run_owner(), self.execution.session_id.clone())
+            .capture()
+            .await
+            .map_err(|error| ToolError::Persistence(error.to_string()))?
+            .through_sequence;
         let mut record = InteractionRecord {
             execution: self.execution.clone(),
             request_id,
@@ -989,7 +997,7 @@ impl RunAccess {
                 service: service.into(),
                 method: method.into(),
                 binding: binding.into(),
-                through: view.revision,
+                through,
             },
             outcome: None,
         };

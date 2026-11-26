@@ -806,6 +806,7 @@
   "Dismiss this notice": "Descartar este aviso",
   "Dispatched": "Enviado",
   "Display name": "Nombre para mostrar",
+  "Don't load": "No cargar",
   "Download location": "Ubicación de descarga",
   "Download update": "Descargar actualización",
   "Downloading update {version}…": "Descargando actualización {version}…",
@@ -1627,6 +1628,7 @@
   "Process output": "Salida del proceso",
   "Process reference": "Referencia del proceso",
   "Project": "Proyecto",
+  "Project MCP configuration skipped for this workspace.": "Configuración MCP del proyecto omitida para este espacio de trabajo.",
   "Project MCP configuration trusted. Send your draft when ready.": "Configuración MCP del proyecto marcada como confiable. Envía tu borrador cuando estés listo.",
   "Project paging did not advance. Refresh to try again.": "La paginación de proyectos no avanzó. Actualiza para intentarlo de nuevo.",
   "Project: {name}": "Proyecto: {name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "El espacio de trabajo de esta tarea no está disponible.",
   "The workspace may have changed. Refresh for current contents.": "Es posible que el espacio de trabajo haya cambiado. Actualiza para ver el contenido actual.",
   "There is no stopped response to continue.": "No hay ninguna respuesta detenida para continuar.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Estos servidores se ejecutan fuera del entorno aislado de la conversación y pueden ejecutar comandos como tu usuario o conectarse a servicios remotos. Las sesiones con acceso completo pueden llamar a sus herramientas sin más confirmación.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Estos servidores se ejecutan fuera del entorno aislado de la conversación y pueden ejecutar comandos como tu usuario o conectarse a servicios remotos. Una vez cargados, esta sesión puede llamar a sus herramientas.",
   "These settings changed elsewhere. Reload before saving again.": "Estos ajustes cambiaron en otro lugar. Recarga antes de volver a guardar.",
   "Thick": "Grueso",
   "Thin": "Fino",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} solicitudes)",
   "{viewed} / {total} viewed": "{viewed} / {total} revisados",
   "{width} × {height} · Captured image": "{width} × {height} · Imagen capturada",
-  "… {count} more characters": "… {count} caracteres más"
+  "… {count} more characters": "… {count} caracteres más",
+  "Project MCP trust": "Confianza de MCP del proyecto",
+  "Trusted": "Confiable",
+  "Not loaded": "No cargado",
+  "Needs confirmation": "Requiere confirmación",
+  "Project MCP configuration changed on disk. Review and try again.": "La configuración de MCP del proyecto cambió en el disco. Revísala e inténtalo de nuevo.",
+  "Project MCP configuration trusted.": "Configuración de MCP del proyecto marcada como confiable.",
+  "Project MCP configuration will not be loaded.": "La configuración de MCP del proyecto no se cargará."
 }

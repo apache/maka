@@ -310,6 +310,33 @@ export function createMcpSettings(
       }
     });
   };
+  const setProjectTrust = (decision: 'trusted' | 'declined') => {
+    const workspace = scope.workspace();
+    const trust = inventory()?.projectTrust;
+    if (!workspace || !trust) return;
+    void operations.run(async () => {
+      const result = await operations.mutate('agent', 'setProjectMcpDecision', {
+        workspace,
+        revision: trust.revision,
+        decision,
+      });
+      if (result.kind !== 'saved') {
+        operations.error.set(
+          tr('Project MCP configuration changed on disk. Review and try again.'),
+        );
+        await load();
+        return;
+      }
+      if (alive) {
+        operations.notice.set(
+          decision === 'trusted'
+            ? tr('Project MCP configuration trusted.')
+            : tr('Project MCP configuration will not be loaded.'),
+        );
+        await load();
+      }
+    });
+  };
   const back = () => {
     if (deleting() && !discarding.asking()) {
       deleting.set(null);
@@ -336,6 +363,7 @@ export function createMcpSettings(
     removePair,
     save,
     remove,
+    setProjectTrust,
     back,
     cancel: closeEditor,
     discarding,

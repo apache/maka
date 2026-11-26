@@ -806,6 +806,7 @@
   "Dismiss this notice": "Ignorer cette notification",
   "Dispatched": "Distribué",
   "Display name": "Nom d’affichage",
+  "Don't load": "Ne pas charger",
   "Download location": "Emplacement de téléchargement",
   "Download update": "Télécharger la mise à jour",
   "Downloading update {version}…": "Téléchargement de la mise à jour {version}…",
@@ -1627,6 +1628,7 @@
   "Process output": "Sortie du processus",
   "Process reference": "Référence du processus",
   "Project": "Projet",
+  "Project MCP configuration skipped for this workspace.": "Configuration MCP du projet ignorée pour cet espace de travail.",
   "Project MCP configuration trusted. Send your draft when ready.": "Configuration MCP du projet approuvée. Envoyez votre brouillon quand vous êtes prêt.",
   "Project paging did not advance. Refresh to try again.": "La pagination des projets n’a pas avancé. Actualisez pour réessayer.",
   "Project: {name}": "Projet : {name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "L’espace de travail de cette tâche est indisponible.",
   "The workspace may have changed. Refresh for current contents.": "L’espace de travail a peut-être changé. Actualisez pour voir le contenu actuel.",
   "There is no stopped response to continue.": "Aucune réponse arrêtée à poursuivre.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Ces serveurs s’exécutent hors du bac à sable de la conversation et peuvent lancer des commandes en tant que votre utilisateur ou contacter des services distants. Les sessions en accès complet peuvent appeler leurs outils sans autre confirmation.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Ces serveurs s’exécutent hors du bac à sable de la conversation et peuvent lancer des commandes en tant que votre utilisateur ou contacter des services distants. Une fois chargés, cette session peut appeler leurs outils.",
   "These settings changed elsewhere. Reload before saving again.": "Ces paramètres ont été modifiés ailleurs. Rechargez avant d’enregistrer à nouveau.",
   "Thick": "Épais",
   "Thin": "Fin",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} requêtes)",
   "{viewed} / {total} viewed": "{viewed} / {total} consultés",
   "{width} × {height} · Captured image": "{width} × {height} · Image capturée",
-  "… {count} more characters": "… {count} caractères de plus"
+  "… {count} more characters": "… {count} caractères de plus",
+  "Project MCP trust": "Confiance MCP du projet",
+  "Trusted": "Approuvé",
+  "Not loaded": "Non chargé",
+  "Needs confirmation": "Confirmation requise",
+  "Project MCP configuration changed on disk. Review and try again.": "La configuration MCP du projet a changé sur le disque. Vérifiez-la et réessayez.",
+  "Project MCP configuration trusted.": "Configuration MCP du projet approuvée.",
+  "Project MCP configuration will not be loaded.": "La configuration MCP du projet ne sera pas chargée."
 }

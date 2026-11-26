@@ -806,6 +806,7 @@
   "Dismiss this notice": "Ignora questo avviso",
   "Dispatched": "Inviato",
   "Display name": "Nome visualizzato",
+  "Don't load": "Non caricare",
   "Download location": "Percorso di download",
   "Download update": "Scarica aggiornamento",
   "Downloading update {version}…": "Download aggiornamento {version}…",
@@ -1627,6 +1628,7 @@
   "Process output": "Output processo",
   "Process reference": "Riferimento processo",
   "Project": "Progetto",
+  "Project MCP configuration skipped for this workspace.": "Configurazione MCP del progetto saltata per questo spazio de lavoro.",
   "Project MCP configuration trusted. Send your draft when ready.": "Configurazione MCP del progetto attendibile. Invia la bozza quando sei pronto.",
   "Project paging did not advance. Refresh to try again.": "La paginazione dei progetti non è avanzata. Aggiorna per riprovare.",
   "Project: {name}": "Progetto: {name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "Lo spazio di lavoro per questa attività non è disponibile.",
   "The workspace may have changed. Refresh for current contents.": "Il workspace potrebbe essere cambiato. Aggiorna per vedere il contenuto attuale.",
   "There is no stopped response to continue.": "Non c’è alcuna risposta interrotta da continuare.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Questi server vengono eseguiti fuori dalla sandbox della conversazione e possono eseguire comandi come il tuo utente o contattare servizi remoti. Le sessioni con accesso completo possono chiamarne gli strumenti senza ulteriori conferme.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Questi server vengono eseguiti fuori dalla sandbox della conversazione e possono eseguire comandi come il tuo utente o contattare servizi remoti. Una volta caricati, questa sessione può chiamarne gli strumenti.",
   "These settings changed elsewhere. Reload before saving again.": "Queste impostazioni sono state modificate altrove. Ricarica prima di salvare di nuovo.",
   "Thick": "Spessa",
   "Thin": "Sottile",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value} ({reported}/{requests} richieste)",
   "{viewed} / {total} viewed": "{viewed} / {total} visualizzati",
   "{width} × {height} · Captured image": "{width} × {height} · Immagine acquisita",
-  "… {count} more characters": "… altri {count} caratteri"
+  "… {count} more characters": "… altri {count} caratteri",
+  "Project MCP trust": "Attendibilità MCP del progetto",
+  "Trusted": "Attendibile",
+  "Not loaded": "Non caricato",
+  "Needs confirmation": "Richiede conferma",
+  "Project MCP configuration changed on disk. Review and try again.": "La configurazione MCP del progetto è cambiata su disco. Controllala e riprova.",
+  "Project MCP configuration trusted.": "Configurazione MCP del progetto contrassegnata come attendibile.",
+  "Project MCP configuration will not be loaded.": "La configurazione MCP del progetto non verrà caricata."
 }

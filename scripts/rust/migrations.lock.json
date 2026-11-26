@@ -249,6 +249,10 @@
       "plugins/settings/store/migrations/0004_host_peer_pairing.sql": {
         "version": 4,
         "sha384": "dff70e09bf539ac65a1f794e24c41751269765effdf387f910c3fc09dae3c820062d9e128dc11be1e6abfeb938857eca"
+      },
+      "plugins/settings/store/migrations/0005_project_mcp_decision.sql": {
+        "version": 5,
+        "sha384": "79b64df066f1fa8dcc35ebcac6ecdd4558a12c81d1442bf4f3a904e3882ea4dca685e7bf5929b6e6c38c110a6140e043"
       }
     },
     "deployment": {

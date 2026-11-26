@@ -775,6 +775,7 @@ export function createConversationUi(
     stop: 'Stop response',
     stopComputerApp: 'Stop computer access',
     trustProjectMcp: 'Update project MCP access',
+    declineProjectMcp: 'Update project MCP access',
   };
   const notExecuted = (method: string) => {
     const label = controlLabels[method];
@@ -3582,6 +3583,7 @@ function projectComposerSession(
       error: owner.projectMcp.error,
       notice: owner.projectMcp.notice,
       trust: owner.projectMcp.trust,
+      decline: owner.projectMcp.decline,
       dismiss: owner.projectMcp.dismiss,
     },
     draft: owner.draft,

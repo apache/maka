@@ -193,6 +193,10 @@ impl Snapshot {
 struct Snapshots {
     revisions: BTreeMap<String, Arc<Snapshot>>,
     current: BTreeMap<String, String>,
+    /// Scopes whose currently published revision has been superseded on disk
+    /// while an active Run still holds it; cleared from `current` and closed as
+    /// soon as the last active Run releases its catalog.
+    pending_retirement: BTreeMap<String, String>,
     clients: BTreeMap<String, Client>,
     // Layers reopened under the same revision. Admitted Runs may still hold them;
     // the connections a layer did not hand over close once nothing references its catalog.
@@ -204,9 +208,37 @@ pub(crate) enum Prepared {
 }
 pub(crate) struct Proposal {
     pub workspace: String,
+    /// Merged global + project snapshot digest for runtime catalog caching.
     pub revision: String,
+    /// Project-file-only digest for workspace consent (independent of global mcp.json edits).
+    pub project_revision: Option<String>,
     file: files::FileConfiguration,
     global: files::FileConfiguration,
+}
+impl Proposal {
+    pub(crate) fn has_project_file(&self) -> bool {
+        self.project_revision.is_some()
+    }
+    pub(crate) fn project_path(&self) -> Option<String> {
+        self.file
+            .path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+    fn without_project(self) -> Self {
+        let empty = files::FileConfiguration::default();
+        let revision = maka_agent_facts::artifact::content_digest(
+            &serde_json::to_vec(&(Option::<String>::None, &self.global, &empty))
+                .expect("global MCP configuration"),
+        );
+        Self {
+            workspace: self.workspace,
+            revision,
+            project_revision: None,
+            file: empty,
+            global: self.global,
+        }
+    }
 }
 enum CleanupFailure {
     Transport(super::CloseError),
@@ -290,9 +322,15 @@ impl Projects {
                 &serde_json::to_vec(&(file.path.as_ref().map(|_| &identity), &global, &file))
                     .expect("MCP configuration"),
             );
+            let project_revision = file.path.as_ref().map(|_| {
+                maka_agent_facts::artifact::content_digest(
+                    &serde_json::to_vec(&(&identity, &file)).expect("project MCP configuration"),
+                )
+            });
             Ok(Proposal {
                 workspace: identity,
                 revision,
+                project_revision,
                 file,
                 global,
             })
@@ -300,25 +338,62 @@ impl Projects {
         .await
         .map_err(|error| error.to_string())?
     }
-    pub async fn trusted(&self, proposal: &Proposal) -> Result<bool, String> {
-        if proposal.file.path.is_none() {
-            return Ok(true);
-        }
+    #[cfg(test)]
+    pub(crate) async fn trust_project_revision(
+        &self,
+        workspace: &Workspace,
+        project_revision: String,
+    ) -> Result<(), String> {
         self.configuration
-            .project_mcp_trusted(
+            .trust_project_mcp(
+                self.owner.clone(),
+                Self::workspace_key(workspace),
+                project_revision,
+            )
+            .await
+            .map_err(|_| "agent_mcp_trust_unconfirmed".into())
+    }
+    pub async fn decision(
+        &self,
+        proposal: &Proposal,
+    ) -> Result<Option<maka_config::ProjectMcpDecision>, String> {
+        let Some(project_revision) = proposal.project_revision.as_ref() else {
+            return Ok(Some(maka_config::ProjectMcpDecision::Trusted));
+        };
+        self.configuration
+            .project_mcp_decision(
                 self.owner.clone(),
                 proposal.workspace.clone(),
-                proposal.revision.clone(),
+                project_revision.clone(),
             )
             .await
             .map_err(|_| "agent_mcp_trust_unavailable".into())
     }
+    pub async fn trusted(&self, proposal: &Proposal) -> Result<bool, String> {
+        Ok(self.decision(proposal).await? == Some(maka_config::ProjectMcpDecision::Trusted))
+    }
     pub async fn trust(&self, proposal: &Proposal) -> Result<(), String> {
+        let Some(project_revision) = proposal.project_revision.as_ref() else {
+            return Ok(());
+        };
         self.configuration
             .trust_project_mcp(
                 self.owner.clone(),
                 proposal.workspace.clone(),
-                proposal.revision.clone(),
+                project_revision.clone(),
+            )
+            .await
+            .map_err(|_| "agent_mcp_trust_unconfirmed".into())
+    }
+    pub async fn decline(&self, proposal: &Proposal) -> Result<(), String> {
+        let Some(project_revision) = proposal.project_revision.as_ref() else {
+            return Ok(());
+        };
+        self.configuration
+            .decline_project_mcp(
+                self.owner.clone(),
+                proposal.workspace.clone(),
+                project_revision.clone(),
             )
             .await
             .map_err(|_| "agent_mcp_trust_unconfirmed".into())
@@ -381,10 +456,15 @@ impl Projects {
                 read_only_tools: config.read_only_tools.clone(),
             });
         }
+        let decision = self.decision(proposal).await?;
         Ok(McpView::Configuration {
             path: path.to_string_lossy().into_owned(),
-            revision: proposal.revision.clone(),
-            trusted: self.trusted(proposal).await?,
+            revision: proposal
+                .project_revision
+                .clone()
+                .unwrap_or_else(|| proposal.revision.clone()),
+            trusted: decision == Some(maka_config::ProjectMcpDecision::Trusted),
+            declined: decision == Some(maka_config::ProjectMcpDecision::Declined),
             servers,
             disabled,
         })
@@ -570,29 +650,37 @@ impl Projects {
                 .current
                 .insert(String::new(), proposal.revision.clone());
             if !proposal.workspace.is_empty() {
-                snapshots.current.remove(&proposal.workspace);
+                Self::mark_scope_and_dependents_stale(&mut snapshots, &proposal.workspace, None);
             }
         }
         Ok(())
     }
     async fn prepared(
         &self,
-        proposal: Proposal,
+        mut proposal: Proposal,
         floor: &maka_sandbox::Sandbox,
     ) -> Result<Prepared, String> {
-        if !self.trusted(&proposal).await? {
-            return Err("agent_mcp_trust_required".into());
+        if !super::floor_allows_mcp(floor) {
+            return Ok(Prepared::Ready(self.base.clone()));
         }
-        if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
-            super::require_compatible_floor(floor).map_err(str::to_owned)?;
+        match self.decision(&proposal).await? {
+            Some(maka_config::ProjectMcpDecision::Trusted) => {}
+            Some(maka_config::ProjectMcpDecision::Declined) => {
+                proposal = proposal.without_project();
+            }
+            None => return Err("agent_mcp_trust_required".into()),
         }
         if proposal.file.path.is_none() && proposal.global.path.is_none() {
             let catalog = self.base.clone();
             {
                 let mut snapshots = self.snapshots.write().expect("MCP snapshots");
-                snapshots.current.remove("");
+                Self::mark_scope_and_dependents_stale(&mut snapshots, "", None);
                 if !proposal.workspace.is_empty() {
-                    snapshots.current.remove(&proposal.workspace);
+                    Self::mark_scope_and_dependents_stale(
+                        &mut snapshots,
+                        &proposal.workspace,
+                        None,
+                    );
                 }
             }
             self.prune().await?;
@@ -612,12 +700,18 @@ impl Projects {
         workspace: &Workspace,
         floor: &maka_sandbox::Sandbox,
     ) -> Result<Prepared, String> {
+        if !super::floor_allows_mcp(floor) {
+            return Ok(Prepared::Ready(self.base.clone()));
+        }
         self.prepared(self.proposal(workspace).await?, floor).await
     }
     pub async fn capture_global(
         self: &Arc<Self>,
         floor: &maka_sandbox::Sandbox,
     ) -> Result<Arc<Catalog>, String> {
+        if !super::floor_allows_mcp(floor) {
+            return Ok(self.base.clone());
+        }
         match self.prepared(self.propose(None).await?, floor).await? {
             Prepared::Ready(revision) => Ok(revision),
             Prepared::Startup(proposal) => self.start(*proposal, floor).await,
@@ -710,17 +804,20 @@ impl Projects {
         let floor = floor.clone();
         self.workers
             .spawn(async move {
-                let gate = owner.startup_gate(&proposal.revision);
+                let gate_revision = proposal.revision.clone();
+                let gate = owner.startup_gate(&gate_revision);
                 let _opening = gate.lock().await;
                 if owner.stop.is_cancelled() {
                     return Err("agent_closed".into());
                 }
-                if !owner.trusted(&proposal).await? {
-                    return Err("agent_mcp_trust_required".into());
+                if !super::floor_allows_mcp(&floor) {
+                    return Ok(owner.base.clone());
                 }
-                if !files::merge(&[], &[&proposal.global, &proposal.file]).is_empty() {
-                    super::require_compatible_floor(&floor).map_err(str::to_owned)?;
-                }
+                let proposal = match owner.decision(&proposal).await? {
+                    Some(maka_config::ProjectMcpDecision::Trusted) => proposal,
+                    Some(maka_config::ProjectMcpDecision::Declined) => proposal.without_project(),
+                    None => return Err("agent_mcp_trust_required".into()),
+                };
                 // A cached layer with a retired connection is reopened under the same
                 // revision. Its servers that are still connected keep their connection.
                 if let Ok(catalog) = owner.catalog(Some(&proposal.revision))
@@ -743,7 +840,7 @@ impl Projects {
                     &serde_json::to_vec(&(Option::<String>::None, &proposal.global, &empty))
                         .expect("global MCP configuration"),
                 );
-                let global_gate = (global_revision != proposal.revision)
+                let global_gate = (global_revision != gate_revision)
                     .then(|| owner.startup_gate(&global_revision));
                 let _global_opening = match global_gate.as_ref() {
                     Some(gate) => Some(gate.lock().await),
@@ -814,6 +911,22 @@ impl Projects {
                 };
                 {
                     let mut snapshots = owner.snapshots.write().expect("MCP snapshots");
+                    let superseded_global = snapshots
+                        .current
+                        .get("")
+                        .and_then(|rev| snapshots.revisions.get(rev))
+                        .map(|snapshot| snapshot.catalog.clone())
+                        .filter(|existing| !Arc::ptr_eq(existing, &global));
+                    let superseded_project = (!proposal.workspace.is_empty())
+                        .then(|| {
+                            snapshots
+                                .current
+                                .get(&proposal.workspace)
+                                .and_then(|rev| snapshots.revisions.get(rev))
+                                .map(|snapshot| snapshot.catalog.clone())
+                                .filter(|existing| !Arc::ptr_eq(existing, &catalog))
+                        })
+                        .flatten();
                     if let Some(opened) = opened_global {
                         Self::publish_reopened(&mut snapshots, global_revision.clone(), opened);
                     }
@@ -822,13 +935,26 @@ impl Projects {
                     } else {
                         snapshots.current.remove("");
                     }
+                    snapshots.pending_retirement.remove("");
                     if let Some(opened) = opened_project {
                         Self::publish_reopened(&mut snapshots, proposal.revision.clone(), opened);
+                        snapshots.pending_retirement.remove(&proposal.workspace);
                         snapshots
                             .current
-                            .insert(proposal.workspace, proposal.revision);
+                            .insert(proposal.workspace.clone(), proposal.revision);
                     } else if !proposal.workspace.is_empty() {
+                        snapshots.pending_retirement.remove(&proposal.workspace);
                         snapshots.current.remove(&proposal.workspace);
+                    }
+                    if let Some(old_global) = superseded_global {
+                        Self::mark_dependents_of_catalog_stale(&mut snapshots, "", &old_global);
+                    }
+                    if let Some(old_project) = superseded_project {
+                        Self::mark_dependents_of_catalog_stale(
+                            &mut snapshots,
+                            &proposal.workspace,
+                            &old_project,
+                        );
                     }
                 }
                 drop((previous_global, previous_project));
@@ -842,6 +968,21 @@ impl Projects {
         loop {
             let mut retired = {
                 let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+                let pending = std::mem::take(&mut snapshots.pending_retirement);
+                for (scope, stale_revision) in pending {
+                    if snapshots.current.get(&scope) != Some(&stale_revision) {
+                        continue;
+                    }
+                    let idle = snapshots
+                        .revisions
+                        .get(&stale_revision)
+                        .is_none_or(|snapshot| Arc::strong_count(&snapshot.catalog) == 1);
+                    if idle {
+                        snapshots.current.remove(&scope);
+                    } else {
+                        snapshots.pending_retirement.insert(scope, stale_revision);
+                    }
+                }
                 let (unreferenced, held): (Vec<_>, Vec<_>) =
                     std::mem::take(&mut snapshots.replaced)
                         .into_iter()
@@ -910,6 +1051,118 @@ impl Projects {
             if let Some(failure) = failure {
                 return Err(failure);
             }
+        }
+    }
+    /// Detach published snapshots whose on-disk configuration or trust decision
+    /// changed so retired servers stop as soon as no active Run holds them.
+    pub(crate) async fn drop_stale_for_scope(
+        &self,
+        workspace: Option<&Workspace>,
+    ) -> Result<(), String> {
+        let proposal = self.propose(workspace.cloned()).await?;
+        let project_trusted = !proposal.has_project_file()
+            || self.decision(&proposal).await? == Some(maka_config::ProjectMcpDecision::Trusted);
+        let empty = files::FileConfiguration::default();
+        let global_revision = (proposal.global.path.is_some()).then(|| {
+            maka_agent_facts::artifact::content_digest(
+                &serde_json::to_vec(&(Option::<String>::None, &proposal.global, &empty))
+                    .expect("global MCP configuration"),
+            )
+        });
+        let project_revision =
+            (proposal.file.path.is_some() && project_trusted).then(|| proposal.revision.clone());
+        {
+            let mut snapshots = self.snapshots.write().expect("MCP snapshots");
+            let global_changed =
+                snapshots.current.get("").map(String::as_str) != global_revision.as_deref();
+            if global_changed {
+                Self::mark_scope_and_dependents_stale(
+                    &mut snapshots,
+                    "",
+                    global_revision.as_deref(),
+                );
+            }
+            if !proposal.workspace.is_empty() {
+                Self::mark_scope_and_dependents_stale(
+                    &mut snapshots,
+                    &proposal.workspace,
+                    project_revision.as_deref(),
+                );
+            }
+        }
+        self.prune().await
+    }
+    fn catalog_depends_on(catalog: &Arc<Catalog>, target: &Arc<Catalog>) -> Option<usize> {
+        let mut depth = 1;
+        let mut current = catalog._parent.as_ref();
+        while let Some(layer) = current {
+            if Arc::ptr_eq(layer, target) {
+                return Some(depth);
+            }
+            depth += 1;
+            current = layer._parent.as_ref();
+        }
+        None
+    }
+    fn mark_dependents_of_catalog_stale(
+        snapshots: &mut Snapshots,
+        root_scope: &str,
+        stale_catalog: &Arc<Catalog>,
+    ) {
+        let mut dependents: Vec<(usize, String)> = snapshots
+            .current
+            .iter()
+            .filter_map(|(scope, rev)| {
+                if scope == root_scope {
+                    return None;
+                }
+                let snapshot = snapshots.revisions.get(rev)?;
+                let depth = Self::catalog_depends_on(&snapshot.catalog, stale_catalog)?;
+                Some((depth, scope.clone()))
+            })
+            .collect();
+        // Retire deeper overlays (e.g. client compositions) before their parent layers.
+        dependents.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        for (_, scope) in dependents {
+            Self::mark_scope_stale(snapshots, scope, None);
+        }
+    }
+    fn mark_scope_and_dependents_stale(
+        snapshots: &mut Snapshots,
+        root_scope: &str,
+        desired: Option<&str>,
+    ) {
+        let Some(current_rev) = snapshots.current.get(root_scope).cloned() else {
+            return;
+        };
+        if desired == Some(current_rev.as_str()) {
+            return;
+        }
+        if let Some(stale_catalog) = snapshots
+            .revisions
+            .get(&current_rev)
+            .map(|snapshot| snapshot.catalog.clone())
+        {
+            Self::mark_dependents_of_catalog_stale(snapshots, root_scope, &stale_catalog);
+        }
+        Self::mark_scope_stale(snapshots, root_scope.to_owned(), desired);
+    }
+    fn mark_scope_stale(snapshots: &mut Snapshots, scope: String, desired: Option<&str>) {
+        let Some(current_rev) = snapshots.current.get(&scope).cloned() else {
+            return;
+        };
+        if desired == Some(current_rev.as_str()) {
+            return;
+        }
+        let idle = snapshots
+            .revisions
+            .get(&current_rev)
+            .is_none_or(|snapshot| Arc::strong_count(&snapshot.catalog) == 1);
+        if idle {
+            snapshots.current.remove(&scope);
+            snapshots.pending_retirement.remove(&scope);
+        } else {
+            snapshots.pending_retirement.insert(scope, current_rev);
         }
     }
     pub fn retire(&self) {

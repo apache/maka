@@ -218,9 +218,12 @@ impl CodeCells {
             .definitions()
             .map(|d| d.name.as_str())
             .collect();
+        // Keep dynamic MCP server tool names out of exec's static description so
+        // installing or removing MCP servers preserves the prompt prefix cache;
+        // connected MCP tools remain callable via tools.mcp__* and inspectable in ALL_TOOLS.
         let deferred_nested: Vec<_> = all_nested
             .definitions()
-            .filter(|d| !visible_names.contains(d.name.as_str()))
+            .filter(|d| !visible_names.contains(d.name.as_str()) && !d.name.starts_with("mcp__"))
             .map(|d| d.name.as_str())
             .collect();
         let mut exec = super::definition(language);
@@ -229,16 +232,19 @@ impl CodeCells {
         }
         exec.description
             .push_str(&super::declarations(visible_nested.definitions(), language));
+        let prefix = match language {
+            maka_agent_facts::execution::CodeLanguage::JavaScript => "//",
+            maka_agent_facts::execution::CodeLanguage::Python => "#",
+        };
         if !deferred_nested.is_empty() {
-            let prefix = match language {
-                maka_agent_facts::execution::CodeLanguage::JavaScript => "//",
-                maka_agent_facts::execution::CodeLanguage::Python => "#",
-            };
             exec.description.push_str(&format!(
                 "{prefix} Deferred tools callable via tools.<name>(input) (inspect schemas in ALL_TOOLS): {}\n",
                 deferred_nested.join(", ")
             ));
         }
+        exec.description.push_str(&format!(
+            "{prefix} Connected MCP server tools (mcp__*) are also callable via tools.<name>(input) and listed in ALL_TOOLS.\n"
+        ));
         vec![exec, super::wait_definition()]
     }
     pub fn prepare(

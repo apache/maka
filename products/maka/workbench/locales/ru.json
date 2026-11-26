@@ -806,6 +806,7 @@
   "Dismiss this notice": "Скрыть это уведомление",
   "Dispatched": "Отправлено",
   "Display name": "Отображаемое имя",
+  "Don't load": "Не загружать",
   "Download location": "Адрес загрузки",
   "Download update": "Скачать обновление",
   "Downloading update {version}…": "Загрузка обновления {version}…",
@@ -1627,6 +1628,7 @@
   "Process output": "Вывод процесса",
   "Process reference": "Ссылка на процесс",
   "Project": "Проект",
+  "Project MCP configuration skipped for this workspace.": "Конфигурация MCP проекта пропущена для этой рабочей области.",
   "Project MCP configuration trusted. Send your draft when ready.": "Конфигурация MCP проекта доверена. Отправьте черновик, когда будете готовы.",
   "Project paging did not advance. Refresh to try again.": "Перелистывание проектов не сдвинулось. Обновите и повторите попытку.",
   "Project: {name}": "Проект: {name}",
@@ -2404,7 +2406,7 @@
   "The workspace for this task is unavailable.": "Рабочая область этой задачи недоступна.",
   "The workspace may have changed. Refresh for current contents.": "Рабочая область могла измениться. Обновите, чтобы увидеть текущее содержимое.",
   "There is no stopped response to continue.": "Нет остановленного ответа для продолжения.",
-  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Full-access sessions can call their tools without further confirmation.": "Эти серверы работают вне песочницы диалога и могут выполнять команды от вашего имени или обращаться к внешним службам. Сессии с полным доступом могут вызывать их инструменты без дополнительного подтверждения.",
+  "These servers run outside the conversation sandbox and can run commands as your user or contact remote services. Once loaded, this session can call their tools.": "Эти серверы работают вне песочницы диалога и могут выполнять команды от вашего имени или обращаться к внешним службам. После загрузки эта сессия сможет вызывать их инструменты.",
   "These settings changed elsewhere. Reload before saving again.": "Эти настройки были изменены в другом месте. Перезагрузите перед повторным сохранением.",
   "Thick": "Толстая",
   "Thin": "Тонкая",
@@ -2905,5 +2907,12 @@
   "{value} ({reported}/{requests} requests)": "{value} (запросов: {reported}/{requests})",
   "{viewed} / {total} viewed": "Просмотрено {viewed} / {total}",
   "{width} × {height} · Captured image": "{width} × {height} · Захваченное изображение",
-  "… {count} more characters": "… ещё символов: {count}"
+  "… {count} more characters": "… ещё символов: {count}",
+  "Project MCP trust": "Доверие к MCP проекта",
+  "Trusted": "Доверено",
+  "Not loaded": "Не загружается",
+  "Needs confirmation": "Требует подтверждения",
+  "Project MCP configuration changed on disk. Review and try again.": "Конфигурация MCP проекта на диске изменилась. Проверьте её и повторите попытку.",
+  "Project MCP configuration trusted.": "Доверие к конфигурации MCP проекта сохранено.",
+  "Project MCP configuration will not be loaded.": "Конфигурация MCP проекта не будет загружаться."
 }

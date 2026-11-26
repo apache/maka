@@ -56,6 +56,7 @@ const CONTROL_METHODS: &[&str] = &[
     "create",
     "predictNextMessage",
     "trustProjectMcp",
+    "declineProjectMcp",
     "selectBackend",
     "compact",
     "continueRun",
@@ -130,6 +131,7 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
                 "updateGlobalInstructions"
                     | "selectWorkspace"
                     | "manageMcpServer"
+                    | "setProjectMcpDecision"
                     | "createPreset"
                     | "updatePreset"
                     | "deletePreset"
@@ -1986,6 +1988,8 @@ mod preset_settings_tests {
     #[tokio::test]
     async fn pending_preset_settings_survive_reopen_and_fence_repeated_writes() {
         for method in [
+            "manageMcpServer",
+            "setProjectMcpDecision",
             "createPreset",
             "updatePreset",
             "deletePreset",

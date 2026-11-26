@@ -86,6 +86,13 @@ const COMPACTION_PROMPT: &str = "Preserve upgrade compatibility markers across r
 const PRESET_NAME: &str = "Compat Reviewer";
 const COMPAT_PEER_GRANT: &str = "compat-host-publication";
 const COMPAT_PAIRING_HASH: [u8; 32] = [31; 32];
+const COMPAT_MCP_OWNER: &str = "compat-mcp-owner";
+const COMPAT_MCP_WORKSPACE: &str =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const COMPAT_MCP_REVISION: &str =
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const COMPAT_MCP_NEXT_REVISION: &str =
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 async fn seed_pairing_invite(settings: &ConfigurationStore) {
     settings
@@ -138,6 +145,8 @@ struct CapsuleManifest {
     host_peer_id: Option<String>,
     #[serde(default)]
     host_pairing_invite: bool,
+    #[serde(default)]
+    project_mcp_trusted: bool,
 }
 
 struct FixtureSecret;
@@ -1214,6 +1223,14 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             .await
             .unwrap();
         seed_pairing_invite(&settings).await;
+        settings
+            .trust_project_mcp(
+                COMPAT_MCP_OWNER.into(),
+                COMPAT_MCP_WORKSPACE.into(),
+                COMPAT_MCP_REVISION.into(),
+            )
+            .await
+            .unwrap();
         settings.close().await.unwrap();
         let migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         CapsuleManifest {
@@ -1241,6 +1258,7 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
             migrations,
             host_peer_id: Some(host_peer_id),
             host_pairing_invite: true,
+            project_mcp_trusted: true,
         }
     })
     .catch_unwind()
@@ -1600,6 +1618,81 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .await;
         assert_eq!(rebound["kind"], "changed", "{rebound}");
 
+        // Exercise real project MCP consent proposal + Settings decision on the upgraded Host.
+        let mcp_dir = destination.join(".maka");
+        fs::create_dir_all(&mcp_dir).unwrap();
+        fs::write(
+            mcp_dir.join("mcp.json"),
+            r#"{"mcpServers":{"compat-demo":{"command":"echo","args":["ok"],"disabled":true}}}"#,
+        )
+        .unwrap();
+        let rebound_observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let project_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(project_view["kind"], "configuration", "{project_view}");
+        assert_eq!(project_view["trusted"], false, "{project_view}");
+        assert_eq!(project_view["declined"], false, "{project_view}");
+        let project_revision = project_view["revision"].as_str().unwrap().to_owned();
+        let saved_trust = call(
+            &client,
+            "agent",
+            "setProjectMcpDecision",
+            json!({
+                "workspace": rebound_observed["session"]["workspace"],
+                "revision": project_revision,
+                "decision": "trusted",
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(saved_trust["kind"], "saved", "{saved_trust}");
+        let trusted_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(trusted_view["trusted"], true, "{trusted_view}");
+        assert_eq!(trusted_view["declined"], false, "{trusted_view}");
+        let saved_decline = call(
+            &client,
+            "agent",
+            "setProjectMcpDecision",
+            json!({
+                "workspace": rebound_observed["session"]["workspace"],
+                "revision": project_revision,
+                "decision": "declined",
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(saved_decline["kind"], "saved", "{saved_decline}");
+        let declined_view = call(
+            &client,
+            "agent",
+            "projectMcp",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(declined_view["trusted"], false, "{declined_view}");
+        assert_eq!(declined_view["declined"], true, "{declined_view}");
+
         let room_post = call(
             &client,
             "agent",
@@ -1687,6 +1780,52 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         assert_eq!(device.label, "Compat device");
         assert!(!device.created_at.is_empty());
         assert!(settings.revoke_host_peer_access(peer).await.unwrap());
+        if manifest.project_mcp_trusted {
+            assert_eq!(
+                settings
+                    .project_mcp_decision(
+                        COMPAT_MCP_OWNER.into(),
+                        COMPAT_MCP_WORKSPACE.into(),
+                        COMPAT_MCP_REVISION.into(),
+                    )
+                    .await
+                    .unwrap(),
+                Some(maka_config::ProjectMcpDecision::Trusted)
+            );
+
+        }
+        settings
+            .decline_project_mcp(
+                COMPAT_MCP_OWNER.into(),
+                COMPAT_MCP_WORKSPACE.into(),
+                COMPAT_MCP_REVISION.into(),
+            )
+            .await
+            .unwrap();
+        settings.close().await.unwrap();
+        let settings = open_compat_settings(&dirs.root).await;
+        assert_eq!(
+            settings
+                .project_mcp_decision(
+                    COMPAT_MCP_OWNER.into(),
+                    COMPAT_MCP_WORKSPACE.into(),
+                    COMPAT_MCP_REVISION.into(),
+                )
+                .await
+                .unwrap(),
+            Some(maka_config::ProjectMcpDecision::Declined)
+        );
+        assert_eq!(
+            settings
+                .project_mcp_decision(
+                    COMPAT_MCP_OWNER.into(),
+                    COMPAT_MCP_WORKSPACE.into(),
+                    COMPAT_MCP_NEXT_REVISION.into(),
+                )
+                .await
+                .unwrap(),
+            None
+        );
         settings.close().await.unwrap();
 
         // Online checkpoint re-export & open sweep on the upgraded live Root
