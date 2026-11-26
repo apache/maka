@@ -2467,6 +2467,39 @@ mod tests {
         tui.press_key("escape").unwrap();
         tui.wait_for("text:Back in app").unwrap();
     }
+
+    #[test]
+    fn sidebar_sort_segmented_control_switches_between_project_and_time_grouping() {
+        let mut app = headless_fixture(
+            "tests/fixtures/sidebar-sort-segment.tsx",
+            Size::new(px(320.0), px(640.0)),
+            true,
+        );
+        app.wait_for("role:tablist[Conversation grouping]").unwrap();
+        app.wait_for("label:Collapse Alpha").unwrap();
+        assert!(app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("text:Today").unwrap());
+
+        app.press("role:tab[Time]").unwrap();
+        app.wait_for("text:Today").unwrap();
+        app.wait_for("text:Earlier").unwrap();
+        assert!(app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
+
+        // Re-selecting the active segment leaves chronological grouping intact.
+        app.press("role:tab[Time]").unwrap();
+        app.wait_for("text:Today").unwrap();
+        assert!(app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("label:Collapse Alpha").unwrap());
+
+        app.press("role:tab[Project]").unwrap();
+        app.wait_for("label:Collapse Alpha").unwrap();
+        assert!(app.screen().selected("role:tab[Project]").unwrap());
+        assert!(!app.screen().selected("role:tab[Time]").unwrap());
+        assert!(!app.screen().matches("text:Today").unwrap());
+    }
 }
 
 #[cfg(test)]
