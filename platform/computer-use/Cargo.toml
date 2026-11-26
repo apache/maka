@@ -65,13 +65,13 @@ zstd = { workspace = true, optional = true }
 futures-util.workspace = true
 cua-driver-contract = { workspace = true, optional = true }
 cua-driver-sdk = { workspace = true, optional = true }
-cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", optional = true }
+cua-driver-core = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5", optional = true }
 serde.workspace = true
 uuid.workspace = true
 libc = { workspace = true, optional = true }
 reqwest.workspace = true
 base64 = "0.23.1"
-cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", features = ["theme-authoring"], optional = true }
+cursor-overlay = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5", features = ["theme-authoring"], optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 serde_json.workspace = true
@@ -95,21 +95,21 @@ tracing-subscriber.workspace = true
 tiny-skia = { version = "0.11.4", features = ["png-format"] }
 
 [target.'cfg(windows)'.dependencies]
-platform-windows = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", optional = true }
+platform-windows = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5", optional = true }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem"], optional = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-platform-linux = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", optional = true }
+platform-linux = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5", optional = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 imagesize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 unicode-segmentation = { workspace = true, optional = true }
-platform-macos = { git = "https://github.com/maka-agent/cua", rev = "f767531b26772afea29985d360d3f00d730baeb0", optional = true }
+platform-macos = { git = "https://github.com/maka-agent/cua", rev = "2778d8c1f0bfb99f3c8d9399650ede1bc8ad22d5", optional = true }
 core-foundation = { version = "0.10.1", optional = true }
 objc2 = { version = "0.6.5" }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSString", "NSURL"] }
