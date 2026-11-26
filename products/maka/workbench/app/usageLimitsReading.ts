@@ -243,7 +243,16 @@ function hostEntries(host: object, create: boolean): Map<string, SharedEntry> | 
 
 export function peekUsageLimits(host: object, target: UsageTarget): UsageObservation | null {
   const entries = hostEntries(host, false);
-  return entries?.get(usageTargetKey(target))?.observation ?? null;
+  const entry = entries?.get(usageTargetKey(target));
+  if (!entry) return null;
+  if (
+    target.kind === 'connection' &&
+    target.basis &&
+    entry.lastKnownRevision !== target.basis.revision
+  ) {
+    return null;
+  }
+  return entry.observation;
 }
 
 export function invalidateUsageLimits(host: object, target: UsageTarget) {

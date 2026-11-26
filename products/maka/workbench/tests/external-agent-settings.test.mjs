@@ -60,7 +60,9 @@ const hooks = registerHooks({
 const { createExternalAgentSettings } = await import(
   new URL('externalAgentSettingsState.ts', appRoot)
 );
-const { watchUsageLimits } = await import(new URL('usageLimitsReading.ts', appRoot));
+const { peekUsageLimits, watchUsageLimits } = await import(
+  new URL('usageLimitsReading.ts', appRoot)
+);
 hooks.deregister();
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -309,4 +311,142 @@ test('retains cached runtimes across deactivate and propagates force refresh to 
   assert.equal(owner.status('antigravity')?.models.count, 9);
   assert.equal(observedUsage.at(-1)?.reading.result.limits[0].usedPercent, 80);
   stopWatch();
+});
+
+test('surfaces failure with retry on current inspect conflict and ignores stale inspect conflicts', async () => {
+  // Case A: current inspect observes a revision change between before/after reads.
+  let conflictReads = 0;
+  const reports = [];
+  const conflictHost = {
+    async query(endpoint, method, input) {
+      if (endpoint === 'management' && method === 'read') {
+        conflictReads += 1;
+        return { source: { reference: makeDeploymentRef(conflictReads === 1 ? 3 : 4) } };
+      }
+      if (endpoint === 'agent' && method === 'externalAgents' && input.inspect) {
+        return {
+          target,
+          configured: true,
+          runtimes: makeRuntimes(true),
+          state: { kind: 'enabled' },
+        };
+      }
+      throw new Error(`Unexpected query ${endpoint}.${method}`);
+    },
+    refresh: async () => {},
+  };
+  const ops = createOperations();
+  ops.report = (err) => reports.push(err);
+  const conflictOwner = createExternalAgentSettings(conflictHost, ops, () => true);
+  conflictOwner.activate();
+  await flush();
+  await flush();
+
+  assert.equal(conflictOwner.loading(), false);
+  assert.equal(conflictOwner.runtimes().length, 0);
+  assert.ok(conflictOwner.failure(), 'current inspect conflict must expose failure for Retry');
+  assert.equal(reports.length, 1);
+
+  // Case B: stale inspect from before deactivate settles with conflict after newer activate succeeded.
+  let revision = 3;
+  let releaseFirstInspect;
+  let inspectCount = 0;
+  const staleHost = {
+    async query(endpoint, method, input) {
+      if (endpoint === 'management' && method === 'read') {
+        return { source: { reference: makeDeploymentRef(revision) } };
+      }
+      if (endpoint === 'agent' && method === 'externalAgents') {
+        if (input.inspect) {
+          inspectCount += 1;
+          if (inspectCount === 1) {
+            return await new Promise((resolve) => {
+              releaseFirstInspect = resolve;
+            });
+          }
+          return {
+            target,
+            configured: true,
+            runtimes: makeRuntimes(true),
+            state: { kind: 'enabled' },
+          };
+        }
+        return readyStatus(true, 6);
+      }
+      throw new Error(`Unexpected query ${endpoint}.${method}`);
+    },
+    refresh: async () => {},
+  };
+
+  let isActive = true;
+  const owner = createExternalAgentSettings(staleHost, createOperations(), () => isActive);
+  owner.activate();
+  await flush();
+
+  // Leave and re-enter on a newer revision; the second load completes cleanly.
+  isActive = false;
+  owner.deactivate();
+  revision = 4;
+  isActive = true;
+  owner.activate();
+  await flush();
+  await flush();
+  assert.equal(owner.runtimes().length, 2);
+  assert.equal(owner.status('antigravity')?.models.count, 6);
+
+  // Now the stale first inspect finally resolves and sees before(3) !== after(4).
+  releaseFirstInspect({
+    target,
+    configured: true,
+    runtimes: makeRuntimes(true),
+    state: { kind: 'enabled' },
+  });
+  await flush();
+  await flush();
+
+  assert.equal(owner.failure(), null);
+  assert.equal(owner.runtimes().length, 2);
+  assert.equal(owner.status('antigravity')?.models.count, 6);
+});
+
+test('peekUsageLimits ignores cached connection readings whose revision does not match', async () => {
+  const host = {
+    async query(endpoint, method) {
+      if (endpoint === 'settings' && method === 'connectionUsageLimits') {
+        return {
+          kind: 'ready',
+          limits: [
+            { kind: 'window', period: { kind: 'duration', seconds: 18000 }, usedPercent: 17 },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query ${endpoint}.${method}`);
+    },
+  };
+  const stop = watchUsageLimits(
+    host,
+    {
+      kind: 'connection',
+      connectionId: 'conn-1',
+      basis: { connectionId: 'conn-1', revision: 1 },
+      sourceName: 'OpenAI',
+    },
+    () => {},
+  );
+  await flush();
+  stop();
+
+  const sameRev = peekUsageLimits(host, {
+    kind: 'connection',
+    connectionId: 'conn-1',
+    basis: { connectionId: 'conn-1', revision: 1 },
+  });
+  assert.equal(sameRev?.reading.result.limits[0].usedPercent, 17);
+
+  const newerRev = peekUsageLimits(host, {
+    kind: 'connection',
+    connectionId: 'conn-1',
+    basis: { connectionId: 'conn-1', revision: 2 },
+  });
+  assert.equal(newerRev, null);
 });
