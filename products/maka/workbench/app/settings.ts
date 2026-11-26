@@ -239,6 +239,7 @@ export function createModelSettings(
   const modelLoading = signal(false);
   const credential = signal<CredentialStatus | null>(restored?.credential ?? null);
   const loading = signal(false);
+  const connectionsFailed = signal(false);
   const discovery = signal<'idle' | 'fetching' | 'ready' | 'failed'>(restored?.discovery ?? 'idle');
   const confirmation = signal<'connection' | 'key' | 'model' | null>(
     restored?.confirmation ?? null,
@@ -356,6 +357,7 @@ export function createModelSettings(
         ? Math.max(16, connections().length)
         : 16;
     loading.set(true);
+    connectionsFailed.set(false);
     error.set('');
     try {
       let rows = more ? connections() : [];
@@ -393,7 +395,10 @@ export function createModelSettings(
       }
       if (!more) await loadModelChoices(generation);
     } catch (reason) {
-      if (generation === read) report(reason);
+      if (alive && generation === read) {
+        connectionsFailed.set(true);
+        report(reason);
+      }
     } finally {
       if (alive && generation === read) loading.set(false);
     }
@@ -1391,6 +1396,7 @@ export function createModelSettings(
   const reset = (target: ModelSelection | null = null) => {
     cancelRead();
     clearDiscard();
+    connectionsFailed.set(false);
     editor.set(null);
     model.set(null);
     confirmation.set(null);
@@ -1472,6 +1478,7 @@ export function createModelSettings(
     modelLoading,
     credential,
     loading,
+    connectionsFailed,
     discovery,
     busy,
     error,
@@ -1518,7 +1525,6 @@ export function createModelSettings(
     modelDirty,
     modelProblem,
     removalAction,
-    claimInlineError: operations.claimInlineError,
     loadConnections,
     loadProviders,
     newConnection,

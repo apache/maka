@@ -3180,7 +3180,7 @@ export function createConversationUi(
                 <SideReactions
                   followUp={(item) => {
                     const session = composerSession();
-                    if (session && !session.blockedReason()) session.submit({ text: item.message });
+                    if (session && !session.sendBlock()) session.submit({ text: item.message });
                   }}
                   attached={sideAttached}
                   attach={() => {
@@ -3484,7 +3484,7 @@ export function createConversationUi(
           owner.connected() &&
           owner.editable() &&
           owner.run() !== null &&
-          !owner.blockedReason() &&
+          !owner.sendBlock() &&
           hasComposerContent(owner.draft().trim(), owner.attachments.files(), owner.quotes()) &&
           !matchComposerCommand(
             commandCandidates().map((entry) => entry.metadata),
@@ -3646,7 +3646,7 @@ function projectComposerSession(
     previewImage: owner.previewImage,
     editable: owner.editable,
     loading: owner.loading,
-    blockedReason: owner.blockedReason,
+    sendBlock: owner.sendBlock,
     backend: owner.backend,
     modelDetails: owner.modelDetails,
     refreshModel: owner.refreshModel,

@@ -51,7 +51,12 @@ function Fixture() {
   const catalogRevision = 1;
   const modelIds = ['gpt-4.1', 'gpt-4.1-mini'];
   const basis = () => ({ connectionId: 'openai', revision });
-  const sourceRef = { stateDomain: 'profile', deployment: 'root', revision: 1 };
+  let sourceRevision = 1;
+  const sourceRef = () => ({
+    stateDomain: 'profile',
+    deployment: 'root',
+    revision: sourceRevision,
+  });
   const externalRuntimes = [
     { id: 'codex' as const, name: 'Codex', enabled: true, usageLimits: false },
     { id: 'claude' as const, name: 'Claude Code', enabled: false, usageLimits: false },
@@ -65,21 +70,43 @@ function Fixture() {
     },
   ];
   let holdExternal = true;
+  let failExternal = false;
+  let failConnections = false;
+  let failProviders = false;
+  let conflictBatch = false;
   let releaseExternal: (() => void) | null = null;
 
   const application = {
     pendingSettings: async () => [],
     refresh: async () => {},
+    settingsMutation: async (endpoint: string, method: string) => {
+      if (endpoint === 'management' && method === 'configureBatch' && conflictBatch) {
+        return {
+          operationId: 'op-conflict',
+          reply: {
+            receipt: {
+              kind: 'recorded',
+              outcome: {
+                kind: 'returned',
+                result: { kind: 'success', value: { status: 'conflict' } },
+              },
+            },
+          },
+        };
+      }
+      throw new Error(`Unexpected mutation ${endpoint}.${method}`);
+    },
     async query(endpoint: string, method: string, input: any) {
       if (method === 'assistantPreferences') return { revision: 1, language: 'auto' };
       if (endpoint === 'management' && method === 'read')
-        return { source: { reference: sourceRef } };
+        return { source: { reference: sourceRef() } };
       if (endpoint === 'agent' && method === 'externalAgents') {
         if (holdExternal) {
           await new Promise<void>((resolve) => {
             releaseExternal = resolve;
           });
         }
+        if (failExternal) throw new Error('External runtime probe failed');
         return {
           target: {
             source: { stateDomain: 'profile', deployment: 'root', namespace: ['agent'] },
@@ -92,7 +119,8 @@ function Fixture() {
             : { kind: 'ready' as const, runtimes: externalStatuses },
         };
       }
-      if (method === 'connections')
+      if (method === 'connections') {
+        if (failConnections) throw new Error('Connection catalog unavailable');
         return {
           kind: 'page',
           revision: catalogRevision,
@@ -110,6 +138,7 @@ function Fixture() {
             },
           ],
         };
+      }
       if (method === 'models') {
         const choice = (modelId: string) => ({
           selection: { connectionId: 'openai', modelId },
@@ -125,6 +154,10 @@ function Fixture() {
           next: null,
           choices: modelIds.map(choice),
         };
+      }
+      if (method === 'providers') {
+        if (failProviders) throw new Error('Provider registry unavailable');
+        return { providers: [], next: null };
       }
       if (method === 'provider') return definition;
       if (method === 'connection')
@@ -267,6 +300,18 @@ function Fixture() {
           opened.set(false);
           targetPage = 'external-agents';
           opened.set(true);
+        },
+        f9: () => {
+          failExternal = !failExternal;
+        },
+        f10: () => {
+          failProviders = !failProviders;
+        },
+        f11: () => {
+          conflictBatch = !conflictBatch;
+        },
+        f12: () => {
+          failConnections = !failConnections;
         },
       },
       { when: 'always' },

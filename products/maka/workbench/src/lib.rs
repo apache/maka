@@ -2253,7 +2253,7 @@ mod tests {
         })
         .unwrap();
         assert!(app.screen().matches("label:Disable Codex").unwrap());
-        assert!(!app.screen().enabled("label:Disable Codex").unwrap());
+        assert!(app.screen().enabled("label:Disable Codex").unwrap());
         assert!(
             !app.screen()
                 .matches("label:Checking external agents…")
@@ -2298,7 +2298,101 @@ mod tests {
         app.wait_for("label:Edit connection OpenAI").unwrap();
         app.wait_for("label:Disable Codex").unwrap();
     }
+
+    #[test]
+    fn models_settings_renders_each_error_once_without_cross_section_retry() {
+        let mut app = fixture("models-settings.tsx");
+        app.set_viewport(Size::new(px(1040.0), px(900.0))).unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+        app.wait_for("label:Checking external agents…").unwrap();
+
+        // Fail externalAgents read: error and Retry must appear once, scoped to external agents.
+        app.press_key("f9").unwrap();
+        app.press_key("f7").unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        assert!(
+            !app.screen()
+                .matches("text:/Could not check external agents/")
+                .unwrap()
+        );
+
+        // Clicking Retry must reload externalAgents rather than connections.
+        app.press_key("f9").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:External runtime probe failed")
+                .unwrap(),
+            0
+        );
+
+        // Host configureBatch conflict clears basis; header owns message, section offers Retry to reload.
+        app.press_key("f11").unwrap();
+        app.press("label:Disable Codex").unwrap();
+        app.wait_for("text:/These settings changed elsewhere/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
+                .unwrap(),
+            1
+        );
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 1);
+        app.press_key("f11").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/These settings changed elsewhere/")
+                .unwrap(),
+            0
+        );
+
+        // Retrying externalAgents read failure must not wipe an active connections error in the header.
+        app.press_key("f12").unwrap();
+        app.press_key("f9").unwrap();
+        app.press_key("f8").unwrap();
+        app.wait_for("text:/Connection catalog unavailable/")
+            .unwrap();
+        app.wait_for("text:External runtime probe failed").unwrap();
+        assert_eq!(app.screen().count("text:Retry").unwrap(), 2);
+        app.press_key("f9").unwrap();
+        app.press("text:Retry >> nth=0").unwrap();
+        app.wait_for("label:Disable Codex").unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Connection catalog unavailable/")
+                .unwrap(),
+            1
+        );
+        app.press_key("f12").unwrap();
+        app.press("text:Retry").unwrap();
+        app.wait_for("label:Edit connection OpenAI").unwrap();
+
+        // Fail providers read: ProviderPicker owns the error, not the Settings header.
+        app.press_key("f10").unwrap();
+        app.press("label:Add connection").unwrap();
+        app.wait_for("text:/Provider registry unavailable/")
+            .unwrap();
+        assert_eq!(
+            app.screen()
+                .count("text:/Provider registry unavailable/")
+                .unwrap(),
+            1
+        );
+    }
 }
+
+#[cfg(test)]
+mod composer_notices_tests;
 
 #[cfg(test)]
 mod desktop_residency_tests;

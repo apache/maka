@@ -375,7 +375,7 @@ export function ModelSettings(props: {
         </View>
         <If
           when={
-            (!operations.hasInlineError() && Boolean(operations.error())) ||
+            (!page()?.ownsError?.() && Boolean(operations.error())) ||
             operations.pending().length > 0
           }
         >
@@ -387,9 +387,9 @@ export function ModelSettings(props: {
             }}
           >
             <InlineCallout
-              tone={!operations.hasInlineError() && operations.error() ? 'danger' : 'info'}
+              tone={!page()?.ownsError?.() && operations.error() ? 'danger' : 'info'}
               message={
-                (!operations.hasInlineError() && operations.error()) ||
+                (!page()?.ownsError?.() && operations.error()) ||
                 tr('Checking whether settings changes were applied…')
               }
             />

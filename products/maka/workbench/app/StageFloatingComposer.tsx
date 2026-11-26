@@ -75,9 +75,9 @@ export function StageFloatingComposer(props: {
       props.exitFullscreen();
       return;
     }
-    const reason = session.blockedReason();
-    if (reason) {
-      toast.show({ id: 'stage-composer.refused', tone: 'warning', message: reason });
+    const block = session.sendBlock();
+    if (block) {
+      toast.show({ id: 'stage-composer.refused', tone: 'warning', message: block.message });
       return;
     }
     session.submit({ text });

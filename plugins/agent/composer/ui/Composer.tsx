@@ -193,13 +193,20 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const current = pending();
     if (current?.id === owner) completion.submitPending(current, text, expected);
   };
-  const blocked = () => props.session()?.blockedReason() ?? '';
+  const sendBlock = () => props.session()?.sendBlock() ?? null;
+  const blocked = () => sendBlock() !== null;
   const confirming = () =>
     !!props.session()?.loading() ||
     !!props.session()?.recovering() ||
     !!props.session()?.continuing() ||
     !!pending()?.sending();
-  const warning = () => (confirming() ? '' : blocked());
+  // Only draft blocks belong to the composer's own status row; workspace, transcript,
+  // and attachment-tray blocks are rendered by their owning surfaces.
+  const warning = () => {
+    if (confirming()) return '';
+    const block = sendBlock();
+    return block?.kind === 'draft' ? block.message : '';
+  };
   const cannotSend = () =>
     props.blocked?.() ||
     (props.session() === null &&
