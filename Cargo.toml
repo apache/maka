@@ -43,6 +43,7 @@ members = [
     "products/maka/cli",
     "plugins/settings/store",
     "products/maka/desktop-shell",
+    "products/maka/ios-shell",
     "products/maka/host-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
@@ -68,6 +69,7 @@ members = [
     "platform/process",
     "plugins/agent/providers",
     "platform/host-runtime",
+    "platform/remote-client",
     "platform/remote-pairing",
     "platform/remote-transport",
     "platform/host-js",
@@ -181,6 +183,7 @@ maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
+maka-remote-client = { path = "platform/remote-client" }
 maka-remote-pairing = { path = "platform/remote-pairing" }
 maka-remote-transport = { path = "platform/remote-transport" }
 maka-host-js = { path = "platform/host-js" }

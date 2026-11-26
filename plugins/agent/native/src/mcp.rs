@@ -43,6 +43,26 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+// Display only. Request URLs and persisted configuration retain their full query.
+pub(crate) fn display_http_url(raw: &str) -> Option<(String, bool)> {
+    let mut url = reqwest::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let has_query = url.query().is_some();
+    if has_query {
+        url.set_query(None);
+        Some((url.into(), true))
+    } else {
+        Some((raw.to_owned(), false))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CleanupMaterial {
     _connections: Vec<Connection>,

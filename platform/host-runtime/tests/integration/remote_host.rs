@@ -171,7 +171,7 @@ async fn host_opens_independent_supplied_channels() {
             .is_err()
     );
     let opener = websocket::channel_opener(transport.clone(), bearer.clone());
-    Client::finalize_access(opener, client_id.clone(), None)
+    Client::finalize_access(opener, client_id.clone(), &pairing.root_id, None)
         .await
         .unwrap();
     assert!(
@@ -450,8 +450,67 @@ async fn native_peers_can_call_but_cannot_control_the_host_and_are_revocable() {
             .is_err()
     );
     assert_peer_closed(call).await;
+    assert!(matches!(
+        raw_anchor.read::<Response>().await.unwrap(),
+        Response::PeerAccessRevoked
+    ));
     assert_peer_closed(raw_anchor.inner).await;
     assert!(client.refresh().await.is_err());
+    cancel.cancel();
+    wait_for_server(server).await;
+}
+
+#[tokio::test]
+async fn revocation_drains_when_the_peer_never_reads_its_anchor() {
+    let (_dir, host, _) = logs_host().await;
+    let peer = PeerId::new("unreading-peer".into()).unwrap();
+    host.grant_peer_access(peer.clone()).await.unwrap();
+    let (sender, ingress) = mpsc::channel(1);
+    let cancel = CancellationToken::new();
+    let server = tokio::spawn({
+        let host = host.clone();
+        let cancel = cancel.clone();
+        async move { host.serve_peer_streams(ingress, cancel).await }
+    });
+
+    // Connected fills this tiny send buffer. Keep the peer alive without
+    // reading even one byte, so the revocation frame cannot fit either.
+    let (mut anchor, host_stream) = tokio::io::duplex(32);
+    sender
+        .send(AuthenticatedPeerStream {
+            peer_id: peer.clone(),
+            stream: Box::new(host_stream),
+        })
+        .await
+        .unwrap();
+    wire::write(
+        &mut anchor,
+        &Opening {
+            version: VERSION,
+            epoch: None,
+            client_instance: None,
+            request: Request::Connect,
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while host.status().sessions != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Host did not admit the anchor");
+    assert!(host.revoke_peer_access(peer).await.unwrap());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while host.status().sessions != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unreading peer held up session cleanup");
+
+    drop(anchor);
     cancel.cancel();
     wait_for_server(server).await;
 }
@@ -661,7 +720,7 @@ async fn websocket_and_native_principals_are_isolated_and_ingress_eof_keeps_othe
     let claimed = Some(peer.as_str().to_owned());
 
     assert_rejected(opening(&ws, Request::Connect, claimed.clone()).await).await;
-    Client::finalize_access(ws.clone(), peer.as_str().into(), None)
+    Client::finalize_access(ws.clone(), peer.as_str().into(), &pairing.root_id, None)
         .await
         .unwrap();
     let mut ws_anchor = opening(&ws, Request::Connect, claimed.clone()).await;

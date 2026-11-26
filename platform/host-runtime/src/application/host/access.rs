@@ -27,7 +27,10 @@ use maka_config::access::{
 use maka_remote_pairing::{PairingTicketPayload, RelayEndpoint, SignedPairingTicket};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::Ordering},
+};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -68,6 +71,7 @@ fn timestamp() -> Result<String> {
 }
 impl Session {
     fn revoke(&self) {
+        self.revoked.store(true, Ordering::Release);
         self.peer.revoke();
         self.transport.request_close();
     }
@@ -267,7 +271,11 @@ impl Host {
         &self,
         authority: &Authority,
         client: Option<String>,
+        expected_root_id: &str,
     ) -> Result<()> {
+        if expected_root_id != self.root_id() {
+            return Err("Host root does not match expected root".into());
+        }
         let Authority::Remote { hash } = authority else {
             return Err("pairing requires the remote credential".into());
         };

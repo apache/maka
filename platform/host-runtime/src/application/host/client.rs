@@ -201,6 +201,7 @@ impl Client {
     pub async fn finalize_access(
         open: OpenChannel,
         client_instance: Arc<str>,
+        expected_root_id: &str,
         epoch: Option<Uuid>,
     ) -> Result<()> {
         let mut pairing = open().await.map_err(|error| error.to_string())?;
@@ -210,7 +211,9 @@ impl Client {
                 version: VERSION,
                 epoch,
                 client_instance: Some(client_instance.to_string()),
-                request: Request::FinalizeAccess,
+                request: Request::FinalizeAccessForRoot {
+                    expected_root_id: expected_root_id.to_owned(),
+                },
             },
         )
         .await?;

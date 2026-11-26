@@ -28,7 +28,7 @@ if (!['generate', 'check'].includes(mode) || process.argv.length !== 3)
   throw new Error('Usage: generate.mjs <generate|check>');
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const catalog = JSON.parse(
-  execFileSync('cargo', ['run', '--locked', '--quiet', '-p', 'maka-schema'], {
+  execFileSync(process.env.CARGO || 'cargo', ['run', '--locked', '--quiet', '-p', 'maka-schema'], {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],

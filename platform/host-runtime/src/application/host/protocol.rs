@@ -185,7 +185,10 @@ pub enum Request {
         invite_secret: String,
         device_label: Option<String>,
     },
-    FinalizeAccess,
+    // Older Hosts must reject this name rather than dispatch unchecked finalization.
+    FinalizeAccessForRoot {
+        expected_root_id: String,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(
@@ -209,6 +212,7 @@ pub enum Response {
     Configured(Result<()>),
     Retired(Result<bool>),
     Closed,
+    PeerAccessRevoked,
     Pairing(Result<super::Pairing>),
     Revoked(Result<bool>),
     PeerPairingInvite(Result<super::PeerPairingInvite>),

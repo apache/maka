@@ -92,3 +92,17 @@ All settings screens compose primitives from [`SettingsPage.tsx`](products/maka/
 ## Visual verification
 
 Inspect UI changes in the native desktop renderer across both light and dark themes at narrow and wide viewport widths. Shared-edge invariants belong in automated layout-bound assertions (such as `shell_shares_its_lines` in the desktop integration suite) rather than eyeball checks alone. On macOS, the offscreen test backend rasterizes Helvetica rather than SF Pro, so check optical text-to-icon centering in a real desktop window.
+
+## iPhone motion inventory
+
+| Change | Motion |
+| --- | --- |
+| Settings hierarchy, menus, confirmations and new-chat sheet | Native navigation, menu and sheet transitions; system owns back gestures and dismissal |
+| Computer, room and inbox selection | Native segmented selection or shared pill color transition (150 ms); replace target-bound data without animating stale rows |
+| Drafts, progress and load failures | Keep form position, show progress/errors inline; no animation on streamed status updates |
+| Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
+| Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
+
+Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
+
+Computer settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.

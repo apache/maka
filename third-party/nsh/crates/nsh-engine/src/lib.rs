@@ -1603,6 +1603,8 @@ enum Message {
     /// The embedding app's event (`nsh/host`'s `host.on`): its name and
     /// data.
     HostEvent(String, nsh_core::JsonValue),
+    /// An event scoped to the calling app; never carried over to the next app.
+    CallerHostEvent(String, nsh_core::JsonValue),
     /// The embedding app's answer to call `.0` (`host.call`).
     HostReply(u64, Result<nsh_core::JsonValue, String>),
     /// The embedding app's answer to call `.0` the core made
@@ -3263,6 +3265,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             match rx.recv_deadline(wake) {
                 Ok(Message::Shutdown) => {}
                 Ok(message @ Message::HostEvent(..)) => kept.push(message),
+                Ok(Message::CallerHostEvent(..)) => {}
                 Ok(message) => {
                     self.handle(message, rx);
                 }
@@ -4920,7 +4923,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         // The components' listeners hear it, then JS's.
-        Message::HostEvent(name, data) => {
+        Message::HostEvent(name, data) | Message::CallerHostEvent(name, data) => {
             state.core.host_event(&name, &data);
             if let Some(script) = script {
                 script.host_event(&name, data);

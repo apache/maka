@@ -27,6 +27,46 @@ use std::{
     path::{Path, PathBuf},
 };
 
+fn settings_projection(configuration: &Value, redacted: bool) -> (Value, bool) {
+    let url = configuration.get("url");
+    let display_url = url
+        .and_then(Value::as_str)
+        .and_then(crate::mcp::display_http_url);
+    let has_literal_credentials = (url.is_some() && !matches!(display_url, Some((_, false))))
+        || ["env", "headers"].iter().any(|key| {
+            configuration.get(key).is_some_and(|value| {
+                !value.is_null() && !value.as_object().is_some_and(|fields| fields.is_empty())
+            })
+        });
+    let configuration = if redacted {
+        serde_json::Value::Object(
+            [
+                "type",
+                "url",
+                "command",
+                "args",
+                "cwd",
+                "disabled",
+                "passEnv",
+                "headerEnv",
+            ]
+            .into_iter()
+            .filter_map(|key| {
+                let value = if key == "url" {
+                    Value::String(display_url.as_ref()?.0.clone())
+                } else {
+                    configuration.get(key)?.clone()
+                };
+                Some((key.to_owned(), value))
+            })
+            .collect(),
+        )
+    } else {
+        configuration.clone()
+    };
+    (configuration, has_literal_credentials)
+}
+
 #[derive(Clone)]
 pub(super) struct Location {
     pub(super) id: LocationId,
@@ -161,6 +201,7 @@ impl Owner {
     ) -> Result<McpConfigurationList, String> {
         self.resource_work(scope, move |owner, _scope| {
             Box::pin(async move {
+                let redacted = input.redacted;
                 let workspace = input.workspace.clone();
                 let locations = owner.mcp_locations(input.workspace).await?;
                 let project_trust = if let Some(workspace) = workspace.as_ref() {
@@ -198,9 +239,12 @@ impl Owner {
                             for (name, configuration) in entries {
                                 let shadowed_by = selected.get(name).copied();
                                 selected.entry(name.clone()).or_insert(location.id);
+                                let (configuration, has_literal_credentials) =
+                                    settings_projection(configuration, redacted);
                                 servers.push(McpConfigurationEntry {
                                     name: name.clone(),
-                                    configuration: configuration.clone(),
+                                    configuration,
+                                    has_literal_credentials,
                                     shadowed_by,
                                 });
                             }
@@ -331,7 +375,7 @@ impl Owner {
                                     server.remove(key);
                                 }
                                 server.extend(fields.clone());
-                                let server = Value::Object(server);
+                                let server = serde_json::Value::Object(server);
                                 files::validate_server(
                                     &input.name,
                                     server.clone(),
@@ -376,5 +420,43 @@ impl Owner {
             })
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_mcp_inventory_omits_literal_credentials_but_preserves_environment_references() {
+        let document = serde_json::json!({
+            "type": "http", "url": "https://example.test/mcp",
+            "headers": {"Authorization": "literal-token"},
+            "env": {"TOKEN": "literal-env"},
+            "headerEnv": {"X-API-Key": "API_TOKEN"},
+        });
+        let (mobile, has_literal_credentials) = settings_projection(&document, true);
+        assert!(has_literal_credentials);
+        assert_eq!(
+            mobile,
+            serde_json::json!({
+                "type":"http", "url":"https://example.test/mcp", "headerEnv":{"X-API-Key":"API_TOKEN"}
+            })
+        );
+        assert_eq!(settings_projection(&document, false), (document, true));
+    }
+    #[test]
+    fn mobile_mcp_inventory_omits_http_query_credentials_without_changing_the_saved_url() {
+        let document = serde_json::json!({
+            "type": "http", "url": "https://example.test/mcp?token=literal-url-token"
+        });
+        assert_eq!(
+            settings_projection(&document, true),
+            (
+                serde_json::json!({"type":"http","url":"https://example.test/mcp"}),
+                true
+            )
+        );
+        assert_eq!(settings_projection(&document, false), (document, true));
     }
 }
