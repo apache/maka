@@ -20,20 +20,24 @@
 import {
   computed,
   effect,
+  keyboardFrame,
   List,
   openUrl,
+  reduceMotion,
   safeAreaInsets,
+  Scroll,
   signal,
   Text,
   View,
   token,
+  windowSize,
   type Accessor,
   type JSX,
   type InputRef,
   type ListRef,
 } from 'nsh';
-import { Button, Input, MenuButton, NavPage, TextView, type MenuButtonItem } from 'nsh/base';
-import { InputAccessoryView, isAvailable } from 'nsh/mobile';
+import { Button, Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
+import { InputAccessoryView } from 'nsh/mobile';
 import {
   approvalControls,
   approvalDetail,
@@ -98,11 +102,24 @@ import {
   type SideDraftRequest,
 } from '../../state/sideQuestions';
 import { spacing, type } from '../../theme/tokens';
-import { ActionButton, ApprovalCard, BannerNotice, Icon, ScreenHeader, StatusDot } from '../../ui';
+import {
+  ActionButton,
+  ApprovalCard,
+  BannerNotice,
+  glassSurfaceStyle,
+  Icon,
+  ScreenHeader,
+  StatusDot,
+} from '../../ui';
 
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
 import { SideQuestionList } from './ChatSideQuestions';
-import { ComposerPendingDock, QueueSendMenu } from './ComposerPendingDock';
+import {
+  ComposerPendingDock,
+  QueueSendMenu,
+  pendingDockLimits,
+  type QueueEdit,
+} from './ComposerPendingDock';
 
 interface ToolSummaryItem {
   id: string;
@@ -559,7 +576,6 @@ export function ChatScreen(
       }
   ),
 ) {
-  const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const pending = props.pendingSide;
@@ -584,6 +600,11 @@ export function ChatScreen(
 
   const atBottom = signal(true);
   const queueExpanded = signal(false);
+  const pendingSheetOpen = signal(false);
+  const openQueue = () => {
+    queueExpanded.set(true);
+    pendingSheetOpen.set(true);
+  };
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
   let pagingDrag: number | undefined;
@@ -636,21 +657,22 @@ export function ChatScreen(
     <View
       role="button"
       accessibilityLabel={tr('Send message')}
+      hitSlop={4}
       disabled={!canSend()}
       onPress={() => send()}
-      class="active:opacity-70"
+      activeStyle={{ backgroundColor: token('glass-primary-pressed-bg') }}
       style={{
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: canSend() ? token('primary') : token('surface-muted'),
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: canSend() ? token('glass-accent') : token('surface-muted'),
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
       <Icon
         name="send"
-        color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
+        color={canSend() ? token('surface') : token('tertiary-foreground')}
         size={18}
         strokeWidth={2.3}
       />
@@ -1142,6 +1164,9 @@ export function ChatScreen(
     </If>
   );
 
+  const canBringBack = () => !!props.mainChat && side();
+  const bringBackLabel = () => tr('Bring to Main Draft');
+
   return (
     <NavPage
       style={{ flex: 1 }}
@@ -1149,6 +1174,8 @@ export function ChatScreen(
       headerBackVisible={!sideDraft?.busy()}
       popOnBack={!sideDraft?.busy()}
       hidesBottomBarWhenPushed
+      headerTransparent
+      headerBackgroundOnScroll
       headerShadowVisible={false}
       ios={{
         headerRightItems: sideDraft
@@ -1160,6 +1187,16 @@ export function ChatScreen(
                 label: tr('Files & Changes'),
                 onPress: openFiles,
               },
+              ...(canBringBack()
+                ? [
+                    {
+                      key: 'bring-main',
+                      symbol: 'link',
+                      label: bringBackLabel(),
+                      onPress: () => void bringBack(),
+                    },
+                  ]
+                : []),
               {
                 key: 'more',
                 symbol: 'ellipsis.circle',
@@ -1175,7 +1212,7 @@ export function ChatScreen(
                           label: tr('Queued Messages ({count})', {
                             count: ctrl.queuedMessages().length,
                           }),
-                          onSelect: () => queueExpanded.set(true),
+                          onSelect: openQueue,
                         },
                       ]
                     : []),
@@ -1189,6 +1226,7 @@ export function ChatScreen(
       }}
       header={
         <ScreenHeader
+          compact
           title={sessionTitle()}
           backLabel={sideDraft ? tr('Cancel') : props.mainChat ? tr('Back') : tr('Chats')}
           onBack={sideDraft?.busy() ? undefined : props.onBack}
@@ -1208,6 +1246,21 @@ export function ChatScreen(
                 >
                   <Icon name="folder" color={token('primary')} size={20} />
                 </View>
+                <If when={canBringBack()}>
+                  <Button
+                    accessibilityLabel={bringBackLabel()}
+                    onPress={() => void bringBack()}
+                    class="active:opacity-60"
+                    style={{
+                      width: 44,
+                      height: 44,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Icon name="link" color={token('primary')} size={20} />
+                  </Button>
+                </If>
                 <If when={canAskSide()}>
                   <MenuButton
                     accessibilityLabel={tr('More')}
@@ -1238,48 +1291,183 @@ export function ChatScreen(
         />
       }
     >
-      <View style={{ flex: 1, backgroundColor: token('canvas') }}>
-        {/* The native nav bar fits its own title between the actual UIKit items. */}
-        <View
-          style={{
-            paddingLeft: Math.max(spacing.pageX, insets().left),
-            paddingRight: Math.max(spacing.pageX, insets().right),
-            paddingBottom: 6,
+      <ChatContent />
+    </NavPage>
+  );
+
+  function ChatContent() {
+    // The page scope includes a transparent UIKit bar, but not the in-flow fallback header.
+    const insets = safeAreaInsets();
+    const composerLayout = signal<{ compact: boolean; height: number } | undefined>(undefined);
+    const contextHeight = signal(26);
+    const contextGap = 6;
+    const transcriptGap = 16;
+    const keyboardHeight = () => keyboardFrame().height;
+    // The keyboard frame already covers the home indicator; the page's safe area doesn't change.
+    const bottomInset = () => keyboardHeight() || insets().bottom;
+
+    const pageHeight = signal(windowSize().height);
+    const left = () => Math.max(spacing.pageX, insets().left);
+    const right = () => Math.max(spacing.pageX, insets().right);
+    const hasReferences = () => !ctrl.isRoom() && !!(quotes().length || links().length);
+    const queueEditor = signal<QueueEdit | null>(null);
+    const queueCount = () => ctrl.queuedMessages().length;
+    const hasQueueDock = () => !!(queueCount() || queueEditor() || ctrl.queueError());
+    const hasDeliveryDock = () => !!(ctrl.pendingSends().length || ctrl.steeringMessages().length);
+    const hasPendingDock = () => !sideDraft && (hasQueueDock() || hasDeliveryDock());
+    const pendingDockLabel = () =>
+      queueCount() ? tr('Queued Messages ({count})', { count: queueCount() }) : tr('Pending');
+    const showLatest = () => !atBottom() && hasLivePreview();
+    const jumpToLatest = () => scrollToBottom(!reduceMotion());
+    const quoteSheetOpen = signal(false);
+
+    // Leave room for the input at full height, context and at least two lines of transcript.
+    // On short pages the secondary controls move into a menu, not on top of the reader.
+    const compact = computed(
+      () =>
+        pageHeight() - insets().top - bottomInset() <
+        228 +
+          (hasReferences() ? (canAskFromTray() ? 152 : 104) : 0) +
+          // Reserve the expanded dock too, so opening it cannot change the mode.
+          (hasQueueDock() && !sideDraft ? pendingDockLimits.queue : 0) +
+          (hasDeliveryDock() && !sideDraft ? pendingDockLimits.delivery : 0) +
+          (hasLivePreview() ? 44 : 0),
+    );
+    const inlineDock = () => !pendingSheetOpen() && (!compact() || !!queueEditor());
+    effect(() => {
+      // A keyboard-only resize must not reparent the focused editor.
+      // An actual rotation to a short page may move it to the sheet.
+      if (queueEditor() && pageHeight() < 400) pendingSheetOpen.set(true);
+    });
+    const bottomGap = () => (compact() ? 6 : 8);
+    const composerMinHeight = 48;
+    const composerHeight = () => {
+      const measured = composerLayout();
+      if (measured?.compact === compact()) return measured.height;
+      return compact() ? composerMinHeight + bottomGap() : 92;
+    };
+    // List keeps a gap even before its empty footer slot. Reuse that space on short pages.
+    const tailGap = () =>
+      compact() && !hasLivePreview() && !inlineInteractions().length ? 4 - transcriptGap : 8;
+    const compactItems = (): MenuButtonItem[] => [
+      ...(hasReferences() ? [{ id: 'quotes', label: tr('Quote'), icon: 'quote.bubble' }] : []),
+      ...(hasPendingDock() && !inlineDock()
+        ? [{ id: 'pending', label: pendingDockLabel(), icon: 'tray' }]
+        : []),
+      ...(showLatest()
+        ? [{ id: 'latest', label: tr('Scroll to latest'), icon: 'arrow.down' }]
+        : []),
+    ];
+    const quoteStrip = () => (
+      <DraftQuoteStrip
+        quotes={quotes()}
+        links={links()}
+        disabled={sideDraft?.busy()}
+        onClearQuotes={() =>
+          sideDraft ? sideDraft.quotes.set([]) : clearDraftQuotes(rootId, sessionId)
+        }
+        onRemoveQuote={(id) =>
+          sideDraft
+            ? sideDraft.quotes.update((items) => items.filter((item) => item.id !== id))
+            : removeDraftQuote(rootId, sessionId, id)
+        }
+        onRemoveLink={(id) => removeDraftLink(rootId, sessionId, id)}
+        mainActions={
+          hostOnline() && canAskFromTray()
+            ? {
+                ask: () => {
+                  quoteSheetOpen.set(false);
+                  askSide(traySource);
+                },
+                send: () => {
+                  quoteSheetOpen.set(false);
+                  send();
+                },
+                canSend: canSend(),
+                queue: canQueue()
+                  ? () => {
+                      quoteSheetOpen.set(false);
+                      send('queue');
+                    }
+                  : undefined,
+              }
+            : undefined
+        }
+      />
+    );
+
+    const pendingDock = (inSheet: boolean) => (
+      <ComposerPendingDock
+        ctrl={ctrl}
+        editor={queueEditor}
+        inSheet={inSheet}
+        expanded={queueExpanded()}
+        onExpandedChange={queueExpanded.set}
+        running={isRunning()}
+        generation={generation()}
+        focusComposer={() => {
+          pendingSheetOpen.set(false);
+          inputRef?.focus();
+        }}
+      />
+    );
+
+    function ComposerSheet(props: {
+      title: string;
+      scrollId: string;
+      onClose: () => void;
+      editing?: boolean;
+      children: JSX.Element;
+    }) {
+      return (
+        <Sheet
+          open
+          accessibilityLabel={props.title}
+          closeOnSwipe={!props.editing}
+          closeOnBackdropPress={!props.editing}
+          closeOnEscape={!props.editing}
+          onOpenChange={({ open }) => {
+            if (!open) props.onClose();
+          }}
+          popupStyle={{
             backgroundColor: token('grouped-bg'),
-            flexDirection: 'row',
-            justifyContent: isAvailable ? 'center' : 'flex-start',
-            alignItems: 'center',
-            gap: 6,
+            paddingTop: 8,
+            paddingBottom: 8,
+            paddingLeft: left(),
+            paddingRight: right(),
+            // Sheet clears the keyboard inset for its children. Bound the
+            // scrolling viewport using the owning page's keyboard frame.
+            bottom: keyboardHeight() || undefined,
+            maxHeight: Math.max(0, windowSize().height - insets().top - bottomInset()),
           }}
         >
-          <StatusDot kind={hostStatusKind(rootId)} size={7} />
-          <Text
-            style={{
-              ...type.footnote,
-              color: token('muted-foreground'),
-              minWidth: 0,
-              flexShrink: 1,
-              numberOfLines: 1,
-              textOverflow: 'ellipsis',
-            }}
+          <If when={!props.editing}>
+            <View style={{ alignItems: 'flex-end', flexShrink: 0 }}>
+              <ActionButton
+                title={tr('Done')}
+                variant="glassQuiet"
+                compact
+                minHeight={spacing.rowMinHeight}
+                onPress={props.onClose}
+              />
+            </View>
+          </If>
+          <Scroll
+            testID={props.scrollId}
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+            keyboardShouldPersistTaps="handled"
           >
-            {subtitleLine()}
-          </Text>
-        </View>
+            {props.children}
+          </Scroll>
+        </Sheet>
+      );
+    }
 
-        <If when={props.mainChat && side()}>
-          <View style={{ paddingHorizontal: spacing.pageX, alignItems: 'flex-start' }}>
-            <ActionButton
-              title={tr('Bring to Main Draft')}
-              icon="link"
-              compact
-              minHeight={44}
-              variant="quiet"
-              onPress={() => void bringBack()}
-            />
-          </View>
-        </If>
-
+    return (
+      <View
+        onLayout={({ bounds }) => pageHeight.set(bounds.size.height)}
+        style={{ flex: 1, backgroundColor: token('canvas') }}
+      >
         <List
           ref={(ref) => (transcriptRef = ref)}
           testID="chat-transcript"
@@ -1312,10 +1500,12 @@ export function ChatScreen(
             pagingDrag = undefined;
           }}
           contentStyle={{
-            paddingHorizontal: spacing.pageX,
-            paddingTop: 12,
-            paddingBottom: 24,
-            gap: 16,
+            paddingLeft: left(),
+            paddingRight: right(),
+            // Keep the start gutter stable when the pill hides so reading position doesn't move.
+            paddingTop: insets().top + contextHeight() + contextGap * 2,
+            paddingBottom: composerHeight() + bottomInset() + tailGap(),
+            gap: transcriptGap,
           }}
           empty={
             <If
@@ -1460,222 +1650,273 @@ export function ChatScreen(
           )}
         </List>
 
-        {/* Subtle Floating Jump-to-Latest Pill when user scrolled up */}
-        <View>
-          <If when={!atBottom() && (isRunning() || hasLivePreview())}>
-            <View style={{ position: 'absolute', right: 16, bottom: 8 }}>
-              <View
-                role="button"
-                accessibilityLabel={tr('Scroll to latest')}
-                onPress={() => scrollToBottom(true)}
-                class="active:opacity-75"
-                style={{
-                  minHeight: 36,
-                  paddingHorizontal: 12,
-                  borderRadius: 18,
-                  backgroundColor: token('surface-elevated'),
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 5,
-                }}
-              >
-                <Icon name="arrowDown" color={token('primary')} size={15} />
-                <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
-                  {tr('Latest')}
-                </Text>
-              </View>
-            </View>
-          </If>
-        </View>
-
-        <If when={!sideDraft}>
-          <ComposerPendingDock
-            ctrl={ctrl}
-            expanded={queueExpanded()}
-            onExpandedChange={queueExpanded.set}
-            running={isRunning()}
-            generation={generation()}
-            focusComposer={() => inputRef?.focus()}
-          />
-        </If>
-
-        {/* Bottom Composer or Offline Notice */}
-        <View
-          style={{
-            paddingHorizontal: spacing.pageX,
-            paddingTop: 8,
-            paddingBottom: Math.max(insets().bottom, 12) + 4,
-            backgroundColor: token('canvas'),
-            borderTopWidth: spacing.hairline,
-            borderTopColor: token('separator'),
-          }}
-        >
-          <If when={!ctrl.isRoom() && (quotes().length || links().length)}>
-            <DraftQuoteStrip
-              quotes={quotes()}
-              links={links()}
-              disabled={sideDraft?.busy()}
-              onClearQuotes={() =>
-                sideDraft ? sideDraft.quotes.set([]) : clearDraftQuotes(rootId, sessionId)
-              }
-              onRemoveQuote={(id) =>
-                sideDraft
-                  ? sideDraft.quotes.update((items) => items.filter((item) => item.id !== id))
-                  : removeDraftQuote(rootId, sessionId, id)
-              }
-              onRemoveLink={(id) => removeDraftLink(rootId, sessionId, id)}
-              mainActions={
-                canAskFromTray()
-                  ? {
-                      ask: () => askSide(traySource),
-                      send,
-                      canSend: canSend(),
-                      queue: canQueue() ? () => send('queue') : undefined,
-                    }
-                  : undefined
-              }
-            />
-          </If>
-          <If
-            when={hostOnline()}
-            else={
-              <If
-                when={connectionProgress()}
-                else={
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                      minHeight: 44,
-                    }}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                      <StatusDot kind="offline" size={8} />
-                      <Text
-                        style={{
-                          ...type.subheadline,
-                          color: token('muted-foreground'),
-                          flex: 1,
-                          numberOfLines: 1,
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {tr('{name} is offline', { name: hostName() })}
-                      </Text>
-                    </View>
-                    <ActionButton
-                      title={tr('Reconnect')}
-                      variant="secondary"
-                      compact
-                      onPress={() => void connectSavedHost(rootId)}
-                    />
-                  </View>
-                }
-              >
-                {(progress) => (
-                  <View style={{ minHeight: 44, justifyContent: 'center' }}>
-                    <ConnectionProgress kind={progress()} surface="canvas" />
-                  </View>
-                )}
-              </If>
-            }
+        <If when={!compact()}>
+          <View
+            style={{
+              position: 'absolute',
+              top: insets().top + contextGap,
+              left: left(),
+              right: right(),
+              alignItems: 'center',
+              pointerEvents: 'none',
+            }}
           >
             <View
+              testID="chat-context"
+              onLayout={({ bounds }) => contextHeight.set(Math.ceil(bounds.size.height))}
               style={{
+                ...glassSurfaceStyle(spacing.pillRadius),
+                maxWidth: '100%',
+                paddingHorizontal: 10,
+                paddingVertical: 3,
                 flexDirection: 'row',
-                alignItems: 'flex-end',
-                gap: 8,
+                alignItems: 'center',
+                gap: 6,
+                pointerEvents: 'none',
               }}
+            >
+              <StatusDot kind={hostStatusKind(rootId)} size={7} />
+              <Text
+                style={{
+                  ...type.footnote,
+                  color: token('glass-muted'),
+                  minWidth: 0,
+                  flexShrink: 1,
+                  numberOfLines: 1,
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {subtitleLine()}
+              </Text>
+            </View>
+          </View>
+        </If>
+
+        <View
+          testID="chat-composer"
+          onLayout={({ bounds }) =>
+            composerLayout.set({ compact: compact(), height: Math.ceil(bounds.size.height) })
+          }
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            marginBottom: keyboardHeight() > 0 ? 'env(keyboard-inset-height)' : insets().bottom,
+            paddingLeft: left(),
+            paddingRight: right(),
+            paddingBottom: bottomGap(),
+            pointerEvents: 'box-none',
+          }}
+        >
+          <If when={!compact() && showLatest()}>
+            <View
+              role="button"
+              accessibilityLabel={tr('Scroll to latest')}
+              hitSlop={2}
+              onPress={jumpToLatest}
+              activeStyle={{ backgroundColor: token('glass-action-pressed-bg') }}
+              style={{
+                ...glassSurfaceStyle(20),
+                alignSelf: 'center',
+                marginBottom: 8,
+                width: 40,
+                height: 40,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Icon name="arrowDown" color={token('glass-foreground')} size={18} />
+            </View>
+          </If>
+
+          <If when={inlineDock() && hasPendingDock()}>{pendingDock(false)}</If>
+          <If when={!compact() && hasReferences()}>{quoteStrip()}</If>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'flex-end',
+              gap: 8,
+              pointerEvents: 'box-none',
+            }}
+          >
+            <If when={compact() && compactItems().length}>
+              <MenuButton
+                testID="chat-composer-actions"
+                accessibilityLabel={tr('Composer actions')}
+                items={compactItems()}
+                onSelect={({ id }) => {
+                  if (id === 'latest') jumpToLatest();
+                  else if (id === 'quotes') quoteSheetOpen.set(true);
+                  else if (id === 'pending') openQueue();
+                }}
+                activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
+                style={{
+                  ...glassSurfaceStyle(22),
+                  width: 44,
+                  height: 44,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Icon name="more" size={20} color={token('glass-foreground')} />
+              </MenuButton>
+            </If>
+            <If
+              when={hostOnline()}
+              else={
+                <If
+                  when={connectionProgress()}
+                  else={
+                    <View
+                      style={{
+                        ...glassSurfaceStyle(22),
+                        flex: 1,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        minHeight: 44,
+                        paddingHorizontal: 12,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                        <StatusDot kind="offline" size={8} />
+                        <Text
+                          style={{
+                            ...type.subheadline,
+                            color: token('glass-muted'),
+                            flex: 1,
+                            numberOfLines: 1,
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {tr('{name} is offline', { name: hostName() })}
+                        </Text>
+                      </View>
+                      <ActionButton
+                        title={tr('Reconnect')}
+                        variant="glassSecondary"
+                        compact
+                        minHeight={spacing.rowMinHeight}
+                        onPress={() => void connectSavedHost(rootId)}
+                      />
+                    </View>
+                  }
+                >
+                  {(progress) => (
+                    <View
+                      style={{
+                        ...glassSurfaceStyle(22),
+                        flex: 1,
+                        minHeight: 44,
+                        paddingHorizontal: 12,
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <ConnectionProgress kind={progress()} surface="glass" />
+                    </View>
+                  )}
+                </If>
+              }
             >
               <View
                 style={{
                   flex: 1,
-                  minHeight: 42,
-                  maxHeight: 132,
-                  paddingHorizontal: 14,
-                  paddingVertical: 6,
-                  borderRadius: 21,
-                  borderCurve: 'continuous',
-                  backgroundColor: sideDraft ? token('inline-card') : token('surface'),
-                  borderWidth: sideDraft ? 1 : 0,
-                  borderColor: token('border'),
-                  justifyContent: 'center',
+                  minWidth: 0,
+                  flexDirection: 'row',
+                  alignItems: 'flex-end',
+                  gap: 8,
+                  pointerEvents: 'box-none',
                 }}
               >
-                <Input
-                  ref={(r) => (inputRef = r)}
-                  multiline
-                  accessibilityLabel={tr('Message composer')}
-                  value={composerText()}
-                  placeholder={
-                    sideDraft
-                      ? tr('Your question')
-                      : isRunning()
-                        ? tr('Steer or message Maka…')
-                        : tr('Message Maka…')
-                  }
-                  disabled={sideDraft?.busy()}
-                  ios={sideDraft ? undefined : { inputAccessoryViewID: accessoryId }}
-                  onChange={({ value }) => editComposer(value)}
-                  style={{
-                    ...type.body,
-                    color: token('foreground'),
-                    placeholderColor: token('muted-foreground'),
-                    backgroundColor: 'transparent',
-                    maxHeight: 116,
-                  }}
-                />
-              </View>
-
-              <If when={isRunning()}>
                 <View
-                  role="button"
-                  accessibilityLabel={tr('Stop Run')}
-                  onPress={() => void ctrl.stopRun()}
-                  class="active:opacity-70"
+                  testID="chat-composer-input"
+                  accessible={false}
+                  onPress={!sideDraft?.busy() ? () => inputRef?.focus() : undefined}
                   style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 20,
-                    backgroundColor: token('destructive-tint'),
-                    alignItems: 'center',
-                    justifyContent: 'center',
+                    ...glassSurfaceStyle(24),
+                    ...(sideDraft && { borderColor: token('primary'), borderWidth: 1 }),
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: composerMinHeight,
+                    maxHeight: compact() ? composerMinHeight : 132,
+                    paddingLeft: 16,
+                    paddingRight: 6,
+                    paddingVertical: 5,
+                    flexDirection: 'row',
+                    alignItems: 'flex-end',
+                    gap: 5,
                   }}
                 >
-                  <Icon name="stop" color={token('destructive')} size={16} />
+                  <Input
+                    ref={(r) => (inputRef = r)}
+                    multiline
+                    accessibilityLabel={tr('Message composer')}
+                    value={composerText()}
+                    placeholder={
+                      sideDraft
+                        ? tr('Your question')
+                        : isRunning() && !compact()
+                          ? tr('Steer or message…')
+                          : tr('Message…')
+                    }
+                    disabled={sideDraft?.busy()}
+                    ios={sideDraft ? undefined : { inputAccessoryViewID: accessoryId }}
+                    onChange={({ value }) => editComposer(value)}
+                    style={{
+                      ...type.body,
+                      color: token('glass-foreground'),
+                      placeholderColor: token('glass-muted'),
+                      backgroundColor: 'transparent',
+                      flex: 1,
+                      minWidth: 0,
+                      alignSelf: 'center',
+                      maxHeight: compact() ? 30 : 116,
+                    }}
+                  />
+                  <If when={compact() || !canAskFromTray()}>
+                    <QueueSendMenu
+                      trigger={sendButton()}
+                      onQueue={canQueue() ? () => send('queue') : undefined}
+                      disabled={!canSend()}
+                    />
+                  </If>
                 </View>
-              </If>
 
-              <If when={!canAskFromTray()}>
-                <QueueSendMenu
-                  trigger={sendButton()}
-                  onQueue={canQueue() ? () => send('queue') : undefined}
-                  disabled={!canSend()}
-                />
-              </If>
-            </View>
-          </If>
+                <If when={isRunning()}>
+                  <View
+                    role="button"
+                    accessibilityLabel={tr('Stop Run')}
+                    onPress={() => void ctrl.stopRun()}
+                    activeStyle={{ backgroundColor: token('glass-action-bg') }}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: token('surface-elevated'),
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Icon name="stop" color={token('glass-destructive')} size={16} />
+                  </View>
+                </If>
+              </View>
+            </If>
+          </View>
         </View>
 
-        {/* iOS Keyboard InputAccessoryView: Model pill + Quote Diff + Hide Keyboard */}
         <If when={!sideDraft}>
-          <InputAccessoryView
-            nativeID={accessoryId}
-            style={{
-              backgroundColor: token('surface'),
-              borderTopWidth: spacing.hairline,
-              borderTopColor: token('separator'),
-            }}
-          >
+          <InputAccessoryView nativeID={accessoryId} style={{ backgroundColor: 'transparent' }}>
             <View
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                paddingHorizontal: 12,
-                paddingVertical: 6,
+                minHeight: 48,
+                paddingLeft: left(),
+                paddingRight: right(),
                 gap: 8,
               }}
             >
@@ -1684,61 +1925,70 @@ export function ChatScreen(
                 else={<View style={{ flex: 1 }} />}
               >
                 <MenuButton
+                  testID="chat-keyboard-model"
                   accessibilityLabel={tr('Select model')}
                   disabled={!!ctrl.selectingModel() || ctrl.sending()}
                   title={tr('Model')}
                   items={modelMenuItems()}
                   onSelect={({ id }) => handleSelectModel(id)}
+                  // The native menu button covers its host, not the inset glass.
+                  style={{ flexShrink: 1, paddingVertical: 4 }}
                 >
                   <View
+                    testID="chat-keyboard-model-glass"
                     style={{
-                      minHeight: 32,
+                      ...glassSurfaceStyle(18),
+                      minHeight: 36,
                       paddingHorizontal: 10,
-                      borderRadius: 16,
-                      backgroundColor: token('grouped-bg'),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 5,
                       maxWidth: 210,
                     }}
                   >
-                    <Icon name="sparkles" color={token('primary')} size={14} />
+                    <Icon name="sparkles" color={token('glass-foreground')} size={14} />
                     <Text
                       style={{
                         ...type.caption,
                         fontWeight: '600',
-                        color: token('foreground'),
+                        color: token('glass-foreground'),
+                        minWidth: 0,
+                        flexShrink: 1,
                         numberOfLines: 1,
                         textOverflow: 'ellipsis',
                       }}
                     >
                       {currentModelLabel()}
                     </Text>
-                    <Icon name="chevronDown" color={token('tertiary-foreground')} size={12} />
+                    <Icon name="chevronDown" color={token('glass-foreground')} size={12} />
                   </View>
                 </MenuButton>
               </If>
 
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <View
                   role="button"
                   accessibilityLabel={ctrl.isRoom() ? tr('Changes') : tr('Quote diff')}
+                  hitSlop={{ top: 4, bottom: 4 }}
                   onPress={() => {
                     inputRef?.blur();
                     openFiles();
                   }}
+                  activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
                   style={{
-                    minHeight: 32,
+                    ...glassSurfaceStyle(18),
+                    minWidth: 44,
+                    minHeight: 36,
                     paddingHorizontal: 10,
-                    borderRadius: 16,
-                    backgroundColor: token('grouped-bg'),
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 5,
                   }}
                 >
-                  <Icon name="diff" color={token('primary')} size={14} />
-                  <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
+                  <Icon name="diff" color={token('glass-foreground')} size={14} />
+                  <Text
+                    style={{ ...type.caption, fontWeight: '600', color: token('glass-foreground') }}
+                  >
                     {tr('Changes')}
                   </Text>
                 </View>
@@ -1746,16 +1996,18 @@ export function ChatScreen(
                 <View
                   role="button"
                   accessibilityLabel={tr('Dismiss keyboard')}
+                  hitSlop={4}
                   onPress={() => inputRef?.blur()}
+                  activeStyle={{ backgroundColor: token('glass-pressed-bg') }}
                   style={{
-                    width: 34,
-                    height: 32,
-                    borderRadius: 16,
+                    ...glassSurfaceStyle(18),
+                    width: 36,
+                    height: 36,
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  <Icon name="keyboardDown" color={token('muted-foreground')} size={18} />
+                  <Icon name="keyboardDown" color={token('glass-foreground')} size={18} />
                 </View>
               </View>
             </View>
@@ -1776,7 +2028,28 @@ export function ChatScreen(
             onOpen={sideDraft ? undefined : openSide}
           />
         </If>
+
+        <If when={quoteSheetOpen()}>
+          <ComposerSheet
+            title={tr('Quote')}
+            scrollId="chat-quote-sheet-scroll"
+            onClose={() => quoteSheetOpen.set(false)}
+          >
+            {quoteStrip()}
+          </ComposerSheet>
+        </If>
+
+        <If when={pendingSheetOpen()}>
+          <ComposerSheet
+            title={tr('Pending')}
+            scrollId="chat-pending-sheet-scroll"
+            editing={!!queueEditor()}
+            onClose={() => pendingSheetOpen.set(false)}
+          >
+            {pendingDock(true)}
+          </ComposerSheet>
+        </If>
       </View>
-    </NavPage>
-  );
+    );
+  }
 }

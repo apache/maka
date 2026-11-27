@@ -11860,6 +11860,7 @@ impl<M: TextEngine> Core<M> {
         let horizontal = list.horizontal;
         let scroll = node.scroll.as_ref().expect("list scroll");
         let zoom = scroll.zoom;
+        let old_height = scroll.content.map(|size| size.height.0);
         let inset = scroll.behavior.content_inset;
         let (leading, trailing) = if horizontal {
             (inset.left.0, inset.right.0)
@@ -11947,6 +11948,7 @@ impl<M: TextEngine> Core<M> {
             }
             _ => (0.0, 0.0),
         };
+        let keyboard_motion = !horizontal && self.list_motion.follows_keyboard();
         let list = self.nodes[key as usize].list.as_mut().expect("list");
         // Not on the first layout: there is nothing to clamp yet.
         let grew = outer.is_none() && list.viewport > 0.0 && main > list.viewport;
@@ -11958,11 +11960,18 @@ impl<M: TextEngine> Core<M> {
         // about where the user is.
         let spliced = list.take_splice_anchor();
         anchor += spliced;
-        if outer.is_none() {
-            let maximum = (list.content_len() * zoom - main + trailing).max(-leading);
-            list.predict_clamp(maximum);
-        }
         let kept = anchor;
+        if outer.is_none() {
+            let extent = list.content_len();
+            let maximum = (extent * zoom - main + trailing).max(-leading);
+            let before = list.offset;
+            list.predict_clamp(maximum);
+            if keyboard_motion && old_height.is_some_and(|height| extent < height) {
+                // Make the predicted clamp explicit before the content shrinks.
+                // List motion then offsets the retained rows before the scroll.
+                anchor += list.offset - before;
+            }
+        }
         // A row growing under its own layout animation (a reveal) moves
         // the end while its frames slide: a scroll to the new end would
         // land at once, ahead of them, so the list keeps its place.

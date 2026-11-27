@@ -28,7 +28,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{Core, Key, NO_KEY};
 use crate::{
-    LayoutAnimation, MountItem, NodeId,
+    LayoutAnimation, LayoutCurve, MountItem, NodeId,
     geometry::{Bounds, Points},
     text::TextEngine,
 };
@@ -51,6 +51,12 @@ impl ListMotion {
     /// The turn's layout animation, when it moves frames.
     pub(super) fn active(&self) -> bool {
         self.layout.is_some()
+    }
+
+    pub(super) fn follows_keyboard(&self) -> bool {
+        self.layout
+            .and_then(|animation| animation.update)
+            .is_some_and(|transition| transition.curve == LayoutCurve::Keyboard)
     }
 }
 

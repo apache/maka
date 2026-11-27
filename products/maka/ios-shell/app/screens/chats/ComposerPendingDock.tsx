@@ -29,6 +29,7 @@ import {
   token,
   View,
   type JSX,
+  type ViewStyle,
 } from 'nsh';
 import { Button, ContextMenu, Input } from 'nsh/base';
 import { tr } from '../../locale';
@@ -40,14 +41,27 @@ import {
 import { showToast } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { motion, spacing, type } from '../../theme/tokens';
-import { glassSurfaceStyle, Icon } from '../../ui';
+import { Icon } from '../../ui';
 
 type Controller = ReturnType<typeof createConversationController>;
 type QueuedMessage = NonNullable<Awaited<ReturnType<Controller['readQueuedMessage']>>>;
-type Editing = { messageId: string; base: QueuedMessage; text: string; latest?: QueuedMessage };
+export type QueueEdit = {
+  messageId: string;
+  base: QueuedMessage;
+  text: string;
+  latest?: QueuedMessage;
+};
+export const pendingDockLimits = { delivery: 152, queue: 220 } as const;
 
 const actions = { flexDirection: 'row', flexWrap: 'wrap', gap: 4 } as const;
 const preview = { ...type.footnote, numberOfLines: 1, textOverflow: 'ellipsis' } as const;
+const dockSurface = () => ({
+  backgroundColor: token('surface-elevated'),
+  borderColor: token('glass-border'),
+  borderWidth: spacing.hairline,
+  borderRadius: 18,
+  borderCurve: 'continuous' as const,
+});
 
 function DockAction(props: {
   label: string;
@@ -61,10 +75,12 @@ function DockAction(props: {
       accessibilityLabel={props.accessibilityLabel ?? props.label}
       disabled={props.disabled}
       onPress={props.onPress}
-      class="active:opacity-60 disabled:opacity-40"
+      class="disabled:opacity-40"
+      activeStyle={{ backgroundColor: token('glass-action-bg') }}
       style={{
         minHeight: 44,
         minWidth: 44,
+        borderRadius: spacing.controlRadius,
         paddingHorizontal: 8,
         justifyContent: 'center',
         alignItems: 'center',
@@ -73,7 +89,7 @@ function DockAction(props: {
       <Text
         style={{
           ...type.subheadlineMedium,
-          color: token(props.destructive ? 'destructive' : 'glass-accent'),
+          color: token(props.destructive ? 'glass-destructive' : 'glass-accent'),
         }}
       >
         {props.label}
@@ -109,7 +125,7 @@ function SteeringPill(props: { text: string; sending?: boolean; queued?: boolean
   return (
     <View
       style={{
-        ...glassSurfaceStyle(18),
+        ...dockSurface(),
         ...fade?.style,
         flexDirection: 'row',
         alignItems: 'center',
@@ -145,8 +161,36 @@ function SteeringPill(props: { text: string; sending?: boolean; queued?: boolean
   );
 }
 
+// The inline dock caps each region. In the sheet there is just one vertical
+// scroll view, so an oversized sibling cannot leave the editor offscreen.
+function DockRegion(props: {
+  inSheet: boolean;
+  inlineLimit: number;
+  contentStyle: ViewStyle;
+  children: JSX.Element;
+}) {
+  return (
+    <If
+      when={props.inSheet}
+      else={
+        <Scroll
+          style={{ maxHeight: props.inlineLimit, flexShrink: 1 }}
+          contentStyle={props.contentStyle}
+          keyboardShouldPersistTaps="handled"
+        >
+          {props.children}
+        </Scroll>
+      }
+    >
+      <View style={props.contentStyle}>{props.children}</View>
+    </If>
+  );
+}
+
 export function ComposerPendingDock(props: {
   ctrl: Controller;
+  editor: ReturnType<typeof signal<QueueEdit | null>>;
+  inSheet: boolean;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   running: boolean;
@@ -154,7 +198,7 @@ export function ComposerPendingDock(props: {
   focusComposer: () => void;
 }) {
   const ctrl = props.ctrl;
-  const editing = signal<Editing | null>(null);
+  const editing = props.editor;
   const composing = signal(false);
   const editorNotice = () => {
     const edit = editing();
@@ -166,7 +210,7 @@ export function ComposerPendingDock(props: {
   const rowPresent = (id: string) => ctrl.queuedMessages().some((row) => row.messageId === id);
   const sameVersion = (message: QueuedMessage) =>
     message.generation === props.generation && message.revision === ctrl.queue()?.revision;
-  const stale = (edit: Editing) => !sameVersion(edit.base) || !rowPresent(edit.messageId);
+  const stale = (edit: QueueEdit) => !sameVersion(edit.base) || !rowPresent(edit.messageId);
   const startEdit = async (messageId: string) => {
     const base = await ctrl.readQueuedMessage(messageId);
     if (base) editing.set({ messageId, base, text: base.message });
@@ -234,12 +278,15 @@ export function ComposerPendingDock(props: {
         ctrl.queueError()
       }
     >
-      <View style={{ paddingHorizontal: spacing.pageX, paddingBottom: 6, gap: 6 }}>
+      <View
+        testID="composer-pending-dock"
+        style={{ paddingBottom: 6, gap: 6, pointerEvents: 'box-none' }}
+      >
         <If when={ctrl.pendingSends().length || ctrl.steeringMessages().length}>
-          <Scroll
-            style={{ maxHeight: 152 }}
+          <DockRegion
+            inSheet={props.inSheet}
+            inlineLimit={pendingDockLimits.delivery}
             contentStyle={{ gap: 5 }}
-            keyboardShouldPersistTaps="handled"
           >
             <Each of={ctrl.pendingSends()} key={(send) => send.id}>
               {(send) => {
@@ -261,7 +308,7 @@ export function ComposerPendingDock(props: {
                     {(failed) => (
                       <View
                         style={{
-                          ...glassSurfaceStyle(18),
+                          ...dockSurface(),
                           paddingHorizontal: 12,
                           paddingTop: 8,
                           paddingBottom: 3,
@@ -272,7 +319,9 @@ export function ComposerPendingDock(props: {
                           <Icon
                             name="warning"
                             size={16}
-                            color={token(send().state === 'unknown' ? 'warning' : 'destructive')}
+                            color={token(
+                              send().state === 'unknown' ? 'glass-muted' : 'glass-destructive',
+                            )}
                           />
                           <View style={{ flex: 1, gap: 2 }}>
                             <Text style={{ ...preview, color: token('glass-foreground') }}>
@@ -312,11 +361,17 @@ export function ComposerPendingDock(props: {
             <Each of={ctrl.steeringMessages()} key={(entry) => entry.messageId}>
               {(entry) => <SteeringPill text={entry().preview} />}
             </Each>
-          </Scroll>
+          </DockRegion>
         </If>
 
         <If when={ctrl.queuedMessages().length || editing() || ctrl.queueError()}>
-          <View style={{ ...glassSurfaceStyle(18), maxHeight: 220, overflow: 'hidden' }}>
+          <View
+            style={{
+              ...dockSurface(),
+              maxHeight: props.inSheet ? undefined : pendingDockLimits.queue,
+              overflow: 'hidden',
+            }}
+          >
             <View
               role="button"
               accessibilityLabel={tr('Queued Messages ({count})', {
@@ -324,7 +379,7 @@ export function ComposerPendingDock(props: {
               })}
               accessibilityState={{ expanded: props.expanded }}
               onPress={toggle}
-              class="active:opacity-70"
+              activeStyle={{ backgroundColor: token('glass-action-bg') }}
               style={{
                 minHeight: 44,
                 paddingHorizontal: 12,
@@ -334,7 +389,7 @@ export function ComposerPendingDock(props: {
                 flexShrink: 0,
               }}
             >
-              <Icon name="queue" color={token('muted-foreground')} size={16} />
+              <Icon name="queue" color={token('glass-muted')} size={16} />
               <Text style={{ ...type.caption, color: token('glass-foreground') }}>
                 {tr('{count} queued', { count: ctrl.queuedMessages().length })}
               </Text>
@@ -342,20 +397,24 @@ export function ComposerPendingDock(props: {
                 {props.expanded ? '' : ctrl.queuedMessages()[0]?.preview}
               </Text>
               <View style={{ transform: [{ rotate: props.expanded ? '180deg' : '0deg' }] }}>
-                <Icon name="chevronDown" color={token('muted-foreground')} size={14} />
+                <Icon name="chevronDown" color={token('glass-muted')} size={14} />
               </View>
             </View>
 
             <If when={props.expanded}>
-              <Scroll
-                style={{ maxHeight: 175, flexShrink: 1 }}
+              <DockRegion
+                inSheet={props.inSheet}
+                inlineLimit={175}
                 contentStyle={{ paddingHorizontal: 12, paddingBottom: 6 }}
-                keyboardShouldPersistTaps="handled"
               >
                 <If when={editorNotice()}>
                   {(detail) => (
                     <Text
-                      style={{ ...type.footnote, color: token('destructive'), marginBottom: 4 }}
+                      style={{
+                        ...type.footnote,
+                        color: token('glass-destructive'),
+                        marginBottom: 4,
+                      }}
                     >
                       {detail()}
                     </Text>
@@ -405,6 +464,7 @@ export function ComposerPendingDock(props: {
                     <View style={{ gap: 4 }}>
                       <Input
                         testID="queue-message-editor"
+                        autoFocus
                         multiline
                         accessibilityLabel={tr('Edit queued message')}
                         value={edit().text}
@@ -478,7 +538,7 @@ export function ComposerPendingDock(props: {
                 <If when={!editing() && !ctrl.queuedMessages().length && ctrl.queueError()}>
                   <DockAction label={tr('Dismiss')} onPress={ctrl.clearQueueError} />
                 </If>
-              </Scroll>
+              </DockRegion>
             </If>
           </View>
         </If>

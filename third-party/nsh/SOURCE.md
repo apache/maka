@@ -92,6 +92,16 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 - **Native lifecycle:** terminal surfaces keep host ownership of windows and
   event loops while honoring menu labels, quit requests and system session
   termination. Stopping an engine revokes its input and frame receipts.
+- **iOS keyboard geometry:** `nsh-platform-ios` ignores floating or undocked
+  keyboard frames that leave the bottom edge clear when the docked guide covers
+  only the safe area. Animated updates start from the notification's end
+  frame and reconcile visible occlusion with the docked guide once UIKit
+  finishes the change. UIKit can omit a late input accessory from the frame
+  after modal dismissal. Instantaneous docked frames still use the guide,
+  and a completion cannot undo a hide. An idle surface resize also reconciles
+  against the docked guide when UIKit sends no new keyboard notification.
+  A docked keyboard remains visible to the platform even if the resized
+  surface temporarily has zero overlap.
 
 ## Maintenance and verification
 

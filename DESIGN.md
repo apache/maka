@@ -113,6 +113,9 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Chats, transcript and Pending connection status | Inline text shimmer during dials and online backoff, solid under Reduce Motion; static offline state while waiting for a network. No transition or placeholder over cached chats. |
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
+| Chat glass chrome | UIKit owns bar, menu and keyboard motion. The context pill does not intercept scroll gestures. Composer, quote and sheet controls change fill without dimming their foregrounds. Jump to Latest scrolls, or jumps under Reduce Motion. |
+| Composer and transcript | Composer height, quotes, queue and live content reflow without a second animation. The composer and retained transcript rows follow NSH's keyboard transition when pinned to the tail. Keep the reading position otherwise. |
+| Short chat viewport | Context hides; quotes, pending sends, queue and Latest stay reachable in the composer menu. Both sheets scroll above the keyboard and stay within the horizontal safe area. The quote sheet works offline. |
 
 Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
 
@@ -122,12 +125,22 @@ Side questions push a chat with the same composer and quote tray. The first acce
 
 ### iOS chat: composer delivery dock
 
-The inline dock sits above the composer: a brief delivery status for steer, a
-recoverable card on failure, and a single disclosure for the longer-lived queue.
+The dock sits inside the measured floating composer: a brief delivery status for
+steer, a recoverable card on failure, and a single disclosure for the queue.
+On short viewports it opens in a sheet from the composer menu, with one scroll
+region for the whole dock. Showing the keyboard keeps an active queue edit in
+its current presentation unless the window itself rotates to a short viewport.
+Dock cards stay opaque so transcript media cannot lower action contrast. The
+composer's Send sits inside the glass field; the compact actions menu and
+keyboard toolbar use the same material without pulling focus from the draft.
 
 | Change | Motion | Reduced motion |
 | --- | --- | --- |
-| Send and dock action press/hover | Existing opacity feedback (fast); distinct 44pt targets, no hover-only actions | Immediate opacity |
+| Send and dock action press/hover | Opaque fill changes; distinct 44pt targets, no hover-only actions. | Immediate feedback |
+| Keyboard toolbar press; model and compact menus | Translucent press tint for toolbar buttons; native menu presentation. | Immediate tint; system menu motion |
+| Draft wraps | The field grows above Send; the button holds its bottom inset. | Same |
+| Reconnecting over the composer glass | Pulse the letters, not the surface behind them. | Static status text |
+| Clear or remove a draft quote | The quote strip updates in place; a light tint matches other glass controls on press. | Same |
 | Sending → steering; queue count or preview changes | No movement for Host updates; keep the row's position | Same |
 | Steer status arrives or lands | Fast opacity enter/exit; no delayed removal from the transcript handoff | Immediate |
 | Queue disclosure, inline edit and review | Disclosure uses normal layout animation; editing and review reveal in place | Immediate |
