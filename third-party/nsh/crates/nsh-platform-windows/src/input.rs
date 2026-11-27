@@ -2022,14 +2022,17 @@ fn down(
         return;
     };
     let touch = key != Key::Mouse;
-    if let Some(view) = chain(&hit.view).into_iter().find(|view| {
-        let state = view.state();
-        focusable(&state)
-    }) {
-        crate::text_input::focus_view(surface, &view);
-    }
+    let mut focus_target = chain(&hit.view)
+        .into_iter()
+        .find(|view| focusable(&view.state()));
+    let mut focus_hit = || {
+        if let Some(view) = focus_target.take() {
+            crate::text_input::focus_view(surface, &view);
+        }
+    };
     let mut item = None;
     if let Some(native) = hit.item.take() {
+        focus_hit();
         let hosted = Item::Hosted(hit.view.clone(), native);
         if hosted.send(surface, PointerKind::Down, (x, y), clicks, modifiers) {
             item = Some(hosted);
@@ -2052,6 +2055,7 @@ fn down(
         })
         .flatten();
     if let Some(view) = thumb {
+        focus_hit();
         let input = &surface.input;
         if input.pointers.borrow().is_empty() {
             input.js_block.set(false);
@@ -2099,33 +2103,9 @@ fn down(
             None
         };
         if let Some(c) = candidate {
+            focus_hit();
             c.send(surface, PointerKind::Down, (x, y), clicks, modifiers);
             item = Some(c);
-        }
-    }
-    // The press gives the keyboard focus to the stop it is on (the view or
-    // its nearest focusable ancestor), as a click does on a desktop; a
-    // hosted item (a video's controls, a component's window) or a field
-    // keeps the keys for itself.
-    match &item {
-        Some(Item::Input(_)) => {}
-        Some(Item::Hosted(..)) => {
-            crate::keyboard::blur_window(surface, crate::app_window::window_of(surface, &hit.view))
-        }
-        _ => {
-            if let Some(target) = crate::keyboard::focus_target(surface, &hit.view) {
-                crate::keyboard::focus_pointer(surface, &target);
-            } else if !matches!(item, Some(Item::Text(_) | Item::Area(..)))
-                && let Some(field) = crate::text_input::focused(surface)
-            {
-                // A press on no stop (blank space) leaves the field of its
-                // window, as one on a stop does: the field is drawn here,
-                // not a system control that would lose the focus to the
-                // click itself. A press that starts a text selection keeps
-                // the field focused, so Ctrl+C copies the selection around
-                // a chat's composer (copy-selection-windows.test.tsx).
-                crate::text_input::blur(&field);
-            }
         }
     }
     let native = matches!(item, Some(Item::Hosted(..) | Item::Input(_)));
@@ -2207,6 +2187,41 @@ fn down(
         mode: Mode::Idle,
         moved: false,
     };
+    let mut focus = |p: &Pointer| {
+        focus_hit();
+        match &p.item {
+            Some(Item::Input(_)) => {}
+            Some(Item::Hosted(..)) => crate::keyboard::blur_window(
+                surface,
+                crate::app_window::window_of(surface, &p.target),
+            ),
+            _ => {
+                if let Some(target) = crate::keyboard::focus_target(surface, &p.target) {
+                    crate::keyboard::focus_pointer(surface, &target);
+                } else if !matches!(p.item, Some(Item::Text(_) | Item::Area(..)))
+                    && let Some(field) = crate::text_input::focused(surface)
+                {
+                    // A press on no stop (blank space) leaves the field of its
+                    // window, as one on a stop does: the field is drawn here,
+                    // not a system control that would lose the focus to the
+                    // click itself. A press that starts a text selection keeps
+                    // the field focused, so Ctrl+C copies the selection around
+                    // a chat's composer (copy-selection-windows.test.tsx).
+                    crate::text_input::blur(&field);
+                }
+            }
+        }
+    };
+    // A mouse-down listener can capture the field's selection before the
+    // default focus transfer blurs it. Native items handle their own down.
+    let focus_after_press = !touch
+        && p.item.is_none()
+        && p.press
+            .as_ref()
+            .is_some_and(|press| press.events.contains(EventKind::PressDown));
+    if !focus_after_press {
+        focus(&p);
+    }
     p.velocity.add(time, point(Points(x), Points(y)));
     if p.reporting {
         report(surface, TouchPhase::Start, &p, None);
@@ -2244,6 +2259,9 @@ fn down(
                 press_event(surface, press, EventKind::LongPress, (p.x, p.y));
             });
         }
+    }
+    if focus_after_press {
+        focus(&p);
     }
     put(surface, p);
 }

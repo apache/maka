@@ -632,6 +632,16 @@ impl Desktop {
         .await
     }
 
+    async fn finish_turn(&self, reply: ModelRequest) {
+        self.control("Stop response").await;
+        self.wait("the provider reply did not finish", reply.finish())
+            .await;
+        self.until("the response did not finish in the workbench", || {
+            self.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
+    }
+
     async fn restart(
         mut self,
         fixture: &Fixture,
@@ -1653,9 +1663,7 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     let indented_reply = "    indented_first_line();\nCACHE_INVALIDATION_RULE";
     let mut reply = desktop.request(&mut fixture).await;
     reply.delta(indented_reply).await;
-    desktop
-        .wait("the reply did not finish", reply.finish())
-        .await;
+    desktop.finish_turn(reply).await;
     let listed = desktop.sessions().await.len();
 
     // Select only the second word of a multi-word user message and right-click on the
@@ -1763,9 +1771,7 @@ async fn desktop_quotes_a_message_into_the_current_session() {
         })
         .await;
     follow_up.delta("Here is a concrete example.").await;
-    desktop
-        .wait("the follow-up reply did not finish", follow_up.finish())
-        .await;
+    desktop.finish_turn(follow_up).await;
 
     // A single-line user message with a session-reference token renders via read-only
     // SkillInput. Selecting one word inside it and clicking Quote selection must quote only
@@ -1775,12 +1781,7 @@ async fn desktop_quotes_a_message_into_the_current_session() {
     desktop.press("Send message").await;
     let mut token_reply = desktop.request(&mut fixture).await;
     token_reply.delta("Checked.").await;
-    desktop
-        .wait(
-            "the token-message reply did not finish",
-            token_reply.finish(),
-        )
-        .await;
+    desktop.finish_turn(token_reply).await;
     // Wait until the third reply's actions are laid out and scrolled into place before
     // sampling the token user message's screen position.
     desktop
