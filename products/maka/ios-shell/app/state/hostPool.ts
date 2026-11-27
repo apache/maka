@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { computed, signal, UrlScheme } from 'nsh';
+import { computed, effect, lifecycle, network, signal, untracked, UrlScheme } from 'nsh';
 import {
   beginPairing,
   bootstrap,
@@ -27,6 +27,7 @@ import {
   connectWebSocket,
   disconnectHost,
   hostQuery,
+  networkChange,
   onHostState,
   onHostPath,
   type PathSummary,
@@ -142,7 +143,16 @@ export function isHostConnected(rootId: string): boolean {
   return hostConnectionState(rootId).status === 'connected';
 }
 
+export function hostReconnectNotice(rootId: string): { error?: string } | null {
+  const host = hostConnectionState(rootId);
+  if (host.status === 'error' && host.autoReconnect !== false) return { error: host.error };
+  const retry = reconnects().get(rootId);
+  if (host.status === 'connecting' && retry?.kind === 'dialing') return { error: retry.error };
+  return null;
+}
+
 export function hostStatusKind(rootId: string): StatusKind {
+  if (hostReconnectNotice(rootId)) return 'working';
   const state = hostConnectionState(rootId);
   switch (state.status) {
     case 'connected':
@@ -157,6 +167,7 @@ export function hostStatusKind(rootId: string): StatusKind {
 }
 
 export function hostStatusText(rootId: string): string {
+  if (hostReconnectNotice(rootId)) return tr('Reconnecting…');
   const state = hostConnectionState(rootId);
   switch (state.status) {
     case 'connected':
@@ -249,7 +260,7 @@ export function closeAdvancedConnectSheet() {
 
 function applySnapshot(next: HostStateSnapshot) {
   const prev = snapshot();
-  if (prev && next.revision < prev.revision) return;
+  if (prev && next.revision <= prev.revision) return;
   setHostSnapshot(next);
   snapshot.set(next);
   paths.update((previous) =>
@@ -284,6 +295,8 @@ function applySnapshot(next: HostStateSnapshot) {
   ) {
     disconnectNotice.set(null);
   }
+
+  syncReconnect();
 
   if (next.pendingPairUri) {
     handleIncomingUrl(next.pendingPairUri);
@@ -445,50 +458,152 @@ export async function connectManualWebSocket(
   }
 }
 
+const FIRST_RETRY_MS = 1000;
+const MAX_RETRY_MS = 15_000;
+type RetryPlan = { delay: number; immediate: boolean };
+type ScheduledRetry = { kind: 'scheduled'; plan: RetryPlan; timer: ReturnType<typeof setTimeout> };
+type DialingRetry = { kind: 'dialing'; next: RetryPlan; error?: string };
+type ReconnectState =
+  | { kind: 'waiting'; plan: RetryPlan }
+  | ScheduledRetry
+  | DialingRetry
+  | { kind: 'manual' };
+const reconnects = signal(new Map<string, ReconnectState>());
+
+function setReconnect(rootId: string, state?: ReconnectState) {
+  reconnects.update((previous) => {
+    const current = previous.get(rootId);
+    if (current === state) return previous;
+    if (current?.kind === 'scheduled') clearTimeout(current.timer);
+    const next = new Map(previous);
+    if (state) next.set(rootId, state);
+    else next.delete(rootId);
+    return next;
+  });
+}
+
+function reconnectAvailable() {
+  return lifecycle() === 'active' && network().online;
+}
+
+async function dialSavedHost(rootId: string, scheduled: ScheduledRetry) {
+  if (reconnects().get(rootId) !== scheduled) return;
+  if (!reconnectAvailable()) {
+    setReconnect(rootId, { kind: 'waiting', plan: scheduled.plan });
+    return;
+  }
+  const host = hostConnectionState(rootId);
+  const { delay, immediate } = scheduled.plan;
+  const attempt: DialingRetry = {
+    kind: 'dialing',
+    next: { delay: immediate ? delay : Math.min(delay * 2, MAX_RETRY_MS), immediate: false },
+    error: host.status === 'error' ? host.error : undefined,
+  };
+  setReconnect(rootId, attempt);
+  try {
+    applySnapshot(await connectHost(rootId, undefined, undefined, true));
+  } catch (cause) {
+    // The native snapshot carries the error. No toast or haptics for automatic dials.
+    if (reconnects().get(rootId) === attempt)
+      console.warn('Could not reconnect computer', rootId, cause);
+  } finally {
+    if (reconnects().get(rootId) === attempt) {
+      setReconnect(rootId, { kind: 'waiting', plan: attempt.next });
+      syncHostReconnect(rootId);
+    }
+  }
+}
+
+function syncHostReconnect(rootId: string, immediate = false) {
+  const retry = reconnects().get(rootId);
+  if (retry?.kind === 'manual') return;
+  const saved = hostById(rootId);
+  const host = hostConnectionState(rootId);
+  if (
+    !saved ||
+    saved.ephemeral ||
+    host.status === 'connected' ||
+    ('autoReconnect' in host && host.autoReconnect === false)
+  ) {
+    setReconnect(rootId);
+    return;
+  }
+  if (retry?.kind === 'dialing') {
+    // Wakeups during a dial are consumed once, if that dial fails.
+    if (immediate) retry.next = { delay: FIRST_RETRY_MS, immediate: true };
+    return;
+  }
+  const ready = reconnectAvailable() && host.status !== 'connecting';
+  if (retry?.kind === 'scheduled' && ready && !immediate) return;
+  const plan = immediate || !retry ? { delay: FIRST_RETRY_MS, immediate } : retry.plan;
+  if (!ready) {
+    if (immediate || retry?.kind === 'scheduled') setReconnect(rootId, { kind: 'waiting', plan });
+    return;
+  }
+  const scheduled: ScheduledRetry = {
+    kind: 'scheduled',
+    plan,
+    timer: setTimeout(() => void dialSavedHost(rootId, scheduled), plan.immediate ? 0 : plan.delay),
+  };
+  setReconnect(rootId, scheduled);
+}
+
+function syncReconnect(immediate = false) {
+  const roots = new Set(savedHosts().map(({ rootId }) => rootId));
+  for (const rootId of roots) syncHostReconnect(rootId, immediate);
+  for (const [rootId, state] of reconnects()) {
+    if (!roots.has(rootId) && state.kind !== 'manual') setReconnect(rootId);
+  }
+}
+
+export function retrySavedHostNow(rootId: string) {
+  syncHostReconnect(rootId, true);
+}
+
+async function manualHostAction(
+  rootId: string,
+  action: () => Promise<HostStateSnapshot>,
+  feedback: () => void,
+): Promise<boolean> {
+  if (reconnects().get(rootId)?.kind === 'manual') return false;
+  setReconnect(rootId, { kind: 'manual' });
+  try {
+    applySnapshot(await action());
+    feedback();
+    return true;
+  } catch (cause) {
+    showToast(cause instanceof Error ? cause.message : String(cause));
+    return false;
+  } finally {
+    setReconnect(rootId);
+    syncHostReconnect(rootId);
+  }
+}
+
 export async function connectSavedHost(
   rootId: string,
   relayUrl?: string,
   relayToken?: string,
 ): Promise<boolean> {
-  try {
-    const next = await connectHost(
-      rootId,
-      relayUrl?.trim() || undefined,
-      relayToken?.trim() || undefined,
-    );
-    applySnapshot(next);
-    hapticNotification('success');
-    return true;
-  } catch (cause) {
-    hapticNotification('error');
-    const message = cause instanceof Error ? cause.message : String(cause);
-    showToast(message);
-    return false;
-  }
+  const ok = await manualHostAction(
+    rootId,
+    () => connectHost(rootId, relayUrl?.trim() || undefined, relayToken?.trim() || undefined),
+    () => hapticNotification('success'),
+  );
+  if (!ok) hapticNotification('error');
+  return ok;
 }
 
-export async function disconnectSavedHost(rootId: string): Promise<boolean> {
-  try {
-    const next = await disconnectHost(rootId);
-    applySnapshot(next);
-    hapticSelection();
-    return true;
-  } catch (cause) {
-    showToast(cause instanceof Error ? cause.message : String(cause));
-    return false;
-  }
+export function disconnectSavedHost(rootId: string): Promise<boolean> {
+  return manualHostAction(rootId, () => disconnectHost(rootId), hapticSelection);
 }
 
-export async function removeSavedHost(rootId: string): Promise<boolean> {
-  try {
-    const next = await removeHost(rootId);
-    applySnapshot(next);
-    hapticNotification('warning');
-    return true;
-  } catch (cause) {
-    showToast(cause instanceof Error ? cause.message : String(cause));
-    return false;
-  }
+export function removeSavedHost(rootId: string): Promise<boolean> {
+  return manualHostAction(
+    rootId,
+    () => removeHost(rootId),
+    () => hapticNotification('warning'),
+  );
 }
 
 export async function checkHostConnection(rootId: string): Promise<boolean> {
@@ -547,6 +662,25 @@ export function startHostPool() {
 
   UrlScheme.on('open', ({ url }) => {
     if (url) handleIncomingUrl(url);
+  });
+
+  let wasActive: boolean | undefined;
+  let previousNetwork: ReturnType<typeof network> | undefined;
+  effect(() => {
+    const active = lifecycle() === 'active';
+    const route = network();
+    const resumed = wasActive === false && active;
+    const routeChanged = previousNetwork !== undefined && previousNetwork !== route;
+    wasActive = active;
+    previousNetwork = route;
+    untracked(() => {
+      if (active && (resumed || routeChanged) && connectedHosts().length > 0) {
+        void networkChange().catch((cause) =>
+          console.warn('Could not refresh network paths', cause),
+        );
+      }
+      syncReconnect(active && route.online && (resumed || routeChanged));
+    });
   });
 
   void bootstrap().then(

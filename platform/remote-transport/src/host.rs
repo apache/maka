@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use crate::{HOST_ALPN, PeerEndpoint, Relay, Result, peer::export_sas};
+use crate::{
+    HOST_ALPN, PeerEndpoint, Relay, Result,
+    peer::{PEER_ACCESS_REVOKED_CODE, export_sas},
+};
 use iroh::{Watcher, endpoint::Connection};
 use maka_host_runtime::application::host::{AuthenticatedPeerStream, Host, PeerId};
 use maka_remote_pairing::parse_peer_id;
@@ -124,7 +127,7 @@ impl HostPeerTransport {
                         Ok(peer) => {
                             if let Some(connections) = active.remove(&peer) {
                                 for conn in connections.into_values() {
-                                    conn.close(0u32.into(), b"peer access revoked");
+                                    conn.close(PEER_ACCESS_REVOKED_CODE.into(), b"peer access revoked");
                                 }
                             }
                         }
@@ -160,8 +163,7 @@ impl HostPeerTransport {
                         let peer_id = PeerId::new(canonical)?;
                         let sas = export_sas(&conn, &self.peer.local_key, &client_key)?;
                         let observation = self.host.peer_handshake_observation(peer_id.clone(), sas.clone());
-                        if revoked_while_handshaking(&mut during_handshake, &peer_id) {
-                            conn.close(0u32.into(), b"peer access revoked during handshake");
+                        if reject_handshake(&conn, &mut during_handshake, &peer_id) {
                             continue;
                         }
                         let ingress = ingress.clone();
@@ -228,17 +230,43 @@ impl HostPeerTransport {
     }
 }
 
-fn revoked_while_handshaking(revoked: &mut broadcast::Receiver<PeerId>, peer: &PeerId) -> bool {
+enum HandshakeRevocation {
+    Revoked,
+    Uncertain,
+    Clear,
+}
+
+fn handshake_revocation(
+    revoked: &mut broadcast::Receiver<PeerId>,
+    peer: &PeerId,
+) -> HandshakeRevocation {
     loop {
         match revoked.try_recv() {
-            Ok(revoked) if revoked == *peer => return true,
+            Ok(revoked) if revoked == *peer => return HandshakeRevocation::Revoked,
             Ok(_) => {}
-            Err(broadcast::error::TryRecvError::Empty) => return false,
+            Err(broadcast::error::TryRecvError::Empty) => return HandshakeRevocation::Clear,
             Err(
                 broadcast::error::TryRecvError::Closed | broadcast::error::TryRecvError::Lagged(_),
-            ) => return true,
+            ) => return HandshakeRevocation::Uncertain,
         }
     }
+}
+
+fn reject_handshake(
+    conn: &Connection,
+    revoked: &mut broadcast::Receiver<PeerId>,
+    peer: &PeerId,
+) -> bool {
+    let (code, reason): (u32, &[u8]) = match handshake_revocation(revoked, peer) {
+        HandshakeRevocation::Revoked => (
+            PEER_ACCESS_REVOKED_CODE,
+            b"peer access revoked during handshake",
+        ),
+        HandshakeRevocation::Uncertain => (0, b"peer revocation receiver unavailable"),
+        HandshakeRevocation::Clear => return false,
+    };
+    conn.close(code.into(), reason);
+    true
 }
 
 async fn serve_connection(
@@ -282,5 +310,56 @@ async fn serve_streams(
             _ = conn.closed() => break,
             result = ingress.send(stream) => if result.is_err() { break; },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::{
+        Endpoint, EndpointAddr, RelayMode, TransportAddr,
+        endpoint::{ConnectionError, presets},
+    };
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn lag_during_handshake_closes_without_revoking_the_peer() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let direct = || {
+                Endpoint::builder(presets::Minimal)
+                    .crypto_provider(crate::tls::provider())
+                    .relay_mode(RelayMode::Disabled)
+                    .clear_ip_transports()
+                    .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
+                    .unwrap()
+            };
+            let host = direct()
+                .alpns(vec![HOST_ALPN.to_vec()])
+                .bind()
+                .await
+                .unwrap();
+            let client = direct().bind().await.unwrap();
+            let address = EndpointAddr::new(host.id())
+                .with_addrs([TransportAddr::Ip(host.bound_sockets()[0])]);
+            let (client_conn, host_conn) =
+                tokio::join!(client.connect(address, HOST_ALPN), async {
+                    host.accept().await.unwrap().await
+                },);
+            let client_conn = client_conn.unwrap();
+            let host_conn = host_conn.unwrap();
+            let peer = PeerId::new(client.id().to_string()).unwrap();
+            let unrelated = PeerId::new(host.id().to_string()).unwrap();
+            let (tx, mut rx) = broadcast::channel(1);
+            tx.send(unrelated.clone()).unwrap();
+            tx.send(unrelated).unwrap();
+
+            assert!(reject_handshake(&host_conn, &mut rx, &peer));
+            let ConnectionError::ApplicationClosed(close) = client_conn.closed().await else {
+                panic!("expected an application close");
+            };
+            assert_eq!(close.error_code.into_inner(), 0);
+        })
+        .await
+        .expect("the loopback peer did not observe the handshake close");
     }
 }

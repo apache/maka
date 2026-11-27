@@ -59,6 +59,8 @@ pub enum RemoteClientError {
     #[error("remote transport failed: {0}")]
     Transport(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
+    RelayAuth(#[from] maka_remote_transport::RelayAuthRejected),
+    #[error(transparent)]
     Pairing(#[from] maka_remote_pairing::PairingError),
     #[error("Host Root ID mismatch: expected '{expected}', Host advertised '{actual}'")]
     RootIdMismatch { expected: String, actual: String },
@@ -66,6 +68,8 @@ pub enum RemoteClientError {
     Protocol(String),
     #[error("Host rejected call or control request: {0}")]
     HostRejected(String),
+    #[error("peer access revoked")]
+    PeerAccessRevoked,
     #[error("unknown Host endpoint '{0}'")]
     UnknownEndpoint(String),
     #[error("serialization error: {0}")]
@@ -442,24 +446,35 @@ impl RemoteHostConnection {
         if client_instance.trim().is_empty() {
             return Err(RemoteClientError::EmptyField("client_instance"));
         }
-        let mut channel = link.open().await?;
-        write_frame(
-            &mut channel,
-            &Opening {
-                version: HOST_PROTOCOL_VERSION,
-                epoch: None,
-                client_instance: Some(client_instance.to_string()),
-                request: WireRequest::Connect,
-            },
-        )
-        .await?;
-        let mut anchor = BufReader::new(channel);
-        let WireResponse::Connected(connected) = read_frame::<_, WireResponse>(&mut anchor).await?
-        else {
-            return Err(RemoteClientError::Protocol(
-                "Host did not return Connected handshake".into(),
-            ));
-        };
+        let handshake = async {
+            let mut channel = link.open().await?;
+            write_frame(
+                &mut channel,
+                &Opening {
+                    version: HOST_PROTOCOL_VERSION,
+                    epoch: None,
+                    client_instance: Some(client_instance.to_string()),
+                    request: WireRequest::Connect,
+                },
+            )
+            .await?;
+            let mut anchor = BufReader::new(channel);
+            match read_frame::<_, WireResponse>(&mut anchor).await? {
+                WireResponse::Connected(connected) => Ok((connected, anchor)),
+                WireResponse::PeerAccessRevoked => Err(RemoteClientError::PeerAccessRevoked),
+                _ => Err(RemoteClientError::Protocol(
+                    "Host did not return Connected handshake".into(),
+                )),
+            }
+        }
+        .await;
+        let (connected, anchor) = handshake.map_err(|cause| {
+            if link.access_revoked() {
+                RemoteClientError::PeerAccessRevoked
+            } else {
+                cause
+            }
+        })?;
         if connected.version != HOST_PROTOCOL_VERSION
             || connected.epoch.is_nil()
             || connected.session.is_nil()
@@ -602,6 +617,11 @@ impl RemoteCallHandle {
     }
 
     /// Invoke a query and return its terminal result without retaining progress frames.
+    /// Prompt the live QUIC endpoint to refresh its network paths.
+    pub async fn network_change(&self) {
+        self.link.network_change().await;
+    }
+
     pub fn path_summary(&self) -> Option<maka_remote_transport::PathSummary> {
         self.link.path_summary()
     }
@@ -1033,9 +1053,7 @@ impl RemoteHostConnection {
         match result {
             Err(error) => Err(error),
             Ok(None | Some(WireResponse::Closed)) => Ok(()),
-            Ok(Some(WireResponse::PeerAccessRevoked)) => Err(RemoteClientError::HostRejected(
-                "peer access revoked".into(),
-            )),
+            Ok(Some(WireResponse::PeerAccessRevoked)) => Err(RemoteClientError::PeerAccessRevoked),
             Ok(_) => Err(RemoteClientError::Protocol(
                 "unexpected anchor response".into(),
             )),

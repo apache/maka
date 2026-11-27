@@ -204,6 +204,106 @@ async fn relay_requires_the_configured_bearer() {
 }
 
 #[tokio::test]
+async fn dialing_classifies_rejection_by_every_configured_relay() {
+    use maka_remote_transport::RelayAuthRejected;
+    use tokio::{
+        io::{AsyncBufReadExt, BufReader},
+        net::TcpListener,
+    };
+
+    timeout(DEADLINE * 2, async {
+        let (first, first_route, tls) = https_relay().await;
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let second = RelayServer::bind(None, Some(addr), Some(addr), Some(&tls), Some(TOKEN))
+            .await
+            .unwrap();
+        let second_route = RelayEndpoint {
+            url: format!("https://{}", second.https_addr().unwrap()),
+            quic_port: Some(second.quic_addr().unwrap().port()),
+            cert_sha256: second.cert_sha256().map(hex::encode),
+        };
+
+        // Real upgrades guard the WebSocket error downcast against upstream drift.
+        // A proxy can require auth just at /relay or for every request, leaving
+        // iroh with no home relay.
+        let mut proxies = Vec::new();
+        let mut http_routes = Vec::new();
+        for (probe_ok, status) in [(true, "401 Unauthorized"), (false, "401 Unauthorized"), (false, "403 Forbidden")] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            http_routes.push(RelayEndpoint {
+                url: format!("http://{}", listener.local_addr().unwrap()),
+                cert_sha256: None,
+                quic_port: None,
+            });
+            proxies.push(tokio::spawn(async move {
+                let mut requests = tokio::task::JoinSet::new();
+                loop {
+                    tokio::select! {
+                        Some(result) = requests.join_next() => result.unwrap(),
+                        result = listener.accept() => {
+                            let (stream, _) = result.unwrap();
+                            requests.spawn(async move {
+                                let mut stream = BufReader::new(stream);
+                                let mut line = String::new();
+                                if stream.read_line(&mut line).await.unwrap() == 0 {
+                                    return;
+                                }
+                                let upgrade = line.starts_with("GET /relay ");
+                                loop {
+                                    line.clear();
+                                    if stream.read_line(&mut line).await.unwrap() == 0 {
+                                        return;
+                                    }
+                                    if line == "\r\n" {
+                                        break;
+                                    }
+                                }
+                                let status = if upgrade || !probe_ok { status } else { "200 OK" };
+                                let response = format!(
+                                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                );
+                                // iroh may cancel a probe once it selects a route.
+                                if let Err(error) = stream.get_mut().write_all(response.as_bytes()).await {
+                                    assert!(matches!(error.kind(),
+                                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset));
+                                }
+                            });
+                        }
+                    }
+                }
+            }));
+        }
+
+        for (case, routes) in [
+            ("two relay handshake denials", vec![&first_route, &second_route]),
+            ("probe 200, upgrade 401", vec![&http_routes[0]]),
+            ("probe 401, upgrade 401", vec![&http_routes[1]]),
+            ("probe 403, upgrade 403", vec![&http_routes[2]]),
+            ("mixed 401 and 403", vec![&http_routes[0], &http_routes[2]]),
+        ] {
+            let routes: Vec<_> = routes.iter().map(|route| Relay::new(route, None, None).unwrap()).collect();
+            let client = DeviceIdentity::generate().unwrap();
+            let target = DeviceIdentity::generate().unwrap().public_key();
+            let endpoint = PeerEndpoint::bind(&client, &routes, false).await.unwrap();
+            let Err(error) = timeout(Duration::from_secs(6), endpoint.connect(&target)).await
+                .unwrap_or_else(|_| panic!("{case}: no auth rejection before deadline; check iroh-relay's upgrade error chain")) else {
+                panic!("{case}: unauthorized relay admitted client");
+            };
+            assert!(error.is::<RelayAuthRejected>(), "{case}: {error:#}");
+            endpoint.close().await;
+        }
+
+        for proxy in proxies {
+            proxy.abort();
+        }
+        first.shutdown().await.unwrap();
+        second.shutdown().await.unwrap();
+    })
+    .await
+    .expect("all relay authorization failures must be reported without a QUIC dial timeout");
+}
+
+#[tokio::test]
 async fn pairing_rpc_multiplexing_reconnect_and_revocation_over_self_hosted_relay() {
     timeout(DEADLINE, async {
         let (relay, route, _) = https_relay().await;

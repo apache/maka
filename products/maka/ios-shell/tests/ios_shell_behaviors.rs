@@ -288,20 +288,26 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     app.press("label:Confirm & Connect").unwrap();
     app.wait_for("text:Second test Host").unwrap();
 
-    // Open Tab 3 Settings -> First test Host detail -> Check connection.
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: First test Host").unwrap();
     app.press("label:Computer: First test Host").unwrap();
+    app.press("label:Connection details").unwrap();
+    app.wait_for("text:/Direct connection discovery · Port/")
+        .unwrap();
     app.wait_for("label:Check connection").unwrap();
     app.press("label:Check connection").unwrap();
     app.wait_for("text:Computer responded").unwrap();
+    app.press("label:Disconnect").unwrap();
+    app.wait_for("label:Reconnect").unwrap();
 
     drop(app);
     drop(bridge);
     let persisted = std::fs::read_to_string(support.path().join("hosts.json")).unwrap();
     assert!(!persisted.contains(RELAY_TOKEN));
 
-    // Cold restart: reconnect First test Host with relay Bearer token and verify live revocation notice.
+    // The paused profile and unpaused profile have the same relay route.
+    // Only the unpaused one should try it without the in-memory Bearer.
+    use nsh_core::platform::{Lifecycle, NetworkKind};
     let channel = HostChannel::new();
     let runtime = tokio::runtime::Handle::current();
     let _bridge =
@@ -310,16 +316,40 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     config.viewport = Size::new(px(390.), px(844.));
     config.environment = Environment {
         os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
         reduce_motion: true,
         ..Environment::default()
     };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
     let mut app = Headless::start(config).unwrap();
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
+    app.wait_for("label:Computer: Second test Host").unwrap();
+    app.press("label:Computer: Second test Host").unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    app.wait_for("text:/relay rejected authentication/")
+        .unwrap();
+
+    app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: First test Host").unwrap();
     app.press("label:Computer: First test Host").unwrap();
-    app.wait_for("label:Relay Bearer for First test Host")
-        .unwrap();
+    resume_after_network_change(&mut app);
+    app.wait_for("label:Reconnect").unwrap();
+    assert!(
+        !app.screen()
+            .matches("text:/relay rejected authentication/")
+            .unwrap()
+    );
+    assert!(first.handshakes.try_recv().is_err());
+    assert!(
+        maka_remote_client::SavedHosts::load(support.path().join("hosts.json"))
+            .unwrap()
+            .get(first.host.root_id())
+            .unwrap()
+            .reconnect_paused()
+    );
+
     app.press("label:Relay Bearer for First test Host").unwrap();
     app.type_text("label:Saved Host relay Bearer token", RELAY_TOKEN)
         .unwrap();
@@ -327,12 +357,56 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let (same_peer, _) = first.sas().await;
     assert_eq!(same_peer, peer);
     app.wait_for("label:Check connection").unwrap();
+    assert!(
+        !maka_remote_client::SavedHosts::load(support.path().join("hosts.json"))
+            .unwrap()
+            .get(first.host.root_id())
+            .unwrap()
+            .reconnect_paused()
+    );
     assert!(first.host.revoke_peer_access(peer).await.unwrap());
     app.wait_for("text:/peer access revoked/").unwrap();
+
+    resume_after_network_change(&mut app);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), first.handshakes.recv())
+            .await
+            .is_err(),
+        "the revoked live session must not be redialed"
+    );
+
+    // A manual attempt gets a fresh QUIC connection, but the opening itself
+    // is rejected as revoked. That path must also stop automatic attempts.
+    app.press("label:Reconnect").unwrap();
+    assert_eq!(first.sas().await.0, same_peer);
+    app.wait_for("text:/peer access revoked/").unwrap();
+    resume_after_network_change(&mut app);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), first.handshakes.recv())
+            .await
+            .is_err(),
+        "a revoked opening must not be redialed"
+    );
     drop(app);
     first.shutdown().await;
     second.shutdown().await;
     relay.shutdown().await.unwrap();
+}
+
+fn resume_after_network_change(app: &mut Headless) {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+    app.set_environment("background/offline", |env| {
+        env.lifecycle = Lifecycle::Background;
+        env.network.kind = NetworkKind::None;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    app.set_environment("foreground/online", |env| {
+        env.lifecycle = Lifecycle::Active;
+        env.network.kind = NetworkKind::Cellular;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
 }
 
 struct RpcDriver {
@@ -407,6 +481,7 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         let b_session = state["connections"][&b_id]["connection"]["session"].clone();
         assert_eq!(state["connections"][&a_id]["status"], "connected");
         assert_eq!(state["active"]["rootId"], b_id);
+        driver.call("ios.networkChange", json!({})).await;
 
         let save = |root: &str| json!({
             "rootId":root, "generation":state["connections"][root]["connection"]["generation"],
@@ -462,6 +537,8 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
 
         let state = driver.call("ios.disconnectHost", json!({"rootId":a_id})).await;
         assert_eq!(state["connections"][&a_id]["status"], "offline");
+        let paused = driver.call("ios.connectHost", json!({"rootId":a_id,"automatic":true})).await;
+        assert_eq!(paused["connections"][&a_id]["status"], "offline");
         assert_eq!(state["connections"][&b_id]["connection"]["session"], b_session);
         driver.call("ios.connectHost", json!({"rootId":a_id})).await;
         assert_eq!(a.sas().await.0, peers[0]);
@@ -742,6 +819,233 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: Newly paired Host").unwrap();
+}
+
+#[tokio::test]
+async fn automatic_reconnect_respects_app_network_and_disconnect_intent() {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn state(revision: u64, connection: Value) -> Value {
+        let host = json!({
+            "rootId":"root","hostName":"Test Mac","peerId":"peer","endpoints":[],
+            "relays":[{"url":"https://relay.example.com","quicPort":null}]
+        });
+        json!({
+            "revision":revision,"devicePeerId":"iphone","hosts":[host],
+            "active":connection["connection"],
+            "connections":{"root":connection}
+        })
+    }
+
+    fn connected(revision: u64) -> Value {
+        state(
+            revision,
+            json!({"status":"connected","connection":{
+                "rootId":"root","hostName":"Test Mac","generation":revision,
+                "endpoints":["hostLogs"],"transport":"quic"
+            }}),
+        )
+    }
+
+    let channel = HostChannel::new();
+    let revision = Arc::new(AtomicU64::new(1));
+    channel.handle("ios.bootstrap", |call| call.resolve(connected(1)));
+    let (connect_tx, mut connects) = mpsc::unbounded_channel();
+    let connect_revision = revision.clone();
+    channel.handle("ios.connectHost", move |mut call| {
+        connect_tx.send(call.take_data()).unwrap();
+        call.resolve(connected(
+            connect_revision.fetch_add(1, Ordering::SeqCst) + 1,
+        ));
+    });
+    let (refresh_tx, mut refreshes) = mpsc::unbounded_channel();
+    channel.handle("ios.networkChange", move |call| {
+        refresh_tx.send(()).unwrap();
+        call.resolve(Value::Null);
+    });
+    let disconnect_revision = revision.clone();
+    channel.handle("ios.disconnectHost", move |call| {
+        call.resolve(state(
+            disconnect_revision.fetch_add(1, Ordering::SeqCst) + 1,
+            json!({"status":"offline","autoReconnect":false}),
+        ));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Computer: Test Mac").unwrap();
+    app.wait_for("label:Disconnect").unwrap();
+    app.press("label:Connection details").unwrap();
+    app.wait_for("label:https://relay.example.com").unwrap();
+    app.wait_for("text:Without a discovery port, direct connections may be harder.")
+        .unwrap();
+
+    let lose_connection = |app: &mut Headless| {
+        app.send_host_event(
+            "ios.hostState",
+            state(
+                revision.fetch_add(1, Ordering::SeqCst) + 1,
+                json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+            ),
+        )
+        .unwrap();
+        app.wait_for("text:Transport closed").unwrap();
+    };
+
+    app.set_environment("background", |env| env.lifecycle = Lifecycle::Background)
+        .unwrap();
+    lose_connection(&mut app);
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err());
+    app.set_environment("foreground", |env| env.lifecycle = Lifecycle::Active)
+        .unwrap();
+    app.wait_for_within("label:Disconnect", Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(
+        connects.try_recv().unwrap(),
+        json!({"rootId":"root","automatic":true})
+    );
+
+    app.set_environment("offline", |env| env.network.kind = NetworkKind::None)
+        .unwrap();
+    assert!(
+        refreshes.try_recv().is_ok(),
+        "the live endpoint is notified"
+    );
+    lose_connection(&mut app);
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err());
+    app.set_environment("cellular", |env| env.network.kind = NetworkKind::Cellular)
+        .unwrap();
+    app.wait_for_within("label:Disconnect", Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(
+        connects.try_recv().unwrap(),
+        json!({"rootId":"root","automatic":true})
+    );
+
+    app.press("label:Disconnect").unwrap();
+    app.wait_for_gone("label:Disconnect", Duration::from_secs(1))
+        .unwrap();
+    app.set_environment("background", |env| env.lifecycle = Lifecycle::Background)
+        .unwrap();
+    app.set_environment("Wi-Fi restored in background", |env| {
+        env.network.kind = NetworkKind::Wifi
+    })
+    .unwrap();
+    app.set_environment("foreground", |env| env.lifecycle = Lifecycle::Active)
+        .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(
+        connects.try_recv().is_err(),
+        "explicit Disconnect must survive resume"
+    );
+    assert!(!app.screen().matches("label:Disconnect").unwrap());
+}
+
+#[tokio::test]
+async fn reconnecting_stays_neutral_and_network_change_during_dial_retries_immediately() {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+
+    fn snapshot(revision: u64, connection: Value) -> Value {
+        json!({
+            "revision":revision,"devicePeerId":"phone",
+            "hosts":[{"rootId":"root","hostName":"Test Mac","peerId":"peer","endpoints":[]}],
+            "connections":{"root":connection}
+        })
+    }
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(snapshot(
+            1,
+            json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+        ))
+    });
+    let (connect_tx, mut connects) = mpsc::unbounded_channel();
+    channel.handle("ios.connectHost", move |mut call| {
+        let request = call.take_data();
+        assert_eq!(request, json!({"rootId":"root","automatic":true}));
+        connect_tx.send(call).unwrap();
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Computer: Test Mac").unwrap();
+
+    let assert_retrying = |app: &mut Headless| {
+        app.wait_for("text:Reconnecting…").unwrap();
+        app.wait_for("text:Transport closed").unwrap();
+        app.wait_for("label:Retry now").unwrap();
+        assert!(!app.screen().matches("text:Connection error").unwrap());
+    };
+    assert_retrying(&mut app);
+    assert!(connects.try_recv().is_err());
+    app.press("label:Retry now").unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    let first = connects.try_recv().expect("Retry now bypasses backoff");
+    app.send_host_event("ios.hostState", snapshot(2, json!({"status":"connecting"})))
+        .unwrap();
+    assert_retrying(&mut app);
+    app.set_environment("cellular during dial", |env| {
+        env.network.kind = NetworkKind::Cellular;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    assert!(
+        connects.try_recv().is_err(),
+        "no overlapping automatic dial"
+    );
+
+    app.send_host_event(
+        "ios.hostState",
+        snapshot(
+            3,
+            json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+        ),
+    )
+    .unwrap();
+    first.reject("Transport closed");
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    let second = connects
+        .try_recv()
+        .expect("route change bypasses the next backoff");
+    app.send_host_event(
+        "ios.hostState",
+        snapshot(
+            4,
+            json!({"status":"error","error":"Peer access revoked","autoReconnect":false}),
+        ),
+    )
+    .unwrap();
+    second.reject("Peer access revoked");
+    app.wait_for("text:Connection error").unwrap();
+    app.wait_for("text:Peer access revoked").unwrap();
+    app.wait_for("label:Reconnect").unwrap();
+    assert!(!app.screen().matches("label:Retry now").unwrap());
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err(), "terminal errors stop retries");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1130,10 +1434,13 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     let sub_generation = AtomicU64::new(2);
     let fail_reopen = Arc::new(AtomicBool::new(false));
     let fail_pending = fail_reopen.clone();
+    let generation = Arc::new(AtomicU64::new(1));
+    let expected_generation = generation.clone();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
         assert_eq!(
-            data["generation"], 1,
+            data["generation"],
+            expected_generation.load(Ordering::SeqCst),
             "subscribe is pinned to the connection"
         );
         if data["input"]["filter"] == "needs_you" && fail_pending.swap(false, Ordering::SeqCst) {
@@ -1490,6 +1797,48 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
     app.wait_for("text:Denied").unwrap();
     app.press("label:Pending").unwrap();
     app.wait_for("id:main-tab-bar >> text:1").unwrap();
+
+    app.press("label:Chats").unwrap();
+    // Keep the completed window, not the in-flight continuation from the old connection.
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-1", &chats_after_peer, Some("s-31")),
+    );
+    let (_, interrupted) = fixture_recv(&mut page_rx).await;
+    let mut offline = snapshot(3, true);
+    offline["active"] = Value::Null;
+    offline["connections"]["root"] = json!({"status":"offline","autoReconnect":false});
+    app.send_host_event("ios.hostState", offline).unwrap();
+    app.wait_for_gone("label:Loading…", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("label:Conversation: Needle moved up in live catalog")
+        .unwrap();
+
+    // The new connection can report the same revision as the interrupted read.
+    let mut reconnected = snapshot(4, true);
+    reconnected["active"]["generation"] = json!(2);
+    reconnected["connections"]["root"]["connection"]["generation"] = json!(2);
+    generation.store(2, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", reconnected).unwrap();
+    for _ in 0..3 {
+        fixture_recv(&mut sub_rx).await;
+    }
+    let (continuation, resumed) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        continuation["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-31"})
+    );
+    resumed.resolve(json!({"value":page("chats-1", &[row(32, "Needle after reconnect")], None)}));
+    interrupted
+        .resolve(json!({"value":page("chats-1", &[row(32, "Needle from old connection")], None)}));
+    app.wait_for("label:Conversation: Needle after reconnect")
+        .unwrap();
+    assert!(
+        !app.screen()
+            .matches("text:Needle from old connection")
+            .unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

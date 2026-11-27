@@ -31,12 +31,14 @@ import {
   hostById,
   hostCheckMessage,
   hostConnectionState,
+  hostReconnectNotice,
   hostStatusKind,
   hostStatusText,
   isHostConnected,
   openAddComputerFlow,
   savedHosts,
   removeSavedHost,
+  retrySavedHostNow,
   showToast,
 } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
@@ -65,8 +67,14 @@ export function DeviceDetailScreen(props: {
   const busy = signal(false);
 
   const host = () => hostById(props.rootId);
+  const relays = () => host()?.relays ?? [];
   const conn = () => activeHostInfo(props.rootId);
   const connState = () => hostConnectionState(props.rootId);
+  const reconnecting = () => hostReconnectNotice(props.rootId);
+  const terminalError = () => {
+    const state = connState();
+    return state.status === 'error' && state.autoReconnect === false ? state.error : undefined;
+  };
 
   const subtitle = () => {
     const info = conn();
@@ -76,7 +84,7 @@ export function DeviceDetailScreen(props: {
 
   const connectionDetail = () => {
     const peer = host()?.peerId;
-    return [host()?.relayUrls?.[0], peer && peer.slice(0, 8) + '…' + peer.slice(-4)]
+    return [relays()[0]?.url, peer && peer.slice(0, 8) + '…' + peer.slice(-4)]
       .filter(Boolean)
       .join(' · ');
   };
@@ -90,7 +98,7 @@ export function DeviceDetailScreen(props: {
   const handleConnect = async (withRelayToken = false) => {
     busy.set(true);
     try {
-      const resolvedRelayUrl = relayUrl().trim() || host()?.relayUrls?.[0] || '';
+      const resolvedRelayUrl = relayUrl().trim() || relays()[0]?.url || '';
       const ok = await connectSavedHost(
         props.rootId,
         withRelayToken ? resolvedRelayUrl : undefined,
@@ -196,11 +204,18 @@ export function DeviceDetailScreen(props: {
                 </View>
               </View>
             </If>
-            <If when={connState().status === 'error'}>
+            <If when={reconnecting()}>
+              <BannerNotice
+                tone="info"
+                title={tr('Reconnecting…')}
+                detail={reconnecting()?.error}
+              />
+            </If>
+            <If when={terminalError() !== undefined}>
               <BannerNotice
                 tone="destructive"
                 title={tr('Connection error')}
-                detail={(connState() as { status: 'error'; error: string }).error}
+                detail={terminalError()}
               />
             </If>
 
@@ -224,12 +239,19 @@ export function DeviceDetailScreen(props: {
                   <View>
                     <GroupRow
                       title={
-                        connState().status === 'connecting' ? tr('Connecting…') : tr('Reconnect')
+                        reconnecting()
+                          ? tr('Retry now')
+                          : connState().status === 'connecting'
+                            ? tr('Connecting…')
+                            : tr('Reconnect')
                       }
                       tone="primary"
-                      disabled={busy() || connState().status === 'connecting'}
+                      disabled={busy() || (!reconnecting() && connState().status === 'connecting')}
                       divider
-                      onPress={() => void handleConnect(false)}
+                      onPress={() => {
+                        if (reconnecting()) retrySavedHostNow(props.rootId);
+                        else void handleConnect();
+                      }}
                     />
                     <GroupRow
                       title={tr('Reconnect with relay token')}
@@ -252,7 +274,7 @@ export function DeviceDetailScreen(props: {
                           <Input
                             accessibilityLabel={tr('Saved Host relay URL')}
                             value={relayUrl()}
-                            placeholder={host()!.relayUrls?.[0] ?? 'https://relay.example.com'}
+                            placeholder={relays()[0]?.url ?? 'https://relay.example.com'}
                             onChange={({ value }) => relayUrl.set(value)}
                             style={{
                               minHeight: 38,
@@ -381,7 +403,7 @@ export function DeviceDetailScreen(props: {
                     subtitle={devicePeerId()}
                     divider={
                       (conn()?.endpoints.length ?? host()!.endpoints.length) > 0 ||
-                      (host()!.relayUrls?.length ?? 0) > 0
+                      relays().length > 0
                     }
                     onPress={() => copyText(devicePeerId(), tr('This iPhone Peer ID'))}
                   />
@@ -390,12 +412,26 @@ export function DeviceDetailScreen(props: {
                   <GroupRow
                     title={tr('Endpoints')}
                     subtitle={(conn()?.endpoints ?? host()!.endpoints).join(', ')}
-                    divider={(host()!.relayUrls?.length ?? 0) > 0}
+                    divider={relays().length > 0}
                   />
                 </If>
-                <If when={(host()!.relayUrls?.length ?? 0) > 0}>
-                  <GroupRow title={tr('Relays')} subtitle={host()!.relayUrls!.join(', ')} />
-                </If>
+                <Each of={relays()} key={(relay) => relay.url}>
+                  {(relay) => {
+                    const discovery = () => {
+                      const port = relay().quicPort;
+                      return port == null
+                        ? tr('Without a discovery port, direct connections may be harder.')
+                        : tr('Direct connection discovery · Port {port}', { port });
+                    };
+                    return (
+                      <GroupRow
+                        title={relay().url}
+                        subtitle={discovery()}
+                        divider={relay().url !== relays().at(-1)?.url}
+                      />
+                    );
+                  }}
+                </Each>
               </If>
             </InsetGroup>
             <If when={!props.settings || !isHostConnected(props.rootId)}>

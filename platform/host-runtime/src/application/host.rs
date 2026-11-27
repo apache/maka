@@ -758,9 +758,19 @@ impl Host {
             | Request::ConnectPeer { .. }
             | Request::ConnectUi { .. }) => {
                 let mut gate = Some(self.access_gate.lock().await);
-                let principal = self
-                    .identify(&authority, opening.client_instance.as_deref())
-                    .await?;
+                let principal = match &authority {
+                    Authority::AuthenticatedPeer { peer_id } => {
+                        if !self.peer_has_current_grant(peer_id).await? {
+                            drop(gate.take());
+                            return wire::write(&mut output, &Response::PeerAccessRevoked).await;
+                        }
+                        Principal::AuthenticatedPeer(peer_id.clone())
+                    }
+                    _ => {
+                        self.identify(&authority, opening.client_instance.as_deref())
+                            .await?
+                    }
+                };
                 let (mode, peer, endpoints, consumers, source, ui, parent) = match request {
                     Request::Connect => {
                         let selections = {

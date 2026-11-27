@@ -21,6 +21,7 @@
   "Could not save the proxy password.": "無法儲存代理密碼。",
   "Could not update the message queue.": "無法更新訊息隊列。",
   "Default sandbox mode": "預設沙盒模式",
+  "Direct connection discovery · Port {port}": "直接連接偵測 · 端口 {port}",
   "Disconnect": "中斷連接",
   "Enable proxy": "啟用代理",
   "Enable the parent plugin first.": "請先啟用上層插件。",
@@ -48,6 +49,7 @@
   "Reconnect this computer to read and edit its settings.": "重新連接這部電腦以讀取及編輯其設定。",
   "Reconnect to sync your conversations from this computer.": "重新連接以同步這部電腦上的對話。",
   "Reconnect with relay token": "使用中繼令牌重新連接",
+  "Reconnecting…": "正在重新連接…",
   "Relay Bearer for {name}": "{name} 的中繼 Bearer 令牌",
   "Relay Bearer token": "中繼 Bearer 令牌",
   "Request body": "請求內容",
@@ -69,5 +71,6 @@
   "Unavailable": "不可用",
   "User action required": "需要用戶操作",
   "Username": "用戶名稱",
-  "Web Search": "網絡搜尋"
+  "Web Search": "網絡搜尋",
+  "Without a discovery port, direct connections may be harder.": "未設定偵測端口，可能較難建立直接連接。"
 }

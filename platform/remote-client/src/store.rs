@@ -36,6 +36,8 @@ pub struct HostProfile {
     host_peer_id: String,
     relays: Vec<RelayEndpoint>,
     direct_endpoints: Vec<String>,
+    #[serde(default)]
+    reconnect_paused: bool,
 }
 
 impl HostProfile {
@@ -46,6 +48,7 @@ impl HostProfile {
             host_peer_id: payload.host_peer_id.clone(),
             relays: payload.relays.clone(),
             direct_endpoints: payload.direct_endpoints.clone(),
+            reconnect_paused: false,
         }
     }
 
@@ -55,6 +58,14 @@ impl HostProfile {
     pub fn host_name(&self) -> &str {
         &self.host_name
     }
+    pub fn reconnect_paused(&self) -> bool {
+        self.reconnect_paused
+    }
+
+    pub fn set_reconnect_paused(&mut self, paused: bool) {
+        self.reconnect_paused = paused;
+    }
+
     pub fn host_peer_id(&self) -> &str {
         &self.host_peer_id
     }

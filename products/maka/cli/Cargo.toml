@@ -154,6 +154,7 @@ nsh-core.workspace = true
 maka-capabilities.workspace = true
 maka-app-client.workspace = true
 maka-mock-ai.workspace = true
+maka-remote-client.workspace = true
 maka-workbench.workspace = true
 log = "0.4.35"
 tokio-util = { workspace = true, features = ["compat"] }
