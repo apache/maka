@@ -1749,7 +1749,7 @@ async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
             "list" if input["input"]["filter"] == "all" => {
                 list_tx.send((input["rootId"].clone(), call)).unwrap();
             }
-            "list" => call.resolve(json!({"value":{"revision":"p1","sessions":[],"after":null}})),
+            "list" => call.reject("Pending unavailable"),
             _ => call.resolve(json!({"value":{}})),
         }
     });
@@ -1784,6 +1784,17 @@ async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
     app.wait_for("text:Could not sync chats").unwrap();
     app.wait_for("label:Retry").unwrap();
     assert!(!app.screen().matches("text:No conversations yet").unwrap());
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Pending unavailable").unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    assert!(app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(
+        !app.screen().matches("role:progressbar[Loading…]").unwrap(),
+        "inbox error banner should not render a skeleton underneath"
+    );
+    app.press("label:Chats").unwrap();
+    app.wait_for("text:Could not sync chats").unwrap();
 
     app.press("label:Backup Mac").unwrap();
     let mut stale = initial.clone();
@@ -3951,7 +3962,11 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
         history_rx.try_recv().is_err(),
         "paging continued beyond a complete prior Turn"
     );
-    app.scroll("id:chat-transcript", px(-1100.)).unwrap();
+    app.wheel(
+        "id:chat-transcript",
+        nsh_core::geometry::point(px(0.), px(-1100.)),
+    )
+    .unwrap();
     let (next, start) = fixture_recv(&mut history_rx).await;
     assert_eq!(next["position"]["cursor"], oldest_cursor);
     start.resolve(json!({"value":page(vec![], Value::Null)}));
@@ -5386,6 +5401,19 @@ async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
     receipt.resolve(json!({"value":SendResult::Queued {
         session_id:"chat".into(), message_id:"combined".into(), revision:2, completion:None,
     }}));
+
+    let offline_host = json!({"rootId":"root","hostName":"Host","endpoints":[]});
+    app.send_host_event(
+        "ios.hostState",
+        json!({"revision":2,"hosts":[offline_host],"active":null,
+            "connections":{"root":{"status":"offline","autoReconnect":false}}}),
+    )
+    .unwrap();
+    app.wait_for("text:Host is offline").unwrap();
+    assert!(app.press("role:button[Quote]").is_err());
+    app.press("role:button[Copy reply]").unwrap();
+    assert!(app.settle());
+    assert_eq!(app.screen().clipboard(), Some("Second answer"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

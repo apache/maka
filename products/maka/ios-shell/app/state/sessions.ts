@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, signal, untracked, type Signal } from 'nsh';
+import { cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -76,6 +76,7 @@ type SessionWindow =
   | (SessionRetry & { snapshot?: SessionSnapshot });
 
 const sessionsByHost = signal<Record<string, SessionWindow>>({});
+const catalogWatchErrorByHost = signal<Record<string, { generation: number; error: string }>>({});
 type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
 const botsByHost = signal<Record<string, BotOutbox>>({});
 
@@ -122,10 +123,23 @@ const showArchived = signal(false);
 interface SessionSubscription {
   connectionGeneration: number;
   stopCatalog?: () => void;
-  catalogWatchError: Signal<string | null>;
   stopBot: () => void;
   headRequest?: object;
   botRequest?: object;
+}
+
+function setCatalogWatchError(rootId: string, generation: number, error: string | null) {
+  catalogWatchErrorByHost.update((prev) => {
+    const current = prev[rootId];
+    if (error === null) {
+      if (!current || current.generation !== generation) return prev;
+      const next = { ...prev };
+      delete next[rootId];
+      return next;
+    }
+    if (current?.generation === generation && current.error === error) return prev;
+    return { ...prev, [rootId]: { generation, error } };
+  });
 }
 const activeSubscriptions = new Map<string, SessionSubscription>();
 let subSeq = 0;
@@ -360,6 +374,7 @@ function applySessionPage(rootId: string, hostName: string, page: AgentSessionPa
 export const scopedSessionLoad = computed(() => {
   const scope = selectedScopeRootId();
   const windows = sessionsByHost();
+  const watchErrors = catalogWatchErrorByHost();
   let hasItems = false;
   let loading = false;
   let refreshing = false;
@@ -373,8 +388,8 @@ export const scopedSessionLoad = computed(() => {
     if (window?.kind === 'failed') error ??= window.error;
     else if (!window?.snapshot) loading = true;
     else if (window.kind === 'loadingHead' || window.kind === 'reading') refreshing = true;
-    const sub = activeSubscriptions.get(rootId);
-    if (sub?.connectionGeneration === connection.generation) error ??= sub.catalogWatchError();
+    const watchError = watchErrors[rootId];
+    if (watchError?.generation === connection.generation) error ??= watchError.error;
   }
   return { hasItems, loading, refreshing, error };
 });
@@ -419,6 +434,7 @@ export async function loadMoreSessions() {
 }
 
 export function retryFailedSessions() {
+  const watchErrors = catalogWatchErrorByHost();
   for (const {
     host: { rootId, hostName },
     window,
@@ -426,7 +442,8 @@ export function retryFailedSessions() {
     const sub = activeSubscriptions.get(rootId);
     if (window.kind === 'failed' || window.kind === 'interrupted')
       void refreshHostSessions(rootId, hostName, true);
-    else if (sub && sub.catalogWatchError() !== null) watchSessionCatalog(rootId, hostName, sub);
+    else if (sub && watchErrors[rootId]?.generation === sub.connectionGeneration)
+      watchSessionCatalog(rootId, hostName, sub);
   }
 }
 
@@ -445,9 +462,10 @@ function watchSessionCatalog(rootId: string, hostName: string, sub: SessionSubsc
     },
     (cause) => {
       sub.stopCatalog = undefined;
-      sub.catalogWatchError.set(errorMessage(cause));
+      if (activeSubscriptions.get(rootId) === sub)
+        setCatalogWatchError(rootId, sub.connectionGeneration, errorMessage(cause));
     },
-    () => sub.catalogWatchError.set(null),
+    () => setCatalogWatchError(rootId, sub.connectionGeneration, null),
   );
 }
 
@@ -751,6 +769,7 @@ export function startSessionsStore() {
       activeSubscriptions.delete(rootId);
       sub.stopCatalog?.();
       sub.stopBot();
+      setCatalogWatchError(rootId, sub.connectionGeneration, null);
       const window = untracked(() => sessionsByHost()[rootId]);
       if (window?.kind === 'reading' || window?.kind === 'loadingHead') {
         setWindow(rootId, {
@@ -762,6 +781,7 @@ export function startSessionsStore() {
     // Keep the last catalog visible across transport loss; only unpairing forgets it.
     const saved = new Set(savedHosts().map(({ rootId }) => rootId));
     pruneForgottenHosts(sessionsByHost, saved);
+    pruneForgottenHosts(catalogWatchErrorByHost, saved);
     pruneForgottenHosts(botsByHost, saved);
     for (const {
       host: { rootId, hostName },
@@ -770,7 +790,6 @@ export function startSessionsStore() {
       if (activeSubscriptions.has(rootId)) continue;
       const sub: SessionSubscription = {
         connectionGeneration: generation,
-        catalogWatchError: signal<string | null>(null),
         stopBot: watchHost<BotOutbox>(
           rootId,
           generation,

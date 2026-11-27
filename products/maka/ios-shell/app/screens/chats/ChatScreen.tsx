@@ -574,6 +574,9 @@ export function ChatScreen(
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
   let pagingDrag: number | undefined;
+  let lastTranscriptScroll:
+    | { generation: number | undefined; height: number; viewport: number; y: number }
+    | undefined;
   let transcriptCanScroll = false;
   let inputRef: InputRef | undefined;
   let openedTranscript = false;
@@ -1079,7 +1082,10 @@ export function ChatScreen(
           >
             <ReplyActions
               bodies={props.turn.bodies}
-              loadBodies={props.turn.folded ? () => fullReply(props.turn.folded!) : undefined}
+              needsFullReply={Boolean(props.turn.folded)}
+              loadBodies={
+                props.turn.folded && liveFence() ? () => fullReply(props.turn.folded!) : undefined
+              }
               limitReached={quoteLimitReached()}
               onQuote={quoteMessage}
               onAskSide={
@@ -1273,13 +1279,32 @@ export function ChatScreen(
             if (offset.y <= 1 && !transcriptCanScroll) loadEarlierFromDrag();
           }}
           onScroll={({ offset, delta, size, contentSize }) => {
+            const gen = generation();
+            const previous = lastTranscriptScroll;
+            lastTranscriptScroll = {
+              generation: gen,
+              height: contentSize.height,
+              viewport: size.height,
+              y: offset.y,
+            };
             transcriptCanScroll = contentSize.height - size.height > 1;
             const nearEnd = contentSize.height - offset.y - size.height <= 64;
             atBottom.set(nearEnd);
             if (!transcriptCanScroll && !ctrl.loadingEarlier()) followLatest.set(true);
             if (delta.y < 0 && !nearEnd) followLatest.set(false);
             if (delta.y > 0 && nearEnd) followLatest.set(true);
-            if (delta.y < 0 && offset.y <= size.height * 0.2) loadEarlierFromDrag();
+            const edge = size.height * 0.2;
+            if (delta.y < 0 && offset.y <= edge) {
+              if (pagingDrag !== undefined) {
+                loadEarlierFromDrag();
+              } else if (previous && previous.generation === gen && offset.y < previous.y) {
+                const sameLayout =
+                  previous.height === contentSize.height && previous.viewport === size.height;
+                const crossedEdge = sameLayout && previous.y > edge;
+                const reachedTop = transcriptCanScroll && offset.y <= 1 && previous.y > 1;
+                if (crossedEdge || reachedTop) startEarlier();
+              }
+            }
           }}
           onScrollEnd={() => {
             pagingDrag = undefined;
