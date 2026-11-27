@@ -71,7 +71,7 @@ function TurnMark(props: {
             height: markPitch(),
             lineHeight: markPitch(),
             textAlign: 'center',
-            color: props.active ? C.text : C.line,
+            color: props.active ? C.text : C.pressed,
           },
           { pointerEvents: 'none' },
         ]}
@@ -87,7 +87,7 @@ function TurnMark(props: {
         draw={(cx) => {
           const end = railWidth() - 1;
           const y = markPitch() / 2;
-          cx.strokeStyle = props.active ? C.text : C.line;
+          cx.strokeStyle = props.active ? C.text : C.pressed;
           cx.lineWidth = 2;
           cx.lineCap = 'round';
           cx.beginPath();

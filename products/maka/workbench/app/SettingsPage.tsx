@@ -349,7 +349,7 @@ export function SettingsSwitchControl(props: {
       }}
       trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
       trackStyle={{
-        backgroundColor: props.checked && !props.disabled ? C.accent : C.line,
+        backgroundColor: props.checked && !props.disabled ? C.accent : C.pressed,
       }}
       thumbClass="size-[10px] rounded-full"
       thumbStyle={{

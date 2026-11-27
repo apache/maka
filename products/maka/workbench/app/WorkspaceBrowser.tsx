@@ -1062,7 +1062,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     }}
                     trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
                     trackStyle={{
-                      backgroundColor: sidebarPreferences.isPinned(item().id) ? C.accent : C.line,
+                      backgroundColor: sidebarPreferences.isPinned(item().id)
+                        ? C.accent
+                        : C.pressed,
                     }}
                     thumbClass="size-[10px] rounded-full"
                     thumbStyle={{
