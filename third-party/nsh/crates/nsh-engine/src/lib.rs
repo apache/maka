@@ -92,7 +92,7 @@ pub use storage::{FileStorage, resolve_data_dir, support_dir};
 pub use crate::{
     cache::{ByteSize, CacheLocation, CacheOptions, CachePolicy},
     error::{AppError, AppErrorKind, PackageInfo},
-    host_channel::{HostCall, HostChannel, HostReply, OpenUrlRequest},
+    host_channel::{HostCall, HostCaller, HostChannel, HostReply, OpenUrlRequest},
 };
 use crate::{
     host_channel::HostRefusal,

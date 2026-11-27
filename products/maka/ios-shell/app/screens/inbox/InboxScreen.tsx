@@ -33,6 +33,7 @@ import { savedHosts } from '../../state/hostPool';
 import {
   allInboxItems,
   inboxLoading,
+  inboxError,
   isInboxItemBusy,
   refreshAllInbox,
   respondInboxItem,
@@ -42,6 +43,7 @@ import { hapticSelection } from '../../state/preferences';
 import { spacing } from '../../theme/tokens';
 import {
   ApprovalCard,
+  BannerNotice,
   EmptyState,
   InsetGroup,
   ScopePills,
@@ -135,20 +137,40 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
               />
             </View>
           </If>
+          <If when={inboxError()}>
+            <BannerNotice
+              tone="warning"
+              title={tr('Could not sync Pending')}
+              detail={inboxError() ?? undefined}
+              actionLabel={tr('Retry')}
+              onAction={refreshAllInbox}
+            />
+          </If>
           <If
             when={visibleItems().length > 0}
             else={
               <View style={{ flex: 1, justifyContent: 'center' }}>
-                <EmptyState
-                  icon="checkCircle"
-                  tint="success"
-                  title={tr('All caught up')}
-                  subtitle={
-                    savedHosts().length > 1
-                      ? tr('No approvals or questions are waiting across your connected computers.')
-                      : tr('No approvals or questions are waiting.')
-                  }
-                />
+                <If when={!inboxError()}>
+                  <If
+                    when={inboxLoading()}
+                    else={
+                      <EmptyState
+                        icon="checkCircle"
+                        tint="success"
+                        title={tr('All caught up')}
+                        subtitle={
+                          savedHosts().length > 1
+                            ? tr(
+                                'No approvals or questions are waiting across your connected computers.',
+                              )
+                            : tr('No approvals or questions are waiting.')
+                        }
+                      />
+                    }
+                  >
+                    <BannerNotice title={tr('Loading…')} />
+                  </If>
+                </If>
               </View>
             }
           >
