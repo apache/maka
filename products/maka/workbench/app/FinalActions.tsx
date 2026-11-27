@@ -27,8 +27,9 @@ import type { JSX } from 'nsh';
 import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
 import { sameHistoryRow, type Row } from './history';
-import type { HistoryRowAddress } from '../../../../packages/plugin-sdk/src/index.js';
+import type { HistoryRowAddress, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { MessageCopy } from './MessageCopy';
+import { MessageQuote } from './MessageQuote';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
@@ -72,6 +73,8 @@ export function FinalActions(props: {
   extra?: JSX.Element;
   menu?: MessageMenu;
   compact?: boolean;
+  /** Quotes this reply or its selected passage into the current conversation's draft. */
+  quote?(quote: QuoteRef): boolean;
   /** Asks a side question beside this reply. */
   side?: {
     ask(row: Row, passage: string | null): void;
@@ -140,8 +143,9 @@ export function FinalActions(props: {
       if (alive) pending.set(false);
     }
   };
+  const sourceId = () => `${props.sessionId}/${props.ownerKey()}`;
   const askLabel = () =>
-    selectedPassage(props.sessionId, props.row().turnId)
+    selectedPassage(props.sessionId, sourceId())
       ? tr('Ask about the selection beside')
       : tr('Ask beside');
   const askBeside = (passage: string | null) => {
@@ -157,18 +161,18 @@ export function FinalActions(props: {
       // The menu holds the passage selected as it opened.
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        const passage = selectedPassage(props.sessionId, sourceId());
         return () => askBeside(passage);
       },
     });
   if (props.side)
     props.menu?.add({
-      kind: 'quote',
+      kind: 'sideQuote',
       label: () => tr('Quote for a side question'),
       busy: () => false,
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, props.row().turnId);
+        const passage = selectedPassage(props.sessionId, sourceId());
         return passage
           ? () => {
               props.side?.gather(props.row(), passage);
@@ -194,6 +198,19 @@ export function FinalActions(props: {
       menu={props.menu}
     />
   );
+  const quote = () =>
+    props.quote ? (
+      <MessageQuote
+        compact={props.compact}
+        menuOnly={props.compact}
+        row={props.row}
+        ownerKey={props.ownerKey}
+        sessionId={props.sessionId}
+        through={props.through}
+        menu={props.menu}
+        quote={props.quote}
+      />
+    ) : null;
   if (props.compact)
     return (
       <View style={{ maxWidth: '100%' }}>
@@ -202,6 +219,7 @@ export function FinalActions(props: {
           at={props.row().timestamp}
           metrics={() => replyMetrics(props.row())}
         />
+        {quote()}
         {props.extra}
       </View>
     );
@@ -240,11 +258,12 @@ export function FinalActions(props: {
           />
         </If>
         {props.extra}
+        {quote()}
         <If when={props.side !== undefined && target() !== null}>
           <IconButton
             label={askLabel()}
             icon="ask"
-            onPress={() => askBeside(selectedPassage(props.sessionId, props.row().turnId))}
+            onPress={() => askBeside(selectedPassage(props.sessionId, sourceId()))}
           />
         </If>
         <If

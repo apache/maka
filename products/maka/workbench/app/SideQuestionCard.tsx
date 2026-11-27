@@ -29,7 +29,11 @@ import {
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import type { AgentSession, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
-import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import {
+  hasComposerContent,
+  type ComposerSession,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { DraftQuotes } from '../../../../plugins/agent/composer/ui/DraftQuotes';
 import { Icon } from './Icon';
 import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
@@ -493,15 +497,26 @@ export function SideComposer(props: {
     return block && (block.kind === 'attachments' || block.kind === 'draft') ? block.message : '';
   };
   const notice = () => failure() || blockWarning();
+  const canSend = () => {
+    const session = props.session();
+    return (
+      session !== null &&
+      session.sendBlock() === null &&
+      hasComposerContent(session.draft().trim(), session.attachments.files(), session.quotes())
+    );
+  };
   const send = () => {
     const session = props.session();
-    if (!session) return;
-    const text = session.draft();
-    if (text.trim() === '' || session.sendBlock()) return;
-    session.submit({ text });
+    if (!session || !canSend()) return;
+    session.submit({ text: session.draft() });
   };
   return (
     <View style={{ borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.panel }}>
+      <If when={(props.session()?.quotes().length ?? 0) > 0}>
+        <View style={{ paddingHorizontal: INSET, paddingTop: 10 }}>
+          <DraftQuotes owner={props.session()!} />
+        </View>
+      </If>
       <InputRow
         attach={props.attach}
         label={tr('Ask in the side question')}
@@ -517,10 +532,7 @@ export function SideComposer(props: {
               <IconButton
                 label={tr('Send message')}
                 icon="send"
-                disabled={
-                  (props.session()?.draft() ?? '').trim() === '' ||
-                  props.session()?.sendBlock() !== null
-                }
+                disabled={!canSend()}
                 onPress={send}
               />
             }

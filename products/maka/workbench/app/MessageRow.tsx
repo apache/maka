@@ -24,7 +24,7 @@ import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
-import { selectedPassage, type SideMark } from './sideQuestions';
+import { notePassage, selectedPassage, type SideMark } from './sideQuestions';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import {
@@ -35,7 +35,7 @@ import {
   senderSession,
   type Row,
 } from './history';
-import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { MessageOrigin, QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import type { InlineCitation } from './answerCitations';
 import { MarkdownBody } from './MarkdownBody';
 import type { BindTextViewToc } from './turnToc';
@@ -66,6 +66,7 @@ import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
 import { MessageQuotes } from './MessageQuotes';
 import { MessageCopy, readOriginal, type OriginalMessage } from './MessageCopy';
+import { MessageQuote } from './MessageQuote';
 import type { ImagePreview } from './ImageThumbnail';
 import type { InlineEdit } from './MessageEdit';
 import { LoadingIndicator, ThinkingPeek } from './Loading';
@@ -198,6 +199,7 @@ export function MessageRow({
   replyNotes,
   sideMarks,
   openSide,
+  quoteMessage,
   editMessage,
   messageEditor,
   failureActions,
@@ -234,6 +236,8 @@ export function MessageRow({
   /** The side questions asked beside a reply, to underline what they quote. */
   sideMarks?(row: Row): readonly SideMark[];
   openSide?(sessionId: string): void;
+  /** Quotes a user message or its selected passage into the current draft. */
+  quoteMessage?(quote: QuoteRef): boolean;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
   /** What takes a user message's place while `viewState.edit` holds an edit of it. */
@@ -553,7 +557,7 @@ export function MessageRow({
         );
         // The passage selected as the menu opened; the selection may go as it opens.
         const copySelection = () => {
-          const passage = selectedPassage(sessionId, row().turnId);
+          const passage = selectedPassage(sessionId, sourceId());
           return passage ? () => void Clipboard.writeText(passage) : null;
         };
         const marks = () => (sideMarks && !user() ? sideMarks(row()) : []);
@@ -618,14 +622,21 @@ export function MessageRow({
                           <If
                             when={row().role === 'assistant' && row().field === 'body'}
                             else={
-                              <Text
-                                style={[
-                                  { color: C.text, ...bodyTextStyle },
-                                  { userSelect: 'text' },
-                                ]}
+                              <View
+                                selectable
+                                onSelectionChange={(event: { text: string }) =>
+                                  notePassage(sessionId, sourceId(), event.text)
+                                }
                               >
-                                <SourceText row={row} sourceId={sourceId()} />
-                              </Text>
+                                <Text
+                                  style={[
+                                    { color: C.text, ...bodyTextStyle },
+                                    { userSelect: 'text' },
+                                  ]}
+                                >
+                                  <SourceText row={row} sourceId={sourceId()} />
+                                </Text>
+                              </View>
                             }
                           >
                             <MarkdownBody
@@ -644,9 +655,18 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
-                          <SourceText row={row} sourceId={sourceId()} />
-                        </Text>
+                        <View
+                          selectable
+                          onSelectionChange={(event: { text: string }) =>
+                            notePassage(sessionId, sourceId(), event.text)
+                          }
+                        >
+                          <Text
+                            style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}
+                          >
+                            <SourceText row={row} sourceId={sourceId()} />
+                          </Text>
+                        </View>
                       </If>
                       <If when={replyNotes !== undefined && replyActions()}>
                         {replyNotes?.(row, marked)}
@@ -940,14 +960,28 @@ export function MessageRow({
                       <If
                         when={localQuickReply}
                         else={
-                          <MessageCopy
-                            compact={compactChat}
-                            row={row}
-                            ownerKey={() => rowKey(row())}
-                            sessionId={sessionId}
-                            through={through}
-                            menu={menu}
-                          />
+                          <>
+                            <MessageCopy
+                              compact={compactChat}
+                              row={row}
+                              ownerKey={() => rowKey(row())}
+                              sessionId={sessionId}
+                              through={through}
+                              menu={menu}
+                            />
+                            <If when={quoteMessage !== undefined}>
+                              <MessageQuote
+                                compact={compactChat}
+                                menuOnly={compactChat}
+                                row={row}
+                                ownerKey={() => rowKey(row())}
+                                sessionId={sessionId}
+                                through={through}
+                                menu={menu}
+                                quote={quoteMessage!}
+                              />
+                            </If>
+                          </>
                         }
                       >
                         <LocalMessageCopy user text={() => row().text} />

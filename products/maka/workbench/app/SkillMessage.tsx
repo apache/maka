@@ -23,6 +23,7 @@ import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { hasComposerToken, skillTextGroups } from './skillTokenText';
 import { hasTextPrefix, type Row } from './history';
+import { notePassage } from './sideQuestions';
 import { C, readingTextStyle } from './ui';
 
 export function userMessagePresentation(row: Row) {
@@ -56,9 +57,16 @@ export function SkillMessage(props: {
         <If
           when={props.presentation().kind === 'tokens'}
           else={
-            <Text style={{ ...readingTextStyle(), color: C.text, userSelect: 'text' }}>
-              <SourceText row={props.row} sourceId={props.sourceId} />
-            </Text>
+            <View
+              selectable
+              onSelectionChange={(event: { text: string }) =>
+                notePassage(props.sessionId, props.sourceId, event.text)
+              }
+            >
+              <Text style={{ ...readingTextStyle(), color: C.text, userSelect: 'text' }}>
+                <SourceText row={props.row} sourceId={props.sourceId} />
+              </Text>
+            </View>
           }
         >
           <View style={{ width: '100%', minWidth: 0 }}>

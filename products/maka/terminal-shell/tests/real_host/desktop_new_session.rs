@@ -1704,6 +1704,82 @@ async fn desktop_asks_a_side_question_beside_a_reply() {
     fixture.finish().await;
 }
 
+async fn desktop_quotes_a_message_into_the_current_session() {
+    let mut fixture = Fixture::open().await;
+    let (_, appearance, _, _, _) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(
+            nsh_terminal::DevicePixels(1440),
+            nsh_terminal::DevicePixels(820),
+        ),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("USER_PROMPT_TO_QUOTE").await;
+    desktop.submit().await;
+    let mut reply = desktop.request(&mut fixture).await;
+    reply
+        .delta("Writes invalidate the key first and then update the row. CACHE_INVALIDATION_RULE")
+        .await;
+    desktop
+        .wait("the reply did not finish", reply.finish())
+        .await;
+    let listed = desktop.sessions().await.len();
+
+    // Quote the user message and then the reply into the current session's draft.
+    desktop.press("Quote user message").await;
+    desktop.control("Remove quote").await;
+    desktop.press("Quote message").await;
+    desktop
+        .until("the second quote did not appear in the draft", || {
+            (desktop.controls("Remove quote").len() == 2).then_some(())
+        })
+        .await;
+    // Quoting into the current session stays here without creating a side question.
+    assert_eq!(desktop.sessions().await.len(), listed);
+
+    // Removing the first quote leaves only the reply quote in the draft.
+    let first_remove = desktop.controls("Remove quote")[0];
+    desktop.press_at(first_remove.center());
+    desktop
+        .until("removing the first quote did not leave one quote", || {
+            (desktop.controls("Remove quote").len() == 1).then_some(())
+        })
+        .await;
+    desktop.artifact("quote-current-session-draft");
+
+    // The composer is focused and sends the quoted excerpt in the same session.
+    desktop.type_text("Can you give a concrete example?").await;
+    desktop.submit().await;
+    let mut follow_up = desktop.request(&mut fixture).await;
+    let body = follow_up.body.to_string();
+    assert!(
+        body.contains("<quoted_excerpt>")
+            && body.contains("CACHE_INVALIDATION_RULE")
+            && body.contains("Can you give a concrete example?"),
+        "expected the quoted reply excerpt in the current session request: {body}"
+    );
+    assert!(
+        !body.contains("<quoted_excerpt>\nUSER_PROMPT_TO_QUOTE"),
+        "the removed user quote should not be sent as a quoted excerpt: {body}"
+    );
+    desktop
+        .until("quotes did not clear after sending", || {
+            desktop.controls("Remove quote").is_empty().then_some(())
+        })
+        .await;
+    follow_up.delta("Here is a concrete example.").await;
+    desktop
+        .wait("the follow-up reply did not finish", follow_up.finish())
+        .await;
+    assert_eq!(desktop.sessions().await.len(), listed);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     let mut fixture = Fixture::open().await;
     let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
@@ -3928,6 +4004,7 @@ pub(crate) const CASES: &[&str] = &[
     "desktop_scrolling_up_past_tall_markdown_reply_does_not_jump_to_bottom",
     "desktop_edits_a_message_in_place_and_forks_only_when_sent",
     "desktop_asks_a_side_question_beside_a_reply",
+    "desktop_quotes_a_message_into_the_current_session",
     "desktop_steering_freezes_each_message_and_queue_is_one_shot",
     "desktop_file_gestures_preserve_drafts_and_stage_an_image",
     "desktop_composer_large_paste_keeps_controls_on_screen",
@@ -3988,6 +4065,9 @@ pub(crate) fn run(name: &str) {
         }
         "desktop_asks_a_side_question_beside_a_reply" => {
             runtime.block_on(desktop_asks_a_side_question_beside_a_reply())
+        }
+        "desktop_quotes_a_message_into_the_current_session" => {
+            runtime.block_on(desktop_quotes_a_message_into_the_current_session())
         }
         "desktop_steering_freezes_each_message_and_queue_is_one_shot" => {
             runtime.block_on(desktop_steering_freezes_each_message_and_queue_is_one_shot())

@@ -71,29 +71,22 @@ export function sideQuestionsAt<T extends Pick<AgentSession, 'branch'>>(
     .reverse();
 }
 
-// The passage selected in a reply, by conversation and turn. Pressing a button
-// clears the selection just before the press arrives, so a cleared selection
-// still counts for a moment, and no longer: an old or accidental selection
-// must not become the question's quote.
+// The passage selected in a message, by conversation and message source id.
+// Pressing a button clears the selection just before the press arrives, so a
+// cleared selection still counts for a moment, and no longer: an old or
+// accidental selection must not become a quote.
 const clearedGrace = 1500;
 const passage = signal<{
   sessionId: string;
-  turnId: string;
   source: string;
   text: string;
   clearedAt: number | null;
 } | null>(null);
 
 /** `source` is the reporting text's own id: only its own clearing counts. */
-export function notePassage(
-  sessionId: string,
-  turnId: string | null | undefined,
-  source: string,
-  text: string,
-) {
+export function notePassage(sessionId: string, source: string, text: string) {
   const current = passage();
-  if (turnId && text.trim())
-    passage.set({ sessionId, turnId, source, text: text.trim(), clearedAt: null });
+  if (text.trim()) passage.set({ sessionId, source, text: text.trim(), clearedAt: null });
   else if (
     current &&
     current.clearedAt === null &&
@@ -103,15 +96,12 @@ export function notePassage(
     passage.set({ ...current, clearedAt: Date.now() });
 }
 
-/** The passage selected in that turn's reply, if one is. */
-export function selectedPassage(
-  sessionId: string,
-  turnId: string | null | undefined,
-): string | null {
+/** The passage selected in that message, if one is. */
+export function selectedPassage(sessionId: string, source: string): string | null {
   const current = passage();
   return current !== null &&
     current.sessionId === sessionId &&
-    current.turnId === turnId &&
+    current.source === source &&
     (current.clearedAt === null || Date.now() - current.clearedAt < clearedGrace)
     ? current.text
     : null;

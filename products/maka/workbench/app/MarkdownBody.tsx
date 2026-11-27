@@ -163,7 +163,7 @@ export function MarkdownBody(props: {
     <View
       selectable={props.selectable ?? true}
       onSelectionChange={(event: { text: string }) =>
-        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
+        notePassage(props.sessionId, props.sourceId, event.text)
       }
     >
       <If
