@@ -50,6 +50,62 @@ pub struct ClipboardChange {
     pub text: Option<String>,
 }
 
+#[derive(Clone, JsObject)]
+pub struct StartMenuApplication {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, JsObject)]
+pub struct StartMenuActions {
+    pub path: Option<String>,
+    pub instance: Option<String>,
+}
+
+pub async fn start_menu_actions(id: String) -> Result<StartMenuActions, String> {
+    #[cfg(windows)]
+    return blocking(move || start_menu::actions(&id)).await?;
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        Err("The Start menu requires Windows".into())
+    }
+}
+
+pub async fn start_menu_action(
+    id: String,
+    action: String,
+    instance: Option<String>,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    return blocking(move || start_menu::act(&id, &action, instance.as_deref())).await?;
+    #[cfg(not(windows))]
+    {
+        let _ = (id, action, instance);
+        Err("The Start menu requires Windows".into())
+    }
+}
+
+#[cfg(windows)]
+mod start_menu;
+
+pub async fn start_menu_applications() -> Result<Vec<StartMenuApplication>, String> {
+    #[cfg(windows)]
+    return blocking(start_menu::applications).await?;
+    #[cfg(not(windows))]
+    Err("The Start menu requires Windows".into())
+}
+
+pub async fn open_start_menu_application(id: String) -> Result<(), String> {
+    #[cfg(windows)]
+    return blocking(move || start_menu::open(&id)).await?;
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        Err("The Start menu requires Windows".into())
+    }
+}
+
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
@@ -152,13 +208,16 @@ fn thumbnail_png(icon: &objc2_app_kit::NSImage, max_side: isize) -> Result<Vec<u
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn application_icon_png(_path: &str) -> Result<Vec<u8>, String> {
-    unreachable!("the application tool only runs on macOS")
+#[cfg(windows)]
+use start_menu::icon_png as application_icon_png;
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn application_icon_png(_id: &str) -> Result<Vec<u8>, String> {
+    Err("Application icons require Windows or macOS".into())
 }
 
-pub async fn application_icon(path: String) -> Result<String, String> {
-    let png = blocking(move || application_icon_png(&path)).await??;
+pub async fn application_icon(id: String) -> Result<String, String> {
+    let png = blocking(move || application_icon_png(&id)).await??;
     Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
 }
 

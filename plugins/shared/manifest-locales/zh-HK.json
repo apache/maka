@@ -23,7 +23,7 @@
   "pkg.maka.agent.workspace-processes.displayName": "工作區處理程序",
   "pkg.maka.agent.workspace-web.description": "為助手搜尋網絡並讀取網頁。",
   "pkg.maka.application.host-logs.description": "查看並追蹤所連接 Host 已截取的日誌。",
-  "pkg.maka.applications.description": "在 macOS 的快速啟動器中尋找、開啟和管理已安裝的應用程式。",
+  "pkg.maka.applications.description": "在 Windows 和 macOS 的快速啟動器中尋找、開啟和管理已安裝的應用程式。",
   "pkg.maka.calculator.description": "在快速啟動器中計算和換算單位，並複製結果。",
   "pkg.maka.calculator.displayName": "計數機",
   "pkg.maka.composer.description": "透過技能、檔案、圖片和工作階段控制項撰寫訊息。",

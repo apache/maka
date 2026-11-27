@@ -386,7 +386,7 @@ export const suites = {
     ],
     filter:
       '(binary_id(=maka-cli::bin/maka) & test(=windows::tests::desktop_releases_only_its_private_console)) | ' +
-      'package(=maka-desktop-shell) | (package(=maka-workbench) & test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip))',
+      'package(=maka-desktop-shell) | (package(=maka-workbench) & (test(=bindings::quick_tools::windows_history::tests::isolated_windows_history_round_trip) | test(~bindings::quick_tools::start_menu::tests::)))',
     extraInputs: productInputs,
   },
   'windows-skills': {
