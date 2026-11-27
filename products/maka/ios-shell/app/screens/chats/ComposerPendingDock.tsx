@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { trimHostWhitespace } from '../../hostText';
 import {
   Clipboard,
   createMotion,
@@ -33,11 +34,7 @@ import {
 } from 'nsh';
 import { Button, Input } from 'nsh/base';
 import { tr } from '../../locale';
-import {
-  sendPreview,
-  trimHostWhitespace,
-  type createConversationController,
-} from '../../state/chat';
+import { sendPreview, type createConversationController } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { motion, spacing, type } from '../../theme/tokens';

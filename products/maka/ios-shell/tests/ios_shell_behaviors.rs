@@ -2966,6 +2966,20 @@ async fn chat_streaming_collapsible_tools_and_inline_approval() {
     held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
+fn more_menu_action<'a>(
+    config: &'a nsh_core::ScreenConfig,
+    label: &str,
+) -> Option<&'a nsh_core::desktop::MenuAction> {
+    let more = config
+        .right_items
+        .iter()
+        .find(|item| item.key.as_deref() == Some("more"))?;
+    more.menu.as_ref()?.iter().find_map(|item| match item {
+        nsh_core::desktop::MenuItem::Action(action) if action.label == label => Some(action),
+        _ => None,
+    })
+}
+
 fn select_header_item(app: &mut Headless, id: u32) {
     app.engine().control().dispatch_event(
         nsh_core::ROOT_ID,
@@ -2986,6 +3000,7 @@ struct ComposerDockFixture {
     history: Arc<std::sync::Mutex<Vec<Value>>>,
     calls: mpsc::UnboundedReceiver<(Value, HostCall)>,
     watches: mpsc::UnboundedReceiver<Value>,
+    goal_watches: mpsc::UnboundedReceiver<Value>,
     watch: Value,
     history_reads: mpsc::UnboundedReceiver<()>,
     hold_queue: Arc<std::sync::atomic::AtomicBool>,
@@ -3120,7 +3135,7 @@ impl ComposerDockFixture {
                 "botOutbox" => json!({"isBot":false}),
                 "connections" => json!({"kind":"ready","revision":1,"connections":[],"next":null,
                     "defaultTarget":{"connectionId":"test","modelId":"model"}}),
-                "queueMessage" | "resolveModel" | "execution" | "continuationAvailability" | "model" => {
+                "queueMessage" | "resolveModel" | "execution" | "continuationAvailability" | "model" | "goal" => {
                     query_tx.send((data, call)).unwrap();
                     return;
                 }
@@ -3134,6 +3149,7 @@ impl ComposerDockFixture {
             tx.send((data, call)).unwrap();
         });
         let (watch_tx, mut watches) = mpsc::unbounded_channel();
+        let (goal_tx, goal_watches) = mpsc::unbounded_channel();
         let (side_tx, mut side_watch) = mpsc::unbounded_channel();
         channel.handle("ios.subscribe", move |mut call| {
             let data = call.take_data();
@@ -3142,6 +3158,8 @@ impl ComposerDockFixture {
             call.resolve(handle.clone());
             if data["method"] == "watch" {
                 watch_tx.send(handle).unwrap();
+            } else if data["method"] == "watchGoal" {
+                goal_tx.send(handle).unwrap();
             } else if anchor && data["input"]["scope"]["kind"] == "side_questions" {
                 side_tx.send((handle, side_on_watch.clone())).unwrap();
             }
@@ -3196,6 +3214,7 @@ impl ComposerDockFixture {
             history,
             calls,
             watches,
+            goal_watches,
             watch,
             history_reads,
             hold_queue,
@@ -3206,17 +3225,7 @@ impl ComposerDockFixture {
 
     fn navigation_action(&self, label: &str) -> Option<nsh_core::desktop::MenuAction> {
         let config = self.header.lock().unwrap();
-        let more = config
-            .as_ref()?
-            .right_items
-            .iter()
-            .find(|item| item.key.as_deref() == Some("more"))?;
-        more.menu.as_ref()?.iter().find_map(|item| match item {
-            nsh_core::desktop::MenuItem::Action(action) if action.label == label => {
-                Some(action.clone())
-            }
-            _ => None,
-        })
+        more_menu_action(config.as_ref()?, label).cloned()
     }
 
     fn navigation_item(&self, label: &str) -> Option<u32> {
@@ -3659,6 +3668,52 @@ async fn accessory_model_menu_remains_reachable_at_300_percent_dynamic_type() {
     fx.app
         .wait_for("id:chat-keyboard-model >> text:Other model")
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_goal_creation_uses_the_thinking_preference_saved_by_the_slider() {
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    backend["thinkingLevel"] = json!("high");
+    let mut fx = ComposerDockFixture::start(Value::Null, backend, empty_queue()).await;
+    let mut frame = fixture_recv(&mut fx.goal_watches).await;
+    frame["item"] = goal_view(Value::Null);
+    fx.app
+        .send_host_event("ios.subscriptionItem", frame)
+        .unwrap();
+
+    fx.choose_navigation("Thinking level");
+    fx.app.wait_for("id:chat-thinking-slider").unwrap();
+    fx.app.press("label:Minimal").unwrap();
+    let (input, receipt) = fx.call("selectBackend").await;
+    let confirmed = json!({"kind":"model","connectionId":"test","modelId":"model",
+        "serviceTier":"fast","thinkingLevel":"minimal"});
+    assert_eq!(input["backend"], confirmed);
+    let session = json!({"id":"chat","kind":"agent","title":"Dock Chat","revision":2,
+        "workspace":{"path":"/work"},"backend":confirmed,
+        "permissions":{"access":"read_only","requestPermissions":true},"boundaryRevision":12,
+        "binding":{"id":"00000000-0000-4000-8000-000000000001","permissionEpoch":3}});
+    *fx.observation.lock().unwrap() = json!({"session":session});
+    receipt.resolve(json!({"value":{"kind":"committed","session":session}}));
+    fx.app.wait_for("label:Thinking level · Minimal").unwrap();
+    fx.app.press("id:chat-thinking-backdrop").unwrap();
+
+    fx.choose_navigation("New Goal…");
+    fx.app.wait_for("id:chat-goal-sheet-scroll").unwrap();
+    enter_goal_text(
+        &mut fx.app,
+        "goal-objective",
+        "Check the selected thinking strength",
+    );
+    fx.app.press("id:goal-save").unwrap();
+    let (input, receipt) = fx.call("changeGoal").await;
+    assert_eq!(input["approval"]["backend"], confirmed);
+    assert_eq!(input["approval"]["target"]["sessionId"], "chat");
+    receipt.resolve(json!({"value":{"kind":"committed","goalId":GOAL_ID,"revision":1}}));
+    let (input, read) = fx.call("goal").await;
+    assert_eq!(input["sessionId"], "chat");
+    read.resolve(json!({"value":goal_view(goal_record("active",1))}));
+    fx.app.wait_for("text:Goal Details").unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4744,7 +4799,8 @@ where
             items.insert(label, action);
         }
         let item = items
-            .remove(label)
+            .get(label)
+            .cloned()
             .unwrap_or_else(|| panic!("missing native menu item: {label}"));
         select_native_item(app, item);
     }
@@ -7319,7 +7375,10 @@ fn side_session(id: &str, title: &str, backend: &Value) -> Value {
 
 struct SideChatFixture {
     app: Headless,
+    header: Arc<std::sync::Mutex<Option<nsh_core::ScreenConfig>>>,
     mutations: mpsc::UnboundedReceiver<(Value, HostCall)>,
+    goal_reads: mpsc::UnboundedReceiver<(Value, HostCall)>,
+    goal_authority: Arc<std::sync::atomic::AtomicBool>,
     subscriptions: mpsc::UnboundedReceiver<Value>,
     unsubscribed: mpsc::UnboundedReceiver<Value>,
     main_removed: Arc<std::sync::atomic::AtomicBool>,
@@ -7396,7 +7455,7 @@ fn side_chat_fixture_on(
     let mut user = quote_history_row(11, "user", "A user message");
     user["order"] = json!({"path":[6, 1],"itemIndex":0});
     main_history.extend([late, user, provisional]);
-    side_chat_fixture_with_history(default_model, missing_main, os, main_history)
+    side_chat_fixture_with_history(default_model, missing_main, os, main_history, "/work")
 }
 
 fn side_chat_fixture_with_history(
@@ -7404,12 +7463,14 @@ fn side_chat_fixture_with_history(
     missing_main: bool,
     os: Os,
     main_history: Vec<Value>,
+    main_workspace: &str,
 ) -> SideChatFixture {
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
 
+    let main_workspace = main_workspace.to_owned();
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         call.resolve(side_host_state(1, Some(7)))
@@ -7427,6 +7488,9 @@ fn side_chat_fixture_with_history(
     let hold = hold_side_observe.clone();
     let (observe_tx, side_observations) = mpsc::unbounded_channel();
     let main_revision = AtomicU64::new(40);
+    let (goal_read_tx, goal_reads) = mpsc::unbounded_channel();
+    let goal_authority = Arc::new(AtomicBool::new(true));
+    let with_authority = goal_authority.clone();
     let (_, late) = side_history_rows();
     let mut saved_history: Vec<_> = (20..=45)
         .map(|n| {
@@ -7447,12 +7511,16 @@ fn side_chat_fixture_with_history(
         let backend = observed_backend.lock().unwrap().clone();
         let missing_main = removed.load(Ordering::Relaxed);
         let main = json!({"id":"main","title":"Main Chat","kind":"agent","activity":"idle",
-            "branch":null,"parentSessionId":null,"workspace":{"path":"/work"},"revision":2,
+            "branch":null,"parentSessionId":null,"workspace":{"path":main_workspace},"revision":2,
             "backend":backend});
         let room = json!({"id":"room","title":"Room Chat","kind":"room","activity":"idle",
             "branch":null,"parentSessionId":null,"workspace":{"path":"/work"},"revision":1});
         let saved = side_session("saved", "Saved side question", &backend);
         let value = match data["method"].as_str().unwrap() {
+            "goal" => {
+                goal_read_tx.send((data, call)).unwrap();
+                return;
+            }
             "list" if input["scope"]["kind"] == "side_questions" => {
                 assert_eq!(input["scope"]["sessionId"], "main");
                 assert_eq!(input["position"], json!({"kind":"after","revision":"sides-7","cursor":"older"}));
@@ -7492,6 +7560,14 @@ fn side_chat_fixture_with_history(
                     "new-side" => side_session("new-side", "A side question", &backend),
                     id => panic!("unexpected observe: {id}"),
                 };
+                let mut session = session;
+                if session["kind"] == "agent" && with_authority.load(Ordering::Relaxed) {
+                    session["binding"] = json!({
+                        "id":"00000000-0000-4000-8000-000000000001","permissionEpoch":3
+                    });
+                    session["permissions"] = json!({"access":"read_only","requestPermissions":true});
+                    session["boundaryRevision"] = json!(12);
+                }
                 json!({"session":session,"through":99,"run":null})
             }
             "history" if input["sessionId"] == "room" => json!({
@@ -7566,10 +7642,26 @@ fn side_chat_fixture_with_history(
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
+    let header = Arc::new(Mutex::new(None));
+    if os == Os::Ios {
+        let mounted = header.clone();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let nsh_core::MountItem::ScreenConfig { config, .. } = item
+                    && config.title.as_deref() == Some("Main Chat")
+                {
+                    *mounted.lock().unwrap() = Some((**config).clone());
+                }
+            }
+        });
+    }
     app.wait_for("label:Conversation: Room Chat").unwrap();
     SideChatFixture {
         app,
+        header,
         mutations,
+        goal_reads,
+        goal_authority,
         subscriptions,
         unsubscribed,
         main_removed,
@@ -8715,7 +8807,7 @@ async fn side_chat_blank_reply_context_menu_has_no_quote_action() {
 
     let mut blank = quote_history_row(1, "assistant", " \u{2003} ");
     blank["finalOutput"] = json!(true);
-    let mut fx = side_chat_fixture_with_history(false, false, Os::Ios, vec![blank]);
+    let mut fx = side_chat_fixture_with_history(false, false, Os::Ios, vec![blank], "/work");
     let (menu_tx, mut menus) = mpsc::unbounded_channel();
     fx.app.observe(move |_, batch| {
         for item in &batch.items {
@@ -11720,4 +11812,885 @@ async fn model_settings_reload_after_reconnect_and_refresh_the_host_default_summ
     old.resolve(json!({"value":stale}));
     app.wait_for("label:New generation preset").unwrap();
     assert!(!app.shows("Old generation preset"));
+}
+
+const GOAL_ID: &str = "00000000-0000-4000-8000-000000000007";
+
+fn goal_record(status: &str, revision: u64) -> Value {
+    json!({
+        "id":GOAL_ID, "revision":revision, "objective":"Review database migrations", "status":status,
+        "iterations":3,"tokenBudget":2000,"consumed":{"known":1234,"missing":0},
+        "remainingTokens":766,"elapsedSeconds":45,"createdAt":1,"retryAt":null,
+        "pending":false,"dismissed":false,"note":"Reviewed the schema.","report":null
+    })
+}
+
+fn goal_view(current: Value) -> Value {
+    json!({"enabled":true,"current":current})
+}
+
+impl SideChatFixture {
+    fn open_native_goal(&mut self, label: &str) {
+        let id = {
+            let config = self.header.lock().unwrap();
+            config
+                .as_ref()
+                .and_then(|config| more_menu_action(config, label))
+                .filter(|action| action.enabled)
+                .unwrap_or_else(|| panic!("missing UIKit Goal menu item: {label}"))
+                .id
+        };
+        select_header_item(&mut self.app, id);
+        self.app.wait_for("id:chat-goal-sheet-scroll").unwrap();
+    }
+
+    fn goal_frame(&mut self, sub: &Value, item: Value) {
+        self.app
+            .send_host_event(
+                "ios.subscriptionItem",
+                json!({
+                    "subscriptionId":sub["subscriptionId"],"rootId":"root",
+                    "generation":sub["generation"],"item":item
+                }),
+            )
+            .unwrap();
+        assert!(self.app.settle());
+    }
+
+    async fn expect_goal_unsubscribe(&mut self, sub: &Value) {
+        loop {
+            let handle = fixture_recv(&mut self.unsubscribed).await;
+            if handle["subscriptionId"] == sub["subscriptionId"] {
+                assert_eq!(handle["generation"], sub["generation"]);
+                return;
+            }
+        }
+    }
+
+    async fn goal_read(&mut self, session: &str) -> HostCall {
+        let (data, call) = fixture_recv(&mut self.goal_reads).await;
+        assert_eq!(data["rootId"], "root");
+        assert_eq!(data["input"], json!({"sessionId":session}));
+        call
+    }
+
+    async fn goal_commit(&mut self, call: HostCall, record: Value) {
+        call.resolve(json!({"value":{"kind":"committed","goalId":record["id"],"revision":record["revision"]}}));
+        self.goal_read("main")
+            .await
+            .resolve(json!({"value":goal_view(record)}));
+        assert!(self.app.settle());
+    }
+}
+
+fn open_goal(app: &mut Headless, label: &str) {
+    app.press("label:More").unwrap();
+    app.choose_menu_item(label).unwrap();
+    app.wait_for("id:chat-goal-sheet-scroll").unwrap();
+}
+
+fn enter_goal_text(app: &mut Headless, id: &str, text: &str) {
+    let selector = format!("id:{id}");
+    app.clear(&selector).unwrap();
+    if !text.is_empty() {
+        app.type_text(&selector, text).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_capability_and_watches_follow_visible_agent_and_forked_side_chat() {
+    use nsh_core::platform::Lifecycle;
+
+    let mut fx = side_chat_fixture(false, false);
+    let mut native_quote = watch_quote_menus(&mut fx.app);
+    fx.app.press("label:Conversation: Room Chat").unwrap();
+    fx.app.wait_for("text:Room message").unwrap();
+    assert!(
+        !std::iter::from_fn(|| fx.subscriptions.try_recv().ok())
+            .any(|sub| sub["method"] == "watchGoal")
+    );
+    fx.app.press("label:More").unwrap();
+    assert!(fx.app.choose_menu_item("New Goal…").is_err());
+    fx.app.close_menu().unwrap();
+    fx.app.press("label:Chats").unwrap();
+
+    fx.open_main();
+    fx.app.press("label:More").unwrap();
+    assert!(
+        fx.app.choose_menu_item("New Goal…").is_err(),
+        "before the first frame"
+    );
+    fx.app.close_menu().unwrap();
+    let main = fx.subscription("watchGoal", None).await;
+    assert_eq!(main["input"], json!({"sessionId":"main"}));
+    fx.goal_frame(&main, json!({"enabled":false,"current":null}));
+    fx.app.press("label:More").unwrap();
+    assert!(
+        fx.app.choose_menu_item("New Goal…").is_err(),
+        "Host disabled it"
+    );
+    fx.app.close_menu().unwrap();
+    fx.goal_frame(
+        &main,
+        json!({"enabled":false,"current":goal_record("paused",1)}),
+    );
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app
+        .wait_for("text:Goals are turned off on this computer.")
+        .unwrap();
+    assert!(!fx.app.screen().matches("id:goal-toggle").unwrap());
+    fx.app.press("id:goal-close").unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+
+    assert!(native_quote(
+        &mut fx.app,
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app.wait_for("text:Side Question").unwrap();
+    assert!(!fx.app.screen().matches("label:More").unwrap());
+    fx.expect_goal_unsubscribe(&main).await;
+    assert!(
+        !std::iter::from_fn(|| fx.subscriptions.try_recv().ok())
+            .any(|sub| sub["method"] == "watchGoal")
+    );
+
+    fx.app
+        .type_text("label:Message composer", "A separate question")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, fork) = fx.mutation("fork").await;
+    let backend = json!({"kind":"model","connectionId":"selected","modelId":"selected-model","thinkingLevel":"high"});
+    *fx.backend.lock().unwrap() = backend.clone();
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","A separate question",&backend)}}));
+    let (input, send) = fx.mutation("send").await;
+    assert_eq!(input["sessionId"], "new-side");
+    send.resolve(
+        json!({"value":{"kind":"rejected","sessionId":"new-side","reason":"turn_stopped"}}),
+    );
+
+    let child = fx.subscription("watchGoal", None).await;
+    assert_eq!(child["input"], json!({"sessionId":"new-side"}));
+    fx.goal_frame(&child, goal_view(Value::Null));
+    open_goal(&mut fx.app, "New Goal…");
+    enter_goal_text(&mut fx.app, "goal-objective", "Child objective");
+    fx.app.press("id:goal-save").unwrap();
+    let (create, receipt) = fx.mutation("changeGoal").await;
+    assert_eq!(create["sessionId"], "new-side");
+    assert_eq!(create["approval"]["target"]["sessionId"], "new-side");
+    assert_eq!(create["approval"]["backend"], backend);
+    receipt.resolve(json!({"value":{"kind":"committed","goalId":GOAL_ID,"revision":1}}));
+    fx.goal_read("new-side")
+        .await
+        .resolve(json!({"value":goal_view(goal_record("active",1))}));
+    fx.app.wait_for("text:Review database migrations").unwrap();
+
+    fx.app
+        .set_environment("background", |env| env.lifecycle = Lifecycle::Background)
+        .unwrap();
+    fx.expect_goal_unsubscribe(&child).await;
+    fx.app.wait_for("text:Last synced · Read-only").unwrap();
+    fx.app
+        .set_environment("foreground", |env| env.lifecycle = Lifecycle::Active)
+        .unwrap();
+    let back = fx.subscription("watchGoal", None).await;
+    assert_eq!(back["input"], child["input"]);
+    assert_ne!(back["subscriptionId"], child["subscriptionId"]);
+    fx.goal_frame(&child, goal_view(goal_record("cancelled", 20)));
+    assert!(!fx.app.shows("text:Goal Cancelled"));
+    fx.goal_frame(&back, goal_view(goal_record("paused", 2)));
+    fx.app.wait_for("text:Goal Paused").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_create_validates_inputs_and_uses_observed_authority_without_touching_the_draft() {
+    use nsh_testing::DialogAnswer;
+
+    let mut fx = side_chat_fixture(false, false);
+    *fx.backend.lock().unwrap() = json!({
+        "kind":"model","connectionId":"chosen","modelId":"m","serviceTier":"priority","thinkingLevel":"high"
+    });
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(Value::Null));
+    fx.app
+        .type_text("label:Message composer", "Keep this as a chat draft")
+        .unwrap();
+    open_goal(&mut fx.app, "New Goal…");
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-objective").unwrap(),
+        Some("")
+    );
+    enter_goal_text(&mut fx.app, "goal-objective", "\u{0085}\u{2003}");
+    assert!(fx.app.press("id:goal-save").is_err());
+    enter_goal_text(
+        &mut fx.app,
+        "goal-objective",
+        "\u{0085} Write the migration plan \u{2003}",
+    );
+    for invalid in ["0", "-1", "1.5", "1e3", "9007199254740992", "+3", "0x10"] {
+        enter_goal_text(&mut fx.app, "goal-budget", invalid);
+        assert!(fx.app.press("id:goal-save").is_err(), "{invalid}");
+    }
+    enter_goal_text(&mut fx.app, "goal-budget", "");
+    fx.app.press_key("escape").unwrap();
+    assert!(
+        fx.app.screen().matches("id:goal-objective").unwrap(),
+        "dirty edit stayed open"
+    );
+    fx.app.answer_dialogs_myself();
+    fx.app.press("id:goal-close").unwrap();
+    assert_eq!(
+        fx.app.pending_dialog().unwrap().title.as_deref(),
+        Some("Discard goal edits?")
+    );
+    fx.app
+        .answer_dialog(DialogAnswer::Press("Keep Editing".into()))
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+
+    fx.app.compose("id:goal-objective", "qianyi").unwrap();
+    assert!(
+        fx.app.press("id:goal-save").is_err(),
+        "do not submit marked text"
+    );
+    assert!(fx.mutations.try_recv().is_err());
+    fx.app.compose("id:goal-objective", "").unwrap();
+    fx.app.press("id:goal-save").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(
+        input,
+        json!({
+            "kind":"create","sessionId":"main","objective":"Write the migration plan","tokenBudget":null,"start":true,
+            "approval":{
+                "target":{"sessionId":"main","workspace":{"path":"/work"},
+                    "permissions":{"access":"read_only","requestPermissions":true},"boundaryRevision":12,
+                    "binding":{"id":"00000000-0000-4000-8000-000000000001","permissionEpoch":3}},
+                "backend":*fx.backend.lock().unwrap()
+            }
+        })
+    );
+    assert!(
+        fx.app.press("id:goal-save").is_err(),
+        "in-flight mutation disables submission"
+    );
+    let mut goal = goal_record("active", 1);
+    goal["objective"] = input["objective"].clone();
+    fx.goal_commit(call, goal).await;
+    fx.app.wait_for("text:Write the migration plan").unwrap();
+    assert!(!fx.app.screen().matches("id:goal-objective").unwrap());
+    fx.app.press("id:goal-close").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep this as a chat draft")
+    );
+    assert!(
+        fx.mutations.try_recv().is_err(),
+        "closing does not send a mutation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_cannot_create_from_list_metadata_without_observed_authority() {
+    let mut fx = side_chat_fixture(false, false);
+    fx.goal_authority
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(Value::Null));
+    open_goal(&mut fx.app, "New Goal…");
+    enter_goal_text(&mut fx.app, "goal-objective", "A separate objective");
+    fx.app.press("id:goal-save").unwrap();
+    fx.app
+        .wait_for("text:Could not verify this chat’s settings. Review them and try again.")
+        .unwrap();
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-objective").unwrap(),
+        Some("A separate objective")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_controls_use_host_revision_pending_and_budget_completeness() {
+    use nsh_testing::DialogAnswer;
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(goal_record("armed", 1)));
+    fx.app.wait_for("text:work · Goal Ready").unwrap();
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app.press("id:goal-toggle").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "resume");
+    assert_eq!(input["revision"], 1);
+    assert_eq!(input["goalId"], GOAL_ID);
+    assert_eq!(input["approval"]["target"]["sessionId"], "main");
+    let mut active = goal_record("active", 2);
+    active["pending"] = json!(true);
+    active["retryAt"] = json!(4_000_000_000_000u64);
+    fx.goal_commit(call, active).await;
+    fx.app.wait_for("text:/Next attempt:/").unwrap();
+    assert!(!fx.app.screen().matches("id:goal-complete").unwrap());
+    fx.app.press("id:goal-toggle").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(
+        input,
+        json!({"kind":"control","sessionId":"main","goalId":GOAL_ID,"revision":2,"action":"pause"})
+    );
+    let mut paused = goal_record("paused", 3);
+    paused["pending"] = json!(true);
+    fx.goal_commit(call, paused).await;
+    fx.app.wait_for("text:Goal Paused").unwrap();
+    fx.app.press("id:goal-toggle").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "resume");
+    assert!(input.get("approval").is_none());
+    let mut blocked = goal_record("blocked", 4);
+    blocked["note"] = json!("A dependency is unavailable.");
+    fx.goal_commit(call, blocked.clone()).await;
+    fx.app
+        .wait_for("text:A dependency is unavailable.")
+        .unwrap();
+
+    fx.app.press("id:goal-edit-budget").unwrap();
+    enter_goal_text(&mut fx.app, "goal-budget", "3500");
+    fx.app.press("id:goal-save").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "set_budget");
+    assert_eq!(input["budget"], json!({"tokenBudget":3500}));
+    assert!(input.get("approval").is_none());
+    blocked["revision"] = json!(5);
+    blocked["tokenBudget"] = json!(3500);
+    fx.goal_commit(call, blocked).await;
+    fx.app.wait_for("text:3,500 tokens").unwrap();
+
+    let mut limited = goal_record("budget_limited", 6);
+    limited["tokenBudget"] = json!(1234);
+    limited["remainingTokens"] = json!(0);
+    fx.goal_frame(&sub, goal_view(limited.clone()));
+    fx.app.wait_for("text:Goal Budget Limited").unwrap();
+    assert!(
+        !fx.app.screen().matches("id:goal-toggle").unwrap(),
+        "no bare resume"
+    );
+    fx.app.press("id:goal-adjust").unwrap();
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-budget").unwrap(),
+        Some("1234")
+    );
+    assert!(
+        fx.app.press("id:goal-save").is_err(),
+        "the existing cap must not be removed implicitly"
+    );
+    assert!(fx.mutations.try_recv().is_err());
+    enter_goal_text(&mut fx.app, "goal-budget", "4321");
+    fx.app.press("id:goal-save").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "resume");
+    assert_eq!(input["budget"], json!({"tokenBudget":4321}));
+    assert_eq!(input["revision"], 6);
+    limited["revision"] = json!(7);
+    limited["consumed"]["missing"] = json!(1);
+    limited["report"] = json!({"status":"progress","note":limited["note"]});
+    fx.goal_commit(call, limited.clone()).await;
+    fx.app.wait_for("text:At least 1,234 tokens").unwrap();
+    assert_eq!(
+        fx.app.screen().count("text:Reviewed the schema.").unwrap(),
+        1
+    );
+    fx.app.wait_for("text:Unknown · Incomplete usage").unwrap();
+    assert!(!fx.app.shows("text:0 tokens"));
+    assert!(!fx.app.screen().matches("id:goal-adjust").unwrap());
+
+    let mut older = goal_record("cancelled", 6);
+    older["objective"] = json!("Old goal");
+    fx.goal_frame(&sub, goal_view(older));
+    limited["consumed"]["known"] = json!(1235);
+    limited["elapsedSeconds"] = json!(51);
+    fx.goal_frame(&sub, goal_view(limited));
+    fx.app.wait_for("text:At least 1,235 tokens").unwrap();
+    fx.app.wait_for("text:51 s").unwrap();
+
+    fx.app.press("id:goal-remove-limit").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "resume");
+    assert_eq!(input["budget"], json!({"tokenBudget":null}));
+    assert_eq!(input["revision"], 7);
+    let mut active = goal_record("active", 8);
+    active["consumed"]["missing"] = json!(1);
+    active["tokenBudget"] = Value::Null;
+    fx.goal_commit(call, active).await;
+    assert_eq!(fx.app.screen().count("text:Unlimited").unwrap(), 2);
+    fx.app.answer_dialogs_myself();
+    fx.app.press("id:goal-cancel").unwrap();
+    fx.app
+        .answer_dialog(DialogAnswer::Press("Keep Goal".into()))
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+    fx.app.press("id:goal-cancel").unwrap();
+    fx.app
+        .answer_dialog(DialogAnswer::Press("Cancel Goal".into()))
+        .unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "cancel");
+    let mut cancelled = goal_record("cancelled", 9);
+    cancelled["pending"] = json!(true);
+    fx.goal_commit(call, cancelled.clone()).await;
+    fx.app
+        .wait_for("text:Waiting for this turn to finish.")
+        .unwrap();
+    assert!(fx.app.press("id:goal-new").is_err());
+    assert!(!fx.app.screen().matches("id:goal-dismiss").unwrap());
+    cancelled["pending"] = json!(false);
+    cancelled["revision"] = json!(10);
+    fx.goal_frame(&sub, goal_view(cancelled.clone()));
+    fx.app.press("id:goal-dismiss").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "dismiss");
+    cancelled["dismissed"] = json!(true);
+    cancelled["revision"] = json!(11);
+    fx.goal_commit(call, cancelled).await;
+    assert!(!fx.app.screen().matches("id:goal-dismiss").unwrap());
+    fx.app.press("id:goal-close").unwrap();
+    assert!(!fx.app.shows("text:work · Goal Cancelled"));
+    // A new Host record, not a local "hidden" bit, owns the summary.
+    let mut next = goal_record("paused", 12);
+    next["id"] = json!("00000000-0000-4000-8000-000000000008");
+    fx.goal_frame(&sub, goal_view(next));
+    fx.app.wait_for("text:work · Goal Paused").unwrap();
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app.press("id:goal-complete").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "complete");
+    let mut achieved = goal_record("achieved", 13);
+    achieved["id"] = input["goalId"].clone();
+    fx.goal_commit(call, achieved).await;
+    fx.app.wait_for("text:Goal Achieved").unwrap();
+    fx.app.press("id:goal-new").unwrap();
+    fx.app.wait_for("id:goal-objective").unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_conflict_rejections_and_disconnect_read_back_without_replaying_changes() {
+    let mut fx = side_chat_fixture(false, false);
+    use nsh_core::{Command, MountItem};
+    let (announcement_tx, mut announcements) = mpsc::unbounded_channel();
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::Command {
+                command: Command::Announce(message),
+                ..
+            } = item
+            {
+                announcement_tx.send(message.clone()).unwrap();
+            }
+        }
+    });
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    let active = goal_record("active", 4);
+    fx.goal_frame(&sub, goal_view(active.clone()));
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app.press("id:goal-toggle").unwrap();
+    let (_, call) = fx.mutation("changeGoal").await;
+    call.resolve(json!({"value":{"kind":"conflict","actual":5}}));
+    let query = fx.goal_read("main").await;
+    fx.goal_frame(&sub, goal_view(goal_record("blocked", 5)));
+    query.resolve(json!({"value":goal_view(active)}));
+    fx.app
+        .wait_for("text:The goal changed. Review it and try again.")
+        .unwrap();
+    fx.app.wait_for("text:Goal Blocked").unwrap();
+
+    assert_eq!(
+        fixture_recv(&mut announcements).await,
+        "The goal changed. Review it and try again."
+    );
+    let mut usage_update = goal_record("blocked", 5);
+    usage_update["elapsedSeconds"] = json!(46);
+    fx.goal_frame(&sub, goal_view(usage_update));
+    fx.app.wait_for("text:46 s").unwrap();
+    assert!(
+        announcements.try_recv().is_err(),
+        "meter updates must not interrupt VoiceOver"
+    );
+
+    for (reason, message) in [
+        (
+            "goal_current_unfinished",
+            "Finish or cancel the current goal first.",
+        ),
+        ("goal_disabled", "Goals are turned off on this computer."),
+        (
+            "goal_status_tool_unavailable",
+            "Enable Goal tools for this chat to start or resume a goal.",
+        ),
+        (
+            "scheduler_authorization_changed",
+            "Chat settings changed. Review them and try again.",
+        ),
+        (
+            "goal_authorization_changed",
+            "Chat settings changed. Review them and try again.",
+        ),
+        (
+            "future_reason",
+            "The computer rejected the goal change: future_reason",
+        ),
+    ] {
+        fx.app.press("id:goal-toggle").unwrap();
+        let (_, call) = fx.mutation("changeGoal").await;
+        call.resolve(json!({"value":{"kind":"rejected","reason":reason}}));
+        fx.goal_read("main")
+            .await
+            .resolve(json!({"value":goal_view(goal_record("blocked",5))}));
+        fx.app.wait_for(&format!("text:{message}")).unwrap();
+        assert_eq!(fixture_recv(&mut announcements).await, message);
+        assert!(fx.app.settle());
+    }
+
+    fx.app.press("id:goal-toggle").unwrap();
+    let (_, call) = fx.mutation("changeGoal").await;
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(2, None))
+        .unwrap();
+    call.reject("Connection interrupted");
+    fx.app.wait_for("text:Last synced · Read-only").unwrap();
+    fx.app
+        .wait_for("text:Could not confirm the goal change. Check its status before trying again.")
+        .unwrap();
+    assert!(fx.app.press("id:goal-toggle").is_err());
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(3, Some(8)))
+        .unwrap();
+    assert!(fx.app.settle());
+    let reconnected = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(goal_record("cancelled", 99)));
+    fx.goal_frame(&reconnected, goal_view(goal_record("active", 6)));
+    fx.app.wait_for("text:Goal in Progress").unwrap();
+    assert!(
+        fx.mutations.try_recv().is_err(),
+        "never reissued the lost mutation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_sheet_fits_landscape_ime_and_transcript_omits_the_internal_prompt() {
+    use nsh_core::platform::ColorScheme;
+
+    let mut continuation = quote_history_row(1, "user", "Internal continuation instructions");
+    continuation["origin"] =
+        json!({"kind":"goal","goalId":GOAL_ID,"objective":"Review database migrations"});
+    let (_, answer) = side_history_rows();
+    let subtitle = "production-schema-migration-review-for-november-release";
+    let mut fx = side_chat_fixture_with_history(
+        false,
+        false,
+        Os::Ios,
+        vec![continuation, answer],
+        &format!("/work/{subtitle}"),
+    );
+    fx.app.set_viewport(Size::new(px(600.), px(844.))).unwrap();
+    fx.open_main();
+    fx.app
+        .wait_for("label:Continuing goal: Review database migrations")
+        .unwrap();
+    assert!(!fx.app.shows("text:Internal continuation instructions"));
+    let sub = fx.subscription("watchGoal", None).await;
+    let mut compact = goal_record("paused", 1);
+    compact["objective"] = json!("A".repeat(150));
+    fx.goal_frame(&sub, goal_view(compact));
+    let context_label = |app: &Headless| {
+        let node = app
+            .screen()
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.test_id.as_deref() == Some("chat-context-label"))
+            .unwrap();
+        (node.bounds, node.text.unwrap().text.text.to_string())
+    };
+    assert_eq!(
+        context_label(&fx.app).1,
+        format!("{subtitle} · Goal Paused")
+    );
+    fx.app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
+    fx.app
+        .set_environment("larger type", |env| env.font_scale = 1.45)
+        .unwrap();
+    let (label_bounds, label) = context_label(&fx.app);
+    assert_eq!(label, subtitle);
+    let pill = fx
+        .app
+        .screen()
+        .layout("id:chat-context")
+        .unwrap()
+        .unwrap()
+        .bounds;
+    assert!(pill.origin.x >= px(16.) && pill.origin.x + pill.size.width <= px(359.));
+    assert!(label_bounds.origin.x + label_bounds.size.width <= pill.origin.x + pill.size.width);
+    fx.open_native_goal("Goal Details…");
+    let sheet = "id:chat-goal-sheet-scroll";
+    fx.app.wait_for(sheet).unwrap();
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("Goal appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        for selector in ["id:goal-close", "id:goal-toggle", "id:goal-cancel"] {
+            assert_dock_touch_target(&fx.app, selector);
+            assert_chat_button_contrast(&mut fx.app, selector, None, button_text_color);
+        }
+    }
+    fx.app.press("id:goal-close").unwrap();
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape keyboard and safe area", |env| {
+            env.font_scale = 1.;
+            env.keyboard_height = px(240.);
+            env.safe_area.left = px(47.);
+            env.safe_area.right = px(47.);
+            env.safe_area.bottom = px(34.);
+        })
+        .unwrap();
+    let composer_before = fx
+        .app
+        .screen()
+        .layout("id:chat-composer")
+        .unwrap()
+        .unwrap()
+        .bounds;
+    assert_eq!(
+        composer_before.origin.y + composer_before.size.height,
+        px(150.)
+    );
+    assert!(!fx.app.screen().matches("id:chat-context").unwrap());
+    fx.goal_frame(&sub, goal_view(goal_record("active", 2)));
+    assert_eq!(
+        fx.app
+            .screen()
+            .layout("id:chat-composer")
+            .unwrap()
+            .unwrap()
+            .bounds,
+        composer_before
+    );
+    fx.open_native_goal("Goal Details…");
+    fx.app.wait_for(sheet).unwrap();
+    reveal_sheet_target(&mut fx.app, sheet, "id:goal-toggle");
+    reveal_sheet_target(&mut fx.app, sheet, "id:goal-edit-budget");
+    fx.app.press("id:goal-edit-budget").unwrap();
+    reveal_sheet_target(&mut fx.app, sheet, "id:goal-budget");
+    assert_dock_touch_target(&fx.app, "id:goal-budget");
+    enter_goal_text(&mut fx.app, "goal-budget", "3000");
+    reveal_sheet_target(&mut fx.app, sheet, "id:goal-save");
+    assert_dock_touch_target(&fx.app, "id:goal-save");
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_budget_limited_can_cancel_a_pending_turn_and_mark_a_settled_goal_complete() {
+    use nsh_testing::DialogAnswer;
+
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    let mut limited = goal_record("budget_limited", 1);
+    limited["pending"] = json!(true);
+    fx.goal_frame(&sub, goal_view(limited));
+    open_goal(&mut fx.app, "Goal Details…");
+    assert!(!fx.app.screen().matches("id:goal-complete").unwrap());
+    fx.app.answer_dialogs_myself();
+    fx.app.press("id:goal-cancel").unwrap();
+    fx.app
+        .answer_dialog(DialogAnswer::Press("Cancel Goal".into()))
+        .unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "cancel");
+    assert_eq!(input["revision"], 1);
+    fx.goal_commit(call, goal_record("cancelled", 2)).await;
+    fx.app.wait_for("text:Goal Cancelled").unwrap();
+
+    let mut next = goal_record("budget_limited", 3);
+    next["id"] = json!("00000000-0000-4000-8000-000000000008");
+    fx.goal_frame(&sub, goal_view(next));
+    fx.app.press("id:goal-complete").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["action"], "complete");
+    assert_eq!(input["revision"], 3);
+    let mut achieved = goal_record("achieved", 4);
+    achieved["id"] = input["goalId"].clone();
+    fx.goal_commit(call, achieved).await;
+    fx.app.wait_for("text:Goal Achieved").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_continuations_do_not_appear_in_the_pending_dock_or_its_count() {
+    const INTERNAL: &str = "Continue using these internal Goal instructions";
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    let goal = json!({
+        "messageId":"goal-continuation","kind":"followup","preview":INTERNAL,
+        "origin":{"kind":"goal","goalId":GOAL_ID,"objective":"Review database migrations"}
+    });
+    fx.queue_item(json!({"revision":1,"entries":[goal]}));
+    assert!(!fx.app.screen().matches("id:composer-pending-dock").unwrap());
+    assert!(!fx.app.shows("text:1 queued"));
+
+    fx.queue_item(json!({"revision":2,"entries":[goal,
+        {"messageId":"user-followup","kind":"followup","preview":"A user follow-up"}
+    ]}));
+    fx.app.press("label:Queued Messages (1)").unwrap();
+    fx.app.wait_for("text:A user follow-up").unwrap();
+    assert!(!fx.app.shows(&format!("text:{INTERNAL}")));
+    assert_eq!(
+        fx.app.screen().count("label:Edit queued message").unwrap(),
+        1
+    );
+    fx.app.press("label:Edit queued message").unwrap();
+    let (input, reply) = fx.call("queueMessage").await;
+    assert_eq!(input["messageId"], "user-followup");
+    reply.resolve(json!({"value":{"kind":"ready","revision":2,
+        "message":"A user follow-up","hasAttachments":false,"quotes":[]}}));
+    fx.app.wait_for("id:queue-message-editor").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_portrait_sheet_stays_below_the_notch_and_above_the_keyboard() {
+    let mut fx = side_chat_fixture_on(false, false, Os::Ios, 1);
+    fx.app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(Value::Null));
+    fx.open_native_goal("New Goal…");
+    fx.app
+        .set_environment("portrait keyboard and safe area", |env| {
+            env.safe_area.top = px(47.);
+            env.safe_area.bottom = px(34.);
+            env.keyboard_height = px(320.);
+        })
+        .unwrap();
+    for selector in ["id:chat-goal-sheet-scroll", "id:goal-close"] {
+        assert_keyboard_target(&fx.app, selector, 16., 359., 492.);
+        let bounds = fx.app.screen().layout(selector).unwrap().unwrap().bounds;
+        assert!(bounds.origin.y >= px(47.), "{selector}: {bounds:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_late_readback_cannot_close_a_new_budget_editor() {
+    use nsh_testing::DialogAnswer;
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(goal_record("paused", 1)));
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app.press("id:goal-edit-budget").unwrap();
+    enter_goal_text(&mut fx.app, "goal-budget", "3000");
+    fx.app.press("id:goal-save").unwrap();
+    let (_, call) = fx.mutation("changeGoal").await;
+    call.resolve(json!({"value":{"kind":"committed","goalId":GOAL_ID,"revision":2}}));
+    let readback = fx.goal_read("main").await;
+    let mut committed = goal_record("paused", 2);
+    committed["tokenBudget"] = json!(3000);
+    fx.goal_frame(&sub, goal_view(committed.clone()));
+
+    fx.app.answer_dialogs_myself();
+    fx.app.press("id:goal-close").unwrap();
+    fx.app
+        .answer_dialog(DialogAnswer::Press("Discard Edits".into()))
+        .unwrap();
+    fx.app.press("id:goal-edit-budget").unwrap();
+    enter_goal_text(&mut fx.app, "goal-budget", "4050");
+
+    // A newer snapshot proves JS processed the held read, not just that the
+    // draft was still there before its promise settled.
+    committed["revision"] = json!(3);
+    readback.resolve(json!({"value":goal_view(committed)}));
+    fx.app
+        .wait_for("text:The goal changed. Close the editor to review it.")
+        .unwrap();
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-budget").unwrap(),
+        Some("4050")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_watch_ack_keeps_the_submitted_budget_editor_read_only_until_readback() {
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(goal_record("paused", 1)));
+    open_goal(&mut fx.app, "Goal Details…");
+    fx.app.press("id:goal-edit-budget").unwrap();
+    enter_goal_text(&mut fx.app, "goal-budget", "3000");
+    fx.app.press("id:goal-save").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["budget"], json!({"tokenBudget":3000}));
+    call.resolve(json!({"value":{"kind":"committed","goalId":GOAL_ID,"revision":2}}));
+    let readback = fx.goal_read("main").await;
+    let mut committed = goal_record("paused", 2);
+    committed["tokenBudget"] = json!(3000);
+    fx.goal_frame(&sub, goal_view(committed.clone()));
+
+    // The editor has seen the watch frame, but its own save has not returned.
+    fx.app
+        .wait_for("text:The goal changed. Close the editor to review it.")
+        .unwrap();
+    assert!(fx.app.type_text("id:goal-budget", "4050").is_err());
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-budget").unwrap(),
+        Some("3000")
+    );
+
+    readback.resolve(json!({"value":goal_view(committed)}));
+    fx.app.wait_for("text:3,000 tokens").unwrap();
+    assert!(!fx.app.screen().matches("id:goal-budget").unwrap());
+    fx.app.press("id:goal-edit-budget").unwrap();
+    enter_goal_text(&mut fx.app, "goal-budget", "4050");
+    assert_eq!(
+        fx.app.screen().input_text("id:goal-budget").unwrap(),
+        Some("4050")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goal_sheet_can_reconnect_only_the_watch_without_losing_or_submitting_a_draft() {
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    let sub = fx.subscription("watchGoal", None).await;
+    fx.goal_frame(&sub, goal_view(Value::Null));
+    open_goal(&mut fx.app, "New Goal…");
+    enter_goal_text(&mut fx.app, "goal-objective", "Check the migration plan");
+    enter_goal_text(&mut fx.app, "goal-budget", "3400");
+    fx.app
+        .send_host_event(
+            "ios.subscriptionEnded",
+            json!({
+                "subscriptionId":sub["subscriptionId"],"rootId":"root",
+                "generation":sub["generation"],"error":"watch interrupted"
+            }),
+        )
+        .unwrap();
+    fx.app.wait_for("text:Last synced · Read-only").unwrap();
+    assert!(fx.app.press("id:goal-save").is_err());
+    fx.app.press("id:goal-reconnect").unwrap();
+    let reconnected = fx.subscription("watchGoal", None).await;
+    assert_ne!(reconnected["subscriptionId"], sub["subscriptionId"]);
+    assert_eq!(reconnected["input"], sub["input"]);
+    fx.goal_frame(&reconnected, goal_view(Value::Null));
+    assert!(fx.goal_reads.try_recv().is_err());
+    assert!(fx.mutations.try_recv().is_err());
+    fx.app.press("id:goal-save").unwrap();
+    let (input, call) = fx.mutation("changeGoal").await;
+    assert_eq!(input["objective"], "Check the migration plan");
+    assert_eq!(input["tokenBudget"], 3400);
+    fx.goal_commit(call, goal_record("active", 1)).await;
+    fx.app.wait_for("text:Goal Details").unwrap();
 }
