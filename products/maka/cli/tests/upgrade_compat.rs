@@ -730,15 +730,42 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     );
                 }
             }
-            if has_runs > 0 && versions.contains(&57) {
-                let invalid: i64 = conn
+            if versions.contains(&58) {
+                for dropped in [
+                    "agent_memory_session_reads",
+                    "agent_memory_session_visibility",
+                    "agent_memory_visibility",
+                    "agent_memory_history_reads",
+                    "agent_memory_external_sources",
+                    "agent_memory_external_epochs",
+                ] {
+                    let exists: i64 = conn
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        exists, 0,
+                        "migration 58 left dropped table {dropped} on {rel}"
+                    );
+                }
+                let wrapped_recaps: i64 = conn
                     .query_row(
-                        "SELECT count(*) FROM agent_memory_external_epochs WHERE revision < 0",
+                        "SELECT count(*) FROM plugin_data
+                         WHERE package_id='maka.session-recap' AND scope_id='profile'
+                           AND json_type(value_json,'$.receipt')='object'",
                         [],
                         |row| row.get(0),
                     )
                     .unwrap();
-                assert_eq!(invalid, 0, "invalid external memory epoch on {rel}");
+                assert_eq!(
+                    wrapped_recaps, 0,
+                    "migration 58 left wrapped recap receipts on {rel}"
+                );
+            }
+            if has_runs > 0 && versions.contains(&57) {
                 let inconsistent: i64 = conn.query_row(
                     "WITH pending AS (
                        SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission

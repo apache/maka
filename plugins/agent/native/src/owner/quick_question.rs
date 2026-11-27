@@ -192,7 +192,6 @@ impl Owner {
                     cancellation.clone(),
                     &owner.store,
                     auxiliary::Admission::Operation {
-                        history_visibility: None,
                         reference: Box::new(operation),
                         scope: Box::new(dispatch),
                         attempt: None,

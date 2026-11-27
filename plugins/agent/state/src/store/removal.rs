@@ -124,7 +124,7 @@ const RUN_FULL_TAIL: &[Step] = &[
 // created them, and computer::rebuild / interactions::rebuild replay their
 // canonical backing facts, outcomes, subjects, pins, and run metadata.
 const RUN_PROFILE_COMPUTER_TAIL: &[Step] = &[
-    Step::Run("UPDATE agent_run_specs SET unmarked_replay_shared=0, original_user_run=NULL WHERE run=?1"),
+    Step::Run("UPDATE agent_run_specs SET original_user_run=NULL WHERE run=?1"),
     Step::Run(
         "DELETE FROM agent_computer_grants WHERE scope<>'profile'
          AND request IN(SELECT request FROM agent_interaction_requests WHERE run=?1)",
@@ -1108,11 +1108,6 @@ mod tests {
             "agent_memory_shared_fields",
             "agent_message_submissions",
             "agent_memory_tool_inputs",
-            "agent_memory_history_reads",
-            "agent_memory_session_reads",
-            "agent_memory_external_sources",
-            "agent_memory_session_visibility",
-            "agent_memory_external_epochs",
             "agent_memory_legacy_recap_history",
             "agent_model_items",
             "agent_operation_pins",
@@ -1174,7 +1169,6 @@ mod tests {
             "agent_memory_scopes",
             "agent_memory_search",
             "agent_memory_versions",
-            "agent_memory_visibility",
             "agent_room_members",
             "agent_room_messages",
             "agent_room_pins",

@@ -1975,10 +1975,7 @@ async fn cancelled_contested_takeover_preserves_prior_claim() {
 
 #[tokio::test]
 async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
-    use crate::memory::{
-        Scope,
-        reads::{HistorySources, RecordFacts, RecordHistory},
-    };
+    use crate::memory::{Scope, reads::RecordFacts};
     use maka_agent_facts::memory::{LoadedMemory, MemoryId, MemoryRevision};
     use maka_plugin_core::storage::{Data, Mutation, Namespace};
     use tokio::sync::oneshot;
@@ -2026,32 +2023,19 @@ async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
             assertion: MemoryRevision(1),
         }],
     };
-    let unknown = RecordHistory {
-        owner: admission.owner,
-        execution: ExecutionIdentity {
-            run_id: run,
-            session_id: "reader".into(),
-            turn_id: "expired".into(),
-        },
-        sources: HistorySources::session("source"),
-        before: None,
-    };
 
     let (ready, entered) = oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let lane = data.clone();
     let barrier = tokio::spawn(async move { lane.query_barrier(WriterBarrier(ready, wait)).await });
     entered.await.unwrap();
-    // Poll all three FIFO writes while the writer is held so they share a commit.
-    let (peer, stale, unknown, ()) = tokio::join!(biased;
-        data.write(peer),data.write(stale),data.write(unknown),async {release.send(()).unwrap()}
+    // Poll both FIFO writes while the writer is held so they share a commit.
+    let (peer, stale, ()) = tokio::join!(biased;
+        data.write(peer),data.write(stale),async {release.send(()).unwrap()}
     );
     barrier.await.unwrap().unwrap();
     assert!(
         matches!(stale,Err(StoreError::InvalidTransition(reason)) if reason.contains("memory changed"))
-    );
-    assert!(
-        matches!(unknown,Err(StoreError::InvalidTransition(reason)) if reason.contains("execution changed"))
     );
     peer.unwrap();
     assert_eq!(
@@ -2067,35 +2051,54 @@ async fn rejected_memory_reads_do_not_roll_back_peer_writes() {
 }
 
 #[tokio::test]
-async fn replay_uses_the_frozen_authority_and_the_actual_history_source() {
+async fn replay_permits_clean_producers_and_checks_consumed_memory_validity() {
+    use crate::memory::{Scope, reads::RecordFacts};
     use crate::session_history::permits_memory_replay;
-    use maka_agent_facts::memory::MemoryReplay::{Run, Shared, Unrecorded};
+    use maka_agent_facts::memory::{
+        LoadedMemory, MemoryAdmission, MemoryId,
+        MemoryReplay::{Run, Shared, Unrecorded},
+        MemoryRevision,
+    };
 
     let dir = tempfile::tempdir().unwrap();
     let (root, store) = open(dir.path(), true).await;
-    let (spec, contents) = spec();
-    let live = store.session_history(spec.owner.clone(), spec.session_id.clone());
-    let unrelated = store.session_history(spec.owner.clone(), "unrelated".into());
-    let admission = Admission::new(spec, UnixMillis(1), contents);
-    let producer = admission.run();
-    store.admit(admission).await.unwrap();
-    exec_sql(&store, move |db| {
-        db.execute(
-            "UPDATE agent_run_specs SET unmarked_replay_shared=1 WHERE run=?",
-            [producer.to_string()],
-        )?;
-        Ok(())
-    })
-    .await;
+    let (base_spec, contents) = spec();
+    let owner_ns = serde_json::to_string(&base_spec.owner).unwrap();
+    let live = store.session_history(base_spec.owner.clone(), base_spec.session_id.clone());
 
-    let other = Some(RunId::new());
+    let mut producer_spec = base_spec.clone();
+    producer_spec.memory_admission = MemoryAdmission::Enabled;
+    let producer_adm = Admission::new(producer_spec, UnixMillis(1), contents.clone());
+    let producer = producer_adm.run();
+    store.admit(producer_adm).await.unwrap();
+
+    let mut enabled_spec = base_spec.clone();
+    enabled_spec.turn_id = "turn-enabled".into();
+    enabled_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+        message_id: "msg-enabled".into(),
+    };
+    enabled_spec.memory_admission = MemoryAdmission::Enabled;
+    let enabled_adm = Admission::new(enabled_spec, UnixMillis(2), contents.clone());
+    let enabled_target = enabled_adm.run();
+    store.admit(enabled_adm).await.unwrap();
+
+    let mut disabled_spec = base_spec.clone();
+    disabled_spec.turn_id = "turn-disabled".into();
+    disabled_spec.trigger = maka_agent_facts::durable::Trigger::Message {
+        message_id: "msg-disabled".into(),
+    };
+    disabled_spec.memory_admission = MemoryAdmission::Disabled;
+    let disabled_adm = Admission::new(disabled_spec, UnixMillis(3), contents);
+    let disabled_target = disabled_adm.run();
+    store.admit(disabled_adm).await.unwrap();
+
+    // Producer consumed no memory facts: even legacy Run(producer) or Unrecorded checkpoints stay reusable.
     for (history, recorded, target, allowed) in [
-        (Some(&live), Unrecorded, other, true),
-        (Some(&unrelated), Unrecorded, other, false),
-        (Some(&live), Run(producer), other, false),
-        (Some(&live), Run(producer), None, false),
+        (Some(&live), Unrecorded, Some(disabled_target), true),
+        (Some(&live), Run(producer), Some(disabled_target), true),
+        (Some(&live), Run(producer), None, true),
         (None, Unrecorded, Some(producer), false),
-        (None, Shared, other, true),
+        (None, Shared, Some(disabled_target), true),
         (None, Run(producer), Some(producer), true),
     ] {
         assert_eq!(
@@ -2105,6 +2108,80 @@ async fn replay_uses_the_frozen_authority_and_the_actual_history_source() {
             allowed
         );
     }
+
+    // Record an active memory fact consumed by producer.
+    let mem_id = MemoryId(Uuid::new_v4());
+    let ns = owner_ns.clone();
+    let id_str = mem_id.0.to_string();
+    exec_sql(&store, move |db| {
+        db.execute(
+            "INSERT INTO agent_memories VALUES(?1,'personal',?2,1,1,'user_recall','active',0,0)",
+            rusqlite::params![ns, id_str],
+        )?;
+        db.execute(
+            "INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+             VALUES(?1,'personal',?2,1,'Remembered note','{}','digest','current')",
+            rusqlite::params![ns, id_str],
+        )?;
+        Ok(())
+    })
+    .await;
+    store
+        .data
+        .write(RecordFacts {
+            run: producer,
+            scope: Scope {
+                namespace: owner_ns.clone(),
+                location: "personal".into(),
+                binding: None,
+            },
+            facts: vec![LoadedMemory {
+                scope: "personal".into(),
+                id: mem_id.clone(),
+                revision: MemoryRevision(1),
+                assertion: MemoryRevision(1),
+            }],
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        permits_memory_replay(Some(&live), Run(producer), producer, Some(producer))
+            .await
+            .unwrap()
+    );
+    assert!(
+        permits_memory_replay(Some(&live), Run(producer), producer, Some(enabled_target))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, Some(disabled_target))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, None)
+            .await
+            .unwrap()
+    );
+
+    // Suppressing the consumed memory invalidates cross-run replay immediately.
+    let id_str = mem_id.0.to_string();
+    exec_sql(&store, move |db| {
+        db.execute(
+            "UPDATE agent_memory_versions SET disposition='suppressed' WHERE id=?1",
+            [id_str],
+        )?;
+        Ok(())
+    })
+    .await;
+    assert!(
+        !permits_memory_replay(Some(&live), Run(producer), producer, Some(enabled_target))
+            .await
+            .unwrap()
+    );
+
     drop(store);
     root.close().await.unwrap();
 }

@@ -346,7 +346,6 @@ impl Owner {
                 cancellation.clone(),
                 &self.store,
                 auxiliary::Admission::Operation {
-                    history_visibility: None,
                     reference: Box::new(operation),
                     attempt: None,
                     scope: Box::new(dispatch),

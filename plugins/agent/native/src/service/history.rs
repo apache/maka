@@ -47,36 +47,20 @@ pub(super) use media::{attachment_image, tool_image};
 pub(crate) use media::{snapshot_attachment_image, snapshot_tool_image};
 pub(crate) use source::snapshot_source;
 
-pub(super) async fn authorize_session(
-    owner: &Owner,
-    scope: &Scope,
-    session: &str,
-) -> Result<(), String> {
+pub(super) async fn authorize(owner: &Owner, scope: &Scope, session: &str) -> Result<(), String> {
     owner.scoped_session(scope, session).await?;
     if scope.cancellation.is_cancelled() {
         return Err("agent_observation_cancelled".into());
     }
     Ok(())
 }
-pub(super) async fn authorize(
-    owner: &Owner,
-    scope: &Scope,
-    session: &str,
-    before: Option<u64>,
-) -> Result<Option<u64>, String> {
-    authorize_session(owner, scope, session).await?;
-    owner.record_history_read(scope, session, before).await
-}
 pub(super) async fn open(
     owner: &Owner,
     scope: &Scope,
     session: &str,
-) -> Result<(SessionHistory, Option<u64>), String> {
-    let before = authorize(owner, scope, session, None).await?;
-    Ok((
-        scoped_state(owner, scope)?.session_history(owner.run_owner(), session.to_owned()),
-        before,
-    ))
+) -> Result<SessionHistory, String> {
+    authorize(owner, scope, session).await?;
+    Ok(scoped_state(owner, scope)?.session_history(owner.run_owner(), session.to_owned()))
 }
 pub(crate) fn scoped_state(
     owner: &Owner,
@@ -139,7 +123,7 @@ pub(crate) async fn read_with_result_visibility(
             .validate(input.through, input.include_thinking)
             .map_err(|e| e.to_string())?;
     }
-    authorize_session(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
     if rooms
         .exists(&input.session_id)
@@ -160,13 +144,13 @@ pub(crate) async fn read_with_result_visibility(
             .page(input.session_id.clone(), input.through, position, 48)
             .await
             .map_err(|error| error.to_string())?;
-        authorize_session(owner, scope, &input.session_id).await?;
+        authorize(owner, scope, &input.session_id).await?;
         return Ok((
             ui::HistoryPage::Room { page: page.into() },
             RestrictedToolResultRows::new(),
         ));
     }
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     if input.view == wire::HistoryView::Chat && owner.has_bot_history(&input.session_id).await? {
         input.view = wire::HistoryView::Conversation;
     }
@@ -180,7 +164,7 @@ pub(crate) async fn read_with_result_visibility(
         scope.identity.agent().is_some(),
     )
     .await?;
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok((page.into(), restricted_result_rows))
 }
 type Restrictions = std::collections::BTreeMap<wire::HistoryRowAddress, Vec<(u64, u64)>>;
@@ -239,7 +223,7 @@ pub(super) async fn images(
 ) -> Result<ui::HistoryImages, String> {
     use maka_agent_state::session_history::source_tree::{SourceItem, SourceTree};
     const LIMIT: u32 = 24;
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = SourceTree::live(&history, &cut)
         .await
@@ -249,7 +233,7 @@ pub(super) async fn images(
         .await
         .map_err(|error| error.to_string())?;
     let SourceItem::Canonical(item) = item else {
-        authorize(owner, scope, &input.session_id, before).await?;
+        authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::HistoryImages {
             tools: Vec::new(),
             next: None,
@@ -293,7 +277,7 @@ pub(super) async fn images(
         let restricted = restrictions(owner, scope, &tree, positions).await?;
         tools.retain_mut(|tool| !filter_tool(tool, &restricted));
     }
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryImages { tools, next })
 }
 
@@ -307,7 +291,7 @@ pub(super) async fn requests(
         source_tree::{SourceItem, SourceTree},
     };
     const LIMIT: u32 = 24;
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = SourceTree::live(&history, &cut)
         .await
@@ -317,7 +301,7 @@ pub(super) async fn requests(
         .await
         .map_err(|error| error.to_string())?;
     let SourceItem::Canonical(item) = item else {
-        authorize(owner, scope, &input.session_id, before).await?;
+        authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::HistoryRequests {
             requests: Vec::new(),
             next: None,
@@ -403,7 +387,7 @@ pub(super) async fn requests(
             },
         });
     }
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryRequests {
         requests: result,
         next: if more { last } else { None },
@@ -417,7 +401,7 @@ pub(crate) async fn model_text_page(
     input: wire::Read,
 ) -> Result<wire::Page, String> {
     input.validate().map_err(|e| e.to_string())?;
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, input.through).await?;
     let input = ui::History {
         session_id: input.session_id,
@@ -428,7 +412,7 @@ pub(crate) async fn model_text_page(
         thought: None,
     };
     let (page, _) = window(owner, scope, &history, &cut, &input, true).await?;
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(page)
 }
 
@@ -1153,7 +1137,7 @@ pub(super) async fn observation(
     scope: &Scope,
     input: ui::SessionRead,
 ) -> Result<ui::Observation, String> {
-    authorize_session(owner, scope, &input.session_id).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let rooms = scoped_state(owner, scope)?.rooms(owner.run_owner());
     if rooms
         .exists(&input.session_id)
@@ -1167,7 +1151,7 @@ pub(super) async fn observation(
         let session = owner
             .session_summary(&input.session_id, &scope.cancellation)
             .await?;
-        authorize_session(owner, scope, &input.session_id).await?;
+        authorize(owner, scope, &input.session_id).await?;
         return Ok(ui::Observation {
             session,
             latest_run_id: None,
@@ -1181,7 +1165,7 @@ pub(super) async fn observation(
             metrics: None,
         });
     }
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let observed = history
         .live_observation()
         .await
@@ -1378,7 +1362,7 @@ pub(super) async fn observation(
                 ),
             })
     };
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(ui::Observation {
         session,
         last_completed_turn_id,

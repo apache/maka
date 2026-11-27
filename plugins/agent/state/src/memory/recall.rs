@@ -479,7 +479,6 @@ macro_rules! material_origins_sql {
             )"
     };
 }
-pub(super) use material_origins_sql;
 
 #[derive(Clone)]
 pub struct MaterialAccess {
@@ -703,152 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn old_reader_classification_preserves_clean_executor_keys() {
-        let suffix = "\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.";
-        let db = Connection::open_in_memory().unwrap();
-        migrate(&db, 50);
-        let selection = serde_json::json!({
-            "definitions":[
-                {"name":"OpenDocument","description":format!("Read a document{suffix}")},
-                {"name":"Read","description":format!("Untrusted reader{suffix}")}
-            ],
-            "services":[
-                {"selection":{"name":"OpenDocument","target":{"kind":"import","name":"files"},
-                    "method":"read","description":"Read a document"}},
-                {"selection":{"name":"Read","target":{"kind":"import","name":"custom"},
-                    "method":"read","description":format!("Untrusted reader{suffix}")}}
-            ],"internalBindings":{}
-        });
-        db.execute(
-            "INSERT INTO contents(content_sha256,payload) VALUES('selection',?)",
-            [serde_json::to_vec(&selection).unwrap()],
-        )
-        .unwrap();
-        db.execute_batch(
-            r#"INSERT INTO contents(content_sha256,payload) VALUES
-                ('spec', CAST('{"toolSelection":{"digest":"selection"}}' AS BLOB));"#,
-        )
-        .unwrap();
-        for (index, (session, name, path)) in [
-            ("plain", "OpenDocument", "README.md"),
-            ("archive", "OpenDocument", "session:sample"),
-            ("unknown", "Read", "README.md"),
-            ("imported-user", "", ""),
-            ("imported-opaque", "", ""),
-            ("imported-missing-part", "", ""),
-            ("imported-mixed", "", ""),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let sequence = index as i64 + 1;
-            db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
-                    VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
-            db.execute("INSERT INTO agent_run_specs SELECT ?1,1,'owner',?1,id FROM contents WHERE content_sha256='spec'",
-                    [session]).unwrap();
-            let call = serde_json::json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"path":path}}}}}});
-            db.execute(
-                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
-                params![session, serde_json::to_vec(&call).unwrap()],
-            )
-            .unwrap();
-            db.execute(
-                "INSERT INTO agent_facts VALUES(?1,?2,?2,1,1,1,?3)",
-                params![sequence, session, db.last_insert_rowid()],
-            )
-            .unwrap();
-            db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,
-                    prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
-                    VALUES('owner',?1,?2,?1,?2,'model_observed','prefix','call',?3,0,?1,0)",
-                    params![session,sequence,!name.is_empty()]).unwrap();
-            db.execute("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,
-                    control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
-                    VALUES(?1,1,'owner',?1,?2,?3,1,0,0,0,0,0,0,'[]','completed')",params![session,sequence,!name.is_empty()]).unwrap();
-            if name.is_empty() {
-                let manifest = format!("manifest-{session}");
-                let message = format!("message-{session}");
-                db.execute(
-                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                    params![manifest, br#"{"origin":{"kind":"imported"}}"#.as_slice()],
-                )
-                .unwrap();
-                db.execute(
-                    "INSERT INTO agent_history_snapshots VALUES(?1,'owner',?1,'{}',?2)",
-                    params![session, db.last_insert_rowid()],
-                )
-                .unwrap();
-                db.execute(
-                    "INSERT INTO agent_history_snapshot_adoptions VALUES(?1,?1,?1)",
-                    [session],
-                )
-                .unwrap();
-                let role = if session == "imported-opaque" {
-                    "assistant"
-                } else {
-                    "user"
-                };
-                let part = format!("part-{session}");
-                let mut row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
-                if matches!(session, "imported-missing-part" | "imported-mixed") {
-                    row["parts"]
-                        .as_array_mut()
-                        .unwrap()
-                        .push(serde_json::json!({"digest":session.to_owned()+"-extra"}));
-                }
-                if session == "imported-mixed" {
-                    db.execute("INSERT INTO contents(content_sha256,payload) VALUES(?,?)", params![
-                        session.to_owned()+"-extra",br#"{"kind":"input","content":{"text":"caption","attachments":["photo"]}}"#.as_slice()
-                    ]).unwrap();
-                }
-                db.execute(
-                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                    params![
-                        part,
-                        br#"{"kind":"input","content":{"text":"original text"}}"#.as_slice()
-                    ],
-                )
-                .unwrap();
-                db.execute(
-                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
-                    params![message, serde_json::to_vec(&row).unwrap()],
-                )
-                .unwrap();
-                db.execute("INSERT INTO agent_history_snapshot_entries(snapshot,ordinal,kind,position,entry_json)
-                        VALUES(?1,0,'imported',0,json_object('message',json_object('digest',?2)))",
-                        params![session,message]).unwrap();
-            }
-        }
-        migrate(&db, i64::MAX);
-        for session in [
-            "plain",
-            "archive",
-            "unknown",
-            "imported-user",
-            "imported-opaque",
-            "imported-missing-part",
-            "imported-mixed",
-        ] {
-            let reusable = matches!(session, "plain" | "imported-user");
-            let shared: bool = db
-                .query_row(
-                    "SELECT unmarked_replay_shared FROM agent_run_specs WHERE run=?",
-                    [session],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(shared, reusable, "{session}");
-            let key = crate::memory::reads::ExternalConversation(session.into())
-                .execute(&db)
-                .unwrap();
-            if reusable {
-                assert_eq!(key, session);
-            } else {
-                assert_eq!(key, format!("memory/0/{session}"));
-            }
-        }
-    }
-
-    #[test]
     fn read_continuations_are_indexed_only_after_upgrade() {
         use maka_agent_facts::read::ReadInput;
         let dir = tempfile::tempdir().unwrap();
@@ -927,31 +780,6 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()
         };
-        assert_eq!(
-            rows("SELECT run FROM agent_memory_history_reads WHERE revision < 0 ORDER BY run"),
-            ["later", "run"]
-        );
-        let external_key = |session: &str| {
-            crate::memory::reads::ExternalConversation(session.into())
-                .execute(&db)
-                .unwrap()
-        };
-        assert_eq!(external_key("chat"), "memory/0/chat");
-        assert_eq!(external_key("other"), "other");
-        // A post-upgrade reader can observe a pre-index source before its assertion is retired.
-        db.execute_batch(r#"INSERT INTO agent_memory_history_reads SELECT 'clean',revision FROM agent_memory_visibility;
-            INSERT INTO agent_memories VALUES('owner','personal','entry',1,1,'user_recall','active',0,0);
-            INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
-            VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
-            INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
-            '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"fact-1","itemIndex":0,"start":0,"end":4}}','source');
-            UPDATE agent_memory_versions SET disposition='suppressed' WHERE id='entry';"#).unwrap();
-        assert_eq!(
-            rows(
-                "SELECT h.run FROM agent_memory_history_reads h JOIN agent_memory_visibility v ON h.revision <> v.revision WHERE h.run='clean'"
-            ),
-            ["clean"]
-        );
         assert_eq!(
             rows("SELECT tool_use_id FROM agent_memory_recall_calls ORDER BY sequence"),
             ["7"]

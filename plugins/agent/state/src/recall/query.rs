@@ -25,10 +25,10 @@ const ORIGINAL: &str = "LEFT JOIN agent_session_history h ON h.sequence=d.sequen
 // contribute an anchor or adjacent text to a different model conversation.
 const SHARED_CONTEXT: &str = r#"CASE WHEN d.role='"compaction"' THEN EXISTS (
  SELECT 1 FROM contents b WHERE b.content_sha256=d.references_json->>'$[1].digest' AND
- (b.payload->>'memoryReplay'='shared' OR (b.payload->>'memoryReplay' IS NULL AND EXISTS (
-  SELECT 1 FROM agent_run_specs r WHERE r.run=coalesce(b.payload->>'$.summaryOrigin.run',d.run)
-  AND r.unmarked_replay_shared=1 AND r.owner=d.owner AND r.session=d.session
- )))) ELSE 1 END"#;
+ (b.payload->>'memoryReplay'='shared' OR NOT EXISTS (
+  SELECT 1 FROM agent_memory_tool_inputs i
+  WHERE i.run=coalesce(b.payload->>'$.memoryReplay.run',b.payload->>'$.summaryOrigin.run',d.run)
+ ))) ELSE 1 END"#;
 const COLUMNS: &str = concat!(
     "d.message,d.sequence,d.ordinal,d.run,d.turn,d.at,d.role,d.body,d.attachments,d.references_json,d.fields_json,d.origin_json,
  (SELECT json_group_array(json_array(start,end)) FROM (",

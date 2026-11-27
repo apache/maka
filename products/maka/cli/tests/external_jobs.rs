@@ -1119,10 +1119,6 @@ async fn run_case(crash: bool) {
                 confirmed_task(&a_facts,&a_bound["task"]); confirmed_task(&b_facts,&b_bound["task"]);
                 confirmed_effect(&a_facts,&a_bound["task"],&effect,&title,&session);
                 assert!(!b_facts.iter().any(|f| f["kind"] == "external_effect"));
-                // Reopen with the v53 migration outcome for A and an unaffected journal for B.
-                rusqlite::Connection::open(rig.sandbox.root.join("runtime-rust.sqlite"))
-                    .and_then(|db| db.execute("INSERT INTO agent_memory_external_epochs(session) VALUES(?)", [&session]))
-                    .map_err(|e| e.to_string())?;
                 let (mut reopened, continuation) = phase("reopen Host before the next native turn",rig.start()).await?;
                 assert_ne!(anchor.epoch(),reopened.epoch());
                 let resumed_run = phase("send a new turn on the same Maka session",
@@ -1148,18 +1144,7 @@ async fn run_case(crash: bool) {
                     assert!(chunks.iter().any(|chunk| chunk["timing"]["executorUsage"]["totalTokens"] == expected),
                         "missing per-turn usage {expected}: {history}");
                 }
-                let rotated_run = send_native(&continuation, &session, "E", &title, false).await?;
-                let rotated = rig.controller.event("E", "ready").await?;
-                assert_ne!(rotated["thread"], ready["thread"]);
-                let pid = rotated["pid"].as_u64().unwrap();
-                rig.controller.send(pid, json!({"action":"complete"}))?;
-                terminal_state(&continuation, &session, &rotated_run, "completed").await?;
-                let wire = rig.transcript(pid).await?;
-                assert!(wire.input.iter().any(|row| row["method"] == "thread/start"));
-                assert!(!wire.input.iter().any(|row| row["method"] == "thread/resume"));
-                let turn = wire.input.iter().find(|row| row["method"] == "turn/start").unwrap();
-                assert!(turn["params"]["input"][0]["text"].as_str().unwrap().contains("Read the prior conversation context from this file"));
-                rig.controller.assert_submissions(4,1);
+                rig.controller.assert_submissions(3,1);
                 phase("close resumed SDK reader",continuation.close()).await?;
                 rig.clients.pop();
                 phase("reopened Host quit/wait",rig.hosts[1].quit(&mut reopened)).await?;

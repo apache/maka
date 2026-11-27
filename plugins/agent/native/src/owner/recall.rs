@@ -92,33 +92,7 @@ impl Recall {
         }
         Ok(())
     }
-    async fn history_read_start(&self, call: &Scope) -> Result<Option<u64>, ToolError> {
-        if call.identity.agent().is_none() {
-            return Ok(None);
-        }
-        self.data(call)?
-            .query(maka_agent_state::memory::reads::SearchVisibility)
-            .await
-            .map(Some)
-            .map_err(failed)
-    }
-    async fn record_history_read(
-        &self,
-        call: &Scope,
-        sources: maka_agent_state::memory::reads::HistorySources,
-        before: Option<u64>,
-    ) -> Result<(), ToolError> {
-        if call.identity.agent().is_some() {
-            self.authority
-                .get()
-                .and_then(std::sync::Weak::upgrade)
-                .ok_or_else(|| failed("Memory owner unavailable"))?
-                .record_history_sources(call, sources, before)
-                .await
-                .map_err(failed)?;
-        }
-        Ok(())
-    }
+
     async fn worker<T: Send + 'static>(
         &self,
         call: &Scope,
@@ -140,9 +114,8 @@ impl Recall {
         before: usize,
         after: usize,
         transcript_only: bool,
-    ) -> Result<(indexed::Batch, Option<u64>), ToolError> {
+    ) -> Result<indexed::Batch, ToolError> {
         self.check(call).await?;
-        let before_visibility = self.history_read_start(call).await?;
         let index = self.index(call)?;
         let exclude = if let Some(execution) = call.identity.agent() {
             Some(index.exclusion(execution.run_id).await.map_err(failed)?)
@@ -176,30 +149,9 @@ impl Recall {
                 },
             };
             recall.check(&scope).await?;
-            Ok((found, before_visibility))
+            Ok(found)
         })
         .await
-    }
-    async fn record_returned_sessions<'a>(
-        &self,
-        call: &Scope,
-        sessions: impl Iterator<Item = &'a str>,
-        before: Option<u64>,
-    ) -> Result<(), ToolError> {
-        if before.is_some() {
-            let sessions: std::collections::BTreeSet<_> = sessions.map(str::to_owned).collect();
-            if !sessions.is_empty() {
-                self.record_history_read(
-                    call,
-                    maka_agent_state::memory::reads::HistorySources::Sessions(
-                        sessions.into_iter().collect(),
-                    ),
-                    before,
-                )
-                .await?;
-            }
-        }
-        Ok(())
     }
     async fn facts(
         &self,
@@ -299,7 +251,7 @@ impl Recall {
         call: &Scope,
     ) -> Result<RecallPage, String> {
         query.validate()?;
-        let (found, before_visibility) = self
+        let found = self
             .batch(call, &query, 0, 0, true)
             .await
             .map_err(|e| e.to_string())?;
@@ -367,16 +319,6 @@ impl Recall {
             .await
             .map_err(|e| e.to_string())?;
         self.check(call).await.map_err(|e| e.to_string())?;
-        self.record_returned_sessions(
-            call,
-            titles
-                .iter()
-                .map(|s| s.id.as_str())
-                .chain(passages.iter().map(|p| p.session.id.as_str())),
-            before_visibility,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
         Ok(RecallPage {
             facts: facts.facts,
             next_facts_after: facts.next,
@@ -393,7 +335,7 @@ impl Recall {
         before: usize,
         after: usize,
     ) -> Result<search::ResultSet, ToolError> {
-        let (found, before_visibility) = self.batch(call, query, before, after, false).await?;
+        let found = self.batch(call, query, before, after, false).await?;
         let mut passages = Vec::with_capacity(found.hits.len());
         for hit in found.hits {
             let address = Self::address(&hit.anchor);
@@ -412,12 +354,6 @@ impl Recall {
         let facts = self.facts(call, query).await;
         let mut gaps = found.gaps;
         gaps.extend(facts.gaps);
-        self.record_returned_sessions(
-            call,
-            passages.iter().map(|p| p.session_id.as_str()),
-            before_visibility,
-        )
-        .await?;
         Ok(search::ResultSet {
             facts: facts.facts,
             next_facts_after: facts.next,
@@ -432,7 +368,6 @@ impl Recall {
         more: search::More,
     ) -> Result<search::ResultSet, ToolError> {
         self.check(call).await?;
-        let before_visibility = self.history_read_start(call).await?;
         let index = self.index(call)?;
         let exclude = if let Some(execution) = call.identity.agent() {
             Some(index.exclusion(execution.run_id).await.map_err(failed)?)
@@ -463,12 +398,6 @@ impl Recall {
                 Ok(context)
             })
             .await?;
-        self.record_history_read(
-            call,
-            maka_agent_state::memory::reads::HistorySources::session(&context.session.metadata.id),
-            before_visibility,
-        )
-        .await?;
         let address = Self::address(&context.anchor);
         Ok(search::ResultSet {
             facts: vec![],

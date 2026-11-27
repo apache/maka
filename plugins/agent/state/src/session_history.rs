@@ -314,8 +314,10 @@ impl Query for MaskTerminalDiagnostic {
     }
 }
 
-/// Apply the authority frozen in the request or checkpoint. Only live history
-/// can attest to unmarked bytes, and only within its own namespace.
+/// Check whether a request or checkpoint may be replayed by `target`.
+/// Shared records are always reusable; Run-scoped or legacy unrecorded ones
+/// check whether the producer actually consumed any memory facts and whether
+/// those facts remain active and authorized for `target`.
 pub async fn permits_memory_replay(
     live: Option<&SessionHistory>,
     recorded: maka_agent_facts::memory::MemoryReplay,
@@ -325,7 +327,21 @@ pub async fn permits_memory_replay(
     use maka_agent_facts::memory::MemoryReplay;
     match recorded {
         MemoryReplay::Shared => Ok(true),
-        MemoryReplay::Run(owner) => Ok(Some(owner) == target),
+        MemoryReplay::Run(owner) => {
+            if Some(owner) == target {
+                return Ok(true);
+            }
+            let Some(history) = live else {
+                return Ok(false);
+            };
+            history
+                .data
+                .query(crate::memory::reads::PermitsReplay {
+                    producer: owner,
+                    target,
+                })
+                .await
+        }
         MemoryReplay::Unrecorded => {
             let Some(history) = live else {
                 return Ok(false);
@@ -335,11 +351,7 @@ pub async fn permits_memory_replay(
             }
             history
                 .data
-                .query(crate::memory::reads::OriginalReplay {
-                    run: producer,
-                    owner: history.namespace.owner.clone(),
-                    session: history.namespace.session.clone(),
-                })
+                .query(crate::memory::reads::PermitsReplay { producer, target })
                 .await
         }
     }

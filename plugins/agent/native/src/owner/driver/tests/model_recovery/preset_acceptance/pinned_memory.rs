@@ -781,7 +781,8 @@ async fn expect_revoked(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recall_without_memory_only_revokes_a_returned_source() -> TestResult<()> {
+async fn archiving_read_source_preserves_run_and_reuses_compaction_checkpoint_across_runs()
+-> TestResult<()> {
     let mut rig = Rig::new()?;
     let mut provider = Provider::start().await?;
     let base = rig.directory.path().to_owned();
@@ -811,7 +812,6 @@ async fn recall_without_memory_only_revokes_a_returned_source() -> TestResult<()
     .await?;
     let source = create(client, &base, &model, None).await?;
     let reader = create(client, &base, &model, None).await?;
-    let unrelated = create(client, &base, &model, None).await?;
     let source = source["id"].as_str().unwrap();
     let reader = reader["id"].as_str().unwrap();
     let marker = "Clementine field notes";
@@ -825,44 +825,71 @@ async fn recall_without_memory_only_revokes_a_returned_source() -> TestResult<()
     let (_, reply) = provider.next().await?;
     reply.reply_text("Filed.");
     quiescent_message(client, source, &sent["messageId"]).await?;
+
+    // Run 1 reads another session via Recall, then that source session is archived mid-Run.
+    // Archiving must not kill Run 1, and Run 1's compaction checkpoint must remain reusable by Run 2.
     let sent = call(
         client,
         "agent",
         "send",
-        json!({"sessionId":reader,"message":"Find the field notes"}),
+        json!({"sessionId":reader,"message":"Find the field notes and compact"}),
     )
     .await?;
     let (_, reply) = provider.next().await?;
     reply.send_plan(tool_response("Recall", json!({"terms":["clementine"]})));
     let (wire, reply) = provider.next().await?;
     assert!(wire["messages"].to_string().contains(marker), "{wire}");
-    let archived=call(client,"agent","changeSession",json!({
-        "sessionId":unrelated["id"], "expectedRevision":unrelated["revision"], "action":"archive"
-    })).await?;
-    assert_eq!(archived["kind"], "changed", "{archived}");
-    reply.send_plan(TurnPlan::http_error(
-        HttpErrorSpec::plain(429, "rate limited").with_header("retry-after", "0"),
-    ));
-    let (retry, reply) = provider.next().await?;
-    assert_eq!(retry["messages"], wire["messages"]);
     let owner = rig.captured.lock().unwrap().clone().unwrap();
-    let archived=call(client,"agent","changeSession",json!({
-        "sessionId":source, "expectedRevision":owner.session(source).await?.revision, "action":"archive"
-    })).await?;
-    assert_eq!(archived["kind"], "changed", "{archived}");
-    reply.reply_tool_call(
-        "lookup-again",
-        "Recall",
-        json!({"terms":["unmatchedsecondlookup"]}),
-    );
-    expect_revoked(
+    let archived = call(
         client,
-        &mut provider,
-        reader,
-        &sent["messageId"],
-        "memory tool input revoked",
+        "agent",
+        "changeSession",
+        json!({
+            "sessionId":source,
+            "expectedRevision":owner.session(source).await?.revision,
+            "action":"archive"
+        }),
     )
     .await?;
+    assert_eq!(archived["kind"], "changed", "{archived}");
+
+    // Continue Run 1 with CompactContext; Run 1 must survive the archive and finish cleanly.
+    reply.send_plan(tool_response("CompactContext", json!({})));
+    let (_, summary_reply) = provider.next().await?;
+    let summary_text = "Compacted checkpoint after reading field notes.";
+    summary_reply.reply_text(summary_text);
+    let (post_compact_wire, post_compact_reply) = provider.next().await?;
+    assert!(
+        post_compact_wire["messages"]
+            .to_string()
+            .contains(summary_text),
+        "{post_compact_wire}"
+    );
+    post_compact_reply.reply_text("Run 1 finished after compaction.");
+    quiescent_message(client, reader, &sent["messageId"]).await?;
+
+    // Run 2 sends a short follow-up: it must reuse Run 1's compacted checkpoint directly
+    // instead of discarding it and replaying raw pre-compaction history.
+    let followup = call(
+        client,
+        "agent",
+        "send",
+        json!({"sessionId":reader,"message":"Continue"}),
+    )
+    .await?;
+    let (run2_wire, run2_reply) = provider.next().await?;
+    let run2_body = run2_wire["messages"].to_string();
+    assert!(
+        run2_body.contains(summary_text),
+        "Run 2 dropped Run 1's compaction checkpoint: {run2_wire}"
+    );
+    assert!(
+        !run2_body.contains(marker),
+        "Run 2 replayed pre-compaction raw history instead of checkpoint: {run2_wire}"
+    );
+    run2_reply.reply_text("Continued from checkpoint.");
+    quiescent_message(client, reader, &followup["messageId"]).await?;
+    assert!(provider.requests.try_recv().is_err());
     assert!(rig.finish().await.is_empty());
     Ok(())
 }

@@ -133,11 +133,7 @@ impl RunAccess {
             .await
             .map_err(memory_read_failure)?;
         let spec = self.spec();
-        if spec.memory_projection.is_none()
-            && !reads.facts
-            && !(reads.history
-                && spec.memory_admission == maka_agent_facts::memory::MemoryAdmission::Enabled)
-        {
+        if spec.memory_projection.is_none() && !reads.facts {
             return Ok(());
         }
 
