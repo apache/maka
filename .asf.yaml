@@ -1,0 +1,6 @@
+publish:
+  whoami: asf-site
+
+staging:
+  profile: ~
+  autostage: site/*
