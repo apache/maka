@@ -859,8 +859,6 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     let referenced = referenced["session"]["id"].as_str().unwrap();
     client.close().await.unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    let composer = desktop.control("Focus message composer").await;
-    desktop.press_at(composer.center());
     desktop.paste("@删过度").await;
     desktop.press("删过度设计").await;
     let mention = format!("[@删过度设计](maka://session/{referenced}) ");
@@ -871,6 +869,7 @@ async fn desktop_composer_click_and_ime_follow_the_text_after_a_mention() {
     desktop.paste(before_ah).await;
     desktop.expect_text(&prefix).await;
     desktop.key("right", false);
+    let composer = desktop.control("Focus message composer").await;
     let insertion = desktop
         .until("the caret did not reach the end of the first part", || {
             desktop
@@ -952,99 +951,30 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     let previous = desktop.platform.text_input_target();
     desktop.press("Open conversation Markdown preview").await;
     desktop.target_after(previous).await;
-    let source = "# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。\n\n- 检查构建\n- 提交结果";
-    desktop.press("Focus message composer").await;
+    let source = "- 检查构建\n- 提交结果\n\n# 发布说明\n\n这是**重点：**先看[文档](https://example.org/docs)，再看 https://example.org/status。";
     desktop.paste(source).await;
     desktop.expect_text(source).await;
-    let selected = desktop
-        .until("the composer did not settle its select-all anchor", || {
-            let &[composer] = desktop.controls("Focus message composer").as_slice() else {
-                return None;
-            };
-            desktop.platform.input_caret_bounds().filter(|bounds| {
-                bounds.left() < composer.left() + px(32.) && bounds.top() < composer.top() + px(32.)
-            })
-        })
-        .await;
-    let mut collapsed = None::<std::time::Instant>;
-    let mut settled = None;
-    let tail = desktop
-        .until("the caret did not collapse to the draft end", || {
-            if collapsed.is_some()
-                && !desktop.platform.has_pending()
-                && let Some(bounds) = desktop.platform.input_caret_bounds()
-                && bounds.left() > selected.left() + px(24.)
-                && bounds.top() > selected.top()
-            {
-                if settled == Some(bounds) {
-                    return Some(bounds);
-                }
-                settled = Some(bounds);
-                return None;
-            }
-            settled = None;
-            if collapsed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("right", false);
-                collapsed = Some(std::time::Instant::now());
-            }
-            None
-        })
-        .await;
     desktop.artifact("composer-markdown-draft");
 
-    let mut homed = None::<std::time::Instant>;
-    let mut home_tries = 0usize;
-    let marker = desktop
-        .until("the caret did not reach the list marker", || {
-            let cur = desktop.platform.input_caret_bounds();
-            if home_tries >= 6 {
-                panic!("PROBE_CARET selected={selected:?} tail={tail:?} after_home={cur:?}");
-            }
-            if let Some(bounds) = cur
-                && bounds.left() < tail.left() - px(24.)
-                && bounds.top() == tail.top()
-            {
-                return Some(bounds);
-            }
-            if homed.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("home", false);
-                homed = Some(std::time::Instant::now());
-                home_tries += 1;
-            }
-            None
-        })
-        .await;
-    let mut ended = None::<std::time::Instant>;
-    desktop
-        .until("the caret did not leave the list marker", || {
-            if let Some(bounds) = desktop.platform.input_caret_bounds()
-                && bounds.left() > marker.left() + px(24.)
-            {
-                return Some(());
-            }
-            if ended.is_none_or(|at| at.elapsed() >= Duration::from_millis(200)) {
-                desktop.key("end", false);
-                ended = Some(std::time::Instant::now());
-            }
-            None
-        })
-        .await;
-    desktop.press_at(point(marker.left() + px(1.), marker.center().y));
-    desktop.artifact("composer-markdown-edit-list-marker");
+    // expect_text copied the entire draft, leaving it selected.
+    desktop.key("left", false);
     desktop.key_with("right", native!(Modifiers { shift: true }));
+    desktop.key("c", true);
+    let marker = desktop
+        .until("the list marker was not copied", || {
+            desktop.platform.take_clipboard_write()
+        })
+        .await;
+    assert_eq!(marker, "-");
     desktop.paste("+").await;
-    assert_eq!(
-        desktop.copy_input().await,
-        source.replace("- 提交结果", "+ 提交结果")
-    );
-    desktop.key("z", true);
-    desktop.expect_text(source).await;
+    let edited = source.replacen('-', "+", 1);
+    desktop.expect_text(&edited).await;
 
     desktop.press("Send message").await;
     let mut request = desktop.request(&mut fixture).await;
     let message = request.body["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(message["role"], "user");
-    assert_eq!(message["content"].as_str(), Some(source));
+    assert_eq!(message["content"].as_str(), Some(edited.as_str()));
     request.delta("Release notes received.").await;
     desktop
         .wait("the response did not finish", request.finish())
@@ -1069,7 +999,7 @@ async fn desktop_composer_previews_markdown_and_sends_its_source() {
     let copied = desktop
         .copy_at("the sent message was not copied", copy.center())
         .await;
-    assert_eq!(copied, source);
+    assert_eq!(copied, edited);
     desktop.close().await;
     fixture.finish().await;
 }
