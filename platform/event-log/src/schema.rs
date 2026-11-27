@@ -111,8 +111,10 @@ pub(crate) fn initialize_connection(
         connection.execute_batch("PRAGMA application_id = 1296124754")?;
     }
     crate::migration::run(connection, catalog)?;
+    // Every commit rewrites the same hot pages, so copy them back every 4,000 pages instead of
+    // 1,000. 4,000 pages of 4 KiB still fit within journal_size_limit.
     connection.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA journal_size_limit = 16777216;",
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE; PRAGMA journal_size_limit = 16777216; PRAGMA wal_autocheckpoint = 4000;",
     )?;
     Ok(())
 }
