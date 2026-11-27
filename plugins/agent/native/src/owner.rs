@@ -92,6 +92,7 @@ mod system_permission;
 mod title;
 mod todo;
 mod work;
+pub(crate) mod worker_progress;
 mod workspace_change;
 mod worktrees;
 use maka_agent_facts::composition::SourceKind;
@@ -248,6 +249,7 @@ pub(crate) struct Owner {
     pub(super) services: maka_host_runtime::application::NativeServices,
     wake_notify: tokio::sync::Notify,
     physical_changes: tokio::sync::watch::Sender<()>,
+    pub(crate) progress: worker_progress::Registry,
     pub recall: Arc<recall::Recall>,
     scheduler: Arc<scheduler::Scheduler>,
     todo: Arc<todo::Todo>,
@@ -707,6 +709,7 @@ impl Owner {
             quick_answer: Mutex::default(),
             todo,
             bot,
+            progress: Default::default(),
             recap_storage,
             scheduler,
             recall,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Clipboard, safeAreaInsets, Scroll, Text, View, token } from 'nsh';
+import { Clipboard, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { Input, NavPage } from 'nsh/base';
 import { isAvailable } from 'nsh/mobile';
 import { pathLabel } from '../../bridge';
@@ -39,6 +39,15 @@ import { ActionButton, BannerNotice, Icon, InsetGroup, ScreenHeader } from '../.
 export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirmed: () => void }) {
   const insets = safeAreaInsets();
   const ticket = () => currentPendingTicket();
+  const editedName = signal<string | null>(null);
+  const computerName = () => editedName() ?? ticket()?.hostName ?? '';
+  const nameInputStyle = {
+    minHeight: 46,
+    paddingHorizontal: 16,
+    ...type.body,
+    color: token('foreground'),
+    backgroundColor: 'transparent',
+  } as const;
 
   const handleCancel = async () => {
     if (isPairingBusy()) return;
@@ -47,7 +56,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
   };
 
   const handleConfirm = async () => {
-    const ok = await confirmPendingPairing();
+    const ok = await confirmPendingPairing(editedName());
     if (ok) props.onConfirmed();
   };
 
@@ -129,7 +138,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
                   textAlign: 'center',
                 }}
               >
-                {ticket()!.hostName}
+                {computerName().trim() || tr('Computer')}
               </Text>
               <Text
                 style={{
@@ -138,7 +147,7 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
                   textAlign: 'center',
                 }}
               >
-                {pathLabel(ticket()!.pathSummary)}
+                {[ticket()!.platform, pathLabel(ticket()!.pathSummary)].filter(Boolean).join(' · ')}
               </Text>
             </View>
 
@@ -185,6 +194,16 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
               </View>
             </InsetGroup>
 
+            <InsetGroup header={tr('Computer name')}>
+              <Input
+                accessibilityLabel={tr('Computer name')}
+                value={computerName()}
+                disabled={isPairingBusy()}
+                onChange={({ value }) => editedName.set(value)}
+                style={nameInputStyle}
+              />
+            </InsetGroup>
+
             {/* Editable iPhone Label */}
             <InsetGroup
               header={tr('This iPhone')}
@@ -192,32 +211,14 @@ export function ConfirmDeviceScreen(props: { onCancelled: () => void; onConfirme
                 'A friendly label to help identify this iPhone in your computer settings.',
               )}
             >
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  minHeight: 46,
-                  paddingHorizontal: 16,
-                  gap: 12,
-                }}
-              >
-                <Text style={{ ...type.body, color: token('foreground'), width: 100 }}>
-                  {tr('Device name')}
-                </Text>
-                <Input
-                  accessibilityLabel={tr('Device name')}
-                  value={currentDeviceLabel()}
-                  placeholder={tr('iPhone')}
-                  onChange={({ value }) => setDeviceLabel(value)}
-                  style={{
-                    flex: 1,
-                    ...type.body,
-                    color: token('foreground'),
-                    textAlign: 'right',
-                    backgroundColor: 'transparent',
-                  }}
-                />
-              </View>
+              <Input
+                accessibilityLabel={tr('Device name')}
+                value={currentDeviceLabel()}
+                placeholder={tr('iPhone')}
+                disabled={isPairingBusy()}
+                onChange={({ value }) => setDeviceLabel(value)}
+                style={nameInputStyle}
+              />
             </InsetGroup>
 
             <If when={currentPairingError()}>

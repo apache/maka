@@ -30,7 +30,7 @@ import {
   type AgentSessionPage,
   type AgentSession,
 } from '../bridge';
-import { activeHostInfo, connectedHosts, showToast } from './hostPool';
+import { activeHostInfo, connectedHosts, savedHosts, showToast } from './hostPool';
 import { hapticNotification } from './preferences';
 import { refreshAllSessions } from './sessions';
 import { catalogInput, readCatalog } from './sessionCatalog';
@@ -71,8 +71,10 @@ export const inboxError = computed(() => {
 export const allInboxItems = computed<InboxItem[]>(() => {
   const map = itemsByHost();
   const out: InboxItem[] = [];
-  for (const list of Object.values(map)) {
-    for (const item of list) out.push(item);
+  for (const { rootId, hostName } of savedHosts()) {
+    for (const item of map[rootId] ?? []) {
+      out.push(item.hostName === hostName ? item : { ...item, hostName });
+    }
   }
   out.sort((a, b) => (b.record?.createdAt ?? 0) - (a.record?.createdAt ?? 0));
   return out;

@@ -33,7 +33,7 @@ pub(super) fn executor_tool_id(run: RunId, task: ExternalTaskId, id: &str) -> St
     maka_agent_facts::tool_call::tool_use_id(run, &format!("{task}:{id}"))
 }
 
-pub(super) fn executor_tool_display(
+pub(crate) fn executor_tool_display(
     name: &str,
     input: &serde_json::Value,
 ) -> (

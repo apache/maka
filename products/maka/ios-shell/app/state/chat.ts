@@ -18,10 +18,6 @@
  */
 
 import { approvalOutcome, approvalRejectionError } from '../approval';
-import type {
-  AgentInteractionResult,
-  AgentSendResult,
-} from '../../../../../packages/plugin-sdk/src/generated/runtime';
 import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
@@ -33,12 +29,19 @@ import {
   type AgentHistoryChunk,
   type AgentHistoryPage,
   type AgentInteractionRecord,
+  type AgentInteractionResult,
   type AgentInteractionSummary,
   type AgentModelChoice,
+  type AgentMetadataResult,
+  type AgentQueueMutationResult,
   type AgentObservation,
   type AgentQueue,
   type AgentRoomMessage,
   type AgentSession,
+  type AgentSendResult,
+  type HistoryOrder,
+  type HistoryRowAddress,
+  type QuoteRef,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
@@ -78,7 +81,10 @@ export const displayModelKey = (backend: AgentBackendPreference) =>
     ? JSON.stringify(['model', backend.connectionId, backend.modelId])
     : backendKey(backend);
 
-export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
+export function compareHistoryRows(
+  a: Pick<AgentHistoryChunk, 'order'>,
+  b: Pick<AgentHistoryChunk, 'order'>,
+): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
     const order = a.order.path[i] - b.order.path[i];
     if (order) return order;
@@ -90,34 +96,221 @@ export function conversationKey(rootId: string, sessionId: string): string {
   return rootId + '::' + sessionId;
 }
 
-const draftMap = signal<Record<string, { text: string }>>({});
-const scrollOffsetMap = new Map<string, number>();
-
-export function getDraft(rootId: string, sessionId: string): string {
-  return draftMap()[conversationKey(rootId, sessionId)]?.text ?? '';
+export interface HistoryRow {
+  key: string;
+  first: AgentHistoryChunk;
+  last: AgentHistoryChunk;
+  text: string;
 }
 
-export function setDraft(rootId: string, sessionId: string, value: string) {
-  const key = conversationKey(rootId, sessionId);
-  draftMap.update((prev) =>
-    (prev[key]?.text ?? '') === value ? prev : { ...prev, [key]: { text: value } },
+export function assembleHistoryRows(chunks: readonly AgentHistoryChunk[]): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (const chunk of chunks) {
+    const row = rows.at(-1);
+    if (row && chunk.offset > 0 && compareHistoryRows(row.first, chunk) === 0) {
+      row.text += chunk.text;
+      row.last = chunk;
+    } else {
+      rows.push({
+        key: chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex),
+        first: chunk,
+        last: chunk,
+        text: chunk.text,
+      });
+    }
+  }
+  return rows;
+}
+
+export function historyAddressKey(position: HistoryRowAddress): string {
+  switch (position.kind) {
+    case 'live':
+      return JSON.stringify([position.kind, position.sequence, position.fact, position.itemIndex]);
+    case 'snapshot':
+      return JSON.stringify([
+        position.kind,
+        position.path,
+        position.snapshot,
+        position.sequence,
+        position.fact,
+        position.itemIndex,
+      ]);
+    case 'imported':
+      return JSON.stringify([
+        position.kind,
+        position.path,
+        position.snapshot,
+        position.messageOrdinal,
+        position.partOrdinal,
+      ]);
+  }
+}
+
+export function historyQuote(row: HistoryRow, text: string): QuoteRef {
+  const { messageId, turnId, role } = row.first;
+  return {
+    text: trimHostWhitespace(text),
+    label: role === 'user' ? tr('You') : 'Maka',
+    sourceMessageId: messageId ?? undefined,
+    sourceTurnId: turnId ?? undefined,
+  };
+}
+
+export function isCompleteHistoryRow(row: HistoryRow): boolean {
+  const { last } = row;
+  return (
+    row.first.offset === 0 && last.offset + Buffer.byteLength(last.text, 'utf8') === last.totalBytes
   );
 }
 
-export function appendQuoteToDraft(
+export const quoteLimit = 16;
+
+export interface SideAnchor {
+  position: HistoryRowAddress;
+  order: HistoryOrder;
+}
+
+export interface DraftQuote {
+  id: number;
+  sourceKey: string;
+  reference: QuoteRef;
+  anchor?: SideAnchor;
+}
+
+export interface DraftLink {
+  id: string;
+  title: string;
+}
+
+interface Draft {
+  // Text and quotes can be edited independently while a snapshot is being sent.
+  readonly input: { readonly text: string };
+  readonly quotes: readonly DraftQuote[];
+  readonly links: readonly DraftLink[];
+  readonly sending: boolean;
+}
+
+const emptyDraft: Draft = { input: { text: '' }, quotes: [], links: [], sending: false };
+const draftMap = signal<Record<string, Draft>>({});
+const scrollOffsetMap = new Map<string, number>();
+let nextQuoteId = 0;
+
+export function getDraft(rootId: string, sessionId: string): Draft {
+  return draftMap()[conversationKey(rootId, sessionId)] ?? emptyDraft;
+}
+
+function updateDraft(rootId: string, sessionId: string, update: (draft: Draft) => Draft) {
+  const key = conversationKey(rootId, sessionId);
+  draftMap.update((prev) => {
+    const current = prev[key] ?? emptyDraft;
+    const next = update(current);
+    if (next === current) return prev;
+    const drafts = { ...prev };
+    if (next.input.text || next.quotes.length || next.links.length || next.sending)
+      drafts[key] = next;
+    else delete drafts[key];
+    return drafts;
+  });
+}
+
+export function setDraft(rootId: string, sessionId: string, text: string) {
+  updateDraft(rootId, sessionId, (draft) =>
+    text === draft.input.text ? draft : { ...draft, input: { text } },
+  );
+}
+
+export function seedSideDraft(
   rootId: string,
   sessionId: string,
-  filePath: string,
-  lineNumber: number,
-  snippet?: string,
+  text: string,
+  quotes: readonly DraftQuote[],
 ) {
-  const tick = String.fromCharCode(96);
-  const quoteHeader = '> ' + tick + filePath + ':' + String(lineNumber) + tick;
-  const quoteLine = snippet?.trim() ? quoteHeader + '\n> ' + snippet.trim() : quoteHeader;
-  const current = getDraft(rootId, sessionId);
-  const next =
-    current.trim().length > 0 ? current.trimEnd() + '\n\n' + quoteLine + '\n' : quoteLine + '\n';
-  setDraft(rootId, sessionId, next);
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, input: { text }, quotes }));
+}
+
+export function appendSideLink(rootId: string, mainId: string, side: DraftLink) {
+  updateDraft(rootId, mainId, (draft) =>
+    draft.links.some(({ id }) => id === side.id)
+      ? draft
+      : { ...draft, links: [...draft.links, { id: side.id, title: side.title }] },
+  );
+}
+
+export function removeDraftLink(rootId: string, sessionId: string, id: string) {
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    links: draft.links.filter((link) => link.id !== id),
+  }));
+}
+
+function sessionInvocation({ id, title }: DraftLink): string {
+  // Same inline session reference as Desktop's sessionInvocation.
+  const label = (title || id).replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').replace(/[\\\]/]/g, '\\$&');
+  return `[@${label}](maka://session/${id})`;
+}
+
+// Rust str::trim uses Unicode White_Space, not JavaScript's trim set.
+export function trimHostWhitespace(text: string): string {
+  return text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+}
+
+export function draftQuote(
+  sourceKey: string,
+  reference: QuoteRef,
+  anchor?: SideAnchor,
+): DraftQuote {
+  return { id: ++nextQuoteId, sourceKey, reference, anchor };
+}
+
+export function appendDraftQuote(
+  rootId: string,
+  sessionId: string,
+  sourceKey: string,
+  reference: QuoteRef,
+  anchor?: SideAnchor,
+): boolean {
+  const text = trimHostWhitespace(reference.text);
+  if (!text) return false;
+  const label = trimHostWhitespace(reference.label ?? '') || undefined;
+  const { quotes } = getDraft(rootId, sessionId);
+  if (quotes.length >= quoteLimit) {
+    showToast(tr('Quote limit reached ({count})', { count: quoteLimit }));
+    return false;
+  }
+  if (quotes.some((quote) => quote.sourceKey === sourceKey && quote.reference.text === text)) {
+    showToast(tr('Already quoted'));
+    return false;
+  }
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    quotes: [...draft.quotes, draftQuote(sourceKey, { ...reference, text, label }, anchor)],
+  }));
+  return true;
+}
+
+export function removeDraftQuote(rootId: string, sessionId: string, id: number) {
+  updateDraft(rootId, sessionId, (draft) => ({
+    ...draft,
+    quotes: draft.quotes.filter((quote) => quote.id !== id),
+  }));
+}
+
+export function clearDraftQuotes(rootId: string, sessionId: string) {
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, quotes: [] }));
+}
+
+export function appendFileQuote(
+  rootId: string,
+  sessionId: string,
+  path: string,
+  line: number,
+  snippet?: { side: 'old' | 'new'; text: string },
+): boolean {
+  const label = path + ':' + String(line);
+  return appendDraftQuote(rootId, sessionId, 'file:' + (snippet?.side ?? '') + ':' + label, {
+    label,
+    text: trimHostWhitespace(snippet?.text ?? '') || label,
+  });
 }
 
 export function getSavedScrollOffset(rootId: string, sessionId: string): number {
@@ -220,9 +413,98 @@ export async function fetchGitWorkspaceDiff(
   );
 }
 
+// Snapshot and consume only the submitted draft, whether this is the first side question or a normal send.
+export async function sendDraft(
+  rootId: string,
+  sessionId: string,
+  room: boolean,
+  selectedBackend: (generation: number) => Promise<AgentBackendPreference | null | false>,
+  current = () => true,
+  onError?: (message: string) => void,
+): Promise<boolean> {
+  const snapshot = getDraft(rootId, sessionId);
+  const quotes = room ? undefined : snapshot.quotes;
+  const links = room ? [] : snapshot.links;
+  const text = [trimHostWhitespace(snapshot.input.text), ...links.map(sessionInvocation)]
+    .filter(Boolean)
+    .join(' ');
+  if (snapshot.sending || (!text && !quotes?.length)) return false;
+  updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: true }));
+  const fail = (message: string) => {
+    hapticNotification('error');
+    if (current()) onError?.(message);
+    showToast(message);
+    return false;
+  };
+  try {
+    const connection = activeHostInfo(rootId);
+    if (!connection) return fail(tr('Computer is offline'));
+    const { generation } = connection;
+    let backend = room ? null : await selectedBackend(generation);
+    if (backend === false || !current()) return false;
+    if (!room && !backend && connection.endpoints.includes('settings')) {
+      const choice = await readDefaultModel(settingsRpc(rootId));
+      backend = choice ? modelBackend(choice) : null;
+    }
+    if (!current()) return false;
+    if (activeHostInfo(rootId)?.generation !== generation) return fail(tr('Computer is offline'));
+    if (!room && !backend) return fail(tr('Select model'));
+    let res: AgentSendResult;
+    try {
+      res = await hostMutate<AgentSendResult>(
+        'agent',
+        'send',
+        {
+          mentions: [],
+          replyTo: null,
+          onComplete: null,
+          ...(quotes && { quotes: quotes.map((quote) => quote.reference) }),
+          delivery: 'queue',
+          expectedRunId: null,
+          attachments: [],
+          backend,
+          sessionId,
+          message: text,
+        },
+        { rootId, generation },
+      );
+    } catch (cause) {
+      console.warn('Could not confirm send result', cause);
+      return fail(
+        tr(
+          'Could not confirm whether the message was sent. Check the conversation or queue before retrying.',
+        ),
+      );
+    }
+    if (res.kind === 'rejected' || res.kind === 'not_your_worker') {
+      console.warn('Host declined send', res.kind === 'rejected' ? res.reason : res.kind);
+      return fail(tr('Could not send the message.'));
+    }
+    const sentQuoteIds = new Set(quotes?.map((quote) => quote.id));
+    updateDraft(rootId, sessionId, (draft) => ({
+      ...draft,
+      input: draft.input === snapshot.input ? emptyDraft.input : draft.input,
+      quotes: draft.quotes.filter((quote) => !sentQuoteIds.has(quote.id)),
+      links: draft.links.filter((link) => !links.includes(link)),
+    }));
+  } catch (cause) {
+    console.warn('Could not send message', cause);
+    return fail(tr('Could not send the message.'));
+  } finally {
+    updateDraft(rootId, sessionId, (draft) => ({ ...draft, sending: false }));
+  }
+  hapticSelection();
+  void refreshHostSessions(rootId, hostById(rootId)?.hostName ?? rootId);
+  return true;
+}
+
 let watchSeq = 0;
 
-export function createConversationController(rootId: string, initialSession: AgentSession) {
+export function createConversationController(
+  rootId: string,
+  initialSession: AgentSession,
+  enabled = true,
+) {
   const sessionId = initialSession.id;
   const observed = signal<{ generation: number; value: AgentObservation } | null>(null);
   const observation = () => {
@@ -243,7 +525,6 @@ export function createConversationController(rootId: string, initialSession: Age
   const earlierGeneration = signal<number | null>(null);
   const loadingEarlier = () =>
     earlierGeneration() !== null && earlierGeneration() === activeHostInfo(rootId)?.generation;
-  const sending = signal(false);
   const modelSelection = signal<{ generation: number; done: Promise<boolean> } | null>(null);
   const selectingModel = () => {
     const pending = modelSelection();
@@ -519,76 +800,41 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  // Always uses 'queue' delivery (never implicit steer-while-running).
+  const draft = () => getDraft(rootId, sessionId);
+  const sending = () => draft().sending;
+  const hasDraftContent = () =>
+    Boolean(
+      trimHostWhitespace(draft().input.text) ||
+        (!isRoom() && (draft().quotes.length || draft().links.length)),
+    );
+
   const sendMessage = async () => {
-    const key = conversationKey(rootId, sessionId);
-    const draft = draftMap()[key];
-    const text = draft?.text.trim();
-    if (!text || sending()) return false;
-    sending.set(true);
     error.set(null);
-    try {
-      const connection = activeHostInfo(rootId);
-      if (!connection) throw new Error(tr('Computer is offline'));
-      const { generation } = connection;
-      let backend: AgentBackendPreference | null = null;
-      if (!isRoom()) {
+    const sent = await sendDraft(
+      rootId,
+      sessionId,
+      isRoom(),
+      async (generation) => {
+        if (isRoom()) return null;
         const pending = selectingModel();
         if (pending && !(await pending.done)) return false;
         if (!observation() && activeHostInfo(rootId)?.generation === generation)
           await loadObserve(false);
-        if (disposed) return false;
+        if (disposed) return null;
         if (activeHostInfo(rootId)?.generation !== generation)
           throw new Error(tr('Computer is offline'));
         if (!observation()) throw new Error(error() ?? tr('Select model'));
-        backend = selectedBackend();
-        if (!backend && connection.endpoints.includes('settings')) {
-          const choice = await readDefaultModel(settingsRpc(rootId));
-          if (disposed) return false;
-          if (activeHostInfo(rootId)?.generation !== generation)
-            throw new Error(tr('Computer is offline'));
-          backend = selectedBackend() ?? (choice ? modelBackend(choice) : null);
-        }
-        if (!backend) throw new Error(tr('Select model'));
-      }
-      if (disposed) return false;
-      const res = await hostMutate<AgentSendResult>(
-        'agent',
-        'send',
-        {
-          mentions: [],
-          replyTo: null,
-          onComplete: null,
-          quotes: [],
-          delivery: 'queue',
-          expectedRunId: null,
-          attachments: [],
-          backend,
-          sessionId,
-          message: text,
-        },
-        { rootId, generation },
-      );
-      if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
-        throw new Error(tr('Could not send the message.'), {
-          cause: res.kind === 'rejected' ? res.reason : res.kind,
-        });
-      }
-      if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
-      hapticSelection();
-      await Promise.all([loadObserve(), loadHistory()]);
-      const hostName = hostById(rootId)?.hostName ?? rootId;
-      void refreshHostSessions(rootId, hostName);
-      return true;
-    } catch (cause) {
-      hapticNotification('error');
-      const msg = cause instanceof Error ? cause.message : String(cause);
-      error.set(msg);
-      showToast(msg);
-      return false;
-    } finally {
-      if (!disposed) sending.set(false);
+        return selectedBackend();
+      },
+      () => !disposed,
+      (message) => error.set(message),
+    );
+    if (sent && !disposed) {
+      void Promise.all([loadObserve(), loadHistory()]).catch((cause) => {
+        if (!disposed) error.set(cause instanceof Error ? cause.message : String(cause));
+      });
     }
+    return sent;
   };
 
   const stopRun = async () => {
@@ -617,9 +863,12 @@ export function createConversationController(rootId: string, initialSession: Age
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (!observation()) throw new Error(error() ?? tr('Select model'));
         if (alreadySelected()) return true;
-        const result = await hostMutate<
-          import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
-        >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
+        const result = await hostMutate<AgentMetadataResult>(
+          'agent',
+          'selectBackend',
+          { sessionId, backend },
+          { rootId, generation },
+        );
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (result.kind !== 'committed')
           throw new Error(tr('Could not change the model.'), { cause: result.kind });
@@ -645,9 +894,7 @@ export function createConversationController(rootId: string, initialSession: Age
   const cancelQueuedMessage = async (messageId: string) => {
     const q = queue();
     try {
-      const result = await hostMutate<
-        import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentQueueMutationResult
-      >(
+      const result = await hostMutate<AgentQueueMutationResult>(
         'agent',
         'editQueue',
         {
@@ -763,6 +1010,7 @@ export function createConversationController(rootId: string, initialSession: Age
   };
 
   effect(() => {
+    if (!enabled) return;
     const conn = activeHostInfo(rootId);
     if (!conn) {
       stopWatch();
@@ -796,6 +1044,7 @@ export function createConversationController(rootId: string, initialSession: Age
     loading,
     loadingEarlier,
     sending,
+    hasDraftContent,
     error,
     queue,
     pendingInteractions,

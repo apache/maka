@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { computed, effect, signal, untracked } from 'nsh';
-import { tr } from '../locale';
+import { cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -27,6 +26,7 @@ import {
   type AgentBackendPreference,
   type AgentProject,
   type AgentSession,
+  type ServiceMethods,
   type AgentSessionPage,
   type AgentWorkspaceSelection,
 } from '../bridge';
@@ -38,7 +38,7 @@ import {
   selectedScopeRootId,
   showToast,
 } from './hostPool';
-import type { ServiceMethods } from '../../../../../packages/plugin-sdk/src/generated/methods';
+import { tr } from '../locale';
 import { hapticNotification, hapticSelection } from './preferences';
 import {
   catalogInput,
@@ -141,7 +141,9 @@ export const allSessions = computed<ScopedSession[]>(() => {
   const byHost = sessionsByHost();
   const merged: ScopedSession[] = [];
   for (const host of savedHosts()) {
-    for (const item of byHost[host.rootId]?.snapshot?.items ?? []) merged.push(item);
+    for (const item of byHost[host.rootId]?.snapshot?.items ?? []) {
+      merged.push(item.hostName === host.hostName ? item : { ...item, hostName: host.hostName });
+    }
   }
   merged.sort((a, b) => (b.session.updatedAt ?? 0) - (a.session.updatedAt ?? 0));
   return merged;
@@ -234,6 +236,70 @@ async function readSessionWindow(
     setWindow(rootId, { kind: 'failed', snapshot, limit });
     showToast(cause instanceof Error ? cause.message : String(cause));
   }
+}
+
+export function isBotSession(rootId: string, sessionId: string) {
+  return botsByHost()[rootId]?.sessionId === sessionId;
+}
+
+export function watchSideQuestions(item: ScopedSession, enabled: () => boolean) {
+  const { rootId } = item;
+  const sessionId = item.session.id;
+  const sessions = signal<AgentSession[] | null>(null);
+  const error = signal<string | null>(null);
+  const scope = { kind: 'side_questions', sessionId } as const;
+  const connectedGeneration = computed(() => activeHostInfo(rootId)?.generation);
+  effect(() => {
+    const generation = connectedGeneration();
+    if (!enabled() || generation == null) return;
+    sessions.set(null);
+    error.set(null);
+    let revision: string | undefined;
+    let epoch = 0;
+    const report = (cause: unknown) => {
+      console.warn('Could not load side questions', cause);
+      error.set(tr('Could not load side questions'));
+    };
+    const stop = watchHost<AgentSessionPage>(
+      rootId,
+      generation,
+      'sides:' + rootId + ':' + ++subSeq,
+      'catalog',
+      catalogInput('all', undefined, scope),
+      (page) => {
+        if (page.revision === revision) return;
+        revision = page.revision;
+        const request = ++epoch;
+        const current = () =>
+          epoch === request && activeHostInfo(rootId)?.generation === generation;
+        void readCatalog(rootId, 'all', current, Infinity, { kind: 'head', page }, scope).then(
+          (catalog) => {
+            if (!catalog || !current()) return;
+            sessions.set(
+              catalog.sessions.filter(
+                (session) => session.branch?.side && session.branch.sessionId === sessionId,
+              ),
+            );
+            error.set(null);
+          },
+          (cause) => {
+            if (!current()) return;
+            revision = undefined;
+            report(cause);
+          },
+        );
+      },
+      (cause) => {
+        epoch++;
+        report(cause);
+      },
+    );
+    cleanup(() => {
+      epoch++;
+      stop();
+    });
+  });
+  return { sessions, error };
 }
 
 function applySessionPage(rootId: string, hostName: string, page: AgentSessionPage) {

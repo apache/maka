@@ -22,12 +22,14 @@ import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import { formatCount, tr } from '../../locale';
 import {
-  appendQuoteToDraft,
+  appendFileQuote,
+  getDraft,
+  quoteLimit,
   fetchGitWorkspaceDiff,
   parseUnifiedDiffFiles,
   type ParsedDiffFile,
 } from '../../state/chat';
-import { showToast } from '../../state/hostPool';
+import { hostById, showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import { listHostFiles, type ScopedSession } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
@@ -59,6 +61,8 @@ export function ProjectFilesScreen(props: {
   const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
+  const canQuote = props.item.session.kind !== 'room';
+  const limitReached = () => getDraft(rootId, sessionId).quotes.length >= quoteLimit;
   const rootPath = props.item.session.workspace?.path || '';
   const workspaceName = rootPath.split('/').filter(Boolean).pop();
 
@@ -146,7 +150,11 @@ export function ProjectFilesScreen(props: {
   const enterDir = (entry: { name: string; path: string; kind: string }) => {
     hapticSelection();
     if (entry.kind !== 'directory') {
-      appendQuoteToDraft(rootId, sessionId, Buffer.from(entry.path, 'base64').toString('utf8'), 1);
+      if (
+        !canQuote ||
+        !appendFileQuote(rootId, sessionId, Buffer.from(entry.path, 'base64').toString('utf8'), 1)
+      )
+        return;
       hapticNotification('success');
       showToast(tr('Quoted {path}', { path: entry.name }));
       props.onQuotedBackToChat();
@@ -276,7 +284,7 @@ export function ProjectFilesScreen(props: {
                     subtitle={
                       diffLoading()
                         ? tr('Reading git workspace diff from {name}.', {
-                            name: props.item.hostName,
+                            name: hostById(rootId)?.hostName ?? props.item.hostName,
                           })
                         : tr(
                             'Modified, added, or deleted files in this workspace will appear here.',
@@ -288,9 +296,13 @@ export function ProjectFilesScreen(props: {
             >
               <InsetGroup
                 header={tr('Modified files')}
-                footer={tr(
-                  'Tap any file to inspect its single-column diff and quote lines into chat.',
-                )}
+                footer={
+                  canQuote
+                    ? tr(
+                        'Tap any file to inspect its single-column diff and quote lines into chat.',
+                      )
+                    : undefined
+                }
               >
                 <Each of={diffFiles()} key={(f) => f.path}>
                   {(file, index) => {
@@ -415,7 +427,13 @@ export function ProjectFilesScreen(props: {
                 header={
                   currentDir() ? Buffer.from(currentDir(), 'base64').toString('utf8') : tr('Files')
                 }
-                footer={tr('Tap a folder to browse or tap a file to quote it into chat.')}
+                footer={
+                  !canQuote
+                    ? undefined
+                    : limitReached()
+                      ? tr('Quote limit reached ({count})', { count: quoteLimit })
+                      : tr('Tap a folder to browse or tap a file to quote it into chat.')
+                }
               >
                 <Each of={dirEntries()} key={(e) => e.path}>
                   {(entry, index) => {
@@ -432,7 +450,8 @@ export function ProjectFilesScreen(props: {
                         title={entry().name}
                         chevron={!isFile()}
                         divider={index() < dirEntries().length - 1}
-                        onPress={() => enterDir(entry())}
+                        onPress={isFile() && !canQuote ? undefined : () => enterDir(entry())}
+                        disabled={isFile() && canQuote && limitReached()}
                       />
                     );
                   }}

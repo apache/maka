@@ -21,7 +21,7 @@
 
 use maka_agent_api::contract::{
     DeliveryPage, PendingInteractions, PreviewPage, Queue, QueueAction, QueueEntry, QueueKind,
-    QueueMutation, QueueMutationResult,
+    QueueMutation, QueueMutationResult, Send, SendResult,
 };
 use maka_agent_facts::interaction::{Decision, InteractionAnswer, InteractionOutcome};
 use maka_event_log::{
@@ -37,6 +37,7 @@ use maka_host_runtime::application::{
 };
 use maka_ios_shell::{bridge::HostBridge, engine_config};
 use maka_packages::Package;
+use maka_remote_pairing::HostPlatform;
 use maka_remote_transport::{
     Relay,
     host::HostPeerTransport,
@@ -47,7 +48,7 @@ use nsh_core::{
     platform::{Environment, Os},
     prelude::px,
 };
-use nsh_engine::{Bundle, EngineConfig, HostChannel};
+use nsh_engine::{Bundle, EngineConfig, HostCall, HostChannel};
 use nsh_testing::Headless;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -268,8 +269,32 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     assert!(first.host.list_peer_access().await.unwrap().is_empty());
     assert!(!support.path().join("hosts.json").exists());
 
+    let platform = json!(HostPlatform::current());
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} ·/")).unwrap();
+    }
+    app.wait_for("text:First test Host").unwrap();
+    app.clear("label:Computer name").unwrap();
+    for input in ["", "   "] {
+        if !input.is_empty() {
+            app.type_text("label:Computer name", input).unwrap();
+        }
+        app.press("label:Confirm & Connect").unwrap();
+        app.wait_for("text:A name cannot be empty.").unwrap();
+        assert!(first.host.list_peer_access().await.unwrap().is_empty());
+        assert!(!support.path().join("hosts.json").exists());
+    }
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", &"界".repeat(43))
+        .unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:First test Host · Online").unwrap();
+    app.wait_for("text:Computer name is too long.").unwrap();
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", "Travel Mac").unwrap();
+    app.wait_for("text:Travel Mac").unwrap();
+    assert!(!app.shows("text:First test Host"));
+    app.press("label:Confirm & Connect").unwrap();
+    app.wait_for("text:Travel Mac · Online").unwrap();
     assert_eq!(first.host.list_peer_access().await.unwrap().len(), 1);
     assert!(matches!(
         first.handshakes.try_recv(),
@@ -289,8 +314,22 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     app.wait_for("text:Second test Host").unwrap();
 
     app.press("label:Settings").unwrap();
-    app.wait_for("label:Computer: First test Host").unwrap();
-    app.press("label:Computer: First test Host").unwrap();
+    app.wait_for("label:Computer: Travel Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} · Connected/"))
+            .unwrap();
+    }
+    app.press("label:Computer: Travel Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:{platform}")).unwrap();
+    }
+    assert!(!app.shows("label:Save"));
+    app.clear("label:Computer name").unwrap();
+    app.type_text("label:Computer name", "Office Mac").unwrap();
+    app.wait_for("label:Save").unwrap();
+    app.submit("label:Computer name").unwrap();
+    app.wait_for_gone("label:Save", Duration::from_secs(5))
+        .unwrap();
     app.press("label:Connection details").unwrap();
     app.wait_for("text:/Direct connection discovery · Port/")
         .unwrap();
@@ -304,6 +343,15 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     drop(bridge);
     let persisted = std::fs::read_to_string(support.path().join("hosts.json")).unwrap();
     assert!(!persisted.contains(RELAY_TOKEN));
+    let profiles: Value = serde_json::from_str(&persisted).unwrap();
+    let renamed = profiles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|profile| profile["rootId"] == first.host.root_id())
+        .unwrap();
+    assert_eq!(renamed["hostName"], "Office Mac");
+    assert_eq!(renamed["platform"], platform);
 
     // The paused profile and unpaused profile have the same relay route.
     // Only the unpaused one should try it without the in-memory Bearer.
@@ -332,8 +380,12 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
         .unwrap();
 
     app.press("label:Settings").unwrap();
-    app.wait_for("label:Computer: First test Host").unwrap();
-    app.press("label:Computer: First test Host").unwrap();
+    app.wait_for("label:Computer: Office Mac").unwrap();
+    if let Some(platform) = platform.as_str() {
+        app.wait_for(&format!("text:/^{platform} · Offline/"))
+            .unwrap();
+    }
+    app.press("label:Computer: Office Mac").unwrap();
     resume_after_network_change(&mut app);
     app.wait_for("label:Reconnect").unwrap();
     assert!(
@@ -350,7 +402,7 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
             .reconnect_paused()
     );
 
-    app.press("label:Relay Bearer for First test Host").unwrap();
+    app.press("label:Relay Bearer for Office Mac").unwrap();
     app.type_text("label:Saved Host relay Bearer token", RELAY_TOKEN)
         .unwrap();
     app.press("label:Connect with Bearer token").unwrap();
@@ -409,6 +461,38 @@ fn resume_after_network_change(app: &mut Headless) {
     app.fast_forward(Duration::from_secs(16)).unwrap();
 }
 
+#[tokio::test]
+async fn opening_a_legacy_name_does_not_offer_or_submit_a_rename() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(json!({
+            "revision": 1, "devicePeerId": "fixture",
+            "hosts": [{"rootId":"legacy","hostName":" Studio ","peerId":"peer","endpoints":[]}],
+            "active": null, "connections": {"legacy":{"status":"offline","autoReconnect":false}}
+        }));
+    });
+    let (renamed, mut rename_requests) = mpsc::unbounded_channel();
+    channel.handle("ios.renameHost", move |mut call| {
+        renamed.send(call.take_data()).unwrap();
+        call.reject("unexpected rename");
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:/Computer: +Studio/").unwrap();
+    app.wait_for("label:Computer name").unwrap();
+    assert!(!app.shows("label:Save"));
+    app.submit("label:Computer name").unwrap();
+    assert!(rename_requests.try_recv().is_err());
+}
+
 struct RpcDriver {
     channel: HostChannel,
     replies: mpsc::UnboundedReceiver<Value>,
@@ -435,7 +519,7 @@ impl RpcDriver {
 async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and_revocation() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let (relay, config, relay_url) = https_relay().await;
-        let mut a = Live::start(&config, "Host A").await;
+        let mut a = Live::start(&config, &"界".repeat(43)).await;
         let mut b = Live::start(&config, "Host B").await;
         let support = tempfile::tempdir().unwrap();
         let channel = HostChannel::new();
@@ -470,8 +554,31 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
                 "uri":host.uri,"relayUrl":relay_url,"relayToken":RELAY_TOKEN
             })).await;
             let (peer, sas) = host.sas().await;
-            let paired = driver.call("ios.confirmPairing", json!({"pairingId":ticket["pairingId"],"sas":sas})).await;
-            assert_eq!(paired["connections"][host.host.root_id()]["status"], "connected");
+            let mut confirm = json!({"pairingId":ticket["pairingId"],"sas":sas});
+            if peers.is_empty() {
+                let invalid = driver.call("ios.confirmPairing", confirm.clone()).await;
+                assert_eq!(invalid, json!({"kind":"invalidName","field":"hostName","reason":"tooLong"}));
+
+                for (field, name, reason) in [
+                    ("hostName", "界".repeat(43), "tooLong"),
+                    ("hostName", "Lab\nMac".into(), "controlCharacter"),
+                    ("deviceLabel", "界".repeat(43), "tooLong"),
+                    ("deviceLabel", "Field\nPhone".into(), "controlCharacter"),
+                    ("deviceLabel", "\u{0085}".into(), "empty"),
+                ] {
+                    let mut input = confirm.clone();
+                    input[field] = json!(name);
+                    let invalid = driver.call("ios.confirmPairing", input).await;
+                    assert_eq!(invalid, json!({"kind":"invalidName","field":field,"reason":reason}));
+                }
+                assert!(host.host.list_peer_access().await.unwrap().is_empty());
+                assert!(!support.path().join("hosts.json").exists());
+                confirm["hostName"] = json!("Host A");
+            }
+            // Correcting the name must still work with the same pairing ID and one-time invite.
+            let paired = driver.call("ios.confirmPairing", confirm).await;
+            assert_eq!(paired["kind"], "saved");
+            assert_eq!(paired["snapshot"]["connections"][host.host.root_id()]["status"], "connected");
             peers.push(peer);
         }
 
@@ -482,6 +589,26 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         assert_eq!(state["connections"][&a_id]["status"], "connected");
         assert_eq!(state["active"]["rootId"], b_id);
         driver.call("ios.networkChange", json!({})).await;
+        for (name, reason) in [("界".repeat(43), "tooLong"), ("Build\nMac".into(), "controlCharacter")] {
+            let invalid = driver.call("ios.renameHost", json!({"rootId":b_id,"hostName":name})).await;
+            assert_eq!(invalid, json!({"kind":"invalidName","field":"hostName","reason":reason}));
+        }
+        let unchanged = driver.call("ios.bootstrap", json!({})).await;
+        assert_eq!(unchanged["hosts"], state["hosts"]);
+
+        let renamed = driver.call("ios.renameHost", json!({"rootId":b_id,"hostName":"  Build Mac  "})).await;
+        assert_eq!(renamed["kind"], "saved");
+        let renamed = &renamed["snapshot"];
+        assert_eq!(renamed["active"]["hostName"], "Build Mac");
+        assert_eq!(renamed["connections"][&b_id]["connection"]["hostName"], "Build Mac");
+        assert_eq!(renamed["connections"][&b_id]["connection"]["session"], b_session);
+        loop {
+            let broadcast = states.recv().await.unwrap();
+            if broadcast["revision"] == renamed["revision"] {
+                assert_eq!(&broadcast, renamed);
+                break;
+            }
+        }
 
         let save = |root: &str| json!({
             "rootId":root, "generation":state["connections"][root]["connection"]["generation"],
@@ -655,7 +782,11 @@ async fn detached_engine_subscriptions_do_not_reach_the_replacement_engine() {
             )
             .await;
         let root = remote.host.root_id();
-        assert_eq!(state["connections"][root]["status"], "connected");
+        assert_eq!(state["kind"], "saved");
+        assert_eq!(
+            state["snapshot"]["connections"][root]["status"],
+            "connected"
+        );
         let handle = driver.call("ios.subscribe", json!({
             "rootId":root,"endpoint":"hostLogs","method":"watch","subscriptionId":"engine-a",
             "input":{"position":{"kind":"tail"}}
@@ -782,36 +913,43 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.type_text("label:Device name", &"\u{754c}".repeat(43))
         .unwrap();
     app.press("label:Confirm & Connect").unwrap();
-    app.wait_for("text:Device name must be 128 UTF-8 bytes or fewer.")
-        .unwrap();
-    assert!(confirming.try_recv().is_err());
+    let (invalid, confirm) = confirming.try_recv().unwrap();
+    assert_eq!(invalid["deviceLabel"], "界".repeat(43));
+    confirm.unwrap().resolve(json!({
+        "kind": "invalidName", "field": "deviceLabel", "reason": "tooLong"
+    }));
+    app.wait_for("text:Device name is too long.").unwrap();
     app.clear("label:Device name").unwrap();
     app.type_text("label:Device name", "Field iPhone").unwrap();
     app.press("label:Confirm & Connect").unwrap();
     let (input, confirm) = confirming.try_recv().unwrap();
+    assert_eq!(input["pairingId"], invalid["pairingId"]);
     assert_eq!(input["deviceLabel"], "Field iPhone");
     assert!(app.press("label:Cancel").is_err());
     assert!(cancelled.try_recv().is_err());
     confirm.unwrap().resolve(json!({
-        "revision": 2,
-        "devicePeerId": "fixture",
-        "filter": { "kind": "all_computers" },
-        "hosts": [{
-            "rootId": "late-root",
-            "hostName": "Newly paired Host",
-            "peerId": "late-peer",
-            "connected": true,
-            "endpoints": []
-        }],
-        "active": {
-            "rootId": "late-root",
-            "hostName": "Newly paired Host",
-            "epoch": "e1",
-            "session": "late",
-            "generation": 1,
-            "endpoints": [],
-            "pathSummary": null,
-            "transport": "quic"
+        "kind": "saved",
+        "snapshot": {
+            "revision": 2,
+            "devicePeerId": "fixture",
+            "filter": { "kind": "all_computers" },
+            "hosts": [{
+                "rootId": "late-root",
+                "hostName": "Newly paired Host",
+                "peerId": "late-peer",
+                "connected": true,
+                "endpoints": []
+            }],
+            "active": {
+                "rootId": "late-root",
+                "hostName": "Newly paired Host",
+                "epoch": "e1",
+                "session": "late",
+                "generation": 1,
+                "endpoints": [],
+                "pathSummary": null,
+                "transport": "quic"
+            }
         }
     }));
     app.wait_for_gone("text:123456", Duration::from_secs(1))
@@ -2046,24 +2184,27 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
+fn workspace_host_state(revision: u64, name: &str) -> Value {
+    let connection = json!({
+        "rootId": "root-a", "hostName": name, "epoch": "ea", "session": "sa",
+        "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
+    });
+    json!({
+        "revision": revision, "devicePeerId": "ios-device", "filter": {"kind": "all_computers"},
+        "hosts": [
+            {"rootId": "root-a", "hostName": name, "peerId": "peer-a", "endpoints": ["agent"]},
+            {"rootId": "root-b", "hostName": "Offline Host", "peerId": "peer-b", "endpoints": []}
+        ],
+        "active": connection,
+        "connections": {"root-a": {"status": "connected", "connection": connection}}
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_existing_draft() {
+async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
-        call.reply(Ok(json!({
-            "revision": 1,
-            "devicePeerId": "ios-device",
-            "filter": { "kind": "all_computers" },
-            "hosts": [
-                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
-            ],
-            "active": {
-                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
-            },
-            "connections": {
-                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
-            }
-        })));
+        call.resolve(workspace_host_state(1, "MacBook Pro"))
     });
     let session = json!({
         "id": "chat-diff", "title": "Login fix", "kind": "agent", "parentSessionId": null,
@@ -2081,6 +2222,8 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
  }
 ";
     let (files_tx, mut files_rx) = mpsc::unbounded_channel();
+    let (diff_tx, mut diff_rx) = mpsc::unbounded_channel();
+    let first_diff = std::sync::atomic::AtomicBool::new(true);
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
@@ -2098,6 +2241,10 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
                     json!([{"path":{"bytesBase64":"LmdpdGh1Yi9OT1RJQ0U="},"kind":"file"}])
                 };
                 json!({"directoryIdentity":"directory","entries":entries,"next":null})
+            }
+            "gitWorkspaceDiff" if first_diff.swap(false, std::sync::atomic::Ordering::Relaxed) => {
+                diff_tx.send(call.into_reply().unwrap()).unwrap();
+                return;
             }
             "gitWorkspaceDiff" => json!({ "patch": sample_patch, "truncated": false, "skippedFiles": 0 }),
             _ => json!({}),
@@ -2124,26 +2271,41 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     app.wait_for("label:Conversation: Login fix").unwrap();
     app.press("label:Conversation: Login fix").unwrap();
     app.wait_for("label:Message composer").unwrap();
+    app.wait_for("text:MacBook Pro · maka-agent").unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(2, "Travel Mac"))
+        .unwrap();
+    app.wait_for("text:Travel Mac · maka-agent").unwrap();
 
     // Type an unsent draft before navigating to ProjectFiles -> DiffScreen.
     app.type_text("label:Message composer", "Please check this:")
         .unwrap();
     app.press("label:Files & Changes").unwrap();
+    app.wait_for("text:Reading git workspace diff from Travel Mac.")
+        .unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(3, "Office Mac"))
+        .unwrap();
+    app.wait_for("text:Reading git workspace diff from Office Mac.")
+        .unwrap();
+    diff_rx.try_recv().unwrap().resolve(json!({
+        "value": {"patch": sample_patch, "truncated": false, "skippedFiles": 0}
+    }));
     app.wait_for("label:Diff: src/auth.rs").unwrap();
     app.press("label:Diff: src/auth.rs").unwrap();
     app.wait_for("label:Quote line to chat").unwrap();
     app.press("label:Quote line to chat").unwrap();
     app.wait_for("text:Quoted auth.rs:1234").unwrap();
 
-    // Returns cleanly to ChatScreen with both original draft and quoted path:line.
+    // Both references land in the same Composer queue, independently of the draft text.
     app.wait_for("text:/Please check this:/").unwrap();
-    app.wait_for(r"text:/src\/auth\.rs:1234/").unwrap();
+    app.wait_for("text:src/auth.rs:1234").unwrap();
+    app.wait_for("label:Remove quote: let ttl = 60;").unwrap();
     app.press("label:Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
     app.press("label:.github").unwrap();
     app.press("label:NOTICE").unwrap();
-    app.wait_for(r"text:/\.github\/NOTICE:1/").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("text:.github/NOTICE:1").unwrap();
     let root = files_rx.try_recv().unwrap();
     let directory = files_rx.try_recv().unwrap();
     assert_eq!(root["sessionId"], "chat-diff");
@@ -2152,24 +2314,1845 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     assert_eq!(directory["path"]["bytesBase64"], "LmdpdGh1Yg==");
 }
 
+fn quote_chat_fixture(
+    chunks: Vec<Value>,
+    older_chunks: Vec<Value>,
+    hold_first_refresh: Option<mpsc::UnboundedSender<(HostCall, Value)>>,
+) -> (Headless, mpsc::UnboundedReceiver<(Send, HostCall)>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Host","generation":1,"endpoints":["agent"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let history_requests = AtomicUsize::new(0);
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let session = |id, title| json!({"id":id,"title":title,"kind":"agent","parentSessionId":null,
+            "workspace":{"path":"/work"},"revision":1,"updatedAt":1700000000000u64,"activity":"idle",
+            "backend":{"kind":"model","connectionId":"conn","modelId":"model"}});
+        let method = data["method"].as_str().unwrap();
+        let value = match method {
+            "list" => json!({"sessions":[session("chat","Quotes Chat"),session("other","Other Chat")],"needsYouCount":0}),
+            "observe" => {
+                let row = if data["input"]["sessionId"] == "chat" {
+                    session("chat", "Quotes Chat")
+                } else {
+                    session("other", "Other Chat")
+                };
+                json!({"session":row,"through":17,"run":null})
+            }
+            "history" => {
+                let (rows, before) = match (
+                    data["input"]["sessionId"].as_str(),
+                    data["input"]["position"]["kind"].as_str(),
+                ) {
+                    (Some("chat"), Some("before")) => {
+                        assert_eq!(data["input"]["position"]["cursor"], "older");
+                        (older_chunks.as_slice(), None)
+                    }
+                    (Some("chat"), Some("tail")) => (chunks.as_slice(),
+                        (!older_chunks.is_empty()).then_some("older")),
+                    (Some("other"), Some("tail")) => (&[][..], None),
+                    _ => panic!("unexpected history query: {data}"),
+                };
+                json!({"kind":"ready","chunks":rows,"through":17,"before":before,"after":null})
+            }
+            "models" => json!({"kind":"ready","choices":[]}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            method => panic!("unexpected query: {method}"),
+        };
+        if method == "history"
+            && let Some(refresh) = &hold_first_refresh
+            && history_requests.fetch_add(1, Ordering::Relaxed) == 1
+        {
+            refresh.send((call, value)).unwrap();
+            return;
+        }
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","generation":1,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (send_tx, send_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let mut data = call.take_data();
+        assert_eq!(data["method"], "send");
+        assert_eq!(data["rootId"], "root");
+        send_tx
+            .send((serde_json::from_value(data["input"].take()).unwrap(), call))
+            .unwrap();
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Quotes Chat").unwrap();
+    (app, send_rx)
+}
+
+// Headless does not present UIKit's text edit menu. Read the action the
+// selectable view mounted and report its ID through the same event as UIKit.
+fn watch_quote_menus(
+    app: &mut Headless,
+) -> impl FnMut(&mut Headless, &str, Option<&str>) -> bool + use<> {
+    watch_selection_menu(app, "Add to quotes")
+}
+
+fn watch_selection_menu(
+    app: &mut Headless,
+    title: &'static str,
+) -> impl FnMut(&mut Headless, &str, Option<&str>) -> bool + use<> {
+    let mut select = watch_selection_menus(app);
+    move |app, selector, text| select(app, title, selector, text)
+}
+
+fn watch_selection_menus(
+    app: &mut Headless,
+) -> impl FnMut(&mut Headless, &str, &str, Option<&str>) -> bool + use<> {
+    use nsh_core::{EventKind, EventPayload, MountItem, PayloadValue, ROOT_ID, desktop::MenuItem};
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ViewProps { id, props } = item
+                && props.selectable_view
+            {
+                let actions = props
+                    .selection_menu
+                    .iter()
+                    .filter_map(|item| match item {
+                        MenuItem::Action(action) if action.enabled => {
+                            Some((action.label.to_string(), action.id))
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                tx.send((*id, actions)).unwrap();
+            }
+        }
+    });
+    let mut actions = BTreeMap::new();
+    move |app, title, selector, text| {
+        while let Ok((node, action)) = rx.try_recv() {
+            actions.insert(node, action);
+        }
+        let mut node = app.screen().id(selector).unwrap();
+        let nodes = app.screen().layout_nodes();
+        let (owner, action) = loop {
+            if let Some(action) = actions.get(&node).and_then(|items| items.get(title)) {
+                break (node, *action);
+            }
+            let Some(parent) = nodes
+                .iter()
+                .find(|entry| entry.id == node)
+                .map(|entry| entry.parent)
+            else {
+                return false;
+            };
+            if parent == ROOT_ID {
+                return false;
+            }
+            node = parent;
+        };
+        let control = app.engine().control();
+        if let Some(text) = text {
+            control.dispatch_event(
+                owner,
+                EventKind::SelectionChange,
+                EventPayload::Map(vec![
+                    ("text", PayloadValue::Str(text.into())),
+                    ("start", PayloadValue::Number(0.0)),
+                ]),
+            );
+            assert!(app.settle());
+        }
+        control.dispatch_event(
+            ROOT_ID,
+            EventKind::Menu,
+            EventPayload::Map(vec![("id", PayloadValue::Number(f64::from(action)))]),
+        );
+        assert!(app.settle());
+        true
+    }
+}
+
+fn quote_history_row(sequence: u64, role: &str, text: &str) -> Value {
+    json!({"importedTurn":null,"field":"body","position":{"kind":"live","sequence":sequence,
+        "fact":Uuid::from_u128(u128::from(sequence)),"itemIndex":0},
+        "order":{"path":[sequence],"itemIndex":0},"offset":0,"totalBytes":text.len(),
+        "messageId":format!("m{sequence}"),"turnId":"t1","role":role,"text":text,"tool":null})
+}
+
+fn side_history_rows() -> (Value, Value) {
+    let mut early = quote_history_row(9, "assistant", "Earlier durable answer");
+    early["position"] = json!({
+        "kind":"snapshot", "path":[Uuid::from_u128(2)], "snapshot":Uuid::from_u128(3),
+        "sequence":9, "fact":Uuid::from_u128(9), "itemIndex":0,
+    });
+    early["order"] = json!({"path":[5, 9], "itemIndex":0});
+    early["turnId"] = json!("zzz");
+    let mut late = quote_history_row(2, "assistant", "Later durable answer");
+    late["order"] = json!({"path":[6], "itemIndex":0});
+    late["turnId"] = json!("aaa");
+    late["finalOutput"] = json!(true);
+    (early, late)
+}
+
+fn side_session(id: &str, title: &str, backend: &Value) -> Value {
+    let (_, late) = side_history_rows();
+    json!({
+        "id":id, "title":title, "kind":"agent", "activity":"waiting",
+        "parentSessionId":"not-the-main-chat",
+        "branch":{"side":true,"sessionId":"main","position":{
+            "kind":"through_source_turn","position":late["position"],
+        }},
+        "backend":backend, "workspace":{"path":"/work"}, "revision":1,
+    })
+}
+
+struct SideChatFixture {
+    app: Headless,
+    mutations: mpsc::UnboundedReceiver<(Value, HostCall)>,
+    subscriptions: mpsc::UnboundedReceiver<Value>,
+    unsubscribed: mpsc::UnboundedReceiver<Value>,
+    main_removed: Arc<std::sync::atomic::AtomicBool>,
+    hold_side_observe: Arc<std::sync::atomic::AtomicBool>,
+    side_observations: mpsc::UnboundedReceiver<(HostCall, Value)>,
+    backend: Arc<std::sync::Mutex<Value>>,
+}
+
+impl SideChatFixture {
+    fn open_main(&mut self) {
+        self.app.press("label:Conversation: Main Chat").unwrap();
+        self.app.wait_for("text:Later durable answer").unwrap();
+    }
+
+    async fn subscription(&mut self, method: &str, scope: Option<&str>) -> Value {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(sub) = self.subscriptions.recv().await {
+                if sub["method"] == method && sub["input"]["scope"]["kind"].as_str() == scope {
+                    return sub;
+                }
+            }
+            panic!("no {method} subscription");
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn mutation(&mut self, method: &str) -> (Value, HostCall) {
+        let (data, call) = tokio::time::timeout(Duration::from_secs(2), self.mutations.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(data["rootId"], "root");
+        assert_eq!(data["generation"], 7);
+        assert_eq!(data["method"], method);
+        (data["input"].clone(), call)
+    }
+}
+
+fn side_host_state(revision: u64, generation: Option<u64>) -> Value {
+    let host = json!({"rootId":"root","hostName":"Host","generation":generation,
+        "endpoints":["agent","settings"]});
+    let connection = if generation.is_some() {
+        json!({"status":"connected","connection":host})
+    } else {
+        json!({"status":"offline"})
+    };
+    json!({"revision":revision,"hosts":[host],
+        "active":generation.map(|_| host),
+        "connections":{"root":connection}})
+}
+
+fn side_chat_fixture(default_model: bool, missing_main: bool) -> SideChatFixture {
+    side_chat_fixture_on(default_model, missing_main, Os::MacOs, 1)
+}
+
+fn side_chat_fixture_on(
+    default_model: bool,
+    missing_main: bool,
+    os: Os,
+    early_count: u64,
+) -> SideChatFixture {
+    let (early, late) = side_history_rows();
+    let mut provisional = quote_history_row(12, "assistant", "Provider marked this final");
+    provisional["order"] = json!({"path":[7],"itemIndex":0});
+    provisional["finalAnswer"] = json!(true);
+    let mut main_history = vec![early];
+    for i in 1..early_count {
+        let mut row = quote_history_row(20 + i, "assistant", &format!("Collected answer {i}"));
+        row["order"] = json!({"path":[5, 9 + i],"itemIndex":0});
+        row["finalOutput"] = json!(true);
+        main_history.push(row);
+    }
+    let mut user = quote_history_row(11, "user", "A user message");
+    user["order"] = json!({"path":[6, 1],"itemIndex":0});
+    main_history.extend([late, user, provisional]);
+    side_chat_fixture_with_history(default_model, missing_main, os, main_history)
+}
+
+fn side_chat_fixture_with_history(
+    default_model: bool,
+    missing_main: bool,
+    os: Os,
+    main_history: Vec<Value>,
+) -> SideChatFixture {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    };
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(side_host_state(1, Some(7)))
+    });
+    let backend = if default_model {
+        Value::Null
+    } else {
+        json!({"kind":"model","connectionId":"selected","modelId":"selected-model"})
+    };
+    let backend = Arc::new(Mutex::new(backend));
+    let observed_backend = backend.clone();
+    let main_removed = Arc::new(AtomicBool::new(missing_main));
+    let removed = main_removed.clone();
+    let hold_side_observe = Arc::new(AtomicBool::new(false));
+    let hold = hold_side_observe.clone();
+    let (observe_tx, side_observations) = mpsc::unbounded_channel();
+    let main_revision = AtomicU64::new(40);
+    let (_, late) = side_history_rows();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root");
+        let input = &data["input"];
+        let backend = observed_backend.lock().unwrap().clone();
+        let missing_main = removed.load(Ordering::Relaxed);
+        let main = json!({"id":"main","title":"Main Chat","kind":"agent","activity":"idle",
+            "branch":null,"parentSessionId":null,"workspace":{"path":"/work"},"revision":2,
+            "backend":backend});
+        let room = json!({"id":"room","title":"Room Chat","kind":"room","activity":"idle",
+            "branch":null,"parentSessionId":null,"workspace":{"path":"/work"},"revision":1});
+        let saved = side_session("saved", "Saved side question", &backend);
+        let value = match data["method"].as_str().unwrap() {
+            "list" if input["scope"]["kind"] == "side_questions" => {
+                assert_eq!(input["scope"]["sessionId"], "main");
+                assert_eq!(input["position"], json!({"kind":"after","revision":"sides-7","cursor":"older"}));
+                let mut old = side_session("old", "From an unloaded page", &backend);
+                old["branch"]["position"]["position"] = quote_history_row(0, "assistant", "Older")["position"].clone();
+                old["activity"] = json!("idle");
+                json!({"sessions":[old],"revision":"sides-7","needsYouCount":1,"before":null,"after":null})
+            }
+            "list" if input["filter"] == "needs_you" => {
+                if input["position"]["kind"] == "start" {
+                    let mut waiting = room.clone();
+                    waiting["activity"] = json!("waiting");
+                    json!({"sessions":[waiting],"revision":"pending-7","needsYouCount":2,"before":null,"after":"pending-next"})
+                } else {
+                    assert_eq!(input["position"], json!({"kind":"after","revision":"pending-7","cursor":"pending-next"}));
+                    json!({"sessions":[saved],"revision":"pending-7","needsYouCount":2,"before":null,"after":null})
+                }
+            }
+            "list" => {
+                let sessions = if missing_main { vec![room] } else { vec![main, room] };
+                json!({"sessions":sessions,"revision":"main-7","needsYouCount":1,"before":null,"after":null})
+            }
+            "observe" => {
+                let session = match input["sessionId"].as_str().unwrap() {
+                    "main" if missing_main => {
+                        call.reject("agent_session_not_found");
+                        return;
+                    }
+                    "main" => {
+                        let revision = main_revision.fetch_add(1, Ordering::Relaxed) + 1;
+                        let mut main = main;
+                        main["revision"] = json!(revision);
+                        main
+                    }
+                    "room" => room,
+                    "saved" => saved,
+                    "new-side" => side_session("new-side", "A side question", &backend),
+                    id => panic!("unexpected observe: {id}"),
+                };
+                json!({"session":session,"through":99,"run":null})
+            }
+            "history" if input["sessionId"] == "room" => json!({
+                "kind":"room","page":{"items":[{
+                    "id":"message","sequence":1, "content":{"text":"Room message"},
+                    "author":{"kind":"human"}, "createdAt":0
+                }],"through":1,"before":null,"after":null}
+            }),
+            "history" => {
+                let chunks = if input["sessionId"] == "main" { main_history.clone() }
+                    else { vec![late.clone()] };
+                json!({"kind":"ready","chunks":chunks,"through":99,"before":null,"after":null})
+            }
+            "models" if os == Os::Ios => json!({"kind":"ready","choices":[
+                {"label":"New side model","selection":{"kind":"model","connectionId":"new","modelId":"new-model"}}
+            ]}),
+            "models" => json!({"kind":"ready","choices":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            "connections" => json!({"kind":"ready","revision":1,"connections":[],"next":null,
+                "defaultTarget":{"connectionId":"default","modelId":"default-model"}}),
+            "resolveModel" => json!({"kind":"ready","defaults":null,"choice":{
+                "label":"Host default","connectionName":"Host",
+                "selection":{"connectionId":"default","modelId":"default-model"},"thinkingLevels":[],
+            }}),
+            "pendingInteractions" if input["sessionId"] == "saved" =>
+                json!({"entries":[{"requestId":"side-request","kind":"service_approval","toolUseId":"tool"}]}),
+            "pendingInteractions" => json!({"entries":[]}),
+            "interaction" if input["sessionId"] == "saved" => json!({
+                "requestId":"side-request","outcome":null,"request":{
+                    "kind":"service_approval","toolUseId":"tool","toolName":"SideTool",
+                    "service":"service","method":"execute","binding":"binding","through":1
+                }
+            }),
+            method => panic!("unexpected side chat query: {method}"),
+        };
+        let value = json!({"value":value});
+        if data["method"] == "observe" && input["sessionId"] == "saved" && hold.swap(false, Ordering::Relaxed) {
+            observe_tx.send((call, value)).unwrap();
+        } else {
+            call.resolve(value);
+        }
+    });
+    let (sub_tx, subscriptions) = mpsc::unbounded_channel();
+    let subscription_generation = AtomicU64::new(11);
+    channel.handle("ios.subscribe", move |mut call| {
+        let mut data = call.take_data();
+        let generation = subscription_generation.fetch_add(1, Ordering::Relaxed);
+        call.resolve(
+            json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}),
+        );
+        data["generation"] = json!(generation);
+        sub_tx.send(data).unwrap();
+    });
+    let (unsub_tx, unsubscribed) = mpsc::unbounded_channel();
+    channel.handle("ios.unsubscribe", move |mut call| {
+        unsub_tx.send(call.take_data()).unwrap();
+        call.resolve(json!({"cancelled":true}));
+    });
+    let (mut_tx, mutations) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        mut_tx.send((call.take_data(), call)).unwrap();
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Conversation: Room Chat").unwrap();
+    SideChatFixture {
+        app,
+        mutations,
+        subscriptions,
+        unsubscribed,
+        main_removed,
+        hold_side_observe,
+        side_observations,
+        backend,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_uses_transcript_order_and_keeps_the_main_draft() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    fx.app
+        .type_text("label:Message composer", "Main draft")
+        .unwrap();
+    assert!(quote(
+        &mut fx.app,
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    assert!(quote(
+        &mut fx.app,
+        "text:Earlier durable answer",
+        Some("Earlier durable answer")
+    ));
+    fx.app.wait_for("text:2 quotes").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Main draft")
+    );
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app.wait_for("text:Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Compare these\nanswers?")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+
+    let (input, call) = fx.mutation("fork").await;
+    let fork: maka_agent_api::contract::Fork = serde_json::from_value(input.clone()).unwrap();
+    let (_, late) = side_history_rows();
+    assert_eq!(fork.session_id, "main");
+    assert_eq!(fork.expected_revision, 42);
+    assert!(fork.side);
+    assert!(fork.labels.is_empty());
+    assert_eq!(fork.title, "Compare these answers?");
+    assert_eq!(
+        input["position"],
+        json!({"kind":"through_source_turn","position":late["position"]})
+    );
+    call.resolve(
+        json!({"value":{"kind":"forked","session":side_session("new-side", &fork.title,
+        &json!({"kind":"model","connectionId":"selected","modelId":"selected-model"}))}}),
+    );
+
+    let (input, call) = fx.mutation("send").await;
+    let send: Send = serde_json::from_value(input.clone()).unwrap();
+    assert_eq!(send.session_id, "new-side");
+    assert_eq!(send.message, "Compare these\nanswers?");
+    assert_eq!(input["backend"]["modelId"], "selected-model");
+    assert_eq!(
+        json!(send.quotes),
+        json!([
+            {"text":"Later durable answer","label":"Maka","sourceMessageId":"m2","sourceTurnId":"aaa"},
+            {"text":"Earlier durable answer","label":"Maka","sourceMessageId":"m9","sourceTurnId":"zzz"},
+        ])
+    );
+    call.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+    fx.app.wait_for("label:Bring to Main Draft").unwrap();
+    fx.app.press("label:Back").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Main draft")
+    );
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Earlier durable answer")
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+
+    fx.app.press("label:Send to Main Chat").unwrap();
+    let (payload, receipt) = fx.mutation("send").await;
+    let main: Send = serde_json::from_value(payload).unwrap();
+    assert_eq!(main.session_id, "main");
+    assert_eq!(main.message, "Main draft");
+    assert_eq!(main.quotes, send.quotes);
+    receipt.resolve(json!({"value":SendResult::Queued{
+        session_id:"main".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_cancel_and_unicode_whitespace_do_not_mutate() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
+    fx.open_main();
+    fx.app
+        .type_text("label:Message composer", "Keep me")
+        .unwrap();
+    assert!(ask(
+        &mut fx.app,
+        "text:Earlier durable answer",
+        Some("Earlier durable")
+    ));
+    fx.app
+        .wait_for("label:Remove quote: Earlier durable")
+        .unwrap();
+    fx.app.wait_for("text:Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "\u{0085}\u{2003}")
+        .unwrap();
+    assert!(!fx.app.screen().enabled("label:Send message").unwrap());
+    fx.app
+        .type_text("label:Message composer", "Should not send")
+        .unwrap();
+    assert!(fx.app.screen().enabled("label:Send message").unwrap());
+    fx.app.press("label:Cancel").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep me")
+    );
+    assert!(!fx.app.shows("label:Clear all quotes"));
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_fork_conflict_then_failed_first_send_retries_in_the_new_chat() {
+    let mut fx = side_chat_fixture(true, false);
+    let mut select = watch_selection_menus(&mut fx.app);
+    fx.open_main();
+    assert!(select(
+        &mut fx.app,
+        "Add to quotes",
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Why this one?")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, call) = fx.mutation("fork").await;
+    assert_eq!(input["expectedRevision"], 42);
+    call.resolve(json!({"value":{"kind":"revision_conflict","expected":42,"actual":43}}));
+    fx.app
+        .wait_for("text:Could not create the side question. Try again.")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Why this one?")
+    );
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+
+    fx.app.press("label:Send message").unwrap();
+    let (input, call) = fx.mutation("fork").await;
+    assert_eq!(input["expectedRevision"], 43);
+    call.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","Why this one?",&Value::Null)}}));
+    let (send, call) = fx.mutation("send").await;
+    assert_eq!(send["backend"]["modelId"], "default-model");
+    call.resolve(json!({"value":SendResult::Rejected {
+        session_id:"new-side".into(), reason:maka_agent_api::contract::SendRejection::ModelUnavailable,
+        skills:None,
+    }}));
+
+    fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.app.wait_for("text:Could not send the message.").unwrap();
+    fx.app.press("text:Could not send the message.").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Why this one?")
+    );
+    assert!(!fx.app.shows("label:Ask Side Question"));
+    assert!(!select(
+        &mut fx.app,
+        "Ask Side Question",
+        "text:Later durable answer >> nth=0",
+        None
+    ));
+    fx.app.press("label:Send message").unwrap();
+    let (retry, call) = fx.mutation("send").await;
+    assert_eq!(retry, send);
+    assert_eq!(retry["sessionId"], "new-side");
+    call.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+    fx.app
+        .wait_for_gone("label:Clear all quotes", Duration::from_secs(2))
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_unacknowledged_first_send_keeps_draft_and_warns_before_retry() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    assert!(quote(
+        &mut fx.app,
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "What did the Host receive?")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, fork) = fx.mutation("fork").await;
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","What did the Host receive?",&Value::Null)}}));
+    let (submitted, send) = fx.mutation("send").await;
+    assert_eq!(submitted["sessionId"], "new-side");
+    send.reject("Host mutation result was not acknowledged: connection closed");
+
+    let notice = "text:Could not confirm whether the message was sent. Check the conversation or queue before retrying.";
+    fx.app.wait_for(notice).unwrap();
+    assert!(!fx.app.shows("text:Could not send the message."));
+    fx.app.press(notice).unwrap();
+    fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("What did the Host receive?")
+    );
+    assert!(
+        fx.mutations.try_recv().is_err(),
+        "automatically retried the send or fork"
+    );
+
+    fx.app.press("label:Send message").unwrap();
+    let (retry, send) = fx.mutation("send").await;
+    assert_eq!(retry, submitted);
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+    fx.app
+        .wait_for_gone("label:Clear all quotes", Duration::from_secs(2))
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_rediscovers_anchors_pages_and_brings_a_link_back() {
+    let mut fx = side_chat_fixture(false, false);
+    fx.app.wait_for("text:1").unwrap();
+    assert_eq!(fx.app.screen().count("text:1").unwrap(), 1);
+    assert_eq!(fx.app.screen().count("text:2").unwrap(), 0);
+    fx.open_main();
+    let scope = fx.subscription("catalog", Some("side_questions")).await;
+    assert_ne!(scope["generation"], 7);
+    assert_eq!(scope["input"]["scope"]["sessionId"], "main");
+    assert_eq!(scope["input"]["position"]["kind"], "start");
+    let mut saved = side_session("saved", "Saved side question", &Value::Null);
+    saved["branch"]["position"]["position"]["itemIndex"] = json!(1);
+    let correct = side_session("saved", "Saved side question", &Value::Null);
+    // Wrong row in the same event must not surface an anchor.
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":scope["subscriptionId"],"rootId":"root","generation":scope["generation"],
+        "item":{"revision":"sides-6","sessions":[saved],"needsYouCount":1,"before":null,"after":null}
+    })).unwrap();
+    assert!(fx.app.settle());
+    assert!(!fx.app.shows("text:Side questions (1)"));
+
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":scope["subscriptionId"],"rootId":"root","generation":scope["generation"],
+        "item":{"revision":"sides-7","sessions":[correct],"needsYouCount":1,"before":null,"after":"older"}
+    })).unwrap();
+    fx.app
+        .wait_for("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app.press("label:More").unwrap();
+    fx.app.choose_menu_item("All Side Questions").unwrap();
+    fx.app
+        .wait_for("label:Saved side question · Waiting for your response")
+        .unwrap();
+    fx.app.wait_for("label:From an unloaded page").unwrap();
+    fx.app.press("label:Done").unwrap();
+
+    fx.app
+        .type_text("label:Message composer", "Main draft")
+        .unwrap();
+    fx.app
+        .press("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.app.press("label:Bring to Main Draft").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Main draft")
+    );
+    fx.app
+        .wait_for("label:Remove conversation link: Saved side question")
+        .unwrap();
+    assert!(fx.mutations.try_recv().is_err());
+
+    fx.app
+        .press("label:Remove conversation link: Saved side question")
+        .unwrap();
+    assert!(
+        !fx.app
+            .shows("label:Remove conversation link: Saved side question")
+    );
+    fx.app
+        .press("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app.wait_for("text:Saved side question").unwrap();
+    fx.app.press("label:Bring to Main Draft").unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (payload, send) = fx.mutation("send").await;
+    let input: Send = serde_json::from_value(payload).unwrap();
+    assert_eq!(input.session_id, "main");
+    assert_eq!(
+        input.message,
+        "Main draft [@Saved side question](maka://session/saved)"
+    );
+    assert!(input.quotes.is_empty());
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"main".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+    fx.app
+        .wait_for_gone(
+            "label:Remove conversation link: Saved side question",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+
+    fx.app.press("label:Chats").unwrap();
+    fx.app.wait_for("label:Conversation: Main Chat").unwrap();
+    let unsubscribed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let handle = fx.unsubscribed.recv().await.unwrap();
+            if handle["subscriptionId"] == scope["subscriptionId"] {
+                break handle;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(unsubscribed["generation"], scope["generation"]);
+    assert_eq!(fx.app.screen().count("text:1").unwrap(), 1);
+    assert_eq!(fx.app.screen().count("text:2").unwrap(), 0);
+
+    fx.open_main();
+    let scope = fx.subscription("catalog", Some("side_questions")).await;
+    fx.app
+        .send_host_event(
+            "ios.subscriptionEnded",
+            json!({
+                "rootId":"root","subscriptionId":scope["subscriptionId"],
+                "generation":scope["generation"],"error":"catalog closed"
+            }),
+        )
+        .unwrap();
+    fx.app.press("label:More").unwrap();
+    fx.app.choose_menu_item("All Side Questions").unwrap();
+    fx.app
+        .wait_for("text:Could not load side questions")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_pending_restores_the_readable_main_and_can_open_an_orphan() {
+    for missing_main in [false, true] {
+        let mut fx = side_chat_fixture(false, missing_main);
+        fx.app.press("label:Pending").unwrap();
+        fx.app
+            .wait_for("text:Allow service call SideTool?")
+            .unwrap();
+        assert_eq!(
+            fx.app
+                .screen()
+                .count("text:Allow service call SideTool?")
+                .unwrap(),
+            1
+        );
+        fx.app.press("text:Allow service call SideTool?").unwrap();
+        fx.app.press("label:Open Conversation >> nth=0").unwrap();
+        if missing_main {
+            fx.app.wait_for("text:Side Question").unwrap();
+            assert!(!fx.app.shows("label:Bring to Main Draft"));
+            fx.app.press("label:Chats").unwrap();
+            fx.app.wait_for("label:Conversation: Room Chat").unwrap();
+        } else {
+            fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+            fx.app.press("label:Back").unwrap();
+            fx.app.wait_for("text:Main Chat").unwrap();
+            fx.app.wait_for("text:Earlier durable answer").unwrap();
+        }
+        assert!(fx.mutations.try_recv().is_err());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_actions_are_absent_in_rooms_and_from_live_preview() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut ask = watch_selection_menu(&mut fx.app, "Ask Side Question");
+    fx.app.press("label:Conversation: Room Chat").unwrap();
+    fx.app.wait_for("text:Room message").unwrap();
+    assert!(!fx.app.shows("label:Ask Side Question"));
+    assert!(!fx.app.shows("label:More"));
+    fx.app.press("label:Chats").unwrap();
+    while fx.subscriptions.try_recv().is_ok() {}
+    fx.open_main();
+    let watch = fx.subscription("watch", None).await;
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":watch["subscriptionId"],"rootId":"root","generation":watch["generation"],
+        "item":{"kind":"preview","page":{
+            "kind":"cut","hostEpoch":"ea","runId":"run","turnId":"running","stepId":"step","attemptId":"attempt",
+            "revision":1,"dependsOn":0,"first":true,"last":false,
+            "parts":[{"ordinal":0,"messageId":"streaming","startedAt":1,
+                "field":{"kind":"text","textKind":"text"},"offset":0,"totalBytes":11,"text":"Live answer"}]
+        }}
+    })).unwrap();
+    fx.app.wait_for("text:Live answer").unwrap();
+    // Only the two durable source rows are eligible; neither a provider's
+    // finalAnswer flag nor the live preview exposes collection or direct Ask.
+    assert!(!ask(&mut fx.app, "text:Provider marked this final", None));
+    assert!(!ask(&mut fx.app, "text:Live answer", None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_connection_change_discards_only_the_unsubmitted_side_draft() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    fx.app
+        .type_text("label:Message composer", "Keep the main draft")
+        .unwrap();
+    assert!(quote(
+        &mut fx.app,
+        "text:Earlier durable answer",
+        Some("Earlier durable answer")
+    ));
+
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Not submitted")
+        .unwrap();
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(2, None))
+        .unwrap();
+    fx.app.wait_for("label:Reconnect").unwrap();
+    fx.app.wait_for("text:Main Chat").unwrap();
+
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(3, Some(8)))
+        .unwrap();
+    fx.app.wait_for("label:Message composer").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Earlier durable answer")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep the main draft")
+    );
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app.wait_for("text:Side Question").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("")
+    );
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(4, Some(9)))
+        .unwrap();
+    fx.app.wait_for("text:Main Chat").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep the main draft")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_late_fork_receipt_keeps_child_draft_after_disconnect() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    assert!(quote(
+        &mut fx.app,
+        "text:Earlier durable answer",
+        Some("Earlier durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Keep this question")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, fork) = fx.mutation("fork").await;
+
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(2, None))
+        .unwrap();
+    fx.app.wait_for("label:Reconnect").unwrap();
+    let old_catalog = fx.subscription("catalog", Some("side_questions")).await;
+    let side = side_session("new-side", "Keep this question", &Value::Null);
+    fork.resolve(json!({"value":{"kind":"forked","session":side}}));
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(3, Some(8)))
+        .unwrap();
+    let catalog = fx.subscription("catalog", Some("side_questions")).await;
+    assert_ne!(catalog["subscriptionId"], old_catalog["subscriptionId"]);
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "rootId":"root","subscriptionId":catalog["subscriptionId"],"generation":catalog["generation"],
+        "item":{"revision":"sides-new","sessions":[side],"needsYouCount":0,"before":null,"after":null}
+    })).unwrap();
+    fx.app
+        .press("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Earlier durable answer")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep this question")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_unselected_row_is_an_anchor_even_with_a_full_quote_tray() {
+    let mut fx = side_chat_fixture_on(false, false, Os::MacOs, 16);
+    let mut select = watch_selection_menus(&mut fx.app);
+    fx.open_main();
+    assert!(select(
+        &mut fx.app,
+        "Add to quotes",
+        "text:Earlier durable answer",
+        Some("Earlier durable answer")
+    ));
+    for i in 1..16 {
+        let text = format!("Collected answer {i}");
+        assert!(select(
+            &mut fx.app,
+            "Add to quotes",
+            &format!("text:{text}"),
+            Some(&text)
+        ));
+    }
+    fx.app.wait_for("text:Quote limit reached (16)").unwrap();
+    assert!(select(
+        &mut fx.app,
+        "Ask Side Question",
+        "text:Later durable answer",
+        None
+    ));
+    fx.app
+        .type_text("label:Message composer", "What ties these together?")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, fork) = fx.mutation("fork").await;
+    let (_, late) = side_history_rows();
+    assert_eq!(input["position"]["position"], late["position"]);
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","What ties these together?",&Value::Null)}}));
+    let (payload, send) = fx.mutation("send").await;
+    let input: Send = serde_json::from_value(payload).unwrap();
+    assert_eq!(input.session_id, "new-side");
+    let expected = std::iter::once("Earlier durable answer".into())
+        .chain((1..16).map(|i| format!("Collected answer {i}")))
+        .collect::<Vec<String>>();
+    assert_eq!(
+        input
+            .quotes
+            .into_iter()
+            .map(|quote| quote.text)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_reply_context_menu_starts_an_anchor_only_draft() {
+    use nsh_core::{EventKind, EventPayload, MountItem};
+
+    let mut fx = side_chat_fixture_on(false, false, Os::Ios, 1);
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    // UIKit presents the context menu. Drive the action the reply mounted.
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item
+                && let Some(action) = props.iter().find_map(|(name, value)| {
+                    if name.as_ref() != "items" {
+                        return None;
+                    }
+                    value
+                        .as_ref()?
+                        .as_array()?
+                        .iter()
+                        .find(|item| item["label"] == "Ask Side Question")
+                })
+            {
+                menu_tx.send((*id, action["id"].clone())).unwrap();
+            }
+        }
+    });
+    fx.open_main();
+    let (menu, action) = menus.try_recv().unwrap();
+    fx.app.engine().control().dispatch_event(
+        menu,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: action,
+        },
+    );
+    fx.app.wait_for("text:Side Question").unwrap();
+    assert!(!fx.app.shows("label:Clear all quotes"));
+    assert!(fx.mutations.try_recv().is_err());
+    fx.app
+        .type_text("label:Message composer", "Follow up on the latest answer")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, fork) = fx.mutation("fork").await;
+    let (_, late) = side_history_rows();
+    assert_eq!(input["position"]["position"], late["position"]);
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","Follow up",&Value::Null)}}));
+    let (payload, send) = fx.mutation("send").await;
+    let input: Send = serde_json::from_value(payload).unwrap();
+    assert_eq!(input.session_id, "new-side");
+    assert!(input.quotes.is_empty());
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_tray_rejects_mixed_sources_but_a_direct_anchor_keeps_eligible_quotes() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut select = watch_selection_menus(&mut fx.app);
+    fx.open_main();
+    assert!(select(
+        &mut fx.app,
+        "Add to quotes",
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    fx.app.wait_for("label:Ask Side Question").unwrap();
+    for text in ["A user message", "Provider marked this final"] {
+        assert!(select(
+            &mut fx.app,
+            "Add to quotes",
+            &format!("text:{text}"),
+            Some(text)
+        ));
+        fx.app.wait_for("text:2 quotes").unwrap();
+        assert!(!fx.app.shows("label:Ask Side Question"));
+        if text == "A user message" {
+            fx.app.press("label:Remove quote: A user message").unwrap();
+            fx.app.wait_for("label:Ask Side Question").unwrap();
+        }
+    }
+    assert!(select(
+        &mut fx.app,
+        "Ask Side Question",
+        "text:Earlier durable answer",
+        None
+    ));
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    assert!(
+        !fx.app
+            .shows("label:Remove quote: Provider marked this final")
+    );
+    fx.app
+        .type_text("label:Message composer", "Ask from this reply")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, fork) = fx.mutation("fork").await;
+    let (early, _) = side_history_rows();
+    assert_eq!(input["position"]["position"], early["position"]);
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","Ask from this reply",&Value::Null)}}));
+    let (payload, send) = fx.mutation("send").await;
+    let input: Send = serde_json::from_value(payload).unwrap();
+    assert_eq!(input.quotes.len(), 1);
+    assert_eq!(input.quotes[0].text, "Later durable answer");
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_from_tray_cannot_send_after_the_last_quote_is_removed() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    assert!(quote(
+        &mut fx.app,
+        "text:Earlier durable answer",
+        Some("Earlier durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Question without a source")
+        .unwrap();
+    assert!(fx.app.screen().enabled("label:Send message").unwrap());
+    fx.app
+        .press("label:Remove quote: Earlier durable answer")
+        .unwrap();
+    assert!(!fx.app.screen().enabled("label:Send message").unwrap());
+    assert!(fx.app.press("label:Send message").is_err());
+    assert!(fx.mutations.try_recv().is_err());
+    fx.app.press("label:Cancel").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: Earlier durable answer")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_blank_reply_context_menu_has_no_quote_action() {
+    use nsh_core::{EventKind, EventPayload, MountItem};
+
+    let mut blank = quote_history_row(1, "assistant", " \u{2003} ");
+    blank["finalOutput"] = json!(true);
+    let mut fx = side_chat_fixture_with_history(false, false, Os::Ios, vec![blank]);
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item
+                && let Some(items) = props.iter().find_map(|(name, value)| {
+                    if name.as_ref() != "items" {
+                        return None;
+                    }
+                    let items = value.as_ref()?.as_array()?;
+                    items
+                        .iter()
+                        .any(|item| item["label"] == "Ask Side Question")
+                        .then_some(items)
+                })
+            {
+                menu_tx.send((*id, items.clone())).unwrap();
+            }
+        }
+    });
+    fx.app.press("label:Conversation: Main Chat").unwrap();
+    fx.app.wait_for("label:Copy reply").unwrap();
+    let (menu, items) = menus.try_recv().unwrap();
+    assert!(!items.iter().any(|item| item["label"] == "Add to quotes"));
+    assert!(!fx.app.shows("label:Quote"));
+
+    let ask = items
+        .iter()
+        .find(|item| item["label"] == "Ask Side Question")
+        .unwrap();
+    // Invoke the remaining action through the same event UIKit sends.
+    fx.app.engine().control().dispatch_event(
+        menu,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: ask["id"].clone(),
+        },
+    );
+    fx.app.wait_for("text:Side Question").unwrap();
+    assert!(!fx.app.shows("label:Clear all quotes"));
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_uncertain_fork_can_check_catalog_without_discarding_question() {
+    let mut fx = side_chat_fixture(false, false);
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.open_main();
+    let catalog = fx.subscription("catalog", Some("side_questions")).await;
+    assert!(quote(
+        &mut fx.app,
+        "text:Later durable answer",
+        Some("Later durable answer")
+    ));
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Did this branch get created?")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, fork) = fx.mutation("fork").await;
+    fork.reject("Host mutation result was not acknowledged: connection closed");
+    fx.app
+        .wait_for("text:Side question creation could not be confirmed.")
+        .unwrap();
+    fx.app.press("label:View All Side Questions").unwrap();
+    fx.app.wait_for("text:All Side Questions").unwrap();
+
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "rootId":"root","subscriptionId":catalog["subscriptionId"],"generation":catalog["generation"],
+        "item":{"revision":"sides-1","sessions":[side_session("new-side","Recovered side question",&Value::Null)],
+            "needsYouCount":0,"before":null,"after":null}
+    })).unwrap();
+    fx.app.wait_for("text:Recovered side question").unwrap();
+    fx.app.press("label:Done").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Did this branch get created?")
+    );
+    fx.app
+        .wait_for("label:Remove quote: Later durable answer")
+        .unwrap();
+    assert!(!fx.app.screen().enabled("label:Send message").unwrap());
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_cannot_bring_a_link_to_a_removed_main_conversation() {
+    use std::sync::atomic::Ordering;
+
+    let mut fx = side_chat_fixture(false, false);
+    fx.open_main();
+    fx.app
+        .type_text("label:Message composer", "Unchanged")
+        .unwrap();
+    let catalog = fx.subscription("catalog", Some("side_questions")).await;
+    fx.app.send_host_event("ios.subscriptionItem", json!({
+        "rootId":"root","subscriptionId":catalog["subscriptionId"],"generation":catalog["generation"],
+        "item":{"revision":"sides-1","sessions":[side_session("saved","Saved side question",&Value::Null)],
+            "needsYouCount":1,"before":null,"after":null}
+    })).unwrap();
+    fx.app
+        .press("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.main_removed.store(true, Ordering::Relaxed);
+    fx.app.press("label:Bring to Main Draft").unwrap();
+    fx.app
+        .wait_for("text:The main conversation is no longer available.")
+        .unwrap();
+    fx.app
+        .press("text:The main conversation is no longer available.")
+        .unwrap();
+    fx.app.wait_for("text:Side Question · Main Chat").unwrap();
+    fx.app.press("label:Back").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Unchanged")
+    );
+    assert!(fx.mutations.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_waits_for_the_parent_model_selection_to_commit() {
+    use nsh_core::{EventKind, EventPayload, MountItem};
+
+    let mut fx = side_chat_fixture_on(false, false, Os::Ios, 1);
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    fx.app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item {
+                for (name, value) in props {
+                    if name.as_ref() == "items"
+                        && let Some(items) = value.as_ref().and_then(Value::as_array)
+                        && let Some(model) =
+                            items.iter().find(|item| item["label"] == "New side model")
+                    {
+                        menu_tx.send((*id, model["id"].clone())).unwrap();
+                    }
+                }
+            }
+        }
+    });
+    fx.open_main();
+    let (menu, model) = tokio::time::timeout(Duration::from_secs(2), menus.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fx.app.engine().control().dispatch_event(
+        menu,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: model,
+        },
+    );
+    fx.app.settle(); // The model RPC is intentionally still pending.
+    let (selection, commit) = fx.mutation("selectBackend").await;
+    fx.app.press("label:Quote >> nth=0").unwrap();
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Use the just-selected model")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    assert!(
+        fx.mutations.try_recv().is_err(),
+        "forked before the model selection committed"
+    );
+
+    let backend = selection["backend"].clone();
+    *fx.backend.lock().unwrap() = backend.clone();
+    commit.resolve(json!({"value":{"kind":"committed","session":{
+        "id":"main","title":"Main Chat","kind":"agent","revision":42,"backend":backend,
+        "branch":null,"workspace":{"path":"/work"}
+    }}}));
+    let (input, fork) = fx.mutation("fork").await;
+    assert_eq!(input["expectedRevision"], 42);
+    fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","Use the new model",&backend)}}));
+    let (input, send) = fx.mutation("send").await;
+    assert_eq!(input["backend"]["modelId"], "new-model");
+    assert_eq!(input["sessionId"], "new-side");
+    send.resolve(json!({"value":SendResult::Queued{
+        session_id:"new-side".into(),message_id:"queued".into(),revision:2,completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn side_chat_slow_pending_jump_is_cancelled_after_leaving_the_review_or_tab() {
+    use std::sync::atomic::Ordering;
+
+    for leave_review in [true, false] {
+        let mut fx = side_chat_fixture(false, false);
+        fx.app.press("label:Pending").unwrap();
+        fx.app.press("text:Allow service call SideTool?").unwrap();
+        fx.hold_side_observe.store(true, Ordering::Relaxed);
+        fx.app.press("label:Open Conversation >> nth=0").unwrap();
+        let (observe, value) =
+            tokio::time::timeout(Duration::from_secs(2), fx.side_observations.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        if leave_review {
+            fx.app.press("label:Pending").unwrap();
+        } else {
+            fx.app.send_url_scheme("maka://settings");
+            fx.app.wait_for("label:Computer: Host").unwrap();
+            fx.app.send_url_scheme("maka://pending");
+            fx.app.wait_for("label:Open Conversation >> nth=0").unwrap();
+        }
+        observe.resolve(value);
+        assert!(fx.app.settle());
+        assert!(!fx.app.shows("text:Side Question · Main Chat"));
+        if leave_review {
+            fx.app
+                .wait_for("text:Allow service call SideTool?")
+                .unwrap();
+            assert!(!fx.app.shows("label:Open Conversation"));
+        } else {
+            fx.app.wait_for("label:Open Conversation >> nth=0").unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_history() {
+    let mut user = quote_history_row(1, "user", "Keep café intact.");
+    user["text"] = json!("Keep café");
+    let mut continuation = user.clone();
+    continuation["offset"] = json!("Keep café".len());
+    continuation["text"] = json!(" intact.");
+    let assistant = quote_history_row(2, "assistant", "Context\n\n**Swift** ready");
+    let mut history = quote_history_row(3, "user", "");
+    history["quotes"] =
+        json!([{"label":"Desktop source","text":"A quote-only history excerpt","truncated":true}]);
+    let (mut app, mut sends) =
+        quote_chat_fixture(vec![user, continuation, assistant, history], vec![], None);
+
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Desktop source").unwrap();
+    app.wait_for("text:A quote-only history excerpt…").unwrap();
+    app.wait_for("text:Keep café intact.").unwrap();
+    app.wait_for("text:Swift ready").unwrap();
+    // Drag from the end of the first paragraph to the end of the second.
+    // The result is a single paragraph of rendered text, not the Markdown source.
+    let center = |selector| {
+        app.screen()
+            .layout(selector)
+            .unwrap()
+            .unwrap()
+            .bounds
+            .center()
+    };
+    let by = center("text:Swift ready") - center("text:Context");
+    app.drag("text:Context", by, Default::default()).unwrap();
+    assert!(!app.shows("role:button[Quote] >> nth=1"));
+    assert!(choose_quote(&mut app, "text:Swift ready", None));
+    let user_body = "text:Keep café intact. >> nth=0";
+    let mut quote_user = |app: &mut Headless| {
+        assert!(choose_quote(app, user_body, Some("Keep café intact.")));
+    };
+    quote_user(&mut app);
+    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("label:Remove quote: Swift ready").unwrap();
+    app.wait_for("label:Remove quote: Keep café intact.")
+        .unwrap();
+
+    let chip = |selector| {
+        let id = app.screen().id(selector).unwrap();
+        let nodes = app.screen().layout_nodes();
+        let parent = nodes.iter().find(|node| node.id == id).unwrap().parent;
+        nodes.iter().find(|node| node.id == parent).unwrap().bounds
+    };
+    let first = chip("label:Remove quote: Swift ready");
+    let second = chip("label:Remove quote: Keep café intact.");
+    assert_eq!(first.size.height, px(44.));
+    assert_eq!(second.size.height, first.size.height);
+    assert_eq!(second.origin.y, first.origin.y);
+    assert!(second.origin.x.0 >= (first.origin.x + first.size.width).0);
+
+    quote_user(&mut app);
+    app.press("text:Already quoted").unwrap();
+    app.press("label:Remove quote: Keep café intact.").unwrap();
+    app.wait_for("text:1 quote").unwrap();
+    assert!(!app.shows("label:Remove quote: Keep café intact."));
+    quote_user(&mut app);
+
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Other Chat").unwrap();
+    assert!(!app.shows("label:Clear all quotes"));
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (send, call) = sends.try_recv().unwrap();
+    assert_eq!(send.session_id, "chat");
+    assert_eq!(send.message, "");
+    assert_eq!(
+        json!(send.quotes),
+        json!([
+            {"text":"Swift ready","label":"Maka","sourceMessageId":"m2","sourceTurnId":"t1"},
+            {"text":"Keep café intact.","label":"You","sourceMessageId":"m1","sourceTurnId":"t1"}
+        ])
+    );
+    call.resolve(json!({"value":SendResult::Rejected {
+        session_id:"chat".into(), reason:maka_agent_api::contract::SendRejection::ModelUnavailable,
+        skills:None,
+    }}));
+    app.wait_for("text:Could not send the message.").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (retry, call) = sends.try_recv().unwrap();
+    assert_eq!(retry.quotes, send.quotes);
+    call.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"queued".into(), revision:2, completion:None,
+    }}));
+    assert!(app.settle());
+    assert!(!app.shows("label:Clear all quotes"));
+    assert!(app.press("label:Send message").is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assistant_turn_with_tools_has_one_copy_and_quote_action_for_all_bodies() {
+    let mut tool = quote_history_row(2, "assistant", "");
+    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![
+            quote_history_row(1, "assistant", "**First** answer"),
+            tool,
+            quote_history_row(3, "assistant", "Second answer"),
+        ],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Second answer").unwrap();
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("**First** answer\n\nSecond answer")
+    );
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(
+        json!(send.quotes),
+        json!([{"text":"**First** answer\n\nSecond answer","label":"Maka","sourceTurnId":"t1"}])
+    );
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"combined".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history_loads() {
+    let mut tool = quote_history_row(2, "assistant", "");
+    tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(3, "assistant", "Second answer")],
+        vec![quote_history_row(1, "assistant", "First answer"), tool],
+        None,
+    );
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Second answer").unwrap();
+    app.wait_for("label:Load earlier messages").unwrap();
+    assert!(!app.shows("role:button[Copy reply]"));
+    assert!(!app.shows("role:button[Quote]"));
+    assert!(choose_quote(&mut app, "text:Second answer", Some("Second")));
+    app.wait_for("label:Remove quote: Second").unwrap();
+
+    app.press("label:Load earlier messages").unwrap();
+    app.wait_for("text:First answer").unwrap();
+    app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("First answer\n\nSecond answer")
+    );
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(
+        json!(send.quotes),
+        json!([
+            {"text":"Second","label":"Maka","sourceMessageId":"m3","sourceTurnId":"t1"},
+            {"text":"First answer\n\nSecond answer","label":"Maka","sourceTurnId":"t1"}
+        ])
+    );
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"boundary".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_limit_disables_the_seventeenth_quote() {
+    let (mut app, mut sends) = quote_chat_fixture(
+        (1..=17)
+            .map(|n| {
+                let mut row = quote_history_row(n, "assistant", &format!("Excerpt {n}"));
+                row["turnId"] = json!(format!("t{n}"));
+                row
+            })
+            .collect(),
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Excerpt 17").unwrap();
+    for n in 0..16 {
+        app.press(&format!("role:button[Quote] >> nth={n}"))
+            .unwrap();
+    }
+    app.wait_for("text:Quote limit reached (16)").unwrap();
+    assert!(app.press("role:button[Quote] >> nth=16").is_err());
+    app.press("label:Send message").unwrap();
+    let (send, call) = sends.try_recv().unwrap();
+    let excerpts = send
+        .quotes
+        .iter()
+        .map(|q| q.text.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        excerpts,
+        (1..=16).map(|n| format!("Excerpt {n}")).collect::<Vec<_>>()
+    );
+
+    // Edits during a pending send belong to the next draft.
+    app.press("label:Clear all quotes").unwrap();
+    app.press("role:button[Quote] >> nth=16").unwrap();
+    app.press("role:button[Quote] >> nth=0").unwrap();
+    call.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"queued".into(), revision:2, completion:None,
+    }}));
+    assert!(app.settle());
+    app.wait_for("label:Remove quote: Excerpt 17").unwrap();
+    app.wait_for("label:Remove quote: Excerpt 1").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_in_flight_survives_reopening_and_consumes_only_the_sent_quote() {
+    let mut second_turn = quote_history_row(2, "assistant", "Second excerpt");
+    second_turn["turnId"] = json!("t2");
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![
+            quote_history_row(1, "assistant", "First excerpt"),
+            second_turn,
+        ],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:First excerpt").unwrap();
+    app.press("role:button[Quote] >> nth=0").unwrap();
+    app.press("label:Send message").unwrap();
+    let (first, receipt) = sends.try_recv().unwrap();
+    assert!(first.message.is_empty());
+    assert_eq!(first.quotes.len(), 1);
+    assert_eq!(first.quotes[0].text, "First excerpt");
+
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    app.press("role:button[Quote] >> nth=1").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    app.press("label:Chats").unwrap();
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:2 quotes").unwrap();
+    assert!(!app.screen().enabled("label:Send message").unwrap());
+    assert!(app.press("label:Send message").is_err());
+    assert!(
+        sends.try_recv().is_err(),
+        "send duplicated after reopening chat"
+    );
+
+    let queued = |id: &str, revision| {
+        json!({"value":SendResult::Queued {
+            session_id:"chat".into(), message_id:id.into(), revision, completion:None,
+        }})
+    };
+    receipt.resolve(queued("first", 2));
+    app.wait_for("text:1 quote").unwrap();
+    app.wait_for("text:Next draft").unwrap();
+    assert!(!app.shows("label:Remove quote: First excerpt"));
+    app.press("label:Send message").unwrap();
+    let (second, receipt) = sends.try_recv().unwrap();
+    assert_eq!(second.message, "Next draft");
+    assert_eq!(second.quotes.len(), 1);
+    assert_eq!(second.quotes[0].text, "Second excerpt");
+    receipt.resolve(queued("second", 3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_can_send_the_next_draft_before_history_refresh_returns() {
+    let (refresh_tx, mut refreshes) = mpsc::unbounded_channel();
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "assistant", "First excerpt")],
+        vec![],
+        Some(refresh_tx),
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:First excerpt").unwrap();
+    app.press("role:button[Quote]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (first, receipt) = sends.try_recv().unwrap();
+    assert_eq!(first.quotes[0].text, "First excerpt");
+
+    app.type_text("label:Message composer", "Next draft")
+        .unwrap();
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"first".into(), revision:2, completion:None,
+    }}));
+    app.wait_for_gone("label:Remove quote: First excerpt", Duration::from_secs(2))
+        .unwrap();
+    let (history, page) = tokio::time::timeout(Duration::from_secs(2), refreshes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    app.press("label:Send message").unwrap();
+    let (second, receipt) = sends.try_recv().unwrap();
+    assert_eq!(second.message, "Next draft");
+    assert!(second.quotes.is_empty());
+    assert!(app.press("label:Send message").is_err());
+    assert!(sends.try_recv().is_err());
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"second".into(), revision:3, completion:None,
+    }}));
+    history.resolve(json!({"value":page}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_quote_selection_rejects_rust_whitespace_and_trims_valid_excerpts() {
+    let (mut app, mut sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "Keep\u{0085}the excerpt")],
+        vec![],
+        None,
+    );
+    let mut choose_quote = watch_quote_menus(&mut app);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let body = "text:Keep\u{0085}the excerpt";
+    app.wait_for(body).unwrap();
+    assert!(app.screen().in_selectable_view(body).unwrap());
+    assert!(!app.shows("role:button[Quote]"));
+    // UIKit reports the selected text, which can include NEL.
+    assert!(choose_quote(&mut app, body, Some("\u{0085}")));
+    assert!(!app.shows("label:Clear all quotes"));
+    assert!(app.press("label:Send message").is_err());
+    assert!(sends.try_recv().is_err());
+
+    assert!(choose_quote(&mut app, body, Some("\u{0085}the excerpt")));
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(send.quotes.len(), 1);
+    assert_eq!(send.quotes[0].text, "the excerpt");
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"excerpt".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_user_quote_button_exists_only_for_a_valid_selection() {
+    use nsh_core::{EventKind, EventPayload, PayloadValue};
+
+    let (mut app, _sends) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "Keep\u{0085}this excerpt")],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let body = "text:Keep\u{0085}this excerpt";
+    let action = "role:button[Add to quotes]";
+    app.wait_for(body).unwrap();
+    assert!(!app.shows("role:button[Quote]"));
+    assert!(!app.shows(action));
+
+    let body_id = app.screen().id(body).unwrap();
+    let owner = app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.id == body_id)
+        .unwrap()
+        .parent;
+    let select = |app: &mut Headless, text: &str| {
+        app.engine().control().dispatch_event(
+            owner,
+            EventKind::SelectionChange,
+            EventPayload::Map(vec![
+                ("text", PayloadValue::Str(text.into())),
+                ("start", PayloadValue::Number(4.0)),
+            ]),
+        );
+        assert!(app.settle());
+    };
+    select(&mut app, "\u{0085}");
+    assert!(!app.shows(action));
+
+    select(&mut app, "this excerpt");
+    app.wait_for(action).unwrap();
+    assert_eq!(
+        app.screen()
+            .layout(action)
+            .unwrap()
+            .unwrap()
+            .bounds
+            .size
+            .height,
+        px(44.)
+    );
+    select(&mut app, "");
+    assert!(!app.shows(action));
+    assert!(!app.shows("label:Clear all quotes"));
+
+    select(&mut app, "this excerpt");
+    app.press(action).unwrap();
+    app.wait_for("label:Remove quote: this excerpt").unwrap();
+    assert!(!app.shows(action));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_duplicate_submit() {
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
-        call.reply(Ok(json!({
-            "revision": 1,
-            "devicePeerId": "ios-device",
-            "filter": { "kind": "all_computers" },
-            "hosts": [
-                { "rootId": "root-a", "hostName": "MacBook Pro", "peerId": "peer-a", "connected": true, "endpoints": ["agent"] }
-            ],
-            "active": {
-                "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic"
-            },
-            "connections": {
-                "root-a": { "status": "connected", "connection": { "rootId": "root-a", "hostName": "MacBook Pro", "epoch": "ea", "session": "sa", "generation": 1, "endpoints": ["agent"], "pathSummary": null, "transport": "quic" } }
-            }
-        })));
+        call.resolve(workspace_host_state(1, "MacBook Pro"))
     });
     let resolved_remotely = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let resolved_q = resolved_remotely.clone();
@@ -2227,6 +4210,10 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.press("text:Allow service call ReleaseTool?").unwrap();
     app.wait_for("label:Deny").unwrap();
     assert!(!app.shows("label:Allow"));
+    app.wait_for("text:MacBook Pro").unwrap();
+    app.send_host_event("ios.hostState", workspace_host_state(2, "Office Mac"))
+        .unwrap();
+    app.wait_for("text:Office Mac").unwrap();
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3312,6 +5299,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
+    let mut choose_quote = watch_quote_menus(&mut app);
     app.wait_for("label:Conversation: Release Room").unwrap();
     app.press("label:Conversation: Release Room").unwrap();
     app.wait_for("text:Initial room message").unwrap();
@@ -3331,11 +5319,15 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     earlier.resolve(json!({"value":value}));
     app.wait_for("text:Earlier room message").unwrap();
     assert!(app.press("label:Select model").is_err());
+    assert!(!app.shows("label:Quote"));
+    assert!(!choose_quote(&mut app, "text:Live room message", None));
+    assert!(!app.shows("label:Clear all quotes"));
     app.type_text("label:Message composer", "Hi Room").unwrap();
     app.press("label:Send message").unwrap();
     let input = send_rx.try_recv().unwrap();
     assert!(input["backend"].is_null());
     assert_eq!(input["message"], "Hi Room");
+    assert!(input.get("quotes").is_none());
     app.wait_for("text:Initial room message").unwrap();
     app.press("label:Load earlier messages").unwrap();
     let (data, stale, page) = earlier_rx.try_recv().unwrap();

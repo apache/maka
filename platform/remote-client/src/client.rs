@@ -23,6 +23,7 @@
 use crate::link::Link;
 use bytes::Bytes;
 use futures_util::{Sink, Stream};
+use maka_remote_pairing::HostPlatform;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -119,6 +120,7 @@ enum WireRequest {
     Call {
         session: Uuid,
     },
+    PeerPairingInfo,
     RedeemPeerPairing {
         invite_secret: String,
         device_label: Option<String>,
@@ -139,6 +141,7 @@ enum WireResponse {
     Accepted,
     Closed,
     PeerAccessRevoked,
+    PeerPairingInfo(Option<HostPlatform>),
     PeerPairingReceipt(Result<PeerPairingReceipt, String>),
     #[serde(other)]
     Other,
@@ -377,6 +380,32 @@ async fn read_optional_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
         reader.consume(take);
     }
     Ok(Some(serde_json::from_slice(&body)?))
+}
+
+pub(crate) async fn pairing_platform(
+    link: &Link,
+) -> Result<Option<HostPlatform>, RemoteClientError> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut stream = link.open().await?;
+        write_frame(
+            &mut stream,
+            &Opening {
+                version: HOST_PROTOCOL_VERSION,
+                epoch: None,
+                client_instance: None,
+                request: WireRequest::PeerPairingInfo,
+            },
+        )
+        .await?;
+        match read_frame(&mut BufReader::new(stream)).await? {
+            WireResponse::PeerPairingInfo(platform) => Ok(platform),
+            _ => Err(RemoteClientError::Protocol(
+                "Host did not return pairing info".into(),
+            )),
+        }
+    })
+    .await
+    .map_err(|cause| io::Error::new(io::ErrorKind::TimedOut, cause))?
 }
 
 pub(crate) async fn redeem_pairing_invite(

@@ -33,11 +33,13 @@ import {
   type PathSummary,
   onOperationRecovery,
   removeHost,
+  renameHost,
   setFilter,
   setHostSnapshot,
   type ActiveHostInfo,
   type HostConnectionState,
   type HostStateSnapshot,
+  type InvalidName,
   type ParsedTicketInfo,
   type SavedHostItem,
 } from '../bridge';
@@ -370,29 +372,49 @@ export async function startPairingFromUri(
   }
 }
 
-export async function confirmPendingPairing(): Promise<boolean> {
+function invalidNameMessage({ field, reason }: InvalidName): string {
+  switch (reason) {
+    case 'empty':
+      return tr('A name cannot be empty.');
+    case 'controlCharacter':
+      return tr('A name cannot contain control characters.');
+    case 'tooLong':
+      return field === 'hostName'
+        ? tr('Computer name is too long.')
+        : tr('Device name is too long.');
+  }
+}
+
+export async function confirmPendingPairing(hostName: string | null): Promise<boolean> {
   const ticket = pendingTicket();
   if (!ticket || pairingBusy()) return false;
-  if (new TextEncoder().encode(pendingDeviceLabel().trim()).length > 128) {
-    pairingError.set(tr('Device name must be 128 UTF-8 bytes or fewer.'));
-    return false;
-  }
   const gen = ++pairingGeneration;
   pairingBusy.set(true);
   pairingError.set(null);
   try {
-    const next = await confirmPairing(ticket.pairingId, ticket.sasCode, pendingDeviceLabel());
+    const result = await confirmPairing(
+      ticket.pairingId,
+      ticket.sasCode,
+      pendingDeviceLabel(),
+      hostName ?? undefined,
+    );
     if (gen !== pairingGeneration) {
       // Cancelled while confirming: ignore late admission snapshot.
       return false;
     }
-    applySnapshot(next);
+    if (result.kind === 'invalidName') {
+      hapticNotification('error');
+      pairingError.set(invalidNameMessage(result));
+      return false;
+    }
+    applySnapshot(result.snapshot);
     pendingTicket.set(null);
     incomingPairUri.set(null);
     pairingModalOpen.set(false);
     advancedSheetOpen.set(false);
     hapticNotification('success');
-    showToast(tr('Connected to {name}', { name: ticket.hostName }));
+    const host = result.snapshot.hosts.find(({ rootId }) => rootId === ticket.rootId)!;
+    showToast(tr('Connected to {name}', { name: host.hostName }));
     return true;
   } catch (cause) {
     if (gen === pairingGeneration) {
@@ -604,6 +626,21 @@ export function removeSavedHost(rootId: string): Promise<boolean> {
     () => removeHost(rootId),
     () => hapticNotification('warning'),
   );
+}
+
+export async function renameSavedHost(rootId: string, hostName: string): Promise<boolean> {
+  try {
+    const result = await renameHost(rootId, hostName);
+    if (result.kind === 'invalidName') {
+      showToast(invalidNameMessage(result));
+      return false;
+    }
+    applySnapshot(result.snapshot);
+    return true;
+  } catch (cause) {
+    showToast(cause instanceof Error ? cause.message : String(cause));
+    return false;
+  }
 }
 
 export async function checkHostConnection(rootId: string): Promise<boolean> {

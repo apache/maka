@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import { cleanup, effect, untracked, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
+import {
+  cleanup,
+  computed,
+  effect,
+  safeAreaInsets,
+  Scroll,
+  signal,
+  Text,
+  token,
+  untracked,
+  View,
+} from 'nsh';
 import { Input, NavPage } from 'nsh/base';
 import {
   approvalControls,
@@ -35,8 +46,8 @@ import {
 import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { tr } from '../../locale';
+import { activeHostInfo, hostById } from '../../state/hostPool';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
-import { activeHostInfo } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, GroupRow, Icon, InsetGroup, ScreenHeader, StatusDot } from '../../ui';
@@ -65,6 +76,7 @@ export function ReviewDetailScreen(props: {
   ) => void;
 }) {
   const insets = safeAreaInsets();
+  const hostName = () => hostById(props.item.rootId)?.hostName ?? props.item.hostName;
   const liveRecord = signal<AgentInteractionRecord | null>(props.item.record);
   let disposed = false;
   let read = 0;
@@ -93,15 +105,16 @@ export function ReviewDetailScreen(props: {
     }
   };
 
+  const connectionGeneration = computed(() => activeHostInfo(props.item.rootId)?.generation);
   effect(() => {
     const { rootId, sessionId } = props.item;
-    const connection = activeHostInfo(rootId);
-    if (!connection) return;
+    const generation = connectionGeneration();
+    if (generation === undefined) return;
     untracked(() => void refreshAuthoritativeRecord());
     cleanup(
       watchHost<AgentDeliveryPage>(
         rootId,
-        connection.generation,
+        generation,
         'review:' + ++reviewSequence,
         'watch',
         { sessionId, after: 0 },
@@ -200,7 +213,7 @@ export function ReviewDetailScreen(props: {
           <InsetGroup header={tr('Source')}>
             <GroupRow
               leading={<Icon name="laptop" color={token('primary')} size={18} />}
-              title={props.item.hostName}
+              title={hostName()}
               subtitle={[props.item.workspaceName, props.item.sessionTitle]
                 .filter(Boolean)
                 .join(' · ')}
@@ -210,7 +223,7 @@ export function ReviewDetailScreen(props: {
                 props.onOpenConversation(
                   props.item.rootId,
                   props.item.sessionId,
-                  props.item.hostName,
+                  hostName(),
                   props.item.sessionTitle,
                 )
               }
@@ -311,7 +324,7 @@ export function ReviewDetailScreen(props: {
                 props.onOpenConversation(
                   props.item.rootId,
                   props.item.sessionId,
-                  props.item.hostName,
+                  hostName(),
                   props.item.sessionTitle,
                 )
               }

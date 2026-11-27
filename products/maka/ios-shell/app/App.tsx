@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { hostQuery, type AgentObservation } from './bridge';
-import { effect, Overlay, safeAreaInsets, signal, Text, View, token } from 'nsh';
+import { hostQuery, type AgentObservation, type AgentSession } from './bridge';
+import { effect, Overlay, safeAreaInsets, signal, Text, View, token, untracked } from 'nsh';
 import { createNavStack, NavStack, Toast, ToastStack } from 'nsh/base';
 import { isAvailable, TabBar, type TabBarItem } from 'nsh/mobile';
 import { formatCount, tr } from './locale';
@@ -64,8 +64,10 @@ import { WebSearchSettingsScreen } from './screens/settings/WebSearchSettingsScr
 import { NetworkSettingsScreen } from './screens/settings/NetworkSettingsScreen';
 import { SettingsRootScreen } from './screens/settings/SettingsRootScreen';
 import type { ConnectionCatalog } from './state/settings/models';
-import type { ParsedDiffFile } from './state/chat';
+import { seedSideDraft, sendDraft, type ParsedDiffFile } from './state/chat';
+import type { SideDraftRequest } from './state/sideQuestions';
 import {
+  activeHostInfo,
   closeAddComputerFlow,
   currentDeepLink,
   showToast,
@@ -89,7 +91,8 @@ import { BannerNotice } from './ui';
 type OnboardingRoute = { name: 'welcome' } | { name: 'scan' } | { name: 'confirm' };
 type ChatsRoute =
   | { name: 'list' }
-  | { name: 'chat'; item: ScopedSession }
+  | { name: 'chat'; item: ScopedSession; main?: ScopedSession }
+  | { name: 'sideDraft'; request: SideDraftRequest }
   | { name: 'files'; item: ScopedSession }
   | { name: 'diff'; item: ScopedSession; file: ParsedDiffFile };
 type InboxRoute = { name: 'list' } | { name: 'review'; item: InboxItem };
@@ -172,6 +175,12 @@ function OnboardingFlow(props: { isModal: boolean }) {
 
 function MainTabShell() {
   const activeTab = signal(0);
+  let tabEpoch = 0;
+  const selectTab = (index: number) => {
+    if (index === untracked(activeTab)) return;
+    tabEpoch++;
+    activeTab.set(index);
+  };
   const chatsNav = createNavStack<ChatsRoute>([{ name: 'list' }]);
   const inboxNav = createNavStack<InboxRoute>([{ name: 'list' }]);
   const modelSettingsRevision = signal(0);
@@ -201,9 +210,9 @@ function MainTabShell() {
     const link = currentDeepLink();
     if (!link || link.target === 'scan') return;
     clearDeepLink();
-    if (link.target === 'chats') activeTab.set(0);
-    else if (link.target === 'pending') activeTab.set(1);
-    else if (link.target === 'settings') activeTab.set(2);
+    if (link.target === 'chats') selectTab(0);
+    else if (link.target === 'pending') selectTab(1);
+    else if (link.target === 'settings') selectTab(2);
   });
 
   const handleTabChange = (index: number) => {
@@ -214,24 +223,74 @@ function MainTabShell() {
       else if (index === 2) settingsNav.popToRoot();
       return;
     }
-    activeTab.set(index);
+    selectTab(index);
   };
 
-  const jumpToConversation = (rootId: string, sessionId: string, hostName: string) => {
+  const scoped = (rootId: string, hostName: string, session: AgentSession): ScopedSession => ({
+    key: rootId + '::' + session.id,
+    rootId,
+    hostName,
+    session,
+  });
+  const observeSession = async (rootId: string, sessionId: string, hostName: string) =>
+    scoped(
+      rootId,
+      hostName,
+      (await hostQuery<AgentObservation>('agent', 'observe', { sessionId }, undefined, rootId))
+        .session,
+    );
+
+  const openConversation = (
+    rootId: string,
+    sessionId: string,
+    hostName: string,
+    known: ScopedSession | undefined,
+    pending?: InboxRoute,
+  ) => {
+    const routes = chatsNav.routes();
+    const inboxRoutes = pending ? inboxNav.routes() : undefined;
+    const tab = tabEpoch;
+    const generation = activeHostInfo(rootId)?.generation;
+    const current = () =>
+      tab === tabEpoch &&
+      chatsNav.routes() === routes &&
+      (!inboxRoutes ||
+        (activeTab() === 1 &&
+          inboxRoutes.at(-1) === pending &&
+          inboxNav.routes() === inboxRoutes)) &&
+      activeHostInfo(rootId)?.generation === generation;
+    if (!current()) return;
     void (async () => {
-      const existing = findScopedSession(rootId, sessionId);
-      const item: ScopedSession = existing ?? {
-        key: rootId + '::' + sessionId,
-        rootId,
-        hostName,
-        session: (
-          await hostQuery<AgentObservation>('agent', 'observe', { sessionId }, undefined, rootId)
-        ).session,
-      };
-      chatsNav.setRoutes([{ name: 'list' }, { name: 'chat', item }]);
-      activeTab.set(0);
-    })().catch((cause) => showToast(cause instanceof Error ? cause.message : String(cause)));
+      const item = known ?? (await observeSession(rootId, sessionId, hostName));
+      if (!current()) return;
+      let main: ScopedSession | undefined;
+      const branch = item.session.branch;
+      if (branch?.side) {
+        try {
+          main = await observeSession(rootId, branch.sessionId, hostName);
+        } catch (cause) {
+          if (!current()) return;
+          // An orphaned or inaccessible source must not prevent reading the side question.
+          console.warn('Side question source is unavailable', cause);
+        }
+      }
+      if (!current()) return;
+      chatsNav.setRoutes([
+        ...(pending ? routes.slice(0, 1) : routes),
+        ...(main ? [{ name: 'chat', item: main } as const] : []),
+        { name: 'chat', item, main },
+      ]);
+      selectTab(0);
+    })().catch((cause) => {
+      if (current()) showToast(cause instanceof Error ? cause.message : String(cause));
+    });
   };
+
+  const wireSide = (main: ScopedSession, session: AgentSession): ChatsRoute => ({
+    name: 'chat',
+    item: scoped(main.rootId, main.hostName, session),
+    main,
+  });
 
   return (
     <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
@@ -248,11 +307,45 @@ function MainTabShell() {
       >
         <NavStack state={chatsNav} style={{ flex: 1 }}>
           {(route) => {
+            if (route.name === 'sideDraft') {
+              const { request } = route;
+              return (
+                <ChatScreen
+                  item={request.main}
+                  active={() => chatsNav.routes().at(-1) === route}
+                  onBack={() => chatsNav.pop()}
+                  pendingSide={{
+                    request,
+                    onConnectionChanged: () => chatsNav.remove(route),
+                    onForked: (session, question, quotes, observed) => {
+                      const { rootId } = request.main;
+                      seedSideDraft(rootId, session.id, question, quotes);
+                      if (activeHostInfo(rootId)?.generation !== request.generation) return;
+                      // Only the accepted fork receipt submits the first question, never route mount.
+                      void sendDraft(
+                        rootId,
+                        session.id,
+                        false,
+                        async () => observed.session.backend ?? observed.rememberedBackend ?? null,
+                      );
+                      if (chatsNav.routes().at(-1) === route)
+                        chatsNav.replace(
+                          wireSide({ ...request.main, session: observed.session }, session),
+                        );
+                    },
+                  }}
+                />
+              );
+            }
             if (route.name === 'chat') {
               return (
                 <ChatScreen
                   item={route.item}
+                  mainChat={route.main}
                   onBack={() => chatsNav.pop()}
+                  active={() => activeTab() === 0 && chatsNav.routes().at(-1) === route}
+                  onAskSideQuestion={(request) => chatsNav.push({ name: 'sideDraft', request })}
+                  onOpenSideQuestion={(main, session) => chatsNav.push(wireSide(main, session))}
                   onOpenProjectFiles={(item) => chatsNav.push({ name: 'files', item })}
                 />
               );
@@ -272,6 +365,7 @@ function MainTabShell() {
                 <DiffScreen
                   rootId={route.item.rootId}
                   sessionId={route.item.session.id}
+                  canQuote={route.item.session.kind !== 'room'}
                   file={route.file}
                   onBack={() => chatsNav.pop()}
                   onQuotedBackToChat={() => chatsNav.pop(2)}
@@ -279,7 +373,11 @@ function MainTabShell() {
               );
             }
             return (
-              <ChatListScreen onOpenSession={(item) => chatsNav.push({ name: 'chat', item })} />
+              <ChatListScreen
+                onOpenSession={(item) =>
+                  openConversation(item.rootId, item.session.id, item.hostName, item)
+                }
+              />
             );
           }}
         </NavStack>
@@ -303,7 +401,15 @@ function MainTabShell() {
                 <ReviewDetailScreen
                   item={route.item}
                   onBack={() => inboxNav.pop()}
-                  onOpenConversation={jumpToConversation}
+                  onOpenConversation={(rootId, sessionId, hostName) =>
+                    openConversation(
+                      rootId,
+                      sessionId,
+                      hostName,
+                      findScopedSession(rootId, sessionId),
+                      route,
+                    )
+                  }
                 />
               );
             }
