@@ -26,10 +26,17 @@ license: Apache-2.0
 
 A theme is drawn by the person's own device. You cannot apply it. Write it in your reply as one
 code block fenced with ```maka-theme; the conversation shows the block as a card with a preview
-in light and dark and an Apply button. The person applies it, can undo it, and can fine-tune it in
-Settings › General › Theme.
+in light and dark and an Apply button. The card also tells the person how to undo it and where to
+fine-tune it.
+
+Once applied, the theme stays on that device, in every conversation, until the person changes it;
+nothing else keeps it. A device has one current theme. To keep others, the person keeps their
+blocks in the conversation or copies a theme from the theme settings page.
 
 Never say you applied or changed the theme. Tell the person to press Apply on the card.
+
+The presets are part of Maka. Do not offer to add a theme as a preset, or to change Maka's code,
+settings or stored files to keep or apply a theme.
 
 ## The block
 
@@ -110,7 +117,7 @@ a hard one is `"shadow-x": 4, "shadow-y": 4, "shadow-opacity": 1` with no blur.
 ## Changing a theme
 
 Start from the latest maka-theme block in the conversation, or from a theme the person pasted
-(Settings › General › Theme › Copy theme copies the current one). Change only what was asked and
+(Copy theme on the theme settings page copies the current one). Change only what was asked and
 write the whole block again. If you have neither, ask the person to copy their theme and paste it;
 do not guess it.
 

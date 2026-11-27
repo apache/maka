@@ -31,6 +31,10 @@ import { bodyTextStyle, C, captionTextStyle, lineWidth, radius, secondaryTextSty
 /** A theme Maka wrote in a reply, as a ```maka-theme block of the look's JSON. */
 export const themeExtensions = [{ name: 'maka-theme', language: 'maka-theme' }];
 
+/** The look each applied card's theme replaced, by the theme, while the app runs: a card drawn
+ * again after it scrolled away still offers Undo. */
+const replaced = signal(new Map<string, Look>());
+
 /** Below this width the card shows the appearance in effect only, not light and dark side by side. */
 const sideBySide = 520;
 
@@ -64,17 +68,23 @@ export function ThemeCard(props: { source(): string }) {
 function Card(props: { block(): NonNullable<ReturnType<typeof readThemeBlock>> }) {
   const look = () => props.block().look;
   const width = signal(0);
-  // The look this device had before the card's was applied, for as long as the card is shown.
-  const previous = signal<Look | null>(null);
+  const key = () => JSON.stringify(look());
+  const previous = () => replaced().get(key()) ?? null;
+  const remember = (value: Look | null) => {
+    const next = new Map(replaced());
+    if (value) next.set(key(), value);
+    else next.delete(key());
+    replaced.set(next);
+  };
   const applied = () => sameLook(look(), appearance.shown());
   const apply = () => {
-    previous.set(appearance.shown());
+    remember(appearance.shown());
     appearance.changeLook(look(), true);
   };
   const undo = () => {
     const before = previous();
     if (!before) return;
-    previous.set(null);
+    remember(null);
     appearance.changeLook(before, true);
   };
   const note = (text: string) => (
