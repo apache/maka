@@ -124,6 +124,15 @@ export type { AgentModelChoice, AgentBackendPreference };
 
 export type {
   AgentProject,
+  AgentFork,
+  AgentForkResult,
+  AgentInteractionResult,
+  AgentMetadataResult,
+  AgentQueueMutationResult,
+  AgentSendResult,
+  HistoryOrder,
+  HistoryRowAddress,
+  QuoteRef,
   AgentWorkspaceSelection,
   AgentSession,
   AgentSessionPage,
@@ -139,7 +148,10 @@ export type {
   InteractionRequest as AgentInteractionRequest,
   InteractionRecord as AgentInteractionRecord,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
-export type { AgentGitWorkspaceDiffOutput_GitWorkspaceDiff as AgentGitWorkspaceDiff } from '../../../../packages/plugin-sdk/src/generated/methods';
+export type {
+  AgentGitWorkspaceDiffOutput_GitWorkspaceDiff as AgentGitWorkspaceDiff,
+  ServiceMethods,
+} from '../../../../packages/plugin-sdk/src/generated/methods';
 
 /* ---- Low-level nsh/host transport ---- */
 

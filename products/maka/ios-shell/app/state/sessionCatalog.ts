@@ -17,29 +17,41 @@
  * under the License.
  */
 
-import type { ServiceMethods } from '../../../../../packages/plugin-sdk/src/generated/methods';
-import { hostQuery, type AgentSession, type AgentSessionPage } from '../bridge';
+import {
+  hostQuery,
+  type AgentSession,
+  type ServiceMethods,
+  type AgentSessionPage,
+} from '../bridge';
 
 type List = ServiceMethods['agent']['list']['input'];
 export type CatalogFilter = List['filter'];
+type CatalogScope = NonNullable<List['scope']>;
 
 export function catalogInput(
   filter: CatalogFilter,
   position: List['position'] = { kind: 'start' },
+  scope: CatalogScope = { kind: 'all' },
 ) {
   return {
     kind: null,
     filter,
     includeArchived: filter === 'archived',
     rootsOnly: false,
-    scope: { kind: 'all' },
+    scope,
     titleQuery: '',
     position,
   } satisfies List;
 }
 
-export function listSessionPage(rootId: string, filter: CatalogFilter) {
-  return hostQuery<AgentSessionPage>('agent', 'list', catalogInput(filter), undefined, rootId);
+export function listSessionPage(rootId: string, filter: CatalogFilter, scope?: CatalogScope) {
+  return hostQuery<AgentSessionPage>(
+    'agent',
+    'list',
+    catalogInput(filter, undefined, scope),
+    undefined,
+    rootId,
+  );
 }
 
 function catalogChanged(cause: unknown): boolean {
@@ -64,11 +76,12 @@ async function nextSessionPage(
   filter: CatalogFilter,
   revision: string,
   cursor: string,
+  scope?: CatalogScope,
 ) {
   const page = await hostQuery<AgentSessionPage>(
     'agent',
     'list',
-    catalogInput(filter, { kind: 'after', revision, cursor }),
+    catalogInput(filter, { kind: 'after', revision, cursor }, scope),
     undefined,
     rootId,
   );
@@ -94,13 +107,14 @@ export async function readCatalog(
   current: () => boolean,
   limit: number,
   start: CatalogStart,
+  scope?: CatalogScope,
 ): Promise<CatalogWindow | undefined> {
   for (let attempt = 0; ; attempt++) {
     try {
       const head =
         start.kind === 'extend'
           ? start.window
-          : (start.page ?? (await listSessionPage(rootId, filter)));
+          : (start.page ?? (await listSessionPage(rootId, filter, scope)));
       if (!current()) return;
       const rows = new Map(head.sessions.map((session) => [session.id, session]));
       const seen = new Set(start.kind === 'extend' ? start.window.seen : undefined);
@@ -109,7 +123,7 @@ export async function readCatalog(
       let after = pageCursor(head, seen);
       while (after !== null && pages < limit) {
         seen.add(after);
-        const next = await nextSessionPage(rootId, filter, revision, after);
+        const next = await nextSessionPage(rootId, filter, revision, after, scope);
         if (!current()) return;
         for (const session of next.sessions) rows.set(session.id, session);
         after = pageCursor(next, seen);

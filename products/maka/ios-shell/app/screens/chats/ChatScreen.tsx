@@ -27,10 +27,11 @@ import {
   Text,
   View,
   token,
+  type Accessor,
   type InputRef,
   type ScrollRef,
 } from 'nsh';
-import { Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
+import { Button, Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
 import { InputAccessoryView, isAvailable } from 'nsh/mobile';
 import {
   approvalControls,
@@ -39,25 +40,43 @@ import {
   interactionBadge,
   interactionTitle,
 } from '../../approval';
-import type { AgentHistoryChunk, AgentInteractionRecord, AgentRoomMessage } from '../../bridge';
+import {
+  hostQuery,
+  type AgentHistoryChunk,
+  type AgentInteractionRecord,
+  type AgentObservation,
+  type AgentRoomMessage,
+  type AgentSession,
+} from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
-import { currentLocale, tr } from '../../locale';
+import { currentLocale, formatCount, tr } from '../../locale';
 import {
   appendDraftQuote,
+  appendSideLink,
   assembleHistoryRows,
   backendKey,
+  clearDraftQuotes,
+  conversationKey,
+  draftQuote,
   createConversationController,
   displayModelKey,
   getDraft,
   getSavedScrollOffset,
+  historyAddressKey,
+  historyQuote,
   quoteLimit,
+  removeDraftLink,
+  removeDraftQuote,
   saveScrollOffset,
   setDraft,
+  type DraftQuote,
+  type SideAnchor,
   type HistoryRow,
 } from '../../state/chat';
 import {
+  activeHostInfo,
   connectSavedHost,
   hostStatusKind,
   isHostConnected,
@@ -65,7 +84,13 @@ import {
   showToast,
 } from '../../state/hostPool';
 import { hapticSelection } from '../../state/preferences';
-import type { ScopedSession } from '../../state/sessions';
+import { isBotSession, watchSideQuestions, type ScopedSession } from '../../state/sessions';
+import {
+  createSideDraft,
+  sideDraftAnchor,
+  type SideDraftSource,
+  type SideDraftRequest,
+} from '../../state/sideQuestions';
 import { spacing, type } from '../../theme/tokens';
 import {
   ActionButton,
@@ -79,6 +104,7 @@ import {
 } from '../../ui';
 
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
+import { SideQuestionList } from './ChatSideQuestions';
 
 interface ToolSummaryItem {
   id: string;
@@ -331,15 +357,45 @@ function InlineInteractionCard(props: {
   );
 }
 
-export function ChatScreen(props: {
-  item: ScopedSession;
-  onBack: () => void;
-  onOpenProjectFiles: (item: ScopedSession) => void;
-}) {
+export function ChatScreen(
+  props: {
+    item: ScopedSession;
+    active: Accessor<boolean>;
+    onBack: () => void;
+  } & (
+    | {
+        mainChat?: ScopedSession;
+        onOpenProjectFiles: (item: ScopedSession) => void;
+        onAskSideQuestion: (request: SideDraftRequest) => void;
+        onOpenSideQuestion: (main: ScopedSession, session: AgentSession) => void;
+        pendingSide?: never;
+      }
+    | {
+        pendingSide: {
+          request: SideDraftRequest;
+          onConnectionChanged: () => void;
+          onForked: (
+            session: AgentSession,
+            question: string,
+            quotes: readonly DraftQuote[],
+            observed: AgentObservation,
+          ) => void;
+        };
+        mainChat?: never;
+        onOpenProjectFiles?: never;
+        onAskSideQuestion?: never;
+        onOpenSideQuestion?: never;
+      }
+  ),
+) {
   const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
-  const ctrl = createConversationController(rootId, props.item.session);
+  const pending = props.pendingSide;
+  const sideDraft =
+    pending &&
+    createSideDraft(pending.request, props.active, pending.onConnectionChanged, pending.onForked);
+  const ctrl = createConversationController(rootId, props.item.session, !pending);
   const feedback = approvalFeedback<{
     record: AgentInteractionRecord;
     index: number;
@@ -361,36 +417,183 @@ export function ChatScreen(props: {
   let inputRef: InputRef | undefined;
   let restoredScroll = false;
 
-  const sessionTitle = () => ctrl.observation()?.session?.title || props.item.session.title;
-  const workspaceName = () => {
-    const ws = ctrl.observation()?.session?.workspace ?? props.item.session.workspace;
-    return ws?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
+  const session = () => ctrl.observation()?.session ?? props.item.session;
+  const side = () => !!session().branch?.side;
+  const sessionTitle = () => (sideDraft ? tr('Side Question') : session().title);
+  const subtitleLine = () => {
+    const main = pending?.request.main ?? props.mainChat;
+    if (main) return tr('Side Question · {title}', { title: main.session.title });
+    if (side()) return tr('Side Question');
+    const workspace =
+      session().workspace?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
+    return savedHosts().length > 1 ? props.item.hostName + ' · ' + workspace : workspace;
   };
-  const subtitleLine = () =>
-    savedHosts().length > 1 ? props.item.hostName + ' · ' + workspaceName() : workspaceName();
+  const accessoryId = 'maka-chat-accessory:' + conversationKey(rootId, sessionId);
   const turns = computed(() => groupHistoryTurns(ctrl.chunks()));
   const hasMoreBefore = () => ctrl.beforeCursor() != null;
-  const isRunning = () => ctrl.observation()?.run !== null && ctrl.observation()?.run !== undefined;
+  const isRunning = () => ctrl.observation()?.run != null;
   const hostOnline = () => isHostConnected(rootId);
   const draft = () => getDraft(rootId, sessionId);
-  const quoteLimitReached = () => draft().quotes.length >= quoteLimit;
-  const canSend = () => ctrl.hasDraftContent() && !ctrl.sending();
-  const quoteMessage = (row: HistoryRow, text: string, combined = false) => {
-    if (ctrl.isRoom()) return false;
-    const { messageId, turnId, role } = row.first;
+  const quotes = () => (sideDraft ? sideDraft.quotes() : draft().quotes);
+  const links = () => (sideDraft ? [] : draft().links);
+  const composerText = () => (sideDraft ? sideDraft.text() : draft().input.text);
+  const editComposer = (text: string) =>
+    sideDraft ? sideDraft.text.set(text) : setDraft(rootId, sessionId, text);
+  const quoteLimitReached = () => quotes().length >= quoteLimit;
+  const canSend = () =>
+    sideDraft ? sideDraft.canSend() : ctrl.hasDraftContent() && !ctrl.sending();
+  const send = () => {
+    if (sideDraft) void sideDraft.submit();
+    else void ctrl.sendMessage();
+  };
+
+  const generation = computed(() => activeHostInfo(rootId)?.generation);
+  const canAskSide = computed(
+    () =>
+      !sideDraft &&
+      generation() != null &&
+      session().kind === 'agent' &&
+      !ctrl.isRoom() &&
+      !side() &&
+      !isBotSession(rootId, sessionId),
+  );
+  const rowAnchor = (row: HistoryRow): SideAnchor | undefined => {
+    const body = row.first;
     if (
-      !appendDraftQuote(rootId, sessionId, row.key, {
-        text,
-        label: role === 'user' ? tr('You') : 'Maka',
-        sourceMessageId: combined ? undefined : (messageId ?? undefined),
-        sourceTurnId: turnId ?? undefined,
-      })
+      body.position &&
+      body.role === 'assistant' &&
+      body.field === 'body' &&
+      !body.sourceCitation &&
+      (body.finalOutput || body.position.kind !== 'live')
     )
-      return false;
+      return { position: body.position, order: body.order };
+  };
+  const replyAnchor = (rows: readonly HistoryRow[]) => {
+    const row = rows.findLast((row) => rowAnchor(row));
+    return row && rowAnchor(row);
+  };
+  const quoteMessage = (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => {
+    if (ctrl.isRoom()) return false;
+    const reference = historyQuote(row, text);
+    const anchor = combined
+      ? combined.every(rowAnchor)
+        ? replyAnchor(combined)
+        : undefined
+      : rowAnchor(row);
+    if (combined) reference.sourceMessageId = undefined;
+    if (!appendDraftQuote(rootId, sessionId, row.key, reference, anchor)) return false;
     hapticSelection();
     inputRef?.blur();
     return true;
   };
+  const sideCatalog = pending?.request.catalog ?? watchSideQuestions(props.item, canAskSide);
+  const traySource = { kind: 'tray' } as const;
+  const canAskFromTray = computed(() => canAskSide() && !!sideDraftAnchor(traySource, quotes()));
+  const askSide = (source: SideDraftSource, selected?: DraftQuote) => {
+    const connection = generation();
+    if (!canAskSide() || connection == null || !props.onAskSideQuestion) return false;
+    const current = source.kind === 'row' ? quotes().filter(({ anchor }) => anchor) : quotes();
+    const next =
+      selected &&
+      !current.some(
+        ({ sourceKey, reference }) =>
+          sourceKey === selected.sourceKey && reference.text === selected.reference.text,
+      )
+        ? [...current, selected]
+        : current;
+    if (next.length > quoteLimit) {
+      showToast(tr('Quote limit reached ({count})', { count: quoteLimit }));
+      return false;
+    }
+    if (!sideDraftAnchor(source, next)) return false;
+    inputRef?.blur();
+    props.onAskSideQuestion({
+      main: { ...props.item, session: session() },
+      generation: connection,
+      source,
+      quotes: next,
+      catalog: sideCatalog,
+      pendingModel: () => ctrl.selectingModel()?.done,
+    });
+    return true;
+  };
+  const askAboutRow = (row: HistoryRow, selection?: string) => {
+    const anchor = rowAnchor(row);
+    return (
+      !!anchor &&
+      askSide(
+        { kind: 'row', anchor },
+        selection ? draftQuote(row.key, historyQuote(row, selection), anchor) : undefined,
+      )
+    );
+  };
+  const askAboutReply = (rows: readonly HistoryRow[]) => {
+    const anchor = replyAnchor(rows);
+    if (anchor) askSide({ kind: 'row', anchor });
+  };
+
+  const sideList = signal<{ kind: 'all' } | { kind: 'anchor'; key: string } | null>(null);
+  const sideAtAnchor = computed(() => {
+    const groups = new Map<string, AgentSession[]>();
+    for (const session of sideCatalog.sessions() ?? []) {
+      const anchor = session.branch?.position;
+      if (anchor?.kind !== 'through_source_turn') continue;
+      const key = historyAddressKey(anchor.position);
+      const group = groups.get(key);
+      if (group) group.push(session);
+      else groups.set(key, [session]);
+    }
+    return groups;
+  });
+  const sideRows = () => {
+    const list = sideList();
+    return list?.kind === 'anchor' ? (sideAtAnchor().get(list.key) ?? []) : sideCatalog.sessions();
+  };
+  const openSide = (sideSession: AgentSession) => {
+    sideList.set(null);
+    inputRef?.blur();
+    props.onOpenSideQuestion?.({ ...props.item, session: session() }, sideSession);
+  };
+  let checkingMain = false;
+  const bringBack = async () => {
+    const main = props.mainChat;
+    if (!main || checkingMain) return;
+    const connection = generation();
+    if (connection == null) {
+      showToast(tr('Computer is offline'));
+      return;
+    }
+    const sessionId = main.session.id;
+    const current = () => props.active() && generation() === connection;
+    checkingMain = true;
+    try {
+      const { session: source } = await hostQuery<AgentObservation>(
+        'agent',
+        'observe',
+        { sessionId },
+        undefined,
+        rootId,
+      );
+      if (!current()) return;
+      if (source.id !== sessionId) throw new Error('Host observed a different conversation');
+      appendSideLink(rootId, sessionId, session());
+      props.onBack();
+    } catch (cause) {
+      if (!current()) return;
+      console.warn('Could not read the main conversation', cause);
+      showToast(tr('The main conversation is no longer available.'));
+    } finally {
+      checkingMain = false;
+    }
+  };
+  const showAllSides = () => {
+    inputRef?.blur();
+    sideList.set({ kind: 'all' });
+  };
+  effect(() => {
+    generation();
+    sideList.set(null);
+  });
   const hasLivePreview = () => {
     const p = ctrl.livePreview();
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
@@ -462,7 +665,7 @@ export function ChatScreen(props: {
 
   const openFiles = () => {
     hapticSelection();
-    props.onOpenProjectFiles({
+    props.onOpenProjectFiles?.({
       ...props.item,
       session: ctrl.observation()?.session ?? props.item.session,
     });
@@ -472,61 +675,94 @@ export function ChatScreen(props: {
     <NavPage
       style={{ flex: 1 }}
       title={sessionTitle()}
+      headerBackVisible={!sideDraft?.busy()}
+      popOnBack={!sideDraft?.busy()}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
       ios={{
-        headerRightItems: [
-          {
-            key: 'files',
-            symbol: 'folder',
-            label: tr('Files & Changes'),
-            onPress: openFiles,
-          },
-          {
-            key: 'more',
-            symbol: 'ellipsis.circle',
-            label: tr('More'),
-            menu: [
-              { label: tr('Files & Changes'), onSelect: openFiles },
-              ...(ctrl.queue().entries.length > 0
-                ? [
-                    {
-                      label: tr('Queued Messages ({count})', {
-                        count: ctrl.queue().entries.length,
-                      }),
-                      onSelect: () => queueSheetOpen.set(true),
-                    },
-                  ]
-                : []),
-              ...(isRunning()
-                ? [{ label: tr('Stop Run'), onSelect: () => void ctrl.stopRun() }]
-                : []),
-              { label: tr('Refresh'), onSelect: () => void ctrl.refreshAll() },
+        headerRightItems: sideDraft
+          ? []
+          : [
+              {
+                key: 'files',
+                symbol: 'folder',
+                label: tr('Files & Changes'),
+                onPress: openFiles,
+              },
+              {
+                key: 'more',
+                symbol: 'ellipsis.circle',
+                label: tr('More'),
+                menu: [
+                  { label: tr('Files & Changes'), onSelect: openFiles },
+                  ...(canAskSide()
+                    ? [{ label: tr('All Side Questions'), onSelect: showAllSides }]
+                    : []),
+                  ...(ctrl.queue().entries.length > 0
+                    ? [
+                        {
+                          label: tr('Queued Messages ({count})', {
+                            count: ctrl.queue().entries.length,
+                          }),
+                          onSelect: () => queueSheetOpen.set(true),
+                        },
+                      ]
+                    : []),
+                  ...(isRunning()
+                    ? [{ label: tr('Stop Run'), onSelect: () => void ctrl.stopRun() }]
+                    : []),
+                  { label: tr('Refresh'), onSelect: () => void ctrl.refreshAll() },
+                ],
+              },
             ],
-          },
-        ],
       }}
       header={
         <ScreenHeader
           title={sessionTitle()}
-          backLabel={tr('Chats')}
-          onBack={props.onBack}
+          backLabel={sideDraft ? tr('Cancel') : props.mainChat ? tr('Back') : tr('Chats')}
+          onBack={sideDraft?.busy() ? undefined : props.onBack}
           trailing={
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <View
-                role="button"
-                accessibilityLabel={tr('Files & Changes')}
-                onPress={openFiles}
-                style={{
-                  minHeight: 44,
-                  minWidth: 44,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Icon name="folder" color={token('primary')} size={20} />
+            sideDraft ? undefined : (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <View
+                  role="button"
+                  accessibilityLabel={tr('Files & Changes')}
+                  onPress={openFiles}
+                  style={{
+                    minHeight: 44,
+                    minWidth: 44,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Icon name="folder" color={token('primary')} size={20} />
+                </View>
+                <If when={canAskSide()}>
+                  <MenuButton
+                    accessibilityLabel={tr('More')}
+                    items={[
+                      {
+                        id: 'side-questions',
+                        label: tr('All Side Questions'),
+                        icon: 'bubble.left.and.bubble.right',
+                      },
+                    ]}
+                    onSelect={showAllSides}
+                  >
+                    <View
+                      style={{
+                        minHeight: 44,
+                        minWidth: 44,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Icon name="more" size={20} color={token('primary')} />
+                    </View>
+                  </MenuButton>
+                </If>
               </View>
-            </View>
+            )
           }
         />
       }
@@ -560,6 +796,19 @@ export function ChatScreen(props: {
           </Text>
         </View>
 
+        <If when={props.mainChat && side()}>
+          <View style={{ paddingHorizontal: spacing.pageX, alignItems: 'flex-start' }}>
+            <ActionButton
+              title={tr('Bring to Main Draft')}
+              icon="link"
+              compact
+              minHeight={44}
+              variant="quiet"
+              onPress={() => void bringBack()}
+            />
+          </View>
+        </If>
+
         {/* Scrollable Transcript */}
         <Scroll
           ref={(r) => (scrollRef = r)}
@@ -578,8 +827,15 @@ export function ChatScreen(props: {
             gap: 16,
           }}
         >
-          <If when={ctrl.error()}>
-            <BannerNotice tone="destructive" title={ctrl.error()!} />
+          <If when={sideDraft?.error() ?? ctrl.error()}>
+            {(message) => (
+              <BannerNotice
+                tone={sideDraft?.uncertain() ? 'warning' : 'destructive'}
+                title={message()}
+                actionLabel={sideDraft?.uncertain() ? tr('View All Side Questions') : undefined}
+                onAction={showAllSides}
+              />
+            )}
           </If>
 
           <If when={hasMoreBefore()}>
@@ -667,11 +923,74 @@ export function ChatScreen(props: {
                       <CollapsibleActivity thinking={turn().thinking} tools={turn().tools} />
                       <Each of={turn().bodies} key={(row) => row.key}>
                         {(row) => (
-                          <MessageBody
-                            row={row()}
-                            limitReached={quoteLimitReached()}
-                            onQuote={quoteMessage}
-                          />
+                          <View style={{ gap: 2 }}>
+                            <MessageBody
+                              row={row()}
+                              limitReached={quoteLimitReached()}
+                              onQuote={quoteMessage}
+                              onAskSide={canAskSide() && rowAnchor(row()) ? askAboutRow : undefined}
+                            />
+                            <If
+                              when={
+                                canAskSide() && row().first.position
+                                  ? sideAtAnchor().get(historyAddressKey(row().first.position))
+                                  : undefined
+                              }
+                            >
+                              {(items) => (
+                                <Button
+                                  accessibilityLabel={
+                                    items().some((item) => item.activity === 'waiting')
+                                      ? tr('{title} · Waiting for your response', {
+                                          title: tr('Side questions ({count})', {
+                                            count: items().length,
+                                          }),
+                                        })
+                                      : tr('Side questions ({count})', { count: items().length })
+                                  }
+                                  class="active:opacity-60"
+                                  style={{
+                                    minHeight: 44,
+                                    minWidth: 44,
+                                    alignSelf: 'flex-start',
+                                    justifyContent: 'center',
+                                  }}
+                                  onPress={() =>
+                                    items().length === 1
+                                      ? openSide(items()[0])
+                                      : sideList.set({
+                                          kind: 'anchor',
+                                          key: historyAddressKey(row().first.position),
+                                        })
+                                  }
+                                >
+                                  <View
+                                    style={{
+                                      flexDirection: 'row',
+                                      alignItems: 'center',
+                                      gap: 6,
+                                      borderRadius: 12,
+                                      paddingHorizontal: 8,
+                                      paddingVertical: 4,
+                                      backgroundColor: token('inline-card'),
+                                    }}
+                                  >
+                                    <Icon
+                                      name="sideQuestion"
+                                      size={14}
+                                      color={token('muted-foreground')}
+                                    />
+                                    <Text style={{ ...type.footnote, color: token('foreground') }}>
+                                      {formatCount(items().length)}
+                                    </Text>
+                                    <If when={items().some((item) => item.activity === 'waiting')}>
+                                      <StatusDot kind="waiting" size={7} />
+                                    </If>
+                                  </View>
+                                </Button>
+                              )}
+                            </If>
+                          </View>
                         )}
                       </Each>
                       <If
@@ -684,6 +1003,11 @@ export function ChatScreen(props: {
                           bodies={turn().bodies}
                           limitReached={quoteLimitReached()}
                           onQuote={quoteMessage}
+                          onAskSide={
+                            canAskSide() && replyAnchor(turn().bodies)
+                              ? () => askAboutReply(turn().bodies)
+                              : undefined
+                          }
                         />
                       </If>
                     </View>
@@ -861,8 +1185,26 @@ export function ChatScreen(props: {
             borderTopColor: token('separator'),
           }}
         >
-          <If when={!ctrl.isRoom() && draft().quotes.length > 0}>
-            <DraftQuoteStrip rootId={rootId} sessionId={sessionId} quotes={draft().quotes} />
+          <If when={!ctrl.isRoom() && (quotes().length || links().length)}>
+            <DraftQuoteStrip
+              quotes={quotes()}
+              links={links()}
+              disabled={sideDraft?.busy()}
+              onClearQuotes={() =>
+                sideDraft ? sideDraft.quotes.set([]) : clearDraftQuotes(rootId, sessionId)
+              }
+              onRemoveQuote={(id) =>
+                sideDraft
+                  ? sideDraft.quotes.update((items) => items.filter((item) => item.id !== id))
+                  : removeDraftQuote(rootId, sessionId, id)
+              }
+              onRemoveLink={(id) => removeDraftLink(rootId, sessionId, id)}
+              mainActions={
+                canAskFromTray()
+                  ? { ask: () => askSide(traySource), send, canSend: canSend() }
+                  : undefined
+              }
+            />
           </If>
           <If
             when={hostOnline()}
@@ -915,7 +1257,9 @@ export function ChatScreen(props: {
                   paddingVertical: 6,
                   borderRadius: 21,
                   borderCurve: 'continuous',
-                  backgroundColor: token('surface'),
+                  backgroundColor: sideDraft ? token('inline-card') : token('surface'),
+                  borderWidth: sideDraft ? 1 : 0,
+                  borderColor: token('border'),
                   justifyContent: 'center',
                 }}
               >
@@ -923,10 +1267,17 @@ export function ChatScreen(props: {
                   ref={(r) => (inputRef = r)}
                   multiline
                   accessibilityLabel={tr('Message composer')}
-                  value={draft().input.text}
-                  placeholder={isRunning() ? tr('Queue a follow-up message…') : tr('Message Maka…')}
-                  ios={{ inputAccessoryViewID: 'maka-chat-accessory' }}
-                  onChange={({ value }) => setDraft(rootId, sessionId, value)}
+                  value={composerText()}
+                  placeholder={
+                    sideDraft
+                      ? tr('Your question')
+                      : isRunning()
+                        ? tr('Queue a follow-up message…')
+                        : tr('Message Maka…')
+                  }
+                  disabled={sideDraft?.busy()}
+                  ios={sideDraft ? undefined : { inputAccessoryViewID: accessoryId }}
+                  onChange={({ value }) => editComposer(value)}
                   style={{
                     ...type.body,
                     color: token('foreground'),
@@ -956,63 +1307,102 @@ export function ChatScreen(props: {
                 </View>
               </If>
 
-              <View
-                role="button"
-                accessibilityLabel={isRunning() ? tr('Queue message') : tr('Send message')}
-                disabled={!canSend()}
-                onPress={() => void ctrl.sendMessage()}
-                class="active:opacity-70"
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 20,
-                  backgroundColor: canSend() ? token('primary') : token('surface-muted'),
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Icon
-                  name="send"
-                  color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
-                  size={18}
-                  strokeWidth={2.3}
-                />
-              </View>
+              <If when={!canAskFromTray()}>
+                <View
+                  role="button"
+                  accessibilityLabel={isRunning() ? tr('Queue message') : tr('Send message')}
+                  disabled={!canSend()}
+                  onPress={send}
+                  class="active:opacity-70"
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    backgroundColor: canSend() ? token('primary') : token('surface-muted'),
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Icon
+                    name="send"
+                    color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
+                    size={18}
+                    strokeWidth={2.3}
+                  />
+                </View>
+              </If>
             </View>
           </If>
         </View>
 
         {/* iOS Keyboard InputAccessoryView: Model pill + Quote Diff + Hide Keyboard */}
-        <InputAccessoryView
-          nativeID="maka-chat-accessory"
-          style={{
-            backgroundColor: token('surface'),
-            borderTopWidth: spacing.hairline,
-            borderTopColor: token('separator'),
-          }}
-        >
-          <View
+        <If when={!sideDraft}>
+          <InputAccessoryView
+            nativeID={accessoryId}
             style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-              gap: 8,
+              backgroundColor: token('surface'),
+              borderTopWidth: spacing.hairline,
+              borderTopColor: token('separator'),
             }}
           >
-            <If
-              when={!ctrl.isRoom() && ctrl.models().length > 0}
-              else={<View style={{ flex: 1 }} />}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                gap: 8,
+              }}
             >
-              <MenuButton
-                accessibilityLabel={tr('Select model')}
-                disabled={!!ctrl.selectingModel() || ctrl.sending()}
-                title={tr('Model')}
-                items={modelMenuItems()}
-                onSelect={({ id }) => handleSelectModel(id)}
+              <If
+                when={!ctrl.isRoom() && ctrl.models().length > 0}
+                else={<View style={{ flex: 1 }} />}
               >
+                <MenuButton
+                  accessibilityLabel={tr('Select model')}
+                  disabled={!!ctrl.selectingModel() || ctrl.sending()}
+                  title={tr('Model')}
+                  items={modelMenuItems()}
+                  onSelect={({ id }) => handleSelectModel(id)}
+                >
+                  <View
+                    style={{
+                      minHeight: 32,
+                      paddingHorizontal: 10,
+                      borderRadius: 16,
+                      backgroundColor: token('grouped-bg'),
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 5,
+                      maxWidth: 210,
+                    }}
+                  >
+                    <Icon name="sparkles" color={token('primary')} size={14} />
+                    <Text
+                      style={{
+                        ...type.caption,
+                        fontWeight: '600',
+                        color: token('foreground'),
+                        numberOfLines: 1,
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {currentModelLabel()}
+                    </Text>
+                    <Icon name="chevronDown" color={token('tertiary-foreground')} size={12} />
+                  </View>
+                </MenuButton>
+              </If>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <View
+                  role="button"
+                  accessibilityLabel={ctrl.isRoom() ? tr('Changes') : tr('Quote diff')}
+                  onPress={() => {
+                    inputRef?.blur();
+                    openFiles();
+                  }}
                   style={{
                     minHeight: 32,
                     paddingHorizontal: 10,
@@ -1021,67 +1411,47 @@ export function ChatScreen(props: {
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 5,
-                    maxWidth: 210,
                   }}
                 >
-                  <Icon name="sparkles" color={token('primary')} size={14} />
-                  <Text
-                    style={{
-                      ...type.caption,
-                      fontWeight: '600',
-                      color: token('foreground'),
-                      numberOfLines: 1,
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {currentModelLabel()}
+                  <Icon name="diff" color={token('primary')} size={14} />
+                  <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
+                    {tr('Changes')}
                   </Text>
-                  <Icon name="chevronDown" color={token('tertiary-foreground')} size={12} />
                 </View>
-              </MenuButton>
-            </If>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View
-                role="button"
-                accessibilityLabel={ctrl.isRoom() ? tr('Changes') : tr('Quote diff')}
-                onPress={() => {
-                  inputRef?.blur();
-                  openFiles();
-                }}
-                style={{
-                  minHeight: 32,
-                  paddingHorizontal: 10,
-                  borderRadius: 16,
-                  backgroundColor: token('grouped-bg'),
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 5,
-                }}
-              >
-                <Icon name="diff" color={token('primary')} size={14} />
-                <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
-                  {tr('Changes')}
-                </Text>
-              </View>
-
-              <View
-                role="button"
-                accessibilityLabel={tr('Dismiss keyboard')}
-                onPress={() => inputRef?.blur()}
-                style={{
-                  width: 34,
-                  height: 32,
-                  borderRadius: 16,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Icon name="keyboardDown" color={token('muted-foreground')} size={18} />
+                <View
+                  role="button"
+                  accessibilityLabel={tr('Dismiss keyboard')}
+                  onPress={() => inputRef?.blur()}
+                  style={{
+                    width: 34,
+                    height: 32,
+                    borderRadius: 16,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Icon name="keyboardDown" color={token('muted-foreground')} size={18} />
+                </View>
               </View>
             </View>
-          </View>
-        </InputAccessoryView>
+          </InputAccessoryView>
+        </If>
+
+        <If when={canAskSide() || sideDraft?.uncertain()}>
+          <SideQuestionList
+            open={sideList() !== null}
+            title={
+              sideList()?.kind === 'anchor'
+                ? tr('Side questions ({count})', { count: sideRows()?.length ?? 0 })
+                : tr('All Side Questions')
+            }
+            sessions={sideRows()}
+            error={sideCatalog.error()}
+            onClose={() => sideList.set(null)}
+            onOpen={sideDraft ? undefined : openSide}
+          />
+        </If>
 
         {/* Queued Messages Sheet */}
         <Sheet
