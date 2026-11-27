@@ -1478,11 +1478,13 @@ impl ListState {
         let near_end = self
             .follow_end
             .is_some_and(|threshold| content_len - self.viewport - self.offset <= threshold);
+        // Instant jumps and relative corrections already contribute to
+        // the replayed offset. An animation still depends on native ticks.
         if near_end
-            || !self
+            || self
                 .pending
                 .iter()
-                .all(|(_, scroll)| matches!(scroll, PendingScroll::By(_)))
+                .any(|(_, scroll)| matches!(scroll, PendingScroll::Animate))
         {
             return None;
         }

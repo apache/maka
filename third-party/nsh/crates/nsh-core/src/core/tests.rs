@@ -39461,9 +39461,8 @@ impl ScrollRig {
     fn mount<R: crate::element::Component<Props = ()>>() -> Self {
         let mut c = core();
         c.mount_root(&crate::element::Root::new::<R>(|| ()));
-        let list = c
-            .commit()
-            .unwrap()
+        let batch = c.commit().unwrap();
+        let list = batch
             .items
             .iter()
             .find_map(|item| match item {
@@ -39474,18 +39473,24 @@ impl ScrollRig {
                 _ => None,
             })
             .expect("outer list");
-        Self {
+        let mut rig = Self {
             c,
             list,
             y: 0.0,
             applied: 0,
-        }
+        };
+        rig.apply(&batch);
+        rig
     }
 
     fn commit(&mut self) -> Vec<(bool, f32)> {
         let Some(batch) = self.c.commit() else {
             return Vec::new();
         };
+        self.apply(&batch)
+    }
+
+    fn apply(&mut self, batch: &MountBatch) -> Vec<(bool, f32)> {
         let mut scrolls = Vec::new();
         for item in &batch.items {
             match item {
@@ -39670,6 +39675,149 @@ fn a_page_list_in_an_outer_list_anchors_once_above_and_across_the_viewport_top()
         }),
         [(false, -140.0)]
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HeadingJumpCase {
+    ReportBeforeReflow,
+    ReportAfterReflow,
+    UserScroll,
+    NewJump,
+}
+
+fn check_heading_jump(case: HeadingJumpCase) {
+    use crate::prelude::*;
+
+    type Controls = (Signal<bool>, ElementRef, ElementRef, ElementRef);
+    thread_local! {
+        static CONTROLS: Cell<Option<Controls>> = const { Cell::new(None) };
+    }
+
+    #[component]
+    fn Chapters() -> impl IntoElement {
+        let parsed = signal(false);
+        let history = element_ref();
+        let chapter = element_ref();
+        let heading = element_ref();
+        CONTROLS.set(Some((parsed, history, chapter, heading)));
+        // The 16pt heading inset leaves the preceding chapter's footer visible
+        // while its provisional body is replaced by the full projection.
+        virtual_list(2, move |row| {
+            if row.index() == 0 {
+                view()
+                    .child(
+                        virtual_list(
+                            move || 1 + usize::from(parsed.get()),
+                            |block| view().h(px(if block.index() == 0 { 360.0 } else { 346.0 })),
+                        )
+                        .viewport(crate::ListViewport::Parent)
+                        .source_rows(move || {
+                            Some(Arc::new(crate::ListSourceRows {
+                                id: "previous".into(),
+                                source_len: 2,
+                                projection_len: 2,
+                                provisional: !parsed.get(),
+                                rows: if parsed.get() {
+                                    vec![vec![0..1], vec![1..2]]
+                                } else {
+                                    vec![vec![0..2]]
+                                }
+                                .into(),
+                            }))
+                        }),
+                    )
+                    .child(view().h(px(40.0)))
+                    .into_element()
+            } else {
+                virtual_list(1, move |_| {
+                    view()
+                        .h(px(900.0))
+                        .child(
+                            text("Heading")
+                                .element_ref(&heading)
+                                .text_source(Some(Arc::new(crate::TextSource::Literal {
+                                    id: "chapter".into(),
+                                    offset: 0,
+                                }))),
+                        )
+                })
+                .viewport(crate::ListViewport::Parent)
+                .source_rows(Some(Arc::new(crate::ListSourceRows {
+                    id: "chapter".into(),
+                    source_len: 7,
+                    projection_len: 7,
+                    provisional: false,
+                    rows: vec![vec![0..7]].into(),
+                })))
+                .element_ref(&chapter)
+                .into_element()
+            }
+        })
+        .element_ref(&history)
+        .h(px(410.0))
+    }
+
+    let mut rig = ScrollRig::mount::<Chapters>();
+    let (parsed, history, chapter, heading) = CONTROLS.take().unwrap();
+    rig.update(|| history.scroll_to_index(1, Percentage(0.0), px(0.0), false));
+    let (row_y, row_applied) = (rig.y, rig.applied);
+    rig.update(|| chapter.scroll_to_index(0, Percentage(0.0), px(16.0), false));
+    assert_eq!(row_y - rig.y, 16.0);
+    let (jump_y, jump_applied) = (rig.y, rig.applied);
+    // The platform has applied both jumps. Its row-jump report arrives first.
+    rig.c
+        .set_scroll_offset(rig.list, point(px(0.0), px(row_y)), row_applied);
+    rig.commit();
+    match case {
+        HeadingJumpCase::ReportBeforeReflow => {
+            rig.scroll_to(jump_y);
+        }
+        HeadingJumpCase::ReportAfterReflow => {}
+        HeadingJumpCase::NewJump => {
+            rig.update(|| history.scroll_to_index(0, Percentage(0.0), px(0.0), false));
+            rig.scroll_to(rig.y);
+            assert_eq!(rig.y, 0.0);
+            return;
+        }
+        HeadingJumpCase::UserScroll => {
+            rig.scroll_to(row_y + 100.0);
+        }
+    }
+    rig.update(|| parsed.set(true));
+    if matches!(case, HeadingJumpCase::ReportAfterReflow) {
+        rig.c
+            .set_scroll_offset(rig.list, point(px(0.0), px(jump_y)), jump_applied);
+        rig.commit();
+    }
+    rig.scroll_to(rig.y);
+    let _g = rig.c.components.runtime.enter();
+    let heading_y = rig.c.measure(heading.node().unwrap()).unwrap().page.y;
+    let expected = if matches!(case, HeadingJumpCase::UserScroll) {
+        -100.0
+    } else {
+        16.0
+    };
+    assert_eq!(heading_y, px(expected), "{case:?}");
+}
+
+#[test]
+fn nested_heading_jump_survives_reflow_after_its_scroll_report() {
+    check_heading_jump(HeadingJumpCase::ReportBeforeReflow);
+}
+
+#[test]
+fn nested_heading_jump_survives_reflow_before_its_scroll_report() {
+    check_heading_jump(HeadingJumpCase::ReportAfterReflow);
+}
+
+#[test]
+fn nested_heading_jump_yields_to_new_jump() {
+    check_heading_jump(HeadingJumpCase::NewJump);
+}
+
+#[test]
+fn nested_heading_jump_yields_to_user_scroll() {
+    check_heading_jump(HeadingJumpCase::UserScroll);
 }
 
 #[test]
