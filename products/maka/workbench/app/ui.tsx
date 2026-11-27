@@ -397,6 +397,8 @@ export function IconButton(props: {
   icon: Parameters<typeof Icon>[0]['name'];
   selected?: boolean;
   disabled?: boolean;
+  onPressDown?: () => void;
+  onPressUp?: () => void;
   onPress: () => void;
 }) {
   return (
@@ -405,6 +407,8 @@ export function IconButton(props: {
       tooltip={textTooltip(() => props.tooltip ?? props.label)}
       selected={props.selected}
       disabled={props.disabled}
+      onPressDown={props.onPressDown}
+      onPressUp={props.onPressUp}
       onPress={props.onPress}
       style={{
         ...controlStyle(),

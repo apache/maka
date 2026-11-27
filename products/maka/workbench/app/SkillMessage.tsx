@@ -18,11 +18,13 @@
  */
 
 import { Text, View } from 'nsh';
+import type { JSX } from 'nsh';
 import { SkillInput } from './SkillInput';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import { hasComposerToken, skillTextGroups } from './skillTokenText';
 import { hasTextPrefix, type Row } from './history';
+import type { MessageSelection } from './messageSelection';
 import { C, readingTextStyle } from './ui';
 
 export function userMessagePresentation(row: Row) {
@@ -48,46 +50,64 @@ export function SkillMessage(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   openSession?(sessionId: string): void;
+  menu?(body: JSX.Element): JSX.Element;
+  selection?: MessageSelection;
 }) {
+  const wrap = (body: JSX.Element) => (props.menu ? props.menu(body) : body);
   return (
     <If
       when={props.presentation().kind === 'markdown'}
       else={
         <If
           when={props.presentation().kind === 'tokens'}
-          else={
-            <Text style={{ ...readingTextStyle(), color: C.text, userSelect: 'text' }}>
-              <SourceText row={props.row} sourceId={props.sourceId} />
-            </Text>
-          }
-        >
-          <View style={{ width: '100%', minWidth: 0 }}>
-            <Each
-              of={(() => {
-                const presentation = props.presentation();
-                return presentation.kind === 'tokens' ? presentation.groups : [];
-              })()}
-              key={(group) => group.offset}
+          else={wrap(
+            <View
+              selectable
+              onSelectionChange={(event: { text: string }) =>
+                props.selection?.set(event.text, 'plain')
+              }
             >
-              {(group) => (
-                <SkillInput
-                  accessibilityLabel={group().text}
-                  value={group().text}
-                  readonly
-                  onOpenSessionReference={
-                    props.openSession
-                      ? ({ sessionId }) => props.openSession?.(sessionId)
-                      : undefined
-                  }
-                  autoFocus={false}
-                  placeholder=""
-                  sourceId={props.sourceId}
-                  sourceOffset={group().offset}
-                  style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
-                />
-              )}
-            </Each>
-          </View>
+              <Text style={{ ...readingTextStyle(), color: C.text }}>
+                <SourceText row={props.row} sourceId={props.sourceId} />
+              </Text>
+            </View>,
+          )}
+        >
+          {wrap(
+            <View style={{ width: '100%', minWidth: 0 }}>
+              <Each
+                of={(() => {
+                  const presentation = props.presentation();
+                  return presentation.kind === 'tokens' ? presentation.groups : [];
+                })()}
+                key={(group) => group.offset}
+              >
+                {(group) => (
+                  <SkillInput
+                    accessibilityLabel={group().text}
+                    value={group().text}
+                    readonly
+                    onSelectionChange={({ start, end }) => {
+                      const from = Math.min(start, end);
+                      const to = Math.max(start, end);
+                      props.selection?.set(group().text.slice(from, to), `token:${group().offset}`);
+                    }}
+                    onBlur={() => props.selection?.set('', `token:${group().offset}`)}
+                    onOpenSessionReference={
+                      props.openSession
+                        ? ({ sessionId }) => props.openSession?.(sessionId)
+                        : undefined
+                    }
+                    autoFocus={false}
+                    placeholder=""
+                    sourceId={props.sourceId}
+                    sourceOffset={group().offset}
+                    style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
+                  />
+                )}
+              </Each>
+            </View>,
+          )}
         </If>
       }
     >
@@ -98,6 +118,8 @@ export function SkillMessage(props: {
         interactiveBlocks={false}
         openLink={props.openLink}
         userScroll={props.userScroll}
+        menu={props.menu}
+        selection={props.selection}
       />
     </If>
   );

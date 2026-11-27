@@ -29,7 +29,8 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
-import { notePassage, type SideMark } from './sideQuestions';
+import type { MessageSelection } from './messageSelection';
+import type { SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
 import type { BindTextViewToc } from './turnToc';
 import { C, isDark, lineWidth, radius, readingTextStyle, secondaryTextStyle } from './ui';
@@ -50,6 +51,8 @@ export function MarkdownBody(props: {
    * selectable text reaches only a menu bound to the selectable view itself.
    */
   menu?(body: JSX.Element): JSX.Element;
+  /** Reports live text selection to the owning message row. */
+  selection?: MessageSelection;
   /** The side questions asked beside this reply, whose passages are underlined. */
   marks?(): readonly SideMark[];
   openSide?(sessionId: string): void;
@@ -162,9 +165,7 @@ export function MarkdownBody(props: {
   const body = (
     <View
       selectable={props.selectable ?? true}
-      onSelectionChange={(event: { text: string }) =>
-        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
-      }
+      onSelectionChange={(event: { text: string }) => props.selection?.set(event.text, 'markdown')}
     >
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
