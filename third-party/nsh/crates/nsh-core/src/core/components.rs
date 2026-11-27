@@ -3273,6 +3273,11 @@ impl<M: TextEngine> Core<M> {
         }
         // Bound parts are bound first: what they read now is applied with
         // the static parts.
+        let applied_layout = if matches!(el.kind, ElKind::VirtualList(_)) {
+            self.components.list_layouts.remove(&host)
+        } else {
+            None
+        };
         let bound = super::views::Bound::take(&mut el).map(|bound| {
             self.bind_parts(host, host, bound, &mut el);
         });
@@ -3376,6 +3381,7 @@ impl<M: TextEngine> Core<M> {
         let (list, part) = match std::mem::replace(&mut el.kind, ElKind::Plain) {
             ElKind::VirtualList(list) => {
                 let config = list.config;
+                let old_list = applied_layout.unwrap_or(old_list);
                 self.update_virtual_list(self.native_id(host), host, *list, &old_list);
                 (Some(Box::new(config)), Part::VirtualList)
             }
@@ -4263,9 +4269,11 @@ impl<M: TextEngine> Core<M> {
                         .is_some_and(|o| o.part == Part::Slot && o.id == node)
                 });
                 let prev = at.and_then(|j| old[j].take());
-                let old_config = prev
-                    .as_ref()
-                    .and_then(|p| p.list.as_deref().copied())
+                let old_config = self
+                    .components
+                    .list_layouts
+                    .remove(&node)
+                    .or_else(|| prev.as_ref().and_then(|p| p.list.as_deref().copied()))
                     .unwrap_or_default();
                 // Its bound layout is a binding.
                 let parts = std::mem::take(&mut el.bound_list);
@@ -5098,6 +5106,12 @@ impl<M: TextEngine> Core<M> {
                 )
             }
         };
+        // The element snapshot predates any applied layout binding patches.
+        let old_list = if matches!(el.kind, ElKind::VirtualList(_)) {
+            self.components.list_layouts.remove(&id).unwrap_or(old_list)
+        } else {
+            old_list
+        };
         let bound = bound.map(|bound| self.bind_parts(host, id, bound, &mut el));
         let (component, virtual_list) = match std::mem::replace(&mut el.kind, ElKind::Plain) {
             ElKind::Component(c) => (Some(c), None),
@@ -5376,6 +5390,7 @@ impl<M: TextEngine> Core<M> {
                     count_signal.set(count as usize);
                     patches.borrow_mut().push(super::views::Patch::Rows {
                         list: id,
+                        binding: crate::element::Owner::current(),
                         count,
                         keys,
                     });
@@ -5407,16 +5422,7 @@ impl<M: TextEngine> Core<M> {
         state.moves = moves;
         state.separator = list.separator;
         state.min_view = list.min_view_time;
-        let marked: Vec<NodeId> = state
-            .cells
-            .iter()
-            .chain(&state.contents)
-            .copied()
-            .filter(|&c| c != 0)
-            .collect();
-        for cell in marked {
-            self.components.mark(cell);
-        }
+        self.sync_virtual_cells(id, true);
     }
 
     /// Sends list `id` its rows' changes from `before` (none: a new list):
@@ -5457,30 +5463,32 @@ impl<M: TextEngine> Core<M> {
         let state = self.components.virtual_lists.get_mut(&id).expect("list");
         state.count = count;
         state.keys = keys;
-        let parts: Vec<NodeId> = state
-            .cells
-            .iter()
-            .chain(&state.contents)
-            .copied()
-            .filter(|&c| c != 0)
-            .collect();
-        for part in parts {
-            let Some(inst) = self.components.instances.get_mut(&part) else {
-                continue;
-            };
-            let Some(signal) = inst.cell_position else {
-                continue;
-            };
-            let live = inst.cell_owner.is_some_and(|o| o.is_live());
-            if let Inner::VirtualRow { index, .. } | Inner::Row { index, .. } = &mut inst.inner {
-                *index = if live {
-                    signal.index.get_untracked()
-                } else {
-                    usize::MAX
+        self.sync_virtual_cells(id, false);
+    }
+
+    fn sync_virtual_cells(&mut self, id: NodeId, rebuild: bool) {
+        let key = self.key(id).expect("virtual list node");
+        let slots = &self.nodes[key as usize].list.as_ref().expect("list").slots;
+        let state = &self.components.virtual_lists[&id];
+        for (slot, (&cell, &content)) in state.cells.iter().zip(&state.contents).enumerate() {
+            for part in [cell, content].into_iter().filter(|&part| part != 0) {
+                let Some(inst) = self.components.instances.get_mut(&part) else {
+                    continue;
                 };
-            }
-            if !live {
-                self.components.mark(part);
+                let remake = rebuild || !inst.cell_owner.is_some_and(|o| o.is_live());
+                if let Inner::VirtualRow { index, .. } | Inner::Row { index, .. } = &mut inst.inner
+                {
+                    if remake {
+                        // The content owner can die while the slot still has a row.
+                        *index = slots[slot].requested.map_or(usize::MAX, |i| i as usize);
+                    } else if let Some(position) = inst.cell_position {
+                        *index = position.index.get_untracked();
+                    }
+                }
+                if remake && !inst.dirty {
+                    inst.dirty = true;
+                    self.components.dirty.push(part);
+                }
             }
         }
     }
