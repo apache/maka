@@ -193,29 +193,6 @@ struct EligibleWatch {
     caller_live: bool,
 }
 
-/// Deterministic rescue identity derived from the retracted notice and the caller Run
-/// whose Stop retracted it, so all surviving watches converge on one rescue notification
-/// even across a crash mid-settlement.
-fn rescue_identity(retracted_identity: &str, stopped_caller: RunId) -> String {
-    let key = format!("session-completion-rescue/{retracted_identity}/{stopped_caller}");
-    hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
-}
-
-enum ExistingDelivery {
-    Absent,
-    Reusable {
-        request: maka_agent_state::queue::PreparedRequest,
-        /// `Some(caller)` while pending on a live caller Run that can still be stopped and
-        /// retract the notice; watches owned by other callers must remain until it settles.
-        pending_live_caller: Option<RunId>,
-        enqueued_at: Option<UnixMillis>,
-    },
-    RetractedByOtherCaller {
-        caller: RunId,
-        request: Box<maka_agent_state::queue::PreparedRequest>,
-    },
-}
-
 impl Owner {
     /// The result of a finished run: its last non-empty assistant message, and for
     /// a failed run the failures recorded after that message. Reads directly from
@@ -627,10 +604,6 @@ impl Owner {
             .await
             .map_err(|error| error.to_string())?;
         let mut eligible = Vec::with_capacity(entries.len());
-        let mut frozen_groups: BTreeMap<
-            String,
-            (maka_agent_state::queue::PreparedRequest, Vec<EligibleWatch>),
-        > = BTreeMap::new();
         for (entry, request, resolution) in entries {
             let Some(_) = parent.as_ref().filter(|p| {
                 !p.archived
@@ -671,40 +644,19 @@ impl Owner {
                     source.terminal.is_none(),
                 )
             };
-            let frozen = entry
-                .notification
-                .as_ref()
-                .map(|value| {
-                    serde_json::from_value::<maka_agent_state::queue::PreparedRequest>(
-                        value.clone(),
-                    )
-                })
-                .transpose()
-                .map_err(|e| e.to_string())?;
-            let watch = EligibleWatch {
+            if let Some(frozen) = entry.notification.as_ref() {
+                let notification: maka_agent_state::queue::PreparedRequest =
+                    serde_json::from_value(frozen.clone()).map_err(|e| e.to_string())?;
+                self.settle_watch(&entry, &notification, false).await?;
+                continue;
+            }
+            eligible.push(EligibleWatch {
                 entry,
                 request,
                 resolution,
                 placement,
                 caller_live,
-            };
-            if let Some(notification) = frozen {
-                frozen_groups
-                    .entry(notification.id.0.clone())
-                    .or_insert_with(|| (notification, Vec::new()))
-                    .1
-                    .push(watch);
-            } else {
-                eligible.push(watch);
-            }
-        }
-        for (_, (frozen, watches)) in frozen_groups {
-            if let Err(error) = self
-                .deliver_frozen_bucket(worker_session, recipient, frozen, watches, states, now)
-                .await
-            {
-                tracing::warn!(%error, "Session completion delivery deferred");
-            }
+            });
         }
         if eligible.is_empty() {
             return Ok(());
@@ -784,7 +736,7 @@ impl Owner {
         }
         for (_, (notice, watches)) in buckets {
             if let Err(error) = self
-                .deliver_notice_bucket(worker_session, recipient, &notice, watches, states, now)
+                .deliver_notice_bucket(worker_session, recipient, &notice, &watches, now)
                 .await
             {
                 tracing::warn!(%error, "Session completion delivery deferred");
@@ -798,8 +750,7 @@ impl Owner {
         worker_session: &str,
         recipient: &str,
         notice: &Notice,
-        watches: Vec<EligibleWatch>,
-        states: &BTreeMap<RunId, NotificationState>,
+        watches: &[EligibleWatch],
         now: u64,
     ) -> Result<(), String> {
         let display_message_id = watches
@@ -814,174 +765,70 @@ impl Owner {
             .entry
             .message_id
             .clone();
-        let mut watches = watches;
-        let mut identity = notice.identity(worker_session, &display_message_id);
-        let mut seen_stopped = BTreeSet::new();
-        let (notification, pending_live_caller) = loop {
-            match self
-                .inspect_existing_delivery(recipient, &identity, &watches, states)
-                .await?
+        let identity = notice.identity(worker_session, &display_message_id);
+        let request_id = maka_agent_state::queue::RequestId(identity.clone());
+        let notification = if let Notice::Attention { cause, .. } = notice {
+            if let Some(notified_at) = self
+                .durable
+                .queue()
+                .entry_enqueued_at(recipient.to_owned(), request_id)
+                .await
+                .map_err(|error| error.to_string())?
             {
-                ExistingDelivery::Reusable {
-                    request,
-                    pending_live_caller,
-                    enqueued_at,
-                } => {
-                    if let Notice::Attention { cause, .. } = notice {
-                        if let (AttentionCause::Interaction(id), Some(notified_at)) =
-                            (cause, enqueued_at)
-                        {
-                            self.close_unanswered(worker_session, id, notified_at, now)
-                                .await?;
-                        }
-                        return Ok(());
-                    }
-                    break (request, pending_live_caller);
+                if let AttentionCause::Interaction(id) = cause {
+                    self.close_unanswered(worker_session, id, notified_at, now)
+                        .await?;
                 }
-                ExistingDelivery::RetractedByOtherCaller {
-                    caller: stopped_caller,
-                    ..
-                } if seen_stopped.insert(stopped_caller) => {
-                    watches.retain(|w| w.request.source.run_id != stopped_caller);
-                    identity = rescue_identity(&identity, stopped_caller);
+                return Ok(());
+            }
+            None
+        } else {
+            self.durable
+                .queue()
+                .entry(recipient.to_owned(), request_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|existing| existing.request)
+        };
+        let notification = match notification {
+            Some(existing) => existing,
+            None => {
+                let result = match notice {
+                    Notice::Finished {
+                        run: Some(run),
+                        terminal,
+                    } => self.run_result(worker_session, *run, terminal, true).await,
+                    _ => RunResult::default(),
+                };
+                let origin = MessageOrigin::SessionCompletion {
+                    session_id: worker_session.to_owned(),
+                    message_id: display_message_id.clone(),
+                };
+                let Some(prepared) = self
+                    .enqueue_candidates(
+                        recipient,
+                        &identity,
+                        watches,
+                        origin,
+                        |language| {
+                            notice.message(worker_session, &display_message_id, &result, language)
+                        },
+                        now,
+                    )
+                    .await?
+                else {
+                    return Ok(());
+                };
+                if matches!(notice, Notice::Attention { .. }) {
+                    // Admission identity is the durable deduplication record; keep the completion watches.
+                    self.admit_notification(&prepared).await?;
+                    return Ok(());
                 }
-                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller { .. } => {
-                    let result = match notice {
-                        Notice::Finished {
-                            run: Some(run),
-                            terminal,
-                        } => self.run_result(worker_session, *run, terminal, true).await,
-                        _ => RunResult::default(),
-                    };
-                    let origin = MessageOrigin::SessionCompletion {
-                        session_id: worker_session.to_owned(),
-                        message_id: display_message_id.clone(),
-                    };
-                    let Some(delivered) = self
-                        .enqueue_candidates(
-                            recipient,
-                            &identity,
-                            &watches,
-                            origin,
-                            |language| {
-                                notice.message(
-                                    worker_session,
-                                    &display_message_id,
-                                    &result,
-                                    language,
-                                )
-                            },
-                            now,
-                        )
-                        .await?
-                    else {
-                        return Ok(());
-                    };
-                    if matches!(notice, Notice::Attention { .. }) {
-                        // Admission identity is the durable deduplication record; keep the completion watches.
-                        self.admit_notification(&delivered.0).await?;
-                        return Ok(());
-                    }
-                    break delivered;
-                }
+                prepared
             }
         };
-        for watch in &watches {
-            if pending_live_caller.is_some_and(|live| live != watch.request.source.run_id) {
-                // Freeze the admitted notice onto the waiting watch so deleting the finished
-                // worker cannot reclassify it as Unavailable while the live caller still holds it.
-                self.freeze_watch(&watch.entry, &notification).await?;
-                continue;
-            }
+        for watch in watches {
             self.settle_watch(&watch.entry, &notification, true).await?;
-        }
-        Ok(())
-    }
-
-    async fn deliver_frozen_bucket(
-        self: &Arc<Self>,
-        worker_session: &str,
-        recipient: &str,
-        frozen: maka_agent_state::queue::PreparedRequest,
-        mut watches: Vec<EligibleWatch>,
-        states: &BTreeMap<RunId, NotificationState>,
-        now: u64,
-    ) -> Result<(), String> {
-        let mut identity = frozen.id.0.clone();
-        let mut latest_retracted = frozen.clone();
-        let mut seen_stopped = BTreeSet::new();
-        let (notification, pending_live_caller) = loop {
-            match self
-                .inspect_existing_delivery(recipient, &identity, &watches, states)
-                .await?
-            {
-                ExistingDelivery::Reusable {
-                    request,
-                    pending_live_caller,
-                    ..
-                } => {
-                    let chosen = if identity == frozen.id.0 {
-                        frozen.clone()
-                    } else {
-                        request
-                    };
-                    break (chosen, pending_live_caller);
-                }
-                ExistingDelivery::RetractedByOtherCaller {
-                    caller: stopped_caller,
-                    request,
-                } if seen_stopped.insert(stopped_caller) => {
-                    latest_retracted = *request;
-                    watches.retain(|w| w.request.source.run_id != stopped_caller);
-                    identity = rescue_identity(&identity, stopped_caller);
-                }
-                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller { .. } => {
-                    if identity == frozen.id.0 {
-                        // Original frozen notification was never admitted; preserve existing behavior.
-                        break (frozen.clone(), None);
-                    }
-                    let source_bytes = self
-                        .durable
-                        .queue()
-                        .content(
-                            recipient.to_owned(),
-                            latest_retracted.id.clone(),
-                            latest_retracted.source.clone(),
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let source_msg: maka_agent_facts::message::RootSourceMessage =
-                        serde_json::from_slice(&source_bytes).map_err(|e| e.to_string())?;
-                    let origin = source_msg.message.origin.unwrap_or_else(|| {
-                        MessageOrigin::SessionCompletion {
-                            session_id: worker_session.to_owned(),
-                            message_id: watches[0].entry.message_id.clone(),
-                        }
-                    });
-                    let rendered = source_msg.unprepared_content.text;
-                    let Some(delivered) = self
-                        .enqueue_candidates(
-                            recipient,
-                            &identity,
-                            &watches,
-                            origin,
-                            |_| rendered.clone(),
-                            now,
-                        )
-                        .await?
-                    else {
-                        return Ok(());
-                    };
-                    break delivered;
-                }
-            }
-        };
-        for watch in &watches {
-            if pending_live_caller.is_some_and(|live| live != watch.request.source.run_id) {
-                continue;
-            }
-            self.settle_watch(&watch.entry, &notification, false)
-                .await?;
         }
         Ok(())
     }
@@ -994,7 +841,7 @@ impl Owner {
         origin: MessageOrigin,
         render: impl Fn(Language) -> String,
         now: u64,
-    ) -> Result<Option<(maka_agent_state::queue::PreparedRequest, Option<RunId>)>, String> {
+    ) -> Result<Option<maka_agent_state::queue::PreparedRequest>, String> {
         let mut last_error: Option<String> = None;
         for idx in Self::ordered_candidate_indices(watches) {
             let candidate = &watches[idx];
@@ -1027,13 +874,7 @@ impl Owner {
                 .await
                 .map_err(String::from)
             {
-                Ok(Some(notification)) => {
-                    let pending_live_caller =
-                        matches!(candidate.placement, QueuePlacement::Completion { .. })
-                            .then_some(candidate.request.source.run_id)
-                            .filter(|_| candidate.caller_live);
-                    return Ok(Some((notification, pending_live_caller)));
-                }
+                Ok(Some(notification)) => return Ok(Some(notification)),
                 Ok(None) => return Ok(None),
                 Err(error) => last_error = Some(error),
             }
@@ -1065,118 +906,6 @@ impl Owner {
         indices
     }
 
-    async fn inspect_existing_delivery(
-        &self,
-        recipient: &str,
-        identity: &str,
-        watches: &[EligibleWatch],
-        states: &BTreeMap<RunId, NotificationState>,
-    ) -> Result<ExistingDelivery, String> {
-        let request_id = maka_agent_state::queue::RequestId(identity.to_owned());
-        let Some(existing) = self
-            .durable
-            .queue()
-            .entry(recipient.to_owned(), request_id.clone())
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(ExistingDelivery::Absent);
-        };
-        let enqueued_at = self
-            .durable
-            .queue()
-            .entry_enqueued_at(recipient.to_owned(), request_id.clone())
-            .await
-            .map_err(|error| error.to_string())?;
-        let resolution = self
-            .durable
-            .queue()
-            .resolve_message(recipient.to_owned(), existing.request.message_id.clone())
-            .await
-            .map_err(|error| error.to_string())?;
-        match resolution {
-            MessageResolution::Missing => Ok(ExistingDelivery::Absent),
-            MessageResolution::Delivered { .. } => Ok(ExistingDelivery::Reusable {
-                request: existing.request,
-                pending_live_caller: None,
-                enqueued_at,
-            }),
-            MessageResolution::Pending => {
-                let pending_live_caller = match existing.placement {
-                    QueuePlacement::Completion { caller }
-                        if self
-                            .caller_state(recipient, caller, states)
-                            .await?
-                            .is_some_and(|(stopped, live)| !stopped && live) =>
-                    {
-                        Some(caller)
-                    }
-                    _ => None,
-                };
-                Ok(ExistingDelivery::Reusable {
-                    request: existing.request,
-                    pending_live_caller,
-                    enqueued_at,
-                })
-            }
-            MessageResolution::Cancelled => {
-                // Check durable queue/run state directly (never the pre-lock snapshot) so a
-                // concurrent Stop cannot be misclassified as an explicit user Retract.
-                if let QueuePlacement::Completion { caller } = existing.placement
-                    && watches.iter().any(|w| w.request.source.run_id != caller)
-                    && self
-                        .durable
-                        .queue()
-                        .cancelled_by_caller_stop(recipient.to_owned(), request_id, caller)
-                        .await
-                        .map_err(|error| error.to_string())?
-                {
-                    Ok(ExistingDelivery::RetractedByOtherCaller {
-                        caller,
-                        request: Box::new(existing.request),
-                    })
-                } else {
-                    Ok(ExistingDelivery::Reusable {
-                        request: existing.request,
-                        pending_live_caller: None,
-                        enqueued_at,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Returns `Some((stopped, live))` for `caller` if it still exists on `recipient`.
-    async fn caller_state(
-        &self,
-        recipient: &str,
-        caller: RunId,
-        states: &BTreeMap<RunId, NotificationState>,
-    ) -> Result<Option<(bool, bool)>, String> {
-        if let Some(state) = states.get(&caller).filter(|s| s.session_id == recipient) {
-            return Ok(Some((state.stopped, state.terminal.is_none())));
-        }
-        Ok(self
-            .session_run(recipient, caller)
-            .await?
-            .map(|view| (view.stopped, view.terminal.is_none())))
-    }
-
-    async fn freeze_watch(
-        &self,
-        entry: &Completion,
-        notification: &maka_agent_state::queue::PreparedRequest,
-    ) -> Result<(), String> {
-        self.store
-            .settle_message_completion(
-                &self.prefix,
-                &entry.key,
-                Some(serde_json::to_value(notification).map_err(|e| e.to_string())?),
-            )
-            .await
-            .map_err(|e| e.to_string())
-    }
-
     async fn settle_watch(
         &self,
         entry: &Completion,
@@ -1184,7 +913,14 @@ impl Owner {
         freeze_first: bool,
     ) -> Result<(), String> {
         if freeze_first {
-            self.freeze_watch(entry, notification).await?;
+            self.store
+                .settle_message_completion(
+                    &self.prefix,
+                    &entry.key,
+                    Some(serde_json::to_value(notification).map_err(|e| e.to_string())?),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
         }
         if self.admit_notification(notification).await? {
             self.mark_bot_completion(&entry.session_id, &entry.message_id, &entry.recipient)

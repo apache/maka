@@ -1188,60 +1188,6 @@ pub(super) fn entry_enqueued_at(
     .optional()?
     .map(UnixMillis))
 }
-/// Whether `request` transitioned from pending to cancelled via `CallerStopped { caller }`
-/// rather than an explicit queue `Retract` / `RetractAll`.
-pub(super) fn cancelled_by_caller_stop(
-    c: &Connection,
-    session: &str,
-    request: &RequestId,
-    caller: RunId,
-) -> Result<bool, StoreError> {
-    id(session)?;
-    id(&request.0)?;
-    let caller_id = caller.to_string();
-    let stopped: bool = c
-        .prepare_cached("SELECT stopped FROM agent_runs WHERE run=?1 AND session=?2")?
-        .query_row(params![caller_id, session], |r| r.get::<_, i64>(0))
-        .optional()?
-        .is_some_and(|v| v != 0);
-    if !stopped {
-        return Ok(false);
-    }
-    let mut stmt = c.prepare_cached(
-        "SELECT json_extract(c.payload, '$.kind'), json_extract(c.payload, '$.edit.kind')
-         FROM agent_queue_events e
-         JOIN contents c ON c.id = e.body_content_id
-         WHERE e.session = ?1
-           AND (
-             (json_extract(c.payload, '$.kind') = 'caller_stopped'
-              AND json_extract(c.payload, '$.caller') = ?3)
-             OR (json_extract(c.payload, '$.kind') = 'command'
-                 AND (
-                   (json_extract(c.payload, '$.edit.kind') = 'enqueue'
-                    AND json_extract(c.payload, '$.edit.request.id') = ?2)
-                   OR (json_extract(c.payload, '$.edit.kind') = 'retract'
-                       AND json_extract(c.payload, '$.edit.request') = ?2)
-                   OR json_extract(c.payload, '$.edit.kind') = 'retract_all'
-                 ))
-           )
-         ORDER BY e.revision",
-    )?;
-    let rows = stmt.query_map(params![session, request.0, caller_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    })?;
-    let mut enqueued = false;
-    for row in rows {
-        let (kind, edit_kind) = row?;
-        if !enqueued {
-            if kind == "command" && edit_kind.as_deref() == Some("enqueue") {
-                enqueued = true;
-            }
-            continue;
-        }
-        return Ok(kind == "caller_stopped");
-    }
-    Ok(false)
-}
 pub(super) fn resolve(
     c: &Connection,
     session: &str,

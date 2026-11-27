@@ -299,16 +299,6 @@ impl QueueStore {
     pub async fn is_holding(&self, session: String) -> Result<bool, StoreError> {
         self.data.query(IsHolding(session)).await
     }
-    pub async fn cancelled_by_caller_stop(
-        &self,
-        session: String,
-        request: RequestId,
-        caller: RunId,
-    ) -> Result<bool, StoreError> {
-        self.data
-            .query(CancelledByCallerStop(session, request, caller))
-            .await
-    }
     /// Resolve the immutable source request by its submitted message identity.
     pub async fn message_entry(
         &self,
@@ -640,13 +630,6 @@ impl Query for IsHolding {
     type Output = bool;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         sql::holding(c, &self.0)
-    }
-}
-struct CancelledByCallerStop(String, RequestId, RunId);
-impl Query for CancelledByCallerStop {
-    type Output = bool;
-    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        sql::cancelled_by_caller_stop(c, &self.0, &self.1, self.2)
     }
 }
 struct Resolve(String, String);

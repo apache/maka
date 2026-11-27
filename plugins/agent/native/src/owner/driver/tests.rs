@@ -5811,35 +5811,17 @@ mod model_recovery {
             let attention_text = last_user(caller_b_steered.body());
             assert!(attention_text.contains("steer-question") && attention_text.contains(&primary_msg), "{attention_text}");
 
-            // Answer question and finish Run 1 while Turn B is live; non-user Stop on B retracts B's
-            // pending completion, so Turn A's surviving watch must rescue Run 1's single notice.
+            // Answer question and finish Run 1 while Turn B is live; Turn B receives ONE steered
+            // completion notice citing primary_msg and both watches settle together.
             owner.durable.interactions().commit_outcome(worker, "steer-question",
                 InteractionOutcome::QuestionAnswer { answers: vec![Some("Yes".into())], committed_at: now() }).await?;
             worker_turn_2.reply_text_with_usage("Run 1 done.", Usage::new(20, 10));
             completed_message(client, worker, &primary["messageId"]).await?;
             owner.deliver_completions().await?;
-            // Stop Turn B from another session so stop_completions retracts B's pending notice.
-            let b_access = owner.runs.state().await.controls.get(caller)
-                .and_then(|c| c.access.upgrade()).ok_or("caller B access missing")?;
-            let b_view = owner.durable.frontier(caller_b_run).await?;
-            owner.durable.append(b_access.claim(), (&b_view).into(), vec![
-                maka_agent_state::Change {
-                    id: FactId::new(),
-                    at: UnixMillis(now() as i64),
-                    fact: Fact::StopRequested {
-                        diagnostic: "other_agent_stop".into(),
-                        requester: maka_agent_facts::durable::StopRequester::Session { session_id: worker.clone() },
-                    },
-                }
-            ], vec![]).await?;
-            drop(b_access);
-            caller_b_steered.reply_text_with_usage("Stopped.", Usage::new(5, 5));
-            let mut changes = owner.durable.subscribe()?;
-            while owner.durable.frontier(caller_b_run).await?.terminal.is_none() {
-                changes.changed().await?;
-            }
-            owner.deliver_completions().await?;
-            let r1_notice = server.next_turn().await.ok_or("Turn A did not rescue Run 1 completion")?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            caller_b_steered.reply_text_with_usage("Answered.", Usage::new(5, 5));
+            let r1_notice = server.next_turn().await.ok_or("live Turn B did not receive Run 1 completion")?;
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(caller_b_run));
             let r1_text = last_user(r1_notice.body());
             assert!(r1_text.contains("Run 1 done.") && r1_text.contains(&primary_msg), "{r1_text}");
 
@@ -5848,12 +5830,11 @@ mod model_recovery {
                 "sessionId": worker, "message": "Second task.", "backend": backend, "onComplete": "notify_caller"
             })).await?;
             let second_msg = second["messageId"].as_str().ok_or("second messageId")?.to_owned();
-            let r1_run = owner.durable.latest_run(caller.clone()).await?.ok_or("r1 caller run missing")?;
-            let Trigger::Message { message_id: r1_caller_msg } = owner.durable.frontier(r1_run).await?.spec.trigger else {
-                return Err("missing r1 trigger".into());
+            let Trigger::Message { message_id: b_caller_msg } = owner.durable.frontier(caller_b_run).await?.spec.trigger else {
+                return Err("missing caller B trigger".into());
             };
             r1_notice.reply_text_with_usage("Handled Run 1.", Usage::new(10, 5));
-            quiescent_message(client, caller, &json!(r1_caller_msg)).await?;
+            quiescent_message(client, caller, &json!(b_caller_msg)).await?;
 
             let worker_run2 = server.next_turn().await.ok_or("worker run 2 turn missing")?;
             worker_run2.reply_text_with_usage("Run 2 done.", Usage::new(20, 10));
@@ -7424,8 +7405,8 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cross_turn_retract_and_user_stop_hold_completion_notices() {
-    use maka_agent_state::queue::{Placement, QueueCommand, QueueEdit};
+async fn cross_turn_user_stop_holds_completion_notices() {
+    use maka_agent_state::queue::Placement;
     let mut rig = Rig::new().unwrap();
     let result: TestResult<()> = async {
         let session = rig.start().await?;
@@ -7465,67 +7446,8 @@ async fn cross_turn_retract_and_user_stop_hold_completion_notices() {
         };
         let queue = owner.durable.queue();
 
-        // 1. Explicit user Retract on live B's notice must settle A's frozen watch without re-emitting.
-        let worker_1 = format!("{}missing-1", owner.prefix);
-        owner
-            .store
-            .register_message_completion(
-                &owner.prefix,
-                &worker_1,
-                "a-1",
-                &session,
-                make_req(&source_a)?,
-            )
-            .await?;
-        owner
-            .store
-            .register_message_completion(
-                &owner.prefix,
-                &worker_1,
-                "b-1",
-                &session,
-                make_req(&source_b)?,
-            )
-            .await?;
-        owner.deliver_completions().await?;
-        let pending_b = queue.steering(session.clone(), run_b).await?;
-        let [notice_1] = pending_b.entries.as_slice() else {
-            return Err("live B did not receive notice".into());
-        };
-        assert_eq!(
-            owner
-                .store
-                .message_completions(&owner.prefix, None)
-                .await?
-                .len(),
-            1
-        );
-        queue
-            .execute(
-                session.clone(),
-                QueueCommand {
-                    id: FactId::new(),
-                    at: at(),
-                    expected_revision: queue.read(session.clone()).await?.revision,
-                    edit: QueueEdit::Retract {
-                        request: notice_1.request.id.clone(),
-                    },
-                },
-                vec![],
-            )
-            .await?;
-        owner.deliver_completions().await?;
-        assert!(
-            owner
-                .store
-                .message_completions(&owner.prefix, None)
-                .await?
-                .is_empty()
-        );
-        assert!(queue.read(session.clone()).await?.entries.is_empty());
-
-        // 2. An already-queued Completion { caller: A } is moved to Held when user stops B,
-        //    and a subsequent completion arriving after the user Stop also lands in Held.
+        // An already-queued Completion { caller: A } is moved to Held when user stops B,
+        // and a subsequent completion arriving after the user Stop also lands in Held.
         let worker_pre = format!("{}missing-pre", owner.prefix);
         owner
             .store
