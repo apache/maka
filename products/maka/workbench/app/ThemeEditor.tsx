@@ -19,7 +19,7 @@
 
 // Settings › General › Theme: a preset to start from, then each color, the shape and the
 // font, seen on a sample of a conversation while a value is dragged, then on the whole window.
-import { batch, colorScheme, computed, signal, Text, View } from 'nsh';
+import { batch, colorScheme, computed, platform, signal, Text, View } from 'nsh';
 import { Button, ColorArea, ColorField, ColorPicker, ColorSlider, Popover, Slider } from 'nsh/base';
 import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
@@ -58,6 +58,7 @@ import {
   SettingsRow,
   SettingsSection,
   SettingsSelect,
+  settingsGutter,
 } from './SettingsPage';
 import {
   C,
@@ -162,7 +163,15 @@ export function ThemeEditor() {
       });
     },
   };
-  return (
+  const page = signal({ width: 0, height: 0 });
+  const place = (): PreviewPlace => {
+    const { width, height } = page();
+    if (platform.idiom === 'terminal' || width === 0) return 'inline';
+    if (width >= besideFrom) return 'beside';
+    return height >= aboveFrom ? 'above' : 'inline';
+  };
+  const previewLook = () => dragged() ?? appearance.look();
+  const controls = (
     <SettingsBody>
       <ThemeStatus />
       <SettingsSection>
@@ -180,9 +189,11 @@ export function ThemeEditor() {
           </Each>
         </View>
       </SettingsSection>
-      <SettingsSection title={tr('Preview')}>
-        <Specimen look={() => dragged() ?? appearance.look()} />
-      </SettingsSection>
+      <If when={place() === 'inline'}>
+        <SettingsSection title={tr('Preview')}>
+          <Specimen look={previewLook} />
+        </SettingsSection>
+      </If>
       <SettingsSection title={tr('Colors')}>
         <Each of={[...pickedColors, ...derivedColors]} key={(key) => key}>
           {(key) => <ColorRow color={key()} picking={picking} />}
@@ -199,7 +210,53 @@ export function ThemeEditor() {
       </SettingsSection>
     </SettingsBody>
   );
+  return (
+    <View
+      style={{ flex: 1, minHeight: 0 }}
+      onLayout={({ bounds }) => page.set({ width: bounds.size.width, height: bounds.size.height })}
+    >
+      <If when={place() === 'above'}>
+        <View
+          style={{
+            paddingHorizontal: settingsGutter,
+            paddingTop: 4,
+            paddingBottom: 12,
+            maxHeight: page().height * 0.4,
+            overflow: 'hidden',
+            borderBottomWidth: 1,
+            borderColor: C.line,
+          }}
+        >
+          <Specimen look={previewLook} compact />
+        </View>
+      </If>
+      <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
+        {controls}
+        <If when={place() === 'beside'}>
+          <View
+            style={{
+              width: Math.min(Math.max(page().width * 0.44, 360), 480),
+              marginLeft: besideGap - settingsGutter,
+              paddingTop: 4,
+              paddingRight: settingsGutter,
+            }}
+          >
+            <SettingsSection title={tr('Preview')}>
+              <Specimen look={previewLook} compact={page().height < 500} />
+            </SettingsSection>
+          </View>
+        </If>
+      </View>
+    </View>
+  );
 }
+
+/** Where the preview stays in view while the controls below it scroll: beside them on a wide
+ * page, above them on a narrow one, and among them on a page too short to spare the room. */
+type PreviewPlace = 'beside' | 'above' | 'inline';
+const besideFrom = 840;
+const besideGap = 32;
+const aboveFrom = 480;
 
 /** The look's name, undo and the way back to its preset, in the default colors: a look
  * whose text cannot be read still shows them. */
@@ -320,8 +377,10 @@ function PresetCard(props: { id: LookId }) {
   );
 }
 
-/** A piece of a conversation in the colors in effect: what the settings page has none of. */
-function Specimen(props: { look(): Look | null }) {
+/** A piece of a conversation in the colors in effect: what the settings page has none of.
+ * `compact` keeps a bubble, a reply, code and the field: every color but the warning, and
+ * every part of the shape. */
+function Specimen(props: { look(): Look | null; compact?: boolean }) {
   const C = lookColors(props.look);
   const { radius, lineWidth, letterSpacing, raisedShadow } = lookShape(props.look);
   const line = (text: string, color: string, extra: object = {}) => (
@@ -350,7 +409,7 @@ function Specimen(props: { look(): Look | null }) {
           {tr('See the notes.')}
         </Text>
       </Text>
-      {line(tr('Ran the tests · 12 passed'), C.muted)}
+      <If when={!props.compact}>{line(tr('Ran the tests · 12 passed'), C.muted)}</If>
       <View style={{ borderRadius: radius(6), padding: 8, backgroundColor: C.card, gap: 2 }}>
         <Text style={{ ...codeTextStyle, color: C.text, backgroundColor: C.removed }}>
           {'- if (items.length == 0) return;'}
@@ -359,43 +418,50 @@ function Specimen(props: { look(): Look | null }) {
           {'+ if (!items.length) return [];'}
         </Text>
       </View>
-      {line(tr('Something needs your attention.'), C.warning)}
+      <If when={!props.compact}>{line(tr('Something needs your attention.'), C.warning)}</If>
       <View
-        style={{
-          minHeight: 32,
-          paddingHorizontal: 10,
-          justifyContent: 'center',
-          borderRadius: radius(8),
-          borderWidth: lineWidth(),
-          borderColor: C.line,
-          backgroundColor: C.background,
-          ...raisedShadow(),
-        }}
+        style={{ flexDirection: props.compact ? 'row' : 'column', gap: props.compact ? 8 : 10 }}
       >
-        {line(tr('Write a reply…'), C.muted)}
-      </View>
-      <View style={{ flexDirection: 'row', gap: 8 }}>
         <View
           style={{
-            paddingHorizontal: 12,
-            paddingVertical: 6,
-            borderRadius: radius(8),
-            backgroundColor: C.accent,
-            ...raisedShadow(),
-          }}
-        >
-          {line(tr('Send'), C.onAccent, { fontWeight: '600' })}
-        </View>
-        <View
-          style={{
-            paddingHorizontal: 12,
-            paddingVertical: 6,
+            flexGrow: props.compact ? 1 : 0,
+            minHeight: 32,
+            paddingHorizontal: 10,
+            justifyContent: 'center',
             borderRadius: radius(8),
             borderWidth: lineWidth(),
             borderColor: C.line,
+            backgroundColor: C.background,
+            ...raisedShadow(),
           }}
         >
-          {line(tr('Cancel'), C.text)}
+          {line(tr('Write a reply…'), C.muted)}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View
+            style={{
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+              borderRadius: radius(8),
+              backgroundColor: C.accent,
+              ...raisedShadow(),
+            }}
+          >
+            {line(tr('Send'), C.onAccent, { fontWeight: '600' })}
+          </View>
+          <If when={!props.compact}>
+            <View
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: radius(8),
+                borderWidth: lineWidth(),
+                borderColor: C.line,
+              }}
+            >
+              {line(tr('Cancel'), C.text)}
+            </View>
+          </If>
         </View>
       </View>
     </View>
