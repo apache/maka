@@ -599,7 +599,7 @@ impl Query for ProjectedCellAt {
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
         let row: Option<String> = c
             .query_row(
-                "SELECT t.body FROM agent_cells t JOIN agent_runs r ON r.run=t.run
+                "SELECT maka_content_text(t.body,t.body_encoding) FROM agent_cells t JOIN agent_runs r ON r.run=t.run
              JOIN agent_facts f ON f.run=r.run AND f.revision=r.revision
              WHERE t.run=?1 AND t.cell=?2 AND r.owner=?3 AND r.session=?4 AND f.sequence<=?5",
                 params![

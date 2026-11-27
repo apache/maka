@@ -241,7 +241,8 @@ const CUT: &str =
 
 fn settled(scope: &str) -> String {
     format!(
-        "FROM agent_usage_results r JOIN agent_usage_calls c ON c.request=r.request {}",
+        "FROM agent_usage_results r JOIN agent_usage_calls c ON c.request=r.request
+         LEFT JOIN agent_usage_json_blobs q ON q.id=c.quote_id {}",
         settled_where(scope)
     )
 }

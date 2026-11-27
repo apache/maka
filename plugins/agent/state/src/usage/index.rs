@@ -72,6 +72,21 @@ fn evidence(
         serde_json::from_str(&body)?,
     ))
 }
+fn intern_usage_json(c: &Connection, body: &str) -> Result<i64, StoreError> {
+    if let Some(id) = c
+        .prepare_cached("SELECT id FROM agent_usage_json_blobs WHERE body=?1")?
+        .query_row([body], |r| r.get::<_, i64>(0))
+        .optional()?
+    {
+        return Ok(id);
+    }
+    c.prepare_cached("INSERT OR IGNORE INTO agent_usage_json_blobs(body) VALUES(?1)")?
+        .execute([body])?;
+    Ok(
+        c.prepare_cached("SELECT id FROM agent_usage_json_blobs WHERE body=?1")?
+            .query_row([body], |r| r.get(0))?,
+    )
+}
 fn insert_model(
     c: &Connection,
     id: &str,
@@ -88,7 +103,13 @@ fn insert_model(
         at,
     } = position;
     let ns_id = crate::namespace::ensure_id(c, &json(owner)?, session)?;
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_json,quote_json,origin_json) VALUES(?,?,'model',?,NULL,?,?,?,?,?,?,?,?,?)",params![id,source,ns_id,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,json(&evidence.binding)?,evidence.quote.as_ref().map(json).transpose()?,json(origin)?])?;
+    let binding_id = intern_usage_json(c, &json(&evidence.binding)?)?;
+    let quote_id = evidence
+        .quote
+        .as_ref()
+        .map(|q| intern_usage_json(c, &json(q)?))
+        .transpose()?;
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,model_id,provider_id,purpose,binding_id,quote_id,origin_json) VALUES(?,?,'model',?,NULL,?,?,?,?,?,?,?,?,?)",params![id,source,ns_id,run.map(|r|r.to_string()),integer(sequence)?,at.0,evidence.model_id,evidence.quote.as_ref().map(|q|q.provider_id.as_str()),json(&evidence.purpose)?,binding_id,quote_id,json(origin)?])?;
     Ok(())
 }
 fn insert_tool(
@@ -114,7 +135,10 @@ fn insert_tool(
         ),
         None => (None, Some(session)),
     };
-    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,name,binding_json,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,ns_id,standalone_session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding.map(json).transpose()?,json(origin)?])?;
+    let binding_id = binding
+        .map(|b| intern_usage_json(c, &json(b)?))
+        .transpose()?;
+    c.execute("INSERT INTO agent_usage_calls(request,source,kind,namespace_id,standalone_session,run,admission_sequence,started_at,name,binding_id,origin_json) VALUES(?,?,'tool',?,?,?,?,?,?,?,?) ON CONFLICT(request) DO NOTHING",params![id,source,ns_id,standalone_session,run.map(|r|r.to_string()),integer(sequence)?,at.0,name,binding_id,json(origin)?])?;
     Ok(())
 }
 #[derive(Default)]
@@ -166,7 +190,7 @@ fn version(
     mut result: ResultVersion,
 ) -> Result<(), StoreError> {
     let quote: Option<String> = c.query_row(
-        "SELECT quote_json FROM agent_usage_calls WHERE request=?",
+        "SELECT q.body FROM agent_usage_calls c LEFT JOIN agent_usage_json_blobs q ON q.id=c.quote_id WHERE c.request=?",
         [id],
         |r| r.get(0),
     )?;

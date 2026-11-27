@@ -19,6 +19,7 @@
 
 //! Atomic durable application sources; no legacy composition translation.
 mod changes;
+pub(crate) mod migrate_v65;
 mod source;
 pub use source::SourceSnapshot;
 pub mod intents;

@@ -1045,6 +1045,77 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                         .unwrap_or_else(|e| panic!("v64 view {view} failed on {rel}: {e}"));
                 }
             }
+            if has_runs > 0 && versions.contains(&65) {
+                for (table, col, enc) in [
+                    (
+                        "application_operation_contracts",
+                        "contract_json",
+                        "contract_encoding",
+                    ),
+                    ("application_operations", "request_json", "request_encoding"),
+                    (
+                        "application_intents",
+                        "reference_json",
+                        "reference_encoding",
+                    ),
+                    ("application_intents", "recovery_json", "recovery_encoding"),
+                ] {
+                    let invalid_json: i64 = conn
+                        .query_row(
+                            &format!(
+                                "SELECT COUNT(*) FROM {table}
+                                 WHERE {enc} NOT IN (0, 1, 2, 3)
+                                    OR NOT json_valid(maka_content_text({col}, {enc}))"
+                            ),
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        invalid_json, 0,
+                        "v65 inline JSON decode invariant violated on {table}.{col} ({rel})"
+                    );
+                }
+            }
+            if has_runs > 0 && versions.contains(&66) {
+                let invalid_cells: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_cells
+                         WHERE body_encoding NOT IN (0, 1, 2, 3)
+                            OR NOT json_valid(maka_content_text(body, body_encoding))",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    invalid_cells, 0,
+                    "v66 agent_cells decode invariant violated on {rel}"
+                );
+                for dropped in ["binding_json", "quote_json"] {
+                    let exists: bool = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('agent_usage_calls') WHERE name=?)",
+                            [dropped],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert!(
+                        !exists,
+                        "v66 must replace agent_usage_calls.{dropped} with interned FK on {rel}"
+                    );
+                }
+                let invalid_blobs: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_usage_json_blobs WHERE NOT json_valid(body)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    invalid_blobs, 0,
+                    "v66 agent_usage_json_blobs JSON validity violated on {rel}"
+                );
+            }
             ledgers.insert(rel, versions);
         }
     }

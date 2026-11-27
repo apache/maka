@@ -638,9 +638,11 @@ async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests()
              VALUES('chat','test',1,0,0,0,'{}');
              INSERT INTO application_operation_contracts VALUES('agent','{}');",
         )?;
+        // Include a compressible body (> 256 B) so v65 must compress request_json AFTER v57 reads it.
+        let compressible = "pending-send-body ".repeat(32);
         for (message, actor, session) in [("user","remote","chat"), ("worker","agent","chat"),
                                          ("cancelled","native","chat"), ("other","native","another")] {
-            let request = json!({"method":"send","export":"agent","origin":{"kind":actor}});
+            let request = json!({"method":"send","export":"agent","origin":{"kind":actor},"input":{"text":compressible}});
             let outcome = ContentBlob::json(&json!({"kind":"success","value":{"kind":"queued","sessionId":session,"messageId":message}}))?.store(db)?;
             db.execute("INSERT INTO application_operations(deployment,namespace,operation,source_revision,request_json,
                 outcome_content_id,outcome_json,cleanup_json,contract_digest) VALUES(?1,?2,?3,1,?4,?5,'{}','{}','agent')",
@@ -742,6 +744,15 @@ async fn upgrade_and_rebuild_preserve_the_original_senders_of_pending_requests()
             [],
             |row| row.get::<_, bool>(0)
         )?);
+        let compressed_requests: i64 = db.query_row(
+            "SELECT COUNT(*) FROM application_operations WHERE request_encoding != 0",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            compressed_requests, 4,
+            "v65 must compress long pending send requests after v57 finishes"
+        );
         Ok(())
     })
     .await;

@@ -22,6 +22,10 @@
         "version": 63,
         "sha384": "121302ca09694ee47aa890cb24b5634a4fe37b35bab6e7772ba78992a7613e1fea9e985b29f8680f8ecfc35b53c418bd"
       },
+      "platform/event-log/migrations/0065_compress_application_tables.sql": {
+        "version": 65,
+        "sha384": "c16d8e6b21c6b390ec5e4547f5357c0ac20c57b60d5d6c8a2c1c275801f24dfcec18b7d3720d4648f81d5d8b00c13d3a"
+      },
       "plugins/agent/state/migrations/0002_agent.sql": {
         "version": 2,
         "sha384": "cc1d058e9b871d3ecdb844b7cd525dfa695cadbf0a70c2133def97d2f527089a198d3d433b0daa78bf214cf682a7f0c2"
@@ -253,6 +257,10 @@
       "plugins/agent/state/migrations/0064_agent_views_content_decode.sql": {
         "version": 64,
         "sha384": "a70590acbc13b4f0e054f0f278d6ff41a4300307ee08c31af4b6d93bad734f99da603cd119e8902054b181229cd52353"
+      },
+      "plugins/agent/state/migrations/0066_compress_cells_and_usage.sql": {
+        "version": 66,
+        "sha384": "3a227c1d1eebff049e7c83c65ce83400a71cf6ed236d07a902f76f08c56913d3c4e7a591d55301e32a2d905b02c3334a"
       }
     },
     "checkpoint-repository": {

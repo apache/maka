@@ -50,10 +50,13 @@ const RECONCILABLE_WAIT: &str = "
         AND json_extract(a.body,'$.admission') IS NOT NULL
         AND json_extract(a.body,'$.cleanup.kind') IS 'confirmed'))
     OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS(
-        SELECT 1 FROM agent_cells c WHERE c.cell=json_extract(w.body,'$.reason.cell') AND c.run=w.run
-        AND json_extract(c.body,'$.status.kind') IN ('completed','interrupted')
-        AND json_extract(c.body,'$.vmUncertainty') IS NULL
-        AND NOT EXISTS(SELECT 1 FROM json_each(c.body,'$.children') child WHERE NOT (
+        SELECT 1 FROM (
+            SELECT c.cell, c.run, jsonb(maka_content_text(c.body,c.body_encoding)) AS doc
+            FROM agent_cells c WHERE c.cell=json_extract(w.body,'$.reason.cell') AND c.run=w.run
+        ) c
+        WHERE json_extract(c.doc,'$.status.kind') IN ('completed','interrupted')
+        AND json_extract(c.doc,'$.vmUncertainty') IS NULL
+        AND NOT EXISTS(SELECT 1 FROM json_each(c.doc,'$.children') child WHERE NOT (
             json_extract(child.value,'$.rejected') IS NOT NULL
             OR (json_extract(child.value,'$.localResult') IS NOT NULL AND json_extract(child.value,'$.localResult.settlement') IS NOT 'unknown')
             OR (json_extract(child.value,'$.reply.receipt.kind') IS 'recorded' AND json_extract(child.value,'$.reply.receipt.cleanup.kind') IS 'confirmed')))))
@@ -2006,13 +2009,13 @@ pub(crate) fn ready(
             OR (r.stopped=1 AND json_extract(r.external,'$.admitted')=1
                 AND json_extract(r.external,'$.closed') IS NULL
                 AND json_extract(r.external,'$.cleanup.kind') IN ('confirmed','failed'))
-            OR EXISTS (SELECT 1 FROM agent_cells cell WHERE cell.run=r.run AND cell.pending=1 AND json_extract(cell.body,'$.status.kind')='running'))
+            OR EXISTS (SELECT 1 FROM agent_cells cell WHERE cell.run=r.run AND cell.pending=1 AND json_extract(maka_content_text(cell.body,cell.body_encoding),'$.status.kind')='running'))
         AND (r.stopped=1 OR r.cancelled_by_risk=1 OR r.retry_due_at IS NULL OR r.retry_due_at<=?3)
         AND (r.stopped=1 OR r.cancelled_by_risk=1 OR (?5=1 AND {AUTHORITY_BLOCKED}) OR NOT EXISTS (SELECT 1 FROM agent_waits w WHERE w.run=r.run AND w.pending=1 AND (w.due_at IS NULL OR w.due_at>?3) AND NOT (
             {RECONCILABLE_WAIT}
             OR (w.due_at IS NULL AND json_extract(w.body,'$.reason.kind') IS 'cell' AND EXISTS (
                 SELECT 1 FROM agent_cells c WHERE c.run=w.run AND c.cell=json_extract(w.body,'$.reason.cell')
-                AND json_extract(c.body,'$.status.kind') IS 'running'))))))))
+                AND json_extract(maka_content_text(c.body,c.body_encoding),'$.status.kind') IS 'running'))))))))
         SELECT run,admission_sequence,session,NULL AS cleanup_task FROM business
         UNION ALL
         SELECT r.run,r.admission_sequence,r.session,json_extract(r.external,'$.task') AS cleanup_task

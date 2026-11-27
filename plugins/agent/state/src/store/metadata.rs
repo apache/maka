@@ -402,7 +402,7 @@ fn terminal_needs_catalog(
     )? || any_pending::<CellView>(
         c,
         run,
-        "SELECT body FROM agent_cells WHERE run=? AND pending=1",
+        "SELECT maka_content_text(body,body_encoding) FROM agent_cells WHERE run=? AND pending=1",
         |cell| cell.blocks_session_retirement(Some(terminal)),
     )? || any_pending::<ExternalEffect>(
         c,
