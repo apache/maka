@@ -349,7 +349,7 @@ pub(super) fn search(
     let mut cursor = 0i64;
     loop {
         let sql = format!(
-            "SELECT {COLUMNS},d.session,d.id,d.folded{settlement_col} FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>?{transcript_filter} AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
+            "SELECT {COLUMNS},d.session,d.id{settlement_col} FROM agent_recall_terms CROSS JOIN agent_recall_messages d ON d.id=agent_recall_terms.rowid {ORIGINAL} CROSS JOIN session_control s ON s.id=d.session JOIN session_creations route ON route.session_id=s.id AND route.ready=1 AND route.visible=1 WHERE agent_recall_terms MATCH ? AND d.role<>'\"compaction\"' AND d.owner=? AND d.session>=? AND d.session<? AND substr(d.session,1,length(?))=? AND (? IS NULL OR d.session=?) AND (? IS NULL OR d.at>=?) AND (? IS NULL OR d.at<=?) AND NOT(d.session=COALESCE(?,'') AND d.turn=COALESCE(?,'') AND d.sequence>COALESCE(?,0)) AND agent_recall_terms.rowid>?{transcript_filter} AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1) ORDER BY agent_recall_terms.rowid LIMIT 128"
         );
         let mut statement = c.prepare_cached(&sql)?;
         let since = query.since.map(number).transpose()?;
@@ -402,7 +402,7 @@ pub(super) fn search(
             if gaps.contains_key(&session) {
                 continue;
             }
-            let needs_settlement_check: bool = row.get(18)?;
+            let needs_settlement_check: bool = row.get(17)?;
             let message = read_message(row)?;
             if message.fields.iter().all(|f| f.internal) {
                 continue;
@@ -412,17 +412,7 @@ pub(super) fn search(
             {
                 continue;
             }
-            let text: String = if row
-                .get_ref(12)?
-                .as_str()
-                .map_err(|e| invalid(e.to_string()))?
-                == "[]"
-                && !row.get::<_, bool>(13)?
-            {
-                row.get(17)?
-            } else {
-                fold(&message.body)
-            };
+            let text = fold(&message.body);
             let (matched, score) = density(&text, &query.terms, &stop)?;
             if matched.is_empty() {
                 continue;

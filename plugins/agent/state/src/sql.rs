@@ -3051,15 +3051,15 @@ mod tests {
                     crate::external_effects::replay(&db, run, revision, event).unwrap();
                 }
                 crate::session_history::index(&db, &recorded).unwrap();
-                if !pre_v55_recall
-                    || !matches!(
-                        recorded.fact,
-                        Fact::ExternalEffect {
-                            event: ExternalEffectEvent::Observed { .. }
-                        }
-                    )
-                {
+                if !pre_v55_recall {
                     crate::recall::index_fact(&db, &spec, &recorded, seq).unwrap();
+                } else if !matches!(
+                    recorded.fact,
+                    Fact::ExternalEffect {
+                        event: ExternalEffectEvent::Observed { .. }
+                    }
+                ) {
+                    crate::recall::index_fact_v55(&db, &spec, &recorded, seq).unwrap();
                 } else {
                     let digest: String = db
                         .query_row(

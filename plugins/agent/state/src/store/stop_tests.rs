@@ -734,10 +734,10 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
 
     let dir = tempfile::tempdir().unwrap();
     let (root, store) = open_through(dir.path(), true, 53).await;
-    // Seed canonical events with the current writer, then drop the v54 columns
-    // to leave a genuine v53 schema before reopening.
+    // Seed canonical events with the current writer, then restore the v53 schema
+    // before reopening.
     exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT;")?;
+        c.execute_batch("ALTER TABLE agent_queue_items ADD COLUMN enqueued_at INTEGER NOT NULL DEFAULT 0; ALTER TABLE agent_queue_items ADD COLUMN interrupted_run TEXT; ALTER TABLE agent_recall_messages DROP COLUMN folded;")?;
         Ok(())
     }).await;
 
@@ -796,7 +796,7 @@ async fn upgrade_repairs_old_reorder_handoff_before_queue_is_used() {
         .unwrap();
 
     exec_sql(&store, |c| {
-        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run;")?;
+        c.execute_batch("ALTER TABLE agent_queue_items DROP COLUMN enqueued_at; ALTER TABLE agent_queue_items DROP COLUMN interrupted_run; ALTER TABLE agent_recall_messages ADD COLUMN folded TEXT NOT NULL DEFAULT '';")?;
         Ok(())
     }).await;
     drop(store);
