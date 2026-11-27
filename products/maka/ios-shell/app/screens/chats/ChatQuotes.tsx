@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import { Clipboard, computed, openUrl, Scroll, signal, Text, token, View, type ViewRef } from 'nsh';
+import {
+  Clipboard,
+  computed,
+  effect,
+  openUrl,
+  Scroll,
+  signal,
+  Text,
+  token,
+  View,
+  type ViewRef,
+} from 'nsh';
 import { Button, ContextMenu, TextView } from 'nsh/base';
 import type { AgentHistoryChunk } from '../../bridge';
 import { tr } from '../../locale';
@@ -50,6 +61,15 @@ export function MessageBody(props: {
     return selected?.body === props.row.text && isQuotable(props.row) ? selected.text : '';
   };
   let area: ViewRef | undefined;
+  effect(() => {
+    const selected = selection();
+    if (selected && selected.body !== props.row.text) {
+      // Native selection offsets are in rendered text, not history bytes.
+      // A changed body (including a prepended prefix) needs a fresh selection.
+      selection.set(null);
+      area?.clearSelection();
+    }
+  });
   const sourceId = () =>
     props.row.first.offset > 0 || props.row.last.offset > 0 ? props.row.key : undefined;
   const quoteSelection = () => {
@@ -158,6 +178,8 @@ const replyActionStyle = {
 
 export function ReplyActions(props: {
   bodies: readonly HistoryRow[];
+  folded: boolean;
+  knownIncomplete: boolean;
   loadBodies?: () => Promise<HistoryRow[] | undefined>;
   limitReached: boolean;
   onQuote: (row: HistoryRow, text: string, combined?: readonly HistoryRow[]) => boolean;
@@ -167,33 +189,38 @@ export function ReplyActions(props: {
   const canQuote = () =>
     sources().length > 0 &&
     !props.limitReached &&
-    (props.loadBodies !== undefined || sources().every(isCompleteHistoryRow));
-  const withReply = async (action: (bodies: readonly HistoryRow[]) => void | Promise<void>) => {
+    !props.knownIncomplete &&
+    (props.loadBodies !== undefined || (!props.folded && props.bodies.every(isCompleteHistoryRow)));
+  const actOnReply = async (action: 'copy' | 'quote') => {
+    if (action === 'quote' && !canQuote()) return;
+    const visible = props.bodies;
+    const load = props.loadBodies;
     try {
-      const bodies = props.loadBodies ? await props.loadBodies() : props.bodies;
-      if (bodies?.length && bodies.every(isCompleteHistoryRow)) await action(bodies);
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-  const copyReply = () =>
-    void withReply(async (bodies) => {
-      hapticSelection();
-      await Clipboard.writeText(bodies.map((row) => row.text).join('\n\n'));
-      showToast(tr('Copied'));
-    });
-  const quoteReply = () => {
-    if (!canQuote()) return;
-    const onQuote = props.onQuote;
-    void withReply((bodies) => {
-      const rows = bodies.filter(isQuotable);
-      if (rows.length)
-        onQuote(
+      if (action === 'copy') {
+        let full: HistoryRow[] | undefined;
+        try {
+          full = await load?.();
+        } catch (cause) {
+          console.warn('Could not load the whole reply for Copy', cause);
+        }
+        hapticSelection();
+        await Clipboard.writeText((full ?? visible).map((row) => row.text).join('\n\n'));
+        showToast(tr('Copied'));
+      } else {
+        const rows = (load ? await load() : visible)?.filter(isQuotable);
+        if (!rows?.length) {
+          showToast(tr('Could not load conversation history.'));
+          return;
+        }
+        props.onQuote(
           rows[0],
           rows.map((row) => row.text).join('\n\n'),
           rows.length > 1 ? rows : undefined,
         );
-    });
+      }
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause));
+    }
   };
   const actions = (
     <View style={{ flexDirection: 'row' }}>
@@ -201,7 +228,7 @@ export function ReplyActions(props: {
         accessibilityLabel={tr('Copy reply')}
         class="active:opacity-60"
         style={replyActionStyle}
-        onPress={copyReply}
+        onPress={() => void actOnReply('copy')}
       >
         <Icon name="copy" color={token('muted-foreground')} size={16} />
       </Button>
@@ -211,7 +238,7 @@ export function ReplyActions(props: {
           disabled={!canQuote()}
           class="active:opacity-60 disabled:opacity-45"
           style={replyActionStyle}
-          onPress={quoteReply}
+          onPress={() => void actOnReply('quote')}
         >
           <Icon name="quote" color={token('muted-foreground')} size={16} />
         </Button>
@@ -239,8 +266,7 @@ export function ReplyActions(props: {
         ]}
         onSelect={({ id }) => {
           if (id === 'ask-side') props.onAskSide?.();
-          else if (id === 'quote') quoteReply();
-          else if (id === 'copy') copyReply();
+          else if (id === 'quote' || id === 'copy') void actOnReply(id);
         }}
       />
     </If>

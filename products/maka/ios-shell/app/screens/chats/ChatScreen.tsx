@@ -28,6 +28,7 @@ import {
   Text,
   View,
   token,
+  untracked,
   type Accessor,
   type InputRef,
   type ListRef,
@@ -69,6 +70,7 @@ import {
   historyAddressKey,
   historyQuote,
   historyTurnKey,
+  isCompleteHistoryRow,
   quoteLimit,
   removeDraftLink,
   removeDraftQuote,
@@ -121,7 +123,6 @@ interface DisplayTurn {
   kind: 'agent';
   key: string;
   role: 'user' | 'assistant';
-  activityKey: string;
   thinking: string;
   tools: Map<string, ToolSummaryItem>;
   bodies: HistoryRow[];
@@ -167,18 +168,22 @@ function readableToolTitle(tool: NonNullable<AgentHistoryChunk['tool']>): string
   );
 }
 
-function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] {
+function groupHistoryTurns(
+  chunks: readonly AgentHistoryChunk[],
+  previous: readonly DisplayTurn[] = [],
+): DisplayTurn[] {
   const turns: DisplayTurn[] = [];
+  const previousKeys = new Set(previous.map((turn) => turn.key));
   let lastTurn: string | null = null;
+  let keptAnchor = false;
   for (const row of assembleHistoryRows(chunks)) {
     const ch = row.first;
     if (ch.role === 'user' && !ch.work) {
       if (row.text || ch.quotes?.length) {
         turns.push({
           kind: 'agent',
-          key: row.key,
+          key: 'user:' + row.key,
           role: 'user',
-          activityKey: row.key,
           thinking: '',
           tools: new Map(),
           groups: [],
@@ -191,34 +196,50 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
 
     let target = turns.at(-1);
     const turn = historyTurnKey(ch);
+    const key = 'assistant:' + row.key;
     if (target?.role !== 'assistant' || lastTurn !== turn) {
       target = {
         kind: 'agent',
-        key: row.key,
+        key,
         role: 'assistant',
-        activityKey: turn ?? row.key,
         thinking: '',
         tools: new Map(),
         bodies: [],
         groups: [],
       };
       turns.push(target);
+      keptAnchor = false;
     }
     lastTurn = turn;
     if (ch.foldedWork) target.folded ??= ch;
     if (ch.work) target.groups.push(ch);
     else collectActivity(target, row);
-    // Use a surviving message as the list key even when older tools are
-    // prepended to this group.
-    if (target.bodies.length) target.key = target.bodies.at(-1)!.key;
+    // Keep the original row anchor when a segment grows at either end.
+    // An anchor belongs to one row, so a later split cannot inherit its key.
+    if (!keptAnchor && previousKeys.has(key)) {
+      target.key = key;
+      keptAnchor = true;
+    }
   }
   return turns;
 }
+
+type CompleteFoldedTurn = { rows: HistoryRow[]; bodies: HistoryRow[] };
+type FoldedTurn = CompleteFoldedTurn | { rows: HistoryRow[]; bodies?: never };
+type FoldedTurnRead = { generation: number } & (
+  | { kind: 'reading'; read: Promise<FoldedTurn | undefined> }
+  | { kind: 'incomplete'; read?: Promise<FoldedTurn | undefined> }
+  | { kind: 'ready'; value: CompleteFoldedTurn }
+);
+
+const foldedTurnKey = (anchor: AgentHistoryChunk) =>
+  anchor.runId ?? historyAddressKey(anchor.position);
 
 type Activity = Pick<DisplayTurn, 'thinking' | 'tools' | 'bodies'>;
 type ActivityRead = {
   generation: number;
   fingerprint: string;
+  foldedRows?: readonly HistoryRow[];
   kind: 'loading' | 'failed' | 'ready';
   value?: Activity;
 };
@@ -573,8 +594,8 @@ export function ChatScreen(
   const queueSheetOpen = signal(false);
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
-  let pagingDrag: number | undefined;
-  let transcriptCanScroll = false;
+  let lastScroll: { height: number; viewport: number; y: number } | undefined;
+  const transcriptCanScroll = () => !!lastScroll && lastScroll.height - lastScroll.viewport > 1;
   let inputRef: InputRef | undefined;
   let openedTranscript = false;
 
@@ -591,7 +612,7 @@ export function ChatScreen(
     return savedHosts().length > 1 ? hostName() + ' · ' + workspace : workspace;
   };
   const accessoryId = 'maka-chat-accessory:' + conversationKey(rootId, sessionId);
-  const turns = computed(() => groupHistoryTurns(ctrl.chunks()));
+  const turns = computed<DisplayTurn[]>((previous) => groupHistoryTurns(ctrl.chunks(), previous));
   const hasMoreBefore = ctrl.hasMoreBefore;
   const transcript = computed<readonly (DisplayTurn | RoomTranscriptRow)[]>(() =>
     ctrl.isRoom()
@@ -806,7 +827,9 @@ export function ChatScreen(
   };
 
   const startEarlier = (retry = false) => {
+    const connection = generation();
     if (
+      connection == null ||
       !props.active() ||
       ctrl.loading() ||
       !hasMoreBefore() ||
@@ -814,9 +837,7 @@ export function ChatScreen(
       ctrl.earlierFailed() !== retry
     )
       return;
-    pagingDrag = undefined;
-    const restoreShortTail = !transcriptCanScroll && followLatest();
-    const connection = generation();
+    const restoreShortTail = !transcriptCanScroll() && followLatest();
     followLatest.set(false);
     void ctrl.loadEarlier(retry).then(async () => {
       if (!restoreShortTail || !props.active() || generation() !== connection) return;
@@ -825,15 +846,12 @@ export function ChatScreen(
         props.active() &&
         generation() === connection &&
         !ctrl.loadingEarlier() &&
-        !transcriptCanScroll &&
+        !transcriptCanScroll() &&
         (!position || (position.index === 0 && position.offset <= 1))
       ) {
         followLatest.set(true);
       }
     });
-  };
-  const loadEarlierFromDrag = () => {
-    if (props.active() && pagingDrag !== undefined && pagingDrag === generation()) startEarlier();
   };
 
   effect(() => {
@@ -844,13 +862,7 @@ export function ChatScreen(
 
   const expandedTurns = signal<ReadonlySet<string>>(new Set());
   const activityReads = signal<Record<string, ActivityRead | undefined>>({});
-  const turnPages = new Map<
-    string,
-    {
-      generation: number;
-      read: Promise<AgentHistoryChunk[] | undefined>;
-    }
-  >();
+  const turnPages = signal<ReadonlyMap<string, FoldedTurnRead>>(new Map());
   const toggleActivity = (key: string) =>
     expandedTurns.update((previous) => {
       const next = new Set(previous);
@@ -862,30 +874,70 @@ export function ChatScreen(
     const fence = ctrl.historyFence();
     if (props.active() && fence?.generation === generation()) return fence;
   };
-  const readFoldedTurn = (anchor: AgentHistoryChunk, fence: HistoryFence) => {
-    const key = anchor.runId ?? historyAddressKey(anchor.position);
-    const existing = turnPages.get(key);
-    if (existing?.generation === fence.generation) return existing.read;
-    const read = ctrl.readHistoryDetail(anchor, 'turn', fence, () => true);
-    const entry = { generation: fence.generation, read };
-    turnPages.set(key, entry);
-    const forget = () => {
-      if (turnPages.get(key) === entry) turnPages.delete(key);
+  const readFoldedTurn = async (
+    anchor: AgentHistoryChunk,
+    fence: HistoryFence,
+  ): Promise<FoldedTurn | undefined> => {
+    const key = foldedTurnKey(anchor);
+    const cached = untracked(turnPages).get(key);
+    const previous = cached?.generation === fence.generation ? cached : undefined;
+    if (previous?.kind === 'ready') return previous.value;
+    if (previous?.read) return previous.read;
+    const publish = (value?: FoldedTurnRead) =>
+      turnPages.update((old) => {
+        const next = new Map(old);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      });
+    const read = ctrl
+      .readHistoryDetail(anchor, 'turn', fence, () => true)
+      .then(
+        (chunks) => {
+          if (untracked(turnPages).get(key) !== entry) return;
+          if (!chunks || liveFence()?.generation !== fence.generation) {
+            publish(previous);
+            return;
+          }
+          const rows = assembleHistoryRows(chunks);
+          const replyRows = rows.filter(
+            ({ first }) =>
+              !first.work && !first.tool && first.role !== 'user' && first.field === 'body',
+          );
+          const bodies = replyRows.filter(({ text }) => text);
+          if (!bodies.length || !replyRows.every(isCompleteHistoryRow)) {
+            publish({ kind: 'incomplete', generation: fence.generation });
+            if (!rows.length) throw new Error(tr('Could not load conversation history.'));
+            // The activity disclosure can still use the available work rows.
+            return { rows };
+          }
+          const value = { rows, bodies };
+          publish({ kind: 'ready', generation: fence.generation, value });
+          return value;
+        },
+        (cause) => {
+          if (untracked(turnPages).get(key) === entry) publish(previous);
+          throw cause;
+        },
+      );
+    const entry: FoldedTurnRead = {
+      kind: previous?.kind ?? 'reading',
+      generation: fence.generation,
+      read,
     };
-    void read.then((rows) => {
-      if (!rows) forget();
-    }, forget);
+    publish(entry);
     return read;
   };
   const fullReply = async (anchor: AgentHistoryChunk) => {
     const fence = liveFence();
     if (!fence) return;
-    const rows = await readFoldedTurn(anchor, fence);
-    if (!rows || liveFence()?.generation !== fence.generation) return;
-    return assembleHistoryRows(rows).filter(
-      ({ first, text }) =>
-        text && !first.work && !first.tool && first.role !== 'user' && first.field === 'body',
-    );
+    const turn = await readFoldedTurn(anchor, fence);
+    if (liveFence()?.generation === fence.generation) return turn?.bodies;
+  };
+  const incompleteFoldedReply = (anchor: AgentHistoryChunk | undefined) => {
+    if (!anchor) return false;
+    const read = turnPages().get(foldedTurnKey(anchor));
+    return read?.kind === 'incomplete' && read.generation === generation();
   };
 
   const activityTurns = computed(
@@ -893,7 +945,7 @@ export function ChatScreen(
       new Map(
         turns()
           .filter((turn) => turn.folded || turn.groups.length)
-          .map((turn) => [turn.activityKey, turn]),
+          .map((turn) => [turn.key, turn]),
       ),
   );
   const activityFingerprint = (turn: DisplayTurn, fence: HistoryFence) =>
@@ -908,7 +960,7 @@ export function ChatScreen(
           ]),
     ]);
   const readActivity = async (turn: DisplayTurn, fence: HistoryFence, fingerprint: string) => {
-    const key = turn.activityKey;
+    const key = turn.key;
     const update = (state: ActivityRead | undefined) =>
       activityReads.update((reads) => ({ ...reads, [key]: state }));
     const previous = activityReads()[key];
@@ -927,25 +979,33 @@ export function ChatScreen(
       liveFence()?.generation === fence.generation &&
       activityTurns().has(key);
     update(request);
+    let foldedRows: readonly HistoryRow[] | undefined;
     try {
       const value: Activity = { thinking: '', tools: new Map(), bodies: [] };
-      const rows = turn.folded ? await readFoldedTurn(turn.folded, fence) : turn.groups;
+      const folded = turn.folded ? await readFoldedTurn(turn.folded, fence) : undefined;
+      const rows = turn.folded ? folded?.rows : assembleHistoryRows(turn.groups);
       if (!rows || !current()) return;
-      // Turn pages can split a prose row; join it before collecting it.
-      for (const row of assembleHistoryRows(rows)) {
+      const incomplete = folded !== undefined && !folded.bodies;
+      foldedRows = folded?.bodies ? folded.rows : undefined;
+      for (const row of rows) {
         const anchor = row.first;
         if (anchor.work) {
           const steps = await ctrl.readHistoryDetail(anchor, 'steps', fence, () => !!current());
           if (!steps || !current()) return;
           for (const step of assembleHistoryRows(steps)) collectActivity(value, step);
-        } else if (anchor.role !== 'user' && !anchor.finalOutput) {
+        } else if (
+          anchor.role !== 'user' &&
+          !anchor.finalOutput &&
+          (!incomplete || isCompleteHistoryRow(row))
+        ) {
           collectActivity(value, row);
         }
       }
-      if (current()) update({ ...request, kind: 'ready', value });
+      if (current())
+        update({ ...request, kind: incomplete ? 'failed' : 'ready', value, foldedRows });
     } catch (cause) {
       if (current()) {
-        update({ ...request, kind: 'failed' });
+        update({ ...request, kind: 'failed', foldedRows });
         showToast(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
@@ -959,11 +1019,22 @@ export function ChatScreen(
     if (!fence) return;
     const byKey = activityTurns();
     const reads = activityReads();
+    const pages = turnPages();
     for (const key of expanded) {
       const turn = byKey.get(key);
       if (!turn) continue;
       const fingerprint = activityFingerprint(turn, fence);
-      if (reads[key]?.fingerprint !== fingerprint) void readActivity(turn, fence, fingerprint);
+      const page = turn.folded && pages.get(foldedTurnKey(turn.folded));
+      // Copy may complete the shared turn read without changing the transcript summary.
+      const completeRows =
+        page?.kind === 'ready' && page.generation === fence.generation
+          ? page.value.rows
+          : undefined;
+      if (
+        reads[key]?.fingerprint !== fingerprint ||
+        (completeRows && reads[key]?.foldedRows !== completeRows)
+      )
+        void readActivity(turn, fence, fingerprint);
     }
   });
   const retryActivity = (key: string) => {
@@ -996,10 +1067,10 @@ export function ChatScreen(
             folded={props.turn.folded}
             groups={props.turn.groups}
             history={{
-              expanded: expandedTurns().has(props.turn.activityKey),
-              detail: activityDetail(props.turn.activityKey),
-              onToggle: () => toggleActivity(props.turn.activityKey),
-              onRetry: () => retryActivity(props.turn.activityKey),
+              expanded: expandedTurns().has(props.turn.key),
+              detail: activityDetail(props.turn.key),
+              onToggle: () => toggleActivity(props.turn.key),
+              onRetry: () => retryActivity(props.turn.key),
             }}
             limitReached={quoteLimitReached()}
             onQuote={quoteMessage}
@@ -1079,7 +1150,11 @@ export function ChatScreen(
           >
             <ReplyActions
               bodies={props.turn.bodies}
-              loadBodies={props.turn.folded ? () => fullReply(props.turn.folded!) : undefined}
+              folded={!!props.turn.folded}
+              knownIncomplete={incompleteFoldedReply(props.turn.folded)}
+              loadBodies={
+                props.turn.folded && liveFence() ? () => fullReply(props.turn.folded!) : undefined
+              }
               limitReached={quoteLimitReached()}
               onQuote={quoteMessage}
               onAskSide={
@@ -1262,27 +1337,28 @@ export function ChatScreen(
           style={{ flex: 1 }}
           keyboardShouldPersistTaps="handled"
           maintainVisibleContentPosition={followLatest() ? { autoscrollToBottomThreshold: 64 } : {}}
-          onLoadMoreAtStart={loadEarlierFromDrag}
-          loadMoreAtStartThreshold={0.2}
-          onScrollDragStart={({ offset }) => {
-            pagingDrag =
-              ctrl.loading() || ctrl.loadingEarlier() || ctrl.earlierFailed()
-                ? undefined
-                : generation();
-            // UIKit reports a drag even when a short transcript only bounces.
-            if (offset.y <= 1 && !transcriptCanScroll) loadEarlierFromDrag();
-          }}
           onScroll={({ offset, delta, size, contentSize }) => {
-            transcriptCanScroll = contentSize.height - size.height > 1;
+            const previous = lastScroll;
+            lastScroll = { height: contentSize.height, viewport: size.height, y: offset.y };
             const nearEnd = contentSize.height - offset.y - size.height <= 64;
             atBottom.set(nearEnd);
-            if (!transcriptCanScroll && !ctrl.loadingEarlier()) followLatest.set(true);
+            if (!transcriptCanScroll() && !ctrl.loadingEarlier()) followLatest.set(true);
             if (delta.y < 0 && !nearEnd) followLatest.set(false);
             if (delta.y > 0 && nearEnd) followLatest.set(true);
-            if (delta.y < 0 && offset.y <= size.height * 0.2) loadEarlierFromDrag();
-          }}
-          onScrollEnd={() => {
-            pagingDrag = undefined;
+
+            if (!openedTranscript || delta.y >= 0 || (previous && offset.y >= previous.y)) return;
+
+            const edge = size.height * 0.2;
+            const crossedEdge =
+              previous?.height === contentSize.height &&
+              previous.viewport === size.height &&
+              previous.y > edge &&
+              offset.y <= edge;
+            // Reaching the top on real movement doesn't require old layout metrics.
+            const reachedTop = offset.y <= 1 && offset.y - delta.y > 1;
+            // UIKit can pull past the top even when the transcript fits.
+            const pulled = offset.y < -1 && Math.abs(offset.y - delta.y) <= 1;
+            if (pulled || (transcriptCanScroll() && (crossedEdge || reachedTop))) startEarlier();
           }}
           contentStyle={{
             paddingHorizontal: spacing.pageX,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, computed, effect, signal, untracked, type Signal } from 'nsh';
+import { cleanup, computed, effect, signal, untracked } from 'nsh';
 import {
   hasAgentEndpoint,
   hostMutate,
@@ -76,6 +76,9 @@ type SessionWindow =
   | (SessionRetry & { snapshot?: SessionSnapshot });
 
 const sessionsByHost = signal<Record<string, SessionWindow>>({});
+const catalogWatchErrors = signal<ReadonlyMap<string, { generation: number; error: string }>>(
+  new Map(),
+);
 type BotOutbox = ServiceMethods['agent']['botOutbox']['output'];
 const botsByHost = signal<Record<string, BotOutbox>>({});
 
@@ -122,7 +125,6 @@ const showArchived = signal(false);
 interface SessionSubscription {
   connectionGeneration: number;
   stopCatalog?: () => void;
-  catalogWatchError: Signal<string | null>;
   stopBot: () => void;
   headRequest?: object;
   botRequest?: object;
@@ -360,7 +362,9 @@ function applySessionPage(rootId: string, hostName: string, page: AgentSessionPa
 export const scopedSessionLoad = computed(() => {
   const scope = selectedScopeRootId();
   const windows = sessionsByHost();
+  const watchErrors = catalogWatchErrors();
   let hasItems = false;
+  let hasMore = false;
   let loading = false;
   let refreshing = false;
   let error: string | null = null;
@@ -370,13 +374,14 @@ export const scopedSessionLoad = computed(() => {
     if (window?.snapshot?.items.length) hasItems = true;
     const connection = activeHostInfo(rootId);
     if (!connection || !hasAgentEndpoint(connection)) continue;
+    if (window?.snapshot?.catalog.after != null) hasMore = true;
     if (window?.kind === 'failed') error ??= window.error;
     else if (!window?.snapshot) loading = true;
     else if (window.kind === 'loadingHead' || window.kind === 'reading') refreshing = true;
-    const sub = activeSubscriptions.get(rootId);
-    if (sub?.connectionGeneration === connection.generation) error ??= sub.catalogWatchError();
+    const watch = watchErrors.get(rootId);
+    if (watch?.generation === connection.generation) error ??= watch.error;
   }
-  return { hasItems, loading, refreshing, error };
+  return { hasItems, hasMore, loading, refreshing, error };
 });
 
 function scopedWindows() {
@@ -390,8 +395,6 @@ function scopedWindows() {
   });
 }
 
-export const hasMoreSessions = () =>
-  scopedWindows().some(({ window }) => window.snapshot?.catalog.after != null);
 const extendableCatalog = (window: SessionWindow) =>
   window.kind === 'ready' && window.snapshot.catalog.after !== null
     ? window.snapshot.catalog
@@ -426,8 +429,17 @@ export function retryFailedSessions() {
     const sub = activeSubscriptions.get(rootId);
     if (window.kind === 'failed' || window.kind === 'interrupted')
       void refreshHostSessions(rootId, hostName, true);
-    else if (sub && sub.catalogWatchError() !== null) watchSessionCatalog(rootId, hostName, sub);
+    else if (sub && catalogWatchErrors().has(rootId)) watchSessionCatalog(rootId, hostName, sub);
   }
+}
+
+function clearCatalogWatchError(rootId: string) {
+  catalogWatchErrors.update((previous) => {
+    if (!previous.has(rootId)) return previous;
+    const next = new Map(previous);
+    next.delete(rootId);
+    return next;
+  });
 }
 
 function watchSessionCatalog(rootId: string, hostName: string, sub: SessionSubscription) {
@@ -445,9 +457,14 @@ function watchSessionCatalog(rootId: string, hostName: string, sub: SessionSubsc
     },
     (cause) => {
       sub.stopCatalog = undefined;
-      sub.catalogWatchError.set(errorMessage(cause));
+      catalogWatchErrors.update((previous) =>
+        new Map(previous).set(rootId, {
+          generation: sub.connectionGeneration,
+          error: errorMessage(cause),
+        }),
+      );
     },
-    () => sub.catalogWatchError.set(null),
+    () => clearCatalogWatchError(rootId),
   );
 }
 
@@ -751,6 +768,7 @@ export function startSessionsStore() {
       activeSubscriptions.delete(rootId);
       sub.stopCatalog?.();
       sub.stopBot();
+      clearCatalogWatchError(rootId);
       const window = untracked(() => sessionsByHost()[rootId]);
       if (window?.kind === 'reading' || window?.kind === 'loadingHead') {
         setWindow(rootId, {
@@ -770,7 +788,6 @@ export function startSessionsStore() {
       if (activeSubscriptions.has(rootId)) continue;
       const sub: SessionSubscription = {
         connectionGeneration: generation,
-        catalogWatchError: signal<string | null>(null),
         stopBot: watchHost<BotOutbox>(
           rootId,
           generation,

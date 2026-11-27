@@ -69,7 +69,7 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
     return state.kind === 'offline' ? state.host : null;
   };
   const initialLoading = () =>
-    allInboxItems().length === 0 && (connectionProgress() || inboxLoading());
+    allInboxItems().length === 0 && !inboxError() && (connectionProgress() || inboxLoading());
 
   const feedback = approvalFeedback<{ item: InboxItem; index: number; accepted: boolean }>();
   const respond = async (

@@ -1724,6 +1724,68 @@ async fn cold_reconnect_pauses_loading_in_airplane_mode_and_resumes_when_online(
 }
 
 #[tokio::test]
+async fn pending_first_read_error_hides_the_skeleton_during_peer_reconnect() {
+    use nsh_core::platform::NetworkKind;
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let studio = json!({"rootId":"a","hostName":"Studio","generation":1,"endpoints":["agent"]});
+        let backup = json!({"rootId":"b","hostName":"Backup","endpoints":["agent"]});
+        call.resolve(
+            json!({"revision":1,"hosts":[studio,backup],"filter":{"kind":"all_computers"},
+                "connections":{
+                    "a":{"status":"connected","connection":studio},
+                    "b":{"status":"offline","autoReconnect":true}
+                }
+            }),
+        );
+    });
+    let (list_tx, mut lists) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let input = call.take_data();
+        match input["method"].as_str().unwrap() {
+            "list" if input["input"]["filter"] == "needs_you" => {
+                assert_eq!(input["rootId"], "a");
+                list_tx.send(call).unwrap();
+            }
+            "list" => call.resolve(json!({"value":{"revision":"c1","sessions":[],"after":null}})),
+            _ => call.resolve(json!({"value":{}})),
+        }
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let input = call.take_data();
+        call.resolve(json!({
+            "subscriptionId":input["subscriptionId"],"rootId":input["rootId"],"generation":1
+        }));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment.os = Os::MacOs;
+    config.environment.reduce_motion = true;
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    let first = fixture_recv(&mut lists).await;
+    app.wait_for("label:Pending").unwrap();
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Reconnecting…").unwrap();
+    let skeleton = "role:progressbar[Loading…]";
+    app.wait_for(skeleton).unwrap();
+
+    first.reject("Studio Pending unavailable");
+    app.wait_for("text:Studio Pending unavailable").unwrap();
+    assert!(app.screen().matches("text:Reconnecting…").unwrap());
+    assert!(!app.screen().matches(skeleton).unwrap());
+    app.press("label:Retry").unwrap();
+    fixture_recv(&mut lists)
+        .await
+        .resolve(json!({"value":{"revision":"p1","sessions":[],"after":null}}));
+    app.wait_for_gone("label:Retry", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[tokio::test]
 async fn catalog_retry_survives_peer_reconnect_and_a_cached_empty_catalog() {
     use nsh_core::platform::NetworkKind;
 
@@ -1899,6 +1961,11 @@ async fn catalog_watch_can_be_repaired_after_a_successful_list_retry() {
     app.press("label:Retry").unwrap();
     let (handle, repair) = fixture_recv(&mut watches).await;
     repair.resolve(handle.clone());
+    // Opening the watch alone clears its error; no catalog item or list read arrives.
+    app.wait_for_gone("label:Retry", Duration::from_secs(2))
+        .unwrap();
+    assert!(app.screen().matches(existing).unwrap());
+    assert!(lists.try_recv().is_err());
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
@@ -3306,29 +3373,48 @@ fn watch_selection_menus(
     }
 }
 
-// Headless scrolling clamps the offset. Deliver the native drag events for
-// short transcripts that UIKit lets the reader pull at the top.
-fn pull_at_transcript_start(app: &mut Headless) {
-    use nsh_core::{EventKind, EventPayload, Point};
-
-    let list = app
-        .screen()
-        .layout_nodes()
-        .into_iter()
-        .find(|node| node.test_id.as_deref() == Some("chat-transcript"))
-        .expect("transcript scroll view");
-    for event in [
-        EventKind::ScrollDragStart,
-        EventKind::ScrollDragEnd,
-        EventKind::ScrollEnd,
-    ] {
-        app.engine().control().dispatch_event(
-            list.id,
-            event,
-            EventPayload::Scroll(Point::default()),
-        );
-    }
+// Headless clamps its own scroll input. Report the bounce offsets UIKit
+// sends for a short transcript, through the engine's native scroll input.
+fn report_transcript_offset(app: &mut Headless, y: f32) {
+    let list = app.screen().id("id:chat-transcript").unwrap();
+    app.engine()
+        .control()
+        .scroll(list, nsh_core::Point::new(px(0.), px(y)), u32::MAX);
     assert!(app.settle());
+}
+
+fn pull_at_transcript_start(app: &mut Headless) {
+    report_transcript_offset(app, -24.);
+    report_transcript_offset(app, 0.);
+}
+
+fn select_reply_excerpt(app: &mut Headless, body: &str, start: u32, text: &str) {
+    use nsh_core::{EventKind, EventPayload, PayloadValue, ROOT_ID};
+
+    let mut owner = app.screen().id(body).unwrap();
+    let nodes = app.screen().layout_nodes();
+    assert!(app.screen().in_selectable_view(body).unwrap());
+    loop {
+        let parent = nodes.iter().find(|node| node.id == owner).unwrap().parent;
+        if parent == ROOT_ID
+            || !app
+                .screen()
+                .in_selectable_view(&format!("view:{parent}"))
+                .unwrap()
+        {
+            break;
+        }
+        owner = parent;
+    }
+    app.engine().control().dispatch_event(
+        owner,
+        EventKind::SelectionChange,
+        EventPayload::Map(vec![
+            ("text", PayloadValue::Str(text.into())),
+            ("start", PayloadValue::Number(f64::from(start))),
+        ]),
+    );
+    app.wait_for("role:button[Add to quotes]").unwrap();
 }
 
 fn quote_history_row(sequence: u64, role: &str, text: &str) -> Value {
@@ -3853,7 +3939,18 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
         history_rx.try_recv().is_err(),
         "opening the chat fetched older history"
     );
-    app.scroll("id:chat-transcript", px(-1600.)).unwrap();
+    app.wheel("id:chat-transcript", nsh_core::Point::new(px(0.), px(-90.)))
+        .unwrap();
+    app.set_viewport(Size::new(px(390.), px(800.))).unwrap();
+    assert!(
+        history_rx.try_recv().is_err(),
+        "resizing the transcript fetched older history"
+    );
+    app.wheel(
+        "id:chat-transcript",
+        nsh_core::Point::new(px(0.), px(-1600.)),
+    )
+    .unwrap();
     let (abandoned_input, abandoned) = fixture_recv(&mut history_rx).await;
     app.press("label:Files & Changes").unwrap();
     app.wait_for("text:No uncommitted changes").unwrap();
@@ -5389,6 +5486,144 @@ async fn folded_turn_copies_and_quotes_all_prose_even_before_expansion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copying_a_recovered_folded_reply_repairs_the_open_activity() {
+    let prompt = quote_history_row(1, "user", "What happened?");
+    let first = quote_history_row(2, "assistant", "headtail");
+    let mut fragment = first.clone();
+    fragment["offset"] = json!(4);
+    fragment["text"] = json!("tail");
+    let mut last = quote_history_row(3, "assistant", "B");
+    last["finalOutput"] = json!(true);
+    let mut folded = last.clone();
+    mark_final(&mut folded);
+    let mut fx =
+        ProjectionFixture::start(history_page(11, vec![prompt.clone(), folded], Value::Null)).await;
+    let quote = "role:button[Quote]";
+    fx.app.wait_for("label:Used 1 tool").unwrap();
+    fx.app.press("label:Used 1 tool").unwrap();
+    let (input, incomplete) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "turn");
+    incomplete.resolve(history_page(11, vec![fragment, last.clone()], Value::Null));
+    fx.app.wait_for("label:Retry").unwrap();
+    assert!(!fx.app.screen().enabled(quote).unwrap());
+    assert!(!fx.app.shows("tail"));
+
+    fx.app.press("role:button[Copy reply]").unwrap();
+    let (input, replay) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "turn");
+    replay.resolve(history_page(11, vec![prompt, first, last], Value::Null));
+    fx.app.wait_for("text:Copied").unwrap();
+    assert_eq!(fx.app.screen().clipboard(), Some("headtail\n\nB"));
+    assert!(fx.app.screen().enabled(quote).unwrap());
+    fx.app.wait_for("text:headtail").unwrap();
+    assert!(!fx.app.shows("tail"));
+    assert!(!fx.app.screen().matches("label:Retry").unwrap());
+    assert!(
+        fx.queries.try_recv().is_err(),
+        "disclosure reread the recovered turn"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_or_incomplete_folded_reads_copy_visible_prose_and_can_recover() {
+    let prompt = quote_history_row(1, "user", "What happened?");
+    let last = quote_history_row(3, "assistant", "Visible final answer");
+    let mut folded = last.clone();
+    mark_final(&mut folded);
+    let mut fx =
+        ProjectionFixture::start(history_page(11, vec![prompt.clone(), folded], Value::Null)).await;
+    let quote = "role:button[Quote]";
+    let copy = "role:button[Copy reply]";
+
+    fx.app.press(copy).unwrap();
+    let (input, failed) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "turn");
+    failed.reject("Folded history unavailable");
+    fx.app.wait_for("text:Copied").unwrap();
+    assert_eq!(fx.app.screen().clipboard(), Some("Visible final answer"));
+    assert!(fx.app.screen().enabled(quote).unwrap());
+
+    fx.app.press(quote).unwrap();
+    let (_, truncated) = fixture_recv(&mut fx.queries).await;
+    let mut fragment = last.clone();
+    fragment["offset"] = json!(12);
+    fragment["totalBytes"] = json!(32);
+    truncated.resolve(history_page(11, vec![fragment], Value::Null));
+    fx.app
+        .wait_for("text:Could not load conversation history.")
+        .unwrap();
+    assert!(!fx.app.screen().enabled(quote).unwrap());
+    assert!(!fx.app.screen().matches("label:Clear all quotes").unwrap());
+
+    fx.app.press(copy).unwrap();
+    let (_, empty) = fixture_recv(&mut fx.queries).await;
+    empty.resolve(history_page(11, vec![], Value::Null));
+    fx.app.wait_for("text:Copied").unwrap();
+    assert_eq!(fx.app.screen().clipboard(), Some("Visible final answer"));
+    assert!(!fx.app.screen().enabled(quote).unwrap());
+
+    fx.app.press(copy).unwrap();
+    let (_, retry) = fixture_recv(&mut fx.queries).await;
+    assert!(!fx.app.screen().enabled(quote).unwrap());
+    let first = quote_history_row(2, "assistant", "Hidden first answer");
+    retry.resolve(history_page(11, vec![prompt, first, last], Value::Null));
+    assert!(fx.app.settle());
+    assert_eq!(
+        fx.app.screen().clipboard(),
+        Some("Hidden first answer\n\nVisible final answer")
+    );
+    assert!(fx.app.screen().enabled(quote).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cached_folded_reply_copies_visible_prose_and_disables_whole_quote_offline() {
+    let mut folded = quote_history_row(2, "assistant", "Cached final answer");
+    mark_final(&mut folded);
+    let (mut app, _) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "What happened?"), folded],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let quote = "role:button[Quote]";
+    app.wait_for(quote).unwrap();
+    assert!(app.screen().enabled(quote).unwrap());
+
+    app.send_host_event(
+        "ios.hostState",
+        json!({
+            "revision":2,"hosts":[{"rootId":"root","hostName":"Host","endpoints":["agent"]}],
+            "connections":{"root":{"status":"offline","autoReconnect":false}}
+        }),
+    )
+    .unwrap();
+    app.wait_for("text:Host is offline").unwrap();
+    assert!(app.shows("Cached final answer"));
+    assert!(!app.screen().enabled(quote).unwrap());
+    app.press("role:button[Copy reply]").unwrap();
+    app.wait_for("text:Copied").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("Cached final answer"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incomplete_reply_copies_the_visible_prose_without_quoting_a_whole_reply() {
+    let mut partial = quote_history_row(2, "assistant", "Only the loaded text");
+    partial["totalBytes"] = json!(64 * 1024);
+    let (mut app, _) = quote_chat_fixture(
+        vec![quote_history_row(1, "user", "Long reply please"), partial],
+        vec![],
+        None,
+    );
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    let quote = "role:button[Quote]";
+    app.wait_for(quote).unwrap();
+    assert!(!app.screen().enabled(quote).unwrap());
+    app.press("role:button[Copy reply]").unwrap();
+    app.wait_for("text:Copied").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("Only the loaded text"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history_loads() {
     let mut tool = quote_history_row(2, "assistant", "");
     tool["tool"] = json!({"toolUseId":"work","call":{"name":"Shell"}});
@@ -5397,16 +5632,20 @@ async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history
         vec![quote_history_row(1, "assistant", "First answer"), tool],
         None,
     );
-    let mut choose_quote = watch_quote_menus(&mut app);
     app.press("label:Conversation: Quotes Chat").unwrap();
-    app.wait_for("text:Second answer").unwrap();
-    assert!(!app.shows("role:button[Copy reply]"));
-    assert!(!app.shows("role:button[Quote]"));
-    assert!(choose_quote(&mut app, "text:Second answer", Some("Second")));
-    app.wait_for("label:Remove quote: Second").unwrap();
+    let body = "text:Second answer";
+    app.wait_for(body).unwrap();
+    let original_body = app.screen().id(body).unwrap();
+    assert!(!app.screen().matches("role:button[Copy reply]").unwrap());
+    assert!(!app.screen().matches("role:button[Quote]").unwrap());
+    select_reply_excerpt(&mut app, body, 0, "Second");
 
     pull_at_transcript_start(&mut app);
     app.wait_for("text:First answer").unwrap();
+    app.wait_for("label:Used 1 tool").unwrap();
+    assert_eq!(app.screen().id(body).unwrap(), original_body);
+    app.press("role:button[Add to quotes]").unwrap();
+    app.wait_for("label:Remove quote: Second").unwrap();
     app.press("role:button[Copy reply]").unwrap();
     assert_eq!(
         app.screen().clipboard(),
@@ -5425,6 +5664,108 @@ async fn chat_boundary_reply_gains_whole_turn_actions_only_after_earlier_history
     receipt.resolve(json!({"value":SendResult::Queued {
         session_id:"chat".into(), message_id:"boundary".into(), revision:2, completion:None,
     }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn appending_a_segment_keeps_the_original_assistant_cell_and_disclosure() {
+    let mut thought = quote_history_row(1, "assistant", "Earlier thought");
+    thought["field"] = json!("thinking");
+    let mut rows = vec![
+        thought,
+        quote_history_row(2, "assistant", "Earlier part"),
+        quote_history_row(3, "user", "Follow up"),
+    ];
+    let mut fx = ProjectionFixture::start(history_page(11, rows.clone(), Value::Null)).await;
+    let earlier = "text:Earlier part";
+    fx.app.wait_for(earlier).unwrap();
+    let earlier_node = fx.app.screen().id(earlier).unwrap();
+    fx.app.press("label:Thought process").unwrap();
+    fx.app.wait_for("text:Earlier thought").unwrap();
+
+    fx.ended();
+    let (input, tail) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["position"]["kind"], "tail");
+    let mut thought = quote_history_row(4, "assistant", "Later thought");
+    thought["field"] = json!("thinking");
+    rows.extend([thought, quote_history_row(5, "assistant", "Later part")]);
+    tail.resolve(history_page(12, rows, Value::Null));
+    fx.app.wait_for("text:Later part").unwrap();
+    assert_eq!(fx.app.screen().id(earlier).unwrap(), earlier_node);
+    assert_ne!(fx.app.screen().id("text:Later part").unwrap(), earlier_node);
+    assert!(fx.app.shows("Earlier thought"));
+    assert!(!fx.app.shows("Later thought"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prepended_body_prefix_clears_the_selection_at_the_old_text_offsets() {
+    let word = "Second";
+    let prefix = "Café ";
+    let full = format!("{prefix}{word} answer");
+    let mut suffix = quote_history_row(2, "assistant", "Second answer");
+    suffix["offset"] = json!(prefix.len());
+    suffix["totalBytes"] = json!(full.len());
+    let mut beginning = suffix.clone();
+    beginning["offset"] = json!(0);
+    beginning["text"] = json!(prefix);
+    let (mut app, mut sends) = quote_chat_fixture(vec![suffix], vec![beginning], None);
+    app.press("label:Conversation: Quotes Chat").unwrap();
+    app.wait_for("text:Second answer").unwrap();
+    select_reply_excerpt(&mut app, "text:Second answer", 0, word);
+
+    pull_at_transcript_start(&mut app);
+    let body = &format!("text:{full}");
+    app.wait_for(body).unwrap();
+    assert!(!app.screen().matches("role:button[Add to quotes]").unwrap());
+    select_reply_excerpt(&mut app, body, 5, word);
+    app.press("role:button[Add to quotes]").unwrap();
+    app.press("label:Send message").unwrap();
+    let (send, receipt) = sends.try_recv().unwrap();
+    assert_eq!(
+        json!(send.quotes),
+        json!([{"text":word,"label":"Maka","sourceMessageId":"m2","sourceTurnId":"t1"}])
+    );
+    receipt.resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"new-selection".into(), revision:2, completion:None,
+    }}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_short_transcript_pages_on_a_top_pull_not_on_a_drag_start_or_bottom_bounce() {
+    use nsh_core::{EventKind, EventPayload, Point};
+
+    let latest = quote_history_row(2, "assistant", "Short reply");
+    let cursor = history_cursor(&latest);
+    let mut fx = ProjectionFixture::start(history_page(11, vec![latest], cursor.clone())).await;
+    fx.app.wait_for("text:Short reply").unwrap();
+    let list = fx
+        .app
+        .screen()
+        .layout_nodes()
+        .into_iter()
+        .find(|node| node.test_id.as_deref() == Some("chat-transcript"))
+        .unwrap();
+    assert!(list.scroll.unwrap().content_size.unwrap().height < list.bounds.size.height);
+    fx.app.engine().control().dispatch_event(
+        list.id,
+        EventKind::ScrollDragStart,
+        EventPayload::Scroll(Point::default()),
+    );
+    assert!(fx.app.settle());
+    assert!(fx.queries.try_recv().is_err(), "a stationary drag paged");
+    report_transcript_offset(&mut fx.app, 24.);
+    report_transcript_offset(&mut fx.app, 0.);
+    assert!(fx.queries.try_recv().is_err(), "a bottom bounce paged");
+
+    pull_at_transcript_start(&mut fx.app);
+    let (input, before) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["position"]["cursor"], cursor);
+    before.resolve(history_page(
+        11,
+        vec![quote_history_row(1, "user", "Earlier question")],
+        Value::Null,
+    ));
+    fx.app.wait_for("text:Earlier question").unwrap();
+    assert!(fx.queries.try_recv().is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -50,7 +50,6 @@ import {
   renameSession,
   sessionSearchQuery,
   canLoadMoreSessions,
-  hasMoreSessions,
   loadingMoreSessions,
   loadMoreSessions,
   sessionPaginationFailed,
@@ -778,7 +777,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                         icon="chat"
                         title={
                           sessionSearchQuery().trim()
-                            ? hasMoreSessions()
+                            ? scopedSessionLoad().hasMore
                               ? tr('No matches in loaded chats')
                               : tr('No matching chats')
                             : tr('No conversations yet')
