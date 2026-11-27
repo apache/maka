@@ -75,6 +75,8 @@ pub enum RemoteClientError {
     UnknownEndpoint(String),
     #[error("serialization error: {0}")]
     Codec(#[from] serde_json::Error),
+    #[error("remote mutation was prevented before start")]
+    MutationNotExecuted,
     #[error("Host mutation completed with cleanup error: {diagnostic}")]
     MutationCleanup {
         diagnostic: String,
@@ -191,16 +193,57 @@ struct WireCallOpen {
     input: Value,
 }
 
-/// Named, immutable request-local resources. The mobile client only needs the
-/// Host's UTF-8 resource contract, without linking its native capability stack.
+/// Named, immutable request-local resources.
 pub type Attachments = BTreeMap<String, ReadResource>;
 
-/// An in-memory Host UTF-8 resource. Its contents are never serialized or formatted.
-pub struct ReadResource(String);
+/// An in-memory Host resource. Its contents are never serialized or formatted.
+pub struct ReadResource(ResourceData);
+
+enum ResourceData {
+    Utf8(String),
+    Binary(Bytes),
+}
 
 impl ReadResource {
     pub fn utf8(text: String) -> Self {
-        Self(text)
+        Self(ResourceData::Utf8(text))
+    }
+
+    pub fn binary(bytes: Bytes) -> Self {
+        Self(ResourceData::Binary(bytes))
+    }
+
+    fn descriptor(&self) -> Value {
+        let (encoding, name, length) = match &self.0 {
+            ResourceData::Utf8(text) => ("utf8", "maka.text.utf8", text.len()),
+            ResourceData::Binary(bytes) => ("bytes", "maka.bytes", bytes.len()),
+        };
+        json!({
+            "encoding": encoding,
+            "resource": {"name": name, "version": 1},
+            "length": length,
+            "metadata": {},
+        })
+    }
+
+    async fn write_to(&self, stream: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        let bytes = match &self.0 {
+            ResourceData::Utf8(text) => text.as_bytes(),
+            ResourceData::Binary(bytes) => bytes.as_ref(),
+        };
+        let mut start = 0;
+        while start < bytes.len() {
+            let end = start + (bytes.len() - start).min(RESOURCE_CHUNK_LIMIT);
+            let end = match &self.0 {
+                ResourceData::Utf8(text) => text.floor_char_boundary(end),
+                ResourceData::Binary(_) => end,
+            };
+            let chunk = &bytes[start..end];
+            stream.write_u32(chunk.len() as u32).await?;
+            stream.write_all(chunk).await?;
+            start = end;
+        }
+        Ok(())
     }
 }
 
@@ -601,17 +644,7 @@ impl RemoteCallHandle {
         };
         let descriptors: BTreeMap<_, _> = attachments
             .iter()
-            .map(|(slot, resource)| {
-                (
-                    slot,
-                    json!({
-                        "encoding": "utf8",
-                        "resource": {"name": "maka.text.utf8", "version": 1},
-                        "length": resource.0.len(),
-                        "metadata": {},
-                    }),
-                )
-            })
+            .map(|(slot, resource)| (slot, resource.descriptor()))
             .collect();
         write_frame(reader.get_mut(), &open_msg).await?;
         write_frame(reader.get_mut(), &descriptors).await?;
@@ -630,14 +663,7 @@ impl RemoteCallHandle {
 
         // The Host reserves the descriptors before accepting any payload bytes.
         for resource in attachments.values() {
-            let mut remaining = resource.0.as_str();
-            while !remaining.is_empty() {
-                let end = remaining.floor_char_boundary(remaining.len().min(RESOURCE_CHUNK_LIMIT));
-                let (chunk, rest) = remaining.split_at(end);
-                reader.get_mut().write_u32(chunk.len() as u32).await?;
-                reader.get_mut().write_all(chunk.as_bytes()).await?;
-                remaining = rest;
-            }
+            resource.write_to(reader.get_mut()).await?;
         }
         reader.get_mut().flush().await?;
         Ok(reader)
@@ -958,9 +984,7 @@ fn extract_mutation_value(reply: Value) -> Result<Value, RemoteClientError> {
                         ))),
                     }
                 }
-                Some("not_executed") => Err(RemoteClientError::HostRejected(
-                    "remote mutation was prevented before start".into(),
-                )),
+                Some("not_executed") => Err(RemoteClientError::MutationNotExecuted),
                 other => Err(RemoteClientError::Protocol(format!(
                     "unexpected mutation outcome kind: {other:?}"
                 ))),
@@ -1165,6 +1189,59 @@ impl RemoteHostConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn assert_resource_chunks(resource: ReadResource, expected: &[u8], lengths: &[usize]) {
+        let mut wire = Vec::new();
+        resource.write_to(&mut wire).await.unwrap();
+        let mut wire = wire.as_slice();
+        let mut remaining = expected;
+        for &length in lengths {
+            assert_eq!(wire.read_u32().await.unwrap() as usize, length);
+            assert_eq!(&wire[..length], &remaining[..length]);
+            wire = &wire[length..];
+            remaining = &remaining[length..];
+        }
+        assert!(wire.is_empty());
+        assert!(remaining.is_empty());
+    }
+
+    #[tokio::test]
+    async fn binary_resources_keep_raw_bytes_and_chunk_at_the_wire_limit() {
+        for (size, chunks) in [
+            (0, &[][..]),
+            (65_536, &[65_536][..]),
+            (65_537, &[65_536, 1][..]),
+        ] {
+            let bytes = Bytes::from((0..size).map(|n| (n + 255) as u8).collect::<Vec<_>>());
+            let resource = ReadResource::binary(bytes.clone());
+            assert_eq!(
+                resource.descriptor(),
+                json!({
+                    "encoding": "bytes",
+                    "resource": {"name": "maka.bytes", "version": 1},
+                    "length": size,
+                    "metadata": {},
+                })
+            );
+            assert_resource_chunks(resource, &bytes, chunks).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn utf8_credential_chunks_end_at_character_boundaries() {
+        let credential = format!("{}🦀密钥", "x".repeat(65_535));
+        let resource = ReadResource::utf8(credential.clone());
+        assert_eq!(
+            resource.descriptor(),
+            json!({
+                "encoding": "utf8",
+                "resource": {"name": "maka.text.utf8", "version": 1},
+                "length": credential.len(),
+                "metadata": {},
+            })
+        );
+        assert_resource_chunks(resource, credential.as_bytes(), &[65_535, 10]).await;
+    }
 
     #[tokio::test]
     async fn only_eof_at_a_frame_boundary_is_a_clean_anchor_disconnect() {
