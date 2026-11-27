@@ -23,7 +23,8 @@ use iroh::{
     Watcher,
     dns::{DnsResolver, FallbackMode},
     endpoint::{
-        ConnectError, ConnectingError, Connection, ConnectionError, RecvStream, SendStream, presets,
+        ConnectError, ConnectOptions, ConnectingError, Connection, ConnectionError, RecvStream,
+        SendStream, presets,
     },
 };
 use iroh_relay::{
@@ -46,6 +47,8 @@ use tokio::{
 };
 
 pub const HOST_ALPN: &[u8] = b"maka/host/v1";
+// A negotiated pre-redeem metadata query; the v1 ticket and redemption wire stay unchanged.
+pub(crate) const PAIRING_INFO_ALPN: &[u8] = b"maka/host/v1/pairing-info";
 pub(crate) const PEER_ACCESS_REVOKED_CODE: u32 = 1;
 
 pub struct Relay {
@@ -183,6 +186,7 @@ impl PeerEndpoint {
         let dial = self.connect_via(
             host_key,
             self.routes.keys().cloned().map(TransportAddr::Relay),
+            ConnectOptions::default(),
         );
         let mut home = self.endpoint.home_relay_status();
         let mut rejected = BTreeMap::new();
@@ -280,13 +284,22 @@ impl PeerEndpoint {
         &self,
         host_key: &DevicePublicKey,
         addresses: impl IntoIterator<Item = TransportAddr>,
+        options: ConnectOptions,
     ) -> Result<PeerConnection> {
         let expected = EndpointId::from_bytes(host_key.as_bytes())?;
         let target = EndpointAddr::new(expected).with_addrs(addresses);
         // Dial immediately. Waiting for online here would serialize the relay
         // handshake behind local UDP address discovery on a cold endpoint.
-        let conn = self.endpoint.connect(target, HOST_ALPN).await.map_err(
-            |cause| -> Box<dyn std::error::Error + Send + Sync> {
+        let dial = async {
+            let connecting = self
+                .endpoint
+                .connect_with_opts(target, HOST_ALPN, options)
+                .await?;
+            Ok::<_, ConnectError>(connecting.await?)
+        };
+        let conn = dial
+            .await
+            .map_err(|cause| -> Box<dyn std::error::Error + Send + Sync> {
                 match &cause {
                     ConnectError::Connection { source, .. }
                     | ConnectError::Connecting {
@@ -295,8 +308,7 @@ impl PeerEndpoint {
                     } if is_peer_access_revoked(source) => Box::new(PeerAccessRevoked),
                     _ => Box::new(cause),
                 }
-            },
-        )?;
+            })?;
         if conn.remote_id() != expected {
             conn.close(0u32.into(), b"unexpected host identity");
             return Err("authenticated peer does not match the target Host".into());
@@ -331,8 +343,12 @@ impl PeerEndpoint {
         if routes.is_empty() {
             return Err("pairing ticket does not name a configured relay".into());
         }
-        self.connect_via(&parse_peer_id(&payload.host_peer_id)?, routes)
-            .await
+        self.connect_via(
+            &parse_peer_id(&payload.host_peer_id)?,
+            routes,
+            ConnectOptions::new().with_additional_alpns(vec![PAIRING_INFO_ALPN.to_vec()]),
+        )
+        .await
     }
 
     pub async fn close(&self) {
@@ -479,6 +495,10 @@ impl PeerConnection {
         Ok(join(recv, send))
     }
 
+    pub fn supports_pairing_info(&self) -> bool {
+        self.conn.alpn() == PAIRING_INFO_ALPN
+    }
+
     pub fn export_sas(&self) -> Result<String> {
         export_sas(&self.conn, &self.host_key, &self.client_key)
     }
@@ -623,8 +643,11 @@ mod tests {
                 routes: BTreeMap::new(),
                 relay_map: RelayMap::empty(),
             };
-            let dial =
-                client.connect_via(&target, [TransportAddr::Ip(imposter.bound_sockets()[0])]);
+            let dial = client.connect_via(
+                &target,
+                [TransportAddr::Ip(imposter.bound_sockets()[0])],
+                ConnectOptions::default(),
+            );
             let accept = async { imposter.accept().await.unwrap().await };
             let (client_result, server_result) = tokio::join!(dial, accept);
             assert!(

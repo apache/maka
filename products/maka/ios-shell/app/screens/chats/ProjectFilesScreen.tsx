@@ -29,7 +29,7 @@ import {
   parseUnifiedDiffFiles,
   type ParsedDiffFile,
 } from '../../state/chat';
-import { showToast } from '../../state/hostPool';
+import { hostById, showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import { listHostFiles, type ScopedSession } from '../../state/sessions';
 import { spacing, type } from '../../theme/tokens';
@@ -284,7 +284,7 @@ export function ProjectFilesScreen(props: {
                     subtitle={
                       diffLoading()
                         ? tr('Reading git workspace diff from {name}.', {
-                            name: props.item.hostName,
+                            name: hostById(rootId)?.hostName ?? props.item.hostName,
                           })
                         : tr(
                             'Modified, added, or deleted files in this workspace will appear here.',

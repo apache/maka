@@ -141,7 +141,9 @@ export const allSessions = computed<ScopedSession[]>(() => {
   const byHost = sessionsByHost();
   const merged: ScopedSession[] = [];
   for (const host of savedHosts()) {
-    for (const item of byHost[host.rootId]?.snapshot?.items ?? []) merged.push(item);
+    for (const item of byHost[host.rootId]?.snapshot?.items ?? []) {
+      merged.push(item.hostName === host.hostName ? item : { ...item, hostName: host.hostName });
+    }
   }
   merged.sort((a, b) => (b.session.updatedAt ?? 0) - (a.session.updatedAt ?? 0));
   return merged;

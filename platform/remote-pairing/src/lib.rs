@@ -36,6 +36,36 @@ pub const SAS_EXPORTER_LABEL: &[u8] = b"EXPORTER-maka-remote-pairing-v1";
 
 /// Host transport adapters and local ticket issuance share this State Root key.
 pub const HOST_IDENTITY_FILE: &str = "remote-host.ed25519";
+const MAX_NAME_BYTES: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
+pub enum PairingNameError {
+    #[error("must not be empty")]
+    Empty,
+    #[error("must be {MAX_NAME_BYTES} UTF-8 bytes or fewer")]
+    TooLong,
+    #[error("must not contain control characters")]
+    ControlCharacter,
+}
+
+pub fn validate_pairing_name(name: &str) -> Result<&str, PairingNameError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(PairingNameError::Empty);
+    }
+    if name.len() > MAX_NAME_BYTES {
+        return Err(PairingNameError::TooLong);
+    }
+    if has_control_characters(name) {
+        return Err(PairingNameError::ControlCharacter);
+    }
+    Ok(name)
+}
+
+fn has_control_characters(name: &str) -> bool {
+    name.chars().any(char::is_control)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PairingError {
@@ -63,6 +93,65 @@ pub enum PairingError {
     Random(#[source] getrandom::Error),
     #[error("invalid pairing JSON")]
     Json(#[from] serde_json::Error),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HostPlatform {
+    #[serde(rename = "macOS")]
+    MacOS,
+    Windows,
+    Linux,
+}
+
+impl HostPlatform {
+    pub fn current() -> Option<Self> {
+        match std::env::consts::OS {
+            "macos" => Some(Self::MacOS),
+            "windows" => Some(Self::Windows),
+            "linux" => Some(Self::Linux),
+            _ => None,
+        }
+    }
+}
+
+/// Default public name for invitations issued by the local Host.
+pub fn default_host_name() -> String {
+    #[cfg(unix)]
+    let hostname = gethostname::gethostname().into_string().ok();
+    #[cfg(windows)]
+    let hostname = std::env::var("COMPUTERNAME").ok();
+    #[cfg(not(any(unix, windows)))]
+    let hostname: Option<String> = None;
+
+    format_host_name(hostname.as_deref()).to_owned()
+}
+
+fn format_host_name(hostname: Option<&str>) -> &str {
+    hostname
+        .filter(|name| !has_control_characters(name))
+        .map(str::trim)
+        .and_then(|name| validate_pairing_name(name.strip_suffix(".local").unwrap_or(name)).ok())
+        .unwrap_or("Maka")
+}
+
+#[cfg(test)]
+mod host_name_tests {
+    use super::format_host_name;
+
+    #[test]
+    fn default_name_uses_only_the_valid_hostname() {
+        assert_eq!(format_host_name(Some(" Studio Mac.local ")), "Studio Mac");
+        let limit = format!("{}ab", "界".repeat(42));
+        assert_eq!(format_host_name(Some(&limit)), limit);
+        for invalid in [
+            None,
+            Some(" .local "),
+            Some("Lab\nMac"),
+            Some(&"界".repeat(43)),
+        ] {
+            assert_eq!(format_host_name(invalid), "Maka");
+        }
+    }
 }
 
 /// RFC 6750 b64token, with optional trailing padding.

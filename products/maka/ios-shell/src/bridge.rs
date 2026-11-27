@@ -18,11 +18,12 @@
  */
 
 use maka_remote_client::{
-    Attachments, DeviceIdentity, HostProfile, PendingPairing, ReadResource, RelayAuthorization,
-    RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts, TlsTrust,
+    Attachments, DeviceIdentity, HostProfile, PairingNameError, PendingPairing, ReadResource,
+    RelayAuthorization, RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts,
+    TlsTrust, validate_pairing_name,
 };
 use nsh_engine::{HostCall, HostChannel, HostSender};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -53,6 +54,7 @@ pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.disconnectHost",
     "ios.removeHost",
     "ios.networkChange",
+    "ios.renameHost",
     "ios.setFilter",
     "ios.hostQuery",
     "ios.hostMutate",
@@ -75,6 +77,7 @@ struct Confirm {
     pairing_id: u64,
     sas: String,
     device_label: Option<String>,
+    host_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +93,32 @@ struct Direct {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Root {
     root_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameHost {
+    root_id: String,
+    host_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum NameField {
+    HostName,
+    DeviceLabel,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum NameEditOutcome {
+    Saved {
+        snapshot: Value,
+    },
+    InvalidName {
+        field: NameField,
+        reason: PairingNameError,
+    },
 }
 
 #[derive(Deserialize)]
@@ -474,10 +503,14 @@ impl Bridge {
             connections.insert(root.clone(), info);
         }
         for (root, active) in &state.connections {
-            connections.insert(
-                root.clone(),
-                json!({"status": "connected", "connection": active.info}),
+            let mut status = json!({"status": "connected", "connection": active.info});
+            status["connection"]["hostName"] = json!(
+                state
+                    .profiles
+                    .get(root)
+                    .map_or("WebSocket", HostProfile::host_name)
             );
+            connections.insert(root.clone(), status);
         }
         let mut hosts: Vec<_> = state
             .profiles
@@ -490,6 +523,7 @@ impl Bridge {
                 json!({
                     "rootId": root,
                     "hostName": host.host_name(),
+                    "platform": host.platform(),
                     "peerId": host.host_peer_id(),
                     "endpoints": host.direct_endpoints(),
                     "relays": host.relays().iter().map(|relay| json!({
@@ -502,12 +536,12 @@ impl Bridge {
         hosts.extend(
             state
                 .connections
-                .iter()
-                .filter(|(root, _)| !state.profiles.contains_key(*root))
-                .map(|(root, active)| {
+                .keys()
+                .filter(|root| !state.profiles.contains_key(*root))
+                .map(|root| {
                     json!({
                         "rootId": root,
-                        "hostName": active.info["hostName"],
+                        "hostName": connections[root]["connection"]["hostName"],
                         "peerId": "",
                         "endpoints": [],
                         "ephemeral": true,
@@ -515,11 +549,14 @@ impl Bridge {
                     })
                 }),
         );
+        let active = state
+            .latest_connection()
+            .map(|(root, _)| &connections[root]["connection"]);
         json!({
             "revision": self.snapshot_revision.fetch_add(1, Ordering::Relaxed) + 1,
             "devicePeerId": self.peer_id,
             "hosts": hosts,
-            "active": state.latest_connection().map(|(_, active)| &active.info),
+            "active": active,
             "connections": connections,
             "filter": match &state.filter {
                 Some(root) => json!({"kind": "single_computer", "root_id": root}),
@@ -538,7 +575,10 @@ impl Bridge {
                 Ok(snapshot)
             }
             "ios.beginPairing" => self.begin(decode(data)?).await,
-            "ios.confirmPairing" => self.confirm(decode(data)?).await,
+            "ios.confirmPairing" => self
+                .confirm(decode(data)?)
+                .await
+                .map(|outcome| json!(outcome)),
             "ios.cancelPairing" => {
                 let mut state = self.state.lock().await;
                 if let Some(root) = optional_root(&data)? {
@@ -577,6 +617,10 @@ impl Bridge {
                 }
                 Ok(Value::Null)
             }
+            "ios.renameHost" => self
+                .rename(decode(data)?)
+                .await
+                .map(|outcome| json!(outcome)),
             "ios.setFilter" => {
                 let filter = &data["filter"];
                 let mut state = self.state.lock().await;
@@ -805,7 +849,7 @@ impl Bridge {
         }
         let info = json!({
             "pairingId": id,
-            "rootId": pairing.root_id(), "hostName": pairing.host_name(),
+            "rootId": pairing.root_id(), "hostName": pairing.host_name(), "platform": pairing.platform(),
             "peerId": pairing.host_peer_id(), "devicePeerId": self.peer_id,
             "sasCode": pairing.sas(), "pathSummary": path_summary(pairing.path_summary()),
         });
@@ -817,22 +861,38 @@ impl Bridge {
         Ok(info)
     }
 
-    async fn confirm(&self, confirm: Confirm) -> Result<Value, String> {
-        if confirm
-            .device_label
-            .as_deref()
-            .is_some_and(|name| name.trim().len() > 128)
-        {
-            return Err("Device name exceeds 128 UTF-8 bytes".into());
-        }
-        let (pending, root, id, cancel) = {
+    async fn confirm(
+        &self,
+        Confirm {
+            pairing_id,
+            sas,
+            device_label,
+            host_name,
+        }: Confirm,
+    ) -> Result<NameEditOutcome, String> {
+        let (pending, root, id, cancel, label) = {
             let mut state = self.state.lock().await;
-            if !state
+            let pending = state
                 .pending
-                .as_ref()
-                .is_some_and(|pending| pending.id == confirm.pairing_id)
-            {
-                return Err("there is no matching pairing to confirm".into());
+                .as_mut()
+                .filter(|pending| pending.id == pairing_id)
+                .ok_or("there is no matching pairing to confirm")?;
+            // Validation errors leave the pending pairing and its invite untouched.
+            let label =
+                match validate_pairing_name(device_label.as_deref().unwrap_or("Maka for iOS")) {
+                    Ok(label) => label,
+                    Err(reason) => {
+                        return Ok(NameEditOutcome::InvalidName {
+                            field: NameField::DeviceLabel,
+                            reason,
+                        });
+                    }
+                };
+            if let Err(reason) = pending.pairing.select_host_name(host_name.as_deref()) {
+                return Ok(NameEditOutcome::InvalidName {
+                    field: NameField::HostName,
+                    reason,
+                });
             }
             let pending = state.pending.take().expect("matched pending pairing");
             let root = pending.pairing.root_id().to_owned();
@@ -851,18 +911,19 @@ impl Bridge {
                 },
             );
             self.emit("ios.hostState", self.snapshot(&state));
-            (pending, root, id, cancel)
+            (pending, root, id, cancel, label)
         };
-        let pairing_id = pending.id;
-        let result = self.confirm_pairing(pending, id, &cancel, confirm).await;
+        let result = self
+            .confirm_pairing(pending, id, &cancel, &sas, label)
+            .await;
         self.state.lock().await.redeeming.remove(&id);
         self.finish_admission(&root, id, &cancel, &result, true)
             .await;
         self.finish_pairing(pairing_id).await;
-        if let Ok(snapshot) = &result {
+        result.map(|snapshot| {
             self.emit("ios.hostState", snapshot.clone());
-        }
-        result
+            NameEditOutcome::Saved { snapshot }
+        })
     }
 
     async fn confirm_pairing(
@@ -870,17 +931,12 @@ impl Bridge {
         pending: Pending,
         id: u64,
         cancel: &CancellationToken,
-        confirm: Confirm,
+        sas: &str,
+        label: &str,
     ) -> Result<Value, String> {
-        let label = confirm
-            .device_label
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("Maka for iOS");
         let redeemed = pending
             .pairing
-            .redeem(&confirm.sas, Some(label.to_owned()))
+            .redeem(sas, Some(label.to_owned()))
             .await
             .map_err(error)?;
         self.save_redeemed(id, redeemed.profile().clone(), pending.credential)
@@ -1110,6 +1166,33 @@ impl Bridge {
         }
     }
 
+    async fn rename(
+        &self,
+        RenameHost { root_id, host_name }: RenameHost,
+    ) -> Result<NameEditOutcome, String> {
+        let _edit = self.profile_edits.lock().await;
+        let mut profile = self
+            .state
+            .lock()
+            .await
+            .profiles
+            .get(&root_id)
+            .cloned()
+            .ok_or("unknown paired Host")?;
+        if let Err(reason) = profile.set_host_name(&host_name) {
+            return Ok(NameEditOutcome::InvalidName {
+                field: NameField::HostName,
+                reason,
+            });
+        }
+        self.persist_profile(&profile).await?;
+        let mut state = self.state.lock().await;
+        state.profiles.insert(root_id, profile);
+        let snapshot = self.snapshot(&state);
+        self.emit("ios.hostState", snapshot.clone());
+        Ok(NameEditOutcome::Saved { snapshot })
+    }
+
     async fn remove(&self, root: String) -> Result<Value, String> {
         let _edit = self.profile_edits.lock().await;
         let saved = self.saved.clone();
@@ -1177,12 +1260,8 @@ impl Bridge {
                     connection.call_handle(),
                 ))
             });
-            let name = state
-                .profiles
-                .get(root)
-                .map_or("WebSocket", HostProfile::host_name);
             let info = json!({
-                "rootId": connection.root_id(), "hostName": name, "epoch": connection.epoch(),
+                "rootId": connection.root_id(), "epoch": connection.epoch(),
                 "session": connection.session(), "generation": id, "endpoints": endpoints,
                 "pathSummary": path_summary(connection.path_summary()), "transport": transport,
             });

@@ -78,6 +78,7 @@ import {
 import {
   activeHostInfo,
   connectSavedHost,
+  hostById,
   hostStatusKind,
   isHostConnected,
   savedHosts,
@@ -420,13 +421,14 @@ export function ChatScreen(
   const session = () => ctrl.observation()?.session ?? props.item.session;
   const side = () => !!session().branch?.side;
   const sessionTitle = () => (sideDraft ? tr('Side Question') : session().title);
+  const hostName = () => hostById(rootId)?.hostName ?? props.item.hostName;
   const subtitleLine = () => {
     const main = pending?.request.main ?? props.mainChat;
     if (main) return tr('Side Question · {title}', { title: main.session.title });
     if (side()) return tr('Side Question');
     const workspace =
       session().workspace?.path?.split('/').filter(Boolean).pop() || tr('Default workspace');
-    return savedHosts().length > 1 ? props.item.hostName + ' · ' + workspace : workspace;
+    return savedHosts().length > 1 ? hostName() + ' · ' + workspace : workspace;
   };
   const accessoryId = 'maka-chat-accessory:' + conversationKey(rootId, sessionId);
   const turns = computed(() => groupHistoryTurns(ctrl.chunks()));
@@ -1074,7 +1076,7 @@ export function ChatScreen(
             {(rec, index) => (
               <InlineInteractionCard
                 record={rec()}
-                hostName={props.item.hostName}
+                hostName={hostName()}
                 sessionTitle={sessionTitle()}
                 accepted={
                   feedback.outcome()?.record.requestId === rec().requestId
@@ -1229,7 +1231,7 @@ export function ChatScreen(
                       textOverflow: 'ellipsis',
                     }}
                   >
-                    {tr('{name} is offline', { name: props.item.hostName })}
+                    {tr('{name} is offline', { name: hostName() })}
                   </Text>
                 </View>
                 <ActionButton

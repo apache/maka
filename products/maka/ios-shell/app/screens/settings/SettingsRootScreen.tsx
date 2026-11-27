@@ -184,7 +184,9 @@ export function SettingsRootScreen(props: {
                     />
                   }
                   title={host().hostName}
-                  subtitle={hostSubtitle(host().rootId)}
+                  subtitle={[host().platform, hostSubtitle(host().rootId)]
+                    .filter(Boolean)
+                    .join(' · ')}
                   trailing={<StatusDot kind={hostStatusKind(host().rootId)} size={8} />}
                   chevron
                   divider={savedHosts().length > 1}
