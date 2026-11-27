@@ -461,6 +461,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: Some(maka_event_log::content::register_sql_functions),
         data: Some(cells::migrate_v66::migrate_compress_cells_and_usage),
     },
+    maka_event_log::migration::Migration {
+        version: 67,
+        description: "index live catalog runs for active child lookups",
+        sql: include_str!("../migrations/0067_catalog_live_runs_index.sql"),
+        configure: None,
+        data: None,
+    },
 ];
 
 #[cfg(test)]
@@ -472,7 +479,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=65) {
+        for through in [0, 41].into_iter().chain(46..=66) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

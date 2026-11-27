@@ -7586,7 +7586,7 @@ export interface AgentList {
    */
   includeArchived?: boolean;
   /**
-   * Only conversations without a parent; omitted queries still include children.
+   * Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.
    */
   rootsOnly?: boolean;
   position: AgentSessionPosition;
@@ -7858,6 +7858,14 @@ export interface AgentSession {
    * Session that initiated creation, independent of fork ancestry and task ownership.
    */
   parentSessionId: string | null;
+  /**
+   * Ordered live ancestor session ids from immediate parent to top-level root.
+   */
+  ancestorIds?: string[];
+  /**
+   * Title of the immediate live parent session when this session is a child.
+   */
+  parentTitle?: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
   tools?: string[] | null;
@@ -7870,10 +7878,15 @@ export interface AgentSession {
   labels: string[];
   workspace: AgentWorkspace;
   revision: number;
+  createdAt?: number;
   updatedAt: number;
   archived: boolean;
   pinned: boolean;
   hasUnread: boolean;
+  /**
+   * Whether at least one direct unarchived child conversation is currently working.
+   */
+  hasActiveChildren?: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
    */

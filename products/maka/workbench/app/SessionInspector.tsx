@@ -20,7 +20,7 @@
 import { formatCount } from './numberFormat';
 import { cleanup, effect, Scroll, signal, Text, untracked, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
-import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
+
 import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
@@ -83,12 +83,10 @@ export function SessionInspector(props: {
   sources?(): readonly WorkspaceSourceItem[];
   answerSources(): readonly AnswerSource[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
-  childSessions(): readonly AgentSession[];
   openChanges?(worktreePath?: string | null): void;
   openFiles?(): void;
   openLaunchpad?(): void;
   openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
-  openChildSession?(sessionId: string): void;
 }) {
   const host = useHost();
   const revisions = signal<GitRevisions | null>(null);
@@ -98,7 +96,6 @@ export function SessionInspector(props: {
   const pulls = signal<GitHubPullSummary[]>([]);
   const githubRepo = signal<GitHubRepoRef | null>(null);
   const repoMenuOpen = signal(false);
-  const subagentsExpanded = signal(false);
   const scrollY = signal(0);
   const viewportHeight = signal(0);
   const contentHeight = signal(0);
@@ -221,16 +218,6 @@ export function SessionInspector(props: {
     if (mainWt) return mainWt.name;
     return basenameLabel(effectivePath()) || tr('Files');
   };
-  const children = () => {
-    const raw = props.childSessions();
-    return [...raw].sort((a, b) => {
-      const aRun = a.activity !== 'idle' ? 0 : 1;
-      const bRun = b.activity !== 'idle' ? 0 : 1;
-      return aRun - bRun;
-    });
-  };
-  const visibleChildren = () => (subagentsExpanded() ? children() : children().slice(0, 6));
-  const runningChildren = () => children().filter((item) => item.activity !== 'idle').length;
   const openSources = () => props.sources?.() ?? [];
 
   const showScrollbar = () => viewportHeight() > 48 && contentHeight() > viewportHeight() + 2;
@@ -565,126 +552,6 @@ export function SessionInspector(props: {
             </View>
             {divider()}
           </If>
-
-          {/* 4. Subagents */}
-          <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 4,
-              }}
-            >
-              <Text style={{ ...sectionTitleStyle, flex: 1 }}>{tr('Subagents')}</Text>
-              <If when={children().length > 6 && subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show fewer project conversations')}
-                  onPress={() => subagentsExpanded.set(false)}
-                  style={{
-                    minHeight: 20,
-                    height: 20,
-                    paddingHorizontal: 6,
-                    borderRadius: radius(4),
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 2,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 11, lineHeight: 16, color: C.muted }}>
-                    {tr('Show fewer project conversations')}
-                  </Text>
-                  <Icon name="up" size={11} color={C.muted} />
-                </Button>
-              </If>
-              <If when={children().length > 0}>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 16,
-                    color: runningChildren() > 0 ? C.accentText : C.muted,
-                  }}
-                >
-                  {runningChildren() > 0
-                    ? tr('{count} running', { count: runningChildren() })
-                    : tr('{count} completed', { count: children().length })}
-                </Text>
-              </If>
-            </View>
-            <If
-              when={children().length > 0}
-              else={
-                <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                  {tr('No subagents')}
-                </Text>
-              }
-            >
-              <Each of={visibleChildren()} key={(child) => child.id}>
-                {(child) => (
-                  <Button
-                    accessibilityLabel={child().title || tr('Untitled conversation')}
-                    onPress={() => props.openChildSession?.(child().id)}
-                    style={{
-                      minHeight: 32,
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      marginHorizontal: -8,
-                      borderRadius: radius(8),
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.cardRaised }}
-                    activeStyle={quietActiveStyle()}
-                    focusStyle={quietFocusStyle()}
-                  >
-                    <Icon
-                      name={child().activity !== 'idle' ? 'statusRecorded' : 'statusSuccess'}
-                      size={14}
-                      color={child().activity !== 'idle' ? C.accentText : C.success}
-                    />
-                    <Text
-                      style={[
-                        { ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {child().title || tr('Untitled conversation')}
-                    </Text>
-                  </Button>
-                )}
-              </Each>
-              <If when={children().length > 6 && !subagentsExpanded()}>
-                <Button
-                  accessibilityLabel={tr('Show all ({count})', { count: children().length })}
-                  onPress={() => subagentsExpanded.set(true)}
-                  style={{
-                    minHeight: 28,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    marginHorizontal: -8,
-                    borderRadius: radius(8),
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                  hoverStyle={{ backgroundColor: C.cardRaised }}
-                  focusStyle={quietFocusStyle()}
-                >
-                  <Text style={{ fontSize: 12, lineHeight: 16, color: C.muted }}>
-                    {subagentsExpanded()
-                      ? tr('Show fewer project conversations')
-                      : tr('Show all ({count})', { count: children().length })}
-                  </Text>
-                  <Icon name={subagentsExpanded() ? 'up' : 'down'} size={12} color={C.muted} />
-                </Button>
-              </If>
-            </If>
-          </View>
-
-          {divider()}
 
           {/* Open workspace tabs */}
           <View style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 4 }}>

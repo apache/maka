@@ -965,7 +965,7 @@ export const contracts: {
               },
               rootsOnly: {
                 description:
-                  'Only conversations without a parent; omitted queries still include children.',
+                  'Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.',
                 type: 'boolean',
                 default: false,
               },
@@ -1199,6 +1199,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -1259,6 +1272,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -1272,6 +1291,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -2881,6 +2906,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -2941,6 +2979,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -2954,6 +2998,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -8059,6 +8109,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -8119,6 +8182,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -8132,6 +8201,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -12062,6 +12137,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12122,6 +12210,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -12135,6 +12229,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -12854,6 +12954,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12914,6 +13027,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -12927,6 +13046,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -20928,6 +21053,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -20988,6 +21126,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -21001,6 +21145,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -22137,6 +22287,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -22197,6 +22360,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -22210,6 +22379,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -24164,7 +24339,7 @@ export const contracts: {
               },
               rootsOnly: {
                 description:
-                  'Only conversations without a parent; omitted queries still include children.',
+                  'Only conversations without a parent and explicitly pinned ones; omitted queries still include all children.',
                 type: 'boolean',
                 default: false,
               },
@@ -24398,6 +24573,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -24458,6 +24646,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -24471,6 +24665,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -29913,6 +30113,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -29973,6 +30186,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -29986,6 +30205,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -31855,6 +32080,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -31915,6 +32153,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -31928,6 +32172,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -33197,6 +33447,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -33257,6 +33520,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -33270,6 +33539,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -36986,6 +37261,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -37046,6 +37334,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -37059,6 +37353,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -44902,6 +45202,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -44962,6 +45275,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -44975,6 +45294,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -47314,6 +47639,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -47374,6 +47712,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -47387,6 +47731,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:
@@ -53637,6 +53987,19 @@ export const contracts: {
                       'Session that initiated creation, independent of fork ancestry and task ownership.',
                     type: ['string', 'null'],
                   },
+                  ancestorIds: {
+                    description:
+                      'Ordered live ancestor session ids from immediate parent to top-level root.',
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  parentTitle: {
+                    description:
+                      'Title of the immediate live parent session when this session is a child.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -53697,6 +54060,12 @@ export const contracts: {
                     format: 'uint64',
                     minimum: 0,
                   },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    default: 0,
+                  },
                   updatedAt: {
                     type: 'integer',
                     format: 'uint64',
@@ -53710,6 +54079,12 @@ export const contracts: {
                   },
                   hasUnread: {
                     type: 'boolean',
+                  },
+                  hasActiveChildren: {
+                    description:
+                      'Whether at least one direct unarchived child conversation is currently working.',
+                    type: 'boolean',
+                    default: false,
                   },
                   tailMessageId: {
                     description:

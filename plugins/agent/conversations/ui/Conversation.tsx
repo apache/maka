@@ -41,6 +41,12 @@ import { quietWaits, retrying, waitActivity } from './runWaits';
 import { ConversationSkeleton } from '../../../../products/maka/workbench/app/Loading';
 import type { RecallAnchor } from '../../../../products/maka/workbench/app/RecallSearch';
 import { SessionInspector } from '../../../../products/maka/workbench/app/SessionInspector';
+import {
+  SessionFamilyBreadcrumb,
+  SessionFamilyTrigger,
+  type FamilyParent,
+} from '../../../../products/maka/workbench/app/SessionFamily';
+import { siblingTarget } from '../../../../products/maka/workbench/app/sessionFamilyState';
 import type {
   WorkspacePullRequestTarget,
   WorkspaceSourceItem,
@@ -356,6 +362,7 @@ export type ConversationHandle = Omit<
   reveal(anchor: RecallAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  stepSibling?(step: -1 | 1): void;
   /** The title its header shows, or null until the session metadata has loaded. */
   title(): string | null;
   /** Latest user/assistant messages for the fullscreen floating mini-preview. */
@@ -421,7 +428,6 @@ type ConversationProps = {
   activeWorktree?(): string | null;
   selectWorktree?(worktreePath: string | null): void;
   sources?(): readonly WorkspaceSourceItem[];
-  childSessions?(): readonly AgentSession[];
   openChangesWithWorktree?(worktreePath?: string | null): void;
   openLaunchpad?(): void;
   openPullRequest?(target: Omit<WorkspacePullRequestTarget, 'sessionId'>): void;
@@ -523,6 +529,9 @@ export function Conversation(props: ConversationProps) {
   // Held messages wait for the user's next message; they do not keep the Session busy.
   const runnableQueued = () => queued()?.entries.some((entry) => entry.kind !== 'held') ?? false;
   const title = signal<string | null>(null);
+  const parentSessionId = signal<string | null>(
+    props.knownSession?.(sessionId)?.parentSessionId ?? null,
+  );
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const runId = signal<RunId | null>(null);
@@ -1237,6 +1246,61 @@ export function Conversation(props: ConversationProps) {
   }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
   const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  const openFamilySession = (id: string) =>
+    (props.openSessionHere ?? props.openSessionBeside)?.(id);
+  const stepSibling = (step: -1 | 1) => {
+    if (props.compact || !parentSessionId()) return;
+    const target = siblingTarget(familySiblings(), sessionId, step);
+    if (target) openFamilySession(target.id);
+  };
+  const familyChildren = createScopedCatalog(host, () =>
+    props.compact ? null : { kind: 'children', sessionId },
+  );
+  const familySiblings = createScopedCatalog(host, () =>
+    !props.compact && parentSessionId()
+      ? { kind: 'children', sessionId: parentSessionId()! }
+      : null,
+  );
+  const familyParent = signal<FamilyParent | null>(null);
+  effect(() => {
+    const pid = parentSessionId();
+    if (props.compact || !pid) {
+      familyParent.set(null);
+      return;
+    }
+    let cancelled = false;
+    const known = props.knownSession?.(pid);
+    if (known) {
+      familyParent.set({
+        id: known.id,
+        title: known.title,
+        workspacePath: known.workspace.path,
+        hasGrandparent: known.parentSessionId !== null,
+        rootId: known.parentSessionId === null ? known.id : null,
+      });
+    }
+    void (async () => {
+      try {
+        const obs = await host.query('agent', 'observe', { sessionId: pid });
+        if (!alive || cancelled) return;
+        const ancestors = obs.session.ancestorIds ?? [];
+        const rootId =
+          ancestors.at(-1) ?? (obs.session.parentSessionId === null ? obs.session.id : null);
+        familyParent.set({
+          id: obs.session.id,
+          title: obs.session.title,
+          workspacePath: obs.session.workspace.path,
+          hasGrandparent: obs.session.parentSessionId !== null,
+          rootId,
+        });
+      } catch {
+        // Parent may be archived or unavailable; keep any cached label.
+      }
+    })();
+    cleanup(() => {
+      cancelled = true;
+    });
+  });
   const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
     const id = sessionIdFromLink(target);
     if (id !== undefined) openWorker(id);
@@ -2467,6 +2531,7 @@ export function Conversation(props: ConversationProps) {
       batch(() => {
         sessionRevision.set(observed.session.revision);
         title.set(observed.session.title);
+        parentSessionId.set(observed.session.parentSessionId);
         archived.set(observed.session.archived);
         workspace.set(observed.session.workspace.path);
         permissions.observe(observed.session);
@@ -3174,7 +3239,6 @@ export function Conversation(props: ConversationProps) {
       { within: node, when: 'notEditing' },
     );
   });
-
   // A slow disk retains one in-flight snapshot and one replaceable latest
   // edit, rather than one complete draft and Promise closure per keystroke.
   const startSave = () => {
@@ -4596,6 +4660,7 @@ export function Conversation(props: ConversationProps) {
       cancelNavigation();
       list?.focus();
     },
+    stepSibling,
     focusActivity(turnId) {
       cancelNavigation();
       if (reading() === 'trajectory') {
@@ -5654,6 +5719,19 @@ export function Conversation(props: ConversationProps) {
     >
       <Header
         title={title() === null ? tr('New conversation') : title() || tr('Untitled conversation')}
+        titleSlot={
+          platform.idiom !== 'terminal' && familyParent() ? (
+            <SessionFamilyBreadcrumb
+              sessionId={sessionId}
+              title={() =>
+                title() === null ? tr('New conversation') : title() || tr('Untitled conversation')
+              }
+              parent={() => familyParent()!}
+              siblings={familySiblings}
+              openSession={openFamilySession}
+            />
+          ) : undefined
+        }
         workspace={workspace()}
         commands={props.commands}
         browser={props.browser()}
@@ -5696,6 +5774,12 @@ export function Conversation(props: ConversationProps) {
               />
               <BotRestart restart={props.restartBot} />
             </View>
+          ) : platform.idiom !== 'terminal' ? (
+            <SessionFamilyTrigger
+              children={familyChildren}
+              workspacePath={() => workspace()}
+              openSession={openFamilySession}
+            />
           ) : undefined
         }
         views={
@@ -6141,7 +6225,6 @@ export function Conversation(props: ConversationProps) {
                 sources={props.sources}
                 answerSources={inspectorSources}
                 openLink={openLink}
-                childSessions={() => props.childSessions?.() ?? []}
                 openChanges={
                   props.openChangesWithWorktree ??
                   (props.changes ? () => props.changes!() : undefined)
@@ -6149,11 +6232,6 @@ export function Conversation(props: ConversationProps) {
                 openFiles={props.files}
                 openLaunchpad={props.openLaunchpad}
                 openPullRequest={props.openPullRequest}
-                openChildSession={(childId) =>
-                  props.openSessionBeside
-                    ? props.openSessionBeside(childId)
-                    : props.openSessionHere?.(childId)
-                }
               />
             </View>
           </View>

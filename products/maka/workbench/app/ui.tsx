@@ -660,6 +660,8 @@ export function ViewSegment(props: { label: string; selected: boolean; onPress: 
  */
 export function Header(props: {
   title: string;
+  /** Replaces the plain title text when a conversation shows a breadcrumb switcher. */
+  titleSlot?: JSX.Element;
   subtitle?: string;
   workspace?: string;
   /** The command palette, which the terminal's header opens; the desktop's is in the menu bar. */
@@ -740,16 +742,23 @@ export function Header(props: {
           <Icon name="command" color={C.secondary} />
         </Button>
       </If>
-      <Text
-        style={[
-          desktop
-            ? { color: C.text, flexShrink: 1, minWidth: 0, fontWeight: '600' }
-            : { color: C.text, flex: 1, minWidth: 0, fontWeight: '500' },
-          { numberOfLines: 1 },
-        ]}
+      <If
+        when={Boolean(props.titleSlot)}
+        else={
+          <Text
+            style={[
+              desktop
+                ? { color: C.text, flexShrink: 1, minWidth: 0, fontWeight: '600' }
+                : { color: C.text, flex: 1, minWidth: 0, fontWeight: '500' },
+              { numberOfLines: 1 },
+            ]}
+          >
+            {props.title}
+          </Text>
+        }
       >
-        {props.title}
-      </Text>
+        {props.titleSlot}
+      </If>
       <If when={Boolean(props.subtitle)}>
         <Text
           style={[
