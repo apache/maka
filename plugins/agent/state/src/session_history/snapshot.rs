@@ -362,6 +362,36 @@ impl Snapshot {
             ))
             .await
     }
+    pub(super) async fn position_is_compact(
+        &self,
+        sequence: u64,
+        item_index: u64,
+    ) -> Result<bool, StoreError> {
+        self.data
+            .query(read::PositionIsCompact(self.clone(), sequence, item_index))
+            .await
+    }
+    pub(super) async fn coalesced_external_delta(
+        &self,
+        run: RunId,
+        task: maka_agent_facts::durable::ExternalTaskId,
+        message_id: String,
+        is_thinking: bool,
+        sequence: u64,
+        min_sequence: u64,
+    ) -> Result<String, StoreError> {
+        self.data
+            .query(read::CoalescedExternalDelta(
+                self.clone(),
+                run,
+                task,
+                message_id,
+                is_thinking,
+                sequence,
+                min_sequence,
+            ))
+            .await
+    }
     pub async fn item(&self, sequence: u64) -> Result<Option<HistoryItem>, StoreError> {
         self.data.query(read::Item(self.clone(), sequence)).await
     }

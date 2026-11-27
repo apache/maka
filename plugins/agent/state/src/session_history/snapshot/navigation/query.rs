@@ -537,8 +537,14 @@ fn matching_preview_requires_the_entire_original_field() -> Result<(), StoreErro
         end: 17,
         internal: false,
     };
+    let blob = c.blob_open("main", "original", "body", 1, true)?;
+    let len = blob.len();
     let body = IndexedBody {
-        body: c.blob_open("main", "original", "body", 1, true)?,
+        body: crate::session_history::evidence::BodySource::Blob {
+            blob,
+            offset: 0,
+            len,
+        },
         fields: vec![
             crate::recall::FieldSpan {
                 field: Field::ToolName,

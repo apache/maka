@@ -237,6 +237,10 @@
       "plugins/agent/state/migrations/0060_drop_recall_folded.sql": {
         "version": 60,
         "sha384": "c3f4ef06fa72cf440f46848a02083644f8229ce365607feb4e7663f762283901a47dab76ff40d3f7ca4d62009709f589"
+      },
+      "plugins/agent/state/migrations/0061_dedup_recall_index.sql": {
+        "version": 61,
+        "sha384": "5dee9fc1a747264e063af1f3c29e2817adf5d4e77736c0fb673ea00d26365e28ced4084a688a01e64f504241498e7470"
       }
     },
     "checkpoint-repository": {

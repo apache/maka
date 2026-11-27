@@ -409,8 +409,8 @@ pub(super) fn index_entry(
     entry: &Entry,
 ) -> Result<(), StoreError> {
     let (kind, run, sequence, position) = match entry {
-        Entry::Position { row } => {
-            super::positions::index(c, id, row)?;
+        Entry::Position { row, compact } => {
+            super::positions::index(c, id, row, *compact)?;
             match row {
                 maka_agent_facts::history_snapshot::SnapshotPosition::Canonical {
                     run,

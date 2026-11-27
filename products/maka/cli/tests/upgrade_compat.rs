@@ -837,6 +837,44 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     "v60 must drop agent_recall_messages.folded on {rel}"
                 );
             }
+            if has_runs > 0 && versions.contains(&61) {
+                let has_legacy_table: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_recall_legacy_evidenced'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    has_legacy_table, 1,
+                    "v61 must create agent_recall_legacy_evidenced on {rel}"
+                );
+                let bookkeeping: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_recall_messages d
+                         JOIN agent_session_history h
+                           ON h.owner = d.owner AND h.session = d.session AND h.sequence = d.sequence
+                         JOIN agent_facts f ON f.sequence = h.sequence
+                         JOIN contents c ON c.id = f.body_content_id
+                         WHERE h.kind = 'cell'
+                           AND json_extract(CAST(c.payload AS TEXT), '$.fact.event.kind') IN (
+                             'vm_bound', 'loaded_tools_published', 'child_admitted',
+                             'child_approval_consumed', 'child_bound',
+                             'result_accepted', 'final_notification_queued', 'notification_consumed'
+                           )
+                           AND NOT EXISTS (
+                             SELECT 1 FROM agent_recall_legacy_evidenced e
+                             WHERE e.fact_id = h.fact_id
+                           )",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    bookkeeping, 0,
+                    "v61 must omit unreferenced pure cell bookkeeping rows from agent_recall_messages on {rel}"
+                );
+            }
             ledgers.insert(rel, versions);
         }
     }

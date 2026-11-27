@@ -432,6 +432,13 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration {
+        version: 61,
+        description: "deduplicate Recall indexing at source and coalesce external streaming deltas",
+        sql: include_str!("../migrations/0061_dedup_recall_index.sql"),
+        configure: None,
+        data: Some(recall::migrate_v58::run),
+    },
 ];
 
 #[cfg(test)]
@@ -443,7 +450,7 @@ mod migration_tests {
             .chain(super::MIGRATIONS)
             .copied()
             .collect();
-        for through in [0, 41].into_iter().chain(46..=59) {
+        for through in [0, 41].into_iter().chain(46..=60) {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("root.sqlite");
             let db = rusqlite::Connection::open(&path).unwrap();

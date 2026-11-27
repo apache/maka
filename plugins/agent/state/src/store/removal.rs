@@ -50,6 +50,9 @@ const RUN_HISTORY_RELEASES: &[Step] = &[
         "DELETE FROM agent_recall_messages WHERE owner=?2 AND session=?3
          AND sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
     ),
+    Step::RunOwnerSession(
+        "DELETE FROM agent_recall_external_segments WHERE owner=?2 AND session=?3 AND run=?1",
+    ),
     Step::Run(
         "DELETE FROM agent_session_history WHERE sequence IN(SELECT sequence FROM agent_facts WHERE run=?1)",
     ),
@@ -172,6 +175,7 @@ const SESSION_RELEASES: &[Step] = &[
     ),
     Step::OwnerSession("DELETE FROM agent_recall_heads WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_recall_gaps WHERE owner=?1 AND session=?2"),
+    Step::OwnerSession("DELETE FROM agent_recall_external_segments WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_sessions WHERE owner=?1 AND session=?2"),
     Step::OwnerSession("DELETE FROM agent_catalog_controls WHERE owner=?1 AND session=?2"),
 ];
@@ -1115,6 +1119,7 @@ mod tests {
             "agent_queue_events",
             "agent_queue_heads",
             "agent_queue_items",
+            "agent_recall_external_segments",
             "agent_recall_gaps",
             "agent_recall_heads",
             "agent_recall_messages",
@@ -1158,6 +1163,7 @@ mod tests {
             "agent_memories",
             "agent_memory_evidence",
             "agent_memory_history_boundary",
+            "agent_recall_legacy_evidenced",
             // Imported bindings follow their snapshot; frozen aliases follow the retained run spec.
             "agent_memory_imported_tools",
             "agent_memory_read_aliases",

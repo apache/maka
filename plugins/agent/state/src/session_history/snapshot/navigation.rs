@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 mod produce;
 mod query;
 pub(in crate::session_history) use query::{FindInput, LocalFindPage, LocalFound, LocalLandmark};
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 const CHUNK_BYTES: usize = 32 * 1024;
 
 pub(crate) enum IndexedRead<T> {

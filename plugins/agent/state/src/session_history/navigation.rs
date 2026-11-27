@@ -30,7 +30,7 @@ use maka_agent_facts::{
     history_snapshot::{ImportedTurnOrdinal, SnapshotPosition},
     message::MessageOrigin,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub struct SourceFind {
@@ -363,7 +363,54 @@ fn live_row(
     if position.source_sequence > cut.through_sequence {
         return Err(invalid("history row exceeds original cut"));
     }
-    let (run,admission,fact,internal):(String,u64,String,bool)=c.query_row("SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",params![serde_json::to_string(&scope.owner)?,scope.session,bind_u64(position.source_sequence)?,bind_u64(position.item_index)?,bind_u64(min_admission)?],|r|Ok((r.get(0)?,read_u64(r,1)?,r.get(2)?,r.get(3)?)))?;
+    let owner_json = serde_json::to_string(&scope.owner)?;
+    let indexed: Option<(String, u64, String, bool)> = c
+        .query_row(
+            "SELECT d.run,h.admission_sequence,h.fact_id,d.internal FROM agent_recall_messages d JOIN agent_session_history h ON h.owner=d.owner AND h.session=d.session AND h.sequence=d.sequence WHERE d.owner=? AND d.session=? AND d.sequence=? AND d.ordinal=? AND h.admission_sequence>?",
+            params![
+                owner_json,
+                scope.session,
+                bind_u64(position.source_sequence)?,
+                bind_u64(position.item_index)?,
+                bind_u64(min_admission)?
+            ],
+            |r| Ok((r.get(0)?, read_u64(r, 1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let (run, admission, fact, internal) = match indexed {
+        Some(found) => found,
+        None if position.item_index == 0 => {
+            let (run, admission, fact, bytes): (String, u64, String, Vec<u8>) = c.query_row(
+                "SELECT h.run,h.admission_sequence,h.fact_id,b.payload
+                 FROM agent_session_history h
+                 JOIN agent_facts f ON f.sequence=h.sequence
+                 JOIN contents b ON b.id=f.body_content_id
+                 WHERE h.owner=? AND h.session=? AND h.sequence=? AND h.admission_sequence>?
+                   AND h.kind='external_task_observed'",
+                params![
+                    owner_json,
+                    scope.session,
+                    bind_u64(position.source_sequence)?,
+                    bind_u64(min_admission)?
+                ],
+                |r| Ok((r.get(0)?, read_u64(r, 1)?, r.get(2)?, r.get(3)?)),
+            )?;
+            let recorded: maka_agent_facts::durable::RecordedFact = serde_json::from_slice(&bytes)?;
+            let internal = match recorded.fact {
+                maka_agent_facts::durable::Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::ThinkingDelta { .. },
+                    ..
+                } => true,
+                maka_agent_facts::durable::Fact::ExternalTaskObserved {
+                    output: maka_agent_facts::executor::Output::OutputDelta { .. },
+                    ..
+                } => false,
+                _ => return Err(StoreError::EventConflict),
+            };
+            (run, admission, fact, internal)
+        }
+        None => return Err(StoreError::EventConflict),
+    };
     Ok(SnapshotPosition::Canonical {
         run: sql::identity(run)?,
         sequence: position.source_sequence,

@@ -790,6 +790,7 @@ fn copy(
                 } => *sequence <= cut.through_sequence,
                 Entry::Position {
                     row: SnapshotPosition::Canonical { sequence, .. },
+                    ..
                 } => *sequence <= cut.through_sequence,
                 _ => false,
             };
