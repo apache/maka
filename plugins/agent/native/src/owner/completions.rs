@@ -105,15 +105,8 @@ enum Notice {
 impl Notice {
     /// Scoped per worker Run (rather than per `SessionSend` message) once a message has
     /// landed in a Run, so steering an active worker never fans out duplicate notifications.
-    /// `fallback_caller` is appended only when a different caller's Stop retracted the
-    /// shared notice while surviving watches still need delivery.
-    fn identity(
-        &self,
-        session_id: &str,
-        message_id: &str,
-        fallback_caller: Option<RunId>,
-    ) -> String {
-        let mut key = match self {
+    fn identity(&self, session_id: &str, message_id: &str) -> String {
+        let key = match self {
             Self::Finished { run: Some(run), .. } => {
                 format!("session-completion/{session_id}/{run}")
             }
@@ -129,9 +122,6 @@ impl Notice {
                 format!("session-completion/{session_id}/{run}/{cause}")
             }
         };
-        if let Some(caller) = fallback_caller {
-            key.push_str(&format!("/caller/{caller}"));
-        }
         hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
     }
 
@@ -201,6 +191,14 @@ struct EligibleWatch {
     resolution: MessageResolution,
     placement: QueuePlacement,
     caller_live: bool,
+}
+
+/// Deterministic rescue identity derived from the retracted notice and the caller Run
+/// whose Stop retracted it, so all surviving watches converge on one rescue notification
+/// even across a crash mid-settlement.
+fn rescue_identity(retracted_identity: &str, stopped_caller: RunId) -> String {
+    let key = format!("session-completion-rescue/{retracted_identity}/{stopped_caller}");
+    hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
 }
 
 enum ExistingDelivery {
@@ -616,7 +614,20 @@ impl Owner {
             Err(error) if error == "agent_session_unavailable" => None,
             Err(error) => return Err(error),
         };
+        // When the recipient session is in a user-Stop hold, every completion must enter as a
+        // Followup so the queue transitions it to Held instead of waking the session via an older
+        // completed caller turn.
+        let holding = self
+            .durable
+            .queue()
+            .is_holding(recipient.to_owned())
+            .await
+            .map_err(|error| error.to_string())?;
         let mut eligible = Vec::with_capacity(entries.len());
+        let mut frozen_groups: BTreeMap<
+            String,
+            (maka_agent_state::queue::PreparedRequest, Vec<EligibleWatch>),
+        > = BTreeMap::new();
         for (entry, request, resolution) in entries {
             let Some(_) = parent.as_ref().filter(|p| {
                 !p.archived
@@ -634,38 +645,63 @@ impl Owner {
                 continue;
             };
             // After a user Stop the result stays with the Session; any other Stop withdraws it.
-            let (placement, caller_live) = if !source.stopped {
+            let (placement, caller_live) = if source.stopped {
+                if self
+                    .durable
+                    .queue()
+                    .stopped_by_user(request.source.run_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    (QueuePlacement::Followup, false)
+                } else {
+                    self.retire_completion(&entry).await?;
+                    continue;
+                }
+            } else if holding {
+                (QueuePlacement::Followup, false)
+            } else {
                 (
                     QueuePlacement::Completion {
                         caller: request.source.run_id,
                     },
                     source.terminal.is_none(),
                 )
-            } else if self
-                .durable
-                .queue()
-                .stopped_by_user(request.source.run_id)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                (QueuePlacement::Followup, false)
-            } else {
-                self.retire_completion(&entry).await?;
-                continue;
             };
-            if let Some(frozen) = entry.notification.clone() {
-                let notification: maka_agent_state::queue::PreparedRequest =
-                    serde_json::from_value(frozen).map_err(|e| e.to_string())?;
-                self.settle_watch(&entry, &notification, false).await?;
-                continue;
-            }
-            eligible.push(EligibleWatch {
+            let frozen = entry
+                .notification
+                .as_ref()
+                .map(|value| {
+                    serde_json::from_value::<maka_agent_state::queue::PreparedRequest>(
+                        value.clone(),
+                    )
+                })
+                .transpose()
+                .map_err(|e| e.to_string())?;
+            let watch = EligibleWatch {
                 entry,
                 request,
                 resolution,
                 placement,
                 caller_live,
-            });
+            };
+            if let Some(notification) = frozen {
+                frozen_groups
+                    .entry(notification.id.0.clone())
+                    .or_insert_with(|| (notification, Vec::new()))
+                    .1
+                    .push(watch);
+            } else {
+                eligible.push(watch);
+            }
+        }
+        for (_, (frozen, watches)) in frozen_groups {
+            if let Err(error) = self
+                .deliver_frozen_bucket(worker_session, recipient, frozen, watches, states, now)
+                .await
+            {
+                tracing::warn!(%error, "Session completion delivery deferred");
+            }
         }
         if eligible.is_empty() {
             return Ok(());
@@ -776,8 +812,8 @@ impl Owner {
             .message_id
             .clone();
         let mut watches = watches;
-        let mut identity = notice.identity(worker_session, &display_message_id, None);
-        let mut fallback_used = false;
+        let mut identity = notice.identity(worker_session, &display_message_id);
+        let mut seen_stopped = BTreeSet::new();
         let (notification, pending_live_caller) = loop {
             match self
                 .inspect_existing_delivery(recipient, &identity, &watches, states)
@@ -799,15 +835,11 @@ impl Owner {
                     }
                     break (request, pending_live_caller);
                 }
-                ExistingDelivery::RetractedByOtherCaller(stopped_caller) if !fallback_used => {
-                    fallback_used = true;
+                ExistingDelivery::RetractedByOtherCaller(stopped_caller)
+                    if seen_stopped.insert(stopped_caller) =>
+                {
                     watches.retain(|w| w.request.source.run_id != stopped_caller);
-                    let fallback_caller = Self::ordered_candidate_indices(&watches)
-                        .first()
-                        .map(|&idx| watches[idx].request.source.run_id)
-                        .ok_or("missing surviving completion watch")?;
-                    identity =
-                        notice.identity(worker_session, &display_message_id, Some(fallback_caller));
+                    identity = rescue_identity(&identity, stopped_caller);
                 }
                 ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller(_) => {
                     let result = match notice {
@@ -817,75 +849,123 @@ impl Owner {
                         } => self.run_result(worker_session, *run, terminal, true).await,
                         _ => RunResult::default(),
                     };
-                    let mut last_error: Option<String> = None;
-                    let mut delivered = None;
-                    for idx in Self::ordered_candidate_indices(&watches) {
-                        let candidate = &watches[idx];
-                        let route = match self
-                            .resolve_notification_route(
-                                candidate.request.backend.clone(),
-                                &candidate.request.source.session_id,
-                                candidate.request.workspace.clone(),
-                                candidate.request.binding,
-                            )
-                            .await
-                        {
-                            Ok(route) => route,
-                            Err(error) => {
-                                last_error = Some(error);
-                                continue;
-                            }
-                        };
-                        match self
-                            .prepare_notification_checked(
-                                recipient,
-                                &route,
-                                &identity,
-                                |language| {
-                                    notice.message(
-                                        worker_session,
-                                        &display_message_id,
-                                        &result,
-                                        language,
-                                    )
-                                },
-                                MessageOrigin::SessionCompletion {
-                                    session_id: worker_session.to_owned(),
-                                    message_id: display_message_id.clone(),
-                                },
-                                candidate.placement.clone(),
-                                None,
-                                UnixMillis(now as i64),
-                            )
-                            .await
-                            .map_err(String::from)
-                        {
-                            Ok(Some(notification)) => {
-                                let pending_live_caller = matches!(
-                                    candidate.placement,
-                                    QueuePlacement::Completion { .. }
+                    let origin = MessageOrigin::SessionCompletion {
+                        session_id: worker_session.to_owned(),
+                        message_id: display_message_id.clone(),
+                    };
+                    let Some(delivered) = self
+                        .enqueue_candidates(
+                            recipient,
+                            &identity,
+                            &watches,
+                            origin,
+                            |language| {
+                                notice.message(
+                                    worker_session,
+                                    &display_message_id,
+                                    &result,
+                                    language,
                                 )
-                                .then_some(candidate.request.source.run_id)
-                                .filter(|_| candidate.caller_live);
-                                delivered = Some((notification, pending_live_caller));
-                                break;
-                            }
-                            Ok(None) => return Ok(()),
-                            Err(error) => last_error = Some(error),
-                        }
-                    }
-                    let Some((notification, pending_live_caller)) = delivered else {
-                        return match last_error {
-                            Some(error) => Err(error),
-                            None => Ok(()),
-                        };
+                            },
+                            now,
+                        )
+                        .await?
+                    else {
+                        return Ok(());
                     };
                     if matches!(notice, Notice::Attention { .. }) {
                         // Admission identity is the durable deduplication record; keep the completion watches.
-                        self.admit_notification(&notification).await?;
+                        self.admit_notification(&delivered.0).await?;
                         return Ok(());
                     }
-                    break (notification, pending_live_caller);
+                    break delivered;
+                }
+            }
+        };
+        for watch in &watches {
+            if pending_live_caller.is_some_and(|live| live != watch.request.source.run_id) {
+                // Freeze the admitted notice onto the waiting watch so deleting the finished
+                // worker cannot reclassify it as Unavailable while the live caller still holds it.
+                self.freeze_watch(&watch.entry, &notification).await?;
+                continue;
+            }
+            self.settle_watch(&watch.entry, &notification, true).await?;
+        }
+        Ok(())
+    }
+
+    async fn deliver_frozen_bucket(
+        self: &Arc<Self>,
+        worker_session: &str,
+        recipient: &str,
+        frozen: maka_agent_state::queue::PreparedRequest,
+        mut watches: Vec<EligibleWatch>,
+        states: &BTreeMap<RunId, NotificationState>,
+        now: u64,
+    ) -> Result<(), String> {
+        let mut identity = frozen.id.0.clone();
+        let mut seen_stopped = BTreeSet::new();
+        let (notification, pending_live_caller) = loop {
+            match self
+                .inspect_existing_delivery(recipient, &identity, &watches, states)
+                .await?
+            {
+                ExistingDelivery::Reusable {
+                    request,
+                    pending_live_caller,
+                    ..
+                } => {
+                    let chosen = if identity == frozen.id.0 {
+                        frozen.clone()
+                    } else {
+                        request
+                    };
+                    break (chosen, pending_live_caller);
+                }
+                ExistingDelivery::RetractedByOtherCaller(stopped_caller)
+                    if seen_stopped.insert(stopped_caller) =>
+                {
+                    watches.retain(|w| w.request.source.run_id != stopped_caller);
+                    identity = rescue_identity(&identity, stopped_caller);
+                }
+                ExistingDelivery::Absent | ExistingDelivery::RetractedByOtherCaller(_) => {
+                    if identity == frozen.id.0 {
+                        // Original frozen notification was never admitted; preserve existing behavior.
+                        break (frozen.clone(), None);
+                    }
+                    let source_bytes = self
+                        .durable
+                        .queue()
+                        .content(
+                            recipient.to_owned(),
+                            frozen.id.clone(),
+                            frozen.source.clone(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let source_msg: maka_agent_facts::message::RootSourceMessage =
+                        serde_json::from_slice(&source_bytes).map_err(|e| e.to_string())?;
+                    let origin = source_msg.message.origin.unwrap_or_else(|| {
+                        MessageOrigin::SessionCompletion {
+                            session_id: worker_session.to_owned(),
+                            message_id: watches[0].entry.message_id.clone(),
+                        }
+                    });
+                    let rendered = source_msg.unprepared_content.text;
+                    let Some(delivered) = self
+                        .enqueue_candidates(
+                            recipient,
+                            &identity,
+                            &watches,
+                            origin,
+                            |_| rendered.clone(),
+                            now,
+                        )
+                        .await?
+                    else {
+                        return Ok(());
+                    };
+                    break delivered;
                 }
             }
         };
@@ -893,9 +973,68 @@ impl Owner {
             if pending_live_caller.is_some_and(|live| live != watch.request.source.run_id) {
                 continue;
             }
-            self.settle_watch(&watch.entry, &notification, true).await?;
+            self.settle_watch(&watch.entry, &notification, false)
+                .await?;
         }
         Ok(())
+    }
+
+    async fn enqueue_candidates(
+        self: &Arc<Self>,
+        recipient: &str,
+        identity: &str,
+        watches: &[EligibleWatch],
+        origin: MessageOrigin,
+        render: impl Fn(Language) -> String,
+        now: u64,
+    ) -> Result<Option<(maka_agent_state::queue::PreparedRequest, Option<RunId>)>, String> {
+        let mut last_error: Option<String> = None;
+        for idx in Self::ordered_candidate_indices(watches) {
+            let candidate = &watches[idx];
+            let route = match self
+                .resolve_notification_route(
+                    candidate.request.backend.clone(),
+                    &candidate.request.source.session_id,
+                    candidate.request.workspace.clone(),
+                    candidate.request.binding,
+                )
+                .await
+            {
+                Ok(route) => route,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            match self
+                .prepare_notification_checked(
+                    recipient,
+                    &route,
+                    identity,
+                    &render,
+                    origin.clone(),
+                    candidate.placement.clone(),
+                    None,
+                    UnixMillis(now as i64),
+                )
+                .await
+                .map_err(String::from)
+            {
+                Ok(Some(notification)) => {
+                    let pending_live_caller =
+                        matches!(candidate.placement, QueuePlacement::Completion { .. })
+                            .then_some(candidate.request.source.run_id)
+                            .filter(|_| candidate.caller_live);
+                    return Ok(Some((notification, pending_live_caller)));
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
 
     /// Delivery candidate priority:
@@ -939,7 +1078,7 @@ impl Owner {
         let enqueued_at = self
             .durable
             .queue()
-            .entry_enqueued_at(recipient.to_owned(), request_id)
+            .entry_enqueued_at(recipient.to_owned(), request_id.clone())
             .await
             .map_err(|error| error.to_string())?;
         let resolution = self
@@ -958,7 +1097,10 @@ impl Owner {
             MessageResolution::Pending => {
                 let pending_live_caller = match existing.placement {
                     QueuePlacement::Completion { caller }
-                        if self.caller_is_live(recipient, caller, states).await? =>
+                        if self
+                            .caller_state(recipient, caller, states)
+                            .await?
+                            .is_some_and(|(stopped, live)| !stopped && live) =>
                     {
                         Some(caller)
                     }
@@ -971,8 +1113,20 @@ impl Owner {
                 })
             }
             MessageResolution::Cancelled => {
+                // Only rescue when CallerStopped retracted the shared notice; an explicit
+                // user queue Retract/RetractAll settles all watches sharing that notice.
                 if let QueuePlacement::Completion { caller } = existing.placement
                     && watches.iter().any(|w| w.request.source.run_id != caller)
+                    && self
+                        .caller_state(recipient, caller, states)
+                        .await?
+                        .is_some_and(|(stopped, _)| stopped)
+                    && self
+                        .durable
+                        .queue()
+                        .cancelled_by_caller_stop(recipient.to_owned(), request_id, caller)
+                        .await
+                        .map_err(|error| error.to_string())?
                 {
                     Ok(ExistingDelivery::RetractedByOtherCaller(caller))
                 } else {
@@ -986,19 +1140,35 @@ impl Owner {
         }
     }
 
-    async fn caller_is_live(
+    /// Returns `Some((stopped, live))` for `caller` if it still exists on `recipient`.
+    async fn caller_state(
         &self,
         recipient: &str,
         caller: RunId,
         states: &BTreeMap<RunId, NotificationState>,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<(bool, bool)>, String> {
         if let Some(state) = states.get(&caller).filter(|s| s.session_id == recipient) {
-            return Ok(!state.stopped && state.terminal.is_none());
+            return Ok(Some((state.stopped, state.terminal.is_none())));
         }
         Ok(self
             .session_run(recipient, caller)
             .await?
-            .is_some_and(|view| !view.stopped && view.terminal.is_none()))
+            .map(|view| (view.stopped, view.terminal.is_none())))
+    }
+
+    async fn freeze_watch(
+        &self,
+        entry: &Completion,
+        notification: &maka_agent_state::queue::PreparedRequest,
+    ) -> Result<(), String> {
+        self.store
+            .settle_message_completion(
+                &self.prefix,
+                &entry.key,
+                Some(serde_json::to_value(notification).map_err(|e| e.to_string())?),
+            )
+            .await
+            .map_err(|e| e.to_string())
     }
 
     async fn settle_watch(
@@ -1008,14 +1178,7 @@ impl Owner {
         freeze_first: bool,
     ) -> Result<(), String> {
         if freeze_first {
-            self.store
-                .settle_message_completion(
-                    &self.prefix,
-                    &entry.key,
-                    Some(serde_json::to_value(notification).map_err(|e| e.to_string())?),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+            self.freeze_watch(entry, notification).await?;
         }
         if self.admit_notification(notification).await? {
             self.mark_bot_completion(&entry.session_id, &entry.message_id, &entry.recipient)

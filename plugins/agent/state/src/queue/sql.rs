@@ -263,7 +263,7 @@ fn has_held(c: &Connection, session: &str) -> Result<bool, StoreError> {
     .query_row([session], |row| row.get(0))?)
 }
 /// From a user Stop until the Session's next Run, what others send waits.
-fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
+pub(super) fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
     Ok(has_held(c, session)?
         || match crate::sql::latest(c, session.to_owned())? {
             Some(run) => stopped_by_user(c, run)?,
@@ -1190,6 +1190,52 @@ pub(super) fn entry_enqueued_at(
     )
     .optional()?
     .map(UnixMillis))
+}
+/// Whether `request` transitioned from pending to cancelled via `CallerStopped { caller }`
+/// rather than an explicit queue `Retract` / `RetractAll`.
+pub(super) fn cancelled_by_caller_stop(
+    c: &Connection,
+    session: &str,
+    request: &RequestId,
+    caller: RunId,
+) -> Result<bool, StoreError> {
+    id(session)?;
+    id(&request.0)?;
+    let mut stmt = c.prepare_cached(
+        "SELECT c.payload FROM agent_queue_events e
+         JOIN contents c ON c.id = e.body_content_id
+         WHERE e.session = ?1
+         ORDER BY e.revision",
+    )?;
+    let rows = stmt.query_map([session], |r| r.get::<_, Vec<u8>>(0))?;
+    let mut enqueued = false;
+    for row in rows {
+        let event: Event = serde_json::from_slice(&row?)?;
+        if !enqueued {
+            if let Event::Command {
+                edit: QueueEdit::Enqueue { request: req, .. },
+                ..
+            } = &event
+                && &req.id == request
+            {
+                enqueued = true;
+            }
+            continue;
+        }
+        match event {
+            Event::Command {
+                edit: QueueEdit::Retract { request: r },
+                ..
+            } if r == *request => return Ok(false),
+            Event::Command {
+                edit: QueueEdit::RetractAll,
+                ..
+            } => return Ok(false),
+            Event::CallerStopped { caller: stopped } if stopped == caller => return Ok(true),
+            _ => {}
+        }
+    }
+    Ok(false)
 }
 pub(super) fn resolve(
     c: &Connection,

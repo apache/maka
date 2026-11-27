@@ -7424,6 +7424,166 @@ async fn stop_cancels_an_unconsumed_completion_notice() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_turn_retract_and_user_stop_hold_completion_notices() {
+    use maka_agent_state::queue::{Placement, QueueCommand, QueueEdit};
+    let mut rig = Rig::new().unwrap();
+    let result: TestResult<()> = async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let owner = rig.captured.lock().unwrap().clone().unwrap();
+        let _producer = owner.producer_gate.lock().await;
+        let source_a = rig.driver.as_ref().unwrap().access.execution().clone();
+        let route = owner.return_route(&source_a).await?;
+        rig.append(
+            vec![Fact::RunTerminated {
+                terminal: Terminal::Completed,
+                diagnostic: None,
+            }],
+            vec![],
+        )
+        .await?;
+        let view_a = owner.durable.frontier(source_a.run_id).await?;
+        let mut spec_b = view_a.spec.clone();
+        spec_b.turn_id = Uuid::new_v4().to_string();
+        spec_b.trigger = Trigger::Message {
+            message_id: Uuid::new_v4().to_string(),
+        };
+        let admission_b = maka_agent_state::Admission::new(spec_b.clone(), at(), vec![]);
+        let run_b = admission_b.run();
+        owner.durable.admit(admission_b).await?;
+        let source_b = maka_agent_facts::durable::ExecutionIdentity {
+            session_id: session.clone(),
+            turn_id: spec_b.turn_id,
+            run_id: run_b,
+        };
+        let make_req = |src: &maka_agent_facts::durable::ExecutionIdentity| -> TestResult<Value> {
+            let mut req = serde_json::to_value(&route.backend)?;
+            req["source"] = json!(src);
+            req["workspace"] = json!(route.workspace);
+            req["binding"] = json!(route.binding);
+            Ok(req)
+        };
+        let queue = owner.durable.queue();
+
+        // 1. Explicit user Retract on live B's notice must settle A's frozen watch without re-emitting.
+        let worker_1 = format!("{}missing-1", owner.prefix);
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_1,
+                "a-1",
+                &session,
+                make_req(&source_a)?,
+            )
+            .await?;
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_1,
+                "b-1",
+                &session,
+                make_req(&source_b)?,
+            )
+            .await?;
+        owner.deliver_completions().await?;
+        let pending_b = queue.steering(session.clone(), run_b).await?;
+        let [notice_1] = pending_b.entries.as_slice() else {
+            return Err("live B did not receive notice".into());
+        };
+        assert_eq!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .len(),
+            1
+        );
+        queue
+            .execute(
+                session.clone(),
+                QueueCommand {
+                    id: FactId::new(),
+                    at: at(),
+                    expected_revision: queue.read(session.clone()).await?.revision,
+                    edit: QueueEdit::Retract {
+                        request: notice_1.request.id.clone(),
+                    },
+                },
+                vec![],
+            )
+            .await?;
+        owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
+        assert!(queue.read(session.clone()).await?.entries.is_empty());
+
+        // 2. After user Stop on B, a new completion with both A and B watches must land in Held.
+        let claim_b = owner.durable.claim(run_b).await?;
+        let view_b = owner.durable.frontier(run_b).await?;
+        owner
+            .durable
+            .append(
+                &claim_b,
+                (&view_b).into(),
+                vec![maka_agent_state::Change {
+                    id: FactId::new(),
+                    at: at(),
+                    fact: Fact::StopRequested {
+                        diagnostic: "user_requested_stop".into(),
+                        requester: maka_agent_facts::durable::StopRequester::User,
+                    },
+                }],
+                vec![],
+            )
+            .await?;
+        let worker_2 = format!("{}missing-2", owner.prefix);
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_2,
+                "a-2",
+                &session,
+                make_req(&source_a)?,
+            )
+            .await?;
+        owner
+            .store
+            .register_message_completion(
+                &owner.prefix,
+                &worker_2,
+                "b-2",
+                &session,
+                make_req(&source_b)?,
+            )
+            .await?;
+        owner.deliver_completions().await?;
+        assert!(
+            owner
+                .store
+                .message_completions(&owner.prefix, None)
+                .await?
+                .is_empty()
+        );
+        let held_entries = queue.read(session.clone()).await?;
+        assert_eq!(held_entries.entries.len(), 1);
+        assert_eq!(held_entries.entries[0].placement, Placement::Held);
+        Ok(())
+    }
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+    result.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_did_not_fail_reports_no_failure_reason() {
     let mut rig = Rig::new().unwrap();
     let result: TestResult<()> = async {
