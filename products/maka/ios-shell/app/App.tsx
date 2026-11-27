@@ -272,6 +272,7 @@ function MainTabShell() {
                 <DiffScreen
                   rootId={route.item.rootId}
                   sessionId={route.item.session.id}
+                  canQuote={route.item.session.kind !== 'room'}
                   file={route.file}
                   onBack={() => chatsNav.pop()}
                   onQuotedBackToChat={() => chatsNav.pop(2)}

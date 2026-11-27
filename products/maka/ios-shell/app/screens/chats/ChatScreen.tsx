@@ -18,7 +18,7 @@
  */
 
 import {
-  Clipboard,
+  computed,
   effect,
   openUrl,
   safeAreaInsets,
@@ -45,14 +45,17 @@ import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { currentLocale, tr } from '../../locale';
 import {
+  appendDraftQuote,
+  assembleHistoryRows,
   backendKey,
-  compareHistoryRows,
   createConversationController,
   displayModelKey,
   getDraft,
   getSavedScrollOffset,
+  quoteLimit,
   saveScrollOffset,
   setDraft,
+  type HistoryRow,
 } from '../../state/chat';
 import {
   connectSavedHost,
@@ -75,6 +78,8 @@ import {
   StatusDot,
 } from '../../ui';
 
+import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
+
 interface ToolSummaryItem {
   id: string;
   label: string;
@@ -83,10 +88,12 @@ interface ToolSummaryItem {
 
 interface DisplayTurn {
   key: string;
+  source: AgentHistoryChunk;
   role: 'user' | 'assistant';
   thinking: string;
   tools: ToolSummaryItem[];
-  body: string;
+  bodies: HistoryRow[];
+  quotes?: AgentHistoryChunk['quotes'];
 }
 
 function readableToolTitle(tool: NonNullable<AgentHistoryChunk['tool']>): string {
@@ -100,47 +107,34 @@ function readableToolTitle(tool: NonNullable<AgentHistoryChunk['tool']>): string
 
 function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] {
   const turns: DisplayTurn[] = [];
-  for (let i = 0; i < chunks.length; i += 1) {
-    const ch = chunks[i];
-    const role: 'user' | 'assistant' = ch.role === 'user' ? 'user' : 'assistant';
-    const prev = turns[turns.length - 1];
-    const sameAssistant = role === 'assistant' && prev && prev.role === 'assistant';
-
-    if (role === 'user') {
-      if (
-        ch.offset > 0 &&
-        prev?.role === 'user' &&
-        i > 0 &&
-        compareHistoryRows(chunks[i - 1], ch) === 0
-      ) {
-        prev.body += ch.text;
-        continue;
+  for (const row of assembleHistoryRows(chunks)) {
+    const ch = row.first;
+    if (ch.role === 'user') {
+      if (row.text || ch.quotes?.length) {
+        turns.push({
+          key: row.key,
+          source: ch,
+          role: 'user',
+          thinking: '',
+          tools: [],
+          bodies: row.text ? [row] : [],
+          quotes: ch.quotes,
+        });
       }
-      const txt = ch.text;
-      if (!txt) continue;
-      turns.push({
-        key: ch.messageId || 'u:' + String(i),
-        role: 'user',
-        thinking: '',
-        tools: [],
-        body: txt,
-      });
       continue;
     }
 
-    const target: DisplayTurn = sameAssistant
-      ? prev
-      : {
-          key: ch.messageId || ch.turnId || 'a:' + String(i),
-          role: 'assistant',
-          thinking: '',
-          tools: [],
-          body: '',
-        };
-    if (!sameAssistant) turns.push(target);
-
+    let target = turns.at(-1);
+    if (
+      target?.role !== 'assistant' ||
+      target.source.turnId !== ch.turnId ||
+      target.source.importedTurn !== ch.importedTurn
+    ) {
+      target = { key: row.key, source: ch, role: 'assistant', thinking: '', tools: [], bodies: [] };
+      turns.push(target);
+    }
     if (ch.tool) {
-      const id = ch.tool.toolUseId || 'tool:' + String(i);
+      const id = ch.tool.toolUseId || row.key;
       const label = readableToolTitle(ch.tool);
       const existing = target.tools.find((t) => t.id === id);
       if (existing) {
@@ -149,13 +143,10 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
       } else {
         target.tools.push({ id, label, isError: Boolean(ch.tool.result?.isError) });
       }
-    } else if (ch.field === 'thinking') {
-      const t = ch.text;
-      if (t)
-        target.thinking = target.thinking ? target.thinking + (ch.offset ? '' : '\n\n') + t : t;
-    } else {
-      const b = ch.text;
-      if (b) target.body = target.body ? target.body + (ch.offset ? '' : '\n\n') + b : b;
+    } else if (ch.field === 'thinking' && row.text) {
+      target.thinking += (target.thinking ? '\n\n' : '') + row.text;
+    } else if (row.text) {
+      target.bodies.push(row);
     }
   }
   return turns;
@@ -377,10 +368,29 @@ export function ChatScreen(props: {
   };
   const subtitleLine = () =>
     savedHosts().length > 1 ? props.item.hostName + ' · ' + workspaceName() : workspaceName();
-  const turns = () => groupHistoryTurns(ctrl.chunks());
+  const turns = computed(() => groupHistoryTurns(ctrl.chunks()));
+  const hasMoreBefore = () => ctrl.beforeCursor() != null;
   const isRunning = () => ctrl.observation()?.run !== null && ctrl.observation()?.run !== undefined;
   const hostOnline = () => isHostConnected(rootId);
   const draft = () => getDraft(rootId, sessionId);
+  const quoteLimitReached = () => draft().quotes.length >= quoteLimit;
+  const canSend = () => ctrl.hasDraftContent() && !ctrl.sending();
+  const quoteMessage = (row: HistoryRow, text: string, combined = false) => {
+    if (ctrl.isRoom()) return false;
+    const { messageId, turnId, role } = row.first;
+    if (
+      !appendDraftQuote(rootId, sessionId, row.key, {
+        text,
+        label: role === 'user' ? tr('You') : 'Maka',
+        sourceMessageId: combined ? undefined : (messageId ?? undefined),
+        sourceTurnId: turnId ?? undefined,
+      })
+    )
+      return false;
+    hapticSelection();
+    inputRef?.blur();
+    return true;
+  };
   const hasLivePreview = () => {
     const p = ctrl.livePreview();
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
@@ -554,6 +564,7 @@ export function ChatScreen(props: {
         <Scroll
           ref={(r) => (scrollRef = r)}
           style={{ flex: 1 }}
+          keyboardShouldPersistTaps="handled"
           onScroll={(e) => {
             lastContentHeight = e.contentSize.height;
             saveScrollOffset(rootId, sessionId, e.offset.y);
@@ -571,7 +582,7 @@ export function ChatScreen(props: {
             <BannerNotice tone="destructive" title={ctrl.error()!} />
           </If>
 
-          <If when={ctrl.beforeCursor() !== null && ctrl.beforeCursor() !== undefined}>
+          <If when={hasMoreBefore()}>
             <View style={{ alignItems: 'center', marginBottom: 4 }}>
               <ActionButton
                 title={ctrl.loadingEarlier() ? tr('Loading…') : tr('Load earlier messages')}
@@ -654,47 +665,26 @@ export function ChatScreen(props: {
                         Maka
                       </Text>
                       <CollapsibleActivity thinking={turn().thinking} tools={turn().tools} />
-                      <If when={turn().body.length > 0}>
-                        <TextView
-                          markdown={turn().body}
-                          classes={{ codeBlockHeader: 'px-3 text-foreground' }}
-                          codeBlockActions={[{ id: 'copy', label: tr('Copy') }]}
-                          selectable
-                          styles={{
-                            paragraph: { color: token('foreground'), fontSize: 16, lineHeight: 24 },
-                          }}
-                          onLinkPress={({ url }) => void openUrl(url)}
+                      <Each of={turn().bodies} key={(row) => row.key}>
+                        {(row) => (
+                          <MessageBody
+                            row={row()}
+                            limitReached={quoteLimitReached()}
+                            onQuote={quoteMessage}
+                          />
+                        )}
+                      </Each>
+                      <If
+                        when={
+                          turn().bodies.length &&
+                          (!hasMoreBefore() || turn().key !== turns()[0]?.key)
+                        }
+                      >
+                        <ReplyActions
+                          bodies={turn().bodies}
+                          limitReached={quoteLimitReached()}
+                          onQuote={quoteMessage}
                         />
-                        <View
-                          style={{
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            gap: 12,
-                            marginTop: 4,
-                          }}
-                        >
-                          <View
-                            role="button"
-                            accessibilityLabel={tr('Copy reply')}
-                            onPress={() => {
-                              hapticSelection();
-                              void Clipboard.writeText(turn().body);
-                              showToast(tr('Copied'));
-                            }}
-                            class="active:opacity-60"
-                            style={{
-                              minHeight: 32,
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                          >
-                            <Icon name="copy" color={token('muted-foreground')} size={14} />
-                            <Text style={{ ...type.caption, color: token('muted-foreground') }}>
-                              {tr('Copy')}
-                            </Text>
-                          </View>
-                        </View>
                       </If>
                     </View>
                   }
@@ -708,11 +698,19 @@ export function ChatScreen(props: {
                         borderRadius: 18,
                         borderCurve: 'continuous',
                         backgroundColor: token('user-bubble-tint'),
+                        gap: 4,
                       }}
                     >
-                      <Text style={{ ...type.body, color: token('foreground') }}>
-                        {turn().body}
-                      </Text>
+                      <HistoryQuotes quotes={turn().quotes ?? []} />
+                      <Each of={turn().bodies} key={(row) => row.key}>
+                        {(row) => (
+                          <MessageBody
+                            row={row()}
+                            limitReached={quoteLimitReached()}
+                            onQuote={quoteMessage}
+                          />
+                        )}
+                      </Each>
                     </View>
                   </View>
                 </If>
@@ -773,36 +771,32 @@ export function ChatScreen(props: {
         </Scroll>
 
         {/* Subtle Floating Jump-to-Latest Pill when user scrolled up */}
-        <If when={!atBottom() && (isRunning() || hasLivePreview())}>
-          <View
-            style={{
-              position: 'absolute',
-              right: 16,
-              bottom: Math.max(insets().bottom, 12) + 84,
-            }}
-          >
-            <View
-              role="button"
-              accessibilityLabel={tr('Scroll to latest')}
-              onPress={() => scrollToBottom(true)}
-              class="active:opacity-75"
-              style={{
-                minHeight: 36,
-                paddingHorizontal: 12,
-                borderRadius: 18,
-                backgroundColor: token('surface-elevated'),
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 5,
-              }}
-            >
-              <Icon name="arrowDown" color={token('primary')} size={15} />
-              <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
-                {tr('Latest')}
-              </Text>
+        <View>
+          <If when={!atBottom() && (isRunning() || hasLivePreview())}>
+            <View style={{ position: 'absolute', right: 16, bottom: 8 }}>
+              <View
+                role="button"
+                accessibilityLabel={tr('Scroll to latest')}
+                onPress={() => scrollToBottom(true)}
+                class="active:opacity-75"
+                style={{
+                  minHeight: 36,
+                  paddingHorizontal: 12,
+                  borderRadius: 18,
+                  backgroundColor: token('surface-elevated'),
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 5,
+                }}
+              >
+                <Icon name="arrowDown" color={token('primary')} size={15} />
+                <Text style={{ ...type.caption, fontWeight: '600', color: token('primary') }}>
+                  {tr('Latest')}
+                </Text>
+              </View>
             </View>
-          </View>
-        </If>
+          </If>
+        </View>
 
         {/* Queued Messages Compact Pill */}
         <If when={ctrl.queue().entries.length > 0}>
@@ -867,6 +861,9 @@ export function ChatScreen(props: {
             borderTopColor: token('separator'),
           }}
         >
+          <If when={!ctrl.isRoom() && draft().quotes.length > 0}>
+            <DraftQuoteStrip rootId={rootId} sessionId={sessionId} quotes={draft().quotes} />
+          </If>
           <If
             when={hostOnline()}
             else={
@@ -926,7 +923,7 @@ export function ChatScreen(props: {
                   ref={(r) => (inputRef = r)}
                   multiline
                   accessibilityLabel={tr('Message composer')}
-                  value={draft()}
+                  value={draft().input.text}
                   placeholder={isRunning() ? tr('Queue a follow-up message…') : tr('Message Maka…')}
                   ios={{ inputAccessoryViewID: 'maka-chat-accessory' }}
                   onChange={({ value }) => setDraft(rootId, sessionId, value)}
@@ -962,29 +959,21 @@ export function ChatScreen(props: {
               <View
                 role="button"
                 accessibilityLabel={isRunning() ? tr('Queue message') : tr('Send message')}
-                onPress={() => {
-                  if (draft().trim() && !ctrl.sending()) {
-                    void ctrl.sendMessage();
-                  }
-                }}
+                disabled={!canSend()}
+                onPress={() => void ctrl.sendMessage()}
                 class="active:opacity-70"
                 style={{
                   width: 40,
                   height: 40,
                   borderRadius: 20,
-                  backgroundColor:
-                    draft().trim() && !ctrl.sending() ? token('primary') : token('surface-muted'),
+                  backgroundColor: canSend() ? token('primary') : token('surface-muted'),
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
               >
                 <Icon
                   name="send"
-                  color={
-                    draft().trim() && !ctrl.sending()
-                      ? token('primary-foreground')
-                      : token('tertiary-foreground')
-                  }
+                  color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
                   size={18}
                   strokeWidth={2.3}
                 />
@@ -1055,7 +1044,7 @@ export function ChatScreen(props: {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <View
                 role="button"
-                accessibilityLabel={tr('Quote diff')}
+                accessibilityLabel={ctrl.isRoom() ? tr('Changes') : tr('Quote diff')}
                 onPress={() => {
                   inputRef?.blur();
                   openFiles();

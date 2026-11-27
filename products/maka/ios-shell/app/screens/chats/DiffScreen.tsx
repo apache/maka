@@ -20,7 +20,13 @@
 import { safeAreaInsets, signal, Text, View, token } from 'nsh';
 import { DiffView, NavPage } from 'nsh/base';
 import { formatCount, tr } from '../../locale';
-import { appendQuoteToDraft, extractPatchLineText, type ParsedDiffFile } from '../../state/chat';
+import {
+  appendFileQuote,
+  extractPatchLineText,
+  getDraft,
+  quoteLimit,
+  type ParsedDiffFile,
+} from '../../state/chat';
 import { showToast } from '../../state/hostPool';
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
@@ -29,6 +35,7 @@ import { ActionButton, Icon, ScreenHeader } from '../../ui';
 export function DiffScreen(props: {
   rootId: string;
   sessionId: string;
+  canQuote: boolean;
   file: ParsedDiffFile;
   onBack: () => void;
   onQuotedBackToChat: () => void;
@@ -36,6 +43,7 @@ export function DiffScreen(props: {
   const insets = safeAreaInsets();
   const selectedLine = signal<{ side: 'old' | 'new'; line: number; text: string } | null>(null);
 
+  const limitReached = () => getDraft(props.rootId, props.sessionId).quotes.length >= quoteLimit;
   const fileName = () => props.file.path.split('/').pop() || props.file.path;
   const normalizedPatch = () =>
     props.file.patch.endsWith('\n') ? props.file.patch : props.file.patch + '\n';
@@ -52,7 +60,11 @@ export function DiffScreen(props: {
 
   const quoteAndReturn = () => {
     const picked = selectedLine() ?? firstChangedLine();
-    appendQuoteToDraft(props.rootId, props.sessionId, props.file.path, picked.line, picked.text);
+    if (
+      !props.canQuote ||
+      !appendFileQuote(props.rootId, props.sessionId, props.file.path, picked.line, picked)
+    )
+      return;
     hapticNotification('success');
     showToast(tr('Quoted {path}:{line}', { path: fileName(), line: String(picked.line) }));
     props.onQuotedBackToChat();
@@ -65,14 +77,17 @@ export function DiffScreen(props: {
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
       ios={{
-        headerRightItems: [
-          {
-            key: 'quote',
-            symbol: 'quote.bubble',
-            label: tr('Quote line to chat'),
-            onPress: quoteAndReturn,
-          },
-        ],
+        headerRightItems:
+          props.canQuote && !limitReached()
+            ? [
+                {
+                  key: 'quote',
+                  symbol: 'quote.bubble',
+                  label: tr('Quote line to chat'),
+                  onPress: quoteAndReturn,
+                },
+              ]
+            : [],
       }}
       header={
         <ScreenHeader
@@ -80,16 +95,18 @@ export function DiffScreen(props: {
           backLabel={tr('Changes')}
           onBack={props.onBack}
           trailing={
-            <View
-              role="button"
-              accessibilityLabel={tr('Quote')}
-              onPress={quoteAndReturn}
-              style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}
-            >
-              <Text style={{ ...type.subheadlineMedium, color: token('primary') }}>
-                {tr('Quote')}
-              </Text>
-            </View>
+            <If when={props.canQuote && !limitReached()}>
+              <View
+                role="button"
+                accessibilityLabel={tr('Quote')}
+                onPress={quoteAndReturn}
+                style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}
+              >
+                <Text style={{ ...type.subheadlineMedium, color: token('primary') }}>
+                  {tr('Quote')}
+                </Text>
+              </View>
+            </If>
           }
         />
       }
@@ -167,58 +184,66 @@ export function DiffScreen(props: {
             indicatorDeleted: { color: token('diff-del-fg') },
             separator: { backgroundColor: token('grouped-bg') },
           }}
-          onLineNumberPress={({ line }) => {
-            hapticSelection();
-            const lineNum = line.line + 1;
-            const side: 'old' | 'new' = line.side === 'old' ? 'old' : 'new';
-            selectedLine.set({
-              side,
-              line: lineNum,
-              text: extractPatchLineText(props.file.patch, side, lineNum),
-            });
-          }}
+          onLineNumberPress={
+            props.canQuote
+              ? ({ line }) => {
+                  hapticSelection();
+                  const lineNum = line.line + 1;
+                  const side: 'old' | 'new' = line.side === 'old' ? 'old' : 'new';
+                  selectedLine.set({
+                    side,
+                    line: lineNum,
+                    text: extractPatchLineText(props.file.patch, side, lineNum),
+                  });
+                }
+              : undefined
+          }
           style={{ flex: 1 }}
         />
 
-        {/* Bottom Quote-Line Action Bar */}
-        <View
-          style={{
-            paddingHorizontal: spacing.pageX,
-            paddingTop: 10,
-            paddingBottom: Math.max(insets().bottom, 14) + 6,
-            backgroundColor: token('surface'),
-            borderTopWidth: spacing.hairline,
-            borderTopColor: token('separator'),
-            gap: 8,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Icon name="quote" color={token('primary')} size={18} />
-            <Text
-              style={{
-                ...type.footnote,
-                color: token('muted-foreground'),
-                flex: 1,
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {selectedLine()
-                ? props.file.path + ':' + String(selectedLine()!.line)
-                : tr('Tap any line number to quote a specific line into chat')}
-            </Text>
+        <If when={props.canQuote}>
+          <View
+            style={{
+              paddingHorizontal: spacing.pageX,
+              paddingTop: 10,
+              paddingBottom: Math.max(insets().bottom, 14) + 6,
+              backgroundColor: token('surface'),
+              borderTopWidth: spacing.hairline,
+              borderTopColor: token('separator'),
+              gap: 8,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Icon name="quote" color={token('primary')} size={18} />
+              <Text
+                style={{
+                  ...type.footnote,
+                  color: token('muted-foreground'),
+                  flex: 1,
+                  numberOfLines: 1,
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {limitReached()
+                  ? tr('Quote limit reached ({count})', { count: quoteLimit })
+                  : selectedLine()
+                    ? props.file.path + ':' + String(selectedLine()!.line)
+                    : tr('Tap any line number to quote a specific line into chat')}
+              </Text>
+            </View>
+            <ActionButton
+              title={
+                selectedLine()
+                  ? tr('Quote line {line} to chat', { line: String(selectedLine()!.line) })
+                  : tr('Quote line to chat')
+              }
+              icon="quote"
+              compact
+              disabled={limitReached()}
+              onPress={quoteAndReturn}
+            />
           </View>
-          <ActionButton
-            title={
-              selectedLine()
-                ? tr('Quote line {line} to chat', { line: String(selectedLine()!.line) })
-                : tr('Quote line to chat')
-            }
-            icon="quote"
-            compact
-            onPress={quoteAndReturn}
-          />
-        </View>
+        </If>
       </View>
     </NavPage>
   );
