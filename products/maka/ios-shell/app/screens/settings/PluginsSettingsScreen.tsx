@@ -109,6 +109,7 @@ export function PluginsSettingsScreen(
       title={tr('Plugins')}
       work={work}
       ready={!!inventory()}
+      initialList
       reload={reload}
       dirty={!!url()}
     >

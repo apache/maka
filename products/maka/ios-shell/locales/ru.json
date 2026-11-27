@@ -137,6 +137,7 @@
   "Could not save the search API key.": "Не удалось сохранить ключ API поиска.",
   "Could not send the message.": "Не удалось отправить сообщение.",
   "Could not sync Pending": "Не удалось синхронизировать ожидающие запросы",
+  "Could not sync chats": "Не удалось синхронизировать чаты",
   "Could not update the conversation.": "Не удалось обновить диалог.",
   "Could not update the message queue.": "Не удалось обновить очередь сообщений.",
   "Create Room": "Создать комнату",

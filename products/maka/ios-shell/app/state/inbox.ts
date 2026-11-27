@@ -58,7 +58,10 @@ const busyKeys = signal<Record<string, boolean>>({});
 let initialized = false;
 
 export const inboxLoading = computed(() =>
-  Object.values(statusByHost()).some(({ sync }) => sync.kind === 'loading'),
+  connectedHosts().some(({ host, connection }) => {
+    const status = statusByHost()[host.rootId];
+    return hasAgentEndpoint(connection) && (!status || status.sync.kind === 'loading');
+  }),
 );
 export const inboxError = computed(() => {
   for (const { sync, watchError } of Object.values(statusByHost())) {

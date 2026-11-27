@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { computed, effect, lifecycle, network, signal, untracked, UrlScheme } from 'nsh';
+import { batch, computed, effect, lifecycle, network, signal, untracked, UrlScheme } from 'nsh';
 import {
   beginPairing,
   bootstrap,
@@ -147,10 +147,43 @@ export function isHostConnected(rootId: string): boolean {
 
 export function hostReconnectNotice(rootId: string): { error?: string } | null {
   const host = hostConnectionState(rootId);
-  if (host.status === 'error' && host.autoReconnect !== false) return { error: host.error };
   const retry = reconnects().get(rootId);
-  if (host.status === 'connecting' && retry?.kind === 'dialing') return { error: retry.error };
-  return null;
+  if (host.status === 'connected' || ('autoReconnect' in host && host.autoReconnect === false))
+    return null;
+  if (retry?.kind !== 'dialing' && !(retry?.kind === 'scheduled' && reconnectAvailable()))
+    return null;
+  return {
+    error:
+      host.status === 'error' ? host.error : retry.kind === 'dialing' ? retry.error : undefined,
+  };
+}
+
+export type HostConnectionProgress = 'connecting' | 'reconnecting';
+
+export function hostConnectionProgress(rootId: string): HostConnectionProgress | null {
+  if (hostReconnectNotice(rootId)) return 'reconnecting';
+  return hostConnectionState(rootId).status === 'connecting' ? 'connecting' : null;
+}
+
+type ScopedConnection =
+  | { kind: HostConnectionProgress | 'available' }
+  | { kind: 'offline'; host: SavedHostItem };
+
+export function scopedConnection(scope: string): ScopedConnection {
+  let connecting = false;
+  let connected = false;
+  let offline: SavedHostItem | undefined;
+  for (const host of savedHosts()) {
+    if (scope !== 'all' && scope !== host.rootId) continue;
+    const progress = hostConnectionProgress(host.rootId);
+    if (progress === 'reconnecting') return { kind: progress };
+    if (progress === 'connecting') connecting = true;
+    else if (isHostConnected(host.rootId)) connected = true;
+    else offline ??= host;
+  }
+  if (connecting) return { kind: 'connecting' };
+  if (!connected && offline) return { kind: 'offline', host: offline };
+  return { kind: 'available' };
 }
 
 export function hostStatusKind(rootId: string): StatusKind {
@@ -228,7 +261,7 @@ export function selectScope(scope: string) {
   selectedScope.set(scope);
   void setFilter(
     scope === 'all' ? { kind: 'all_computers' } : { kind: 'single_computer', root_id: scope },
-  ).catch(() => {});
+  ).catch((cause) => console.warn('Could not sync the computer filter', cause));
 }
 
 export function setDeviceLabel(label: string) {
@@ -264,41 +297,37 @@ function applySnapshot(next: HostStateSnapshot) {
   const prev = snapshot();
   if (prev && next.revision <= prev.revision) return;
   setHostSnapshot(next);
-  snapshot.set(next);
-  paths.update((previous) =>
-    Object.fromEntries(
-      Object.entries(previous).filter(
-        ([rootId, path]) => activeHostInfo(rootId)?.generation === path.generation,
+  batch(() => {
+    snapshot.set(next);
+    paths.update((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(
+          ([rootId, path]) => activeHostInfo(rootId)?.generation === path.generation,
+        ),
       ),
-    ),
-  );
+    );
 
-  const filter = next.filter;
-  if (filter?.kind === 'single_computer') {
-    const exists = next.hosts.some((h) => h.rootId === filter.root_id);
-    if (exists) {
-      selectedScope.set(filter.root_id);
-    } else {
+    // The bridge's filter seeds this UI; later snapshots can predate a local tap.
+    if (!prev && next.filter?.kind === 'single_computer') selectedScope.set(next.filter.root_id);
+    if (selectedScope() !== 'all' && !next.hosts.some((h) => h.rootId === selectedScope())) {
       selectedScope.set('all');
     }
-  } else if (selectedScope() !== 'all' && !next.hosts.some((h) => h.rootId === selectedScope())) {
-    selectedScope.set('all');
-  }
 
-  if (next.disconnectReason) {
-    disconnectNotice.set({
-      rootId: next.disconnectedRootId,
-      reason: next.disconnectReason,
-    });
-  } else if (
-    disconnectNotice() &&
-    disconnectNotice()!.rootId &&
-    (isHostConnected(disconnectNotice()!.rootId!) || !hostById(disconnectNotice()!.rootId!))
-  ) {
-    disconnectNotice.set(null);
-  }
+    if (next.disconnectReason) {
+      disconnectNotice.set({
+        rootId: next.disconnectedRootId,
+        reason: next.disconnectReason,
+      });
+    } else if (
+      disconnectNotice() &&
+      disconnectNotice()!.rootId &&
+      (isHostConnected(disconnectNotice()!.rootId!) || !hostById(disconnectNotice()!.rootId!))
+    ) {
+      disconnectNotice.set(null);
+    }
 
-  syncReconnect();
+    syncReconnect();
+  });
 
   if (next.pendingPairUri) {
     handleIncomingUrl(next.pendingPairUri);
@@ -530,8 +559,10 @@ async function dialSavedHost(rootId: string, scheduled: ScheduledRetry) {
       console.warn('Could not reconnect computer', rootId, cause);
   } finally {
     if (reconnects().get(rootId) === attempt) {
-      setReconnect(rootId, { kind: 'waiting', plan: attempt.next });
-      syncHostReconnect(rootId);
+      batch(() => {
+        setReconnect(rootId, { kind: 'waiting', plan: attempt.next });
+        syncHostReconnect(rootId);
+      });
     }
   }
 }

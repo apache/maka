@@ -137,6 +137,7 @@
   "Could not save the search API key.": "検索 API キーを保存できませんでした。",
   "Could not send the message.": "メッセージを送信できませんでした。",
   "Could not sync Pending": "保留中のリクエストを同期できませんでした",
+  "Could not sync chats": "チャットを同期できませんでした",
   "Could not update the conversation.": "会話を更新できませんでした。",
   "Could not update the message queue.": "メッセージキューを更新できませんでした。",
   "Create Room": "ルームを作成",

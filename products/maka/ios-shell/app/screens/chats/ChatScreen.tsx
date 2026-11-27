@@ -49,6 +49,8 @@ import {
   type AgentSession,
 } from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
+import { ConnectionProgress } from '../../ui/ConnectionProgress';
+import { TranscriptSkeleton } from '../../ui/Skeleton';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { currentLocale, formatCount, tr } from '../../locale';
@@ -79,6 +81,7 @@ import {
   activeHostInfo,
   connectSavedHost,
   hostById,
+  hostConnectionProgress,
   hostStatusKind,
   isHostConnected,
   savedHosts,
@@ -435,6 +438,7 @@ export function ChatScreen(
   const hasMoreBefore = () => ctrl.beforeCursor() != null;
   const isRunning = () => ctrl.observation()?.run != null;
   const hostOnline = () => isHostConnected(rootId);
+  const connectionProgress = () => hostConnectionProgress(rootId);
   const draft = () => getDraft(rootId, sessionId);
   const quotes = () => (sideDraft ? sideDraft.quotes() : draft().quotes);
   const links = () => (sideDraft ? [] : draft().links);
@@ -840,6 +844,20 @@ export function ChatScreen(
             )}
           </If>
 
+          <If
+            when={
+              !pending &&
+              hostOnline() &&
+              ctrl.loading() &&
+              !ctrl.historyLoaded() &&
+              !hasLivePreview() &&
+              inlineInteractions().length === 0 &&
+              !ctrl.error()
+            }
+          >
+            <TranscriptSkeleton />
+          </If>
+
           <If when={hasMoreBefore()}>
             <View style={{ alignItems: 'center', marginBottom: 4 }}>
               <ActionButton
@@ -1211,36 +1229,47 @@ export function ChatScreen(
           <If
             when={hostOnline()}
             else={
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 10,
-                  minHeight: 44,
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <StatusDot kind="offline" size={8} />
-                  <Text
+              <If
+                when={connectionProgress()}
+                else={
+                  <View
                     style={{
-                      ...type.subheadline,
-                      color: token('muted-foreground'),
-                      flex: 1,
-                      numberOfLines: 1,
-                      textOverflow: 'ellipsis',
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      minHeight: 44,
                     }}
                   >
-                    {tr('{name} is offline', { name: hostName() })}
-                  </Text>
-                </View>
-                <ActionButton
-                  title={tr('Reconnect')}
-                  variant="secondary"
-                  compact
-                  onPress={() => void connectSavedHost(rootId)}
-                />
-              </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                      <StatusDot kind="offline" size={8} />
+                      <Text
+                        style={{
+                          ...type.subheadline,
+                          color: token('muted-foreground'),
+                          flex: 1,
+                          numberOfLines: 1,
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {tr('{name} is offline', { name: hostName() })}
+                      </Text>
+                    </View>
+                    <ActionButton
+                      title={tr('Reconnect')}
+                      variant="secondary"
+                      compact
+                      onPress={() => void connectSavedHost(rootId)}
+                    />
+                  </View>
+                }
+              >
+                {(progress) => (
+                  <View style={{ minHeight: 44, justifyContent: 'center' }}>
+                    <ConnectionProgress kind={progress()} surface="canvas" />
+                  </View>
+                )}
+              </If>
             }
           >
             <View

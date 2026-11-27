@@ -116,6 +116,7 @@ export function McpSettingsScreen(
       title={tr('MCP')}
       work={work}
       ready={!!inventory()}
+      initialList
       reload={reload}
     >
       <InsetGroup>

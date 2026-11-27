@@ -18,7 +18,7 @@
  */
 
 import { approvalOutcome, approvalRejectionError } from '../approval';
-import { cleanup, effect, signal } from 'nsh';
+import { cleanup, computed, effect, signal } from 'nsh';
 import {
   hostMutate,
   hostQuery,
@@ -517,8 +517,8 @@ export function createConversationController(
     const current = observation();
     return current?.session.backend ?? current?.rememberedBackend ?? null;
   };
-  const chunks = signal<AgentHistoryChunk[]>([]);
-  const roomMessages = signal<AgentRoomMessage[]>([]);
+  const chunks = signal<AgentHistoryChunk[] | null>(null);
+  const roomMessages = signal<AgentRoomMessage[] | null>(null);
   const isRoom = signal(initialSession.kind === 'room');
   const beforeCursor = signal<unknown>(null);
   const loading = signal(true);
@@ -625,7 +625,7 @@ export function createConversationController(
         if (tail.length || !preserveHistory)
           roomMessages.update((previous) =>
             preserveHistory && tail.length
-              ? [...previous.filter((item) => item.sequence < tail[0].sequence), ...tail]
+              ? [...(previous ?? []).filter((item) => item.sequence < tail[0].sequence), ...tail]
               : tail,
           );
         if (!preserveHistory) beforeCursor.set(page.page.before ?? null);
@@ -637,7 +637,7 @@ export function createConversationController(
         const tail = page.chunks;
         if (tail.length || !preserveHistory)
           chunks.update((previous) =>
-            preserveHistory && tail.length ? joinHistory(previous, tail) : tail,
+            preserveHistory && tail.length ? joinHistory(previous ?? [], tail) : tail,
           );
         if (!preserveHistory) beforeCursor.set(page.before ?? null);
         if (typeof page.through === 'number') {
@@ -782,13 +782,13 @@ export function createConversationController(
       pagedHistory = true;
       if (page?.kind === 'room') {
         const older = page.page?.items ?? [];
-        const existing = roomMessages();
+        const existing = roomMessages() ?? [];
         const seen = new Set(existing.map((m) => m.id));
         roomMessages.set([...older.filter((m) => !seen.has(m.id)), ...existing]);
         beforeCursor.set(page.page?.before ?? null);
       } else if (page?.kind === 'ready') {
         const older = page.chunks ?? [];
-        chunks.update((existing) => joinHistory(older, existing));
+        chunks.update((existing) => joinHistory(older, existing ?? []));
         beforeCursor.set(page.before ?? null);
       }
     } catch (cause) {
@@ -1037,8 +1037,9 @@ export function createConversationController(
     observation,
     selectedBackend,
     selectingModel,
-    chunks,
-    roomMessages,
+    chunks: computed(() => chunks() ?? []),
+    roomMessages: computed(() => roomMessages() ?? []),
+    historyLoaded: () => chunks() !== null || roomMessages() !== null,
     isRoom,
     beforeCursor,
     loading,

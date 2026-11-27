@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { safeAreaInsets, Scroll, signal, View, token } from 'nsh';
+import { computed, safeAreaInsets, Scroll, signal, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import {
@@ -29,7 +29,7 @@ import {
 } from '../../approval';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { tr } from '../../locale';
-import { savedHosts } from '../../state/hostPool';
+import { connectSavedHost, savedHosts, scopedConnection } from '../../state/hostPool';
 import {
   allInboxItems,
   inboxLoading,
@@ -51,11 +51,25 @@ import {
   type ScopePillItem,
 } from '../../ui';
 
+import { ConnectionProgress } from '../../ui/ConnectionProgress';
+import { ListSkeleton } from '../../ui/Skeleton';
+
 type CategoryFilter = 'all' | 'approvals' | 'questions';
 
 export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
   const insets = safeAreaInsets();
   const category = signal<CategoryFilter>('all');
+  const connection = computed(() => scopedConnection('all'));
+  const connectionProgress = () => {
+    const { kind } = connection();
+    return kind === 'connecting' || kind === 'reconnecting' ? kind : null;
+  };
+  const offlineHost = () => {
+    const state = connection();
+    return state.kind === 'offline' ? state.host : null;
+  };
+  const initialLoading = () =>
+    allInboxItems().length === 0 && (connectionProgress() || inboxLoading());
 
   const feedback = approvalFeedback<{ item: InboxItem; index: number; accepted: boolean }>();
   const respond = async (
@@ -137,6 +151,13 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
               />
             </View>
           </If>
+          <If when={connectionProgress()}>
+            {(progress) => (
+              <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 12 }}>
+                <ConnectionProgress kind={progress()} />
+              </View>
+            )}
+          </If>
           <If when={inboxError()}>
             <BannerNotice
               tone="warning"
@@ -149,29 +170,44 @@ export function InboxScreen(props: { onOpenItem: (item: InboxItem) => void }) {
           <If
             when={visibleItems().length > 0}
             else={
-              <View style={{ flex: 1, justifyContent: 'center' }}>
-                <If when={!inboxError()}>
-                  <If
-                    when={inboxLoading()}
-                    else={
-                      <EmptyState
-                        icon="checkCircle"
-                        tint="success"
-                        title={tr('All caught up')}
-                        subtitle={
-                          savedHosts().length > 1
-                            ? tr(
-                                'No approvals or questions are waiting across your connected computers.',
-                              )
-                            : tr('No approvals or questions are waiting.')
+              <If
+                when={initialLoading()}
+                else={
+                  <If when={!inboxError()}>
+                    <View style={{ flex: 1, justifyContent: 'center' }}>
+                      <If
+                        when={offlineHost()}
+                        else={
+                          <EmptyState
+                            icon="checkCircle"
+                            tint="success"
+                            title={tr('All caught up')}
+                            subtitle={
+                              savedHosts().length > 1
+                                ? tr(
+                                    'No approvals or questions are waiting across your connected computers.',
+                                  )
+                                : tr('No approvals or questions are waiting.')
+                            }
+                          />
                         }
-                      />
-                    }
-                  >
-                    <BannerNotice title={tr('Loading…')} />
+                      >
+                        {(host) => (
+                          <EmptyState
+                            icon="laptop"
+                            tint="muted"
+                            title={tr('{name} is offline', { name: host().hostName })}
+                            actionTitle={tr('Reconnect')}
+                            onAction={() => void connectSavedHost(host().rootId)}
+                          />
+                        )}
+                      </If>
+                    </View>
                   </If>
-                </If>
-              </View>
+                }
+              >
+                <ListSkeleton />
+              </If>
             }
           >
             <InsetGroup header={tr('Waiting for your response')}>

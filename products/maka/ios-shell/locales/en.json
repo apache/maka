@@ -137,6 +137,7 @@
   "Could not save the search API key.": "Could not save the search API key.",
   "Could not send the message.": "Could not send the message.",
   "Could not sync Pending": "Could not sync Pending",
+  "Could not sync chats": "Could not sync chats",
   "Could not update the conversation.": "Could not update the conversation.",
   "Could not update the message queue.": "Could not update the message queue.",
   "Create Room": "Create Room",

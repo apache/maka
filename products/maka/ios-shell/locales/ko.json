@@ -137,6 +137,7 @@
   "Could not save the search API key.": "검색 API 키를 저장하지 못했습니다.",
   "Could not send the message.": "메시지를 보낼 수 없습니다.",
   "Could not sync Pending": "대기 중인 요청을 동기화하지 못했습니다",
+  "Could not sync chats": "채팅을 동기화할 수 없습니다",
   "Could not update the conversation.": "대화를 업데이트할 수 없습니다.",
   "Could not update the message queue.": "메시지 대기열을 업데이트할 수 없습니다.",
   "Create Room": "룸 만들기",
