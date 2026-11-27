@@ -2309,7 +2309,7 @@ mod answer_page_tests {
         maka_event_log::migration::run(&db, &catalog).unwrap();
         db.execute_batch(r#"
             INSERT INTO contents VALUES(1,'spec',x'7b7d'),(2,'text',CAST('A你B' AS BLOB));
-            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);
+            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);
             INSERT INTO agent_memories VALUES('owner','personal','m',1,1,'user_recall','suppressed',0,0);
             INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
               VALUES('owner','personal','m',1,'sample','{}','digest','suppressed');
@@ -3229,6 +3229,7 @@ mod tests {
         );
         assert_eq!(
             RestrictedArchives {
+                snapshot: None,
                 owner: spec_a.owner.clone(),
                 facts: vec![prep_a_id],
             }
@@ -3315,7 +3316,7 @@ mod tests {
             diag_b,
         );
         assert!(
-            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0)], &[])
+            indexed_spans(&db, &spec_b.owner, &[(0, late_obs.id, 0, None)], &[])
                 .unwrap()
                 .contains_key(&0),
             "RunTerminated restriction must propagate to late Observed"
@@ -3352,13 +3353,14 @@ mod tests {
             diag_b,
         );
         assert!(
-            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0)], &[])
+            indexed_spans(&db, &spec_b.owner, &[(0, term_b_id, 0, None)], &[])
                 .unwrap()
                 .contains_key(&0),
             "Observed restriction must propagate to RunTerminated"
         );
         assert_eq!(
             RestrictedArchives {
+                snapshot: None,
                 owner: spec_b.owner.clone(),
                 facts: vec![prep_b_id],
             }

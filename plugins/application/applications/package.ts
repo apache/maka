@@ -23,7 +23,8 @@ export default localizePackage({
   schemaVersion: 1,
   id: 'maka.applications',
   displayName: 'Applications',
-  description: 'Find, open and manage installed applications from the quick launcher on macOS.',
+  description:
+    'Find, open and manage installed applications from the quick launcher on Windows and macOS.',
   application: {
     ui: {
       module: 'ui.js',

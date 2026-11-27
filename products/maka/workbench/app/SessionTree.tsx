@@ -253,7 +253,7 @@ export function SessionTree(props: {
                           })}
                           disabled={!interactive()}
                           onPress={inputAction(() => load(parent().id, true), null)}
-                          style={controlStyle}
+                          style={controlStyle()}
                           hoverStyle={controlHoverStyle()}
                           focusStyle={controlFocusStyle()}
                           disabledStyle={controlDisabledStyle}
@@ -276,7 +276,7 @@ export function SessionTree(props: {
                             })}
                             disabled={!interactive()}
                             onPress={inputAction(() => load(parent().id), null)}
-                            style={controlStyle}
+                            style={controlStyle()}
                             hoverStyle={controlHoverStyle()}
                             focusStyle={controlFocusStyle()}
                             disabledStyle={controlDisabledStyle}
@@ -377,7 +377,7 @@ export function SessionTree(props: {
                             disabled={!interactive() || !present()}
                             onPress={inputAction(toggle, session().id)}
                             style={{
-                              ...controlStyle,
+                              ...controlStyle(),
                               width: 32,
                               alignItems: 'center',
                               justifyContent: 'center',
@@ -399,7 +399,7 @@ export function SessionTree(props: {
                           disabled={!interactive() || !present()}
                           onPress={inputAction(open, session().id)}
                           style={{
-                            ...controlStyle,
+                            ...controlStyle(),
                             flex: 1,
                             minWidth: 0,
                             height: 48,
@@ -437,7 +437,7 @@ export function SessionTree(props: {
                               tooltip={textTooltip(() => tr('Conversation actions'))}
                               disabled={!interactive() || !present()}
                               style={{
-                                ...controlStyle,
+                                ...controlStyle(),
                                 width: 32,
                                 alignItems: 'center',
                                 justifyContent: 'center',

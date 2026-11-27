@@ -209,15 +209,15 @@ fn fire(surface: &Rc<Surface>, binding: &KeyBinding, time: u32) {
 }
 
 fn fires_binding(surface: &Surface, root: &NshView, binding: &KeyBinding) -> bool {
+    let yields = surface
+        .keymap
+        .keymap
+        .borrow()
+        .as_ref()
+        .is_some_and(|keymap| keymap.gives_way(binding));
     binding.window.is_none_or(|window| window == root.id())
         && !crate::text_input::composing_focused(surface)
-        && fires(
-            surface,
-            root,
-            binding.in_text,
-            binding.within,
-            gives_way(binding),
-        )
+        && fires(surface, root, binding.in_text, binding.within, yields)
 }
 
 /// Replays capture-phase shortcut matching for a held GDK key event.
@@ -543,17 +543,6 @@ fn fires(
             && !(control && gives_way)
             && within.is_none_or(|scope| path.contains(&scope))
     })
-}
-
-/// Whether `binding` gives way to a focused control that its key presses:
-/// Return and Space, unless it is the focus' own
-/// ([`nsh_core::keymap::Keymap::find_at`]).
-fn gives_way(binding: &nsh_core::keymap::KeyBinding) -> bool {
-    !binding.for_focus
-        && nsh_core::input::presses_focused_control(
-            binding.keystroke.key,
-            binding.keystroke.modifiers,
-        )
 }
 
 /// The keyval that `key` types with Shift on the display's layout (`slash`

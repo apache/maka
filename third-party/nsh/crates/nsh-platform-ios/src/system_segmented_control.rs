@@ -90,9 +90,16 @@ impl SystemSegmentedControl {
             }
         }
         self.segments = segments;
-        self.control
-            .setSelectedSegmentIndex(selected_segment(self.selected, self.segments.len()));
+        self.sync_selection();
         self.report_size();
+    }
+
+    fn sync_selection(&self) {
+        let target = selected_segment(self.selected, self.segments.len());
+        // Don't interrupt UIKit's selection transition when JS echoes the active index.
+        if self.control.selectedSegmentIndex() != target {
+            self.control.setSelectedSegmentIndex(target);
+        }
     }
 
     /// The control's own size, for the dimensions the style leaves open.
@@ -148,8 +155,7 @@ impl NativeComponent for SystemSegmentedControl {
             }
             "selectedIndex" => {
                 self.selected = value.and_then(JsonValue::as_u64).unwrap_or(0);
-                self.control
-                    .setSelectedSegmentIndex(selected_segment(self.selected, self.segments.len()));
+                self.sync_selection();
             }
             "disabled" => {
                 let disabled = value.and_then(JsonValue::as_bool).unwrap_or(false);

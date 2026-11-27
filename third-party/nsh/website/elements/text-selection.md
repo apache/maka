@@ -11,8 +11,9 @@ demo: el-text-selection
 A [`View`](./view.md) with `selectable` makes the texts inside it select together, as a web page's do: one selection
 runs from a place in one text to a place in another, across views, [`Text`](./text.md) elements and
 [`TextView`](./text-view.md)s, in reading order. Make a chat transcript selectable and a selection can start in one
-message and end in the next; Copy puts the selected text on the clipboard, with texts side by side joined by a tab and
-the others by a line break. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
+message and end in the next; Copy puts the selected text on the clipboard as a browser does: texts side by side
+joined by a tab, texts on the next line by a line break, and separate blocks (paragraphs, messages) by a blank line. A
+list item copied from its start keeps its marker (`•`, `2.`), although the marker itself is never highlighted. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
 text can be selected is its `userSelect` style.
 
 ```tsx tabs
@@ -91,10 +92,10 @@ fn transcript(replies: Signal<Vec<SharedString>>) -> impl IntoElement {
 ## Reading the selection
 
 `onSelectionChange` on a selectable view (`.on_text_selection_change(..)` in Rust) hears the selected text each
-time the selection changes: `{ text, start, bounds, pageBounds }`, what Copy would take, where it starts in the view's whole text
+time the selection changes: `{ text, start, bounds, pageBounds, anchor, focus }`, what Copy would take, where it starts in the view's whole text
 and the box around it in the view and in the root view it is in (on macOS and Windows; an `Overlay` anchored at
-`pageBounds` is a bar of actions above the selection), and `""` once nothing is selected (a press elsewhere,
-Escape, another view selecting). It reports only changes, of the text or of its box. In a selectable view inside another, the outer view
+`pageBounds` is a bar of actions above the selection), the list items its ends are in (below), and `""` once nothing is selected (a press elsewhere,
+Escape, another view selecting). It reports only changes, of the text, of its box or of its ends. In a selectable view inside another, the outer view
 reports, as it holds the one selection. A `selectable` [`TextView`](./text-view.md) reports its own the same way
 (`onSelectionChange`, `.on_selection_change(..)`). A chat uses it to quote the part of a reply the reader selected:
 
@@ -119,6 +120,34 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
         .child(nsh_base::text_view().markdown(markdown))
 }
 ```
+
+### Which list items it is in
+
+When the selectable view holds a [`List`](./list.md), the event also says which items the selection starts and ends in,
+as the list names them: `anchor` is where the selection started (the press) and `focus` where it goes now, each
+`{ key, offset }`. `key` is the item's key (`keyExtractor`, else the item's `key` or `id`, else its index, as in
+`onViewableItemsChange`), and `offset` is where the end is in that item's text, as a copy of the whole item gives it
+(UTF-16 units). A drag upward has its `focus` in an earlier item than its `anchor`. Two items with the same words stay
+apart, and so do items inserted above the selection or replaced while it lasts: each event names the items the ends are
+in as of that event (a row that makes its text anew ends the selection, as any text that goes does). An item scrolled
+out of view keeps its key while an end is in it. In a list inside another list's item, the end names the innermost
+item; a component's own list in an item (a [`Tree`](./tree.md), a `Listbox`) leaves it to the item around it. An end
+outside a list item has no field, and neither has one in a row the list has no key for (its `keyExtractor` threw, which
+is reported as any exception the app throws, or gave neither a string nor a number). A transcript quotes the selected
+part of each message it spans:
+
+```tsx
+<View selectable onSelectionChange={({ text, anchor, focus }) => quote.set({ text, from: anchor, to: focus })}>
+  <List each={messages()} keyExtractor={(m) => m.id}>
+    {(m) => <TextView markdown={m().text} />}
+  </List>
+</View>
+```
+
+In Rust the same ends are `TextSelectionEvent::anchor` and `focus` (`TextSelectionEndpoint { key, offset }`). A Rust
+`virtual_list`'s rows go by their index (`"3"`) when no TSX list around names the item, as its `.keys(..)` are any
+hashable value. The web reports no ends
+yet.
 
 `ref.clearSelection()` on the selectable view, or on a view inside it, clears the selection as a press elsewhere does:
 the highlight goes and `onSelectionChange` hears `""`. A bar of actions over the selection calls it once its action is
@@ -170,10 +199,11 @@ fn reply(markdown: SharedString, quote: Signal<String>) -> impl IntoElement {
 It reads the selection the view holds: in a `selectable` view inside another, the outer view holds it, and the inner
 `TextView`'s ref gives `""`.
 
-On Windows, a right click on a selectable view's text opens the menu of the view's `onContextMenu` when it listens (or a view
-inside it around the text does), with the selection kept: the app shows its own menu with `Menu.popup`, where the
-`copy` and `selectAll` roles act on the selection, beside its own items for what is selected. Without a listener,
-Windows shows Copy and Select All.
+On macOS, Windows and Linux, a right click on a selectable view's text opens the menu of the view's `onContextMenu`
+when it listens (or a view inside it around the text does), with the selection kept, even where the text itself is
+selectable: the app shows its own menu with `Menu.popup`. On Windows, that menu's `copy` and `selectAll` roles act on
+the selection, beside the app's own items for what is selected. Without a listener, the platform's edit menu opens
+(Copy and Select All).
 
 An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selection in its text (`{ start, end }`).
 
@@ -181,7 +211,7 @@ An [`Input`](./input.md)'s `onSelectionChange` is its own: the caret and selecti
 
 | Platform | How a selection is made |
 |---|---|
-| macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the view, Ctrl / Cmd+C copies, Escape or a press outside clears. |
+| macOS, Windows, Linux, GPUI | Drag across the texts; a double click selects a word, a triple click a paragraph, and a drag after them goes on by words or paragraphs. Shift+click extends the selection. Ctrl / Cmd+A selects everything in the view, Ctrl / Cmd+C copies, Escape or a press outside clears. On macOS, Shift with the arrow keys extends a selectable view's selection from where it was pressed, as in a text view: by a character or a line, with Option by a word or a paragraph, with Cmd to the line's or the view's ends (Shift+Home / End too). |
 | iOS, Android | A long press selects a word; the platform's handles extend it, and its edit menu has Copy and Select All. |
 | Web | The browser's own selection, with its gestures, menu and shortcuts. |
 

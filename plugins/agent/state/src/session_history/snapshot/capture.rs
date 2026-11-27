@@ -361,6 +361,9 @@ impl<'a> Builder<'a> {
     }
     pub(super) fn finish(mut self, origin: Origin) -> Result<Manifest, StoreError> {
         self.flush()?;
+        if matches!(origin, Origin::Canonical { .. }) {
+            index_memory_outputs(self.c, self.id)?;
+        }
         let objects: u64 = self.c.query_row(
             "SELECT count(*) FROM agent_history_snapshot_pins WHERE snapshot=?",
             [self.id.to_string()],
@@ -378,6 +381,14 @@ impl<'a> Builder<'a> {
         manifest.validate().map_err(invalid)?;
         Ok(manifest)
     }
+}
+pub(super) fn index_memory_outputs(c: &Connection, id: SnapshotId) -> Result<(), StoreError> {
+    crate::memory::recall::register_read_classifier(c)?;
+    c.prepare_cached(
+        "INSERT INTO agent_memory_indexed_snapshots VALUES(?) ON CONFLICT DO NOTHING",
+    )?
+    .execute([id.to_string()])?;
+    Ok(())
 }
 pub(super) fn index_page(
     c: &Connection,

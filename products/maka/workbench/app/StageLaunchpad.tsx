@@ -39,6 +39,7 @@ import {
   captionTextStyle,
   quietActiveStyle,
   quietFocusStyle,
+  radius,
   textTooltip,
 } from './ui';
 import { orderWorktrees } from './WorktreePicker';
@@ -284,7 +285,7 @@ export function StageLaunchpad(props: {
                 right: 0,
                 bottom: 0,
                 left: 0,
-                borderRadius: 16,
+                borderRadius: radius(16),
               }}
             />
             <Icon name="search" size={14} color={C.muted} />
@@ -335,7 +336,7 @@ export function StageLaunchpad(props: {
           >
             <View
               style={{
-                borderRadius: 12,
+                borderRadius: radius(12),
                 backgroundColor: C.card,
                 padding: 4,
                 gap: 2,
@@ -359,7 +360,7 @@ export function StageLaunchpad(props: {
                   style={{
                     minHeight: 32,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 8,
@@ -389,7 +390,7 @@ export function StageLaunchpad(props: {
                     style={{
                       minHeight: 32,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 8,
@@ -426,7 +427,7 @@ export function StageLaunchpad(props: {
                     style={{
                       minHeight: 32,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                       flexDirection: 'row',
                       alignItems: 'center',
                       gap: 8,
@@ -468,7 +469,7 @@ export function StageLaunchpad(props: {
                       style={{
                         minHeight: 32,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 8,
@@ -523,7 +524,7 @@ export function StageLaunchpad(props: {
                     flexGrow: 1,
                     height: 76,
                     padding: 12,
-                    borderRadius: 12,
+                    borderRadius: radius(12),
                     backgroundColor: C.card,
                     justifyContent: 'space-between',
                     alignItems: 'flex-start',
@@ -567,7 +568,7 @@ export function StageLaunchpad(props: {
                       flexGrow: 1,
                       minHeight: 76,
                       padding: 12,
-                      borderRadius: 12,
+                      borderRadius: radius(12),
                       backgroundColor: C.card,
                       justifyContent: 'space-between',
                       alignItems: 'flex-start',
@@ -613,7 +614,7 @@ export function StageLaunchpad(props: {
                         flexGrow: 1,
                         minHeight: 76,
                         padding: 12,
-                        borderRadius: 12,
+                        borderRadius: radius(12),
                         backgroundColor: C.card,
                         justifyContent: 'space-between',
                         alignItems: 'flex-start',

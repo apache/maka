@@ -1167,3 +1167,42 @@ fn a_wrapped_lines_later_parts_continue_its_first_for_a_copy() {
     let joined: String = parts.iter().map(|(_, t)| t.as_str()).collect();
     assert_eq!(joined.trim_end(), long.trim_end());
 }
+
+/// Typed part styles (`StyleRefinement`, as a Rust app types them) reach
+/// their parts' views: an unchanged line's number takes `lineNumber`'s
+/// color, a changed line's its tint's part, which comes after it.
+#[test]
+fn typed_part_styles_reach_line_numbers_the_later_winning() {
+    use nsh_base::{DiffViewStyles, text_view::PartStyle};
+    use nsh_core::{Color, element::StyleRefinement};
+
+    #[component]
+    fn Typed() -> impl IntoElement {
+        let mut styles = DiffViewStyles::default();
+        let color = |c: u32| PartStyle(StyleRefinement::default().text_color(rgb(c)).into());
+        styles.line_number = Some(color(0xff0000));
+        styles.line_number_deleted = Some(color(0x00ff00));
+        styles.line_number_added = Some(color(0x0000ff));
+        view().test_id("diff").w(px(700.0)).h(px(300.0)).child(
+            diff_view()
+                .old_value("same\nold\n")
+                .new_value("same\nnew\n")
+                .styles(styles)
+                .size_full(),
+        )
+    }
+
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root::<Typed>())
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    see(&mut app, "new");
+    let color = |selector: &str| app.screen().span_style(selector).unwrap().color;
+    assert_eq!(color("id:diff >> text:1 >> nth=0"), Color(0xff00_00ff));
+    // Line 2 is deleted on the old side (first) and added on the new one.
+    assert_eq!(color("id:diff >> text:2 >> nth=0"), Color(0x00ff_00ff));
+    assert_eq!(color("id:diff >> text:2 >> nth=1"), Color(0x0000_ffff));
+}

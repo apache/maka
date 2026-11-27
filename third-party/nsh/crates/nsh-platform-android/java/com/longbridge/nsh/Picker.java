@@ -541,7 +541,7 @@ final class Picker {
         return m;
     }
 
-    private static String displayName(ContentResolver resolver, Uri uri) {
+    static String displayName(ContentResolver resolver, Uri uri) {
         try (Cursor c = resolver.query(uri, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst()) {
                 String name = c.getString(0);

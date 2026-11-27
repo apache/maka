@@ -138,6 +138,30 @@ nsh add nsh-extra --features camera
 }
 ```
 
+只有部分 target 需要其 Rust 的 nshm，可以用 `"targets"` 只为这些 target 链接，名字与 `platform.os` 相同：`macos`、
+`windows`、`linux`、`ios`、`android` 和 `web`（Mac Catalyst 算 `ios`；GPUI 和终端宿主算所在机器的系统）。例如在 Web 上
+用浏览器自己的识别器听写的应用：
+
+```json
+{
+  "dependencies": {
+    "nsh-extra": { "version": "^0.7", "features": ["speech"], "targets": ["macos", "windows", "ios", "android"] }
+  },
+  "resolve": { "alias": { "nsh-extra": "./src/speech-web.ts" } }
+}
+```
+
+其他 target 不构建它的任何 Rust：这里 `nsh run --target web` 和 `nsh package --target web` 用预构建的 Web 运行时。
+`nsh.lock` 在每个 target 上都一样。`nsh run`、`nsh dev` 和 `nsh package` 为它们构建的 target 链接 nshm，`nsh test`
+为它运行的 target 链接（无头运行时是本机的系统）。`nsh check`、`nsh build`、`nsh publish` 和 `nsh dev --server-only`
+面向所有 target，链接所有 nshm，因此应用的 TSX 会按 nshm 的声明检查，为其他 target 运行命令时 `.nsh/types` 也保留这些声明。
+
+在不带这个 nshm 的 target 上，它的模块不存在。静态 `import` 它会让构建失败，除非像上面那样用 `"resolve"` 的 `"alias"`
+给这个标识一个替身：只有不带这个 nshm 的 target 用替身，其他 target 导入模块本身。`import()` 它在每个 target 上都能构建，
+在没有链接它的 target 上会 reject，所以放在 `platform.os` 判断后面的代码可以加载它。`"targets"` 只用于带 Rust 的
+nshm（TSX nshm 在每个 target 上都是 bundle 的一部分），也只用于应用自己的条目：nshm 的依赖在它被链接的地方都会链接，
+被某个已链接的 nshm 依赖的 nshm 也会链接，不论应用自己的条目怎么写。
+
 [CLI：nsh add](./cli.md#nsh-add) 介绍了每种来源写法；[nsh upgrade](./cli.md#nsh-upgrade) 和 [nsh remove](./cli.md#nsh-remove) 介绍了其他命令。
 
 ## nsh-extra
@@ -536,7 +560,7 @@ pub fn Gauge(props: GaugeProps) -> impl IntoElement {
 }
 ```
 
-nshm 兼容的 NSH 版本就是它自己对 `nsh-core` 的版本要求（`nsh-core = "0.6"`），`nsh add` 在编译前会与当前 `nsh` 比对。它的 TypeScript 声明由 Rust 类型生成，应用检查 TSX 时会像检查自己的 crate 一样检查对它的使用。
+nshm 兼容的 NSH 版本就是它自己对 `nsh-core` 的版本要求（`nsh-core = "0.6"`，或用 `nsh-core.workspace = true` 沿用工作区的要求），`nsh add` 在编译前会与当前 `nsh` 比对。在 Cargo 工作区里开发的 nshm 会像 Cargo 一样从工作区取得版本号和这项要求；它本身就是工作区的根 package 时，取自它自己的清单。它的 TypeScript 声明由 Rust 类型生成，应用检查 TSX 时会像检查自己的 crate 一样检查对它的使用。
 
 [nsh-omarchy 的 `src/lib.rs`](https://github.com/huacnlee/nsh-omarchy/blob/main/src/lib.rs) 是一个完整的例子：它的组件由 `#[native_module("nsh-omarchy")]` 导出给 TSX，另有 `Omarchy` 主题模块。
 
@@ -642,7 +666,7 @@ Rust nshm 也可以导出 TSX：在 `Cargo.toml` 旁放一个带同样 `"exports
 
 ### 依赖
 
-nshm 在自己的 `nsh.json` 的 `"dependencies"` 中列出需要的 nshm，写法与应用相同：来自 crates.io 或 Git，版本要求尽量宽到它能工作的范围，这样应用和它用到的其他 nshm 才能协调出同一个版本。已发布的 nshm 不能依赖本地目录。某个包从哪里来由应用自己的条目决定：应用可以从 fork 或本地目录取它的 nshm 所依赖的 nshm，而这些 nshm 的版本要求依然有效。
+nshm 在自己的 `nsh.json` 的 `"dependencies"` 中列出需要的 nshm，写法与应用相同：来自 crates.io 或 Git，版本要求尽量宽到它能工作的范围，这样应用和它用到的其他 nshm 才能协调出同一个版本。已发布的 nshm 不能依赖本地目录，也不能写 `"targets"`：链接到哪些 target 由应用决定（[使用 nshm](#使用-nshm)）。某个包从哪里来由应用自己的条目决定：应用可以从 fork 或本地目录取它的 nshm 所依赖的 nshm，而这些 nshm 的版本要求依然有效。
 
 ## 平台 nshm
 

@@ -47,7 +47,9 @@ import {
   refreshAllSessions,
   renameSession,
   sessionSearchQuery,
-  sessionsLoading,
+  hasMoreSessions,
+  loadingMoreSessions,
+  loadMoreSessions,
   setSessionSearchQuery,
   setShowingArchivedSessions,
   showingArchivedSessions,
@@ -462,7 +464,6 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
           <SearchField
             value={sessionSearchQuery()}
             placeholder={tr('Search chats or projects')}
-            clearLabel={tr('Clear search')}
             onChange={setSessionSearchQuery}
           />
 
@@ -536,7 +537,7 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                     {(bot) => (
                       <View
                         role="button"
-                        accessibilityLabel={'Maka Bot · ' + bot().host.hostName}
+                        accessibilityLabel={tr('{name} Bot', { name: bot().host.hostName })}
                         onPress={() => void openBot(bot().host.rootId, bot().host.hostName)}
                         class="active:bg-row-pressed"
                         style={{
@@ -668,7 +669,9 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                         icon="chat"
                         title={
                           sessionSearchQuery().trim()
-                            ? tr('No matching chats')
+                            ? hasMoreSessions()
+                              ? tr('No matches in loaded chats')
+                              : tr('No matching chats')
                             : tr('No conversations yet')
                         }
                         subtitle={
@@ -709,6 +712,16 @@ export function ChatListScreen(props: { onOpenSession: (item: ScopedSession) => 
                   onAction={() => void connectSavedHost(selectedOfflineHost()!.rootId)}
                 />
               </If>
+            </View>
+          </If>
+          <If when={hasMoreSessions() || loadingMoreSessions()}>
+            <View style={{ paddingHorizontal: spacing.pageX }}>
+              <ActionButton
+                variant="quiet"
+                title={loadingMoreSessions() ? tr('Loading…') : tr('Load more chats')}
+                disabled={loadingMoreSessions()}
+                onPress={() => void loadMoreSessions()}
+              />
             </View>
           </If>
         </Scroll>

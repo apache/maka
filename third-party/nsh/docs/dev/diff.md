@@ -105,8 +105,10 @@ taller side's) times `lineHeight`, plus the annotations under it. In a terminal 
 `renderHunkActions` take a row of their own after each change's last row (and its annotations: `State::action_rows`),
 since over the change's first row, as elsewhere, they would cover its code. Soft wrap counts columns, as widths do: the text box's
 width (the new side's horizontal scroll view, reported by its layout) less the room around the text, in columns of
-`0`, each line broken after its last whitespace that fits, else at the edge, whitespace hanging past it
-(`geometry::wrap_starts`); the view draws each wrapped line as a `Text` of its spans, so rows' heights and what they
+`0`, each line broken where the editor breaks its rows (`editor/line_break.rs`: after whitespace in code and
+Latin text, between CJK characters as Unicode's line breaking allows, never inside a grapheme) at the last
+opportunity that fits, else at the edge, whitespace hanging past it (`geometry::wrap_starts`); the view draws each
+wrapped line as a `Text` of its spans, so rows' heights and what they
 show agree. Annotations (`annotations`, drawn by `renderAnnotation`) all render, not only those in view (they are few
 and their heights move the rows below them); each reports its height from its layout, and a split row's annotations
 stack on their side, the row taking the taller stack.

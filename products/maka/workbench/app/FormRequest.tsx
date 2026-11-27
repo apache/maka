@@ -29,12 +29,13 @@ import {
   bodyTextStyle,
   C,
   captionTextStyle,
+  cardFocusStyle,
   compact,
   controlDisabledStyle,
-  cardFocusStyle,
   controlStyle,
   inputBorderRadius,
   inputTextStyle,
+  lineWidth,
 } from './ui';
 
 type Change = Partial<FormDraft>;
@@ -53,7 +54,7 @@ function Choice(props: {
       accessibilityLabel={props.label}
       onPress={props.onPress}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         minWidth: 0,
         flexDirection: 'row',
         alignItems: 'center',
@@ -171,8 +172,8 @@ export function FormRequest(props: {
                       paddingVertical: compact() ? 4 : 8,
                       color: C.text,
                       backgroundColor: C.panel,
-                      borderRadius: inputBorderRadius,
-                      borderWidth: 1,
+                      borderRadius: inputBorderRadius(),
+                      borderWidth: lineWidth(),
                       borderColor: C.line,
                       placeholderColor: C.muted,
                     }}

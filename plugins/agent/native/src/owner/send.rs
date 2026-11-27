@@ -195,12 +195,19 @@ pub(super) fn finish_capture(
     }
 }
 
+pub(super) enum PinCapture {
+    Excluded,
+    Queued,
+    NewRun,
+}
+
 impl Owner {
     pub(super) async fn capture_current_run(
         &self,
         id: &str,
         selection: Option<BackendPreference>,
         fingerprint: String,
+        pins: PinCapture,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<CapturedRun, CaptureError> {
         self.require_execution(id).await?;
@@ -320,7 +327,25 @@ impl Owner {
             language,
             allowed_tools.as_deref(),
         );
+        let user_run = !matches!(pins, PinCapture::Excluded)
+            && matches!(
+                parent.identity,
+                maka_capabilities::call::Identity::Native
+                    | maka_capabilities::call::Identity::Remote { .. }
+            );
+        let memory_admission =
+            self.memory_admission(id, &session.configuration, user_run, &snapshot);
+        let memory = if matches!(pins, PinCapture::NewRun)
+            && memory_admission == maka_agent_facts::memory::MemoryAdmission::Enabled
+        {
+            self.capture_pinned(id, &session.configuration, snapshot.revision)
+                .await?
+        } else {
+            None
+        };
         let basis = CapturedRun {
+            memory_admission,
+            memory,
             mcp_revision: selected_catalog.revision.clone(),
             client_mcp: selected_catalog.client_mcp,
             mcp_catalog: Some(selected_catalog.clone()),
@@ -532,8 +557,21 @@ impl Owner {
                 Followup::Queued(view.run)
             }
         });
-        let basis = match self
-            .capture_current_run(&id, backend, operation.fingerprint.clone(), parent)
+        let pins = if origin.is_some() {
+            PinCapture::Excluded
+        } else if active.is_some() {
+            PinCapture::Queued
+        } else {
+            PinCapture::NewRun
+        };
+        let user_message = origin.is_none()
+            && matches!(
+                parent.identity,
+                maka_capabilities::call::Identity::Native
+                    | maka_capabilities::call::Identity::Remote { .. }
+            );
+        let mut basis = match self
+            .capture_current_run(&id, backend, operation.fingerprint.clone(), pins, parent)
             .await
         {
             Ok(basis) => basis,
@@ -549,7 +587,15 @@ impl Owner {
             }
             Err(error) => return Err(error.into()),
         };
+        // A queued spec records the submitter's eligibility. Mutable session
+        // settings and the projection are selected when it starts a Run.
+        let queued_eligibility = if user_message {
+            maka_agent_facts::memory::MemoryAdmission::Disabled
+        } else {
+            maka_agent_facts::memory::MemoryAdmission::Excluded
+        };
         if let (Some(view), ActiveDelivery::Steer) = (&active, active_delivery) {
+            basis.memory_admission = queued_eligibility;
             let execution = ExecutionIdentity {
                 session_id: id.clone(),
                 turn_id: view.spec.turn_id.clone(),
@@ -568,6 +614,11 @@ impl Owner {
                 )
                 .await;
         }
+        // Check known fixed inputs for immediate feedback. The queue carries only
+        // eligibility; the scheduler freezes the projection for the actual Run.
+        self.check_pinned_model(&id, &basis)?;
+        basis.memory = None;
+        basis.memory_admission = queued_eligibility;
         let (message, required_tools) = match self
             .prepare_skills(
                 unprepared.clone(),

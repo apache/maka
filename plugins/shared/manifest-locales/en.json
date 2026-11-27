@@ -39,7 +39,7 @@
   "pkg.maka.agent.workspace-web.displayName": "Web tools",
   "pkg.maka.application.host-logs.description": "Read and follow captured logs from the connected Host.",
   "pkg.maka.application.host-logs.displayName": "Host logs",
-  "pkg.maka.applications.description": "Find, open and manage installed applications from the quick launcher on macOS.",
+  "pkg.maka.applications.description": "Find, open and manage installed applications from the quick launcher on Windows and macOS.",
   "pkg.maka.applications.displayName": "Applications",
   "pkg.maka.calculator.description": "Calculate and convert units in the quick launcher, then copy the result.",
   "pkg.maka.calculator.displayName": "Calculator",

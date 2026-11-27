@@ -596,6 +596,7 @@ impl Engine {
             }
         };
         let compacted = CompactedContext {
+            memory_replay: request.memory_replay,
             summary_origin: (origin.run != view.run).then_some(origin),
             source_capture: request.source_capture,
             checkpoint: ContextCheckpoint {

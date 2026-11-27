@@ -60,7 +60,7 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | 在每个页面自身的脚本之前执行。 |
 | `userAgent` | `.user_agent(..)` | `string` | | 浏览器的 user agent 字符串。 |
 | `javaScriptEnabled` | `.java_script_enabled(..)` | `boolean` | `true` | 页面可以运行脚本。 |
-| `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动页面。 |
+| `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动页面。关闭时页面仍会收到触摸，它自己的拖动处理（滑块、拖拽排序）照常工作，脚本也仍可滚动它。 |
 | `incognito` | `.incognito(bool)` | `boolean` | `false` | 页面的网站数据（cookie、存储、缓存）只与网页视图同存亡，与应用的数据分开；Android 上网页视图加载时不使用 HTTP 缓存、不保存表单数据（见[网站数据](../docs/web-view-and-video.md#网站数据)）。在网页视图创建时读取。 |
 | `zoomable` | `.zoomable(bool)` | `boolean` | `false` | 用户可以双指缩放页面，也可以超出页面 viewport 的缩放限制：Android 上是内置缩放（不显示缩放按钮），iOS 上忽略 viewport 的缩放限制，macOS 上是放大。关闭时保持各平台自己的行为（Android 和 macOS 不缩放，iOS 在 viewport 允许的范围内缩放，Windows 可以缩放）。在网页视图创建时读取。 |
 

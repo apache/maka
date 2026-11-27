@@ -29,10 +29,11 @@ import { MarkdownImageView } from './MarkdownImage';
 import { SpecView, markdownExtensions } from './SpecView';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
-import { notePassage, type SideMark } from './sideQuestions';
+import type { MessageSelection } from './messageSelection';
+import type { SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
 import type { BindTextViewToc } from './turnToc';
-import { C, bodyTextStyle, isDark, secondaryTextStyle } from './ui';
+import { C, isDark, lineWidth, radius, readingTextStyle, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -50,6 +51,8 @@ export function MarkdownBody(props: {
    * selectable text reaches only a menu bound to the selectable view itself.
    */
   menu?(body: JSX.Element): JSX.Element;
+  /** Reports live text selection to the owning message row. */
+  selection?: MessageSelection;
   /** The side questions asked beside this reply, whose passages are underlined. */
   marks?(): readonly SideMark[];
   openSide?(sessionId: string): void;
@@ -154,21 +157,20 @@ export function MarkdownBody(props: {
     return `${props.sourceId}\0${r.messageId}\0${r.field}`;
   };
 
-  const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
+  // A look's letter spacing reaches a conversation's text, not its compact notes.
+  const readingStyle = () => (props.compact ? secondaryTextStyle : readingTextStyle());
   const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
   const blockGap = props.compact ? 6 : 16;
 
   const body = (
     <View
       selectable={props.selectable ?? true}
-      onSelectionChange={(event: { text: string }) =>
-        notePassage(props.sessionId, props.row().turnId, props.sourceId, event.text)
-      }
+      onSelectionChange={(event: { text: string }) => props.selection?.set(event.text, 'markdown')}
     >
       <If
         when={props.text !== undefined || hasTextPrefix(props.row())}
         else={
-          <Text style={{ ...readingStyle, color: color() }}>
+          <Text style={{ ...readingStyle(), color: color() }}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         }
@@ -264,11 +266,11 @@ export function MarkdownBody(props: {
                             return target.focus();
                           });
                       }}
-                      renderImage={(context) => (
+                      renderImage={(image, context) => (
                         <MarkdownImageView
-                          image={() => context.image}
+                          image={() => image}
                           sessionId={props.sessionId}
-                          linked={context.linked}
+                          linked={context.link != null}
                           flow={context.flow}
                           lineHeight={context.lineHeight}
                         />
@@ -276,10 +278,10 @@ export function MarkdownBody(props: {
                       renderCodeBlockAction={(action) => <CodeBlockAction action={action} />}
                       codeBlockActions={codeBlockActions()}
                       styles={{
-                        root: { ...readingStyle, color: color() },
-                        paragraph: readingStyle,
+                        root: { ...readingStyle(), color: color() },
+                        paragraph: readingStyle(),
                         heading: {
-                          ...readingStyle,
+                          ...readingStyle(),
                           fontSize: props.compact ? secondaryTextStyle.fontSize : 18,
                           fontWeight: props.compact ? '600' : '700',
                           color: color(),
@@ -295,7 +297,7 @@ export function MarkdownBody(props: {
                         link: { color: C.accentText },
                         mark: { textDecorationColor: C.accentText },
                         activeMark: { color: C.accentText, textDecorationColor: C.accentText },
-                        code: { color: color(), backgroundColor: C.card, borderRadius: 4 },
+                        code: { color: color(), backgroundColor: C.card, borderRadius: radius(4) },
                         ...codeBlockStyles(color(), props.compact ? 8 : 12),
                         // On the desktop a table is framed as a code block is and ruled only
                         // between rows: each body cell draws the line above it and the header
@@ -305,18 +307,18 @@ export function MarkdownBody(props: {
                           ? {}
                           : {
                               tableGrid: {
-                                borderWidth: 1,
+                                borderWidth: lineWidth(),
                                 borderColor: C.line,
-                                borderRadius: props.compact ? 8 : 12,
+                                borderRadius: props.compact ? radius(8) : radius(12),
                               },
                             }),
                         tableCell: {
-                          ...readingStyle,
+                          ...readingStyle(),
                           ...(platform.idiom === 'terminal' ? {} : tableRule(1)),
                           color: color(),
                         },
                         tableHeaderCell: {
-                          ...readingStyle,
+                          ...readingStyle(),
                           ...(platform.idiom === 'terminal' ? {} : tableRule(0)),
                           color: color(),
                           fontWeight: '600',
@@ -328,8 +330,8 @@ export function MarkdownBody(props: {
                           ...(platform.idiom === 'terminal'
                             ? {}
                             : {
-                                borderTopLeftRadius: props.compact ? 7 : 11,
-                                borderTopRightRadius: props.compact ? 7 : 11,
+                                borderTopLeftRadius: props.compact ? radius(7) : radius(11),
+                                borderTopRightRadius: props.compact ? radius(7) : radius(11),
                               }),
                         },
                         rule: { backgroundColor: C.line },
@@ -362,7 +364,7 @@ export function MarkdownBody(props: {
           </Each>
         </View>
         <If when={failure()}>
-          <Text style={{ ...readingStyle, color: color() }}>
+          <Text style={{ ...readingStyle(), color: color() }}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         </If>

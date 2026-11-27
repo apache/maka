@@ -20,7 +20,7 @@
 import { cleanup, effect, safeAreaInsets, Scroll, signal, Text, View, token } from 'nsh';
 import { NavPage } from 'nsh/base';
 import { isAvailable, SegmentedControl } from 'nsh/mobile';
-import { tr } from '../../locale';
+import { formatCount, tr } from '../../locale';
 import {
   appendQuoteToDraft,
   fetchGitWorkspaceDiff,
@@ -60,7 +60,7 @@ export function ProjectFilesScreen(props: {
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const rootPath = props.item.session.workspace?.path || '';
-  const workspaceName = rootPath.split('/').filter(Boolean).pop() || tr('Workspace');
+  const workspaceName = rootPath.split('/').filter(Boolean).pop();
 
   const segment = signal(0); // 0 = Changes, 1 = Files
   const diffFiles = signal<ParsedDiffFile[]>([]);
@@ -168,10 +168,16 @@ export function ProjectFilesScreen(props: {
   return (
     <NavPage
       style={{ flex: 1 }}
-      title={workspaceName}
+      title={workspaceName ?? tr('Workspace')}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
-      header={<ScreenHeader title={workspaceName} backLabel={tr('Chat')} onBack={props.onBack} />}
+      header={
+        <ScreenHeader
+          title={workspaceName ?? tr('Workspace')}
+          backLabel={tr('Chat')}
+          onBack={props.onBack}
+        />
+      }
     >
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         {/* Segmented Control */}
@@ -332,7 +338,7 @@ export function ProjectFilesScreen(props: {
                                   color: token('diff-add-fg'),
                                 }}
                               >
-                                {'+' + String(file().added)}
+                                {'+' + formatCount(file().added)}
                               </Text>
                             </If>
                             <If when={file().deleted > 0}>
@@ -344,7 +350,7 @@ export function ProjectFilesScreen(props: {
                                   color: token('diff-del-fg'),
                                 }}
                               >
-                                {'-' + String(file().deleted)}
+                                {'-' + formatCount(file().deleted)}
                               </Text>
                             </If>
                           </View>

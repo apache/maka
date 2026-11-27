@@ -18,7 +18,7 @@
  */
 
 import { LoadingIndicator, SidebarListSkeleton } from './Loading';
-import { SidebarTitleRow, textTooltip } from './ui';
+import { radius, SidebarTitleRow, textTooltip } from './ui';
 import { InlineCallout, RegionEmptyError } from './Feedback';
 import { message, renderText } from './text';
 import { toast } from './toastStore';
@@ -156,7 +156,7 @@ function GuideLine(props: { last(): boolean; height(): number }) {
               height: props.height() / 2,
               borderLeftWidth: 1,
               borderBottomWidth: 1,
-              borderBottomLeftRadius: 6,
+              borderBottomLeftRadius: radius(6),
               borderColor: C.muted,
             }
           : {
@@ -199,13 +199,13 @@ function ConversationSortSwitch(props: {
         minHeight: 24,
         padding: 2,
         gap: 2,
-        borderRadius: 8,
+        borderRadius: radius(8),
         backgroundColor: trackBg(),
       }}
       indicatorStyle={{
         top: 2,
         bottom: 2,
-        borderRadius: 6,
+        borderRadius: radius(6),
         backgroundColor: selectedBg(),
       }}
     >
@@ -221,7 +221,7 @@ function ConversationSortSwitch(props: {
                 // 2pt track inset + 6pt tab padding aligns the trailing label on the sidebar's 8pt spine.
                 paddingHorizontal: 6,
                 paddingVertical: 2,
-                borderRadius: 6,
+                borderRadius: radius(6),
                 flexShrink: 0,
                 justifyContent: 'center',
                 alignItems: 'center',
@@ -738,7 +738,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             paddingHorizontal: 8,
             paddingVertical: 8,
             alignItems: 'center',
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.pressed }}
@@ -755,7 +755,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               focusBrowser();
             }}
             onPress={inputAction(toggleScopes, null)}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
           >
@@ -771,14 +771,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
           onPress={inputAction(props.search, props.selected())}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flexDirection: 'row',
             alignItems: 'center',
             paddingHorizontal: 8,
             gap: 8,
             height: 32,
             backgroundColor: platform.idiom === 'terminal' ? C.background : 'transparent',
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
           hoverStyle={
             platform.idiom === 'terminal' ? controlHoverStyle() : { backgroundColor: C.raised }
@@ -821,7 +821,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               paddingHorizontal: 8,
               paddingVertical: 8,
               alignItems: 'center',
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}
@@ -852,7 +852,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     alignItems: 'center',
                     gap: 8,
                     paddingHorizontal: 8,
-                    borderRadius: 8,
+                    borderRadius: radius(8),
                     backgroundColor: props.selected() === worker().id ? C.raised : 'transparent',
                   }}
                   hoverStyle={{ backgroundColor: C.raised }}
@@ -893,7 +893,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                   flex: 1,
                   justifyContent: 'center',
                   paddingHorizontal: 8,
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
                 hoverStyle={{ backgroundColor: C.raised }}
                 focusStyle={{ backgroundColor: C.raised }}
@@ -911,13 +911,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             disabled={props.connectionLost()}
             onPress={() => automationsOpen.set(true)}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -933,13 +933,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             disabled={props.switching()}
             onPress={() => props.openRooms?.()}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -958,13 +958,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               browser.filter() === 'needs_you' ? 'all' : 'needs_you',
             )}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
               paddingHorizontal: 8,
               height: navigationRowHeight(),
-              borderRadius: 8,
+              borderRadius: radius(8),
             }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
@@ -995,13 +995,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 accessibilityLabel={tr('More features')}
                 selected={moreFeaturesOpen()}
                 style={{
-                  ...controlStyle,
+                  ...controlStyle(),
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 8,
                   paddingHorizontal: 8,
                   height: navigationRowHeight(),
-                  borderRadius: 8,
+                  borderRadius: radius(8),
                 }}
                 selectedStyle={{ backgroundColor: C.raised }}
                 hoverStyle={controlHoverStyle()}
@@ -1038,7 +1038,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       alignItems: 'center',
                       gap: 8,
                       paddingHorizontal: 8,
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                     }}
                     hoverStyle={{ backgroundColor: C.floatingRaised }}
                     focusStyle={{ backgroundColor: C.floatingRaised }}
@@ -1058,7 +1058,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       paddingHorizontal: 8,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      borderRadius: 8,
+                      borderRadius: radius(8),
                     }}
                     trackClass="w-[32px] h-[16px] p-[3px] rounded-full flex-row items-center checked:justify-end"
                     trackStyle={{
@@ -1120,13 +1120,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             gap: 4,
             padding: compact() ? 0 : 4,
             backgroundColor: C.background,
-            borderRadius: 8,
+            borderRadius: radius(8),
           }}
         >
           <Button
             selected={browser.filter() === 'all'}
             accessibilityLabel={tr('Show active conversations')}
-            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            style={{ ...controlStyle(), flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -1139,7 +1139,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Button
             selected={browser.filter() === 'archived'}
             accessibilityLabel={tr('Show archived conversations')}
-            style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
+            style={{ ...controlStyle(), flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -1156,7 +1156,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show active conversations')}
           onPress={inputAction(chooseFilter, 'all')}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flexDirection: 'row',
             justifyContent: 'flex-start',
             alignItems: 'center',
@@ -1231,7 +1231,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 height: 28,
                 justifyContent: 'center',
                 paddingHorizontal: 8,
-                borderRadius: 8,
+                borderRadius: radius(8),
               }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
@@ -1269,7 +1269,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         flex: 1,
                         paddingHorizontal: 8,
                         justifyContent: 'center',
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1335,7 +1335,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         alignItems: 'center',
                         gap: 6,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1396,7 +1396,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         alignItems: 'center',
                         gap: 4,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1480,7 +1480,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         alignItems: 'center',
                         gap: 6,
                         paddingHorizontal: 8,
-                        borderRadius: 8,
+                        borderRadius: radius(8),
                       }}
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
@@ -1513,7 +1513,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           width: 32,
                           alignItems: 'center',
                           justifyContent: 'center',
-                          borderRadius: 8,
+                          borderRadius: radius(8),
                         }}
                         hoverStyle={controlHoverStyle()}
                         focusStyle={controlFocusStyle()}
@@ -1647,7 +1647,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             flex: 1,
                             minWidth: 0,
                             flexDirection: 'row',
-                            borderRadius: 8,
+                            borderRadius: radius(8),
                             ...(platform.idiom === 'terminal'
                               ? {}
                               : {
@@ -1683,7 +1683,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                               minWidth: 0,
                               paddingHorizontal: 8,
                               justifyContent: 'center',
-                              borderRadius: 8,
+                              borderRadius: radius(8),
                               backgroundColor:
                                 platform.idiom === 'terminal'
                                   ? props.selected() === key()
@@ -1811,7 +1811,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   width: 32,
                                   alignItems: 'center',
                                   justifyContent: 'center',
-                                  borderRadius: 8,
+                                  borderRadius: radius(8),
                                   opacity: actionsShown() ? 1 : 0,
                                 }}
                                 hoverStyle={controlHoverStyle()}
@@ -1864,7 +1864,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           onPress={inputAction(props.settings, props.selected())}
           // Starts where New conversation's icon and label do, like the rows above it.
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             flex: 1,
             flexDirection: 'row',
             justifyContent: 'flex-start',
@@ -1891,7 +1891,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               chooseFilter,
               browser.filter() === 'archived' ? 'all' : 'archived',
             )}
-            style={{ ...controlStyle, width: 32, alignItems: 'center', justifyContent: 'center' }}
+            style={{ ...controlStyle(), width: 32, alignItems: 'center', justifyContent: 'center' }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={{ backgroundColor: C.raised }}
             focusStyle={{ backgroundColor: C.pressed }}

@@ -73,7 +73,7 @@ import { Toaster } from './Feedback';
 import { ConversationSkeleton, SidebarListSkeleton } from './Loading';
 import { currentLocale, tr } from './locale';
 import { toast } from './toastStore';
-import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
+import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle, radius } from './ui';
 
 type Configuration = {
   navigation: UiTarget;
@@ -567,7 +567,7 @@ function App(
         flexDirection: 'row',
         backgroundColor: C.background,
         padding: 3,
-        borderRadius: 10,
+        borderRadius: radius(10),
       }}
     >
       <Each of={['conversations', 'rooms'] as const} key={(mode) => mode}>
@@ -582,7 +582,7 @@ function App(
               height: 30,
               alignItems: 'center',
               justifyContent: 'center',
-              borderRadius: 8,
+              borderRadius: radius(8),
               backgroundColor: workspaceMode() === mode() ? C.card : 'transparent',
             }}
             hoverStyle={controlHoverStyle()}
@@ -837,7 +837,7 @@ function App(
           <Button
             accessibilityLabel={tr('Details')}
             onPress={() => connectionDetails.set(!connectionDetails())}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.pressed }}
@@ -847,7 +847,7 @@ function App(
           <Button
             accessibilityLabel={tr('Retry')}
             onPress={runtime.retryUpdates}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             activeStyle={{ backgroundColor: C.pressed }}

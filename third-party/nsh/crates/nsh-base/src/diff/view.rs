@@ -8,7 +8,7 @@
 //! (and a few around them) are made.
 
 use nsh_core::{
-    element::{EventKind, EventPayload, Style},
+    element::{EventKind, EventPayload},
     prelude::*,
 };
 
@@ -20,7 +20,7 @@ use super::{
     layout::Row,
     review::HoverPart,
 };
-use crate::theme;
+use crate::{text_view::merge_styles, theme};
 
 /// Added lines' green.
 pub(crate) const ADDED: AdaptiveColor = AdaptiveColor::rgb(0x16a34a, 0x4ade80);
@@ -44,14 +44,9 @@ fn parts<E: Element>(el: E, props: DiffViewProps, list: Vec<DiffViewPart>) -> E 
         })
     })
     .inline_style(move || {
-        props.styles.with(|s| {
-            Style::from_decls(
-                styles
-                    .iter()
-                    .filter_map(|p| s.get(*p))
-                    .flat_map(|s| s.decls().iter().cloned()),
-            )
-        })
+        props
+            .styles
+            .with(|s| merge_styles(styles.iter().filter_map(|p| s.get(*p))))
     })
 }
 

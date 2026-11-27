@@ -22,7 +22,7 @@ import type {
   ModelOverride,
   ThinkingLevel,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import { tr } from '../../locale';
+import { thinkingLevelLabel, tr } from '../../locale';
 import { InsetGroup } from '../../ui';
 import { connectionBasis, readConnection } from '../../state/settings/models';
 import { settingsRpc, settingsWork } from '../../state/settings/rpc';
@@ -109,7 +109,8 @@ export function ConnectionModelScreen(
           modelOverrides: { ...facts.editing.modelOverrides, [props.modelId]: model },
         },
       });
-      if (result.kind !== 'committed') throw new Error(result.kind);
+      if (result.kind !== 'committed')
+        throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
       props.onSaved();
       if (work.canWrite()) props.onBack();
     });
@@ -154,7 +155,7 @@ export function ConnectionModelScreen(
             value={draft().defaultThinkingLevel ?? ''}
             options={[
               { id: '', label: tr('Default') },
-              ...thinkingLevels().map((id) => ({ id, label: id })),
+              ...thinkingLevels().map((id) => ({ id, label: thinkingLevelLabel(id) })),
             ]}
             disabled={work.busy()}
             change={(level) => edit({ defaultThinkingLevel: level || undefined })}

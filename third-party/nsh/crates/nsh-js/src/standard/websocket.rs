@@ -10,7 +10,7 @@
 //! quota (32 WebSockets per VM, shared with the `websocket` module) throws
 //! `ERR_NSH_QUOTA_EXCEEDED`, a platform without WebSockets
 //! `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
 #[path = "websocket_native.rs"]
 mod native;
 
@@ -148,10 +148,11 @@ pub(crate) fn connect(
 ) -> crate::web::js::R<crate::web::js::V> {
     let transport = crate::dom::shared(cx).system_websocket.borrow().clone();
     let Some(transport) = transport else {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "websocket"))]
         return native::connect(cx, url, protocols, callback);
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(not(target_arch = "wasm32"), feature = "websocket")))]
         {
+            let _ = (url, protocols, callback);
             let error = JsError::Error("The host has no WebSocket transport configured".into())
                 .with_code(codes::UNAVAILABLE);
             let value = crate::classes::error_value(cx, &error.into_thrown());

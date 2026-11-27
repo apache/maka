@@ -288,20 +288,26 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     app.press("label:Confirm & Connect").unwrap();
     app.wait_for("text:Second test Host").unwrap();
 
-    // Open Tab 3 Settings -> First test Host detail -> Check connection.
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: First test Host").unwrap();
     app.press("label:Computer: First test Host").unwrap();
+    app.press("label:Connection details").unwrap();
+    app.wait_for("text:/Direct connection discovery · Port/")
+        .unwrap();
     app.wait_for("label:Check connection").unwrap();
     app.press("label:Check connection").unwrap();
     app.wait_for("text:Computer responded").unwrap();
+    app.press("label:Disconnect").unwrap();
+    app.wait_for("label:Reconnect").unwrap();
 
     drop(app);
     drop(bridge);
     let persisted = std::fs::read_to_string(support.path().join("hosts.json")).unwrap();
     assert!(!persisted.contains(RELAY_TOKEN));
 
-    // Cold restart: reconnect First test Host with relay Bearer token and verify live revocation notice.
+    // The paused profile and unpaused profile have the same relay route.
+    // Only the unpaused one should try it without the in-memory Bearer.
+    use nsh_core::platform::{Lifecycle, NetworkKind};
     let channel = HostChannel::new();
     let runtime = tokio::runtime::Handle::current();
     let _bridge =
@@ -310,16 +316,40 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     config.viewport = Size::new(px(390.), px(844.));
     config.environment = Environment {
         os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
         reduce_motion: true,
         ..Environment::default()
     };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
     let mut app = Headless::start(config).unwrap();
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
+    app.wait_for("label:Computer: Second test Host").unwrap();
+    app.press("label:Computer: Second test Host").unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    app.wait_for("text:/relay rejected authentication/")
+        .unwrap();
+
+    app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: First test Host").unwrap();
     app.press("label:Computer: First test Host").unwrap();
-    app.wait_for("label:Relay Bearer for First test Host")
-        .unwrap();
+    resume_after_network_change(&mut app);
+    app.wait_for("label:Reconnect").unwrap();
+    assert!(
+        !app.screen()
+            .matches("text:/relay rejected authentication/")
+            .unwrap()
+    );
+    assert!(first.handshakes.try_recv().is_err());
+    assert!(
+        maka_remote_client::SavedHosts::load(support.path().join("hosts.json"))
+            .unwrap()
+            .get(first.host.root_id())
+            .unwrap()
+            .reconnect_paused()
+    );
+
     app.press("label:Relay Bearer for First test Host").unwrap();
     app.type_text("label:Saved Host relay Bearer token", RELAY_TOKEN)
         .unwrap();
@@ -327,12 +357,56 @@ async fn signed_invite_is_confirmed_on_the_live_connection_and_revocation_is_vis
     let (same_peer, _) = first.sas().await;
     assert_eq!(same_peer, peer);
     app.wait_for("label:Check connection").unwrap();
+    assert!(
+        !maka_remote_client::SavedHosts::load(support.path().join("hosts.json"))
+            .unwrap()
+            .get(first.host.root_id())
+            .unwrap()
+            .reconnect_paused()
+    );
     assert!(first.host.revoke_peer_access(peer).await.unwrap());
     app.wait_for("text:/peer access revoked/").unwrap();
+
+    resume_after_network_change(&mut app);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), first.handshakes.recv())
+            .await
+            .is_err(),
+        "the revoked live session must not be redialed"
+    );
+
+    // A manual attempt gets a fresh QUIC connection, but the opening itself
+    // is rejected as revoked. That path must also stop automatic attempts.
+    app.press("label:Reconnect").unwrap();
+    assert_eq!(first.sas().await.0, same_peer);
+    app.wait_for("text:/peer access revoked/").unwrap();
+    resume_after_network_change(&mut app);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(400), first.handshakes.recv())
+            .await
+            .is_err(),
+        "a revoked opening must not be redialed"
+    );
     drop(app);
     first.shutdown().await;
     second.shutdown().await;
     relay.shutdown().await.unwrap();
+}
+
+fn resume_after_network_change(app: &mut Headless) {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+    app.set_environment("background/offline", |env| {
+        env.lifecycle = Lifecycle::Background;
+        env.network.kind = NetworkKind::None;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    app.set_environment("foreground/online", |env| {
+        env.lifecycle = Lifecycle::Active;
+        env.network.kind = NetworkKind::Cellular;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
 }
 
 struct RpcDriver {
@@ -407,6 +481,7 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         let b_session = state["connections"][&b_id]["connection"]["session"].clone();
         assert_eq!(state["connections"][&a_id]["status"], "connected");
         assert_eq!(state["active"]["rootId"], b_id);
+        driver.call("ios.networkChange", json!({})).await;
 
         let save = |root: &str| json!({
             "rootId":root, "generation":state["connections"][root]["connection"]["generation"],
@@ -462,6 +537,8 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
 
         let state = driver.call("ios.disconnectHost", json!({"rootId":a_id})).await;
         assert_eq!(state["connections"][&a_id]["status"], "offline");
+        let paused = driver.call("ios.connectHost", json!({"rootId":a_id,"automatic":true})).await;
+        assert_eq!(paused["connections"][&a_id]["status"], "offline");
         assert_eq!(state["connections"][&b_id]["connection"]["session"], b_session);
         driver.call("ios.connectHost", json!({"rootId":a_id})).await;
         assert_eq!(a.sas().await.0, peers[0]);
@@ -511,6 +588,116 @@ async fn root_routed_calls_and_subscriptions_survive_other_host_reconnection_and
         b.shutdown().await;
         relay.shutdown().await.unwrap();
     }).await.expect("multi-Host bridge test timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn detached_engine_subscriptions_do_not_reach_the_replacement_engine() {
+    use std::io::Write;
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (relay, config, relay_url) = https_relay().await;
+        let mut remote = Live::start(&config, "Log Host").await;
+        let support = tempfile::tempdir().unwrap();
+        let channel = HostChannel::new();
+        let _bridge = HostBridge::attach(
+            channel.clone(),
+            support.path().into(),
+            tokio::runtime::Handle::current(),
+        )
+        .unwrap();
+        let (reply_tx, replies) = mpsc::unbounded_channel();
+        channel.handle("test.reply", move |mut call| {
+            reply_tx.send(call.take_data()).unwrap();
+        });
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        channel.handle("test.subscription", move |mut call| {
+            event_tx.send(call.take_data()).unwrap();
+        });
+        let start_engine = || {
+            let bundle = Bundle::source(
+                r#"
+                import { host } from 'nsh';
+                host.on('test.rpc', async ([[name, data]]) => {
+                  try { host.post('test.reply', [{ok: await host.call(name, data)}]); }
+                  catch (error) { host.post('test.reply', [{error: String(error)}]); }
+                });
+                host.on('ios.subscriptionItem', event => host.post('test.subscription', event));
+                host.on('ios.subscriptionEnded', event => host.post('test.subscription', event));
+            "#
+                .to_owned(),
+            )
+            .with_capabilities_json(Some(r#"{"host":true}"#))
+            .unwrap();
+            let mut engine = EngineConfig::new(bundle);
+            engine.host = channel.clone();
+            engine.runtime = Some(tokio::runtime::Handle::current());
+            Headless::start(engine).unwrap()
+        };
+
+        let a = start_engine();
+        let mut driver = RpcDriver {
+            channel: channel.clone(),
+            replies,
+        };
+        let ticket = driver
+            .call(
+                "ios.beginPairing",
+                json!({
+                    "uri":remote.uri,"relayUrl":relay_url,"relayToken":RELAY_TOKEN
+                }),
+            )
+            .await;
+        let (_, sas) = remote.sas().await;
+        let state = driver
+            .call(
+                "ios.confirmPairing",
+                json!({"pairingId":ticket["pairingId"],"sas":sas}),
+            )
+            .await;
+        let root = remote.host.root_id();
+        assert_eq!(state["connections"][root]["status"], "connected");
+        let handle = driver.call("ios.subscribe", json!({
+            "rootId":root,"endpoint":"hostLogs","method":"watch","subscriptionId":"engine-a",
+            "input":{"position":{"kind":"tail"}}
+        })).await;
+        let first = events.recv().await.unwrap();
+        assert_eq!(first["generation"], handle["generation"]);
+        assert_eq!(first["item"]["kind"], "missing");
+        drop(a);
+
+        let b = start_engine();
+        let state = driver.call("ios.bootstrap", json!({})).await;
+        assert_eq!(state["connections"][root]["status"], "connected");
+        let source = maka_host_runtime::logs::Source::for_root(
+            root,
+            &RootNamespaces {
+                ownership: remote._root.path().join("ownership"),
+                control: remote._root.path().join("control"),
+            },
+        )
+        .unwrap();
+        source
+            .open_capture()
+            .unwrap()
+            .write_all(b"after engine replacement\n")
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .is_err(),
+            "the replacement engine received an event from the old subscription"
+        );
+        assert_eq!(
+            driver.call("ios.unsubscribe", handle).await,
+            json!({"cancelled":false})
+        );
+
+        drop(b);
+        remote.shutdown().await;
+        relay.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -632,6 +819,233 @@ async fn confirming_a_pairing_disables_cancel_and_forwards_the_device_label() {
     app.wait_for("label:Settings").unwrap();
     app.press("label:Settings").unwrap();
     app.wait_for("label:Computer: Newly paired Host").unwrap();
+}
+
+#[tokio::test]
+async fn automatic_reconnect_respects_app_network_and_disconnect_intent() {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn state(revision: u64, connection: Value) -> Value {
+        let host = json!({
+            "rootId":"root","hostName":"Test Mac","peerId":"peer","endpoints":[],
+            "relays":[{"url":"https://relay.example.com","quicPort":null}]
+        });
+        json!({
+            "revision":revision,"devicePeerId":"iphone","hosts":[host],
+            "active":connection["connection"],
+            "connections":{"root":connection}
+        })
+    }
+
+    fn connected(revision: u64) -> Value {
+        state(
+            revision,
+            json!({"status":"connected","connection":{
+                "rootId":"root","hostName":"Test Mac","generation":revision,
+                "endpoints":["hostLogs"],"transport":"quic"
+            }}),
+        )
+    }
+
+    let channel = HostChannel::new();
+    let revision = Arc::new(AtomicU64::new(1));
+    channel.handle("ios.bootstrap", |call| call.resolve(connected(1)));
+    let (connect_tx, mut connects) = mpsc::unbounded_channel();
+    let connect_revision = revision.clone();
+    channel.handle("ios.connectHost", move |mut call| {
+        connect_tx.send(call.take_data()).unwrap();
+        call.resolve(connected(
+            connect_revision.fetch_add(1, Ordering::SeqCst) + 1,
+        ));
+    });
+    let (refresh_tx, mut refreshes) = mpsc::unbounded_channel();
+    channel.handle("ios.networkChange", move |call| {
+        refresh_tx.send(()).unwrap();
+        call.resolve(Value::Null);
+    });
+    let disconnect_revision = revision.clone();
+    channel.handle("ios.disconnectHost", move |call| {
+        call.resolve(state(
+            disconnect_revision.fetch_add(1, Ordering::SeqCst) + 1,
+            json!({"status":"offline","autoReconnect":false}),
+        ));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Computer: Test Mac").unwrap();
+    app.wait_for("label:Disconnect").unwrap();
+    app.press("label:Connection details").unwrap();
+    app.wait_for("label:https://relay.example.com").unwrap();
+    app.wait_for("text:Without a discovery port, direct connections may be harder.")
+        .unwrap();
+
+    let lose_connection = |app: &mut Headless| {
+        app.send_host_event(
+            "ios.hostState",
+            state(
+                revision.fetch_add(1, Ordering::SeqCst) + 1,
+                json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+            ),
+        )
+        .unwrap();
+        app.wait_for("text:Transport closed").unwrap();
+    };
+
+    app.set_environment("background", |env| env.lifecycle = Lifecycle::Background)
+        .unwrap();
+    lose_connection(&mut app);
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err());
+    app.set_environment("foreground", |env| env.lifecycle = Lifecycle::Active)
+        .unwrap();
+    app.wait_for_within("label:Disconnect", Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(
+        connects.try_recv().unwrap(),
+        json!({"rootId":"root","automatic":true})
+    );
+
+    app.set_environment("offline", |env| env.network.kind = NetworkKind::None)
+        .unwrap();
+    assert!(
+        refreshes.try_recv().is_ok(),
+        "the live endpoint is notified"
+    );
+    lose_connection(&mut app);
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err());
+    app.set_environment("cellular", |env| env.network.kind = NetworkKind::Cellular)
+        .unwrap();
+    app.wait_for_within("label:Disconnect", Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(
+        connects.try_recv().unwrap(),
+        json!({"rootId":"root","automatic":true})
+    );
+
+    app.press("label:Disconnect").unwrap();
+    app.wait_for_gone("label:Disconnect", Duration::from_secs(1))
+        .unwrap();
+    app.set_environment("background", |env| env.lifecycle = Lifecycle::Background)
+        .unwrap();
+    app.set_environment("Wi-Fi restored in background", |env| {
+        env.network.kind = NetworkKind::Wifi
+    })
+    .unwrap();
+    app.set_environment("foreground", |env| env.lifecycle = Lifecycle::Active)
+        .unwrap();
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(
+        connects.try_recv().is_err(),
+        "explicit Disconnect must survive resume"
+    );
+    assert!(!app.screen().matches("label:Disconnect").unwrap());
+}
+
+#[tokio::test]
+async fn reconnecting_stays_neutral_and_network_change_during_dial_retries_immediately() {
+    use nsh_core::platform::{Lifecycle, NetworkKind};
+
+    fn snapshot(revision: u64, connection: Value) -> Value {
+        json!({
+            "revision":revision,"devicePeerId":"phone",
+            "hosts":[{"rootId":"root","hostName":"Test Mac","peerId":"peer","endpoints":[]}],
+            "connections":{"root":connection}
+        })
+    }
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        call.resolve(snapshot(
+            1,
+            json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+        ))
+    });
+    let (connect_tx, mut connects) = mpsc::unbounded_channel();
+    channel.handle("ios.connectHost", move |mut call| {
+        let request = call.take_data();
+        assert_eq!(request, json!({"rootId":"root","automatic":true}));
+        connect_tx.send(call).unwrap();
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        lifecycle: Lifecycle::Active,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    config.environment.network.kind = NetworkKind::Wifi;
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Computer: Test Mac").unwrap();
+
+    let assert_retrying = |app: &mut Headless| {
+        app.wait_for("text:Reconnecting…").unwrap();
+        app.wait_for("text:Transport closed").unwrap();
+        app.wait_for("label:Retry now").unwrap();
+        assert!(!app.screen().matches("text:Connection error").unwrap());
+    };
+    assert_retrying(&mut app);
+    assert!(connects.try_recv().is_err());
+    app.press("label:Retry now").unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    let first = connects.try_recv().expect("Retry now bypasses backoff");
+    app.send_host_event("ios.hostState", snapshot(2, json!({"status":"connecting"})))
+        .unwrap();
+    assert_retrying(&mut app);
+    app.set_environment("cellular during dial", |env| {
+        env.network.kind = NetworkKind::Cellular;
+    })
+    .unwrap();
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    assert!(
+        connects.try_recv().is_err(),
+        "no overlapping automatic dial"
+    );
+
+    app.send_host_event(
+        "ios.hostState",
+        snapshot(
+            3,
+            json!({"status":"error","error":"Transport closed","autoReconnect":true}),
+        ),
+    )
+    .unwrap();
+    first.reject("Transport closed");
+    app.fast_forward(Duration::from_millis(200)).unwrap();
+    let second = connects
+        .try_recv()
+        .expect("route change bypasses the next backoff");
+    app.send_host_event(
+        "ios.hostState",
+        snapshot(
+            4,
+            json!({"status":"error","error":"Peer access revoked","autoReconnect":false}),
+        ),
+    )
+    .unwrap();
+    second.reject("Peer access revoked");
+    app.wait_for("text:Connection error").unwrap();
+    app.wait_for("text:Peer access revoked").unwrap();
+    app.wait_for("label:Reconnect").unwrap();
+    assert!(!app.screen().matches("label:Retry now").unwrap());
+    app.fast_forward(Duration::from_secs(16)).unwrap();
+    assert!(connects.try_recv().is_err(), "terminal errors stop retries");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -797,11 +1211,13 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
         assert_eq!(data["endpoint"], "agent");
         match data["method"].as_str().unwrap() {
             "catalog" => {
+                let filter = &data["input"]["filter"];
+                assert!(filter == "all" || filter == "needs_you");
                 assert_eq!(
                     data["input"],
-                    json!({"kind":null,"filter":"all","includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""})
+                    json!({"kind":null,"filter":filter,"includeArchived":false,"rootsOnly":false,"position":{"kind":"start"},"scope":{"kind":"all"},"titleQuery":""})
                 );
-                if data["rootId"] == "root-a" {
+                if data["rootId"] == "root-a" && filter == "all" {
                     id = Some(data["subscriptionId"].clone());
                 }
             }
@@ -910,8 +1326,525 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
     );
 }
 
+async fn fixture_recv<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_catalog_watch_unsubscribes_when_setup_replies_late() {
+    let host = json!({"rootId":"root","hostName":"Late Host","generation":1,"endpoints":["agent"]});
+    let initial = json!({"revision":1,"hosts":[host],"active":host,
+        "connections":{"root":{"status":"connected","connection":host}}});
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", move |call| call.resolve(initial.clone()));
+    channel.handle("ios.hostQuery", |mut call| {
+        let data = call.take_data();
+        let value = if data["method"] == "list" {
+            json!({"revision":"1","sessions":[],"after":null,"before":null,"needsYouCount":0})
+        } else {
+            json!({"isBot":false})
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (opening_tx, mut opening_rx) = mpsc::unbounded_channel();
+    let sub_generation = std::sync::atomic::AtomicU64::new(2);
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        let generation = sub_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation});
+        if data["input"]["filter"] == "all" {
+            opening_tx.send((handle, call)).unwrap();
+        } else {
+            call.resolve(handle);
+        }
+    });
+    let active = Arc::new(std::sync::Mutex::new(None::<Value>));
+    let native = active.clone();
+    let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.unsubscribe", move |mut call| {
+        let data = call.take_data();
+        let mut native = native.lock().unwrap();
+        let cancelled = native.as_ref() == Some(&data);
+        if cancelled {
+            *native = None;
+            cancel_tx.send(data).unwrap();
+        }
+        call.resolve(json!({"cancelled":cancelled}));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.clock = nsh_engine::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Search chats or projects").unwrap();
+    let (handle, opening) = fixture_recv(&mut opening_rx).await;
+    app.send_host_event(
+        "ios.hostState",
+        json!({"revision":2,"hosts":[host],"active":null,
+        "connections":{"root":{"status":"offline"}}}),
+    )
+    .unwrap();
+    app.wait_for("text:Late Host is offline").unwrap();
+
+    // If the JS timeout still owns this handshake, it discards the late
+    // handle and cannot cancel it. Native, not the app clock, owns the deadline.
+    app.fast_forward(Duration::from_secs(31)).unwrap();
+    *active.lock().unwrap() = Some(handle.clone());
+    opening.resolve(handle.clone());
+    assert_eq!(fixture_recv(&mut cancel_rx).await, handle);
+    assert!(active.lock().unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    fn row(i: usize, title: &str) -> Value {
+        json!({
+            "id":format!("s-{i}"), "title":title, "kind":"agent", "parentSessionId":null,
+            "workspace":{"path":"/repo"}, "labels":[], "revision":1,
+            "updatedAt":1700000002000u64 - i as u64,
+            "archived":false, "pinned":false, "hasUnread":false, "activity":"waiting"
+        })
+    }
+    fn page(revision: &str, sessions: &[Value], after: Option<&str>) -> Value {
+        json!({"revision":revision,"needsYouCount":33,"before":null,"after":after,"sessions":sessions})
+    }
+
+    let snapshot = |revision, with_offline_peer| {
+        let host = json!({"rootId":"root","hostName":"Paged Host","epoch":"ea","session":"sa",
+            "generation":1,"endpoints":["agent"],"transport":"quic"});
+        let mut snapshot = json!({"revision":revision,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}});
+        if with_offline_peer {
+            snapshot["hosts"].as_array_mut().unwrap().push(json!({
+                "rootId":"offline","hostName":"Offline peer","peerId":"another-peer","connected":false
+            }));
+            snapshot["connections"]["offline"] = json!({"status":"offline"});
+        }
+        snapshot
+    };
+    let channel = HostChannel::new();
+    let initial = snapshot(1, false);
+    channel.handle("ios.bootstrap", move |call| call.resolve(initial.clone()));
+    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    let sub_generation = AtomicU64::new(2);
+    let fail_reopen = Arc::new(AtomicBool::new(false));
+    let fail_pending = fail_reopen.clone();
+    let generation = Arc::new(AtomicU64::new(1));
+    let expected_generation = generation.clone();
+    channel.handle("ios.subscribe", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(
+            data["generation"],
+            expected_generation.load(Ordering::SeqCst),
+            "subscribe is pinned to the connection"
+        );
+        if data["input"]["filter"] == "needs_you" && fail_pending.swap(false, Ordering::SeqCst) {
+            call.reject("pending subscription unavailable");
+            return;
+        }
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root",
+            "generation":sub_generation.fetch_add(1, Ordering::SeqCst)});
+        call.resolve(handle.clone());
+        sub_tx.send((data, handle)).unwrap();
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+
+    let first: Vec<_> = (0..32)
+        .map(|i| {
+            row(
+                i,
+                if i == 31 {
+                    "Needle moved down"
+                } else {
+                    "Earlier chat"
+                },
+            )
+        })
+        .collect();
+    let pending_head = page("pending-live", &first, Some("s-31"));
+    let mut chats_head = page("chats-1", &first, Some("s-31"));
+    chats_head["sessions"][0]["title"] = json!("Catalog after peer update");
+    let pending_basis = Arc::new(std::sync::Mutex::new(page(
+        "pending-unavailable",
+        &[row(31, "Unavailable review")],
+        Some("s-31"),
+    )));
+    let basis = pending_basis.clone();
+    let (bot_tx, mut bot_rx) = mpsc::unbounded_channel();
+    let hold_bot_query = AtomicBool::new(true);
+    let hold_detail = Arc::new(AtomicBool::new(false));
+    let hold = hold_detail.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let is_settled = settled.clone();
+    let (page_tx, mut page_rx) = mpsc::unbounded_channel();
+    let (detail_tx, mut detail_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        assert_eq!(data["rootId"], "root");
+        let input = &data["input"];
+        let value = match data["method"].as_str().unwrap() {
+            "list" if input["position"]["kind"] == "after" => {
+                if matches!(input["position"]["revision"].as_str(), Some("pending-live" | "pending-burst")) {
+                    assert_eq!(input["filter"], "needs_you");
+                    assert_eq!(input["position"]["cursor"], "s-31");
+                    page(input["position"]["revision"].as_str().unwrap(), &[row(32, "Second page review")], None)
+                } else {
+                    page_tx.send((data, call)).unwrap();
+                    return;
+                }
+            }
+            "list" if input["filter"] == "needs_you" => {
+                if is_settled.load(Ordering::SeqCst) {
+                    page("pending-settled", &[row(32, "Second page review")], None)
+                } else {
+                    basis.lock().unwrap().clone()
+                }
+            }
+            "list" => chats_head.clone(),
+            "botOutbox" if hold_bot_query.swap(false, Ordering::SeqCst) => {
+                bot_tx.send(call).unwrap();
+                return;
+            }
+            "botOutbox" => json!({"isBot":true,"through":2,"readThrough":0,"preview":"New bot preview"}),
+            "pendingInteractions" => {
+                let entry = |id| json!({"requestId":id,"kind":"service_approval","toolUseId":"tu"});
+                let entries = if input["sessionId"] == "s-32" {
+                    if is_settled.load(Ordering::SeqCst) {
+                        vec![entry("extra")]
+                    } else {
+                        vec![entry("page-two"), entry("extra")]
+                    }
+                } else {
+                    vec![entry("other")]
+                };
+                let value = json!({"revision":1,"entries":entries});
+                if input["sessionId"] == "s-32" && hold.swap(false, Ordering::SeqCst) {
+                    detail_tx.send((call, value)).unwrap();
+                    return;
+                }
+                value
+            }
+            "interaction" => {
+                let id = &input["requestId"];
+                let page_two = id == "page-two";
+                json!({
+                    "requestId":id,"createdAt":if page_two { 100 } else { 1 },
+                    "outcome":if page_two && is_settled.load(Ordering::SeqCst) {
+                        json!(InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 101 })
+                    } else { Value::Null },
+                    "request":{"kind":"service_approval","toolUseId":"tu",
+                        "toolName":if page_two { "PageTwoTool" } else { "OtherTool" },
+                        "service":"fixture","method":"run","binding":"test","through":1}
+                })
+            }
+            method => panic!("unexpected query {method}"),
+        };
+        call.resolve(json!({"value":value}));
+    });
+    let (answer_tx, mut answer_rx) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        answer_tx.send(call.take_data()).unwrap();
+        settled.store(true, Ordering::SeqCst);
+        call.resolve(json!({"value":{"kind":"recorded","record":{"outcome":
+            InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 101 }
+        }}}));
+    });
+
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Search chats or projects").unwrap();
+    let mut subscriptions = BTreeMap::new();
+    for _ in 0..3 {
+        let (request, handle) = fixture_recv(&mut sub_rx).await;
+        let key = request["input"]["filter"]
+            .as_str()
+            .unwrap_or_else(|| request["method"].as_str().unwrap());
+        subscriptions.insert(key.to_owned(), handle);
+    }
+    let chats_watch = &subscriptions["all"];
+    let pending_watch = &subscriptions["needs_you"];
+    let push = |app: &mut Headless, handle: &Value, item: Value| {
+        let mut event = handle.clone();
+        event["item"] = item;
+        app.send_host_event("ios.subscriptionItem", event).unwrap();
+    };
+    let old_bot = fixture_recv(&mut bot_rx).await;
+    push(
+        &mut app,
+        &subscriptions["watchBotOutbox"],
+        json!({"isBot":true,"through":2,"readThrough":0,"preview":"New bot preview"}),
+    );
+    app.wait_for("text:New bot preview").unwrap();
+    old_bot.resolve(
+        json!({"value":{"isBot":true,"through":1,"readThrough":0,"preview":"Old bot preview"}}),
+    );
+    assert!(app.screen().matches("text:New bot preview").unwrap());
+    assert!(!app.screen().matches("text:Old bot preview").unwrap());
+
+    let mut first_push = first.clone();
+    first_push[0]["title"] = json!("Initial catalog push");
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-initial-push", &first_push, Some("s-31")),
+    );
+    app.wait_for("label:Conversation: Initial catalog push")
+        .unwrap();
+    // A failed continuation isn't a confirmed empty inbox.
+    let (pending_query, pending_failure) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        pending_query["input"]["position"]["revision"],
+        "pending-unavailable"
+    );
+    pending_failure.reject("second page unavailable");
+    app.wait_for("text:New bot preview").unwrap();
+    assert!(app.settle());
+    assert!(app.screen().matches("text:New bot preview").unwrap());
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Could not sync Pending").unwrap();
+    app.wait_for("text:second page unavailable").unwrap();
+    assert!(!app.screen().matches("text:All caught up").unwrap());
+    app.press("label:Retry").unwrap();
+    let (_, retry_page) = fixture_recv(&mut page_rx).await;
+    // R1 travels on the subscription while the continuation is still held.
+    // Its single page has no cursor and used to overwrite R2 after the retry.
+    let delayed = page("pending-stale-head", &[row(90, "Delayed review")], None);
+    push(&mut app, pending_watch, delayed);
+    *pending_basis.lock().unwrap() = pending_head.clone();
+    hold_detail.store(true, Ordering::SeqCst);
+    retry_page.reject("Host rejected call or control request: agent_catalog_changed");
+    let (details, value) = fixture_recv(&mut detail_rx).await;
+    push(&mut app, pending_watch, pending_head.clone());
+    details.resolve(json!({"value":value}));
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    assert!(app.settle());
+    assert!(app.screen().matches("id:main-tab-bar >> text:34").unwrap());
+
+    // While another round is reading request details, coalesce a burst of
+    // changes and still publish that round before loading the trailing one.
+    let burst = page("pending-burst", &first, Some("s-31"));
+    *pending_basis.lock().unwrap() = burst.clone();
+    hold_detail.store(true, Ordering::SeqCst);
+    push(&mut app, pending_watch, burst.clone());
+    let (details, value) = fixture_recv(&mut detail_rx).await;
+    push(&mut app, pending_watch, burst);
+    push(
+        &mut app,
+        pending_watch,
+        page("pending-intermediate", &first, Some("s-31")),
+    );
+    let latest = page("pending-latest", &first, Some("s-31"));
+    *pending_basis.lock().unwrap() = latest.clone();
+    push(&mut app, pending_watch, latest);
+    assert!(
+        page_rx.try_recv().is_err(),
+        "a continuation started while detail was still held"
+    );
+    details.resolve(json!({"value":value}));
+    let (trailing, trailing_page) = fixture_recv(&mut page_rx).await;
+    assert_eq!(trailing["input"]["position"]["revision"], "pending-latest");
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    trailing_page.resolve(json!({"value":page("pending-latest", &[row(32, "Second page review"), row(33, "New review")], None)}));
+    app.wait_for("id:main-tab-bar >> text:35").unwrap();
+    app.wait_for_gone("text:Could not sync Pending", Duration::from_secs(2))
+        .unwrap();
+
+    // Topology effects rerun when another peer is added, not when A's native
+    // stream ends. Both original A handles must still deliver after that rerun.
+    app.press("label:Chats").unwrap();
+    app.send_host_event("ios.hostState", snapshot(2, true))
+        .unwrap();
+    app.wait_for("label:Offline peer").unwrap();
+    let mut chats_after_peer = first.clone();
+    chats_after_peer[0]["title"] = json!("Catalog after peer update");
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-1", &chats_after_peer, Some("s-31")),
+    );
+    app.wait_for("label:Conversation: Catalog after peer update")
+        .unwrap();
+    let after_peer = page("pending-after-peer", &[row(32, "Second page review")], None);
+    *pending_basis.lock().unwrap() = after_peer.clone();
+    push(&mut app, pending_watch, after_peer);
+    app.wait_for("id:main-tab-bar >> text:2").unwrap();
+    app.press("label:Pending").unwrap();
+    *pending_basis.lock().unwrap() = pending_head.clone();
+    // An unexpected end is visible and retry attaches a fresh subscription.
+    app.send_host_event("ios.subscriptionEnded", pending_watch.clone())
+        .unwrap();
+    app.wait_for("text:Could not sync Pending").unwrap();
+    fail_reopen.store(true, Ordering::SeqCst);
+    app.press("label:Retry").unwrap();
+    app.wait_for("text:pending subscription unavailable")
+        .unwrap();
+    app.press("label:Retry").unwrap();
+    let (_, replacement) = fixture_recv(&mut sub_rx).await;
+    assert_ne!(replacement["generation"], pending_watch["generation"]);
+    app.wait_for("id:main-tab-bar >> text:34").unwrap();
+    let pending_current = page("pending-current", &[row(32, "Second page review")], None);
+    *pending_basis.lock().unwrap() = pending_current.clone();
+    push(&mut app, pending_watch, page("stale-watch", &[], None));
+    let mut wrong_generation = replacement.clone();
+    wrong_generation["generation"] = json!(1);
+    push(
+        &mut app,
+        &wrong_generation,
+        page("wrong-generation", &[], None),
+    );
+    assert!(app.settle());
+    assert!(app.screen().matches("id:main-tab-bar >> text:34").unwrap());
+    push(&mut app, &replacement, pending_current);
+    app.wait_for("id:main-tab-bar >> text:2").unwrap();
+
+    app.press("label:Chats").unwrap();
+    let mut wrong_generation = chats_watch.clone();
+    wrong_generation["generation"] = json!(1);
+    push(
+        &mut app,
+        &wrong_generation,
+        page("wrong-generation", &[row(80, "Wrong chat")], None),
+    );
+    assert!(app.settle());
+    assert!(!app.screen().matches("text:Wrong chat").unwrap());
+    app.type_text("label:Search chats or projects", "Needle moved up")
+        .unwrap();
+    app.wait_for("text:No matches in loaded chats").unwrap();
+    assert!(page_rx.try_recv().is_err(), "Chats must not auto-drain");
+    app.press("label:Load more chats").unwrap();
+    let (failed_query, failed_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(failed_query["input"]["position"]["revision"], "chats-1");
+    failed_reply.reject("chat second page unavailable");
+    app.wait_for("text:chat second page unavailable").unwrap();
+    app.press("label:Load more chats").unwrap();
+    let (retry_query, retry_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        retry_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-31"})
+    );
+    retry_reply
+        .resolve(json!({"value":page("chats-1", &[row(32, "Needle moved up")], Some("s-32"))}));
+    app.wait_for("label:Conversation: Needle moved up").unwrap();
+
+    // Swap rows across the boundary while a further page is outstanding.
+    app.press("label:Load more chats").unwrap();
+    let (old_query, old_reply) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        old_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-32"})
+    );
+    let mut new_head = first[..31].to_vec();
+    new_head.push(row(32, "Needle moved up in live catalog"));
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-2", &new_head, Some("s-32")),
+    );
+    let (new_query, new_reply) = tokio::time::timeout(Duration::from_secs(2), page_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        new_query["input"]["position"],
+        json!({"kind":"after","revision":"chats-2","cursor":"s-32"})
+    );
+    new_reply.resolve(json!({"value":page("chats-2", &[row(31, "Needle moved down"), row(33, "Newest chat")], None)}));
+    app.wait_for("label:Conversation: Needle moved up in live catalog")
+        .unwrap();
+    old_reply.resolve(json!({"value":page("chats-1", &[row(33, "Needle stale")], None)}));
+    assert!(app.settle());
+    app.press("label:Clear search").unwrap();
+    app.type_text("label:Search chats or projects", "Needle")
+        .unwrap();
+    app.wait_for("text:Needle moved down").unwrap();
+    for label in ["Needle moved up in live catalog", "Needle moved down"] {
+        assert_eq!(
+            app.screen()
+                .count(&format!("label:Conversation: {label}"))
+                .unwrap(),
+            1
+        );
+    }
+    assert!(!app.screen().matches("text:Needle stale").unwrap());
+    assert!(!app.screen().matches("label:Load more chats").unwrap());
+
+    app.press("label:Pending").unwrap();
+    app.wait_for("text:Allow service call PageTwoTool?")
+        .unwrap();
+    app.press("text:Allow service call PageTwoTool?").unwrap();
+    app.press("label:Deny").unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(2), answer_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["method"], "respond");
+    assert_eq!(answer["input"]["sessionId"], "s-32");
+    assert_eq!(answer["input"]["requestId"], "page-two");
+    assert_eq!(answer["input"]["answer"]["decision"], "deny");
+    app.wait_for("text:Denied").unwrap();
+    app.press("label:Pending").unwrap();
+    app.wait_for("id:main-tab-bar >> text:1").unwrap();
+
+    app.press("label:Chats").unwrap();
+    // Keep the completed window, not the in-flight continuation from the old connection.
+    push(
+        &mut app,
+        chats_watch,
+        page("chats-1", &chats_after_peer, Some("s-31")),
+    );
+    let (_, interrupted) = fixture_recv(&mut page_rx).await;
+    let mut offline = snapshot(3, true);
+    offline["active"] = Value::Null;
+    offline["connections"]["root"] = json!({"status":"offline","autoReconnect":false});
+    app.send_host_event("ios.hostState", offline).unwrap();
+    app.wait_for_gone("label:Loading…", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("label:Conversation: Needle moved up in live catalog")
+        .unwrap();
+
+    // The new connection can report the same revision as the interrupted read.
+    let mut reconnected = snapshot(4, true);
+    reconnected["active"]["generation"] = json!(2);
+    reconnected["connections"]["root"]["connection"]["generation"] = json!(2);
+    generation.store(2, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", reconnected).unwrap();
+    for _ in 0..3 {
+        fixture_recv(&mut sub_rx).await;
+    }
+    let (continuation, resumed) = fixture_recv(&mut page_rx).await;
+    assert_eq!(
+        continuation["input"]["position"],
+        json!({"kind":"after","revision":"chats-1","cursor":"s-31"})
+    );
+    resumed.resolve(json!({"value":page("chats-1", &[row(32, "Needle after reconnect")], None)}));
+    interrupted
+        .resolve(json!({"value":page("chats-1", &[row(32, "Needle from old connection")], None)}));
+    app.wait_for("label:Conversation: Needle after reconnect")
+        .unwrap();
+    assert!(
+        !app.screen()
+            .matches("text:Needle from old connection")
+            .unwrap()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
     let channel = HostChannel::new();
     channel.handle("ios.bootstrap", |call| {
         call.reply(Ok(json!({
@@ -936,10 +1869,18 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
         "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "working"
     });
     let session_q = session.clone();
+    let settled = Arc::new(AtomicBool::new(false));
+    let is_settled = settled.clone();
+    let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostQuery", move |mut call| {
         let data = call.take_data();
         let method = data["method"].as_str().unwrap();
+        let resolved = is_settled.load(Ordering::SeqCst);
         let value = match method {
+            "list" if resolved && data["input"]["filter"] == "needs_you" => {
+                inbox_tx.send(call).unwrap();
+                return;
+            }
             "list" => json!({ "revision": "1", "needsYouCount": 1, "before": null, "after": null, "sessions": [session_q] }),
             "observe" => json!({
                 "session": session_q, "lastCompletedTurnId": "t0", "compacting": null, "through": 5,
@@ -957,6 +1898,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 ]
             }),
             "models" => json!({ "kind": "ready", "choices": [{ "selection": { "kind": "model", "modelId": "claude-sonnet", "thinkingLevel": "high" }, "label": "Claude Sonnet · High", "sourceName": "anthropic", "thinkingLevels": ["high"], "defaultThinkingLevel": "high" }] }),
+            "pendingInteractions" if resolved => json!({"revision":2,"entries":[]}),
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "perm-1", "kind": "permissions", "toolUseId": "tu2" }] }),
             "interaction" => json!({
                 "requestId": "perm-1", "outcome": null,
@@ -970,15 +1912,17 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
         call.reply(Ok(json!({ "value": value })));
     });
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
+    let sub_generation = AtomicU64::new(2);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        let sub_id = data["subscriptionId"].as_str().unwrap().to_owned();
+        assert_eq!(data["generation"], 1);
+        let generation = sub_generation.fetch_add(1, Ordering::SeqCst);
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root-a","generation":generation});
         if data["method"] == "watch" {
-            let _ = watch_tx.send(sub_id.clone());
+            watch_tx.send((handle, call)).unwrap();
+        } else {
+            call.resolve(handle);
         }
-        call.reply(Ok(
-            json!({ "subscriptionId": sub_id, "rootId": "root-a", "generation": 1 }),
-        ));
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -998,6 +1942,11 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 revision: 4,
                 completion: None,
             })
+        } else if data["method"] == "respond" {
+            settled.store(true, Ordering::SeqCst);
+            json!({"kind":"recorded","record":{"outcome":
+                InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 1 }
+            }})
         } else {
             json!({"kind":"recorded"})
         };
@@ -1015,6 +1964,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     let mut app = Headless::start(config).unwrap();
 
     app.wait_for("label:Conversation: Auth refactor").unwrap();
+    app.wait_for("id:main-tab-bar >> text:1").unwrap();
     app.press("label:Conversation: Auth refactor").unwrap();
 
     // Committed turns + collapsible activity summary + inline approval render cleanly.
@@ -1030,11 +1980,17 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.wait_for("text:Run integration test suite").unwrap();
 
     // Stream live Markdown preview + queued turn over watch subscription.
-    let watch_sub_id = watch_rx.recv().await.unwrap();
+    let (watch_handle, open_watch) = fixture_recv(&mut watch_rx).await;
+    let watch_sub_id = &watch_handle["subscriptionId"];
+    let generation = &watch_handle["generation"];
+    app.send_host_event("ios.subscriptionItem", json!({
+        "subscriptionId":watch_sub_id,"rootId":"root-a","generation":1,
+        "item":{"kind":"queue","queue":{"revision":2,"entries":[{"messageId":"stale","kind":"followup","preview":"Stale queued message"}]}}
+    })).unwrap();
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId": watch_sub_id,
         "rootId": "root-a",
-        "generation": 1,
+        "generation": generation,
         "item": {
             "kind": "preview",
             "page": {
@@ -1044,12 +2000,15 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
             }
         }
     })).unwrap();
+    // Simulate JS receiving the first item before the subscribe promise runs.
+    open_watch.resolve(watch_handle.clone());
     app.wait_for("text:Streaming live verification...").unwrap();
+    assert!(!app.screen().matches("text:1 message queued").unwrap());
 
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId": watch_sub_id,
         "rootId": "root-a",
-        "generation": 1,
+        "generation": generation,
         "item": {
             "kind": "queue",
             "queue": { "revision": 2, "entries": [{ "messageId": "q1", "kind": "followup", "preview": "Add changelog entry" }] }
@@ -1075,6 +2034,16 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     assert_eq!(sent["method"], "send");
     assert_eq!(sent["input"]["delivery"], "queue");
     assert_eq!(sent["input"]["message"], "Follow up after tests");
+
+    app.press("label:Deny").unwrap();
+    let answered = fixture_recv(&mut send_rx).await;
+    assert_eq!(answered["method"], "respond");
+    assert_eq!(answered["input"]["requestId"], "perm-1");
+    let held_refresh = fixture_recv(&mut inbox_rx).await;
+    app.press("label:Chats").unwrap();
+    app.wait_for("id:main-tab-bar").unwrap();
+    assert!(!app.screen().matches("id:main-tab-bar >> text:1").unwrap());
+    held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1105,7 +2074,7 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     let sample_patch = "diff --git a/src/auth.rs b/src/auth.rs
 --- a/src/auth.rs
 +++ b/src/auth.rs
-@@ -12,3 +12,3 @@ fn refresh() {
+@@ -1234,3 +1234,3 @@ fn refresh() {
 -    let ttl = 30;
 +    let ttl = 60;
      ttl
@@ -1164,10 +2133,11 @@ async fn diff_line_quote_inserts_into_draft_and_returns_to_chat_preserving_exist
     app.press("label:Diff: src/auth.rs").unwrap();
     app.wait_for("label:Quote line to chat").unwrap();
     app.press("label:Quote line to chat").unwrap();
+    app.wait_for("text:Quoted auth.rs:1234").unwrap();
 
     // Returns cleanly to ChatScreen with both original draft and quoted path:line.
     app.wait_for("text:/Please check this:/").unwrap();
-    app.wait_for(r"text:/src\/auth\.rs:12/").unwrap();
+    app.wait_for(r"text:/src\/auth\.rs:1234/").unwrap();
     app.press("label:Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
@@ -1229,13 +2199,13 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
         call.reply(Ok(json!({ "value": value })));
     });
     let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    let subscription_generation = std::sync::atomic::AtomicU64::new(2);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
-        let id = data["subscriptionId"].as_str().unwrap().to_owned();
-        let _ = sub_tx.send(id.clone());
-        call.reply(Ok(
-            json!({ "subscriptionId": id, "rootId": "root-a", "generation": 1 }),
-        ));
+        let generation = subscription_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root-a","generation":generation});
+        call.resolve(handle.clone());
+        sub_tx.send(handle).unwrap();
     });
     channel.handle("ios.unsubscribe", |call| {
         call.reply(Ok(json!({ "cancelled": true })));
@@ -1260,18 +2230,22 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
 
     // Desktop resolves the interaction while iPhone is viewing ReviewDetailScreen.
     resolved_remotely.store(true, std::sync::atomic::Ordering::SeqCst);
-    let sub_id = loop {
-        let id = sub_rx.recv().await.unwrap();
-        if id.starts_with("review:") {
-            break id;
+    let watch = loop {
+        let handle = fixture_recv(&mut sub_rx).await;
+        if handle["subscriptionId"]
+            .as_str()
+            .unwrap()
+            .starts_with("review:")
+        {
+            break handle;
         }
     };
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
-            "subscriptionId": sub_id,
+            "subscriptionId": watch["subscriptionId"],
             "rootId": "root-a",
-            "generation": 1,
+            "generation": watch["generation"],
             "item": DeliveryPage::Preview { page: PreviewPage::Empty { host_epoch: "ea".into() } }
         }),
     )
@@ -1281,9 +2255,9 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
     app.send_host_event(
         "ios.subscriptionItem",
         json!({
-            "subscriptionId": sub_id,
+            "subscriptionId": watch["subscriptionId"],
             "rootId": "root-a",
-            "generation": 1,
+            "generation": watch["generation"],
             "item": DeliveryPage::Interactions { pending: PendingInteractions { revision: 2, entries: vec![] } }
         }),
     )
@@ -1345,6 +2319,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
                 "host":"proxy.example","port":443,"bypassList":[],"autoBypassDomains":[],"authEnabled":true,"username":"phone"},
                 "credential":{"configured":true,"credentialId":"proxy-fixture-id","revision":2,"locator":{"key":"proxy"}}}),
             "snapshot" => query_web.clone(),
+            "projects" => json!({"kind":"projects","projects":[],"next":null}),
+            "mcpConfigurations" => json!({"locations":[
+                {"location":"user:agents","path":"/config/mcp.json","revision":"mcp-basis","servers":[]}
+            ]}),
             other => {
                 query_failures.send(Err(format!("unexpected query {other}"))).unwrap();
                 call.reject("unexpected query");
@@ -1361,7 +2339,10 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
         let data = call.take_data();
         let result = match data["method"].as_str().unwrap() {
             "saveCredential" => json!({"kind":"saved"}),
+            "save" => json!({"kind":"future_web_result"}),
+            "saveKey" if data["secret"] == "bad-web-key" => json!({"kind":"invalid_key"}),
             "saveKey" => json!({"kind":"updated","snapshot":web}),
+            "manageMcpServer" => json!({"kind":"changed"}),
             "updateNetwork" => json!({"kind":"applied","result":{"kind":"committed","revision":5}}),
             "discoverModels" => {
                 tx.send((data, call.into_reply())).unwrap();
@@ -1400,6 +2381,12 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Models & Connections").unwrap();
     app.wait_for("label:Fixture provider").unwrap();
     app.press("label:Fixture provider").unwrap();
+    app.press("label:Advanced options").unwrap();
+    app.type_text("label:Request body overlay", "{").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Enter a JSON object.").unwrap();
+    assert!(rx.try_recv().is_err());
+    app.clear("label:Request body overlay").unwrap();
     app.wait_for("label:API Key").unwrap();
     app.type_text("label:API Key", "provider-fixture-secret")
         .unwrap();
@@ -1461,6 +2448,12 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     app.press("label:Search source").unwrap();
     app.choose_menu_item("Search provider").unwrap();
     app.wait_for("label:API Key").unwrap();
+    app.type_text("label:API Key", "bad-web-key").unwrap();
+    app.press("label:Save API key").unwrap();
+    app.wait_for("text:Invalid API key").unwrap();
+    assert!(!app.shows("text:Could not save the search API key."));
+    assert_eq!(rx.try_recv().unwrap().0["method"], "saveKey");
+    app.clear("label:API Key").unwrap();
     app.type_text("label:API Key", "web-fixture-secret")
         .unwrap();
     app.press("label:Save API key").unwrap();
@@ -1473,6 +2466,43 @@ async fn settings_credentials_use_secret_slot_and_provider_progress_stays_live()
     assert_eq!(call["method"], "saveKey");
     assert_eq!(call["secret"], "web-fixture-secret");
     assert_eq!(call["input"], json!({"settingsRevision":6,"revision":null}));
+    app.press("label:Search provider").unwrap();
+    app.choose_menu_item("Brave").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Could not read or update settings.")
+        .unwrap();
+    let (call, _) = rx.try_recv().unwrap();
+    assert_eq!(call["method"], "save");
+    assert_eq!(call["input"]["settings"]["backend"]["kind"], "brave");
+    app.press("label:Search provider").unwrap();
+    app.choose_menu_item("Tavily").unwrap();
+    app.press("label:Settings").unwrap();
+
+    app.press("label:MCP").unwrap();
+    app.wait_for("label:Add MCP server").unwrap();
+    app.press("label:Add MCP server").unwrap();
+    app.type_text("label:Name", "test-server").unwrap();
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("HTTP").unwrap();
+    app.type_text("label:URL", "https://example.test/mcp")
+        .unwrap();
+    let headers = "label:Header environment references (JSON)";
+    app.type_text(headers, "{").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Enter a JSON object.").unwrap();
+    assert!(rx.try_recv().is_err());
+    app.clear(headers).unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Refresh and try again.").unwrap();
+    assert!(!app.shows("text:Could not save the MCP server."));
+    let (call, _) = rx.try_recv().unwrap();
+    assert_eq!(call["method"], "manageMcpServer");
+    assert_eq!(call["input"]["revision"], "mcp-basis");
+    assert_eq!(call["input"]["name"], "test-server");
+    app.clear("label:Name").unwrap();
+    app.press("label:Protocol").unwrap();
+    app.choose_menu_item("stdio").unwrap();
+    app.press("label:MCP").unwrap();
     app.press("label:Settings").unwrap();
 
     app.press("label:Network Proxy").unwrap();
@@ -1529,7 +2559,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     });
     let model = json!({"connectionId":"fixture","modelId":"test-model"});
     let preset = json!({"id":"preset-id","revision":8,"name":"Build reviewer","description":"Reviews changes",
-        "instruction":"Check changes.","model":model,"thinkingLevel":null,"enabled":true,"availability":{"kind":"available"}});
+        "instruction":"Check changes.","model":{"connectionId":"fixture","modelId":"test-model","serviceTier":"fast"},"thinkingLevel":null,"enabled":true,"availability":{"kind":"available"}});
     let source = json!({"deployment":"deploy","stateDomain":"domain","revision":9});
     let package = json!({"id":"demo.plugin","revision":"rev"});
     let plugin = json!({"instance":["key"],"package":package,"path":["demo"],"disabled":false,
@@ -1555,11 +2585,34 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[
                 {"reference":{"id":"project"},"name":"Fixture workspace","path":"/work","archived":false,"available":true}
             ]}),
-            ("agent", "presets") => json!([preset]),
+            ("agent", "presets") => {
+                let mut other = preset.clone();
+                other["id"] = json!("work-preset");
+                other["name"] = json!("Work reviewer");
+                other["model"]["connectionId"] = json!("work");
+                json!([preset, other])
+            }
             ("agent", "preset") => json!({"preset":preset,"availability":{"kind":"available"}}),
             ("settings", "models") => json!({"kind":"ready","revision":9,"next":null,"choices":[
-                {"selection":model,"label":"Fixture model","connectionName":"Fixture","thinkingLevels":["low","high"]}
+                {"selection":model,"label":"Fixture model","connectionName":"Personal","thinkingLevels":["low","high"]},
+                {"selection":{"connectionId":"work","modelId":"test-model"},"label":"Fixture model","connectionName":"Work","thinkingLevels":[]},
+                {"selection":{"connectionId":"work","modelId":"unique"},"label":"Unique model","connectionName":"Work","thinkingLevels":[]},
+                {"selection":{"connectionId":"solo","modelId":"solo"},"label":"Solo model","connectionName":"Solo","thinkingLevels":[]}
             ]}),
+            ("settings", "connections") => {
+                let next = (data["input"]["kind"] == "start").then_some(2);
+                let provider = json!({"packageId":"fixture","entryId":"provider","scope":"root","name":"acme"});
+                let rows = if next.is_some() {
+                    json!([
+                        {"basis":{"connectionId":"fixture","revision":1},"slug":"personal","name":"Personal","provider":provider},
+                        {"basis":{"connectionId":"solo","revision":1},"slug":"solo","name":"Solo",
+                         "provider":{"packageId":"different","entryId":"provider","scope":"root","name":"acme"}}
+                    ])
+                } else {
+                    json!([{"basis":{"connectionId":"work","revision":1},"slug":"work","name":"Work","provider":provider}])
+                };
+                json!({"kind":"ready","revision":7,"connections":rows,"defaultTarget":null,"next":next})
+            }
             ("management", "instances") => json!({"source":source_q,"instances":[plugin],"next":null}),
             ("management", "read") => json!({"source":{"reference":source_q,"input":{"instances":{"demo":{"bindings":{}}}}},"packages":[package_q]}),
             ("management", "readSettings") => json!({"fields":[],"next":null}),
@@ -1600,11 +2653,26 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
         let value = match data["method"].as_str().unwrap() {
+            "manageMcpServer" if data["input"]["name"] == "future-server" =>
+                json!({"kind":"future_mcp_result"}),
             "createPreset" | "updatePreset" | "manageMcpServer" => json!({"kind":"saved"}),
             "deletePreset" => json!({"kind":"deleted"}),
-            "setEnabled" | "editComposition" => json!({"status":"committed","value":source}),
+            "setEnabled" => json!({"status":"rejected","reason":"invalid_source"}),
+            "editComposition" => json!({"status":"committed","value":source}),
+            "installUrl" if data["input"]["url"] == "https://example.com/invalid.maka-plugin" =>
+                json!({"status":"rejected","reason":"invalid_bundle","diagnostic":"private plugin diagnostic"}),
+            "installUrl" if data["input"]["url"] == "https://example.com/offline.maka-plugin" => {
+                tx.send(data).unwrap();
+                call.reject("private plugin diagnostic");
+                return;
+            }
             "installUrl" => json!({"status":"committed","value":{"source":source,"package":{"id":"new.plugin","revision":"v2"}}}),
             "trustProjectMcp" => json!({"kind":"trusted"}),
+            "update" if data["endpoint"] == "skills" => {
+                tx.send(data).unwrap();
+                call.reject("Skill management is disabled");
+                return;
+            }
             "setPreference" | "delete" => json!({"kind":"applied"}),
             method => {
                 unexpected_tx.send(method.to_owned()).unwrap();
@@ -1659,21 +2727,58 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     app.press("label:Settings").unwrap();
     app.press("label:Subagents").unwrap();
     app.wait_for("label:Build reviewer").unwrap();
+    app.wait_for("text:/Fixture model · Personal/").unwrap();
+    app.wait_for("text:/Fixture model · Work/").unwrap();
     app.press("label:Add subagent").unwrap();
     app.wait_for("label:Name").unwrap();
+    app.press("label:Model").unwrap();
+    assert_eq!(
+        app.menu()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect::<Vec<_>>(),
+        [
+            "Fixture model · Personal",
+            "Fixture model · Work",
+            "Unique model · Work",
+            "Solo model"
+        ]
+    );
+    app.choose_menu_item("Fixture model · Work").unwrap();
     app.type_text("label:Name", "New reviewer").unwrap();
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "createPreset");
     assert_eq!(write["input"]["model"]["modelId"], "test-model");
+    assert_eq!(write["input"]["model"]["connectionId"], "work");
     app.press("label:Build reviewer").unwrap();
     app.wait_for("label:Instructions").unwrap();
+    app.press("label:Model").unwrap();
+    let entries = app.menu().unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.checked == Some(true))
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Fixture model · Personal"]
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.label.ends_with(" · Personal"))
+            .count(),
+        1
+    );
+    app.choose_menu_item("Fixture model · Personal").unwrap();
     app.type_text("label:Instructions", "Check documentation too.")
         .unwrap();
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "updatePreset");
     assert_eq!(write["input"]["expectedRevision"], 8);
+    assert_eq!(write["input"]["model"]["serviceTier"], "fast");
     app.press("label:Build reviewer").unwrap();
     app.wait_for("label:Delete").unwrap();
     app.press("label:Delete").unwrap();
@@ -1687,9 +2792,31 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     app.wait_for("label:Enabled").unwrap();
     app.press("label:Enabled").unwrap();
     let write = writes.try_recv().unwrap();
+    app.wait_for("text:The selected deployment source is invalid.")
+        .unwrap();
     assert_eq!(write["method"], "setEnabled");
     assert_eq!(write["input"]["instance"], json!(["key"]));
     app.press("label:Plugins").unwrap();
+    for (url, message) in [
+        (
+            "https://example.com/invalid.maka-plugin",
+            "The plugin bundle is invalid.",
+        ),
+        (
+            "https://example.com/offline.maka-plugin",
+            "Could not install the plugin.",
+        ),
+    ] {
+        app.type_text("label:URL", url).unwrap();
+        app.press("label:Install").unwrap();
+        app.wait_for(&format!("text:{message}")).unwrap();
+        assert!(!app.shows("text:/private plugin diagnostic/"));
+        let write = writes.try_recv().unwrap();
+        assert_eq!(write["method"], "installUrl");
+        assert_eq!(write["input"]["url"], url);
+        assert!(writes.try_recv().is_err());
+        app.clear("label:URL").unwrap();
+    }
     app.type_text("label:URL", "https://example.com/plugin.maka-plugin")
         .unwrap();
     app.press("label:Install").unwrap();
@@ -1754,6 +2881,13 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
             "session":"new-anchor","epoch":"e","transport":"quic","endpoints":["agent","settings","management","skills"]
         }}}})).unwrap();
     assert!(writes.try_recv().is_err());
+    app.clear("label:Name").unwrap();
+    app.type_text("label:Name", "future-server").unwrap();
+    app.press("label:Save").unwrap();
+    app.wait_for("text:Could not save the MCP server.").unwrap();
+    assert_eq!(writes.try_recv().unwrap()["input"]["name"], "future-server");
+    app.clear("label:Name").unwrap();
+    app.type_text("label:Name", "new-server").unwrap();
     app.press("label:Save").unwrap();
     let write = writes.try_recv().unwrap();
     assert_eq!(write["method"], "manageMcpServer");
@@ -1810,6 +2944,14 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
     assert_eq!(write["method"], "setPreference");
     assert_eq!(write["input"]["preference"]["enabled"], false);
     app.press("label:Release checklist").unwrap();
+    app.wait_for("label:Update").unwrap();
+    app.press("label:Update").unwrap();
+    app.wait_for("text:Could not read or update settings.")
+        .unwrap();
+    assert!(!app.shows("text:/Skill management is disabled/"));
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["method"], "update");
+    assert_eq!(write["input"]["reference"], "skill-ref");
     app.wait_for("label:Delete").unwrap();
     app.press("label:Delete").unwrap();
     let write = writes.try_recv().unwrap();
@@ -2124,7 +3266,8 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
                 match query_phase.load(std::sync::atomic::Ordering::SeqCst) {
                     0 => json!({"kind":"room","page":{"items":[message(2,"m2","Initial room message")],"through":0,"before":"m2"}}),
                     1 => json!({"kind":"room","page":{"items":[message(3,"m3","Live room message")],"through":1,"before":"m3"}}),
-                    _ => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
+                    2 => json!({"kind":"room","page":{"items":[message(4,"m4","Reconnected room message")],"through":2,"before":"m4"}}),
+                    _ => json!({"kind":"room","page":{"items":[message(5,"m5","Updated room after reconnect")],"through":3,"before":"m5"}}),
                 }
             }
             method => {
@@ -2136,16 +3279,15 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
         call.resolve(json!({"value":value}));
     });
     let (watch_tx, mut watch_rx) = mpsc::unbounded_channel();
-    let subscribe_phase = phase.clone();
+    let subscription_generation = std::sync::atomic::AtomicU64::new(3);
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
+        let generation = subscription_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let handle = json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation});
+        call.resolve(handle.clone());
         if data["method"] == "watch" {
-            watch_tx.send(data["subscriptionId"].clone()).unwrap();
+            watch_tx.send(handle).unwrap();
         }
-        let generation = if subscribe_phase.load(std::sync::atomic::Ordering::SeqCst) == 2 { 2 } else { 1 };
-        call.resolve(
-            json!({"rootId":"root","subscriptionId":data["subscriptionId"],"generation":generation}),
-        );
     });
     channel.handle("ios.unsubscribe", |call| {
         call.resolve(json!({"cancelled":true}))
@@ -2181,7 +3323,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     phase.store(1, std::sync::atomic::Ordering::SeqCst);
     app.send_host_event(
         "ios.subscriptionItem",
-        json!({"rootId":"root","generation":1,"subscriptionId":watch,
+        json!({"rootId":"root","generation":watch["generation"],"subscriptionId":watch["subscriptionId"],
         "item":{"kind":"room","through":1,"revision":1}}),
     )
     .unwrap();
@@ -2211,6 +3353,20 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
     assert!(app.settle());
     assert!(!app.shows("Stale page from first connection"));
     app.wait_for("label:Load earlier messages").unwrap();
+    let new_watch = fixture_recv(&mut watch_rx).await;
+    let deliver = |app: &mut Headless, mut handle: Value| {
+        handle["item"] = json!({"kind":"room","through":3,"revision":3});
+        app.send_host_event("ios.subscriptionItem", handle).unwrap();
+    };
+    phase.store(3, std::sync::atomic::Ordering::SeqCst);
+    deliver(&mut app, watch);
+    assert!(
+        !app.screen()
+            .matches("text:Updated room after reconnect")
+            .unwrap()
+    );
+    deliver(&mut app, new_watch);
+    app.wait_for("text:Updated room after reconnect").unwrap();
     assert!(unexpected.try_recv().is_err());
 }
 
@@ -2374,7 +3530,8 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
             ("agent", "botOutbox") => json!({"isBot":false}),
             ("agent", "presets") => json!([]),
             ("agent", "models") => json!({"kind":"ready","choices":[
-                {"label":"Not the default","selection":{"kind":"model","connectionId":"other","modelId":"other-model"}}
+                {"label":"Other Kimi model","selection":{"kind":"model","connectionId":"other","modelId":"other-model"}},
+                {"label":"Standalone model","selection":{"kind":"model","connectionId":"solo","modelId":"standalone"}}
             ],"next":null}),
             ("agent", "pendingInteractions") => json!({"entries":[]}),
             ("agent", "observe") => {
@@ -2388,8 +3545,15 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
             ("agent", "history") if input["sessionId"] == "room-new" =>
                 json!({"kind":"room","page":{"items":[],"through":0,"before":null,"after":null}}),
             ("agent", "history") => json!({"kind":"ready","chunks":[],"through":0,"before":null,"after":null}),
-            ("settings", "connections") => json!({"kind":"ready","revision":1,"connections":[],"next":null,
-                "defaultTarget":{"connectionId":"kimi","modelId":"kimi-k2.5"}}),
+            ("settings", "connections") => json!({"kind":"ready","revision":1,"next":null,
+                "defaultTarget":{"connectionId":"kimi","modelId":"kimi-k2.5"},"connections":[
+                    {"basis":{"connectionId":"kimi","revision":1},"name":"Personal","slug":"kimi",
+                        "provider":{"packageId":"fixture","entryId":"kimi","scope":"root","name":"kimi"}},
+                    {"basis":{"connectionId":"other","revision":1},"name":"Work","slug":"other",
+                        "provider":{"packageId":"fixture","entryId":"kimi","scope":"root","name":"kimi"}},
+                    {"basis":{"connectionId":"solo","revision":1},"name":"Solo connection","slug":"solo",
+                        "provider":{"packageId":"another","entryId":"kimi","scope":"root","name":"kimi"}}
+                ]}),
             ("settings", "resolveModel") => {
                 resolve_tx.send(input.clone()).unwrap();
                 if query_unavailable.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2488,7 +3652,21 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
     };
     app.wait_for("label:New Chat").unwrap();
     app.press("label:New Chat").unwrap();
-    app.wait_for("text:Kimi default").unwrap();
+    app.wait_for("text:Kimi default · Personal").unwrap();
+    app.press("label:Model").unwrap();
+    let entries = app.menu().unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Kimi default · Personal",
+            "Other Kimi model · Work",
+            "Standalone model"
+        ]
+    );
+    app.close_menu().unwrap();
     assert_eq!(resolves.try_recv().unwrap(), default_target);
     app.press("label:Start Chat").unwrap();
     let data = mutations.try_recv().unwrap();
@@ -2555,12 +3733,12 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
 
     let channel = HostChannel::new();
     let host_state = |generation, revision| {
-        let host = json!({"rootId":"root","hostName":"Relay Host","generation":generation,"endpoints":["agent"]});
+        let host = json!({"rootId":"root","hostName":"Relay Host","generation":generation,"endpoints":["agent","settings"]});
         json!({"revision":revision,"hosts":[host],"active":host,
             "connections":{"root":{"status":"connected","connection":host}}})
     };
     channel.handle("ios.bootstrap", move |call| call.resolve(host_state(1, 1)));
-    let model = |connection| json!({"kind":"model","connectionId":connection,"modelId":"shared","serviceTier":"fast"});
+    let model = |connection| json!({"kind":"model","connectionId":connection,"modelId":"shared","serviceTier":"fast","thinkingLevel":"high"});
     let row = |revision, backend: Value| {
         json!({"id":"chat","kind":"agent","title":"Chat","parentSessionId":null,
             "workspace":{"path":"/work"},"revision":revision,"backend":backend,
@@ -2590,9 +3768,27 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
             Some("pendingInteractions") => json!({"entries":[]}),
             Some("botOutbox") => json!({"isBot":false}),
             Some("models") => json!({"kind":"ready","choices":[
-                {"label":"First connector","selection":model("first")},
-                {"label":"Second connector","selection":model("second")}
+                {"label":"Shared model","selection":{"kind":"model","connectionId":"first","modelId":"shared","serviceTier":null,"thinkingLevel":null}},
+                {"label":"Shared model","selection":{"kind":"model","connectionId":"second","modelId":"shared","serviceTier":null,"thinkingLevel":null}},
+                {"label":"Unique model","selection":{"kind":"model","connectionId":"second","modelId":"unique"}},
+                {"label":"Solo model","selection":{"kind":"model","connectionId":"solo","modelId":"solo"}},
+                {"label":"Native agent","selection":{"kind":"executor","selection":{"executor":"codex","settings":{"runtime":"cli","model":"gpt-5"}}}}
             ]}),
+            Some("connections") => {
+                let rows = if data["input"]["kind"] == "start" {
+                    json!([
+                        {"basis":{"connectionId":"first","revision":1},"name":"First connector","slug":"first",
+                            "provider":{"packageId":"multi","entryId":"provider","scope":"root","name":"fixture"}},
+                        {"basis":{"connectionId":"solo","revision":1},"name":"Solo connector","slug":"solo",
+                            "provider":{"packageId":"single","entryId":"provider","scope":"root","name":"fixture"}}
+                    ])
+                } else {
+                    json!([{"basis":{"connectionId":"second","revision":1},"name":"Second connector","slug":"second",
+                        "provider":{"packageId":"multi","entryId":"provider","scope":"root","name":"fixture"}}])
+                };
+                let next = (data["input"]["kind"] == "start").then_some(2);
+                json!({"kind":"ready","revision":1,"connections":rows,"next":next,"defaultTarget":null})
+            }
             _ => {
                 call.reject("unexpected query");
                 return;
@@ -2601,17 +3797,16 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         call.resolve(json!({"value":value}));
     });
     let generation = Arc::new(AtomicU64::new(1));
-    let subscription_generation = generation.clone();
+    let subscription_generation = AtomicU64::new(3);
     let (watch_tx, mut watches) = mpsc::unbounded_channel();
     channel.handle("ios.subscribe", move |mut call| {
         let data = call.take_data();
+        let generation = subscription_generation.fetch_add(1, Ordering::SeqCst);
+        let handle = json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]});
+        call.resolve(handle.clone());
         if data["method"] == "watch" {
-            watch_tx
-                .send(data["subscriptionId"].as_str().unwrap().to_owned())
-                .unwrap();
+            watch_tx.send(handle).unwrap();
         }
-        let generation = subscription_generation.load(Ordering::SeqCst);
-        call.resolve(json!({"rootId":"root","generation":generation,"subscriptionId":data["subscriptionId"]}));
     });
     channel.handle("ios.unsubscribe", |call| {
         call.resolve(json!({"cancelled":true}))
@@ -2650,13 +3845,21 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     // Headless hosts the iOS view tree, not UIKit's native menu. Read the
     // displayed items and return the chosen ID through the native select event.
     let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    let (header_tx, mut headers) = mpsc::unbounded_channel();
     app.observe(move |_, batch| {
         for item in &batch.items {
+            if let MountItem::ScreenConfig { config, .. } = item
+                && config.title.as_deref() == Some("Chat")
+            {
+                header_tx.send(config.clone()).unwrap();
+            }
             if let MountItem::ComponentProps { id, props } = item {
                 for (name, value) in props {
                     if name.as_ref() == "items"
                         && let Some(items) = value.as_ref().and_then(Value::as_array)
-                        && items.iter().any(|item| item["label"] == "Second connector")
+                        && items
+                            .iter()
+                            .any(|item| item["label"] == "Shared model · Second connector")
                     {
                         menu_tx.send((*id, items.clone())).unwrap();
                     }
@@ -2665,14 +3868,58 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         }
     });
     app.wait_for("label:Conversation: Chat").unwrap();
+    app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
     app.press("label:Conversation: Chat").unwrap();
-    app.type_text("label:Message composer", "First draft")
-        .unwrap();
-
+    app.wait_for("text:work").unwrap();
+    let header = headers.try_recv().unwrap();
+    assert!(
+        header.title_view.is_none(),
+        "UIKit must fit the title to its actual buttons"
+    );
+    assert!(header.back_visible);
+    assert_eq!(header.right_items.len(), 2);
+    app.wait_for("text:Shared model · First connector").unwrap();
+    let (node, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+    let checked: Vec<_> = items
+        .iter()
+        .filter(|item| item["checked"] == true)
+        .map(|item| &item["label"])
+        .collect();
+    assert_eq!(checked, [&json!("Shared model · First connector")]);
+    let selected = items.iter().find(|item| item["checked"] == true).unwrap();
+    app.engine().control().dispatch_event(
+        node,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: selected["id"].clone(),
+        },
+    );
+    assert!(app.settle());
+    assert!(
+        mutations.try_recv().is_err(),
+        "reselecting must not overwrite tier or thinking level"
+    );
     let choose =
         |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
             let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item["label"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [
+                    "Shared model · First connector",
+                    "Shared model · Second connector",
+                    "Unique model · Second connector",
+                    "Solo model",
+                    "Native agent"
+                ]
+            );
             let item = items.iter().find(|item| item["label"] == label).unwrap();
+            if label == "Native agent" {
+                assert_eq!(item["checked"], true);
+            }
             app.engine().control().dispatch_event(
                 id,
                 EventKind::NativeEvent,
@@ -2689,8 +3936,39 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.send_host_event("ios.hostState", host_state(2, 2))
         .unwrap();
     let (observe, snapshot) = observations.try_recv().unwrap();
+    app.wait_for("text:Default").unwrap();
+    choose(&mut app, &mut menus, "Shared model · First connector");
+    assert!(mutations.try_recv().is_err());
+    observe.resolve(json!({"value":snapshot}));
+    assert!(app.settle());
+    assert!(
+        mutations.try_recv().is_err(),
+        "reselecting after observe must also be a no-op"
+    );
+
+    app.type_text("label:Message composer", "Prior configured model")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    let (first_send, first_receipt) = mutations.try_recv().unwrap();
+    assert_eq!(first_send["generation"], 2);
+    assert_eq!(first_send["input"]["backend"], model("first"));
+    first_receipt
+        .unwrap()
+        .resolve(json!({"value":SendResult::Queued {
+            session_id:"chat".into(), message_id:"prior".into(), revision:1, completion:None
+        }}));
+    assert!(app.settle());
+    app.type_text("label:Message composer", "First draft")
+        .unwrap();
+
+    *session.lock().unwrap() = row(3, model("first"));
+    hold_observe.store(true, Ordering::SeqCst);
+    generation.store(3, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", host_state(3, 3))
+        .unwrap();
+    let (observe, snapshot) = observations.try_recv().unwrap();
     hold_selection.store(true, Ordering::SeqCst);
-    choose(&mut app, &mut menus, "Second connector");
+    choose(&mut app, &mut menus, "Shared model · Second connector");
     assert!(
         mutations.try_recv().is_err(),
         "selected before the current observation"
@@ -2704,7 +3982,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.settle();
     let (selection, commit) = mutations.try_recv().unwrap();
     assert_eq!(selection["method"], "selectBackend");
-    assert_eq!(selection["generation"], 2);
+    assert_eq!(selection["generation"], 3);
     assert!(
         mutations.try_recv().is_err(),
         "sent before the model selection committed"
@@ -2715,7 +3993,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.settle();
     let (call, receipt) = mutations.try_recv().unwrap();
     let send: Send = serde_json::from_value(call["input"].clone()).unwrap();
-    assert_eq!(call["generation"], 2);
+    assert_eq!(call["generation"], 3);
     assert_eq!(send.message, "First draft");
     assert_eq!(
         serde_json::to_value(send.backend).unwrap()["connectionId"],
@@ -2731,21 +4009,22 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     assert!(app.settle());
     app.wait_for("text:Next draft").unwrap();
 
-    choose(&mut app, &mut menus, "First connector");
+    choose(&mut app, &mut menus, "Shared model · First connector");
     let (first, _) = mutations.try_recv().unwrap();
     assert_eq!(first["input"]["backend"]["connectionId"], "first");
-    choose(&mut app, &mut menus, "Second connector");
+    choose(&mut app, &mut menus, "Shared model · Second connector");
     let (second, _) = mutations.try_recv().unwrap();
     assert_eq!(second["method"], "selectBackend");
     let select: SelectBackend = serde_json::from_value(second["input"].clone()).unwrap();
     let backend = serde_json::to_value(select.backend).unwrap();
     assert_eq!(backend["connectionId"], "second");
-    assert_eq!(backend["serviceTier"], "fast");
-    app.wait_for("text:Second connector").unwrap();
+    assert!(backend["serviceTier"].is_null());
+    app.wait_for("text:Shared model · Second connector")
+        .unwrap();
 
     // An ended watch event arriving while a stale running observe is in flight
     // must schedule a catch-up observe rather than sticking in the running state.
-    let watch_id = std::iter::from_fn(|| watches.try_recv().ok())
+    let watch = std::iter::from_fn(|| watches.try_recv().ok())
         .last()
         .unwrap();
     hold_observe.store(true, Ordering::SeqCst);
@@ -2753,7 +4032,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         "ios.subscriptionItem",
         json!({
             "rootId": "root",
-            "subscriptionId": watch_id,
+            "subscriptionId": watch["subscriptionId"],
+            "generation": watch["generation"],
             "item": { "kind": "events", "through": 2, "events": [{ "runId": "r1", "fact": { "kind": "opened" } }] }
         }),
     )
@@ -2763,7 +4043,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         "ios.subscriptionItem",
         json!({
             "rootId": "root",
-            "subscriptionId": watch_id,
+            "subscriptionId": watch["subscriptionId"],
+            "generation": watch["generation"],
             "item": { "kind": "events", "through": 3, "events": [{ "runId": "r1", "fact": { "kind": "ended" } }] }
         }),
     )
@@ -2787,4 +4068,471 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
         !app.shows("label:Stop Run"),
         "catch-up observe after ended must clear the running state"
     );
+    let executor = json!({"kind":"executor","selection":{"executor":"codex",
+        "settings":{"runtime":"cli","model":"gpt-5","thinkingLevel":"high"}}});
+    *session.lock().unwrap() = row(8, executor.clone());
+    generation.store(4, Ordering::SeqCst);
+    app.send_host_event("ios.hostState", host_state(4, 4))
+        .unwrap();
+    app.wait_for("text:Native agent").unwrap();
+    choose(&mut app, &mut menus, "Native agent");
+    assert!(
+        mutations.try_recv().is_err(),
+        "reselecting the executor must not overwrite its settings"
+    );
+
+    app.clear("label:Message composer").unwrap();
+    app.type_text(
+        "label:Message composer",
+        "Executor with configured thinking",
+    )
+    .unwrap();
+    app.press("label:Send message").unwrap();
+    let (sent, receipt) = mutations.try_recv().unwrap();
+    assert_eq!(sent["generation"], 4);
+    assert_eq!(sent["input"]["backend"], executor);
+    receipt.unwrap().resolve(json!({"value":SendResult::Queued {
+        session_id:"chat".into(), message_id:"executor".into(), revision:2, completion:None
+    }}));
+    assert!(app.settle());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connection_defaults_use_all_pages_and_preserve_manual_edits() {
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Naming Host","generation":1,"endpoints":["agent","settings","authentication"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let identity = json!({"packageId":"fixture.provider","entryId":"provider","scope":"profile","name":"acme_cloud"});
+    let summary = |id: &str, slug: &str, name: &str, provider: &Value| {
+        json!({"basis":{"connectionId":id,"revision":1},"slug":slug,"name":name,"provider":provider,
+            "enabled":true,"enabledModelCount":0,"editable":true,"usageLimits":false})
+    };
+    let initial = vec![
+        summary(
+            "other",
+            "other",
+            "Other",
+            &json!({"packageId":"other.provider","entryId":"provider","scope":"profile","name":"other"}),
+        ),
+        summary("original", "legacy-acme", " Acme ", &identity),
+    ];
+    let catalog = Arc::new(std::sync::Mutex::new(initial));
+    let query_catalog = catalog.clone();
+    let provider_identity = identity.clone();
+    let fail_continuation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fail_read = fail_continuation.clone();
+    let (catalog_tx, mut catalog_reads) = mpsc::unbounded_channel();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let input = &data["input"];
+        let value = match data["method"].as_str().unwrap() {
+            "list" => json!({"sessions":[]}),
+            "botOutbox" => json!({"isBot":false}),
+            "connections" => {
+                catalog_tx.send(input.clone()).unwrap();
+                let rows = query_catalog.lock().unwrap();
+                let revision = rows.len();
+                if input["kind"] == "continue" && fail_read.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    call.resolve(json!({"value":{"kind":"changed","revision":revision + 1}}));
+                    return;
+                }
+                let (connections, next) = if input["kind"] == "start" {
+                    (&rows[..1], Some(1))
+                } else {
+                    (&rows[1..], None)
+                };
+                json!({"kind":"ready","revision":revision,"connections":connections,"next":next,"defaultTarget":null})
+            }
+            "models" => json!({"kind":"ready","revision":1,"choices":[],"next":null}),
+            "externalAgents" => json!({"runtimes":[],"state":{"kind":"disabled"}}),
+            "providers" => json!({"next":null,"providers":[{"label":"Acme","identity":provider_identity}]}),
+            "provider" => json!({"identity":provider_identity,"descriptor":{"label":"Acme",
+                "configurationDefaults":{},"configurationSchema":{},"authentication":[],"anonymous":true}}),
+            "connection" => {
+                let rows = query_catalog.lock().unwrap();
+                let Some(row) = rows.iter().find(|row| row["basis"]["connectionId"] == input["connectionId"]) else {
+                    call.reject("connection not found");
+                    return;
+                };
+                json!({"kind":"ready","name":row["name"],"enabled":true,"enabledModelCount":0,
+                    "target":{"connectionId":row["basis"]["connectionId"],"revision":1,"slug":row["slug"],
+                        "configuration":{},"provider":row["provider"]},
+                    "editing":{"enabledModelIds":[],"discoveredModelIds":[],"modelOverrides":null,"requestBodyOverlay":null}})
+            }
+            "credentialStatus" => json!({"kind":"status","status":{"locator":input["locator"],"configured":false,
+                "credentialId":null,"revision":null}}),
+            _ => {
+                call.reject("unexpected query");
+                return;
+            }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","generation":1,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    let (save_tx, mut saves) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        let input = &data["input"];
+        let mut rows = catalog.lock().unwrap();
+        let revision = rows.len();
+        save_tx.send(data.clone()).unwrap();
+        if data["method"] != "create" || input["expectedCatalogRevision"] != revision {
+            call.reject("expected a create using the displayed catalog revision");
+            return;
+        }
+        let draft = &input["connection"];
+        let slug = draft["slug"].as_str().unwrap();
+        let name = draft["name"].as_str().unwrap();
+        if let Err(error) = maka_agent_facts::configuration::validation::slug(slug) {
+            call.reject(error);
+            return;
+        }
+        if rows.iter().any(|row| row["slug"] == slug) {
+            call.reject("duplicate slug");
+            return;
+        }
+        rows.push(summary(slug, slug, name, &draft["provider"]));
+        call.resolve(
+            json!({"value":{"kind":"committed","connection":{"connectionId":slug,"revision":1}}}),
+        );
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.press("label:Models & Connections").unwrap();
+    app.wait_for("label:Add connection").unwrap();
+    let assert_catalog = |reads: &mut mpsc::UnboundedReceiver<Value>, revision| {
+        assert_eq!(reads.try_recv().unwrap(), json!({"kind":"start"}));
+        assert_eq!(
+            reads.try_recv().unwrap(),
+            json!({"kind":"continue","offset":1,"revision":revision})
+        );
+        assert!(reads.try_recv().is_err());
+    };
+    assert_catalog(&mut catalog_reads, 2);
+    app.press("label:Add connection").unwrap();
+    for (revision, expected_name, expected_slug) in [
+        (2, "Acme 2", "acme-cloud"),
+        (3, "Acme 3", "acme-cloud-2"),
+        (4, "Acme 4", "acme-cloud-3"),
+    ] {
+        app.wait_for("label:Acme").unwrap();
+        app.press("label:Acme").unwrap();
+        app.wait_for("label:Name").unwrap();
+        assert_eq!(
+            app.screen().input_text("label:Name").unwrap(),
+            Some(expected_name)
+        );
+        assert_eq!(
+            app.screen().input_text("label:Connection ID").unwrap(),
+            Some(expected_slug)
+        );
+        assert!(
+            catalog_reads.try_recv().is_err(),
+            "opening the editor refetched the catalog"
+        );
+        let (name, slug) = if revision == 4 {
+            app.clear("label:Name").unwrap();
+            app.type_text("label:Name", "Personal Acme").unwrap();
+            app.clear("label:Connection ID").unwrap();
+            app.type_text("label:Connection ID", "personal-acme")
+                .unwrap();
+            ("Personal Acme", "personal-acme")
+        } else {
+            (expected_name, expected_slug)
+        };
+        if revision == 3 {
+            fail_continuation.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        app.press("label:Save").unwrap();
+        let data = saves.try_recv().unwrap();
+        assert_eq!(data["generation"], 1);
+        assert_eq!(data["input"]["connection"]["name"], name);
+        assert_eq!(data["input"]["connection"]["slug"], slug);
+        assert_eq!(data["input"]["expectedCatalogRevision"], revision);
+        app.wait_for_gone("label:Connection ID", Duration::from_secs(2))
+            .unwrap();
+        assert_catalog(&mut catalog_reads, revision + 1);
+        app.press("label:Provider").unwrap();
+        if revision == 3 {
+            assert!(
+                app.press("label:Acme").is_err(),
+                "obsolete catalog must not open an editor"
+            );
+            app.press("label:Models & Connections").unwrap();
+            app.wait_for("label:Retry").unwrap();
+            app.press("label:Retry").unwrap();
+            assert_catalog(&mut catalog_reads, 4);
+            app.press("label:Add connection").unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_menus_work_without_permission_to_read_connections() {
+    use maka_agent_api::contract::SendResult;
+    use nsh_core::{EventKind, EventPayload, MountItem};
+
+    let channel = HostChannel::new();
+    channel.handle("ios.bootstrap", |call| {
+        let host = json!({"rootId":"root","hostName":"Restricted Host","generation":1,"endpoints":["agent","settings"]});
+        call.resolve(json!({"revision":1,"hosts":[host],"active":host,
+            "connections":{"root":{"status":"connected","connection":host}}}));
+    });
+    let session = Arc::new(std::sync::Mutex::new(json!({
+        "id":"chat","kind":"agent","title":"Permission test","parentSessionId":null,"workspace":{"path":"/work"},
+        "revision":1,"backend":{"kind":"model","connectionId":"a","modelId":"a"},
+        "updatedAt":1700000000000u64,"activity":"idle"
+    })));
+    let read = session.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let row = read.lock().unwrap().clone();
+        let value = match data["method"].as_str() {
+            Some("connections") => {
+                call.reject("settings.connections not granted");
+                return;
+            }
+            Some("list") => json!({"sessions":[row]}),
+            Some("observe") => json!({"session":row,"through":0,"run":null}),
+            Some("history") => json!({"kind":"ready","chunks":[],"through":0,"before":null}),
+            Some("pendingInteractions") => json!({"entries":[]}),
+            Some("botOutbox") => json!({"isBot":false}),
+            Some("projects") => json!({"kind":"projects","projects":[],"next":null}),
+            Some("directories") => json!({"kind":"roots","roots":[{"name":"Work","path":"/work"}]}),
+            Some("models") => json!({"kind":"ready","revision":1,"next":null,"choices":[
+                {"label":"First model","selection":{"kind":"model","connectionId":"a","modelId":"a"}},
+                {"label":"Second model","selection":{"kind":"model","connectionId":"b","modelId":"b"}}
+            ]}),
+            _ => { call.reject("unexpected query"); return; }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":"root","generation":1,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (writes_tx, mut writes) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        let result = match data["method"].as_str() {
+            Some("selectBackend") => {
+                let mut row = session.lock().unwrap();
+                row["revision"] = json!(2);
+                row["backend"] = data["input"]["backend"].clone();
+                json!({"kind":"committed","session":*row})
+            }
+            Some("send") => json!(SendResult::Queued {
+                session_id: "chat".into(),
+                message_id: "queued".into(),
+                revision: 1,
+                completion: None
+            }),
+            _ => {
+                call.reject("unexpected mutation");
+                return;
+            }
+        };
+        writes_tx.send(data).unwrap();
+        call.resolve(json!({"value":result}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::Ios,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item
+                && let Some(items) = props.iter().find_map(|(name, value)| {
+                    if name.as_ref() == "items" {
+                        value.as_ref()?.as_array()
+                    } else {
+                        None
+                    }
+                })
+                && let Some(choice) = items.iter().find(|item| item["label"] == "Second model")
+            {
+                menu_tx.send((*id, choice["id"].clone())).unwrap();
+            }
+        }
+    });
+    app.wait_for("label:Conversation: Permission test").unwrap();
+    app.press("label:Conversation: Permission test").unwrap();
+    app.wait_for("text:First model").unwrap();
+    let (id, choice) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+    app.engine().control().dispatch_event(
+        id,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: choice,
+        },
+    );
+    app.wait_for("text:Second model").unwrap();
+    assert_eq!(writes.try_recv().unwrap()["method"], "selectBackend");
+    app.type_text("label:Message composer", "Send with restricted settings")
+        .unwrap();
+    app.press("label:Send message").unwrap();
+    let send = writes.try_recv().unwrap();
+    assert_eq!(send["method"], "send");
+    assert_eq!(send["input"]["backend"]["connectionId"], "b");
+
+    app.back().unwrap();
+    app.press("label:New Chat").unwrap();
+    app.wait_for("text:Unavailable").unwrap();
+    let (id, choice) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+    app.engine().control().dispatch_event(
+        id,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: choice,
+        },
+    );
+    app.wait_for("text:Second model").unwrap();
+    assert!(app.screen().enabled("label:Start Chat").unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_settings_reload_after_reconnect_and_refresh_the_host_default_summary() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let channel = HostChannel::new();
+    let host_state = |generation| {
+        let host = json!({"rootId":"root","hostName":"Models Host","generation":generation,"endpoints":["agent","settings"]});
+        let offline = json!({"rootId":"offline","hostName":"Offline Host","endpoints":[]});
+        json!({"revision":generation,"hosts":[host,offline],"active":host,
+            "connections":{"root":{"status":"connected","connection":host},"offline":{"status":"offline"}}})
+    };
+    channel.handle("ios.bootstrap", move |call| call.resolve(host_state(1)));
+    let (pending_tx, mut pending) = mpsc::unbounded_channel();
+    let hold = Arc::new(AtomicBool::new(false));
+    let hold_read = hold.clone();
+    let hold_presets = Arc::new(AtomicBool::new(false));
+    let pending_presets = hold_presets.clone();
+    let default_work = Arc::new(AtomicBool::new(false));
+    let read_default = default_work.clone();
+    channel.handle("ios.hostQuery", move |mut call| {
+        let data = call.take_data();
+        let target = |id| json!({"connectionId":id,"modelId":"same"});
+        let value = match (data["endpoint"].as_str(), data["method"].as_str()) {
+            (Some("settings"), Some("connections")) => {
+                let provider = json!({"packageId":"fixture","entryId":"provider","scope":"profile","name":"fixture"});
+                let row = |id, name| json!({"basis":{"connectionId":id,"revision":1},"name":name,"slug":id,"provider":provider});
+                let current = if read_default.load(Ordering::SeqCst) { "work" } else { "personal" };
+                let page = json!({"kind":"ready","revision":5,"next":null,"defaultTarget":target(current),
+                    "connections":[row("personal","Personal"),row("work","Work")]});
+                if hold_read.swap(false, Ordering::SeqCst) {
+                    pending_tx.send((call, page)).unwrap();
+                    return;
+                }
+                page
+            }
+            (Some("settings"), Some("resolveModel")) => json!({"kind":"ready","choice":{
+                "label":"Shared model","selection":data["input"],"thinkingLevels":[],"defaultThinkingLevel":null
+            }}),
+            (Some("settings"), Some("models")) => json!({"kind":"ready","revision":5,"next":null,"choices":[
+                {"label":"Shared model","selection":target("personal"),"thinkingLevels":[]},
+                {"label":"Shared model","selection":target("work"),"thinkingLevels":[]}
+            ]}),
+            (Some("agent"), Some("presets")) => {
+                let preset = |name| json!([{"id":"preset","name":name,"description":"","instruction":"",
+                    "enabled":true,"availability":{"kind":"available"},"model":target("work")}]);
+                if pending_presets.swap(false, Ordering::SeqCst) {
+                    pending_tx.send((call, preset("Old generation preset"))).unwrap();
+                    return;
+                }
+                preset("New generation preset")
+            }
+            (_, Some("externalAgents")) => json!({"runtimes":[],"state":{"kind":"disabled"}}),
+            (_, Some("list")) => json!({"sessions":[]}),
+            (_, Some("botOutbox")) => json!({"isBot":false}),
+            _ => { call.reject("unexpected query"); return; }
+        };
+        call.resolve(json!({"value":value}));
+    });
+    channel.handle("ios.subscribe", |mut call| {
+        let data = call.take_data();
+        call.resolve(
+            json!({"rootId":data["rootId"],"generation":1,"subscriptionId":data["subscriptionId"]}),
+        );
+    });
+    channel.handle("ios.unsubscribe", |call| {
+        call.resolve(json!({"cancelled":true}))
+    });
+    let (writes_tx, mut writes) = mpsc::unbounded_channel();
+    channel.handle("ios.hostMutate", move |mut call| {
+        let data = call.take_data();
+        if data["method"] != "setDefault" {
+            call.reject("unexpected mutation");
+            return;
+        }
+        default_work.store(true, Ordering::SeqCst);
+        writes_tx.send(data).unwrap();
+        call.resolve(json!({"value":{"kind":"committed","revision":6}}));
+    });
+    let mut config = engine_config(channel, tokio::runtime::Handle::current());
+    config.viewport = Size::new(px(390.), px(844.));
+    config.environment = Environment {
+        os: Os::MacOs,
+        reduce_motion: true,
+        ..Environment::default()
+    };
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("label:Settings").unwrap();
+    app.press("label:Settings").unwrap();
+    app.wait_for("text:Connected · Shared model · Personal")
+        .unwrap();
+    app.press("label:Computer: Models Host").unwrap();
+
+    hold.store(true, Ordering::SeqCst);
+    app.press("label:Models & Connections").unwrap();
+    let (old, page) = pending.try_recv().unwrap();
+    app.send_host_event("ios.hostState", host_state(2)).unwrap();
+    old.resolve(json!({"value":page}));
+    app.wait_for("label:Add connection").unwrap();
+    assert!(app.screen().enabled("label:Add connection").unwrap());
+    app.press("label:Default model").unwrap();
+    app.choose_menu_item("Shared model · Work").unwrap();
+    let write = writes.try_recv().unwrap();
+    assert_eq!(write["generation"], 2);
+    assert_eq!(write["input"]["target"]["connectionId"], "work");
+    app.back().unwrap();
+    app.back().unwrap();
+    app.wait_for("text:Connected · Shared model · Work")
+        .unwrap();
+
+    app.press("label:Computer: Models Host").unwrap();
+    hold_presets.store(true, Ordering::SeqCst);
+    app.press("label:Subagents").unwrap();
+    let (old, stale) = pending.try_recv().unwrap();
+    app.send_host_event("ios.hostState", host_state(3)).unwrap();
+    old.resolve(json!({"value":stale}));
+    app.wait_for("label:New generation preset").unwrap();
+    assert!(!app.shows("Old generation preset"));
 }

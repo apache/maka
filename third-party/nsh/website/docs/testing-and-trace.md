@@ -171,6 +171,7 @@ options as the test gives them: one the target's platform cannot honor makes `op
 | `network` | none | What the app's requests get, by route: see [Stubbing the network](#stubbing-the-network). `"live"`: the real network, for its requests, sockets and WebSockets. |
 | `width`, `height` | 390, 844 | The viewport in points: headless, the desktops' window, the web's page. On iOS and Android the app fills the device's screen. |
 | `safeArea` | 0 | The safe area insets in points: `{ top: 47, bottom: 34 }`. |
+| `reservedRegions` | none | The regions the device reserves (`reservedRegions()`), a fold to lay out around: `[{ kind: "division", bounds: { origin: { x: 460, y: 0 }, size: { width: 31, height: 669 } } }]`. Headless only: with `--target` the device reports its own, and giving it rejects with `ERR_NSH_TEST_UNSUPPORTED`. |
 | `clipboard` | empty | The text on the clipboard at the start. |
 | `colorScheme` | `"light"` | The system's appearance: `"light"` or `"dark"` (`colorScheme()`, `dark:` classes). |
 | `locale` | `"en-US"` | The device's locale, a BCP 47 tag (`locale()`, `Intl`'s default). |
@@ -510,7 +511,7 @@ a test matches the code:
 | `ERR_NSH_TEST_COVERED` | Another view is drawn over the one `press` names and would take a finger there (an overlay over a button, a bar over a row scrolled under it, a selection's edit menu over a view). |
 | `ETIMEDOUT` | `waitFor` or `waitUntil` ran out of time, or the app rendered nothing after `open`. |
 | `ERR_NSH_TEST_NO_BACK` | `back()` found nothing to go back from. |
-| `ERR_NSH_TEST_UNSUPPORTED` | `open` with `--target` was given an option the target's platform cannot honor: `width` or `height` on iOS and Android, a phone's `platform` on a desktop or the web, a desktop's or the other phone's on iOS or Android, `host.handlers`, `modules`, `url`. The message names it. Also `forward()` off `--target web`. |
+| `ERR_NSH_TEST_UNSUPPORTED` | `open` with `--target` was given an option the target's platform cannot honor: `width` or `height` on iOS and Android, a phone's `platform` on a desktop or the web, a desktop's or the other phone's on iOS or Android, `host.handlers`, `modules`, `url`, `reservedRegions`. The message names it. Also `forward()` off `--target web`. |
 
 ```tsx
 await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" });
@@ -685,7 +686,7 @@ as it was; a text input's own copy and paste use the system's. `host.params` rea
 events, and the URLs the app opens are recorded for `app.openedUrls()` instead of being opened. `host.handlers` runs
 headless, where the test answers the app's calls. `open` checks its options against the target: `width` and
 `height` on iOS and Android, a `platform` of another kind of device (a phone's on a desktop or the web, a desktop's or
-the other phone's on iOS or Android), `host.handlers`, `modules` and `url` reject with `ERR_NSH_TEST_UNSUPPORTED`, so a test runs as it
+the other phone's on iOS or Android), `host.handlers`, `modules`, `url` and `reservedRegions` reject with `ERR_NSH_TEST_UNSUPPORTED`, so a test runs as it
 is written or says what it needs. A desktop's `platform` (`"macos"` for a desktop's mouse and keys) runs on every
 desktop target and the web, as that target's platform and always as a desktop: in the browser the page starts in the
 desktop idiom whatever its width, where without a `platform` (or with `"web"`) it measures its idiom as a browser does

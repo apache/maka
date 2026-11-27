@@ -1,0 +1,18 @@
+[package]
+name = "nsh-gpu"
+description = "GPU views: the renderers an app writes with wgpu to draw a view's box every frame, on a thread of their own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nsh-core.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true

@@ -40,27 +40,35 @@ import {
   windowDrag,
 } from './chrome';
 import { appearance } from './appearance';
-import { darkBackground, lookTokens, type Look, type LookTokens } from './look';
+import {
+  darkBackground,
+  lookShadow,
+  lookTokens,
+  scaledRadius,
+  shapeValue,
+  type Look,
+  type LookTokens,
+} from './look';
 
 /** A text wraps only within a width it is held to; the narrowest window is 640. */
 const TOOLTIP_MAX_WIDTH = 280;
 
 /** NSH's tooltip bubble in Maka's colors: a line, or `richTooltipStyle` for more. */
 export const tooltipStyle = () => ({
-  borderRadius: 6,
+  borderRadius: radius(6),
   paddingHorizontal: 8,
   paddingVertical: 4,
   backgroundColor: C.floating,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
   maxWidth: TOOLTIP_MAX_WIDTH,
 });
 export const richTooltipStyle = () => ({
-  borderRadius: 8,
+  borderRadius: radius(8),
   padding: 10,
   gap: 8,
   backgroundColor: C.floating,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
   maxWidth: TOOLTIP_MAX_WIDTH,
 });
@@ -131,25 +139,52 @@ const LIGHT: typeof DARK = {
 };
 /** The default palette's colors in one appearance. */
 export const defaultColors = (dark: boolean) => (dark ? DARK : LIGHT);
-// The look's tokens, made once per look and appearance.
-let made: { look: Look; dark: boolean; tokens: LookTokens } | null = null;
-const lookColors = (): LookTokens | null => {
-  if (platform.idiom === 'terminal') return null;
-  const look = appearance.look();
-  if (!look) return null;
-  const dark = colorScheme() !== 'light';
-  if (made?.look !== look || made.dark !== dark)
-    made = { look, dark, tokens: lookTokens(look.cssVars[dark ? 'dark' : 'light']) };
-  return made.tokens;
-};
-/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`), or
- * with a look, whether its background is; terminals keep the dark colors. */
-export const isDark = () => {
+/** Whether `look` (null for the default palette) is dark: the window's appearance in effect
+ * (`setColorScheme`), or with a look, whether its background is; terminals keep the dark
+ * colors. */
+const darkLook = (look: Look | null) => {
   if (platform.idiom === 'terminal') return true;
-  const look = appearance.look();
   const dark = colorScheme() !== 'light';
   return look ? darkBackground(look.cssVars[dark ? 'dark' : 'light'].background) : dark;
 };
+/** Whether the interface is dark. */
+export const isDark = () => darkLook(appearance.look());
+/** The shape of `look` (null for the default look); terminals keep their own. */
+export function lookShape(look: () => Look | null) {
+  const shaped = () => (platform.idiom === 'terminal' ? null : look());
+  const shadowOf = (scale: number) => {
+    const value = shaped();
+    return value ? lookShadow(value, colorScheme() !== 'light', scale) : null;
+  };
+  return {
+    /** A corner of radius `n` in the default look, as this look draws it. */
+    radius: (n: number) => {
+      const value = shaped();
+      return value ? scaledRadius(n, shapeValue(value, 'radius')) : n;
+    },
+    /** The width of the line around a control, a field or a card. */
+    lineWidth: () => {
+      const value = shaped();
+      return value ? shapeValue(value, 'border-width') : 1;
+    },
+    /** Space added between the letters of a conversation's text. */
+    letterSpacing: () => {
+      const value = shaped();
+      return value ? shapeValue(value, 'letter-spacing') : 0;
+    },
+    /** The shadow under a field, a primary button or a card: a style to spread, empty for none. */
+    raisedShadow: () => {
+      const shadow = shadowOf(1);
+      return shadow ? { boxShadow: shadow } : {};
+    },
+    /** The shadow under what floats: the look's, farther and wider, or `builtIn` where it has none. */
+    floatingShadow: (builtIn: string) => shadowOf(2) ?? builtIn,
+  };
+}
+/** The shape of the look in effect. */
+export const { radius, lineWidth, letterSpacing, raisedShadow, floatingShadow } = lookShape(() =>
+  appearance.look(),
+);
 type Tone = keyof typeof DARK;
 // The desktop window's regions, by fill: the sidebar (`chrome`) sits one step
 // below the content `panel` in both appearances, and what rests on the panel
@@ -164,29 +199,66 @@ const REGIONS = {
   floating: ['background', 'raised'],
   floatingRaised: ['raised', 'pressed'],
 } satisfies Record<string, [Tone, Tone]>;
-/** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
-export const C = Object.defineProperties({} as Record<Tone | keyof typeof REGIONS, string>, {
-  ...Object.fromEntries(
-    Object.keys(DARK).map((key) => [
-      key,
-      {
-        enumerable: true,
-        get: () => {
-          return lookColors()?.[key as keyof LookTokens] ?? (isDark() ? DARK : LIGHT)[key as Tone];
+type Colors = Record<Tone | keyof typeof REGIONS, string>;
+/** The colors of `look` (null for the default palette), read anew each time one is. */
+export function lookColors(look: () => Look | null): Colors {
+  // The look's tokens and whether its background is dark, made once per look and appearance;
+  // null for the default palette and in terminals.
+  let made: { look: Look; dark: boolean; tokens: LookTokens; darkBackground: boolean } | null =
+    null;
+  const current = () => {
+    if (platform.idiom === 'terminal') return null;
+    const value = look();
+    if (!value) return null;
+    const dark = colorScheme() !== 'light';
+    if (made?.look !== value || made.dark !== dark) {
+      const picked = value.cssVars[dark ? 'dark' : 'light'];
+      made = {
+        look: value,
+        dark,
+        tokens: lookTokens(picked),
+        darkBackground: darkBackground(picked.background),
+      };
+    }
+    return made;
+  };
+  // `darkLook` of the look, from what is made.
+  const lookIsDark = () =>
+    platform.idiom === 'terminal' || (current()?.darkBackground ?? colorScheme() !== 'light');
+  const colors: Colors = Object.defineProperties({} as Colors, {
+    ...Object.fromEntries(
+      Object.keys(DARK).map((key) => [
+        key,
+        {
+          enumerable: true,
+          get: () =>
+            current()?.tokens[key as keyof LookTokens] ??
+            (lookIsDark() ? DARK : LIGHT)[key as Tone],
         },
-      },
-    ]),
-  ),
-  ...Object.fromEntries(
-    Object.entries(REGIONS).map(([key, [light, dark]]) => [
-      key,
-      { enumerable: true, get: () => C[platform.idiom !== 'terminal' && isDark() ? dark : light] },
-    ]),
-  ),
-});
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(REGIONS).map(([key, [light, dark]]) => [
+        key,
+        {
+          enumerable: true,
+          get: () => colors[platform.idiom !== 'terminal' && lookIsDark() ? dark : light],
+        },
+      ]),
+    ),
+  });
+  return colors;
+}
+/** The interface's colors, in the appearance and palette in effect: read them where they are drawn. */
+export const C = lookColors(() => appearance.look());
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.idiom === 'terminal' ? 16 : 24 };
+/** A conversation's text: the body style with the look's letter spacing. */
+export const readingTextStyle = () => {
+  const spacing = letterSpacing();
+  return spacing ? { ...bodyTextStyle, letterSpacing: spacing } : bodyTextStyle;
+};
 export const secondaryTextStyle = {
   fontSize: 13,
   lineHeight: platform.idiom === 'terminal' ? 16 : 20,
@@ -199,18 +271,19 @@ export const codeTextStyle = {
   lineHeight: platform.idiom === 'terminal' ? 16 : 20,
 };
 // Rounded Input clipping rasterizes the editor on a cell surface.
-export const inputBorderRadius = platform.idiom === 'terminal' ? 0 : 8;
+export const inputBorderRadius = () => (platform.idiom === 'terminal' ? 0 : radius(8));
 export const compact = () => windowSize().height < 480;
 /** A control's name and its shortcut, in the keys of the platform the app runs on. */
 export const shortcut = (label: string, keystroke: string) =>
   `${label} · ${keymap.label(keystroke)}`;
-export const controlStyle = {
-  minHeight: 32,
-  paddingHorizontal: 12,
-  paddingVertical: 8,
-  borderRadius: 8,
-  justifyContent: 'center',
-} as const;
+export const controlStyle = () =>
+  ({
+    minHeight: 32,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radius(8),
+    justifyContent: 'center',
+  }) as const;
 export const composerToolbarIconSize = platform.idiom === 'terminal' ? 16 : 14;
 export const composerToolbarChevronSize = platform.idiom === 'terminal' ? 16 : 12;
 export const composerIconSlot = {
@@ -221,15 +294,16 @@ export const composerIconSlot = {
   justifyContent: 'center',
 } as const;
 
-export const toolbarControlStyle = {
-  ...controlStyle,
-  paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
-} as const;
-export const composerToolbarControlStyle =
+export const toolbarControlStyle = () =>
+  ({
+    ...controlStyle(),
+    paddingHorizontal: platform.idiom === 'terminal' ? 12 : 8,
+  }) as const;
+export const composerToolbarControlStyle = () =>
   platform.idiom === 'terminal'
-    ? toolbarControlStyle
+    ? toolbarControlStyle()
     : ({
-        ...toolbarControlStyle,
+        ...toolbarControlStyle(),
         minHeight: 28,
         height: 28,
         paddingHorizontal: 6,
@@ -255,7 +329,7 @@ export const disclosureContentInset = (terminal: number) =>
 export const fieldBoxStyle = () =>
   platform.idiom === 'terminal'
     ? {}
-    : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
+    : { borderWidth: lineWidth(), borderColor: C.line, backgroundColor: C.background };
 export const controlHoverStyle = () => ({ backgroundColor: C.raised });
 export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor: C.accent });
 /** Focus for a control that rests on a card: one step above the card. */
@@ -280,10 +354,10 @@ export const floatingStyle = () => ({
   minHeight: 0,
   maxWidth: Math.max(0, windowSize().width - 16),
   backgroundColor: C.floating,
-  borderWidth: 1,
+  borderWidth: lineWidth(),
   borderColor: C.line,
-  borderRadius: 12,
-  ...(platform.idiom === 'terminal' ? {} : { boxShadow: `0 8px 24px ${C.shadow}` }),
+  borderRadius: radius(12),
+  ...(platform.idiom === 'terminal' ? {} : { boxShadow: floatingShadow(`0 8px 24px ${C.shadow}`) }),
 });
 /** A menu row: a 16-point icon lane at 12 points from the surface's edge, the
  * text lane at 36, and a trailing lane for the check, shortcut or chevron. */
@@ -291,7 +365,7 @@ export const menuRowStyle = () => ({
   minHeight: 32,
   paddingHorizontal: 8,
   paddingVertical: 8,
-  borderRadius: 8,
+  borderRadius: radius(8),
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   justifyContent: 'flex-start' as const,
@@ -323,6 +397,8 @@ export function IconButton(props: {
   icon: Parameters<typeof Icon>[0]['name'];
   selected?: boolean;
   disabled?: boolean;
+  onPressDown?: () => void;
+  onPressUp?: () => void;
   onPress: () => void;
 }) {
   return (
@@ -331,9 +407,11 @@ export function IconButton(props: {
       tooltip={textTooltip(() => props.tooltip ?? props.label)}
       selected={props.selected}
       disabled={props.disabled}
+      onPressDown={props.onPressDown}
+      onPressUp={props.onPressUp}
       onPress={props.onPress}
       style={{
-        ...controlStyle,
+        ...controlStyle(),
         width: props.compact ? 24 : 32,
         minHeight: props.compact ? 24 : 32,
         paddingVertical: props.compact ? 4 : 8,
@@ -427,7 +505,7 @@ export function Disclosure(props: {
         selected={props.open}
         onPress={props.onPress}
         style={{
-          ...controlStyle,
+          ...controlStyle(),
           paddingHorizontal: disclosureInset(props.terminalInset ?? 0),
           flex: 1,
           minWidth: 0,
@@ -510,7 +588,7 @@ export function SidebarToggle(props: {
         accessibilityLabel={label()}
         tooltip={textTooltip(label)}
         selected={props.expanded}
-        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+        style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
         hoverStyle={
           platform.idiom === 'terminal' ? { backgroundColor: C.surface } : controlHoverStyle()
         }
@@ -551,7 +629,7 @@ export function ViewSegment(props: { label: string; selected: boolean; onPress: 
       style={{
         height: 28,
         paddingHorizontal: 8,
-        borderRadius: 8,
+        borderRadius: radius(8),
         justifyContent: 'center',
         backgroundColor: props.selected ? C.card : 'transparent',
       }}
@@ -651,7 +729,7 @@ export function Header(props: {
           onPress={props.commands}
           accessibilityLabel={tr('Open commands')}
           tooltip={textTooltip(() => shortcut(tr('Commands'), 'mod+p'))}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
           activeStyle={{ backgroundColor: C.pressed }}
@@ -692,7 +770,7 @@ export function Header(props: {
           ref={props.filesOpener}
           onPress={props.files}
           style={{
-            ...toolbarControlStyle,
+            ...toolbarControlStyle(),
             ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
@@ -728,7 +806,7 @@ export function Header(props: {
           tooltip={textTooltip(() => `${tr('Applied subagent')}: ${props.preset!.name}`)}
           onPress={() => props.preset?.open()}
           style={{
-            ...toolbarControlStyle,
+            ...toolbarControlStyle(),
             ...(desktop ? { minHeight: 28, height: 28, paddingVertical: 0 } : {}),
             flexDirection: 'row',
             alignItems: 'center',
@@ -768,7 +846,7 @@ export function Header(props: {
           selected={props.inspector!.open}
           onPress={props.inspector!.toggle}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 28,
             minHeight: 28,
             height: 28,
@@ -793,7 +871,7 @@ export function Header(props: {
           selected={props.stage!.open}
           onPress={props.stage!.toggle}
           style={{
-            ...controlStyle,
+            ...controlStyle(),
             width: 28,
             minHeight: 28,
             height: 28,
@@ -831,7 +909,7 @@ export function Header(props: {
           onPress={props.browser.close}
           accessibilityLabel={tr('Close side pane')}
           tooltip={textTooltip(() => tr('Close side pane'))}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={desktop ? quietHoverStyle() : { backgroundColor: C.surface }}
           focusStyle={desktop ? quietFocusStyle() : { backgroundColor: C.raised }}
         >

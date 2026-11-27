@@ -20,6 +20,7 @@ Every tag is a component in scope (`native-pipeline.md`): the primitives `View`,
 | `<Overlay>` | a `NshView` in the root view (the surface's, or the dialog's around it) | its children on top of that root view, outside the parent's layout and clipping; `anchor` (a ref, `{ x, y }` or `{ origin, size }`), `placement`, `align`, `offset`, `margin`, `onPosition`, `onPressOutside`, `onCancel` ("Overlays" below) |
 | `<InputAccessoryView>` | a NshView set as `inputAccessoryView` | `nativeID`; inputs name it with `ios={{ inputAccessoryViewID }}`. A layout root as wide as the window and as tall as its content; the core resolves the id (`InputConfig::accessory`). Renders nothing on Android |
 | `<WebView>` | WKWebView (WebKit loaded on first use) | `src` (a URL) or `html` (inline HTML, shown instead of `src`) + `baseUrl`, `injectedJavaScript(BeforeContentLoaded)`, `onMessage` (pages call `window.nsh.postMessage`), `onLoad*`, `onNavigationStateChange`, `onDownload` (iOS/macOS's `WKDownload`, WebKitGTK's session downloads or WebView2's `DownloadStarting` into the app's data directory's `downloads/<id>/`, only with a listener; a Rust `onDownloadPending` listener chooses destinations instead), `incognito` (website data of its own, in memory: each platform makes the web view from its first props, and the core keeps the prop from changing afterwards), Rust's `url_scheme(scheme, handler)` (URL schemes the page loads from the app, `nsh_core::web_resource`: the handler is called on the main thread with a request answered once, from any thread; read when the web view is made, as `incognito`; iOS and macOS `WKURLSchemeHandler` in `nsh-platform-apple`, Linux `webkit_web_context_register_uri_scheme`); ref: `reload()`, `goBack()`, `goForward()`, `postMessage(data)`, `injectJavaScript(js)`, `load({ src, headers })` (headers on the document request only: `NSMutableURLRequest` + `loadRequest`) |
+| `gpuView` (`nsh`'s `gpuView`) | `NshView` + the renderer's frame under the children | a renderer the app's Rust crate registered by name draws the box with wgpu on a render thread; own props, animated props and events as `nativeComponent`'s; see [gpu-views.md](gpu-views.md) |
 | `nativeComponent` (`nsh`'s `nativeComponent`) | a `NshView` box filled by the registered component's view; own props may be bound to animated values | see [embedding.md](embedding.md) |
 | `<Video>` | AVPlayerLayer / AVPlayerViewController (AVFoundation loaded on first use) | `src` (a URL), `paused`, `muted`, `volume`, `rate`, `repeat`, the `objectFit` style (`object-*`), `controls`, `onLoad` / `onProgress` / `onEnd` / `onBuffer` / `onError`; ref: `seek(seconds)` |
 
@@ -275,7 +276,12 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   that takes presses, plain Return and Space fire only the focus' own bindings (`KeyOptions::for_focus`, TS's `forFocus`: a
   component's keys while its part has the focus or its popup is open, a menu button's Return opening its menu), else they press
   it; an app's other bindings of those keys (a dialog's Return for its main action) give way to the control the user
-  moved the focus to, on every platform (`Keymap::find_at`, `input::presses_focused_control`). Return and Space press
+  moved the focus to, on every platform (`Keymap::find_at`, `input::presses_focused_control`). A binding that takes
+  them over a pointer's focus (`KeyOptions::over_focused`'s `OverFocused::Pointer`, TS's `overFocused: "pointer"`: a media player's Space)
+  fires instead, before the focus' own, while a pointer gave the focus: the core notes it as the focus is reported
+  (the input modality then, or a popup a press opened giving it back, `Core::pointer_focus_back`) and mounts the
+  keymap again as it changes, carrying it (`Keymap::pointer_focus`), only while a binding asks; the platforms ask
+  `Keymap::find_with` or, matching the bindings themselves (GTK), `Keymap::gives_way`. Return and Space press
   only a focused stop inside the newest modal, and a focus the newest modal covers (one the app left under a dialog) has
   no keys of its own: its bindings for the focus give way to the others, the dialog's (`KeyFocus::covered`,
   `Keymap::find_with`; the headless driver, macOS and GPUI, where `focus()` can leave it there). A page a newer one
@@ -387,7 +393,11 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   Each touch carries `pointerType`, `pressure` and `tiltX` / `tiltY` as the DOM's `PointerEvent` (`TouchPoint`): iOS
   reads `UITouch` force and the Pencil's angles, Android `MotionEvent` pressure, tool type and tilt, Windows
   `GetPointerPenInfo` / `GetPointerTouchInfo`, macOS and GTK a tablet's pen events, and the web `PointerEvent`. A device
-  without pressure reports 0.5 while down and 0 once lifted. On web, `browser/events.rs` sends these fields in each point
+  without pressure reports 0.5 while down and 0 once lifted. A pen also carries `eraser` and `barrel`, and a moved
+  point carries `coalesced`: the samples merged into it, oldest first, without its own (the DOM's
+  `getCoalescedEvents()`): iOS `coalescedTouchesForTouch`, Android `MotionEvent` history, Windows
+  `GetPointerPenInfoHistory`, the web `getCoalescedEvents()`; `TouchEvent::merge_move` adds the positions of the moves
+  it folds, so no platform loses them to the per-turn merge. On web, `browser/events.rs` sends these fields in each point
   from Wasm. `web/browser/gesture.js`, bundled into the realm's `bootstrap.js`, copies them to the event and the points
   in `touches` and `changedTouches`. The negotiation asks the app's handlers as in React Native (`nsh-js` `touch.rs`
   on native targets, `gesture.js` on web). A grant returning true
@@ -679,7 +689,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   and the line rules applied, `onChangeText` reporting it, no key, and a step of the platform's undo history, which a
   new value is not. Linux: the editors' `delete-from-cursor` / `insert-at-cursor` signals (`GtkText`; inserting
   from outside an edit would clear its history) or one user action on the `GtkTextBuffer`; web: `execCommand("insertText")`;
-  headless: at the end, as a paste; Windows, Android and GPUI insert nothing yet and log a warning.
+  Android: `Editable.replace` on the selection (filters such as `maxLength` apply); headless: at the end, as a paste; Windows and GPUI insert nothing yet and log a warning.
   During an input method's composition Linux and the web insert nothing and log a warning. With `"insert"` the
   input has inserted the paste already, so an `insertText` from `onPaste` inserts it a second time. Where Paste is offered, it is offered for images and files too while
   the app listens. iOS: `Field` / `Area` override `paste:` (`system::pasted`: strings, `IMAGE_TYPES` data else
@@ -865,6 +875,14 @@ sends `onError` with `ERR_NSH_WEBVIEW_TERMINATED` (Rust `on_process_terminated`)
 next `reload()`, `load()` or new source shows a page again. Android's `WebBox` handles
 `onRenderProcessGone` and makes a new WebView for it; the WebKit backends reload the
 same web view.
+
+`scrollable={false}` stops only the user scrolling the page's viewport: the page still
+gets every touch (its own drag handlers, sliders and sortable lists work) and its scripts
+still scroll it, as a `UIScrollView` with `scrollEnabled` off on iOS. Android and Windows
+put `html { overflow: hidden !important; }` in each document (Android from `WebBox.java`
+as the document starts and when the prop changes, never by keeping moves from the
+WebView), Linux a user style sheet hiding the top document's overflow; macOS keeps wheel
+and trackpad scrolls from the page.
 
 
 

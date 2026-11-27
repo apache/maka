@@ -77,7 +77,7 @@ nsh init [DIR] [--name <NAME>] [--template <ts|rust|mixed>] [--nsh-source <DIR>]
 ## nsh run
 
 ```sh
-nsh run [ENTRY] [--target macos|linux|windows|ios|android|gpui|tui|web|catalyst] [--device <DEVICE>] [--port <PORT>] [--release] [--limits [<LIMITS>]] [--trace] [--fps] [--name <NAME>] [--points-per-cell <WIDTHxHEIGHT>] [--window-size <WIDTHxHEIGHT>] [--display <N>] [--background]
+nsh run [ENTRY] [--target macos|linux|windows|ios|android|gpui|tui|web|catalyst] [--device <DEVICE>] [--port <PORT>] [--release] [--limits [<LIMITS>]] [--trace] [--fps] [--name <NAME>] [--points-per-cell <WIDTHxHEIGHT>] [--window-size <WIDTHxHEIGHT>] [--display <N>] [--background] [--sign <IDENTITY>]
 ```
 
 ```sh
@@ -104,6 +104,7 @@ nsh run my-app/App.tsx --target web
 | `--window-size <WIDTHxHEIGHT>` | 宿主默认值 | 初始窗口尺寸，单位为点，例如 `800x600`（`--target macos`、`linux`、`windows` 和 `gpui`，TSX 入口）。 |
 | `--display <N>` | 主显示器 | 窗口在哪个显示器上居中打开：`1` 是主显示器（带菜单栏的那个），`2` 是下一个，依此类推；没有这个编号的显示器时在主显示器上打开（`--target macos`，TSX 入口）。 |
 | `--background` | | 应用不会成为当前活跃的应用，和 `nsh test` 运行应用的方式一样：窗口照常显示，键盘留在你正在输入的应用里，发给它窗口的输入（驱动它的 agent、UI 测试）照样能到达。在 macOS 上它运行时没有 Dock 图标和菜单栏。用于不需要你盯着的运行，比如你工作时 agent 在检查一处改动（`--target macos`、`linux`、`windows` 和 `gpui`，TSX 入口）。 |
+| `--sign <IDENTITY>` | ad hoc 签名 | 给 macOS 宿主签名的代码签名身份，与 `nsh package --sign` 取值相同，比如 `"Apple Development: …"`。宿主的签名从此每次构建都保持不变，应用的 Rust 代码重新编译后仍能访问它的钥匙串项（[macOS](./macos.md#为开发宿主签名)）（`--target macos`）。 |
 
 使用 `--target android` 时，会选用 `--device` 或 `ANDROID_SERIAL` 指定的设备，否则选用 `adb devices` 列出的第一台（连着多台时 `nsh` 会提示用的是哪一台）；开发服务器的端口通过 `adb reverse` 转发到设备上。参见[快速开始](./getting-started.md)和[开发服务器与调试](./dev-server-and-debugging.md)。
 
@@ -272,7 +273,7 @@ nsh add --path ../gauge                              # 本地目录，按当前�
 nsh add nsh-extra --features camera                  # 开启 crate 的 Cargo feature（逗号分隔或重复传入）
 ```
 
-它像 `Cargo.toml` 一样按包名（crate 名，或 Git、本地 nshm 的 `nsh.json` 中的 `"name"`）把 nshm 记录到 `nsh.json` 的 `"dependencies"`：`"acme-gauge": "^1.2.0"`、`{ "github": "acme/ui", "version": "^1.4" }`、`{ "git": "…", "tag": "v1.4.0" }`、`{ "git": "…", "rev": "…" }` 或 `{ "path": "../gauge" }`，对象形式可加 `"version"` 和 `"features"`。没写版本时写入 `^` 加解析到的版本。随后它重新解析应用用到的所有 nshm，把缺少的安装到 `~/.nsh/nshms`，锁定在 `nsh.lock`（随应用提交），应用有自己的 crate（`"rust"`）时把 Rust nshm 加入该 crate 的 `[dependencies]`。它会打印要导入的标识；如果 nshm 给纯 TSX 应用带来了 Rust，也会说明，此后开发机和 CI 需要 Rust 工具链（[用 Rust 开发](./rust.md)）。若 nshm 无法解析、与应用的 crate 或其他 nshm 冲突（同一个包、标识或模块），或不兼容当前 NSH，应用的文件保持不变。
+它像 `Cargo.toml` 一样按包名（crate 名，或 Git、本地 nshm 的 `nsh.json` 中的 `"name"`）把 nshm 记录到 `nsh.json` 的 `"dependencies"`：`"acme-gauge": "^1.2.0"`、`{ "github": "acme/ui", "version": "^1.4" }`、`{ "git": "…", "tag": "v1.4.0" }`、`{ "git": "…", "rev": "…" }` 或 `{ "path": "../gauge" }`，对象形式可加 `"version"`、`"features"` 和 `"targets"`（要链接 Rust nshm 的 target，再次 `nsh add` 时保留：[nshm](./nshm.md#使用-nshm)）。没写版本时写入 `^` 加解析到的版本。随后它重新解析应用用到的所有 nshm，把缺少的安装到 `~/.nsh/nshms`，锁定在 `nsh.lock`（随应用提交），应用有自己的 crate（`"rust"`）时把 Rust nshm 加入该 crate 的 `[dependencies]`。它会打印要导入的标识；如果 nshm 给纯 TSX 应用带来了 Rust，也会说明，此后开发机和 CI 需要 Rust 工具链（[用 Rust 开发](./rust.md)）。若 nshm 无法解析、与应用的 crate 或其他 nshm 冲突（同一个包、标识或模块），或不兼容当前 NSH，应用的文件保持不变。
 
 `--features` 开启 Rust nshm 的 Cargo feature，即应用用到的模块，已列出的会保留（在 `camera` 之后 `nsh add nsh-extra --features push` 仍保留 `camera`）；crate 未定义的名字会让 `nsh add` 停止。要关闭某个 feature，从 `nsh.json` 和应用 crate 的 `Cargo.toml` 依赖中删掉它。crate 在 `[package.metadata.nsh]` 中为开启的 feature 声明的内容会进入打包结果，除 entitlements 外也进入开发宿主（[打包的应用需要什么](./nshm.md#打包的应用需要什么)）。
 

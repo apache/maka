@@ -39,19 +39,16 @@ import {
   interactionBadge,
   interactionTitle,
 } from '../../approval';
-import type {
-  AgentHistoryChunk,
-  AgentInteractionRecord,
-  AgentModelChoice,
-  AgentRoomMessage,
-} from '../../bridge';
+import type { AgentHistoryChunk, AgentInteractionRecord, AgentRoomMessage } from '../../bridge';
 import { approvalFeedback } from '../../ui/ApprovalCard';
 import { ThinkingMark, ShimmerText } from '../../ui/ThinkingMark';
 import { QuestionForm } from '../../ui/QuestionForm';
 import { currentLocale, tr } from '../../locale';
 import {
+  backendKey,
   compareHistoryRows,
   createConversationController,
+  displayModelKey,
   getDraft,
   getSavedScrollOffset,
   saveScrollOffset,
@@ -389,40 +386,27 @@ export function ChatScreen(props: {
     return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
   };
 
-  const backendKey = (backend: AgentModelChoice['selection']) =>
-    JSON.stringify(
-      backend.kind === 'model'
-        ? [
-            'model',
-            backend.connectionId,
-            backend.modelId,
-            backend.serviceTier ?? null,
-            backend.thinkingLevel ?? null,
-          ]
-        : [
-            'executor',
-            backend.selection.executor,
-            backend.selection.settings?.runtime ?? null,
-            backend.selection.settings?.model ?? null,
-          ],
-    );
-
   const currentModelLabel = () => {
     const chosen = ctrl.selectedBackend();
     if (!chosen) return tr('Default');
-    const key = backendKey(chosen);
+    const key = displayModelKey(chosen);
     return (
-      ctrl.models().find((model) => backendKey(model.selection) === key)?.label ??
+      ctrl.models().find((model) => displayModelKey(model.selection) === key)?.label ??
       (chosen.kind === 'model' ? chosen.modelId : chosen.selection.executor)
     );
   };
 
   const modelMenuItems = (): MenuButtonItem[] => {
     const chosen = ctrl.selectedBackend();
-    const selectedKey = chosen ? backendKey(chosen) : null;
+    const selectedKey = chosen ? displayModelKey(chosen) : null;
     return ctrl.models().map((model) => {
       const id = backendKey(model.selection);
-      return { id, label: model.label, checked: id === selectedKey, singleSelection: true };
+      return {
+        id,
+        label: model.label,
+        checked: displayModelKey(model.selection) === selectedKey,
+        singleSelection: true,
+      };
     });
   };
 
@@ -480,35 +464,6 @@ export function ChatScreen(props: {
       title={sessionTitle()}
       hidesBottomBarWhenPushed
       headerShadowVisible={false}
-      headerTitle={
-        isAvailable ? (
-          <View style={{ alignItems: 'center', width: 200 }}>
-            <Text
-              style={{
-                ...type.headline,
-                fontSize: 15,
-                color: token('foreground'),
-                textAlign: 'center',
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {sessionTitle()}
-            </Text>
-            <Text
-              style={{
-                ...type.caption,
-                color: token('muted-foreground'),
-                textAlign: 'center',
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {subtitleLine()}
-            </Text>
-          </View>
-        ) : undefined
-      }
       ios={{
         headerRightItems: [
           {
@@ -567,32 +522,33 @@ export function ChatScreen(props: {
       }
     >
       <View style={{ flex: 1, backgroundColor: token('canvas') }}>
-        {/* Compact attribution strip on non-iOS header projection */}
-        <If when={!isAvailable}>
-          <View
+        {/* The native nav bar fits its own title between the actual UIKit items. */}
+        <View
+          style={{
+            paddingLeft: Math.max(spacing.pageX, insets().left),
+            paddingRight: Math.max(spacing.pageX, insets().right),
+            paddingBottom: 6,
+            backgroundColor: token('grouped-bg'),
+            flexDirection: 'row',
+            justifyContent: isAvailable ? 'center' : 'flex-start',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <StatusDot kind={hostStatusKind(rootId)} size={7} />
+          <Text
             style={{
-              paddingHorizontal: spacing.pageX,
-              paddingBottom: 6,
-              backgroundColor: token('grouped-bg'),
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
+              ...type.footnote,
+              color: token('muted-foreground'),
+              minWidth: 0,
+              flexShrink: 1,
+              numberOfLines: 1,
+              textOverflow: 'ellipsis',
             }}
           >
-            <StatusDot kind={hostStatusKind(rootId)} size={7} />
-            <Text
-              style={{
-                ...type.footnote,
-                color: token('muted-foreground'),
-                flex: 1,
-                numberOfLines: 1,
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {subtitleLine()}
-            </Text>
-          </View>
-        </If>
+            {subtitleLine()}
+          </Text>
+        </View>
 
         {/* Scrollable Transcript */}
         <Scroll

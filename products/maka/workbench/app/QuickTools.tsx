@@ -31,9 +31,7 @@ import {
   type SettingsPageInput,
   type SettingsPageNavigation,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { Button } from 'nsh/base';
 import { PluginIcon } from './PluginIcon';
-import { ChoiceIndicator } from './ChoiceIndicator';
 import { sameValue } from '../../../../plugins/shared/value';
 import { localizedPresentation, tr } from './locale';
 import { contributionTitle } from './plugins/context';
@@ -46,12 +44,15 @@ import {
   type ToolEntry,
 } from './QuickCommands';
 import {
+  RowLine,
   SettingsBody,
   SettingsProblem,
   SettingsRow,
   SettingsSection,
   SettingsSwitch,
+  SettingsSwitchControl,
   settingsGutter,
+  settingsInset,
 } from './SettingsPage';
 import { errorText, renderText } from './text';
 
@@ -425,39 +426,47 @@ export function QuickToolsSettings(props: {
           >
             <Each of={quick.tools()} key={(item: UiContributionRef) => item.key}>
               {(item) => (
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <View style={{ flex: 1 }}>
-                    <If
-                      when={quick.configurable(item())}
-                      else={<SettingsRow label={quick.title(item())} leading={mark(item())} />}
-                    >
+                <If
+                  when={quick.configurable(item())}
+                  else={
+                    <SettingsSwitch
+                      label={quick.title(item())}
+                      leading={mark(item())}
+                      checked={quick.toolEnabled(item())}
+                      disabled={!quick.ready()}
+                      onPress={() => quick.toggleTool(item())}
+                    />
+                  }
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <RowLine />
+                    <View style={{ flex: 1, minWidth: 0 }}>
                       <SettingsRow
                         label={quick.title(item())}
                         leading={mark(item())}
                         description={summary(item()) || undefined}
                         opens
+                        line={false}
                         onPress={() => selected.set(item())}
                       />
-                    </If>
+                    </View>
+                    <View
+                      style={{
+                        paddingHorizontal: settingsInset,
+                        alignSelf: 'stretch',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <SettingsSwitchControl
+                        accessibilityLabel={quick.title(item())}
+                        checked={quick.toolEnabled(item())}
+                        disabled={!quick.ready()}
+                        onChange={() => quick.toggleTool(item())}
+                      />
+                    </View>
                   </View>
-                  <Button
-                    accessibilityLabel={tr('{label}: {state}', {
-                      label: quick.title(item()),
-                      state: quick.toolEnabled(item()) ? tr('On') : tr('Off'),
-                    })}
-                    selected={quick.toolEnabled(item())}
-                    disabled={!quick.ready()}
-                    onPress={() => quick.toggleTool(item())}
-                    style={{
-                      width: 52,
-                      height: 42,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <ChoiceIndicator kind="switch" checked={quick.toolEnabled(item())} />
-                  </Button>
-                </View>
+                </If>
               )}
             </Each>
             <If when={quick.tools().length === 0}>

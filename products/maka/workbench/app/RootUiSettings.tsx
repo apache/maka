@@ -26,15 +26,16 @@ import { tr } from './locale';
 import { rootUiTitle, type RootUiSettingsOwner } from './rootUiSettingsState';
 import {
   bodyTextStyle,
+  C,
   captionTextStyle,
   controlDisabledStyle,
   controlStyle,
+  floatingStyle,
   inputBorderRadius,
   inputTextStyle,
-  C,
-  floatingStyle,
   menuRowHoverStyle,
   quietFocusStyle,
+  radius,
 } from './ui';
 
 export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
@@ -77,7 +78,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 minHeight: platform.idiom === 'terminal' ? 16 : 28,
                 paddingLeft: platform.idiom === 'terminal' ? 0 : 10,
                 paddingRight: platform.idiom === 'terminal' ? 0 : 6,
-                borderRadius: 8,
+                borderRadius: radius(8),
                 backgroundColor: platform.idiom === 'terminal' ? undefined : C.cardRaised,
                 flexDirection: 'row',
                 gap: 6,
@@ -107,7 +108,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                 backgroundColor: C.background,
                 height: 40,
                 paddingHorizontal: 12,
-                borderRadius: inputBorderRadius,
+                borderRadius: inputBorderRadius(),
               }}
             />
             <List
@@ -135,7 +136,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                     return owner.choose(request);
                   }, owner.action(choice()))}
                   style={{
-                    ...controlStyle,
+                    ...controlStyle(),
                     height: 56,
                     flexDirection: 'row',
                     gap: 8,

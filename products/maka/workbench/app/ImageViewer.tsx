@@ -33,6 +33,7 @@ import {
   controlStyle,
   defaultColors,
   isDark,
+  radius,
   textTooltip,
 } from './ui';
 
@@ -49,12 +50,13 @@ const KEY_PAN_STEP = 32;
 
 // The viewer is dark in every appearance, so its controls take the dark colors.
 const DARK = defaultColors(true);
-const darkControlStyle = {
-  ...controlStyle,
-  height: 36,
-  borderRadius: 18,
-  alignItems: 'center',
-} as const;
+const darkControlStyle = () =>
+  ({
+    ...controlStyle(),
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+  }) as const;
 const darkHoverStyle = { backgroundColor: DARK.line };
 const darkFocusStyle = { backgroundColor: DARK.line, borderColor: DARK.accent };
 
@@ -84,7 +86,7 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
       accessibilityLabel={tr('Open image full screen')}
       tooltip={textTooltip(() => tr('Open full screen'))}
       onPress={inputAction(show, image)}
-      style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+      style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
       hoverStyle={controlHoverStyle()}
       focusStyle={controlFocusStyle()}
     >
@@ -367,7 +369,7 @@ export function ImageViewer(props: {
                 width: controlsRight(true),
                 height: TITLE_BAR_HEIGHT,
                 backgroundColor: C.chrome,
-                borderBottomLeftRadius: 8,
+                borderBottomLeftRadius: radius(8),
               },
               { pointerEvents: 'none' },
             ]}
@@ -400,7 +402,7 @@ export function ImageViewer(props: {
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={props.close}
             style={{
-              ...darkControlStyle,
+              ...darkControlStyle(),
               width: 36,
               paddingHorizontal: 10,
               backgroundColor: DARK.raised,
@@ -439,7 +441,7 @@ export function ImageViewer(props: {
                   )}
                   onPress={inputAction(go, item().step)}
                   style={{
-                    ...darkControlStyle,
+                    ...darkControlStyle(),
                     width: 36,
                     paddingHorizontal: 10,
                     backgroundColor: DARK.raised,
@@ -501,7 +503,7 @@ export function ImageViewer(props: {
                   accessibilityLabel={item().label()}
                   tooltip={textTooltip(() => item().label())}
                   onPress={inputAction(control, { uri: image().uri, kind: item().kind })}
-                  style={{ ...darkControlStyle, minWidth: 36, paddingHorizontal: 12 }}
+                  style={{ ...darkControlStyle(), minWidth: 36, paddingHorizontal: 12 }}
                   hoverStyle={darkHoverStyle}
                   focusStyle={darkFocusStyle}
                 >

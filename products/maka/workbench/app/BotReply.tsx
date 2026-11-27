@@ -143,11 +143,11 @@ export function BotReply(props: {
                                 }}
                                 renderImage={
                                   props.sessionId
-                                    ? (context) => (
+                                    ? (image, context) => (
                                         <MarkdownImageView
-                                          image={() => context.image}
+                                          image={() => image}
                                           sessionId={props.sessionId!}
-                                          linked={context.linked}
+                                          linked={context.link != null}
                                           flow={context.flow}
                                           lineHeight={context.lineHeight}
                                         />

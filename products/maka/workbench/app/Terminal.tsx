@@ -18,7 +18,7 @@
  */
 
 import { FloatingNoticeCapsule, RegionEmptyError } from './Feedback';
-import { textTooltip } from './ui';
+import { radius, textTooltip } from './ui';
 import { errorText, renderText } from './text';
 import { toast } from './toastStore';
 import {
@@ -396,7 +396,7 @@ export function Terminal(props: { model: TerminalModel }) {
                 : tr('Focus terminal input'),
             )}
             selected={model.control() === 'held'}
-            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            style={{ ...controlStyle(), flexDirection: 'row', alignItems: 'center', gap: 8 }}
             selectedStyle={{ backgroundColor: C.raised }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
@@ -409,7 +409,7 @@ export function Terminal(props: { model: TerminalModel }) {
           <Button
             onPress={inputAction(model.release, null)}
             tooltip={textTooltip(() => tr('Release terminal input · Ctrl+Shift+Space'))}
-            style={controlStyle}
+            style={controlStyle()}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
           >
@@ -433,7 +433,7 @@ export function Terminal(props: { model: TerminalModel }) {
           tooltip={textTooltip(() =>
             copied() ? tr('Copied') : tr('Copy visible terminal · Ctrl+Shift+C'),
           )}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
@@ -447,7 +447,7 @@ export function Terminal(props: { model: TerminalModel }) {
             tooltip={textTooltip(() =>
               model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'),
             )}
-            style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+            style={{ ...controlStyle(), width: 32, paddingHorizontal: 8, alignItems: 'center' }}
             hoverStyle={controlHoverStyle()}
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
@@ -462,7 +462,7 @@ export function Terminal(props: { model: TerminalModel }) {
           minHeight: LINE,
           backgroundColor: SURFACE.background,
           padding: textTerminal ? 0 : 8,
-          borderRadius: textTerminal ? 0 : 8,
+          borderRadius: textTerminal ? 0 : radius(8),
           overflow: 'hidden',
         }}
       >

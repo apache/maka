@@ -18,11 +18,12 @@
  */
 
 import { Text, View } from 'nsh';
-import { Button } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
-import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import type { QuoteRef } from '../../../../packages/plugin-sdk/src/index.js';
 import { tr } from '../../../../products/maka/workbench/app/locale';
-import { C, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
+import { C, captionTextStyle, IconButton } from '../../../../products/maka/workbench/app/ui';
+
+const quoteLabel = (quote: QuoteRef) => quote.label || quote.source?.sessionName || '';
 
 export function DraftQuotes(props: {
   owner: Pick<ComposerSession, 'quotes' | 'editable' | 'removeQuote'>;
@@ -35,29 +36,34 @@ export function DraftQuotes(props: {
             <View
               style={{
                 flexDirection: 'row',
+                alignItems: 'center',
                 gap: 8,
-                padding: 8,
+                paddingLeft: 10,
+                paddingVertical: 2,
                 borderLeftWidth: 2,
-                borderColor: C.line,
-                backgroundColor: C.card,
-                borderRadius: 6,
+                borderLeftColor: C.accent,
               }}
             >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>
-                  {quote().label ?? quote().source?.sessionName ?? ''}
-                </Text>
-                <Text style={[{ ...captionTextStyle, color: C.secondary }, { numberOfLines: 3 }]}>
+              <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                <If when={quoteLabel(quote()) !== ''}>
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>{quoteLabel(quote())}</Text>
+                </If>
+                <Text
+                  style={[
+                    { ...captionTextStyle, color: C.secondary },
+                    { numberOfLines: 3, textOverflow: 'ellipsis' },
+                  ]}
+                >
                   {quote().text}
                 </Text>
               </View>
-              <Button
-                accessibilityLabel={tr('Remove quote')}
+              <IconButton
+                compact
+                label={tr('Remove quote')}
+                icon="close"
                 disabled={!props.owner.editable()}
                 onPress={() => props.owner.removeQuote(index())}
-              >
-                <Icon name="close" color={C.muted} />
-              </Button>
+              />
             </View>
           )}
         </Each>

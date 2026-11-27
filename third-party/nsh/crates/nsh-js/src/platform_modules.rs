@@ -665,7 +665,20 @@ unsafe extern "C" fn native_component(
     argc: c_int,
     argv: *mut JsValue,
 ) -> JsValue {
-    let mut data = [arg(argc, argv, 0), arg(argc, argv, 1)];
+    let mut data = [arg(argc, argv, 0), arg(argc, argv, 1), qjs::JS_FALSE];
+    native(cx, render_native, 1, &mut data)
+}
+
+/// `gpuView(name, { props, events })`: the component of the GPU views
+/// drawn by the renderer a UI set registered as `name`: a native
+/// component's props and events, and children over what it draws.
+unsafe extern "C" fn gpu_view(
+    cx: *mut JsContext,
+    _this: JsValue,
+    argc: c_int,
+    argv: *mut JsValue,
+) -> JsValue {
+    let mut data = [arg(argc, argv, 0), arg(argc, argv, 1), qjs::JS_TRUE];
     native(cx, render_native, 1, &mut data)
 }
 
@@ -714,8 +727,8 @@ unsafe extern "C" fn render_native(
     _magic: c_int,
     data: *mut JsValue,
 ) -> JsValue {
-    // SAFETY: two data values (name, spec).
-    let (name, spec) = unsafe { (*data, *data.add(1)) };
+    // SAFETY: three data values (name, spec, whether it is a GPU view).
+    let (name, spec, gpu) = unsafe { (*data, *data.add(1), qjs::JS_ToBool(cx, *data.add(2)) == 1) };
     let props = arg(argc, argv, 0);
     let Some(own) = names(cx, spec, c"props") else {
         return qjs::JS_EXCEPTION;
@@ -723,7 +736,8 @@ unsafe extern "C" fn render_native(
     let Some(events) = names(cx, spec, c"events") else {
         return qjs::JS_EXCEPTION;
     };
-    let node = match dom::create_element(cx, Tag::Native) {
+    let tag = if gpu { Tag::GpuView } else { Tag::Native };
+    let node = match dom::create_element(cx, tag) {
         Ok(node) => node,
         Err(e) => return e,
     };
@@ -734,6 +748,14 @@ unsafe extern "C" fn render_native(
         skip.push("children".into());
         let skip_refs: Vec<&str> = skip.iter().map(String::as_str).collect();
         dom::spread_except(cx, node, props, &skip_refs)?;
+        // A GPU view's children show over what it draws.
+        if gpu {
+            let reader = dom::prop_reader(cx, props, "children");
+            let r = dom::insert_value_at(cx, node, reader, None);
+            // SAFETY: ours.
+            unsafe { qjs::JS_FreeValue(cx, reader) };
+            r?;
+        }
         // Its own props, as the component's (`$name`), followed.
         for key in &own {
             let get = dom::prop_reader(cx, props, key);
@@ -840,6 +862,16 @@ pub(crate) const NATIVE_EXPORTS: &[Item] = &[
         ),
     ),
     (
+        "gpuView",
+        Export::Function(gpu_view, 2),
+        Ts::function(
+            "A component for the GPU views drawn by the renderer a UI set registered as\n`name` (Rust `gpu_renderer(\"gallery/scene\", …)` of `nsh-gpu` in the app's\n`#[native_module]` function): its renderer draws the box with the GPU on a\nthread of its own, every frame it needs, under the view's children. It\ntakes every prop of a `View`, its own props `P` (sent to the renderer;\nan animated value reaches it on every frame it changes, without JS) and\nhandlers of the events `E` it emits. Where nothing is registered under\n`name`, or the device has no GPU, it draws nothing of its own.",
+            &[
+                "<P extends object = {}, E extends object = {}>(name: string, spec: NativeComponentSpec<P, E>): (props: GpuViewProps<P, E>) => JSX.Element",
+            ],
+        ),
+    ),
+    (
         "nativeModule",
         Export::Function(native_module, 1),
         Ts::function(
@@ -859,6 +891,12 @@ export type NativeEventHandlers<E> = { [K in keyof E & string as `on${Capitalize
  * platform then pushes its value (a number or a color) to the component
  * on every frame it changes, without JS. */
 export type NativeComponentProps<P, E> = Omit<ViewProps, "children" | "ref"> & { ref?: NativeComponentRef | ((node: NativeComponentRef) => void) } & { [K in keyof P]: NonNullable<P[K]> extends number | string ? P[K] | AnimatedNode : P[K] } & NativeEventHandlers<E>;
+
+/** The props of a GPU view (`gpuView`): a view's, with its children over
+ * what the renderer draws, the renderer's own props `P` (numbers and
+ * colors may be animated values, which reach it without JS) and handlers
+ * of its events `E`. */
+export type GpuViewProps<P, E> = Omit<ViewProps, "ref"> & { ref?: ViewRef | ((node: ViewRef) => void) } & { [K in keyof P]: NonNullable<P[K]> extends number | string ? P[K] | AnimatedNode : P[K] } & NativeEventHandlers<E>;
 
 /** What a native component takes and emits. */
 export interface NativeComponentSpec<P, E> {

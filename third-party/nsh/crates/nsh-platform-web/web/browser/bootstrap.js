@@ -3873,7 +3873,7 @@
 			children(id, wanted) {
 				state(id)?.lazy.set(wanted);
 			},
-			render(id, prop, key, value, func) {
+			render(id, prop, key, value, spread, func) {
 				const current = state(id);
 				if (!current) return;
 				const held = typeof func === "function" ? current.renders.get(prop)?.get(key) : void 0;
@@ -3887,7 +3887,7 @@
 						const holder = dom.rt.element("view");
 						dom.rt.prop(holder, "componentRender", `${prop}\x1f${key}`);
 						try {
-							dom.rt.insert(holder, reactive.untracked(() => render(signal ? propsOf(signal) : value)));
+							dom.rt.insert(holder, reactive.untracked(() => signal ? render(propsOf(signal)) : spread ? render(...value) : render(value)));
 							dom.rt.append(current.node, holder);
 						} catch (error) {
 							dispose();
@@ -4010,7 +4010,7 @@
 			}
 		};
 		const point = (p) => {
-			const { identifier, target, pageX, pageY, locationX, locationY, timestamp, pointerType, pressure, tiltX, tiltY } = p;
+			const { identifier, target, pageX, pageY, locationX, locationY, timestamp, pointerType, pressure, tiltX, tiltY, eraser, barrel, coalesced } = p;
 			return {
 				identifier,
 				target,
@@ -4022,7 +4022,10 @@
 				pointerType,
 				pressure,
 				tiltX,
-				tiltY
+				tiltY,
+				eraser,
+				barrel,
+				coalesced
 			};
 		};
 		const dispatch = (touch) => reactive.batch(() => reactive.untracked(() => {
@@ -5188,10 +5191,12 @@
 					popped.set(page, () => entries.set(untracked(entries).filter((value) => value !== entry)));
 					return page;
 				};
-				return typeof rendered === "function" ? computed(() => {
-					const value = rendered();
+				if (typeof rendered !== "function") return screenFor(rendered);
+				return computed(() => {
+					let value = rendered();
+					while (typeof value === "function") value = value();
 					return untracked(() => screenFor(value));
-				}) : screenFor(rendered);
+				});
 			});
 			rt.insert(node, rows);
 			return node;
@@ -5304,7 +5309,8 @@
 			e.when,
 			e.repeat,
 			e.passThrough,
-			e.forFocus
+			e.forFocus,
+			e.overFocused
 		]), !!platform.appleKeyboard]);
 		dom.rootProp("onKeyCommand", (id) => {
 			const entry = entries.find((entry) => entry.id === id);
@@ -5324,8 +5330,9 @@
 					pairs = [[String(first), handler]];
 				}
 				if (options != null && typeof options !== "object") throw new TypeError("keymap.bind: options must be an object");
-				const when = options?.when, repeat = !!options?.repeat, passThrough = !!options?.passThrough, forFocus = !!options?.forFocus;
+				const when = options?.when, repeat = !!options?.repeat, passThrough = !!options?.passThrough, forFocus = !!options?.forFocus, overFocused = options?.overFocused === "pointer" ? "pointer" : !!options?.overFocused;
 				if (when !== void 0 && when !== "always" && when !== "notEditing") throw new TypeError("keymap.bind: when must be always or notEditing");
+				if (typeof options?.overFocused === "string" && overFocused !== "pointer") throw new TypeError("keymap.bind: overFocused must be a boolean or pointer");
 				const added = pairs.map(([text, handler]) => {
 					if (typeof handler !== "function") throw new TypeError(`keymap.bind: the handler of ${JSON.stringify(text)} is not a function`);
 					if (next >= 4294967295) throw new RangeError("shortcut IDs exhausted");
@@ -5336,7 +5343,8 @@
 						when,
 						repeat,
 						passThrough,
-						forFocus
+						forFocus,
+						overFocused
 					};
 				});
 				const updated = [...entries, ...added];
@@ -5396,6 +5404,7 @@
 				bottom: 0,
 				left: 0
 			},
+			reservedRegions: [],
 			titleBar: {
 				height: 0,
 				left: 0,
@@ -5471,6 +5480,7 @@
 			windowSize: () => fields.window(),
 			colorScheme: () => fields.colorScheme(),
 			setColorScheme,
+			reservedRegions: () => fields.reservedRegions(),
 			fontScale: () => fields.fontScale(),
 			pixelRatio: () => fields.pixelRatio(),
 			locale: () => fields.locale(),
@@ -5523,7 +5533,7 @@
 				reactive.batch(() => {
 					for (const [name, signal] of Object.entries(fields)) {
 						const value = name === "colorScheme" && appearance !== "system" ? appearance : next[name];
-						if (!same(value, reactive.untracked(signal), 2)) signal.set(value);
+						if (!same(value, reactive.untracked(signal), 4)) signal.set(value);
 					}
 				});
 				dom.rootProp("layoutDirectionRtl", next.rtl);

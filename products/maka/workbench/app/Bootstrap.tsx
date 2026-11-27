@@ -30,7 +30,7 @@ import { installWorkbenchLocaleCatalog } from './localeCatalog';
 import { initializeAppearance } from './appearance';
 import { initializeComposerToolbar } from './composerToolbar';
 import { initializeSidebarPreferences } from './sidebarPreferences';
-import { C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
+import { C, controlFocusStyle, controlHoverStyle, controlStyle, lineWidth } from './ui';
 import { LOADING_DELAY_MS, LoadingState } from './Loading';
 import { nativeDesktop } from './nativeDesktop';
 
@@ -125,7 +125,7 @@ function Bootstrap() {
             <Button
               accessibilityLabel={tr('Retry')}
               onPress={plugins.runtime.retryUpdates}
-              style={{ ...controlStyle, borderWidth: 1, borderColor: C.line }}
+              style={{ ...controlStyle(), borderWidth: lineWidth(), borderColor: C.line }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
             >

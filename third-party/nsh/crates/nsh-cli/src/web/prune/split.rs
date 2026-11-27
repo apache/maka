@@ -3,12 +3,17 @@
 //! [`split`] makes the main module from what the first screen needs and a
 //! side module for what the gates loaded later need, which the page loads
 //! (`nsh.js`'s `loadSides`) before the code that uses them runs.
+//!
+//! A runtime whose crates call JS through wasm-bindgen is split before
+//! wasm-bindgen runs, which then runs on the main module alone
+//! (`web::link`): what wasm-bindgen reads or rewrites stays in the main
+//! module, so the side modules hold none of it.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
 
 use anyhow::{Context as _, bail, ensure};
 use wasmparser::{
-    ExternalKind, Parser, Payload, RelocationEntry, RelocationType, TypeRef, ValType,
+    ExternalKind, Operator, Parser, Payload, RelocationEntry, RelocationType, TypeRef, ValType,
 };
 
 use super::{
@@ -46,6 +51,11 @@ pub(crate) struct Side {
 type Owner = u128;
 const NONE: Owner = 0;
 const MAIN: Owner = 1 << 127;
+/// The main module's export of its function table, which side modules
+/// import: NSH's own name, as its globals' and functions' (`__nsh_g<i>`,
+/// `__nsh_f<i>`), as wasm-bindgen removes the linker's
+/// (`__indirect_function_table`).
+pub(crate) const TABLE: &str = "__nsh_table";
 /// Lazy gates past this many are kept in the main module.
 const MAX_LAZY: usize = 127;
 /// The fewest bytes of code and data a module of what several gates share
@@ -55,7 +65,9 @@ const MIN_SHARED: usize = 32 * 1024;
 
 /// Splits a runtime linked with `--emit-relocs` into a main module that
 /// keeps `main_exports` (what [`prune`](super::prune) keeps) and side
-/// modules for `lazy_gates` ([module docs](self)).
+/// modules for `lazy_gates` ([module docs](self)). With `bindgen`,
+/// wasm-bindgen runs on the main module afterwards
+/// ([`Module::bindgen_callers`]).
 ///
 /// A lazy gate the main module reaches anyway stays an export of the main
 /// module and gets no side module.
@@ -63,6 +75,7 @@ pub(crate) fn split(
     wasm: &[u8],
     main_exports: &[&str],
     lazy_gates: &[&str],
+    bindgen: bool,
 ) -> anyhow::Result<Split> {
     let module = Module::parse(wasm)?;
     let extra = Extra::parse(wasm)?;
@@ -96,6 +109,10 @@ pub(crate) fn split(
         }
     }
     let gates: Vec<u32> = lazy.iter().map(|g| export(g)).collect::<Result<_, _>>()?;
+    let body_relocs = module.body_relocs()?;
+    if bindgen {
+        roots.extend(module.bindgen_callers(&body_relocs)?);
+    }
 
     // Who reaches what: the main module first, then each gate. What a set
     // of several gates shares that is too small to be worth a request of
@@ -105,7 +122,6 @@ pub(crate) fn split(
         .iter()
         .map(|&gate| module.mark_from(vec![gate], Vec::new()))
         .collect::<Result<_, _>>()?;
-    let body_relocs = module.body_relocs()?;
     let mut data_roots = Vec::new();
     let (funcs, bytes) = loop {
         let main = module.mark_from(roots.clone(), data_roots.clone())?;
@@ -284,11 +300,251 @@ pub(crate) fn split(
         &remap,
         &exported,
         &kept,
+        bindgen,
     )?;
     wasmparser::Validator::new()
         .validate_all(&out)
         .context("the main module is not valid")?;
     Ok(Split { main: out, sides })
+}
+
+/// Checks that `processed`, what wasm-bindgen made of `main` (a main module
+/// [`split`] for it), still has what the side modules import from it, as
+/// they import it: the memory and the function table, at least as large,
+/// the table's slots `main` fills and no other (the side modules fill the
+/// others), each with a function of the same type (side modules call them
+/// by it), and the `__nsh_g*` globals and `__nsh_f*` functions, of the
+/// same types, the globals with the same initial values (the stack
+/// pointer's among them). Its data stays where `main`'s was: the side
+/// modules' data is at fixed addresses next to it.
+pub(crate) fn check_processed(main: &[u8], processed: &[u8]) -> anyhow::Result<()> {
+    let before = SharedExports::read(main)?;
+    let after = SharedExports::read(processed)?;
+    for (name, item) in &before.exports {
+        let Some(found) = after.exports.get(name) else {
+            bail!("wasm-bindgen left out the main module's `{name}`, which side modules import");
+        };
+        let kept = match (item, found) {
+            (Shared::Memory(was), Shared::Memory(is)) | (Shared::Table(was), Shared::Table(is)) => {
+                is >= was
+            }
+            _ => item == found,
+        };
+        ensure!(
+            kept,
+            "wasm-bindgen changed the main module's `{name}`, which side modules import"
+        );
+    }
+    ensure!(
+        before.slots.keys().eq(after.slots.keys()),
+        "wasm-bindgen changed which slots of the main module's function table it fills"
+    );
+    if let Some(slot) = before
+        .slots
+        .iter()
+        .find(|&(slot, ty)| after.slots[slot] != *ty)
+        .map(|(slot, _)| slot)
+    {
+        bail!(
+            "wasm-bindgen changed the type of the function in slot {slot} of the main module's function table"
+        );
+    }
+    let data = merged(before.data);
+    if let Some((start, end)) = after
+        .data
+        .into_iter()
+        .find(|&(start, end)| !data.iter().any(|&(s, e)| s <= start && end <= e))
+    {
+        bail!(
+            "wasm-bindgen put data at {start}..{end} in the main module's memory, outside its data, where side modules' data may be"
+        );
+    }
+    Ok(())
+}
+
+/// `ranges` sorted and with the adjacent and overlapping ones joined.
+fn merged(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (start, end) in ranges {
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+/// What side modules import from a main module ([`check_processed`]).
+#[derive(PartialEq)]
+enum Shared {
+    Memory(u64),
+    Table(u64),
+    Global(wasmparser::GlobalType, Option<i32>),
+    Func(wasmparser::FuncType),
+}
+
+struct SharedExports {
+    exports: BTreeMap<String, Shared>,
+    /// The slots of the exported function table its element segments fill,
+    /// with the type of the function in each, when it names one.
+    slots: BTreeMap<u32, Option<wasmparser::FuncType>>,
+    /// Where its active data segments are in memory 0: start, end.
+    data: Vec<(u64, u64)>,
+}
+
+impl SharedExports {
+    fn read(wasm: &[u8]) -> anyhow::Result<Self> {
+        let mut types = Vec::new();
+        let mut funcs = Vec::new();
+        let mut globals = Vec::new();
+        let mut memories = Vec::new();
+        let mut tables = Vec::new();
+        let mut exports = Vec::new();
+        let mut segments = Vec::new();
+        let mut data = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            match payload? {
+                Payload::TypeSection(reader) => {
+                    for ty in reader.into_iter_err_on_gc_types() {
+                        types.push(ty?);
+                    }
+                }
+                Payload::ImportSection(reader) => {
+                    for import in reader.into_imports() {
+                        match import?.ty {
+                            TypeRef::Func(ty) | TypeRef::FuncExact(ty) => funcs.push(ty),
+                            TypeRef::Memory(memory) => memories.push(memory.initial),
+                            TypeRef::Table(table) => tables.push(table.initial),
+                            TypeRef::Global(_) => bail!("the main module imports globals"),
+                            TypeRef::Tag(_) => {}
+                        }
+                    }
+                }
+                Payload::FunctionSection(reader) => {
+                    for ty in reader {
+                        funcs.push(ty?);
+                    }
+                }
+                Payload::TableSection(reader) => {
+                    for table in reader {
+                        tables.push(table?.ty.initial);
+                    }
+                }
+                Payload::MemorySection(reader) => {
+                    for memory in reader {
+                        memories.push(memory?.initial);
+                    }
+                }
+                Payload::GlobalSection(reader) => {
+                    for global in reader {
+                        let global = global?;
+                        let value = match global.init_expr.get_operators_reader().read()? {
+                            Operator::I32Const { value } => Some(value),
+                            _ => None,
+                        };
+                        globals.push((global.ty, value));
+                    }
+                }
+                Payload::ExportSection(reader) => {
+                    for export in reader {
+                        let export = export?;
+                        exports.push((export.name.to_owned(), export.kind, export.index));
+                    }
+                }
+                Payload::ElementSection(reader) => {
+                    for element in reader {
+                        let element = element?;
+                        let wasmparser::ElementKind::Active {
+                            table_index,
+                            offset_expr,
+                        } = element.kind
+                        else {
+                            continue;
+                        };
+                        // Each item: `None` for an empty slot, else the type
+                        // of its function, when it names one.
+                        let type_of = |func: u32| {
+                            let ty = funcs
+                                .get(func as usize)
+                                .and_then(|&ty| types.get(ty as usize));
+                            ty.cloned()
+                                .context("a function of the main module has no type")
+                        };
+                        let filled: Vec<Option<Option<wasmparser::FuncType>>> = match element.items
+                        {
+                            wasmparser::ElementItems::Functions(items) => items
+                                .into_iter()
+                                .map(|f| anyhow::Ok(Some(Some(type_of(f?)?))))
+                                .collect::<Result<_, _>>()?,
+                            wasmparser::ElementItems::Expressions(_, items) => items
+                                .into_iter()
+                                .map(|item| {
+                                    Ok(match item?.get_operators_reader().read()? {
+                                        Operator::RefNull { .. } => None,
+                                        Operator::RefFunc { function_index } => {
+                                            Some(Some(type_of(function_index)?))
+                                        }
+                                        _ => Some(None),
+                                    })
+                                })
+                                .collect::<anyhow::Result<_>>()?,
+                        };
+                        let offset = super::i32_const(&offset_expr)? as u32;
+                        segments.push((table_index.unwrap_or(0), offset, filled));
+                    }
+                }
+                Payload::DataSection(reader) => {
+                    for segment in reader {
+                        let segment = segment?;
+                        if let wasmparser::DataKind::Active {
+                            memory_index: 0,
+                            offset_expr,
+                        } = segment.kind
+                        {
+                            let start = u64::from(super::i32_const(&offset_expr)? as u32);
+                            data.push((start, start + segment.data.len() as u64));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut shared = SharedExports {
+            exports: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            data,
+        };
+        for (name, kind, index) in exports {
+            let index = index as usize;
+            let item = match kind {
+                ExternalKind::Memory if name == "memory" => Shared::Memory(memories[index]),
+                ExternalKind::Table if name == TABLE => {
+                    for (table, offset, filled) in &segments {
+                        if *table as usize == index {
+                            shared.slots.extend(filled.iter().zip(*offset..).filter_map(
+                                |(item, slot)| item.as_ref().map(|ty| (slot, ty.clone())),
+                            ));
+                        }
+                    }
+                    Shared::Table(tables[index])
+                }
+                ExternalKind::Global if name.starts_with("__nsh_g") => {
+                    let (ty, value) = globals[index];
+                    Shared::Global(ty, value)
+                }
+                ExternalKind::Func if name.starts_with("__nsh_f") => {
+                    let ty = types
+                        .get(funcs[index] as usize)
+                        .context("a function of the main module has no type")?;
+                    Shared::Func(ty.clone())
+                }
+                _ => continue,
+            };
+            shared.exports.insert(name, item);
+        }
+        Ok(shared)
+    }
 }
 
 /// What [`Module`] does not keep: the types of the imported functions and
@@ -365,6 +621,50 @@ impl Module<'_> {
             }
         }
         slots
+    }
+
+    /// The functions whose code calls, or takes the table slot of, a
+    /// function wasm-bindgen replaces in the module it reads: one of its
+    /// imports ([`super::BINDGEN_IMPORTS`]), or the shim of a generic import
+    /// (a function that calls [`super::DESCRIBE_GENERIC_IMPORT`]), whose calls it
+    /// points at an import of its own. wasm-bindgen rewrites these functions
+    /// and runs the descriptors they reach, so they and what they reach are
+    /// roots of the main module, the one it runs on: a side module calls
+    /// none of what it replaces.
+    fn bindgen_callers(&self, body_relocs: &[Range<usize>]) -> anyhow::Result<Vec<u32>> {
+        let refers = |defined: usize, to: &dyn Fn(u32) -> bool| -> anyhow::Result<bool> {
+            for entry in &self.code_relocs[body_relocs[defined].clone()] {
+                if matches!(
+                    entry.ty,
+                    RelocationType::FunctionIndexLeb
+                        | RelocationType::FunctionIndexI32
+                        | RelocationType::TableIndexSleb
+                        | RelocationType::TableIndexI32
+                ) && to(self.func_of(entry)?)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        let mut replaced = vec![false; self.func_count()];
+        for &func in &self.bindgen_imports {
+            replaced[func as usize] = true;
+        }
+        if let Some(describe) = self.describe_generic {
+            for defined in 0..self.bodies.len() {
+                if refers(defined, &|func| func == describe)? {
+                    replaced[self.imported_funcs as usize + defined] = true;
+                }
+            }
+        }
+        let mut callers = Vec::new();
+        for defined in 0..self.bodies.len() {
+            if refers(defined, &|func| replaced[func as usize])? {
+                callers.push(self.imported_funcs + defined as u32);
+            }
+        }
+        Ok(callers)
     }
 }
 
@@ -497,6 +797,26 @@ fn data_section(segments: &[(u32, Vec<u8>)]) -> Vec<u8> {
     section
 }
 
+/// The `name` custom section `section` (its contents) with only its
+/// globals' names (subsection 7), which the main module keeps as they are.
+fn global_names(section: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut reader = wasmparser::BinaryReader::new(section, 0);
+    let mut out = Vec::new();
+    let name = reader.read_string()?;
+    put_name(&mut out, name);
+    while !reader.eof() {
+        let id = reader.read_u8()?;
+        let size = reader.read_var_u32()? as usize;
+        let contents = reader.read_bytes(size)?;
+        if id == 7 {
+            out.push(id);
+            put_uleb(&mut out, size as u64);
+            out.extend_from_slice(contents);
+        }
+    }
+    Ok(out)
+}
+
 fn put_name(out: &mut Vec<u8>, name: &str) {
     put_uleb(out, name.len() as u64);
     out.extend_from_slice(name.as_bytes());
@@ -518,6 +838,7 @@ fn write_main(
     remap: &[u32],
     exported: &[bool],
     kept: &[&str],
+    bindgen: bool,
 ) -> anyhow::Result<Vec<u8>> {
     let index = |func: u32| -> anyhow::Result<u32> {
         let new = remap[func as usize];
@@ -538,13 +859,22 @@ fn write_main(
     let segments = runs(module, bytes, MAIN, &|b, e| {
         patch_funcs(module, b, e, &index)
     })?;
-    let has_table_export = module.exports.iter().any(|e| e.kind == ExternalKind::Table);
 
     let mut out = Vec::with_capacity(module.wasm.len() / 2);
     out.extend_from_slice(&module.wasm[..8]);
     for (id, range, name) in &module.sections {
         let mut section = Vec::new();
         match id {
+            // What wasm-bindgen reads: the features the module was built
+            // with (it uses externrefs when it has reference types), and
+            // the globals' names (it finds the stack pointer by its name).
+            // The functions' names no longer match their indices.
+            0 if bindgen && *name == "target_features" => {
+                section.extend_from_slice(&module.wasm[range.clone()]);
+            }
+            0 if bindgen && *name == "name" => {
+                section = global_names(&module.wasm[range.clone()])?;
+            }
             0 if dropped_custom(name) => continue,
             3 => {
                 let types: Vec<u32> = (0..module.bodies.len())
@@ -572,9 +902,7 @@ fn write_main(
                     };
                     entries.push((export.name.to_owned(), kind, index));
                 }
-                if !has_table_export {
-                    entries.push(("__indirect_function_table".into(), 1, 0));
-                }
+                entries.push((TABLE.into(), 1, 0));
                 for g in 0..extra.globals.len() {
                     entries.push((format!("__nsh_g{g}"), 3, g as u32));
                 }
@@ -746,7 +1074,7 @@ impl Plan {
             .context("the web runtime has no memory")?;
         put_limits(&mut section, memory.initial, None);
         put_name(&mut section, "main");
-        put_name(&mut section, "__indirect_function_table");
+        put_name(&mut section, TABLE);
         section.push(1);
         section.push(0x70);
         let table = module
@@ -896,7 +1224,7 @@ mod tests {
             .map(String::as_str)
             .filter(|n| !lazy.contains(n))
             .collect();
-        let split = super::split(&wasm, &main, &lazy).unwrap();
+        let split = super::split(&wasm, &main, &lazy, false).unwrap();
         let gz = |b: &[u8]| {
             use std::io::Write as _;
             let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());

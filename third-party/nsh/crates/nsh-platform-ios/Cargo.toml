@@ -50,7 +50,7 @@ crypto = ["js", "nsh-engine/crypto"]
 
 # The native WebSocket client (tokio-tungstenite, rustls). Without it
 # `connect` of `websocket` rejects with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
-websocket = ["nsh-core/websocket"]
+websocket = ["nsh-engine/websocket"]
 # App self-updates (`nsh/updater`). Without it a check finds no update.
 updater = ["nsh-core/updater"]
 
@@ -86,3 +86,7 @@ objc2-ui-kit.workspace = true
 objc2-authentication-services.workspace = true
 rustc-hash.workspace = true
 libc.workspace = true
+
+[target.'cfg(target_os = "ios")'.dev-dependencies]
+# A renderer for the GPU views' test (`gpu.rs`).
+nsh-gpu.workspace = true

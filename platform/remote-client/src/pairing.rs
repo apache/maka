@@ -164,10 +164,15 @@ impl HostProfile {
     ) -> Result<RemoteHostConnection, RemoteClientError> {
         let host_key = parse_peer_id(self.host_peer_id())?;
         let endpoint = bind(identity, self.relays(), authorization).await?;
-        let connection = endpoint
-            .connect(&host_key)
-            .await
-            .map_err(RemoteClientError::Transport)?;
+        let connection = endpoint.connect(&host_key).await.map_err(|cause| {
+            if cause.is::<maka_remote_transport::PeerAccessRevoked>() {
+                return RemoteClientError::PeerAccessRevoked;
+            }
+            match cause.downcast::<maka_remote_transport::RelayAuthRejected>() {
+                Ok(auth) => RemoteClientError::RelayAuth(*auth),
+                Err(cause) => RemoteClientError::Transport(cause),
+            }
+        })?;
         RemoteHostConnection::connect(
             Link::peer(endpoint, connection),
             self.root_id(),

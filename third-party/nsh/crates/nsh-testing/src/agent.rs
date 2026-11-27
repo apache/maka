@@ -1295,7 +1295,7 @@ pub trait Native: Send + Sync {
         let _ = content;
         Err(
             "pasting in tests is not supported on this platform yet: run the test headless, \
-             or on macOS, iOS or the web"
+             on a desktop platform, iOS or the web"
                 .into(),
         )
     }
@@ -1354,18 +1354,18 @@ pub trait Native: Send + Sync {
         options: DragOptions,
     ) -> Result<(), String> {
         let _ = (from, to, options);
-        Err("`dragAndHold` runs headless, on Linux and on iOS for now".into())
+        Err("`dragAndHold` runs headless, on Linux, Windows and iOS for now".into())
     }
     /// Drops local files (`file:` URLs) at `at`, as a file manager's drag
     /// does.
     fn drop_files(&self, at: Point<Points>, uris: Vec<String>) -> Result<(), String> {
         let _ = (at, uris);
-        Err("`dropFiles` runs headless, on Linux and on macOS for now".into())
+        Err("`dropFiles` runs headless, on Linux, macOS and Windows for now".into())
     }
     /// Lets go of the button [`Native::drag_and_hold`] holds, at `at`.
     fn drop_at(&self, at: Point<Points>) -> Result<(), String> {
         let _ = at;
-        Err("`drop` runs headless, on Linux and on iOS for now".into())
+        Err("`drop` runs headless, on Linux, Windows and iOS for now".into())
     }
     /// Holds modifier keys down (`down`) or lets go of them: the presses,
     /// drags and hovers until then carry them. One that cannot refuses it.
@@ -1373,7 +1373,7 @@ pub trait Native: Send + Sync {
         let _ = keys;
         Err(crate::failure::unsupported_here(
             if down { "keyboard.down" } else { "keyboard.up" },
-            "holding keys runs headless and on Linux for now",
+            "holding keys runs headless, on Linux and Windows for now",
         ))
     }
     /// Types `text` into the focused input, key by key.
@@ -1497,7 +1497,9 @@ impl Worker {
 /// [`Worker`], answering each through the dev client.
 pub struct Tester {
     start: Box<dyn Fn(std::sync::Arc<Model>) -> Box<dyn Native> + Send + Sync>,
-    client: std::sync::OnceLock<std::sync::Weak<nsh_dev::DevClient>>,
+    /// Shared with the closures that answer: the dev client's thread makes
+    /// them, maybe before the thread that started it sets the client.
+    client: Arc<std::sync::OnceLock<std::sync::Weak<nsh_dev::DevClient>>>,
     worker: Mutex<Option<Worker>>,
     /// The model of the session's app, once it started.
     model: Mutex<Option<std::sync::Arc<Model>>>,
@@ -1511,13 +1513,15 @@ impl Tester {
     ) -> std::sync::Arc<Tester> {
         std::sync::Arc::new(Tester {
             start: Box::new(start),
-            client: std::sync::OnceLock::new(),
+            client: Arc::default(),
             worker: Mutex::new(None),
             model: Mutex::new(None),
         })
     }
 
-    /// The client that answers the steps (once it exists).
+    /// The client that answers the steps. Set it as soon as it started: what
+    /// the test is to hear until then (the outcomes of steps, the app's
+    /// requests, a traced app's batches) waits for it.
     pub fn set_client(&self, client: &std::sync::Arc<nsh_dev::DevClient>) {
         let _ = self.client.set(std::sync::Arc::downgrade(client));
     }
@@ -1540,8 +1544,7 @@ impl Tester {
                         trace,
                         environment,
                         Arc::new(move |message| {
-                            let Some(client) = client.get().and_then(std::sync::Weak::upgrade)
-                            else {
+                            let Some(client) = client.wait().upgrade() else {
                                 return;
                             };
                             match message {
@@ -1577,7 +1580,7 @@ impl Tester {
         let native = (self.start)(model.clone());
         let client = self.client.clone();
         let started = Worker::spawn(Agent::new(model, native), move |id, outcome| {
-            if let Some(client) = client.get().and_then(std::sync::Weak::upgrade) {
+            if let Some(client) = client.wait().upgrade() {
                 client.step_done(id, outcome);
             }
         });
@@ -1594,7 +1597,7 @@ impl Tester {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .is_some_and(|w| w.take(id, step));
-        if !taken && let Some(client) = self.client.get().and_then(std::sync::Weak::upgrade) {
+        if !taken && let Some(client) = self.client.wait().upgrade() {
             client.step_done(
                 id,
                 StepOutcome::Failed {
@@ -2910,6 +2913,10 @@ mod tests {
         EventKind, EventPayload,
         geometry::{Size, point},
         prelude::*,
+    };
+    use nsh_dev::{
+        ClientEvent, DevClient, DevEvent, DevServer, HostInfo,
+        protocol::{HostPlatform, WS_PATH},
     };
     use nsh_engine::{EngineConfig, EngineControl};
 
@@ -4484,6 +4491,74 @@ mod tests {
             }),
             StepOutcome::Done { value } if value.is_array()
         ));
+        drop(engine);
+    }
+
+    /// The server's hello and its test's setup may come on the dev client's
+    /// thread before the thread that started the client sets it.
+    #[test]
+    fn a_session_that_starts_before_its_client_is_set_answers_the_test() {
+        let (engine, batches) =
+            crate::start(EngineConfig::new(crate::windowed_root::<Tally>())).unwrap();
+        let control = engine.control();
+        let tester =
+            Tester::new(move |model| Box::new(Fake(control.clone(), Arc::default(), Some(model))));
+        let traced = Arc::new(Mutex::new(Vec::new()));
+        let heard = traced.clone();
+        let server = DevServer::start("127.0.0.1:0".parse().unwrap(), "bc", None, move |event| {
+            if let ClientEvent::Trace { items } = event {
+                heard.lock().unwrap().extend(items);
+            }
+        })
+        .unwrap();
+        server.test_session();
+        server.set_test_trace(true);
+        let (tests, (set_up, is_set_up)) = (tester.clone(), std::sync::mpsc::channel());
+        let client = DevClient::start(
+            format!("ws://{}{WS_PATH}", server.local_addr()),
+            HostInfo {
+                device: "tester".into(),
+                platform: HostPlatform::MacOs,
+                bytecode_version: "bc".into(),
+                ui_sets: Vec::new(),
+                tests: true,
+            },
+            move |event| {
+                let setup = matches!(event, DevEvent::TestSetup { .. });
+                tests.event(event);
+                if setup {
+                    let _ = set_up.send(());
+                }
+            },
+        )
+        .unwrap();
+        // The session started and no client is set.
+        is_set_up.recv_timeout(Duration::from_secs(10)).unwrap();
+        let model = tester.model().expect("the session's model");
+        std::thread::spawn(move || {
+            while let Ok(batch) = batches.recv() {
+                model.apply(&batch);
+            }
+        });
+        let client = Arc::new(client);
+        let (late, setting) = (tester.clone(), client.clone());
+        let setting = std::thread::spawn(move || {
+            // Past the app's first batch and the step's arrival.
+            std::thread::sleep(Duration::from_millis(100));
+            late.set_client(&setting);
+        });
+        assert_eq!(
+            server.step(
+                TestStep::Ready { timeout_ms: 5000 },
+                Duration::from_secs(10)
+            ),
+            Ok(serde_json::Value::Null)
+        );
+        assert!(
+            !traced.lock().unwrap().is_empty(),
+            "the first batch's trace"
+        );
+        setting.join().unwrap();
         drop(engine);
     }
 }

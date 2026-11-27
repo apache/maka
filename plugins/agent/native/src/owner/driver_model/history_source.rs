@@ -43,6 +43,25 @@ pub(super) enum HistorySource<'a> {
     Snapshot(Snapshot, Vec<RunId>),
 }
 impl<'a> HistorySource<'a> {
+    pub(super) async fn can_replay_memory(
+        &self,
+        authority: maka_agent_facts::memory::MemoryReplay,
+        source: RunId,
+        target: RunId,
+    ) -> Result<bool, RunError> {
+        let live = match self {
+            Self::Live { history, .. } => Some(history),
+            Self::Snapshot(..) => None,
+        };
+        Ok(maka_agent_state::session_history::permits_memory_replay(
+            live,
+            authority,
+            source,
+            Some(target),
+        )
+        .await?)
+    }
+
     pub(super) fn live(state: &'a Store, cut: &HistoryCut) -> Self {
         Self::Live {
             state,

@@ -21,7 +21,8 @@ import type {
   AgentWorkspace,
   SkillLibraryRead,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import type { SettingsRpc } from './rpc';
+import { tr } from '../../locale';
+import { LocalizedSettingsError, type SettingsRpc } from './rpc';
 
 export async function readSkills(
   rpc: SettingsRpc,
@@ -29,12 +30,14 @@ export async function readSkills(
   query: string,
 ) {
   const first = await rpc.query('skillLibrary', 'list', { workspace, query, cursor: null });
-  if (first.kind !== 'page') throw new Error(first.kind);
+  if (first.kind !== 'page')
+    throw new Error(first.kind === 'changed' ? tr('Refresh and try again.') : tr('Unavailable'));
   const entries = [...first.entries];
   let cursor = first.after;
   while (cursor != null) {
     const page = await rpc.query('skillLibrary', 'list', { workspace, query, cursor });
-    if (page.kind !== 'page') throw new Error(page.kind);
+    if (page.kind !== 'page')
+      throw new Error(page.kind === 'changed' ? tr('Refresh and try again.') : tr('Unavailable'));
     entries.push(...page.entries);
     cursor = page.after;
   }
@@ -43,12 +46,14 @@ export async function readSkills(
 
 export async function readSkill(rpc: SettingsRpc, input: Omit<SkillLibraryRead, 'offset'>) {
   const first = await rpc.query('skillLibrary', 'read', { ...input, offset: 0 });
-  if (first.kind !== 'page') throw new Error(first.kind);
+  if (first.kind !== 'page')
+    throw new Error(first.kind === 'changed' ? tr('Refresh and try again.') : tr('Unavailable'));
   let text = first.text;
   let offset = first.after;
   while (offset != null) {
     const page = await rpc.query('skillLibrary', 'read', { ...input, offset });
-    if (page.kind !== 'page') throw new Error(page.kind);
+    if (page.kind !== 'page')
+      throw new Error(page.kind === 'changed' ? tr('Refresh and try again.') : tr('Unavailable'));
     text += page.text;
     offset = page.after;
   }
@@ -62,5 +67,6 @@ export async function manageSkill(
   reference: string,
 ) {
   const result = await rpc.mutate('skillLibrary', method, { workspace, reference });
-  if (result.kind !== 'applied') throw new Error(result.reason);
+  if (result.kind !== 'applied')
+    throw new LocalizedSettingsError('Could not read or update settings.', { cause: result });
 }

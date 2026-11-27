@@ -172,6 +172,15 @@ pub struct RunSpec {
     pub allowed_tools: Option<Vec<String>>,
     pub mcp_revision: Option<String>,
     pub compaction_prompt: Option<ContentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_projection: Option<ContentRef>,
+    /// Historical tool output obtained under ordinary memory permission needs
+    /// the same permission at replay even when the Run had no pinned entries.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::memory::MemoryAdmission::is_unknown"
+    )]
+    pub memory_admission: crate::memory::MemoryAdmission,
     pub system_prompt: ContentRef,
     pub tool_selection: ContentRef,
     pub input: ContentRef,
@@ -195,6 +204,12 @@ pub struct AdjudicationBasis {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RequestSpec {
+    /// Frozen tool data in this request is authorized only by its original Run.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::memory::MemoryReplay::is_unrecorded"
+    )]
+    pub memory_replay: crate::memory::MemoryReplay,
     pub schema_version: u32,
     pub step: StepId,
     pub composition: RequestComposition,
@@ -832,6 +847,7 @@ impl RunSpec {
             }
             BackendSpec::Historical {} => {}
         }
+        refs.extend(self.memory_projection.iter());
         refs.extend(self.budget_basis.iter());
         refs.extend(self.compaction_prompt.iter());
         match &self.origin {

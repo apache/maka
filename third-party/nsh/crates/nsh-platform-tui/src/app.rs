@@ -2554,15 +2554,26 @@ impl AppView {
             };
             self.selection.draw(scene, buffer);
             let changes = self.selection.changes(&self.tree, &self.geometry);
+            let kept = self.selection.kept_rows();
             if let Some(control) = self.surface.control() {
-                for (id, text, start) in changes {
+                // Scrolled away, the ends' rows stay rendered: recycled,
+                // their texts would show other items.
+                if let Some(nodes) = kept {
+                    control.keep_rendered(nodes);
+                }
+                for (id, text, start, ends) in changes {
+                    let mut fields = vec![
+                        ("text", nsh_core::PayloadValue::Str(text)),
+                        ("start", nsh_core::PayloadValue::Number(f64::from(start))),
+                    ];
+                    // The core places them in list items.
+                    if let Some(ends) = ends {
+                        fields.extend(nsh_core::selection::end_fields(ends));
+                    }
                     control.dispatch_event(
                         id,
                         nsh_core::EventKind::SelectionChange,
-                        nsh_core::EventPayload::Map(vec![
-                            ("text", nsh_core::PayloadValue::Str(text)),
-                            ("start", nsh_core::PayloadValue::Number(f64::from(start))),
-                        ]),
+                        nsh_core::EventPayload::Map(fields),
                     );
                 }
             }
@@ -2839,6 +2850,7 @@ mod tests {
                 rich_editor()
                     .auto_focus(true)
                     .editable(move || editable.get())
+                    .readonly_sink(true)
                     .accessibility_label(Some(SharedString::from("Message composer")))
                     .on_focus(move |_: &()| focused.set("composer"))
                     .flex_1(),

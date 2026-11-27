@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { approvalOutcome } from '../approval';
+import { approvalOutcome, approvalRejectionError } from '../approval';
 import type {
   AgentInteractionResult,
   AgentSendResult,
@@ -26,10 +26,7 @@ import { cleanup, effect, signal } from 'nsh';
 import {
   hostMutate,
   hostQuery,
-  onSubscriptionEnded,
-  onSubscriptionItem,
-  subscribe,
-  unsubscribe,
+  watchHost,
   type AgentBackendPreference,
   type AgentDeliveryPage,
   type AgentGitWorkspaceDiff,
@@ -42,16 +39,44 @@ import {
   type AgentQueue,
   type AgentRoomMessage,
   type AgentSession,
-  type SubscriptionHandle,
 } from '../bridge';
 import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
-import { refreshHostInbox } from './inbox';
+import { dismissInboxRequest, refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
-import { refreshHostSessions } from './sessions';
-import { modelBackend, readDefaultModel } from './settings/models';
+import { listHostModels, refreshHostSessions } from './sessions';
+import {
+  loadModelCatalog,
+  labelModelChoices,
+  modelBackend,
+  modelConnectionLabels,
+  readDefaultModel,
+} from './settings/models';
 import { settingsRpc } from './settings/rpc';
 import { tr } from '../locale';
+
+export const backendKey = (backend: AgentBackendPreference) =>
+  JSON.stringify(
+    backend.kind === 'model'
+      ? [
+          'model',
+          backend.connectionId,
+          backend.modelId,
+          backend.serviceTier ?? null,
+          backend.thinkingLevel ?? null,
+        ]
+      : [
+          'executor',
+          backend.selection.executor,
+          backend.selection.settings?.runtime ?? null,
+          backend.selection.settings?.model ?? null,
+        ],
+  );
+
+export const displayModelKey = (backend: AgentBackendPreference) =>
+  backend.kind === 'model'
+    ? JSON.stringify(['model', backend.connectionId, backend.modelId])
+    : backendKey(backend);
 
 export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
@@ -235,17 +260,12 @@ export function createConversationController(rootId: string, initialSession: Age
 
   let disposed = false;
   let lastThrough: number | null = null;
-  let watchHandle: SubscriptionHandle | null = null;
-  let watchSubId: string | null = null;
+  let stopSubscription: (() => void) | undefined;
   let activeGeneration = -1;
 
   const stopWatch = () => {
-    watchSubId = null;
-    if (watchHandle) {
-      const h = watchHandle;
-      watchHandle = null;
-      void unsubscribe(h).catch(() => {});
-    }
+    stopSubscription?.();
+    stopSubscription = undefined;
   };
 
   const loadInteractions = async () => {
@@ -371,19 +391,23 @@ export function createConversationController(rootId: string, initialSession: Age
   };
 
   const loadModels = async () => {
+    const connection = activeHostInfo(rootId);
+    if (!connection || isRoom()) return;
+    const current = () => !disposed && connection.generation === activeHostInfo(rootId)?.generation;
+    const metadata = connection.endpoints.includes('settings')
+      ? loadModelCatalog(settingsRpc(rootId))
+      : null;
     try {
-      const page = await hostQuery<{ kind: string; choices?: AgentModelChoice[] }>(
-        'agent',
-        'models',
-        { kind: 'start', query: '' },
-        undefined,
-        rootId,
-      );
-      if (!disposed && page?.kind === 'ready' && Array.isArray(page.choices)) {
-        models.set(page.choices);
-      }
-    } catch {
-      // Models list is optional when offline or unsupported.
+      const choices = await listHostModels(rootId, current);
+      if (!current()) return;
+      models.set(choices);
+      void metadata?.then((catalog) => {
+        if (catalog && current() && models() === choices) {
+          models.set(labelModelChoices(choices, modelConnectionLabels(catalog)));
+        }
+      });
+    } catch (cause) {
+      if (current()) showToast(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
@@ -431,17 +455,15 @@ export function createConversationController(rootId: string, initialSession: Age
   const startWatch = (gen: number) => {
     stopWatch();
     const subId = 'watch:' + rootId + ':' + sessionId + ':' + String(++watchSeq);
-    watchSubId = subId;
-    void subscribe(subId, 'agent', 'watch', { sessionId, after: lastThrough ?? 0 }, rootId)
-      .then((handle) => {
-        if (disposed || watchSubId !== subId) {
-          void unsubscribe(handle).catch(() => {});
-          return;
-        }
-        watchHandle = handle;
-        activeGeneration = gen;
-      })
-      .catch(() => {});
+    stopSubscription = watchHost<AgentDeliveryPage>(
+      rootId,
+      gen,
+      subId,
+      'watch',
+      { sessionId, after: lastThrough ?? 0 },
+      applyWatchItem,
+      (cause) => console.warn('Could not watch conversation', cause),
+    );
   };
 
   const refreshAll = async () => {
@@ -548,7 +570,9 @@ export function createConversationController(rootId: string, initialSession: Age
         { rootId, generation },
       );
       if (res.kind !== 'started' && res.kind !== 'queued' && res.kind !== 'posted') {
-        throw new Error(res.kind === 'rejected' ? res.reason : res.kind);
+        throw new Error(tr('Could not send the message.'), {
+          cause: res.kind === 'rejected' ? res.reason : res.kind,
+        });
       }
       if (draftMap()[key] === draft) setDraft(rootId, sessionId, '');
       hapticSelection();
@@ -582,16 +606,23 @@ export function createConversationController(rootId: string, initialSession: Age
   const selectModel = (backend: AgentBackendPreference) => {
     const generation = activeHostInfo(rootId)?.generation;
     if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
+    const alreadySelected = () => {
+      const chosen = selectedBackend();
+      return chosen !== null && displayModelKey(chosen) === displayModelKey(backend);
+    };
+    if (alreadySelected()) return;
     const done = (async () => {
       try {
         if (!observation()) await loadObserve(false);
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (!observation()) throw new Error(error() ?? tr('Select model'));
+        if (alreadySelected()) return true;
         const result = await hostMutate<
           import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
         >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
-        if (result.kind !== 'committed') throw new Error(result.kind);
+        if (result.kind !== 'committed')
+          throw new Error(tr('Could not change the model.'), { cause: result.kind });
         const current = observation()!;
         if (result.session.revision >= current.session.revision) {
           observed.set({ generation, value: { ...current, session: result.session } });
@@ -628,7 +659,9 @@ export function createConversationController(rootId: string, initialSession: Age
       );
       queue.set(await hostQuery<AgentQueue>('agent', 'queue', { sessionId }, undefined, rootId));
       if (result.kind !== 'committed')
-        throw new Error(result.kind === 'rejected' ? result.reason : result.kind);
+        throw new Error(tr('Could not update the message queue.'), {
+          cause: result.kind === 'rejected' ? result.reason : result.kind,
+        });
       hapticSelection();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause));
@@ -638,6 +671,7 @@ export function createConversationController(rootId: string, initialSession: Age
   const respondInteraction = async (requestId: string, answer: Record<string, unknown>) => {
     if (busyInteractionIds()[requestId]) return null;
     busyInteractionIds.update((prev) => ({ ...prev, [requestId]: true }));
+    const generation = activeHostInfo(rootId)?.generation;
     try {
       const result = await hostMutate<AgentInteractionResult>(
         'agent',
@@ -647,16 +681,14 @@ export function createConversationController(rootId: string, initialSession: Age
       );
       if (result.kind === 'rejected') {
         void loadInteractions();
-        throw new Error(result.reason);
+        throw approvalRejectionError(result.reason);
       }
+      if (activeHostInfo(rootId)?.generation === generation)
+        dismissInboxRequest(rootId, sessionId, requestId);
       hapticNotification(approvalOutcome(result.record.outcome) === false ? 'warning' : 'success');
       const hostName = hostById(rootId)?.hostName ?? rootId;
-      await Promise.all([
-        loadInteractions(),
-        loadObserve(),
-        refreshHostInbox(rootId, hostName),
-        refreshHostSessions(rootId, hostName),
-      ]);
+      refreshHostInbox(rootId);
+      await Promise.all([loadInteractions(), loadObserve(), refreshHostSessions(rootId, hostName)]);
       return result.record;
     } catch (cause) {
       hapticNotification('error');
@@ -673,12 +705,7 @@ export function createConversationController(rootId: string, initialSession: Age
     }
   };
 
-  const offItem = onSubscriptionItem((payload) => {
-    if (disposed || !watchSubId || payload.subscriptionId !== watchSubId) return;
-    if (payload.rootId && payload.rootId !== rootId) return;
-    const page = payload.item as AgentDeliveryPage | undefined;
-    if (!page || typeof page !== 'object') return;
-
+  const applyWatchItem = (page: AgentDeliveryPage) => {
     if (page.kind === 'preview') {
       livePreview.set(accumulator.applyPreviewPage(page.page));
       return;
@@ -689,8 +716,7 @@ export function createConversationController(rootId: string, initialSession: Age
     }
     if (page.kind === 'interactions') {
       void loadInteractions();
-      const hostName = hostById(rootId)?.hostName ?? rootId;
-      void refreshHostInbox(rootId, hostName);
+      refreshHostInbox(rootId);
       return;
     }
     if (page.kind === 'room') {
@@ -734,13 +760,7 @@ export function createConversationController(rootId: string, initialSession: Age
         void refreshHostSessions(rootId, hostName);
       }
     }
-  });
-
-  const offEnded = onSubscriptionEnded((payload) => {
-    if (disposed || !watchSubId || payload.subscriptionId !== watchSubId) return;
-    watchHandle = null;
-    watchSubId = null;
-  });
+  };
 
   effect(() => {
     const conn = activeHostInfo(rootId);
@@ -749,8 +769,9 @@ export function createConversationController(rootId: string, initialSession: Age
       activeGeneration = -1;
       return;
     }
-    const gen = conn.generation ?? 0;
+    const gen = conn.generation;
     if (gen === activeGeneration) return;
+    stopWatch();
     activeGeneration = gen;
     void refreshAll().then(() => {
       if (!disposed && activeHostInfo(rootId)?.generation === gen) {
@@ -761,8 +782,6 @@ export function createConversationController(rootId: string, initialSession: Age
 
   cleanup(() => {
     disposed = true;
-    offItem();
-    offEnded();
     stopWatch();
   });
 

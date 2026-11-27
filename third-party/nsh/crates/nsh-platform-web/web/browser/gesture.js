@@ -33,7 +33,7 @@ export function createGestures(invoke, values, reactive, dom, live, wake) {
       for(const id of ids){if(gated.has(node(id)))continue;if(run(id,name,event,negotiation)===true){if(id!==responder)takeOver(id,event);return;}}
     }
   };
-  const point=p=>{const {identifier,target,pageX,pageY,locationX,locationY,timestamp,pointerType,pressure,tiltX,tiltY}=p;return {identifier,target,pageX,pageY,locationX,locationY,timestamp,pointerType,pressure,tiltX,tiltY};};
+  const point=p=>{const {identifier,target,pageX,pageY,locationX,locationY,timestamp,pointerType,pressure,tiltX,tiltY,eraser,barrel,coalesced}=p;return {identifier,target,pageX,pageY,locationX,locationY,timestamp,pointerType,pressure,tiltX,tiltY,eraser,barrel,coalesced};};
   const dispatch=touch=>reactive.batch(()=>reactive.untracked(()=>{
     const lifted=touch.phase==="end"||touch.phase==="cancel";
     for(const p of touch.points)if(touch.phase==="start"&&p.changed)paths.set(p.identifier,p.path.filter(id=>handlers.get(node(id))?.size));

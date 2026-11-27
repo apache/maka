@@ -70,6 +70,7 @@ mount(() => (
 | Prop | Type | Default | Description |
 |---|---|---|---|
 | `src` | `string` | (required) | The video's URL. |
+| `poster` | `string` | | An image shown while the video loads, until its first frame is ready. |
 | `paused` | `boolean` | `false` | Playback is paused. |
 | `muted` | `boolean` | `false` | No sound. |
 | `volume` | `number` | `1` | 0..1. |

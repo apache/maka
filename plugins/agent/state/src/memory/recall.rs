@@ -345,10 +345,13 @@ pub(crate) fn address_spans<'a>(
         match address {
             Live {
                 fact, item_index, ..
-            }
-            | Snapshot {
-                fact, item_index, ..
-            } => canonical.push((index, *fact, *item_index)),
+            } => canonical.push((index, *fact, *item_index, None)),
+            Snapshot {
+                snapshot,
+                fact,
+                item_index,
+                ..
+            } => canonical.push((index, *fact, *item_index, Some(*snapshot))),
             Imported {
                 snapshot,
                 message_ordinal,
@@ -363,7 +366,12 @@ pub(crate) fn address_spans<'a>(
 pub(crate) fn indexed_spans(
     c: &Connection,
     owner: &maka_agent_facts::durable::RunOwner,
-    canonical: &[(usize, maka_agent_facts::durable::FactId, u64)],
+    canonical: &[(
+        usize,
+        maka_agent_facts::durable::FactId,
+        u64,
+        Option<maka_agent_facts::history_snapshot::SnapshotId>,
+    )],
     imported: &[(
         usize,
         maka_agent_facts::history_snapshot::SnapshotId,
@@ -373,7 +381,7 @@ pub(crate) fn indexed_spans(
 ) -> Result<std::collections::BTreeMap<usize, Vec<(u64, u64)>>, StoreError> {
     register_read_classifier(c)?;
     let mut stmt = c.prepare_cached(concat!(
-        "WITH keys AS MATERIALIZED (SELECT value->>0 idx,value->>1 fact,value->>2 ordinal FROM json_each(?2))
+        "WITH keys AS MATERIALIZED (SELECT value->>0 idx,value->>1 fact,value->>2 ordinal, value->>3 snapshot FROM json_each(?2))
         ",
         restricted_spans_sql!(
             "SELECT k.idx,s.start,s.end FROM keys k CROSS JOIN",
@@ -382,6 +390,8 @@ pub(crate) fn indexed_spans(
         "
         UNION ALL SELECT k.idx,0,9223372036854775807 FROM keys k
         WHERE EXISTS(SELECT 1 FROM agent_memory_recall_outputs r WHERE r.owner=?1 AND r.fact=k.fact)
+        UNION ALL SELECT k.idx,0,9223372036854775807 FROM keys k
+        WHERE EXISTS(SELECT 1 FROM agent_memory_snapshot_outputs s WHERE s.snapshot=k.snapshot AND s.fact=k.fact)
         UNION ALL SELECT i.value->>0,0,9223372036854775807 FROM json_each(?3) i CROSS JOIN agent_memory_imported_outputs r
         WHERE r.snapshot=i.value->>1 AND r.message=i.value->>2 AND r.part=i.value->>3 AND (r.read_path IS NULL OR maka_reads_history_resource(r.read_path))"
     ))?;
@@ -411,6 +421,7 @@ pub enum ArchiveRestriction {
 pub(crate) struct RestrictedArchives {
     pub owner: maka_agent_facts::durable::RunOwner,
     pub facts: Vec<maka_agent_facts::durable::FactId>,
+    pub snapshot: Option<maka_agent_facts::history_snapshot::SnapshotId>,
 }
 
 impl Query for RestrictedArchives {
@@ -423,6 +434,7 @@ impl Query for RestrictedArchives {
             restricted_spans_sql!("SELECT 1 FROM", "s.namespace=?1 AND s.fact=input.value"),
             ")
                 OR EXISTS(SELECT 1 FROM agent_memory_recall_outputs WHERE owner=?1 AND fact=input.value)
+                OR EXISTS(SELECT 1 FROM agent_memory_snapshot_outputs WHERE snapshot=?3 AND fact=input.value)
                 FROM json_each(?2) AS input)
              SELECT fact,direct FROM sources WHERE direct OR EXISTS(
                 SELECT 1 FROM agent_session_history call CROSS JOIN agent_session_history result
@@ -436,7 +448,8 @@ impl Query for RestrictedArchives {
         ))?;
         let mut rows = stmt.query(params![
             serde_json::to_string(&self.owner)?,
-            serde_json::to_string(&self.facts)?
+            serde_json::to_string(&self.facts)?,
+            self.snapshot.map(|id| id.to_string())
         ])?;
         let mut restricted = Self::Output::new();
         while let Some(row) = rows.next()? {
@@ -452,6 +465,22 @@ impl Query for RestrictedArchives {
     }
 }
 
+macro_rules! material_origins_sql {
+    () => {
+        "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
+                SELECT ?2,?3,0 UNION
+                SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
+                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.id'),
+                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.kind')='session'
+                FROM origins o JOIN agent_session_artifact_registrations r
+                  ON r.session=o.session AND r.artifact=o.artifact AND r.owner=?1
+                JOIN contents b ON b.id=r.body_content_id
+                WHERE json_extract(CAST(b.payload AS TEXT),'$.origin.kind')='copy'
+            )"
+    };
+}
+pub(super) use material_origins_sql;
+
 #[derive(Clone)]
 pub struct MaterialAccess {
     pub scope: crate::artifacts::SessionScope,
@@ -462,16 +491,8 @@ impl Query for MaterialAccess {
     fn execute(self, c: &Connection) -> Result<(), StoreError> {
         let restricted: bool = c.query_row(
             concat!(
-            "WITH RECURSIVE origins(session,artifact,needs_registration) AS (
-                SELECT ?2,?3,0 UNION
-                SELECT json_extract(CAST(b.payload AS TEXT),'$.origin.source.scope.session'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.id'),
-                       json_extract(CAST(b.payload AS TEXT),'$.origin.source.kind')='session'
-                FROM origins o JOIN agent_session_artifact_registrations r
-                  ON r.session=o.session AND r.artifact=o.artifact AND r.owner=?1
-                JOIN contents b ON b.id=r.body_content_id
-                WHERE json_extract(CAST(b.payload AS TEXT),'$.origin.kind')='copy'
-            ) SELECT EXISTS(SELECT 1 FROM origins o CROSS JOIN agent_memory_recall_attachments a
+            material_origins_sql!(),
+            " SELECT EXISTS(SELECT 1 FROM origins o CROSS JOIN agent_memory_recall_attachments a
             CROSS JOIN agent_recall_messages d ON d.id=a.message CROSS JOIN agent_session_history h ON h.sequence=d.sequence
             WHERE a.namespace=?1 AND a.session=o.session AND a.artifact=o.artifact
             AND EXISTS(",
@@ -682,6 +703,152 @@ mod tests {
     }
 
     #[test]
+    fn old_reader_classification_preserves_clean_executor_keys() {
+        let suffix = "\n\nAlso reads Maka resources (maka://session/<id>, maka://session/<id>/tool-results/<event-id>, attachment:<id>, archive:<event-id>). Pass page.next unchanged to continue reading.";
+        let db = Connection::open_in_memory().unwrap();
+        migrate(&db, 50);
+        let selection = serde_json::json!({
+            "definitions":[
+                {"name":"OpenDocument","description":format!("Read a document{suffix}")},
+                {"name":"Read","description":format!("Untrusted reader{suffix}")}
+            ],
+            "services":[
+                {"selection":{"name":"OpenDocument","target":{"kind":"import","name":"files"},
+                    "method":"read","description":"Read a document"}},
+                {"selection":{"name":"Read","target":{"kind":"import","name":"custom"},
+                    "method":"read","description":format!("Untrusted reader{suffix}")}}
+            ],"internalBindings":{}
+        });
+        db.execute(
+            "INSERT INTO contents(content_sha256,payload) VALUES('selection',?)",
+            [serde_json::to_vec(&selection).unwrap()],
+        )
+        .unwrap();
+        db.execute_batch(
+            r#"INSERT INTO contents(content_sha256,payload) VALUES
+                ('spec', CAST('{"toolSelection":{"digest":"selection"}}' AS BLOB));"#,
+        )
+        .unwrap();
+        for (index, (session, name, path)) in [
+            ("plain", "OpenDocument", "README.md"),
+            ("archive", "OpenDocument", "session:sample"),
+            ("unknown", "Read", "README.md"),
+            ("imported-user", "", ""),
+            ("imported-opaque", "", ""),
+            ("imported-missing-part", "", ""),
+            ("imported-mixed", "", ""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = index as i64 + 1;
+            db.execute("INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+                    VALUES(?,'test',1,0,0,0,'{}')",[session]).unwrap();
+            db.execute("INSERT INTO agent_run_specs SELECT ?1,1,'owner',?1,id FROM contents WHERE content_sha256='spec'",
+                    [session]).unwrap();
+            let call = serde_json::json!({"fact":{"part":{"call":{"name":name,"input":{"data":{"path":path}}}}}});
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?,?)",
+                params![session, serde_json::to_vec(&call).unwrap()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO agent_facts VALUES(?1,?2,?2,1,1,1,?3)",
+                params![sequence, session, db.last_insert_rowid()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,
+                    prefix_digest,tool_use_id,tool_start,opening_message,fact_id,result_source)
+                    VALUES('owner',?1,?2,?1,?2,'model_observed','prefix','call',?3,0,?1,0)",
+                    params![session,sequence,!name.is_empty()]).unwrap();
+            db.execute("INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,
+                    control_version,stopped,tokens,retries,retry_pending,cancelled_by_risk,replans,terminal)
+                    VALUES(?1,1,'owner',?1,?2,?3,1,0,0,0,0,0,0,'[]','completed')",params![session,sequence,!name.is_empty()]).unwrap();
+            if name.is_empty() {
+                let manifest = format!("manifest-{session}");
+                let message = format!("message-{session}");
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![manifest, br#"{"origin":{"kind":"imported"}}"#.as_slice()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO agent_history_snapshots VALUES(?1,'owner',?1,'{}',?2)",
+                    params![session, db.last_insert_rowid()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO agent_history_snapshot_adoptions VALUES(?1,?1,?1)",
+                    [session],
+                )
+                .unwrap();
+                let role = if session == "imported-opaque" {
+                    "assistant"
+                } else {
+                    "user"
+                };
+                let part = format!("part-{session}");
+                let mut row = serde_json::json!({"role":role,"parts":[{"digest":part}]});
+                if matches!(session, "imported-missing-part" | "imported-mixed") {
+                    row["parts"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!({"digest":session.to_owned()+"-extra"}));
+                }
+                if session == "imported-mixed" {
+                    db.execute("INSERT INTO contents(content_sha256,payload) VALUES(?,?)", params![
+                        session.to_owned()+"-extra",br#"{"kind":"input","content":{"text":"caption","attachments":["photo"]}}"#.as_slice()
+                    ]).unwrap();
+                }
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![
+                        part,
+                        br#"{"kind":"input","content":{"text":"original text"}}"#.as_slice()
+                    ],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)",
+                    params![message, serde_json::to_vec(&row).unwrap()],
+                )
+                .unwrap();
+                db.execute("INSERT INTO agent_history_snapshot_entries(snapshot,ordinal,kind,position,entry_json)
+                        VALUES(?1,0,'imported',0,json_object('message',json_object('digest',?2)))",
+                        params![session,message]).unwrap();
+            }
+        }
+        migrate(&db, i64::MAX);
+        for session in [
+            "plain",
+            "archive",
+            "unknown",
+            "imported-user",
+            "imported-opaque",
+            "imported-missing-part",
+            "imported-mixed",
+        ] {
+            let reusable = matches!(session, "plain" | "imported-user");
+            let shared: bool = db
+                .query_row(
+                    "SELECT unmarked_replay_shared FROM agent_run_specs WHERE run=?",
+                    [session],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(shared, reusable, "{session}");
+            let key = crate::memory::reads::ExternalConversation(session.into())
+                .execute(&db)
+                .unwrap();
+            if reusable {
+                assert_eq!(key, session);
+            } else {
+                assert_eq!(key, format!("memory/0/{session}"));
+            }
+        }
+    }
+
+    #[test]
     fn read_continuations_are_indexed_only_after_upgrade() {
         use maka_agent_facts::read::ReadInput;
         let dir = tempfile::tempdir().unwrap();
@@ -729,6 +896,18 @@ mod tests {
         };
         record(&db, 1, "notes.txt");
         record(&db, 3, "session:sample");
+        migrate(&db, 51);
+        record(&db, 5, "notes.txt");
+        record(&db, 7, "attachment:photo");
+        db.execute_batch(
+            "INSERT INTO session_control(id,fingerprint,revision,created_at,updated_at,archived,configuration)
+             VALUES('chat','test',1,0,0,0,'{}'),('other','test',1,0,0,0,'{}');
+             INSERT INTO agent_run_specs VALUES('clean',1,'owner','other',1),('later',1,'owner','chat',1);
+             INSERT INTO agent_runs(run,schema_version,owner,session,admission_sequence,local,revision,control_version,
+             stopped,tokens,retries,retry_pending,cancelled_by_risk,replans)
+             SELECT run,1,owner,session,CASE run WHEN 'later' THEN 9 ELSE 1 END,1,1,0,0,0,0,0,0,'[]'
+             FROM agent_run_specs;",
+        ).unwrap();
         migrate(&db, i64::MAX);
         drop(db);
         let db = Connection::open(&path).unwrap();
@@ -740,8 +919,6 @@ mod tests {
              INSERT INTO agent_session_history SELECT * FROM old_call;",
         )
         .unwrap();
-        record(&db, 5, "notes.txt");
-        record(&db, 7, "attachment:photo");
         let rows = |sql: &str| {
             db.prepare(sql)
                 .unwrap()
@@ -750,6 +927,31 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()
         };
+        assert_eq!(
+            rows("SELECT run FROM agent_memory_history_reads WHERE revision < 0 ORDER BY run"),
+            ["later", "run"]
+        );
+        let external_key = |session: &str| {
+            crate::memory::reads::ExternalConversation(session.into())
+                .execute(&db)
+                .unwrap()
+        };
+        assert_eq!(external_key("chat"), "memory/0/chat");
+        assert_eq!(external_key("other"), "other");
+        // A post-upgrade reader can observe a pre-index source before its assertion is retired.
+        db.execute_batch(r#"INSERT INTO agent_memory_history_reads SELECT 'clean',revision FROM agent_memory_visibility;
+            INSERT INTO agent_memories VALUES('owner','personal','entry',1,1,'user_recall','active',0,0);
+            INSERT INTO agent_memory_versions(namespace,scope,id,revision,body,source,digest,disposition)
+            VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
+            INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
+            '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"fact-1","itemIndex":0,"start":0,"end":4}}','source');
+            UPDATE agent_memory_versions SET disposition='suppressed' WHERE id='entry';"#).unwrap();
+        assert_eq!(
+            rows(
+                "SELECT h.run FROM agent_memory_history_reads h JOIN agent_memory_visibility v ON h.revision <> v.revision WHERE h.run='clean'"
+            ),
+            ["clean"]
+        );
         assert_eq!(
             rows("SELECT tool_use_id FROM agent_memory_recall_calls ORDER BY sequence"),
             ["7"]
@@ -769,7 +971,7 @@ mod tests {
         migrate(&db, i64::MAX);
         db.execute_batch(
             "INSERT INTO contents VALUES(1,'spec',x'7b7d');
-            INSERT INTO agent_run_specs VALUES('run',1,'owner','chat',1);",
+            INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('run',1,'owner','chat',1);",
         )
         .unwrap();
         let notification = |n: i64, cell: &str| {
@@ -795,7 +997,7 @@ mod tests {
             VALUES('owner','personal','entry',1,'Meeting time','{}','digest','current');
             INSERT INTO agent_memory_evidence(namespace,scope,id,assertion,source,source_key) VALUES('owner','personal','entry',1,
             '{"kind":"conversation","reference":{"sessionId":"chat","sequence":1,"factId":"notice-1","itemIndex":0,"start":0,"end":4}}','source');"#).unwrap();
-        db.execute_batch(r#"INSERT INTO agent_run_specs VALUES('reader-run',1,'owner','chat',1);
+        db.execute_batch(r#"INSERT INTO agent_run_specs(run,schema_version,owner,session,spec_content_id) VALUES('reader-run',1,'owner','chat',1);
             INSERT INTO contents VALUES(1000,'wait-result',CAST('{"body":{"isError":false,"output":{"format":"cell","value":{"cell":"one"}}}}' AS BLOB)),
                                        (1001,'wait-fact',CAST('{"fact":{"result":{"digest":"wait-result"}}}' AS BLOB));
             INSERT INTO agent_facts VALUES(1000,'wait','reader-run',1,1,1,1001);

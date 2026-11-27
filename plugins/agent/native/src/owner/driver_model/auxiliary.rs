@@ -124,17 +124,15 @@ pub(in crate::owner) async fn prepare_completed(
         .as_ref()
         .ok_or_else(|| unsupported("frozen-provider-options"))?;
     let definitions = surface.tools;
-    let original = preparation::restore_prompt_from(
-        io.clone(),
-        resources.clone(),
-        preparation::ContentSource::Live { history, cut },
-        run,
-        &frozen.prompt,
-        &frozen.prompt_chunks,
-        &frozen.layout,
-        cancellation,
-    )
-    .await?;
+    let original = frozen
+        .restore_prompt(
+            io.clone(),
+            resources.clone(),
+            preparation::ContentSource::Live { history, cut },
+            run,
+            cancellation,
+        )
+        .await?;
     let mut builder = match preparation::PromptBuilder::new(io, resources, cancellation).await {
         Ok(builder) => builder,
         Err(error) => return close_result(Err(error), &original).await,

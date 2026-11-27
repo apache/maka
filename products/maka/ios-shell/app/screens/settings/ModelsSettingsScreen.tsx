@@ -24,11 +24,14 @@ import type {
   Identity,
   SettingsConnectionSummary,
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
-import { tr } from '../../locale';
+import { formatCount, thinkingLevelLabel, tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
 import {
   connectionCatalog,
+  type ConnectionCatalog,
   modelChoices,
+  modelConnectionLabels,
+  modelLabel,
   providerCatalog,
   readConnection,
   setExternalRuntime,
@@ -47,31 +50,52 @@ import {
 export function ModelsSettingsScreen(
   props: SettingsPageProps & {
     revision: number;
+    onChanged: () => void;
     openConnection: (row: SettingsConnectionSummary) => void;
-    openProviders: (revision: number) => void;
+    openProviders: (catalog: () => ConnectionCatalog | null) => void;
   },
 ) {
   const work = settingsWork(props.rootId, props.active);
   const rpc = settingsRpc(props.rootId, work.writeGeneration);
   const data = signal<{
-    catalog: Awaited<ReturnType<typeof connectionCatalog>>;
+    catalog: ConnectionCatalog;
+    generation: number;
+    revision: number;
     models: Awaited<ReturnType<typeof modelChoices>>;
     external: Awaited<ReturnType<typeof loadExternal>>;
   } | null>(null);
   const loadExternal = () => rpc.query('agent', 'externalAgents', {});
+  const generation = () => activeHostInfo(props.rootId)?.generation;
   const load = async () => {
+    const started = generation();
+    const revision = props.revision;
+    if (started === undefined) return;
     const [catalog, models, external] = await Promise.all([
       connectionCatalog(rpc),
       modelChoices(rpc),
       loadExternal(),
     ]);
-    data.set({ catalog, models, external });
+    if (started === generation() && revision === props.revision) {
+      data.set({ catalog, models, external, generation: started, revision });
+    }
   };
   const reload = () => void work.run(load);
+  let requested: { generation: number; revision: number } | undefined;
   effect(() => {
-    props.revision;
+    const connected = generation();
+    const revision = props.revision;
+    if (work.busy() || connected === undefined) return;
+    if (requested?.generation === connected && requested.revision === revision) return;
+    requested = { generation: connected, revision };
     untracked(reload);
   });
+  const ready = () => {
+    const snapshot = data();
+    return (
+      !!snapshot && snapshot.generation === generation() && snapshot.revision === props.revision
+    );
+  };
+  const currentCatalog = () => (!work.busy() && ready() ? data()!.catalog : null);
   const changeRuntime = async (id: string, enabled: boolean) => {
     const current = work.fence();
     if (enabled) {
@@ -103,6 +127,17 @@ export function ModelsSettingsScreen(
     data()?.models.find(
       (row) => modelId(row.selection.connectionId, row.selection.modelId) === selected(),
     );
+  const modelOptions = () => {
+    const snapshot = data();
+    const labels = modelConnectionLabels(snapshot?.catalog);
+    return [
+      { id: '', label: tr('None') },
+      ...(snapshot?.models ?? []).map((row) => ({
+        id: modelId(row.selection.connectionId, row.selection.modelId),
+        label: modelLabel(row.label, row.selection.connectionId, labels),
+      })),
+    ];
+  };
   const externalStatus = () => {
     switch (data()?.external.state.kind) {
       case 'ready':
@@ -125,7 +160,7 @@ export function ModelsSettingsScreen(
       backLabel={props.backLabel}
       title={tr('Models & Connections')}
       work={work}
-      ready={!!data()}
+      ready={ready()}
       reload={reload}
     >
       <InsetGroup>
@@ -133,13 +168,7 @@ export function ModelsSettingsScreen(
           title={tr('Default model')}
           divider={!!currentModel()?.thinkingLevels.length}
           value={selected()}
-          options={[
-            { id: '', label: tr('None') },
-            ...(data()?.models ?? []).map((row) => ({
-              id: modelId(row.selection.connectionId, row.selection.modelId),
-              label: row.label + ' · ' + row.connectionName,
-            })),
-          ]}
+          options={modelOptions()}
           disabled={work.busy()}
           change={(id) =>
             void work.run(async () => {
@@ -152,8 +181,9 @@ export function ModelsSettingsScreen(
                   ? { connectionId: target.connectionId, modelId: target.modelId }
                   : null,
               });
-              if (result.kind !== 'committed') throw new Error(result.kind);
-              await load();
+              if (result.kind !== 'committed')
+                throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
+              props.onChanged();
             })
           }
         />
@@ -161,7 +191,10 @@ export function ModelsSettingsScreen(
           <SettingChoice
             title={tr('Default thinking level')}
             value={currentModel()?.defaultThinkingLevel ?? ''}
-            options={currentModel()!.thinkingLevels.map((id) => ({ id, label: id }))}
+            options={currentModel()!.thinkingLevels.map((id) => ({
+              id,
+              label: thinkingLevelLabel(id),
+            }))}
             disabled={work.busy()}
             change={(level) =>
               void work.run(async () => {
@@ -178,7 +211,8 @@ export function ModelsSettingsScreen(
                   expected: connectionBasis(detail.target),
                   changes: { modelOverrides },
                 });
-                if (result.kind !== 'committed') throw new Error(result.kind);
+                if (result.kind !== 'committed')
+                  throw new Error(tr('Could not read or update settings.'), { cause: result.kind });
                 await load();
               })
             }
@@ -191,7 +225,7 @@ export function ModelsSettingsScreen(
             <GroupRow
               title={row().name}
               subtitle={row().provider.name}
-              value={String(row().enabledModelCount)}
+              value={formatCount(row().enabledModelCount)}
               disabled={work.busy() || !row().editable}
               chevron
               divider
@@ -203,8 +237,8 @@ export function ModelsSettingsScreen(
           title={tr('Add connection')}
           tone="primary"
           chevron
-          disabled={work.busy()}
-          onPress={() => props.openProviders(data()!.catalog.revision)}
+          disabled={!currentCatalog()}
+          onPress={() => props.openProviders(currentCatalog)}
         />
       </InsetGroup>
       <InsetGroup header={tr('External Agents')}>
@@ -235,7 +269,10 @@ export function ModelsSettingsScreen(
 }
 
 export function ProviderPicker(
-  props: SettingsPageProps & { onSelect: (provider: Identity) => void },
+  props: SettingsPageProps & {
+    catalog: () => ConnectionCatalog | null;
+    onSelect: (provider: Identity, catalog: ConnectionCatalog) => void;
+  },
 ) {
   const work = settingsWork(props.rootId, props.active);
   const rpc = settingsRpc(props.rootId, work.writeGeneration);
@@ -271,7 +308,11 @@ export function ProviderPicker(
               title={row().label}
               chevron
               divider={index() < matches().length - 1}
-              onPress={() => props.onSelect(row().identity)}
+              disabled={!props.catalog()}
+              onPress={() => {
+                const catalog = props.catalog();
+                if (catalog) props.onSelect(row().identity, catalog);
+              }}
             />
           )}
         </Each>

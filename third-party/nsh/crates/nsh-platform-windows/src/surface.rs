@@ -42,8 +42,9 @@ enum Message {
     Error(String),
     Frame,
     HotUpdateFailed,
-    /// The engine laid the app out at this size ([`MountSink::resized`]).
-    Resized(Size<Points>),
+    /// The engine laid a root out at this size ([`MountSink::resized`],
+    /// [`MountSink::root_resized`]).
+    Resized(NodeId, Size<Points>),
     Handled(u64),
     /// A function the app runs on the main thread
     /// ([`MountSink::run_on_main_thread`]), after the batches before it.
@@ -111,7 +112,11 @@ impl MountSink for Sink {
     }
 
     fn resized(&self, size: Size<Points>) {
-        self.send(Message::Resized(size));
+        self.send(Message::Resized(ROOT_ID, size));
+    }
+
+    fn root_resized(&self, id: NodeId, size: Size<Points>) {
+        self.send(Message::Resized(id, size));
     }
 
     fn handled(&self, events: u64) {
@@ -197,6 +202,11 @@ pub(crate) struct Surface {
     launch_links: RefCell<Vec<String>>,
     rx: RefCell<Option<Receiver<Message>>>,
     pending: RefCell<Arc<AtomicBool>>,
+    /// The queue is being drained ([`Surface::drain`]).
+    draining: Cell<bool>,
+    /// A wake-up came while the queue was drained or a batch applied
+    /// ([`Surface::drain`]): the queue is drained again once it is done.
+    drain_deferred: Cell<bool>,
     /// The window drawn into (shared with the engine's sink).
     hwnd: Arc<std::sync::atomic::AtomicIsize>,
     /// Pixels per point.
@@ -215,18 +225,11 @@ pub(crate) struct Surface {
     /// once it is done (the request made inside `WM_PAINT` does not come
     /// back as another `WM_PAINT`).
     repaint: Cell<bool>,
-    /// The next frame draws the whole window ([`Surface::invalidate`]).
-    full_damage: Cell<bool>,
+    /// What changed since the last frame ([`Damage`]).
+    damage: Damage,
     /// The change stamp of the last request to draw the whole window
     /// ([`Surface::whole_change`]).
     whole_change: Cell<u64>,
-    /// Views that changed since the last frame
-    /// ([`Surface::invalidate_view`]).
-    dirty: RefCell<Vec<NshView>>,
-    /// Parts of views that changed since the last frame, in the view's own
-    /// coordinates ([`Surface::invalidate_view_rect`]): a canvas's animated
-    /// values, drawn again only there.
-    partial: RefCell<Vec<(NshView, Bounds<Points>)>>,
     /// The environment the engine was last told about.
     pub(crate) environment: Cell<Environment>,
     /// The app's appearance (`nsh.json`, `setColorScheme`): the color
@@ -309,6 +312,9 @@ pub(crate) struct Surface {
     events_handled: Cell<u64>,
     /// The app's own windows besides this one (`Window.open`).
     pub(crate) windows: RefCell<Vec<Rc<crate::app_window::AppWindow>>>,
+    /// The app's icon, an `.ico` file, for its own windows' title bars and
+    /// taskbar buttons (a top-level app's [`AppOptions::icon`](crate::AppOptions::icon)).
+    pub(crate) icon: RefCell<Option<std::path::PathBuf>>,
     /// The root view the input being handled is in: a window of the app's
     /// own's ([`crate::app_window::enter`]), or [`Surface::root`].
     pub(crate) input_root: RefCell<Option<NshView>>,
@@ -342,6 +348,8 @@ impl Surface {
             launch_links: RefCell::new(Vec::new()),
             rx: RefCell::new(None),
             pending: RefCell::new(Arc::new(AtomicBool::new(false))),
+            draining: Cell::new(false),
+            drain_deferred: Cell::new(false),
             hwnd: Arc::new(std::sync::atomic::AtomicIsize::new(0)),
             scale: Cell::new(1.0),
             pixels: Cell::new((0, 0)),
@@ -352,10 +360,8 @@ impl Surface {
             painting: Cell::new(false),
             repaint: Cell::new(false),
             // The first frame draws everything.
-            full_damage: Cell::new(true),
+            damage: Damage::default(),
             whole_change: Cell::new(0),
-            dirty: RefCell::default(),
-            partial: RefCell::default(),
             environment: Cell::new(environment),
             appearance: Cell::default(),
             host_environment: Cell::default(),
@@ -390,6 +396,7 @@ impl Surface {
             shortcuts: RefCell::default(),
             events_handled: Cell::new(0),
             windows: RefCell::default(),
+            icon: RefCell::default(),
             input_root: RefCell::default(),
             chrome: Default::default(),
             main_unshown: Cell::new(true),
@@ -697,6 +704,22 @@ impl Surface {
         self.events_handled.get()
     }
 
+    /// A queue as an engine's ([`Surface::start`]'s sink) for a test
+    /// without one: what it is sent wakes the window and is drained there.
+    #[cfg(test)]
+    fn queue_for_test(&self) -> Sink {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let pending = Arc::new(AtomicBool::new(false));
+        *self.rx.borrow_mut() = Some(rx);
+        *self.pending.borrow_mut() = pending.clone();
+        Sink {
+            hwnd: self.hwnd.clone(),
+            tx,
+            pending,
+            wake: None,
+        }
+    }
+
     /// Records events passed to [`Surface::event`] instead of forwarding them
     /// to an engine, for unit tests without a running engine.
     #[cfg(test)]
@@ -796,20 +819,21 @@ impl Surface {
         for f in self.on_resized.borrow().iter() {
             f(width, height);
         }
-        self.await_layout(Size::new(Points(width), Points(height)));
+        self.await_layout(ROOT_ID, Size::new(Points(width), Points(height)));
         self.invalidate();
     }
 
-    /// Waits for the engine's layout at `size` and applies what it sent
-    /// meanwhile, so the frame `WM_SIZE` draws shows the app at the window's
+    /// Waits for the engine's layout of root `id` at `size` and applies what
+    /// it sent meanwhile, so the frame `WM_SIZE` draws shows the window at its
     /// new size rather than growing around stale content. The one place the
     /// main thread waits for the engine: at most [`RESIZE_WAIT`], and an
     /// engine that misses it (JS busy) is not waited for again until it
     /// reports a resize done, so a busy app resizes as before.
-    fn await_layout(self: &Rc<Self>, size: Size<Points>) {
+    pub(crate) fn await_layout(self: &Rc<Self>, id: NodeId, size: Size<Points>) {
         if self.resize_late.get()
             || size.width.0 <= 0.0
             || size.height.0 <= 0.0
+            || self.draining.get()
             || self.mounter.try_borrow_mut().is_err()
             || self.control.borrow().is_none()
         {
@@ -818,6 +842,17 @@ impl Surface {
         let Some(rx) = self.rx.borrow().clone() else {
             return;
         };
+        self.as_the_drain(|| self.apply_until_resized(&rx, id, size));
+    }
+
+    /// Applies what the engine sends until it laid root `id` out at `size`,
+    /// for at most [`RESIZE_WAIT`] ([`Surface::await_layout`]).
+    fn apply_until_resized(
+        self: &Rc<Self>,
+        rx: &Receiver<Message>,
+        id: NodeId,
+        size: Size<Points>,
+    ) {
         let deadline = std::time::Instant::now() + RESIZE_WAIT;
         let mut applied = false;
         loop {
@@ -825,7 +860,7 @@ impl Surface {
                 self.resize_late.set(true);
                 break;
             };
-            let done = matches!(message, Message::Resized(s) if s == size);
+            let done = matches!(message, Message::Resized(i, s) if i == id && s == size);
             applied |= self.handle(message);
             if done {
                 break;
@@ -840,7 +875,7 @@ impl Surface {
     /// Asks for the whole window to be drawn again (once, however often
     /// asked before it is).
     pub(crate) fn invalidate(&self) {
-        self.full_damage.set(true);
+        self.damage.whole();
         self.whole_change.set(crate::view::next_change_stamp());
         self.request_paint();
         crate::app_window::invalidate_all(self);
@@ -858,20 +893,21 @@ impl Surface {
     /// Asks for `view` and its subtree to be drawn again: where it was
     /// drawn and where it draws now ([`Surface::take_damage`]).
     pub(crate) fn invalidate_view(&self, view: &NshView) {
-        if !self.full_damage.get() {
-            view.set_queued(true);
-            self.dirty.borrow_mut().push(view.clone());
-        }
+        self.damage.view(view);
         self.request_paint();
     }
 
     /// Asks for `rect` of `view` (in its own coordinates) to be drawn again:
     /// a canvas whose animated values changed paints only there.
     pub(crate) fn invalidate_view_rect(&self, view: &NshView, rect: Bounds<Points>) {
-        // A whole redraw of the view already on its way covers it.
-        if !self.full_damage.get() && !view.is_queued() {
-            self.partial.borrow_mut().push((view.clone(), rect));
-        }
+        self.damage.view_rect(view, rect);
+        self.request_paint();
+    }
+
+    /// Asks for `area` of the window (DIPs) to be drawn again: what is
+    /// drawn there besides the views (the caption buttons).
+    pub(crate) fn invalidate_area(&self, area: crate::view::WindowRect) {
+        self.damage.area(area);
         self.request_paint();
     }
 
@@ -900,51 +936,7 @@ impl Surface {
     /// changed views were painted and where they draw now. `None`: the
     /// whole window (asked for, or a change whose area is not known).
     pub(crate) fn take_damage(&self) -> Option<Vec<crate::view::WindowRect>> {
-        let dirty = std::mem::take(&mut *self.dirty.borrow_mut());
-        let partial = std::mem::take(&mut *self.partial.borrow_mut());
-        for view in &dirty {
-            view.set_queued(false);
-        }
-        if self.full_damage.replace(false) {
-            return None;
-        }
-        let mut rects = Vec::with_capacity(dirty.len() * 2 + partial.len());
-        for view in &dirty {
-            if let Some(old) = view.painted_subtree() {
-                rects.push(old);
-            }
-            let Some(world) = view.to_root() else {
-                // Out of the tree: only where it was.
-                continue;
-            };
-            if !world.is_affine() {
-                return None;
-            }
-            // Hosted items may draw outside their rectangles.
-            rects.push(
-                crate::render::drawn_area(view)
-                    .map(|area| crate::compose::map_bounds(&world.to_3x2(), &area))?,
-            );
-        }
-        // What changed in part of a view: where that part is now (a view
-        // that moved is in `dirty` whole, which covers it).
-        for (view, rect) in &partial {
-            let Some(world) = view.to_root() else {
-                continue;
-            };
-            if !world.is_affine() {
-                return None;
-            }
-            let area = crate::render::rect_f(
-                rect.origin.x.0,
-                rect.origin.y.0,
-                rect.size.width.0,
-                rect.size.height.0,
-            );
-            rects.push(crate::compose::map_bounds(&world.to_3x2(), &area));
-        }
-        // Asked to draw with nothing changed (the system's `WM_PAINT`).
-        (!rects.is_empty()).then_some(rects)
+        self.damage.take()
     }
 
     /// Draws the window (`WM_PAINT`).
@@ -1042,7 +1034,37 @@ impl Surface {
     }
 
     /// Applies what the engine sent (`WM_NSH_WAKE`).
+    ///
+    /// Not inside a drain or a batch being applied: a call made there may
+    /// pump the thread's messages (a COM call to another process, a shell
+    /// handler) and dispatch the wake-up here, with the mounter borrowed
+    /// and the batches before it not all applied. The queue then waits:
+    /// the next wake-up comes when the engine sends more, and the drain
+    /// under way (this one, or [`Surface::await_layout`]'s) drains it again
+    /// when it is done.
     pub(crate) fn drain(self: &Rc<Self>) {
+        if self.draining.get() || self.mounter.try_borrow_mut().is_err() {
+            self.drain_deferred.set(true);
+            self.pending.borrow().store(false, Ordering::Release);
+            return;
+        }
+        self.as_the_drain(|| self.drain_queued());
+    }
+
+    /// Runs `f`, which applies what the engine sent, as the queue's one
+    /// drain: a wake-up that comes meanwhile waits ([`Surface::drain`]),
+    /// and is asked for again after it, or the batches sent after the ones
+    /// `f` took wait for the engine's next message.
+    fn as_the_drain(&self, f: impl FnOnce()) {
+        self.draining.set(true);
+        f();
+        self.draining.set(false);
+        if self.drain_deferred.take() {
+            self.wake();
+        }
+    }
+
+    fn drain_queued(self: &Rc<Self>) {
         let started = self
             .fps
             .borrow()
@@ -1063,6 +1085,14 @@ impl Surface {
         self.ensure_ticking();
         if let (Some(started), Some(fps)) = (started, self.fps()) {
             fps.drained(started.elapsed(), applied);
+        }
+    }
+
+    /// Asks the message loop to drain the queue ([`Surface::drain`]), as
+    /// the engine's sink does.
+    fn wake(&self) {
+        if !self.pending.borrow().swap(true, Ordering::AcqRel) {
+            crate::window::wake(self.hwnd.load(Ordering::Acquire));
         }
     }
 
@@ -1089,7 +1119,7 @@ impl Surface {
                     f();
                 }
             }
-            Message::Resized(_) => self.resize_late.set(false),
+            Message::Resized(..) => self.resize_late.set(false),
             Message::Handled(events) => {
                 self.events_handled.set(events);
                 crate::text_input::engine_caught_up(self);
@@ -1101,8 +1131,21 @@ impl Surface {
 
     fn apply(self: &Rc<Self>, batch: &MountBatch) {
         crate::access::prepare(batch);
+        // The toasts' and the badge's COM calls to the shell may pump the
+        // thread's messages (a tick, a deadline's timer, which write the
+        // animated values): they run once the batch is applied, the mounter
+        // free.
+        let mut notifications = Vec::new();
         for item in &batch.items {
             self.anim.borrow_mut().apply(item);
+            if let MountItem::Command {
+                command: Command::Notification(command),
+                ..
+            } = item
+            {
+                notifications.push(command);
+                continue;
+            }
             if !matches!(
                 item,
                 MountItem::Animation(_) | MountItem::AnimationBindings { .. }
@@ -1131,6 +1174,9 @@ impl Surface {
         }
         crate::access::batch_applied(self);
         crate::input::batch_applied(self);
+        for command in notifications {
+            crate::notifications::command(self, command);
+        }
     }
 
     /// Writes the animated values to the views and reports finished
@@ -1317,6 +1363,15 @@ impl Surface {
     /// deadline ran without a tick ([`Surface::keep_deadline`]), which keeps
     /// the real time ([`nsh_core::animation::Animator::tick_frame`]).
     fn frame(self: &Rc<Self>, drawn: bool) {
+        // Not while a batch is applied: a call it makes that pumps the
+        // thread's messages may dispatch a tick or a deadline's timer here,
+        // and writing the animated values borrows the mounter the batch
+        // holds. The frame is skipped: the tick still counts as handled
+        // ([`Surface::tick`]), so the ticker posts the next one, and the
+        // deadline's timer is set again.
+        if self.mounter.try_borrow_mut().is_err() {
+            return;
+        }
         let started = self
             .fps
             .borrow()
@@ -1462,6 +1517,180 @@ pub(crate) fn composed_placed(
     }
 }
 
+/// What changed in a window since its last frame: the main window's
+/// ([`Surface::take_damage`]) or a window of the app's own's
+/// ([`crate::app_window`]).
+pub(crate) struct Damage {
+    /// The next frame draws the whole window.
+    full: Cell<bool>,
+    /// Views that changed ([`Damage::view`]).
+    dirty: RefCell<Vec<NshView>>,
+    /// Parts of views that changed, in the view's own coordinates
+    /// ([`Damage::view_rect`]): a canvas's animated values, drawn again
+    /// only there.
+    partial: RefCell<Vec<(NshView, Bounds<Points>)>>,
+    /// Areas of the window (DIPs) that changed besides its views
+    /// ([`Damage::area`]).
+    areas: RefCell<Vec<crate::view::WindowRect>>,
+}
+
+impl Default for Damage {
+    /// The first frame is whole.
+    fn default() -> Self {
+        Self {
+            full: Cell::new(true),
+            dirty: RefCell::default(),
+            partial: RefCell::default(),
+            areas: RefCell::default(),
+        }
+    }
+}
+
+impl Damage {
+    /// The whole window changed.
+    pub(crate) fn whole(&self) {
+        self.full.set(true);
+    }
+
+    /// `view` and its subtree changed: where it was drawn and where it
+    /// draws now.
+    pub(crate) fn view(&self, view: &NshView) {
+        if !self.full.get() {
+            view.set_queued(true);
+            self.dirty.borrow_mut().push(view.clone());
+        }
+    }
+
+    /// `rect` of `view` (in its own coordinates) changed.
+    pub(crate) fn view_rect(&self, view: &NshView, rect: Bounds<Points>) {
+        // A whole redraw of the view already on its way covers it.
+        if !self.full.get() && !view.is_queued() {
+            self.partial.borrow_mut().push((view.clone(), rect));
+        }
+    }
+
+    /// `area` of the window (DIPs) changed.
+    pub(crate) fn area(&self, area: crate::view::WindowRect) {
+        if !self.full.get() {
+            self.areas.borrow_mut().push(area);
+        }
+    }
+
+    /// What changed, in the window's DIPs: where the changed views were
+    /// painted and where they draw now. `None`: the whole window (asked
+    /// for, or a change whose area is not known).
+    pub(crate) fn take(&self) -> Option<Vec<crate::view::WindowRect>> {
+        let dirty = std::mem::take(&mut *self.dirty.borrow_mut());
+        let partial = std::mem::take(&mut *self.partial.borrow_mut());
+        let areas = std::mem::take(&mut *self.areas.borrow_mut());
+        for view in &dirty {
+            view.set_queued(false);
+        }
+        if self.full.replace(false) {
+            return None;
+        }
+        let mut rects = areas;
+        rects.reserve(dirty.len() * 2 + partial.len());
+        for view in &dirty {
+            if let Some(old) = view.painted_subtree() {
+                rects.push(old);
+            }
+            let Some(world) = view.to_root() else {
+                // Out of the tree: only where it was.
+                continue;
+            };
+            if !world.is_affine() {
+                return None;
+            }
+            // Hosted items may draw outside their rectangles.
+            rects.push(
+                crate::render::drawn_area(view)
+                    .map(|area| crate::compose::map_bounds(&world.to_3x2(), &area))?,
+            );
+        }
+        // What changed in part of a view: where that part is now (a view
+        // that moved is in `dirty` whole, which covers it).
+        for (view, rect) in &partial {
+            let Some(world) = view.to_root() else {
+                continue;
+            };
+            if !world.is_affine() {
+                return None;
+            }
+            let area = crate::render::rect_f(
+                rect.origin.x.0,
+                rect.origin.y.0,
+                rect.size.width.0,
+                rect.size.height.0,
+            );
+            rects.push(crate::compose::map_bounds(&world.to_3x2(), &area));
+        }
+        // Asked to draw with nothing changed (the system's `WM_PAINT`).
+        (!rects.is_empty()).then_some(rects)
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use crate::view::WindowRect;
+
+    fn rect(left: f32, top: f32, right: f32, bottom: f32) -> WindowRect {
+        WindowRect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn the_first_frame_is_whole() {
+        let damage = Damage::default();
+        assert!(damage.take().is_none());
+    }
+
+    #[test]
+    fn an_area_alone_is_drawn() {
+        let damage = Damage::default();
+        let _ = damage.take();
+        let area = rect(300.0, 0.0, 438.0, 32.0);
+        damage.area(area);
+        let rects = damage.take().expect("the area");
+        assert_eq!(rects.len(), 1);
+        assert_eq!(
+            (rects[0].left, rects[0].top, rects[0].right, rects[0].bottom),
+            (300.0, 0.0, 438.0, 32.0)
+        );
+        // Taken: nothing changed since.
+        assert!(damage.take().is_none(), "asked with nothing changed: whole");
+    }
+
+    #[test]
+    fn a_whole_redraw_covers_the_areas() {
+        let damage = Damage::default();
+        let _ = damage.take();
+        damage.area(rect(0.0, 0.0, 10.0, 10.0));
+        damage.whole();
+        damage.area(rect(20.0, 0.0, 30.0, 10.0));
+        assert!(damage.take().is_none());
+        damage.area(rect(0.0, 0.0, 10.0, 10.0));
+        assert_eq!(damage.take().map(|r| r.len()), Some(1));
+    }
+
+    #[test]
+    fn a_view_out_of_any_tree_adds_nothing() {
+        let damage = Damage::default();
+        let _ = damage.take();
+        let view = NshView::new(42, nsh_core::ViewKind::View);
+        damage.view(&view);
+        assert!(view.is_queued());
+        damage.area(rect(0.0, 0.0, 5.0, 5.0));
+        assert_eq!(damage.take().map(|r| r.len()), Some(1));
+        assert!(!view.is_queued(), "taken off the list");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -1477,6 +1706,309 @@ mod tests {
     };
 
     use super::*;
+
+    /// Dispatches what this thread's queue holds, as a modal loop does
+    /// (`ShellExecuteW`'s, a COM call's to another process).
+    fn pump() {
+        let mut msg = MSG::default();
+        // SAFETY: dispatching messages taken from this thread's queue.
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    fn cursor_batch(surface: &Surface, cursor: Cursor) -> MountBatch {
+        let mut style = surface.root.state().style.clone();
+        style.cursor = cursor;
+        MountBatch {
+            items: vec![MountItem::ViewStyle { id: ROOT_ID, style }],
+        }
+    }
+
+    /// The test's window, destroyed when the test ends.
+    struct TestWindow(HWND);
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            // SAFETY: the test's own window.
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    /// A call a batch makes may pump the thread's messages: opening a link
+    /// (`ShellExecuteW`) did, and the engine's wake-up dispatched there
+    /// applied its next batch inside this one, the mounter borrowed
+    /// ("RefCell already borrowed", which aborts in a window procedure).
+    /// The wake-up waits; the engine's next one applies what was sent.
+    #[test]
+    fn a_wake_up_while_a_batch_is_applied_waits_for_it() {
+        let surface = Surface::new(Environment::default());
+        let _window = TestWindow(
+            crate::window::create(&surface, "NSH drain re-entry", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        let sink = surface.queue_for_test();
+        sink.submit(cursor_batch(&surface, Cursor::Crosshair));
+        {
+            // What `Surface::apply` holds while a command runs.
+            let _applying = surface.mounter.borrow_mut();
+            pump();
+        }
+        assert_ne!(
+            surface.root.state().style.cursor,
+            Cursor::Crosshair,
+            "applied inside the batch"
+        );
+        sink.resized(Size::default());
+        pump();
+        assert_eq!(surface.root.state().style.cursor, Cursor::Crosshair);
+    }
+
+    /// What a drain runs (an error's handler, a function run on the main
+    /// thread) may pump the thread's messages too: the batches sent
+    /// meanwhile are applied after the ones the drain took, in order.
+    #[test]
+    fn a_wake_up_during_a_drain_keeps_the_batches_in_order() {
+        let surface = Surface::new(Environment::default());
+        let _window = TestWindow(
+            crate::window::create(&surface, "NSH drain order", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        let sink = surface.queue_for_test();
+        let late = Sink {
+            hwnd: sink.hwnd.clone(),
+            tx: sink.tx.clone(),
+            pending: sink.pending.clone(),
+            wake: sink.wake.clone(),
+        };
+        let later = Cell::new(Some(cursor_batch(&surface, Cursor::Pointer)));
+        *surface.on_error.borrow_mut() = Some(Box::new(move |_| {
+            if let Some(batch) = later.take() {
+                late.submit(batch);
+                pump();
+            }
+        }));
+        sink.report_error("pumps the messages");
+        sink.submit(cursor_batch(&surface, Cursor::Crosshair));
+        pump();
+        assert_eq!(
+            surface.root.state().style.cursor,
+            Cursor::Pointer,
+            "the batch sent last is applied last"
+        );
+    }
+
+    /// A toast's or the badge's COM call to the shell may pump the
+    /// thread's messages: a tick dispatched there writes the animated
+    /// values, which borrows the mounter. The notification commands run
+    /// once the batch is applied, the mounter free.
+    #[test]
+    fn a_notification_runs_after_its_batch() {
+        let surface = Surface::new(Environment::default());
+        let window = TestWindow(
+            crate::window::create(&surface, "NSH notification", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        let frames = Rc::new(Cell::new(0));
+        let counted = frames.clone();
+        surface.frame_clients.borrow_mut().push((
+            Box::new(move |surface: &Rc<Surface>, _| {
+                counted.set(counted.get() + 1);
+                surface.write_animations();
+                Next::Done
+            }),
+            None,
+        ));
+        let hwnd = window.0;
+        let weak = Rc::downgrade(&surface);
+        let free = Rc::new(Cell::new(None));
+        let seen = free.clone();
+        crate::notifications::ON_COMMAND.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let Some(surface) = weak.upgrade() else {
+                    return;
+                };
+                seen.set(Some(surface.mounter.try_borrow_mut().is_ok()));
+                // As the shell's COM call may: a tick comes meanwhile.
+                // SAFETY: posting to the test's own window.
+                unsafe {
+                    PostMessageW(Some(hwnd), crate::window::WM_NSH_TICK, WPARAM(0), LPARAM(0))
+                }
+                .unwrap();
+                pump();
+            }))
+        });
+        let mut items = cursor_batch(&surface, Cursor::Pointer).items;
+        items.insert(
+            0,
+            MountItem::Command {
+                id: ROOT_ID,
+                command: Command::Notification(
+                    nsh_core::notifications::NotificationCommand::Listen,
+                ),
+            },
+        );
+        surface.apply(&MountBatch { items });
+        crate::notifications::ON_COMMAND.with(|hook| hook.borrow_mut().take());
+        assert_eq!(free.get(), Some(true), "the mounter is free");
+        assert_eq!(frames.get(), 1, "the tick ran");
+        assert_eq!(surface.root.state().style.cursor, Cursor::Pointer);
+    }
+
+    /// While a resize waits for the engine's layout, a wake-up that comes
+    /// (a batch's call pumped the messages) waits, and is asked for again
+    /// after: else the batches sent after the layout stay queued until the
+    /// engine sends again, which an idle app does not.
+    #[test]
+    fn a_wake_up_while_a_resize_waits_for_the_layout_comes_again() {
+        let surface = Surface::new(Environment::default());
+        let _window = TestWindow(
+            crate::window::create(&surface, "NSH resize wake-up", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        let sink = surface.queue_for_test();
+        let late = Sink {
+            hwnd: sink.hwnd.clone(),
+            tx: sink.tx.clone(),
+            pending: sink.pending.clone(),
+            wake: sink.wake.clone(),
+        };
+        let weak = Rc::downgrade(&surface);
+        let later = Cell::new(Some(cursor_batch(&surface, Cursor::Pointer)));
+        *surface.on_error.borrow_mut() = Some(Box::new(move |_| {
+            let (Some(surface), Some(batch)) = (weak.upgrade(), later.take()) else {
+                return;
+            };
+            late.submit(batch);
+            // As a call a batch makes that pumps the messages.
+            let _applying = surface.mounter.borrow_mut();
+            pump();
+        }));
+        let size = Size::new(Points(400.0), Points(300.0));
+        sink.report_error("pumps the messages");
+        sink.resized(size);
+        let rx = surface.rx.borrow().clone().unwrap();
+        surface.as_the_drain(|| surface.apply_until_resized(&rx, ROOT_ID, size));
+        assert!(!surface.resize_late.get(), "the layout came");
+        pump();
+        assert_eq!(
+            surface.root.state().style.cursor,
+            Cursor::Pointer,
+            "the batch sent meanwhile is applied"
+        );
+    }
+
+    /// A tick or a deadline's timer dispatched while a batch is applied (a
+    /// call it makes pumped the thread's messages) skips its frame, which
+    /// would borrow the mounter the batch holds; the tick counts as handled,
+    /// so the ticker posts the next one.
+    #[test]
+    fn a_tick_while_a_batch_is_applied_skips_its_frame() {
+        let surface = Surface::new(Environment::default());
+        let window = TestWindow(
+            crate::window::create(&surface, "NSH tick re-entry", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        let ticker = crate::window::Ticker::start(window.0).unwrap();
+        // Paused, it posts nothing of its own; a tick is in the queue.
+        ticker.pause();
+        ticker.posted_for_test();
+        *surface.ticker.borrow_mut() = Some(ticker);
+        let frames = Rc::new(Cell::new(0));
+        let counted = frames.clone();
+        surface.frame_clients.borrow_mut().push((
+            Box::new(move |surface: &Rc<Surface>, _| {
+                counted.set(counted.get() + 1);
+                surface.write_animations();
+                Next::Done
+            }),
+            None,
+        ));
+        let tick = || {
+            // SAFETY: posting to the test's own window.
+            unsafe {
+                PostMessageW(
+                    Some(window.0),
+                    crate::window::WM_NSH_TICK,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            }
+            .unwrap();
+        };
+        {
+            let _applying = surface.mounter.borrow_mut();
+            tick();
+            pump();
+            // The deadline's timer runs the same frame.
+            surface.frame(false);
+        }
+        assert_eq!(frames.get(), 0, "a frame ran inside the batch");
+        let pending = surface.ticker.borrow().as_ref().unwrap().pending_for_test();
+        assert!(!pending, "the tick counts as handled");
+        tick();
+        pump();
+        assert_eq!(frames.get(), 1);
+    }
+
+    /// A Rust root with nothing to send after its first frame.
+    #[nsh_core::prelude::component]
+    fn Still() -> impl nsh_core::prelude::IntoElement {
+        nsh_core::prelude::view()
+    }
+
+    /// While a resize waits for the engine's layout (`await_layout`, an
+    /// engine running), a wake-up a handler there pumps waits on the drain
+    /// alone, the mounter free, and is asked for again after it: the
+    /// batches stay in order and none waits for the engine's next message.
+    #[test]
+    fn a_wake_up_while_a_resize_awaits_the_layout_waits_for_it() {
+        let surface = Surface::new(Environment::default());
+        let _window = TestWindow(
+            crate::window::create(&surface, "NSH await layout", (320, 240), None, false).unwrap(),
+        );
+        pump();
+        surface.start(EngineConfig::new(nsh_engine::App::Rust(
+            nsh_core::element::Root::new::<Still>(|| ()),
+        )));
+        // The test sends in the engine's place; the engine is there for
+        // `await_layout`, which waits for none without one.
+        let sink = surface.queue_for_test();
+        let late = Sink {
+            hwnd: sink.hwnd.clone(),
+            tx: sink.tx.clone(),
+            pending: sink.pending.clone(),
+            wake: sink.wake.clone(),
+        };
+        let weak = Rc::downgrade(&surface);
+        let later = Cell::new(Some(cursor_batch(&surface, Cursor::Pointer)));
+        let free = Rc::new(Cell::new(None));
+        let seen = free.clone();
+        *surface.on_error.borrow_mut() = Some(Box::new(move |_| {
+            let (Some(surface), Some(batch)) = (weak.upgrade(), later.take()) else {
+                return;
+            };
+            seen.set(Some(surface.mounter.try_borrow_mut().is_ok()));
+            late.submit(batch);
+            pump();
+        }));
+        let size = Size::new(Points(400.0), Points(300.0));
+        sink.report_error("pumps the messages");
+        sink.resized(size);
+        surface.await_layout(ROOT_ID, size);
+        assert_eq!(free.get(), Some(true), "the mounter was free");
+        assert!(!surface.resize_late.get(), "the layout came");
+        assert_ne!(
+            surface.root.state().style.cursor,
+            Cursor::Pointer,
+            "applied inside the wait"
+        );
+        pump();
+        assert_eq!(surface.root.state().style.cursor, Cursor::Pointer);
+    }
 
     /// A minimized window's client area is empty: the app keeps the size it
     /// had, and nothing is drawn meanwhile.

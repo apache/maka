@@ -20,6 +20,7 @@ mod logger;
 mod module_meta;
 mod msix;
 mod native_features;
+mod nsh_lock;
 mod nshm;
 mod package;
 mod platforms;
@@ -358,6 +359,13 @@ enum Command {
         /// (TSX entries).
         #[arg(long)]
         background: bool,
+        /// Code signing identity for the macOS host (`--target macos`), as
+        /// `nsh package --sign` takes it, e.g. "Apple Development: …": the
+        /// host's signature then stays the same across rebuilds, so what
+        /// macOS ties to it (the app's keychain items) stays the app's.
+        /// Default: signed ad hoc.
+        #[arg(long)]
+        sign: Option<String>,
     },
     /// Create a signing key: `<name>.secret` (keep it offline for a root)
     /// and `<name>.pub` (what apps trust, for a root).
@@ -741,6 +749,13 @@ struct PackageArgs {
     /// relatively, so the site runs from any directory.
     #[arg(long, value_name = "URL", conflicts_with = "run")]
     asset_url: Option<String>,
+    /// Web only (ignored for other targets): package nsh's runtime in its shared form, the same files for
+    /// every app on this NSH version, so a site embedding several apps
+    /// downloads it once. Each app can be packaged on its own (separate CI
+    /// jobs); serve the runtime files from one place (`--asset-url`).
+    /// Not for an app with Rust components or wasm-bindgen glue.
+    #[arg(long)]
+    shared_runtime: bool,
 }
 
 /// `nsh component`'s actions.
@@ -1015,10 +1030,30 @@ fn run(mut command: Command) -> anyhow::Result<()> {
             build: args.build,
         });
     }
+    // The target whose hosts or runtime the command builds: an nshm the
+    // app lists for other targets only (`"targets"`) is not linked. A
+    // command for every target (a check, a bundle, an over-the-air
+    // package, a dev server for hosts started elsewhere) links every one.
+    let target = match &command {
+        Command::Test { target, .. } => Some(target.unwrap_or_else(run::Target::native).os()),
+        Command::Run { target, .. }
+        | Command::Dev {
+            target,
+            server_only: false,
+            ..
+        } => Some(target.os()),
+        Command::Package(args) => args.target.asset_target(),
+        _ => None,
+    };
     let app = match command.entry_mut() {
-        Some(entry) => rust_app::of(entry, unify)?,
+        Some(entry) => rust_app::of(entry, unify, target)?,
         None => None,
     };
+    // `.nsh/types` declare the app's modules as every target has them: a
+    // command that leaves some out keeps the ones written before.
+    if types && let Some(entry) = command.entry_mut() {
+        types = nshm::left_out(entry, target)?.is_empty();
+    }
     let Some(app) = app else {
         if let Some(entry) = command.entry_mut() {
             if rust_app::is_root(entry) {
@@ -1160,6 +1195,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                         trace: false,
                         fps: false,
                         points_per_cell: None,
+                        sign: None,
                     },
                     target,
                     device.as_deref(),
@@ -1188,6 +1224,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 run,
                 device,
                 asset_url,
+                shared_runtime,
             } = *args;
             let mut config = package::read_config(&entry)?;
             config.name = name.or(config.name);
@@ -1215,6 +1252,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 run,
                 device: device.as_deref(),
                 asset_url: asset_url.as_deref(),
+                shared_runtime,
                 development: false,
             })
         }
@@ -1232,6 +1270,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             display,
             background,
             points_per_cell,
+            sign,
         } => {
             no_limits_for_rust(&entry, limits)?;
             run::run(
@@ -1243,6 +1282,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                     trace,
                     fps,
                     points_per_cell,
+                    sign,
                 },
                 target,
                 device.as_deref(),
@@ -1624,6 +1664,24 @@ mod command_tests {
             };
             assert_eq!(target, expected);
         }
+    }
+
+    #[test]
+    fn run_and_package_take_the_same_signing_identity() {
+        let identity = "Apple Development: Jane Doe (ABCDE12345)";
+        let cli = Cli::try_parse_from(["nsh", "run", "--sign", identity]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Run { sign: Some(ref sign), .. } if sign == identity
+        ));
+        let cli = Cli::try_parse_from(["nsh", "run"]).unwrap();
+        assert!(matches!(cli.command, Command::Run { sign: None, .. }));
+        let cli = Cli::try_parse_from(["nsh", "package", "--target", "macos", "--sign", identity])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Package(ref args) if args.sign.as_deref() == Some(identity)
+        ));
     }
 
     #[test]

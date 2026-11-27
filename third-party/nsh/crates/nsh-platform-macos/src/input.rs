@@ -65,8 +65,9 @@ use nsh_core::{
     desktop::{ResizeEdge, WindowControl},
     geometry::{Points, point},
     input::{
-        self, Candidate, Gate, HitArea, PAN_SLOP, PRESS_SLOP, TOUCHPAD_IDLE, VelocityTracker,
-        WheelLatch, WheelStep, ZOOM_IDLE, has_press, laid_out, latch_holds, transforms,
+        self, Candidate, ContextMenuTarget, Gate, HitArea, PAN_SLOP, PRESS_SLOP, TOUCHPAD_IDLE,
+        VelocityTracker, WheelLatch, WheelStep, ZOOM_IDLE, has_press, laid_out, latch_holds,
+        transforms,
     },
     platform::InputModality,
     tailwind::state::{FOCUSED, HOVERED, PRESSED},
@@ -1140,9 +1141,12 @@ fn context_link(links: &[nsh_core::TextLink], at: u32) -> Option<nsh_core::TextL
 }
 
 /// A secondary click at `(x, y)` (root coordinates): the nearest view
-/// around the one under it that listens to `onContextMenu` hears it. Otherwise
-/// a text selection offers Copy. Text fields show AppKit's own menu.
-fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, flags: NSEventModifierFlags) {
+/// around the one under it that listens to `onContextMenu` hears it,
+/// unless selectable text is nearer: that shows its edit menu, but where
+/// its selectable view, or a view between them, listens
+/// ([`nsh_core::input::context_menu_target`], as on Linux and Windows).
+/// Text fields are AppKit's views, which show their own menu.
+fn context_menu(surface: &Surface, x: f32, y: f32, flags: NSEventModifierFlags) {
     let Some(hit) = pick(&event_root(surface), x, y) else {
         return;
     };
@@ -1172,34 +1176,39 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, flags: NSEventModifierFla
             return;
         }
     }
-    for v in chain(&hit.view) {
-        let (id, listens, input) = {
-            let s = v.state();
-            (
-                s.id,
-                s.events.contains(EventKind::ContextMenu),
-                s.kind == ViewKind::Input,
-            )
-        };
-        if listens {
-            let (location_x, location_y) = local(surface, &v, x, y);
+    let views = chain(&hit.view);
+    let hops: Vec<_> = views.iter().map(|v| context_menu_hop(&v.state())).collect();
+    match input::context_menu_target(&hops) {
+        Some(ContextMenuTarget::Listener(i)) => {
+            let v = &views[i];
+            let (location_x, location_y) = local(surface, v, x, y);
             let event = nsh_core::ContextMenuEvent::new(
                 point(Points(location_x), Points(location_y)),
                 point(Points(x), Points(y)),
                 modifiers(flags),
                 Some(nsh_core::PointerType::Mouse),
             );
-            surface.event(id, EventKind::ContextMenu, EventPayload::ContextMenu(event));
-            return;
+            surface.event(
+                v.id(),
+                EventKind::ContextMenu,
+                EventPayload::ContextMenu(event),
+            );
         }
-        if input {
-            return;
-        }
-        if crate::text::selectable(&v.state()) || v.state().props.selectable_view {
-            let area = crate::selectable_view::area_of(&v);
+        Some(ContextMenuTarget::EditMenu(i)) => {
+            let area = crate::selectable_view::area_of(&views[i]);
             crate::text::context_menu(surface, area.as_ref());
-            return;
         }
+        Some(ContextMenuTarget::Field(_)) | None => {}
+    }
+}
+
+/// What `state`'s view is to a secondary click's menu.
+fn context_menu_hop(state: &crate::view::ViewState) -> input::ContextMenuHop {
+    input::ContextMenuHop {
+        listens: state.events.contains(EventKind::ContextMenu),
+        field: state.kind == ViewKind::Input,
+        selectable_text: crate::text::selectable(state),
+        selectable_view: state.props.selectable_view,
     }
 }
 
@@ -2555,16 +2564,30 @@ fn selection_up(surface: &Surface, view: &NshView) -> bool {
     }
 }
 
-/// A pen's state at the latest mouse event: pressure (0 to 1) and tilt
-/// in degrees, `None` for a mouse.
+/// A pen's state at the latest mouse event: pressure (0 to 1), tilt
+/// in degrees, its eraser end and barrel button, `None` for a mouse.
 #[derive(Clone, Copy)]
 struct Pen {
     pressure: f32,
     tilt: (f32, f32),
+    eraser: bool,
+    barrel: bool,
 }
 
 thread_local! {
     static PEN: std::cell::Cell<Option<Pen>> = const { std::cell::Cell::new(None) };
+    /// The pen in proximity of the tablet is its eraser end (only a
+    /// proximity event tells).
+    static ERASER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Keeps which end of the pen proximity `event` (a tablet-proximity event,
+/// or a mouse event of that subtype) brought near the tablet.
+pub(crate) fn pen_proximity(event: &NSEvent) {
+    ERASER.set(
+        event.isEnteringProximity()
+            && event.pointingDeviceType() == objc2_app_kit::NSPointingDeviceType::Eraser,
+    );
 }
 
 /// Keeps the pen state of mouse `event` of type `ty`: a tablet sends mouse
@@ -2583,6 +2606,11 @@ fn pen_sample(event: &NSEvent, ty: NSEventType) {
             | NSEventType::OtherMouseDragged
             | NSEventType::MouseMoved
     );
+    if ty == NSEventType::TabletProximity
+        || (mouse && event.subtype() == objc2_app_kit::NSEventSubtype::TabletProximity)
+    {
+        pen_proximity(event);
+    }
     if !mouse && ty != NSEventType::TabletPoint {
         return;
     }
@@ -2594,6 +2622,11 @@ fn pen_sample(event: &NSEvent, ty: NSEventType) {
                 pressure: event.pressure().clamp(0.0, 1.0),
                 // AppKit's tilt runs -1 to 1, positive y toward the bottom.
                 tilt: (tilt.x as f32 * 90.0, tilt.y as f32 * 90.0),
+                eraser: ERASER.get(),
+                barrel: event.buttonMask().intersects(
+                    objc2_app_kit::NSEventButtonMask::PenLowerSide
+                        | objc2_app_kit::NSEventButtonMask::PenUpperSide,
+                ),
             }
         });
     PEN.set(pen);
@@ -2646,6 +2679,9 @@ fn report(surface: &Surface, phase: TouchPhase, p: &Pointer, activated: Option<N
         ),
         tilt_x: pen.map_or(0.0, |pen| pen.tilt.0),
         tilt_y: pen.map_or(0.0, |pen| pen.tilt.1),
+        coalesced: Vec::new(),
+        eraser: pen.is_some_and(|pen| pen.eraser),
+        barrel: pen.is_some_and(|pen| pen.barrel),
     };
     let event = TouchEvent {
         phase,

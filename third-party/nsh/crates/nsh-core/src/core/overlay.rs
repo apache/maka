@@ -1628,9 +1628,20 @@ impl<M: TextEngine> Core<M> {
         let resolved_anchor = self.resolved_anchor(key);
         let anchor = match resolved_anchor {
             OverlayAnchor::None => None,
-            OverlayAnchor::Point(p) => Some(Bounds {
-                origin: p,
-                size: Size::default(),
+            // In a terminal the pointer is on a Cell, not a point: the
+            // whole Cell is the anchor, so an overlay below it starts on
+            // the next row instead of covering the row it points at.
+            OverlayAnchor::Point(p) => Some(match self.layout.grid() {
+                Some(grid) => rect(
+                    (p.x.0 / grid.width).floor() * grid.width,
+                    (p.y.0 / grid.height).floor() * grid.height,
+                    grid.width,
+                    grid.height,
+                ),
+                None => Bounds {
+                    origin: p,
+                    size: Size::default(),
+                },
             }),
             OverlayAnchor::Bounds(bounds) => Some(bounds),
             OverlayAnchor::Node(id) => self.measure(id).map(|m| Bounds {

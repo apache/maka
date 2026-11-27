@@ -265,3 +265,44 @@ fn an_image_of_one_side_takes_the_other_from_its_aspect_ratio() {
     assert_eq!(line(2), "decoded");
     assert_eq!(line(5), "remote ");
 }
+
+/// A list row led by a glyph-sized icon, then an avatar a little larger.
+#[component]
+fn IconRow() -> impl IntoElement {
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_row()
+                .gap(px(8.0))
+                .child(image(PNG).w(px(16.0)).h(px(16.0)))
+                .child(text("Inbox")),
+        )
+        .child(
+            view()
+                .flex_row()
+                .gap(px(8.0))
+                .child(
+                    image(PNG)
+                        .object_fit(ResizeMode::Stretch)
+                        .w(px(24.0))
+                        .h(px(24.0)),
+                )
+                .child(text("Jason")),
+        )
+}
+
+#[test]
+fn an_icon_sized_picture_is_left_out_and_its_label_closes_up() {
+    let (mut view, rx) = surface();
+    let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
+    view.load(App::Rust(Root::new::<IconRow>(|| ()))).unwrap();
+    draw_until(&mut view, &mut terminal, &rx, "Jason");
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| -> String { (0..12).map(|x| buffer[(x, y)].symbol()).collect() };
+    // Half blocks would show the icon only as a blot of color.
+    assert_eq!(row(0), "Inbox       ");
+    // The avatar keeps its picture, in front of its label.
+    assert_eq!(buffer[(0, 1)].symbol(), "▀", "{:?}", row(1));
+    assert!(row(1).contains("Jason"), "{:?}", row(1));
+}

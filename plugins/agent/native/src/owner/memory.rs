@@ -43,6 +43,135 @@ async fn project_scope(
 }
 
 impl Owner {
+    pub(super) fn check_pinned_model(
+        &self,
+        session: &str,
+        basis: &CapturedRun,
+    ) -> Result<(), String> {
+        if let Some(memory) = &basis.memory {
+            let model = basis.model.as_ref().ok_or("agent_memory_executor_unavailable: executor lacks a per-provider-send revocation check")?;
+            let catalog = self.selected_tools(session, basis, model.editing_tools)?;
+            let tokens = self.tool_catalog.fixed_schema_tokens(
+                model,
+                basis.tool_discovery,
+                catalog.definitions(),
+            );
+            memory.check_admitted_window(model.input_limit, basis.behavior.as_ref(), tokens)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn memory_admission(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        user_run: bool,
+        policy: &RuntimePolicySnapshot,
+    ) -> maka_agent_facts::memory::MemoryAdmission {
+        use maka_agent_facts::memory::MemoryAdmission;
+        if !user_run
+            || self.bot.is(session)
+            || configuration.incognito
+            || configuration.parent_session_id.is_some()
+            || configuration.tools.is_some()
+        {
+            return MemoryAdmission::Excluded;
+        }
+        if !policy.policy.memory.enabled || !policy.policy.memory.agent_read_enabled {
+            return MemoryAdmission::Disabled;
+        }
+        MemoryAdmission::Enabled
+    }
+
+    pub(super) async fn admit_memory(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        user_run: bool,
+        policy: &RuntimePolicySnapshot,
+    ) -> Result<
+        (
+            maka_agent_facts::memory::MemoryAdmission,
+            Option<Arc<MemoryProjection>>,
+        ),
+        String,
+    > {
+        let admission = self.memory_admission(session, configuration, user_run, policy);
+        let memory = if admission == maka_agent_facts::memory::MemoryAdmission::Enabled {
+            self.capture_pinned(session, configuration, policy.revision)
+                .await?
+        } else {
+            None
+        };
+        Ok((admission, memory))
+    }
+
+    pub(super) async fn capture_pinned(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        policy_revision: u64,
+    ) -> Result<Option<Arc<MemoryProjection>>, String> {
+        let capture = self
+            .pin_capture(session, configuration, policy_revision)
+            .await?;
+        self.store
+            .data_writer()
+            .map_err(|e| e.to_string())?
+            .query(capture)
+            .await
+            .map(|memory| memory.map(Arc::new))
+            .map_err(|e| e.to_string())
+    }
+
+    pub(super) async fn pin_capture(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+        policy_revision: u64,
+    ) -> Result<stored::pinned::ProjectionCapture, String> {
+        Ok(stored::pinned::ProjectionCapture {
+            scopes: stored::pinned::Capture {
+                project: self.project_memory_scope(session, configuration).await?,
+                personal: self.memory_scope(MemoryScope::Personal).await?,
+                at: now() as i64,
+            },
+            policy_revision,
+        })
+    }
+
+    pub(crate) async fn loaded_memories(
+        self: &Arc<Self>,
+        input: LoadedMemoriesRead,
+        scope: &Scope,
+    ) -> Result<Vec<LoadedMemory>, String> {
+        management(scope)?;
+        self.resource_work(scope, move |owner, _| {
+            Box::pin(async move {
+                owner.session(&input.session_id).await?;
+                let source = owner
+                    .durable
+                    .session_history(owner.run_owner(), input.session_id)
+                    .run_source(input.run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let Some(reference) = source.spec.memory_projection else {
+                    return Ok(Vec::new());
+                };
+                let projection: MemoryProjection = owner
+                    .run_content(source.run, &reference)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(projection
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.loaded)
+                    .collect())
+            })
+        })
+        .await
+    }
+
     pub(crate) fn memory_data(
         &self,
         scope: &Scope,
@@ -160,28 +289,38 @@ impl Owner {
         &self,
         requested: MemoryScope,
     ) -> Result<stored::Scope, String> {
-        let mut binding = None;
-        let location = match requested {
-            MemoryScope::Personal => "personal".into(),
+        match requested {
+            MemoryScope::Personal => Ok(stored::Scope {
+                namespace: serde_json::to_string(&self.run_owner()).map_err(|e| e.to_string())?,
+                location: "personal".into(),
+                binding: None,
+            }),
             MemoryScope::Project { session_id } => {
                 let session = self.session(&session_id).await?;
-                binding = Some((session_id, session.configuration.permission_basis()));
-                let workspace = &session.configuration.workspace;
-                let (path, _directory, observed) = workspace::open_workspace_observation(
-                    &self.workspace_roots,
-                    workspace,
-                    &self.managed_worktrees,
-                )
-                .await?;
-                project_scope(&path, &observed).await?
+                self.project_memory_scope(&session_id, &session.configuration)
+                    .await
             }
-        };
+        }
+    }
+
+    pub(super) async fn project_memory_scope(
+        &self,
+        session: &str,
+        configuration: &ResolvedConfiguration,
+    ) -> Result<stored::Scope, String> {
+        let (path, _directory, observed) = workspace::open_workspace_observation(
+            &self.workspace_roots,
+            &configuration.workspace,
+            &self.managed_worktrees,
+        )
+        .await?;
         Ok(stored::Scope {
             namespace: serde_json::to_string(&self.run_owner()).map_err(|e| e.to_string())?,
-            location,
-            binding,
+            location: project_scope(&path, &observed).await?,
+            binding: Some((session.into(), configuration.permission_basis())),
         })
     }
+
     pub(super) async fn memory_read_access(
         &self,
         scope: &Scope,
@@ -207,6 +346,12 @@ impl Owner {
             if session.configuration.incognito {
                 return Err("agent_memory_incognito".into());
             }
+            if !matches!(
+                access.spec().backend,
+                maka_agent_facts::durable::BackendSpec::Model { .. }
+            ) {
+                return Err("agent_memory_executor_unavailable".into());
+            }
             if session.configuration.parent_session_id.is_some()
                 || session.configuration.tools.is_some()
                 || !matches!(
@@ -219,6 +364,70 @@ impl Owner {
             return Ok(());
         }
         management(scope)
+    }
+    pub(crate) async fn history_read_start(&self, call: &Scope) -> Result<Option<u64>, String> {
+        if call.identity.agent().is_none() {
+            return Ok(None);
+        }
+        self.memory_data(call)?
+            .query(stored::reads::SearchVisibility)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+    pub(crate) async fn record_history_read(
+        &self,
+        call: &Scope,
+        session: &str,
+        before: Option<u64>,
+    ) -> Result<Option<u64>, String> {
+        self.record_history_sources(
+            call,
+            stored::reads::HistorySources::session(session),
+            before,
+        )
+        .await
+    }
+    pub(crate) async fn record_history_sources(
+        &self,
+        call: &Scope,
+        sources: stored::reads::HistorySources,
+        before: Option<u64>,
+    ) -> Result<Option<u64>, String> {
+        if let Some(execution) = call.identity.agent() {
+            return self
+                .memory_data(call)?
+                .write(stored::reads::RecordHistory {
+                    sources,
+                    before,
+                    owner: self.run_owner(),
+                    execution: execution.clone(),
+                })
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
+        Ok(None)
+    }
+    pub(super) async fn record_memory_reads(
+        &self,
+        call: &Scope,
+        scope: stored::Scope,
+        facts: Vec<LoadedMemory>,
+    ) -> Result<(), String> {
+        if let Some(execution) = call.identity.agent()
+            && !facts.is_empty()
+        {
+            self.memory_data(call)?
+                .write(stored::reads::RecordFacts {
+                    run: execution.run_id,
+                    scope,
+                    facts,
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
     pub(crate) async fn memories(
         self: &Arc<Self>,
@@ -236,7 +445,7 @@ impl Owner {
                 let mut records = owner
                     .memory_data(&call)?
                     .query(stored::Page {
-                        scope,
+                        scope: scope.clone(),
                         after: input.after,
                         limit: input.limit + 1,
                     })
@@ -248,6 +457,13 @@ impl Owner {
                 } else {
                     None
                 };
+                if call.identity.agent().is_some() {
+                    let facts = records
+                        .iter()
+                        .map(|r| LoadedMemory::from_record(&scope.location, r))
+                        .collect();
+                    owner.record_memory_reads(&call, scope, facts).await?;
+                }
                 Ok(MemoryPage { records, next })
             })
         })
@@ -263,14 +479,21 @@ impl Owner {
             Box::pin(async move {
                 owner.memory_read_access(&call, &input.scope).await?;
                 let scope = owner.memory_scope(input.scope).await?;
-                owner
+                let record = owner
                     .memory_data(&call)?
                     .query(stored::Read {
-                        scope,
+                        scope: scope.clone(),
                         id: input.id,
                     })
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                if let Some(r) = &record
+                    && call.identity.agent().is_some()
+                {
+                    let fact = LoadedMemory::from_record(&scope.location, r);
+                    owner.record_memory_reads(&call, scope, vec![fact]).await?;
+                }
+                Ok(record)
             })
         })
         .await

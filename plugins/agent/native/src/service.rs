@@ -666,6 +666,13 @@ impl Handler for Agent {
             "memorySource" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(owner.memory_source(decode(input)?, context.scope()).await?)
             }),
+            "loadedMemories" => json_rpc(&mut args, |owner, input, context| async move {
+                encode(
+                    owner
+                        .loaded_memories(decode(input)?, context.scope())
+                        .await?,
+                )
+            }),
             "memoryEvidence" => json_rpc(&mut args, |owner, input, context| async move {
                 encode(
                     owner

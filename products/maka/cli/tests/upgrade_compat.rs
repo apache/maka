@@ -730,6 +730,40 @@ fn verify_sqlite_integrity_and_migrations(root: &Path) -> BTreeMap<String, Vec<i
                     );
                 }
             }
+            if has_runs > 0 && versions.contains(&57) {
+                let invalid: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM agent_memory_external_epochs WHERE revision < 0",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(invalid, 0, "invalid external memory epoch on {rel}");
+                let inconsistent: i64 = conn.query_row(
+                    "WITH pending AS (
+                       SELECT session,request,coalesce(entry_json->>'$.request.spec.memoryAdmission','unknown') AS admission
+                       FROM agent_queue_items WHERE state='pending'
+                     ), last_edit AS (
+                       SELECT p.session,p.request,max(e.revision) AS revision
+                       FROM (SELECT DISTINCT session FROM pending) affected
+                       CROSS JOIN agent_queue_events e ON e.session=affected.session
+                       CROSS JOIN contents b ON b.id=e.body_content_id
+                       CROSS JOIN pending p ON p.session=e.session AND p.request=b.payload->>'$.edit.request.id'
+                       WHERE b.payload->>'$.kind'='command' AND b.payload->>'$.edit.kind' IN ('enqueue','update')
+                       GROUP BY p.session,p.request
+                     )
+                     SELECT count(*) FROM pending p LEFT JOIN last_edit l USING(session,request)
+                     LEFT JOIN agent_queue_events e ON e.session=l.session AND e.revision=l.revision
+                     LEFT JOIN contents b ON b.id=e.body_content_id
+                     WHERE l.revision IS NULL OR p.admission IS NOT coalesce(
+                       e.memory_admission,b.payload->>'$.edit.request.spec.memoryAdmission','unknown')",
+                    [], |row| row.get(0),
+                ).unwrap();
+                assert_eq!(
+                    inconsistent, 0,
+                    "pending admission differs from queue history on {rel}"
+                );
+            }
             if has_runs > 0 && versions.contains(&55) {
                 for view in [
                     "agent_memory_operation_field_source",
@@ -1328,6 +1362,39 @@ async fn produce_capsule(bin: &Path, capsule_dir: &Path) -> CapsuleManifest {
     manifest
 }
 
+fn verify_saved_host_upgrade(dir: &Path) {
+    use maka_remote_client::SavedHosts;
+
+    // Host profiles live on the mobile client, not in the historical Host root.
+    let path = dir.join("hosts.json");
+    let old = json!([{
+        "rootId": "compat-root",
+        "hostName": "Compat Mac",
+        "hostPeerId": "compat-peer",
+        "relays": [{"url":"https://relay.example.com","quicPort":null,"certSha256":null}],
+        "directEndpoints": ["hostLogs"],
+    }]);
+    fs::write(&path, old.to_string()).unwrap();
+    let mut saved = SavedHosts::load(&path).unwrap();
+    let mut host = saved.get("compat-root").unwrap().clone();
+    assert!(!host.reconnect_paused());
+    host.set_reconnect_paused(true);
+    saved.save(host).unwrap();
+    drop(saved);
+
+    let upgraded: Value = serde_json::from_reader(fs::File::open(&path).unwrap()).unwrap();
+    let mut expected = old;
+    expected[0]["reconnectPaused"] = json!(true);
+    assert_eq!(upgraded, expected);
+    assert!(
+        SavedHosts::load(path)
+            .unwrap()
+            .get("compat-root")
+            .unwrap()
+            .reconnect_paused()
+    );
+}
+
 async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     let manifest_raw = fs::read_to_string(capsule_dir.join("capsule-manifest.json"))
         .unwrap_or_else(|e| {
@@ -1343,6 +1410,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
     // tarball extract a fresh copy at manifest.base_dir before calling verify,
     // matching a real user upgrading Maka at the same HOME and State Root path).
     let work_tmp = tempfile::tempdir().unwrap();
+    verify_saved_host_upgrade(work_tmp.path());
     let canonical_base = fs::canonicalize(capsule_dir).unwrap();
     let dirs = EnvDirs::in_base(&canonical_base);
     dirs.prepare();
@@ -1625,6 +1693,61 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         .await;
         assert_eq!(updated_conn["kind"], "committed", "{updated_conn}");
 
+        let enabled = call(
+            &client,
+            "settings",
+            "updateAssistantPreferences",
+            json!({
+                "expectedRevision": prefs_after["revision"],
+                "mutation": {"kind": "memory", "value": {"enabled": true, "agentReadEnabled": true}}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(enabled["kind"], "committed", "{enabled}");
+        let pin = call(
+            &client,
+            "agent",
+            "changeMemory",
+            json!({
+                "scope": {"kind": "personal"},
+                "edit": {"kind": "set_always", "id": manifest.memory_id,
+                    "expectedRevision": memory["revision"], "always": true}
+            }),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pin["kind"], "saved", "{pin}");
+        let pinned = call(
+            &client,
+            "agent",
+            "memory",
+            json!({"scope": {"kind": "personal"}, "id": manifest.memory_id}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(pinned["mode"], "user_always", "{pinned}");
+        assert_eq!(pinned["assertion"], memory["assertion"]);
+        assert_eq!(pinned["revision"], pin["revision"]);
+
+        let observed = call(
+            &client,
+            "agent",
+            "observe",
+            json!({"sessionId": manifest.primary_session_id}),
+            Attachments::new(),
+        )
+        .await;
+        let original = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": observed["latestRunId"].as_str().unwrap()}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(original, json!([]), "later pin changed historical Run admission");
+
         let followup = call(
             &client,
             "agent",
@@ -1638,12 +1761,21 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         )
         .await;
         assert_eq!(followup["kind"], "queued", "{followup}");
-        wait_run_completed(
+        let run = wait_run_completed(
             &client,
             &manifest.primary_session_id,
             followup["messageId"].as_str().unwrap(),
         )
         .await;
+        let loaded = call(
+            &client,
+            "agent",
+            "loadedMemories",
+            json!({"sessionId": manifest.primary_session_id, "runId": run}),
+            Attachments::new(),
+        )
+        .await;
+        assert_eq!(loaded, json!([]), "tool-restricted session loaded a pin");
         assert!(
             saw_pre_context.load(Ordering::SeqCst),
             "post-upgrade model request did not retain pre-upgrade conversation context"

@@ -120,10 +120,11 @@ import { settingsValue } from '../../../../products/maka/workbench/app/settingsO
 import {
   bodyTextStyle,
   C,
-  Header,
-  controlStyle,
-  controlHoverStyle,
   controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  Header,
+  radius,
   textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
@@ -2515,7 +2516,7 @@ export function createConversationUi(
                             maxWidth: '85%',
                             paddingHorizontal: 12,
                             paddingVertical: 8,
-                            borderRadius: 12,
+                            borderRadius: radius(12),
                             backgroundColor: C.card,
                           }}
                         >

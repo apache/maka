@@ -372,7 +372,7 @@ fn tick(view: &NshView) {
 }
 
 /// The surface's own scale, fractional ones included.
-fn scale_of(view: &impl IsA<gtk::Widget>) -> f32 {
+pub(crate) fn scale_of(view: &impl IsA<gtk::Widget>) -> f32 {
     let view = view.as_ref();
     view.native()
         .and_then(|n| n.surface())

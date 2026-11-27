@@ -1,6 +1,6 @@
 ---
 // One App Stories card: the cover, the app's name, author and description,
-// its platforms, publication date, stars and links.
+// publication date, its platforms, stars and links.
 import type { ShowcaseApp } from '../lib/showcases';
 import { url, type Lang } from '../lib/site';
 import Badge from './ui/Badge.astro';
@@ -30,15 +30,15 @@ const stars = app.stars === null ? null : new Intl.NumberFormat('en', { notation
     <div class="app-card__header">
       <div class="app-card__identity">
         <h3 class="app-card__name">{app.name}</h3>
-        <p class="app-card__author">{app.author}</p>
+        <p class="app-card__author">
+          <span>{app.author}</span>
+          {date && <time datetime={app.publishedAt} title={`${t.published} ${date}`}>{date}</time>}
+        </p>
       </div>
       {app.building && <Badge variant="outline">{t.building}</Badge>}
     </div>
     <p class="app-card__blurb">{app.description}</p>
-    <div class="app-card__platform-row">
-      <span>{app.platforms.join(' / ')}</span>
-      {date && <time datetime={app.publishedAt} title={`${t.published} ${date}`}>{date}</time>}
-    </div>
+    <p class="app-card__platforms" title={app.platforms.join(' / ')}>{app.platforms.join(' / ')}</p>
     <div class="app-card__footer">
       <div class="app-card__footer-start">
         {!app.source && <span class="app-card__commercial">{t.commercial}</span>}

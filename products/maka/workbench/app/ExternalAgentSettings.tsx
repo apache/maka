@@ -135,9 +135,6 @@ export function ExternalAgentSection(props: { owner: ExternalAgentSettingsOwner;
                     </If>
                   </>
                 }
-                accessibilityLabel={tr(runtime().enabled ? 'Disable {name}' : 'Enable {name}', {
-                  name: runtime().name,
-                })}
                 checked={runtime().enabled}
                 disabled={owner.disabled()}
                 onPress={

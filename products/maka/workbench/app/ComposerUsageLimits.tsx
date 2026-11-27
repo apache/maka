@@ -114,7 +114,7 @@ function ComposerUsagePopover(props: {
           accessibilityLabel={tooltipText()}
           tooltip={textTooltip(() => (open() ? undefined : tooltipText()))}
           style={{
-            ...composerToolbarControlStyle,
+            ...composerToolbarControlStyle(),
             flexDirection: 'row',
             alignItems: 'center',
             gap: 4,

@@ -21,6 +21,7 @@ function readAppInfo(json) {
 
 export function createEnvironment(reactive, invoke, dom) {
   const initial = { window: { width: 0, height: 0 }, safeArea: { top: 0, right: 0, bottom: 0, left: 0 },
+    reservedRegions: [],
     titleBar: { height: 0, left: 0, right: 0 }, keyboard: { height: 0, duration: 0.25 },
     colorScheme: "light", fontScale: 1, pixelRatio: 1, locale: "en-US", reduceMotion: false, screenReader: false, host: false,
     lifecycle: "active", shaders: true, wakeCount: 0,
@@ -60,6 +61,8 @@ export function createEnvironment(reactive, invoke, dom) {
     horizontalSizeClass: () => fields.horizontalSizeClass(),
     verticalSizeClass: () => fields.verticalSizeClass(),
     windowSize: () => fields.window(), colorScheme: () => fields.colorScheme(), setColorScheme,
+    // What the engine reports; a page has none to report (an empty list).
+    reservedRegions: () => fields.reservedRegions(),
     fontScale: () => fields.fontScale(), pixelRatio: () => fields.pixelRatio(), locale: () => fields.locale(),
     localeSettings: () => fields.localeSettings(), lifecycle: () => fields.lifecycle(), platform,
     shadersAvailable: () => fields.shaders(),
@@ -99,8 +102,8 @@ export function createEnvironment(reactive, invoke, dom) {
           const previous = reactive.untracked(signal);
           // A part is written when it changed: a value, or an object's
           // member (the locale settings' languages: one of them, or their
-          // number).
-          if (!same(value, previous, 2)) signal.set(value);
+          // number; a reserved region's bounds, down to its origin).
+          if (!same(value, previous, 4)) signal.set(value);
         }
       });
       dom.rootProp("layoutDirectionRtl", next.rtl);

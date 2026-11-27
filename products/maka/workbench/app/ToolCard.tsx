@@ -67,13 +67,14 @@ import { ProviderSearchCard } from './ProviderSearchCard';
 import {
   C,
   captionTextStyle,
-  controlStyle,
   controlFocusStyle,
   controlHoverStyle,
+  controlStyle,
   Disclosure,
   disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
+  radius,
   textTooltip,
 } from './ui';
 import { LoadingIndicator, ShimmerText } from './Loading';
@@ -98,7 +99,7 @@ const cardPadding = {
 };
 const cardStyle = () => ({
   backgroundColor: C.card,
-  borderRadius: 12,
+  borderRadius: radius(12),
   marginHorizontal: -cardOutset,
   paddingTop: cardPadding.top,
   paddingRight: cardPadding.right,
@@ -411,7 +412,7 @@ function Field(props: {
               });
             }}
             style={{
-              ...controlStyle,
+              ...controlStyle(),
               alignSelf: 'flex-start',
               flexDirection: 'row',
               alignItems: 'center',
@@ -539,7 +540,7 @@ export function LiveToolRow(props: { activity(): ToolActivity }) {
       icon="activity"
       open={false}
       foldable={false}
-      terminalInset={controlStyle.paddingHorizontal}
+      terminalInset={controlStyle().paddingHorizontal}
       onPress={() => {}}
       trailing={
         <If when={!useToolShimmer()}>
@@ -713,7 +714,7 @@ export function ToolCard(props: {
         tooltip={title()}
         icon={icon()}
         open={props.expanded()}
-        terminalInset={controlStyle.paddingHorizontal}
+        terminalInset={controlStyle().paddingHorizontal}
         onPress={inputAction(props.expand, {
           sessionId: props.sessionId,
           key: props.ownerKey(),
@@ -818,7 +819,7 @@ export function ToolCard(props: {
               maxHeight: Math.max(
                 16,
                 props.maxHeight() -
-                  controlStyle.minHeight -
+                  controlStyle().minHeight -
                   detailsGap -
                   (platform.idiom === 'terminal' ? 0 : cardPadding.top + cardPadding.bottom),
               ),

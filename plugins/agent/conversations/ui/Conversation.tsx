@@ -3225,6 +3225,18 @@ export function Conversation(props: ConversationProps) {
     draft.set(text);
     queueDraft({ text, quotes: quotes(), ...attachments.snapshot() });
   };
+  const quoteDraft = (quote: QuoteRef) => {
+    if (!draftReady() || savingFailed() || !quote.text.trim()) return false;
+    const next = appendDraftQuote(quotes(), quote, restoringQuotes);
+    if (!next) {
+      notice.set(tr('Too many quotes'));
+      return false;
+    }
+    quotes.set(next);
+    changeDraft(draft());
+    props.focusComposer();
+    return true;
+  };
   // Save edits held while a send was being reserved.
   const releaseHeld = () => {
     holding = false;
@@ -5354,9 +5366,7 @@ export function Conversation(props: ConversationProps) {
                     : undefined
                 }
                 quote={(message, text) => {
-                  if (!draftReady() || savingFailed() || !text.trim()) return;
-                  const next = appendDraftQuote(
-                    quotes(),
+                  quoteDraft(
                     quoteBotMessage(
                       message,
                       sessionId,
@@ -5366,15 +5376,7 @@ export function Conversation(props: ConversationProps) {
                       text,
                       Date.now(),
                     ),
-                    restoringQuotes,
                   );
-                  if (!next) {
-                    notice.set(tr('Too many quotes'));
-                    return;
-                  }
-                  quotes.set(next);
-                  changeDraft(draft());
-                  props.focusComposer();
                 }}
                 openInvestigation={openWorker}
                 worker={
@@ -5468,6 +5470,7 @@ export function Conversation(props: ConversationProps) {
                   : undefined
               }
               openSide={sideActions?.open}
+              quoteMessage={quoteDraft}
               replyNotes={
                 sideActions
                   ? (row, marked) => (
@@ -5493,7 +5496,7 @@ export function Conversation(props: ConversationProps) {
                     )
                   : undefined
               }
-              finalActions={(row, ownerKey, menu) => (
+              finalActions={(row, ownerKey, menu, selection) => (
                 <FinalActions
                   compact={props.compact}
                   row={row}
@@ -5502,6 +5505,8 @@ export function Conversation(props: ConversationProps) {
                   through={() => latestKnown}
                   fork={props.side ? undefined : props.fork}
                   menu={menu}
+                  selection={selection}
+                  quote={quoteDraft}
                   side={sideActions}
                   extra={
                     platform.idiom !== 'terminal' && props.edit ? (
@@ -5727,7 +5732,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'chat',
@@ -5749,7 +5754,7 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={toolbarControlStyle}
+          style={toolbarControlStyle()}
           onPress={inputAction(chooseReading, {
             owner: sessionId,
             mode: 'trajectory',

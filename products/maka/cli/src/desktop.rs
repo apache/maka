@@ -205,6 +205,7 @@ fn desktop_shell_path(launcher: &std::path::Path) -> PathBuf {
 pub(super) fn exec_shell(
     mode: &str,
     options: &[(&str, Option<&std::ffi::OsStr>)],
+    flags: &[(&str, bool)],
 ) -> Result<(), HostError> {
     use std::os::unix::process::CommandExt;
 
@@ -224,6 +225,11 @@ pub(super) fn exec_shell(
             argument.push("=");
             argument.push(value);
             command.arg(argument);
+        }
+    }
+    for &(name, enabled) in flags {
+        if enabled {
+            command.arg(name);
         }
     }
     let error = command.exec();

@@ -126,6 +126,9 @@ pub(super) fn register(
             ));
         }
         validate_index(c, &manifest)?;
+        if matches!(manifest.origin, Origin::Canonical { .. }) {
+            capture::index_memory_outputs(c, manifest.id)?;
+        }
         c.execute(
             "UPDATE agent_history_snapshot_ingest_nodes SET state=1 WHERE ingest=? AND snapshot=?",
             params![ingest, snapshot],

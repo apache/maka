@@ -26,7 +26,7 @@ import type {
 } from '../../../../../../packages/plugin-sdk/src/generated/runtime';
 import { tr } from '../../locale';
 import { GroupRow, InsetGroup } from '../../ui';
-import { settingsRpc, settingsWork } from '../../state/settings/rpc';
+import { LocalizedSettingsError, settingsRpc, settingsWork } from '../../state/settings/rpc';
 import { saveWebSettings, updateWebKey } from '../../state/settings/web';
 import {
   confirmDeleteApiKey,
@@ -122,8 +122,14 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
       const value = settings();
       const endpoint = custom();
       if (!endpoint) return accept(await saveWebSettings(rpc, basis()!, value));
-      const urlParams: unknown = JSON.parse(urlParameters());
-      const jsonBody: unknown = JSON.parse(body());
+      let urlParams: unknown;
+      let jsonBody: unknown;
+      try {
+        urlParams = JSON.parse(urlParameters());
+        jsonBody = JSON.parse(body());
+      } catch (cause) {
+        throw new LocalizedSettingsError('Enter a JSON object.', { cause });
+      }
       if (
         !urlParams ||
         typeof urlParams !== 'object' ||
@@ -133,7 +139,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
         typeof jsonBody !== 'object' ||
         Array.isArray(jsonBody)
       ) {
-        throw new Error(tr('Enter valid JSON objects for the search parameters.'));
+        throw new LocalizedSettingsError('Enter valid JSON objects for the search parameters.');
       }
       accept(
         await saveWebSettings(rpc, basis()!, {
@@ -157,7 +163,7 @@ export function WebSearchSettingsScreen(props: SettingsPageProps) {
         accept(await updateWebKey(rpc, basis()!, action, key));
         if (action !== 'checkKey') secret.set('');
       },
-      key ? tr('Could not save the search API key.') : undefined,
+      action === 'saveKey' ? tr('Could not save the search API key.') : undefined,
     );
   };
   const options = (): { id: WebBackend['kind']; label: string }[] => [

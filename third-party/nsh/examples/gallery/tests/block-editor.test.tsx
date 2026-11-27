@@ -175,9 +175,11 @@ test("a list item's menu turns it into another block and + adds an item of the s
   // The new line is an item of the list: its checkbox shows with the others.
   expect(app.count("role:checkbox")).toBe(5);
   await app.keyboard.press("escape");
-  await app.type("label:Document", "Ship it");
+  await app.type("label:Document", "Ship it today");
   await app.wait(300);
-  await app.hover("text:/Ship it");
+  // The editor's hidden input still holds what was just typed, so the text
+  // matches twice; the input comes after the content, so the line is first.
+  await app.hover("text:/Ship it today >> nth=0");
   await app.waitFor(handle);
   await app.press(handle);
   await app.press("role:menuitem[Delete]");

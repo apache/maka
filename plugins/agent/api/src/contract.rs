@@ -2356,6 +2356,7 @@ pub fn contract() -> Contract {
             methods: BTreeMap::from([
                 ("presets".into(), method::<PresetsRead, Vec<PresetSummary>>(MethodMode::Query)),
                 ("preset".into(), method::<PresetRead, Option<PresetDetail>>(MethodMode::Query)),
+                ("loadedMemories".into(), method::<LoadedMemoriesRead, Vec<LoadedMemory>>(MethodMode::Query)),
                 ("memorySource".into(), method::<MemorySourceSelection, MemoryEvidenceReference>(MethodMode::Query)),
                 ("memoryEvidence".into(), method::<MemoryEvidenceRead, MemoryEvidencePage>(MethodMode::Query)),
                 ("memoryHistory".into(), method::<MemoryHistoryRead, MemoryHistoryPage>(MethodMode::Query)),

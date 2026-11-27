@@ -171,7 +171,7 @@ impl Host {
         self.peer_has_current_grant(peer_id).await
     }
 
-    async fn peer_has_current_grant(&self, peer_id: &PeerId) -> Result<bool> {
+    pub(super) async fn peer_has_current_grant(&self, peer_id: &PeerId) -> Result<bool> {
         let grant = self.access_grant.lock().unwrap().clone();
         self.access
             .has_host_peer_access(peer_id.clone(), grant)

@@ -3822,6 +3822,14 @@ export interface ServiceMethods {
         data: string;
       };
     };
+    loadedMemories: {
+      mode: 'query';
+      input: {
+        sessionId: string;
+        runId: Runtime.RunId;
+      };
+      output: AgentLoadedMemoriesOutput_LoadedMemory[];
+    };
     lookupSubmission: {
       mode: 'query';
       input: {
@@ -6476,6 +6484,15 @@ export interface AgentLoadedHistoryCheckpointSourceInput_AgentCheckpointInspecti
 export interface AgentLoadedHistoryCheckpointToolImageInput_AgentCheckpointInspection {
   sourceSessionId: string;
   operationId: string;
+}
+/**
+ * The exact assertion and management revision admitted to a Run, in projection order.
+ */
+export interface AgentLoadedMemoriesOutput_LoadedMemory {
+  scope: string;
+  id: string;
+  revision: number;
+  assertion: number;
 }
 /**
  * Most recent discovery association added after a Bot message was published.

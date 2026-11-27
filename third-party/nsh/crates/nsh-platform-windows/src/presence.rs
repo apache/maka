@@ -320,7 +320,9 @@ unsafe extern "system" fn cloak_event(
     for surface in Surface::all() {
         let own = surface.hwnd();
         // SAFETY: a plain call on a window handle.
-        if !own.is_invalid() && unsafe { GetAncestor(own, GA_ROOT) } == hwnd {
+        if (!own.is_invalid() && unsafe { GetAncestor(own, GA_ROOT) } == hwnd)
+            || crate::app_window::hwnds(&surface).contains(&hwnd)
+        {
             crate::system::lifecycle_changed(&surface);
         }
     }

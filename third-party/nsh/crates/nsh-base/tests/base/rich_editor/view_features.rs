@@ -62,6 +62,37 @@ fn a_mention_shows_its_text_and_is_one_position() {
 }
 
 #[test]
+fn an_arrow_stops_on_a_selectable_inline_node_and_selects_it() {
+    let mut app = start(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "a"},
+            {"type": "tag"},
+            {"type": "text", "text": "b"},
+        ]},
+    ]}));
+    see(&mut app, "Tag Some(2) false");
+    focus_start(&mut app);
+    // `a` is 1..2, the tag 2..3: the arrow that reaches it selects it, and
+    // its view hears so.
+    keys(&mut app, &["right", "right"]);
+    see(&mut app, "Sel 2-3");
+    see(&mut app, "Tag Some(2) true");
+    // The next one goes on past it; back again selects it from that side.
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 3-3");
+    see(&mut app, "Tag Some(2) false");
+    keys(&mut app, &["left"]);
+    see(&mut app, "Sel 2-3");
+    see(&mut app, "Tag Some(2) true");
+    keys(&mut app, &["left"]);
+    see(&mut app, "Sel 2-2");
+    // Shift extends over it as over a character.
+    keys(&mut app, &["shift+right"]);
+    see(&mut app, "Sel 2-3");
+    see(&mut app, "Tag Some(2) false");
+}
+
+#[test]
 fn typing_at_a_gap_cursor_opens_a_paragraph() {
     let mut app = start(two_atoms());
     focus_start(&mut app);
@@ -738,6 +769,25 @@ fn the_caret_steps_over_an_inline_image_moved_by_an_edit_above() {
     app.press("text:Type").unwrap();
     app.press("text:Measure").unwrap();
     see(&mut app, "Image 8 gap 80 Some(1) rect Some((0.0, 80.0))");
+}
+
+/// A built-in inline image, which draws no selected state, is stepped
+/// over as one position: an arrow stops only on an atom a node view
+/// draws, whose `selected` shows it is selected.
+#[test]
+fn an_arrow_steps_over_a_built_in_inline_image() {
+    // `a` is 1..2, the image 2..3, `b` 3..4.
+    let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "a"},
+        image_80(),
+        {"type": "text", "text": "b"},
+    ]}]});
+    let mut app = start(doc);
+    focus_start(&mut app);
+    keys(&mut app, &["right", "right"]);
+    see(&mut app, "Sel 3-3");
+    keys(&mut app, &["left"]);
+    see(&mut app, "Sel 2-2");
 }
 
 /// An 80-point widget decoration at the start of the line, before `abcd`

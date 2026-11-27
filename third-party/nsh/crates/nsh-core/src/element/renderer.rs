@@ -1,5 +1,6 @@
 //! Render functions a component takes (an `Option<Renderer<T>>` prop): in
-//! JS a function `(value: T) => JSX.Element` the app passes, in Rust a
+//! JS a function `(value: T) => JSX.Element` the app passes (of an
+//! `InContext<A, B>`: `(value: A, context: B) => JSX.Element`), in Rust a
 //! closure. The component asks it for content where it places it, with a
 //! key and a value: `props.render_code.get().map(|r| r.render(key, code))`.
 //!
@@ -183,6 +184,58 @@ impl<T: JsValue + Clone + PartialEq + 'static> Renderer<T> {
         }
         Rendered(node)
     }
+
+    /// `el` (a view with no children of its own) holding what the renderer
+    /// `place` gives renders for its key and value, without a view of the
+    /// render's own: the app's JS function's content goes into `el` itself,
+    /// a Rust closure's is its child. `place` is bound: when the key or
+    /// the value it gives changes, the content is rendered again, as
+    /// [`Renderer::render`]'s would; `None` holds nothing.
+    ///
+    /// For a view a component makes many of, a list's or a table's cells:
+    /// each is one view fewer than with [`Renderer::render`] placed in it.
+    /// Hidden while `nsh-base`'s DataTable is its only user.
+    #[doc(hidden)]
+    pub fn render_into<E: Element>(
+        mut el: E,
+        place: impl Fn() -> Option<(Self, SharedString, T)> + 'static,
+    ) -> E {
+        let place = crate::element::computed(place);
+        el.node().bound_attrs.push(Rc::new(move |attrs| {
+            let at = place.with(|place| {
+                let (renderer, key, value) = place.as_ref()?;
+                let (prop, host, func) = match &renderer.kind {
+                    Kind::Rust(_) => return None,
+                    Kind::Js { prop, host } => (*prop, *host, None),
+                    Kind::JsFn { prop, host, func } => (*prop, *host, Some(func.clone())),
+                };
+                Some(RenderAt(Rc::new(RenderPlace {
+                    host,
+                    prop,
+                    key: key.clone(),
+                    value: Rc::new(value.clone()),
+                    func,
+                })))
+            });
+            if at.is_some() || attrs.rare.is_some() {
+                attrs.rare_mut().render = at;
+            }
+        }));
+        let content = super::dynamic(move || {
+            place.with(|place| match place {
+                Some((
+                    Renderer {
+                        kind: Kind::Rust(f),
+                    },
+                    _,
+                    value,
+                )) => Some(f(value)),
+                _ => None,
+            })
+        });
+        el.node().children.push(content.0);
+        el
+    }
 }
 
 /// What a [`Renderer`] rendered, placed as a view: style it like one (its
@@ -213,6 +266,9 @@ pub trait RenderValue: 'static {
     fn render_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError>;
     /// Whether `other` is an equal value of the same type.
     fn same(&self, other: &dyn RenderValue) -> bool;
+    /// Whether JS passes the value (an array) to the function as its
+    /// arguments ([`JsValue::RENDER_SPREAD`]: an [`super::InContext`]'s).
+    fn spread(&self) -> bool;
     /// The value, to downcast.
     fn as_any(&self) -> &dyn Any;
 }
@@ -224,6 +280,10 @@ impl<T: JsValue + PartialEq + 'static> RenderValue for T {
 
     fn same(&self, other: &dyn RenderValue) -> bool {
         other.as_any().downcast_ref::<T>() == Some(self)
+    }
+
+    fn spread(&self) -> bool {
+        T::RENDER_SPREAD
     }
 
     fn as_any(&self) -> &dyn Any {

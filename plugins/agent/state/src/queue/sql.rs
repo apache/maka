@@ -263,7 +263,7 @@ fn has_held(c: &Connection, session: &str) -> Result<bool, StoreError> {
     .query_row([session], |row| row.get(0))?)
 }
 /// From a user Stop until the Session's next Run, what others send waits.
-fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
+pub(super) fn holding(c: &Connection, session: &str) -> Result<bool, StoreError> {
     Ok(has_held(c, session)?
         || match crate::sql::latest(c, session.to_owned())? {
             Some(run) => stopped_by_user(c, run)?,
@@ -666,7 +666,6 @@ pub(super) fn write(
 pub(crate) fn stop_queue(
     c: &Connection,
     session: &str,
-    run: RunId,
     stop: &Change,
     requester: &StopRequester,
 ) -> Result<(), StoreError> {
@@ -696,15 +695,13 @@ pub(crate) fn stop_queue(
             expected_revision = commit.revision;
             continue;
         }
-        // The stopped turn's own continuation is taken back with the Stop.
+        // Hold any pending worker completion across a user Stop (even if owned by an earlier
+        // finished turn); only the stopped turn's own recovery continuation is taken back.
         let keep = match entry.placement {
-            Placement::Completion { caller } => {
-                caller == run
-                    && matches!(
-                        source.message.origin,
-                        Some(MessageOrigin::SessionCompletion { .. })
-                    )
-            }
+            Placement::Completion { .. } => matches!(
+                source.message.origin,
+                Some(MessageOrigin::SessionCompletion { .. })
+            ),
             Placement::Held => false,
             Placement::Followup | Placement::Steering { .. } => true,
         };
@@ -1288,7 +1285,7 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
             break;
         }
         for session in sessions {
-            rebuild(c, &session)?;
+            replay_queue_events(c, &session, "b.payload")?;
             after = session;
         }
     }
@@ -1296,12 +1293,72 @@ pub(crate) fn rebuild_queue_projections(c: &Connection) -> Result<(), StoreError
 }
 
 pub(super) fn rebuild(c: &Connection, session: &str) -> Result<QueueCommit, StoreError> {
+    replay_queue_events(
+        c,
+        session,
+        "CASE WHEN e.memory_admission IS NULL THEN b.payload
+         ELSE CAST(json_set(b.payload, '$.edit.request.spec.memoryAdmission', e.memory_admission) AS BLOB) END",
+    )
+}
+
+/// Keep the original command body intact for idempotency and the queue revision intact for CAS.
+/// Only the last enqueue or update supplied the request that was pending at upgrade.
+pub(crate) fn migrate_memory_admissions(c: &Connection) -> Result<(), StoreError> {
+    let expected: i64 = c.query_row("SELECT count(*) FROM pinned_queue_admissions", [], |r| {
+        r.get(0)
+    })?;
+    let recorded = c.execute(
+        "WITH last_edit(session,revision,admission) AS MATERIALIZED (
+           SELECT e.session,max(e.revision),p.admission
+           FROM (SELECT DISTINCT session FROM pinned_queue_admissions) affected
+           CROSS JOIN agent_queue_events e ON e.session=affected.session
+           CROSS JOIN contents b ON b.id=e.body_content_id
+           CROSS JOIN pinned_queue_admissions p ON p.session=e.session
+             AND p.request=b.payload->>'$.edit.request.id'
+           WHERE b.payload->>'$.kind'='command' AND b.payload->>'$.edit.kind' IN ('enqueue','update')
+           GROUP BY p.session,p.request
+         )
+         UPDATE agent_queue_events AS e SET memory_admission=l.admission
+         FROM last_edit l WHERE e.session=l.session AND e.revision=l.revision",
+        [],
+    )?;
+    if i64::try_from(recorded).ok() != Some(expected) {
+        return Err(invalid(
+            "pending request is missing its canonical queue event",
+        ));
+    }
+    c.execute_batch(
+        "UPDATE agent_queue_items AS q
+         SET entry_json=json_set(q.entry_json,'$.request.spec.memoryAdmission',p.admission)
+         FROM pinned_queue_admissions p WHERE q.session=p.session AND q.request=p.request;",
+    )?;
+    Ok(())
+}
+
+fn replay_queue_events(
+    c: &Connection,
+    session: &str,
+    body: &str,
+) -> Result<QueueCommit, StoreError> {
     id(session)?;
     c.execute("DELETE FROM agent_queue_items WHERE session=?", [session])?;
     c.execute("DELETE FROM agent_queue_heads WHERE session=?", [session])?;
+    let mut page = c.prepare(&format!(
+        "SELECT e.revision,{body},e.at FROM agent_queue_events e
+        JOIN contents b ON b.id=e.body_content_id WHERE e.session=? AND e.revision>?
+        ORDER BY e.revision LIMIT 128"
+    ))?;
     let mut after = 0;
     loop {
-        let rows = c.prepare_cached("SELECT e.revision,c.payload,e.at FROM agent_queue_events e JOIN contents c ON c.id=e.body_content_id WHERE e.session=? AND e.revision>? ORDER BY e.revision LIMIT 128")?.query_map(params![session,to_sql_integer(after)?],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let rows = page
+            .query_map(params![session, to_sql_integer(after)?], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         if rows.is_empty() {
             break;
         }
@@ -1343,7 +1400,22 @@ pub(crate) fn consume(
     }
     let next = cas(c, &cut.session, cut.expected_revision)?;
     let entry = pending(c, &cut.session, &cut.requests[0])?;
-    if !entry.placement.is_followup() || entry.request.spec != *spec {
+    use maka_agent_facts::memory::MemoryAdmission;
+    let original = &entry.request.spec;
+    let same_memory = original.memory_admission == spec.memory_admission
+        && original.memory_projection == spec.memory_projection;
+    let fresh_memory = matches!(
+        original.memory_admission,
+        MemoryAdmission::Enabled | MemoryAdmission::Disabled
+    ) && (spec.memory_admission == MemoryAdmission::Enabled
+        || (matches!(
+            spec.memory_admission,
+            MemoryAdmission::Disabled | MemoryAdmission::Excluded
+        ) && spec.memory_projection.is_none()));
+    if !entry.placement.is_followup()
+        || !(same_memory || fresh_memory)
+        || !entry.request.matches_run_input(spec.clone())
+    {
         return Err(invalid(
             "Run admission does not match frozen followup request",
         ));
