@@ -119,6 +119,11 @@ impl ShaderView {
         false
     }
 
+    /// `false`: there is no transition to finish.
+    pub fn finish_transition(&mut self) -> bool {
+        false
+    }
+
     /// `false`: the children stay.
     pub fn replaces_children(&mut self, _now: Instant) -> bool {
         false
@@ -139,6 +144,11 @@ impl ShaderView {
 
     /// Does nothing.
     pub fn set_size(&mut self, _size: Size<Points>, _scale: f32) {}
+
+    /// `false`: there are no frames.
+    pub fn has_presented_frame(&self) -> bool {
+        false
+    }
 
     /// `false`: there are no frames.
     pub fn wants_frame(&self) -> bool {

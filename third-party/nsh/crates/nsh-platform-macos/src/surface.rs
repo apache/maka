@@ -772,6 +772,7 @@ impl Surface {
             s.frame.size.width.0 = width;
             s.frame.size.height.0 = height;
         }
+        crate::shader::root_resized(self, &self.root);
         self.control(|c| c.resize(Size::new(Points(width), Points(height))));
         self.window_environment();
         crate::navigation::surface_resized(self, width, height);

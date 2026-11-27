@@ -271,6 +271,31 @@ impl ShaderState {
         &self.layer
     }
 
+    /// Presents a new frame or clears the layer when the view collapses.
+    fn render(&mut self, renderer: &Renderer, now: Instant) -> bool {
+        let changed = self.view.render(renderer, now);
+        if changed
+            && (self.masked
+                || !matches!(
+                    self.role,
+                    ShaderRole::Transition | ShaderRole::ScreenTransition
+                ))
+        {
+            display_frame(&self.layer, &self.view);
+        }
+        changed
+    }
+
+    fn needs_tick(&self, size: Size<Points>, pictures_due: bool) -> bool {
+        // A collapsed view can be out of sight and still have a frame to clear.
+        let clear = collapsed(size) && !is_screen(self.role) && self.view.has_presented_frame();
+        !self.ticking
+            && (clear
+                || (!self.hidden
+                    && (self.view.wants_frame()
+                        || (pictures_due && (self.stale || self.backdrop_stale)))))
+    }
+
     /// Whether it draws under the children, shaped as a background
     /// ([`crate::decor`] places it); the others place themselves.
     pub(crate) fn fills(&self) -> bool {
@@ -287,7 +312,10 @@ impl ShaderState {
     /// What it has left to render or collect. Effects and transitions
     /// render on the frame clock, with their pictures.
     fn need(&self) -> Need {
-        if self.view.animates() || self.stale || self.backdrop_stale {
+        if self.hidden {
+            // A queued hidden view only needs a pass to clear its contents.
+            Need::Changed
+        } else if self.view.animates() || self.stale || self.backdrop_stale {
             Need::Clock
         } else if self.view.compiling() {
             Need::Compiling
@@ -663,6 +691,9 @@ pub(crate) fn start_transition(
     let host = host(surface, view, role);
     let scale = crate::view::backing_scale_of(host.ns());
     let size = host.state().frame.size;
+    if collapsed(size) {
+        return;
+    }
     // From what shows: the running transition's frame (copied on the
     // GPU), or the children.
     let (from_frame, mut canvas) = {
@@ -1440,19 +1471,60 @@ pub(crate) fn deleted(surface: &Surface, view: &NshView) {
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
-    {
-        let mut state = view.state_mut();
-        let size = state.frame.size;
-        let Some(shader) = state.shader.as_mut() else {
-            return;
-        };
-        // Screen shaders take their size from the window root in show_frame.
-        if !is_screen(shader.role) {
-            let scale = crate::view::backing_scale_of(view.ns()) as f32;
-            shader.view.set_size(size, scale);
-        }
+    let Some(role) = view.state().shader.as_ref().map(|shader| shader.role) else {
+        return;
+    };
+    // Screen shaders take their size from the window root in show_frame.
+    if !is_screen(role) {
+        let size = view.state().frame.size;
+        let scale = crate::view::backing_scale_of(view.ns()) as f32;
+        sync_size(surface, view, size, scale);
     }
     if tick(view) {
+        start(surface);
+    }
+}
+
+/// A transition cannot present at zero area. Release its mask at resize,
+/// even if there was no frame yet and the shader has no reason to tick.
+fn sync_size(surface: &Surface, view: &NshView, size: Size<Points>, scale: f32) {
+    let ended = {
+        let mut state = view.state_mut();
+        let shader = state.shader.as_mut().expect("shader");
+        shader.view.set_size(size, scale);
+        let ended = collapsed(size) && shader.view.finish_transition();
+        if ended {
+            shader.stale = false;
+            shader.backdrop_stale = false;
+            // SAFETY: clear the main-thread-owned layer before revealing its children.
+            crate::surface::quiet(|| unsafe { shader.layer.setContents(None) });
+        }
+        ended
+    };
+    if ended {
+        refresh_mask(surface, view, Instant::now());
+    }
+}
+
+/// A screen shader lives on its declaring view but renders at the root's size.
+pub(crate) fn root_resized(surface: &Rc<Surface>, root: &NshView) {
+    let pictured = surface.shaders.pictured.borrow();
+    if pictured.is_empty() {
+        return;
+    }
+    let size = root.state().frame.size;
+    let scale = crate::view::backing_scale_of(root.ns()) as f32;
+    let mut queued = false;
+    for view in pictured.iter() {
+        let role = view.state().shader.as_ref().expect("tracked shader").role;
+        if !is_screen(role) || host(surface, view, role) != *root {
+            continue;
+        }
+        sync_size(surface, view, size, scale);
+        queued |= tick(view);
+    }
+    drop(pictured);
+    if queued {
         start(surface);
     }
 }
@@ -1538,13 +1610,7 @@ fn tick_if(view: &NshView, pictures_due: bool) -> bool {
         let Some(shader) = state.shader.as_mut() else {
             return false;
         };
-        // A collapsed view can be out of sight and still have a frame to clear.
-        let clear = collapsed(size)
-            && !is_screen(shader.role)
-            && (shader.view.surface().is_some() || shader.view.frame().width != 0);
-        let due =
-            shader.view.wants_frame() || (pictures_due && (shader.stale || shader.backdrop_stale));
-        if shader.ticking || (!clear && (shader.hidden || !due)) {
+        if !shader.needs_tick(size, pictures_due) {
             return false;
         }
         let Some(surface) = shader.surface.upgrade() else {
@@ -1760,6 +1826,9 @@ fn show_frame(
         return (false, false);
     };
     shader.view.set_size(size, scale);
+    if collapsed(size) {
+        shader.view.finish_transition();
+    }
     if role != ShaderRole::Fill {
         // Over the box, `overflow` points beyond it.
         let o = shader.view.overflow().0 as f64;
@@ -1773,10 +1842,7 @@ fn show_frame(
             ));
         });
     }
-    let showed = shader.view.render(renderer, now);
-    if showed {
-        display_frame(&shader.layer, &shader.view);
-    }
+    let showed = shader.render(renderer, now);
     // A transition that ended: its children show as they are (unless a
     // screen effect still hides the root's).
     if matches!(role, ShaderRole::Transition | ShaderRole::ScreenTransition)

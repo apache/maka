@@ -1972,6 +1972,7 @@ pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
         }
     }
     view.state_mut().frame = Bounds::new(point(Points(0.0), Points(0.0)), size);
+    crate::shader::root_resized(surface, view);
     surface.control(|c| c.set_root_size(id, size, EdgeInsets::default()));
     crate::navigation::window_resized(surface, view);
     // The primary window's size is the app's `windowSize()`.

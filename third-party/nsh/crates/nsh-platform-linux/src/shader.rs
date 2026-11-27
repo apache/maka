@@ -275,9 +275,15 @@ pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(view: &NshView) {
-    if view.state().shader.is_some() {
-        tick(view);
+    {
+        let mut state = view.state_mut();
+        let size = state.frame.size;
+        let Some(shader) = state.shader.as_mut() else {
+            return;
+        };
+        shader.view.set_size(size, scale_of(view));
     }
+    tick(view);
 }
 
 /// A shader transition starts ([`nsh_core::MountItem::ShaderTransition`],
@@ -1091,6 +1097,89 @@ mod tests {
             shader.and_then(|s| s.owner),
             shader.is_some_and(|s| s.view.layer().is_some()),
         )
+    }
+
+    #[cfg(feature = "shader")]
+    #[test]
+    fn a_static_shader_redraws_when_layout_expands_it() {
+        gtk_test::run(|| {
+            let surface = Surface::new(Default::default());
+            if surface.shader_renderer().is_none() {
+                eprintln!("no GPU: skipped");
+                return;
+            }
+            let id = 2;
+            let view = add(&surface, id, ROOT_ID, frame(10.0, 10.0, 40.0, 40.0));
+            apply(
+                &surface,
+                &[MountItem::Shader {
+                    id,
+                    layer: Some(layer(ShaderRole::Fill)),
+                }],
+            );
+            let window = gtk_test::show(&surface);
+            let texture_width = || {
+                let state = view.state();
+                let texture = state.shader.as_ref()?.texture.as_ref()?;
+                Some(texture.width())
+            };
+            let scale = scale_of(&view);
+            assert!(gtk_test::wait_until(
+                || texture_width() == Some((40.0 * scale) as i32)
+            ));
+            apply(
+                &surface,
+                &[MountItem::Frame {
+                    id,
+                    frame: frame(10.0, 10.0, 0.0, 40.0),
+                }],
+            );
+            assert!(gtk_test::wait_until(|| texture_width().is_none()));
+            apply(
+                &surface,
+                &[MountItem::Frame {
+                    id,
+                    frame: frame(10.0, 10.0, 80.0, 40.0),
+                }],
+            );
+            assert!(gtk_test::wait_until(
+                || texture_width() == Some((80.0 * scale) as i32)
+            ));
+            window.destroy();
+        });
+    }
+
+    #[cfg(feature = "shader")]
+    #[test]
+    fn an_animated_screen_effect_redraws_when_the_root_expands() {
+        gtk_test::run(|| {
+            let surface = Surface::new(Default::default());
+            if surface.shader_renderer().is_none() {
+                eprintln!("no GPU: skipped");
+                return;
+            }
+            mount(
+                &surface,
+                2,
+                shading(ShaderRole::Screen, "vec4f(fract(nsh.time), 0.0, 0.0, 1.0)"),
+            );
+            let window = gtk_test::show(&surface);
+            let width = || {
+                let state = surface.root.state();
+                Some(state.shader.as_ref()?.texture.as_ref()?.width())
+            };
+            let scale = scale_of(&surface.root);
+            assert!(gtk_test::wait_until(
+                || width() == Some((200.0 * scale) as i32)
+            ));
+            surface.assume_size(0.0, 200.0);
+            assert!(gtk_test::wait_until(|| width().is_none()));
+            surface.assume_size(200.0, 200.0);
+            assert!(gtk_test::wait_until(
+                || width() == Some((200.0 * scale) as i32)
+            ));
+            window.destroy();
+        });
     }
 
     #[test]
