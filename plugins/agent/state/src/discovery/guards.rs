@@ -88,6 +88,16 @@ fn clear_guards(c: &Connection, owner: &str, id: &ActionId) -> Result<(), StoreE
     Ok(())
 }
 
+fn topic_is_active(c: &Connection, owner: &str, topic: &TopicId) -> Result<bool, StoreError> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discovery_dossiers WHERE owner=?1 AND topic_id=?2
+         AND signal!='done' AND NOT EXISTS(SELECT 1 FROM plugin_data WHERE package_id=?3
+         AND scope_id=?1 AND key='unfollowed:'||?2 AND value_json='true'))",
+        params![owner, topic.0, REVISION_PACKAGE],
+        |r| r.get(0),
+    )?)
+}
+
 fn material_change(
     c: &Connection,
     owner: &str,
@@ -116,7 +126,9 @@ fn invalidate(
         .optional()?
     {
         clear_guards(c, owner, id)?;
-        material_change(c, owner, &topic, at)?;
+        if topic_is_active(c, owner, &topic)? {
+            material_change(c, owner, &topic, at)?;
+        }
     }
     Ok(())
 }
@@ -140,6 +152,11 @@ impl DiscoveryStore {
                 })? {
                     return Ok(());
                 }
+                if !topic_is_active(c, owner, &watch.watch.topic_id)? {
+                    return Err(crate::store::invalid(
+                        "watch requires an active, followed topic",
+                    ));
+                }
                 insert_watch(c, owner, &watch, due.0)
             }))
             .await
@@ -152,6 +169,9 @@ impl DiscoveryStore {
         read_authority: Value,
     ) -> impl Statement<Value = DiscoveryCommit<()>, Output = ()> + use<> {
         self.mutation(true, move |c, owner| {
+            if !topic_is_active(c, owner, &action.topic_id)? {
+                return Err(crate::store::invalid("pending action requires an active, followed topic"));
+            }
             let sql = "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,input_hashes_json,
                 idempotency_key,status,expires_at,created_at,updated_at,authority_json)
                 VALUES (?1,?2,?3,?4,?5,?6,?7,'awaiting_confirm',?8,?9,?9,?10)";
@@ -252,8 +272,9 @@ impl DiscoveryStore {
                 sql, params![owner, id.0, status.as_str(), receipt.to_string(), at.0],
                 |row| row.get::<_, String>(0),
             ).optional()?.ok_or_else(|| crate::store::invalid("discovery_action_not_executing"))?;
-            if status == PendingActionStatus::Stale {
-                material_change(c, owner, &TopicId(topic), at)?;
+            let topic = TopicId(topic);
+            if status == PendingActionStatus::Stale && topic_is_active(c, owner, &topic)? {
+                material_change(c, owner, &topic, at)?;
             }
             clear_guards(c, owner, &id)
         })).await
@@ -379,19 +400,22 @@ impl DiscoveryStore {
             write: move |c: &Connection, owner: &str| {
                 let at = check.observed_at;
                 let once = fired && w.kind == WatchKind::Deadline;
+                let active = topic_is_active(c, owner, &w.topic_id)?;
                 let sql = "UPDATE discovery_watches SET last_state_hash=?4,updated_at=max(updated_at,?5),
                     next_check_at=CASE WHEN ?7 THEN NULL ELSE min(?6,coalesce(expires_at,?6)) END,
                     expires_at=CASE WHEN ?7 THEN ?5 ELSE expires_at END,
                     followup_at=CASE WHEN ?8 THEN ?5 ELSE followup_at END
                     WHERE owner=?1 AND watch_id=?2 AND last_state_hash IS ?3 AND (expires_at IS NULL OR expires_at>?5)";
                 let count = c.execute(sql, params![owner,w.watch_id.0,w.last_state_hash,check.state_hash,at.0,next,once,
-                    fired && w.on_trigger==WatchTrigger::EnqueueFollowup])?;
+                    active && fired && w.on_trigger==WatchTrigger::EnqueueFollowup])?;
                 if count == 0 { return Ok(((),None)); }
-                c.execute("UPDATE discovery_dossiers SET last_checked_at=max(last_checked_at,?3) WHERE owner=?1 AND topic_id=?2",
-                    params![owner,w.topic_id.0,at.0])?;
+                if active {
+                    c.execute("UPDATE discovery_dossiers SET last_checked_at=max(last_checked_at,?3) WHERE owner=?1 AND topic_id=?2",
+                        params![owner,w.topic_id.0,at.0])?;
+                }
                 if fired {
                     match w.on_trigger {
-                        WatchTrigger::NotifyDirect => {
+                        WatchTrigger::NotifyDirect if active => {
                             let rev = material_change(c, owner, &w.topic_id, at)?;
                             return Ok(((),notify(c,owner,&w.topic_id,rev,check.reason,at)?));
                         }
@@ -409,7 +433,7 @@ impl DiscoveryStore {
                                 for id in ids { invalidate(c,owner,&id,&receipt,at)?; }
                             }
                         }
-                        WatchTrigger::EnqueueFollowup => {}
+                        WatchTrigger::NotifyDirect | WatchTrigger::EnqueueFollowup => {}
                     }
                 }
                 Ok(((),None))

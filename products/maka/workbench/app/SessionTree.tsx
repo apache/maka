@@ -117,8 +117,11 @@ export function SessionTree(props: {
       if (!active() || requests.get(id) !== request) return;
       if (page && next.revision !== page.revision)
         throw new UiError('The conversation list changed. Refresh to continue.');
+      const filtered = next.sessions.filter((session) => session.discoveryWorker !== true);
       update(id, {
-        page: page ? { ...next, sessions: [...page.sessions, ...next.sessions] } : next,
+        page: page
+          ? { ...next, sessions: [...page.sessions, ...filtered] }
+          : { ...next, sessions: filtered },
         loading: false,
         refreshing: false,
         error: '',

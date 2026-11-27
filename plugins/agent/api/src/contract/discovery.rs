@@ -64,6 +64,13 @@ pub struct DossierResolve {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DossierUnfollow {
+    pub topic_id: TopicId,
+    pub unfollowed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossierChoose {
     pub topic_id: TopicId,
     pub revision: u64,
@@ -79,9 +86,11 @@ pub struct DiscoveryNotifications {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiscoveryLead {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_key: Option<String>,
     #[serde(default)]
     pub paths: Vec<String>,
 }

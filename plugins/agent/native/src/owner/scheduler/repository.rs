@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::owner::discovery;
 use maka_event_log::{
     StoreError,
     root_store::DataWriter,
@@ -36,8 +37,12 @@ pub(super) struct ReadyIndex {
     file_changes: BTreeSet<String>,
 }
 fn due_at(plan: &Plan) -> Option<i64> {
-    if plan.pending.is_some() {
-        return plan.task.expires_at;
+    if let Some(fire) = &plan.pending {
+        return fire
+            .deferred_until
+            .into_iter()
+            .chain(plan.task.expires_at)
+            .min();
     }
     if plan.task.status != Status::Active || plan.authorization.is_none() {
         return None;
@@ -84,7 +89,11 @@ impl ReadyIndex {
             if file_change_grant(plan).is_some() {
                 self.file_changes.insert(id.to_owned());
             }
-            if plan.pending.is_some() {
+            if plan
+                .pending
+                .as_ref()
+                .is_some_and(|fire| fire.deferred_until.is_none())
+            {
                 self.pending.insert(id.to_owned());
             }
             if let Some(at) = due_at(plan) {
@@ -112,6 +121,11 @@ fn value<T: Serialize>(value: &T) -> Result<Data, String> {
         .map(Data::Present)
         .map_err(reason)
 }
+enum BudgetAuthority {
+    Execution,
+    Discovery(Option<FollowupGrant>),
+}
+
 fn schedule_budget(
     record: maka_plugin_core::storage::Record,
     id: &str,
@@ -119,7 +133,7 @@ fn schedule_budget(
 ) -> Result<
     (
         super::super::capture_budget::ScheduleBudget,
-        Option<FollowupGrant>,
+        BudgetAuthority,
     ),
     String,
 > {
@@ -163,16 +177,23 @@ fn schedule_budget(
             message_id: message_id.into(),
             revision: record.revision,
             fire_id: fire.id.clone(),
+            token_budget: None,
             expires_at: plan
                 .task
                 .expires_at
                 .map(maka_agent_facts::durable::UnixMillis),
             approval,
         },
-        fire.authorization
-            .as_ref()
-            .and_then(Approval::followup_grant)
-            .cloned(),
+        if matches!(fire.effect, ScheduledEffect::Discovery { .. }) {
+            BudgetAuthority::Discovery(
+                fire.authorization
+                    .as_ref()
+                    .and_then(Approval::followup_grant)
+                    .cloned(),
+            )
+        } else {
+            BudgetAuthority::Execution
+        },
     ))
 }
 #[derive(Clone, Copy)]
@@ -194,7 +215,16 @@ impl Scheduler {
             .await
             .map_err(reason)?
             .ok_or("scheduler_task_missing")?;
-        schedule_budget(record, id, message_id).map(|(budget, _)| budget)
+        let (mut budget, authority) = schedule_budget(record, id, message_id)?;
+        if matches!(authority, BudgetAuthority::Discovery(_)) {
+            let active = self
+                .storage
+                .read(discovery::ACTIVE.into())
+                .await
+                .map_err(reason)?;
+            budget.token_budget = discovery::job_token_budget(active, &budget.fire_id)?;
+        }
+        Ok(budget)
     }
     pub(in crate::owner) fn budget_storage(&self) -> Arc<maka_host_runtime::storage::Storage> {
         self.storage.clone()
@@ -211,17 +241,22 @@ impl Scheduler {
             .ok_or_else(|| {
                 maka_event_log::StoreError::InvalidTransition("scheduler_task_missing".into())
             })?;
-        let (budget, parent) =
+        let (mut budget, authority) =
             schedule_budget(record, id, message_id).map_err(StoreError::InvalidTransition)?;
-        if let Some(parent) = parent {
-            // Admission can race with pausing the parent after the worker was queued.
-            let saved = storage
-                .read_in_transaction(connection, &task_key(&parent.task_id), writer)?
-                .map(|record| decode_saved(record, &parent.task_id))
-                .transpose()?
-                .flatten();
-            if !saved.is_some_and(|saved| parent.is_current(&saved.plan, now() as i64)) {
-                return Err(StoreError::InvalidTransition("discovery_cancelled".into()));
+        if let BudgetAuthority::Discovery(parent) = authority {
+            let active = storage.read_in_transaction(connection, discovery::ACTIVE, writer)?;
+            budget.token_budget = discovery::job_token_budget(active, &budget.fire_id)
+                .map_err(StoreError::InvalidTransition)?;
+            if let Some(parent) = parent {
+                // Admission can race with pausing the parent after the worker was queued.
+                let saved = storage
+                    .read_in_transaction(connection, &task_key(&parent.task_id), writer)?
+                    .map(|record| decode_saved(record, &parent.task_id))
+                    .transpose()?
+                    .flatten();
+                if !saved.is_some_and(|saved| parent.is_current(&saved.plan, now() as i64)) {
+                    return Err(StoreError::InvalidTransition("discovery_cancelled".into()));
+                }
             }
         }
         Ok(budget)
@@ -328,11 +363,24 @@ impl Scheduler {
         plan: Option<Plan>,
         receipt: Option<Mutation>,
     ) -> Result<(), String> {
-        let (mut mutations, ids, ready) = prepare_commit(catalog, id, plan.as_ref())?;
-        if let Some(receipt) = receipt {
-            mutations.push(receipt);
-        }
-        let written = self.storage.batch(mutations).await.map_err(reason)?;
+        self.commit_with(catalog, id, plan, async |mut mutations| {
+            if let Some(receipt) = receipt {
+                mutations.push(receipt);
+            }
+            self.storage.batch(mutations).await.map_err(reason)
+        })
+        .await
+    }
+
+    pub(in crate::owner) async fn commit_with(
+        &self,
+        catalog: &mut Catalog,
+        id: &str,
+        plan: Option<Plan>,
+        write: impl AsyncFnOnce(Vec<Mutation>) -> Result<Vec<maka_plugin_core::storage::Record>, String>,
+    ) -> Result<(), String> {
+        let (mutations, ids, ready) = prepare_commit(catalog, id, plan.as_ref())?;
+        let written = write(mutations).await?;
         catalog.revision = Some(written[0].revision);
         catalog.ids = ids;
         catalog.ready_revision = Some(written[2].revision);
@@ -355,11 +403,10 @@ impl Scheduler {
 impl Catalog {
     pub(in crate::owner) fn has_pending_discovery(&self) -> bool {
         self.plans.values().any(|saved| {
-            saved
-                .plan
-                .pending
-                .as_ref()
-                .is_some_and(|fire| matches!(fire.effect, ScheduledEffect::Discovery { .. }))
+            saved.plan.pending.as_ref().is_some_and(|fire| {
+                fire.deferred_until.is_none()
+                    && matches!(fire.effect, ScheduledEffect::Discovery { .. })
+            })
         })
     }
     pub(in crate::owner) fn watch_fire(&self, plan: &Plan) -> Result<Vec<Mutation>, String> {
@@ -658,54 +705,12 @@ impl Saved {
     }
 }
 
-#[cfg(test)]
-mod wake_tests {
-    use super::*;
-
-    #[test]
-    fn a_waiting_deadline_precedes_a_faster_tasks_next_check() {
-        let ready = ReadyIndex {
-            pending: ["pending".into()].into(),
-            due: BTreeMap::from([
-                (1000, ["z-waiting".into()].into()),
-                (1500, ["pending".into(), "a-rearmed".into()].into()),
-                (2000, ["future".into()].into()),
-            ]),
-            ..Default::default()
-        };
-        assert_eq!(
-            ready
-                .ready_ids(1500)
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["pending", "z-waiting", "a-rearmed"]
-        );
-    }
-
-    #[test]
-    fn deadline_crossed_during_loading_remains_the_next_wake() {
-        let ready = ReadyIndex {
-            due: BTreeMap::from([(1_001, std::collections::BTreeSet::from(["task".into()]))]),
-            ..Default::default()
-        };
-        let loaded_at = 1_000;
-        assert!(ready.due.range(..=loaded_at).next().is_none());
-        let finished_at = 1_002;
-        let wake = ready.next_after(loaded_at).unwrap();
-        assert!(
-            wake <= finished_at,
-            "an unprocessed due task must wake immediately"
-        );
-        assert_eq!(
-            ready.next_after(1_001),
-            None,
-            "do not spin on an already processed deadline"
-        );
-    }
-}
-
 impl Scheduler {
     /// Called on the Root writer while the discovery fire owns the scheduler gate.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Linked schedule edits share the dossier's writer transaction, authority and revision"
+    )]
     pub(in crate::owner) fn dossier_schedule_ops(
         &self,
         c: &rusqlite::Connection,
@@ -814,5 +819,92 @@ impl Scheduler {
             });
         }
         Ok(writes)
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_deadline_precedes_a_faster_tasks_next_check() {
+        let ready = ReadyIndex {
+            pending: ["pending".into()].into(),
+            due: BTreeMap::from([
+                (1000, ["z-waiting".into()].into()),
+                (1500, ["pending".into(), "a-rearmed".into()].into()),
+                (2000, ["future".into()].into()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            ready
+                .ready_ids(1500)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["pending", "z-waiting", "a-rearmed"]
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_budget_deferral_keeps_the_fire_and_releases_the_ready_slot_until_reset() {
+        use maka_scheduler::plan::FireSource;
+        use serde_json::json;
+        let (_dir, root, _) = discovery::test_store().await;
+        let scheduler = Scheduler::new(root, String::new());
+        let input = serde_json::from_value(json!({"title":"Watch deadline","intentBody":"",
+            "schedule":{"kind":"interval","everySeconds":3600,"startAt":3_600_000},
+            "effect":{"kind":"discovery","target":{"sessionId":"bot","workspace":{"path":"/work"},
+                "permissions":{"access":"read_only","requestPermissions":false},"boundaryRevision":0,
+                "binding":{"id":Uuid::new_v4(),"permissionEpoch":0}},
+                "model":{"modelId":"model","connectionId":"test"},"workerTools":"read_only"}
+        })).unwrap();
+        let mut plan = Plan::create("task".into(), input, Creator::User, "UTC".into(), 1).unwrap();
+        let fire = plan
+            .claim_preserving_schedule(10, FireSource::Watch)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let mut catalog = scheduler.load().await.unwrap();
+        scheduler
+            .commit(&mut catalog, "task", Some(plan.clone()), None)
+            .await
+            .unwrap();
+        assert!(catalog.has_pending_discovery());
+        plan.pending.as_mut().unwrap().deferred_until = Some(86_400_000);
+        scheduler
+            .commit(&mut catalog, "task", Some(plan), None)
+            .await
+            .unwrap();
+        assert!(!catalog.has_pending_discovery());
+        let waiting = scheduler.load_ready(86_399_999).await.unwrap();
+        assert!(waiting.plans.is_empty());
+        assert_eq!(waiting.ready.next_after(86_399_999), Some(86_400_000));
+        let due = scheduler.load_ready(86_400_000).await.unwrap();
+        let resumed = &due.plans["task"].plan;
+        assert_eq!(resumed.pending.as_ref().unwrap().id, fire.id);
+        assert_eq!(resumed.pending.as_ref().unwrap().source, FireSource::Watch);
+        assert!(resumed.task.runs.is_empty());
+    }
+
+    #[test]
+    fn deadline_crossed_during_loading_remains_the_next_wake() {
+        let ready = ReadyIndex {
+            due: BTreeMap::from([(1_001, std::collections::BTreeSet::from(["task".into()]))]),
+            ..Default::default()
+        };
+        let loaded_at = 1_000;
+        assert!(ready.due.range(..=loaded_at).next().is_none());
+        let finished_at = 1_002;
+        let wake = ready.next_after(loaded_at).unwrap();
+        assert!(
+            wake <= finished_at,
+            "an unprocessed due task must wake immediately"
+        );
+        assert_eq!(
+            ready.next_after(1_001),
+            None,
+            "do not spin on an already processed deadline"
+        );
     }
 }

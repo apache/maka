@@ -59,19 +59,27 @@ test('approval pins the displayed scope and model and rejects invalid intervals'
 
 test('editing a grant keeps exact names and categories as the catalog changes', () => {
   const preview = {
-    names: ['DiscoveryComplete', 'NewReader', 'Note', 'Read', 'UpdateWatchScope'],
+    names: [
+      'FinishNoChange',
+      'NewReader',
+      'Note',
+      'Read',
+      'UpdateWatchScope',
+      'UpdateWorkspaceMap',
+    ],
     groups: { NewReader: 'read_files', Note: 'commands', Read: 'read_files' },
   };
   const selected = selectedDiscoveryTools(preview, { Read: 'read_files', Note: 'read_files' });
   assert.deepEqual(approvedDiscoveryNames(preview, selected), [
-    'DiscoveryComplete',
+    'FinishNoChange',
     'Read',
     'UpdateWatchScope',
+    'UpdateWorkspaceMap',
   ]);
   assert.deepEqual(selectedDiscoveryTools(preview, null, ['Read', 'DiscoveryComplete']), {
     Read: 'read_files',
   });
-  assert.deepEqual(approvedDiscoveryNames(preview, {}), ['DiscoveryComplete']);
+  assert.deepEqual(approvedDiscoveryNames(preview, {}), ['FinishNoChange']);
   const draftGroups = new Map([['read_files', new Set(['Read'])]]);
   assert.deepEqual(selectedDiscoveryTools(preview, { Note: 'commands' }, undefined, draftGroups), {
     Note: 'commands',

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-type Nestable = { id: string; parentSessionId: string | null };
+type Nestable = { id: string; parentSessionId: string | null; discoveryWorker?: boolean };
 
 /**
  * One workspace group's conversations with each one another conversation in
@@ -79,16 +79,17 @@ export function workspaceSessions<T extends Nestable>(
   filter: 'all' | 'archived' | 'needs_you',
   desktop: boolean,
 ): T[] {
-  if (ancestor === null) return [...sessions];
-  sessions = sessions.filter((session) => session.id !== ancestor);
-  if (!desktop || filter !== 'all') return [...sessions];
-  const parents = new Map(sessions.map((session) => [session.id, session.parentSessionId]));
+  const ordinary = sessions.filter((session) => session.discoveryWorker !== true);
+  if (ancestor === null) return ordinary;
+  const visible = ordinary.filter((session) => session.id !== ancestor);
+  if (!desktop || filter !== 'all') return visible;
+  const parents = new Map(visible.map((session) => [session.id, session.parentSessionId]));
   const verdicts = new Map<string, boolean>();
   const descends = (id: string): boolean => {
     const path: string[] = [];
     let at: string | null | undefined = parents.get(id);
     let result = false;
-    while (at != null && path.length <= sessions.length) {
+    while (at != null && path.length <= visible.length) {
       if (at === ancestor) {
         result = true;
         break;
@@ -104,5 +105,5 @@ export function workspaceSessions<T extends Nestable>(
     for (const member of path) verdicts.set(member, result);
     return result;
   };
-  return sessions.filter((session) => !descends(session.id));
+  return visible.filter((session) => !descends(session.id));
 }

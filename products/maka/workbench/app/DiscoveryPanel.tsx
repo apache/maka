@@ -651,14 +651,21 @@ export function DiscoveryDialog(props: Props & { close(): void }) {
     return status === 'active' || status === 'paused';
   };
   const time = (at: number | null | undefined) => (at == null ? '—' : timeFormat.format(at));
-  const outcome = (): MessageKey =>
-    last()?.outcome === 'failed'
-      ? 'Discovery failed'
-      : last()?.outcome === 'blocked'
-        ? 'Discovery blocked'
-        : last()?.message === 'No report'
-          ? 'Discovery no report'
-          : 'Discovery reported';
+  const INCOMPLETE_OUTCOMES = new Set([
+    'Discovery reached its step limit',
+    'Discovery reached the 100-step safety ceiling',
+    'Discovery stopped after repeated no-progress steps',
+  ]);
+  const outcome = (): MessageKey => {
+    const item = last();
+    if (item?.outcome === 'failed') return 'Discovery failed';
+    if (item?.outcome === 'blocked') return 'Discovery blocked';
+    if (item?.message === 'No report') return 'Discovery no report';
+    if (item?.message && INCOMPLETE_OUTCOMES.has(item.message)) return 'Discovery incomplete';
+    if (item?.message === 'Dossiers updated' || item?.message === 'Report saved to dossier')
+      return 'Discovery dossiers updated';
+    return 'Discovery reported';
+  };
   const nextCheck = () => {
     const plan = detail();
     if (plan?.task.status !== 'active' || !plan.approved) return '—';

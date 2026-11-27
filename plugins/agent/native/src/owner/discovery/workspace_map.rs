@@ -18,20 +18,20 @@
  */
 
 //! Durable per-workspace semantic map built during cold-start onboarding (`DiscoveryMode::Onboard`)
-//! and incrementally maintained during `FollowUp` / `Wander`. Stored in scheduler `plugin_data`
+//! and incrementally maintained during mapped `Wander` runs. Stored in scheduler `plugin_data`
 //! with independent capacity from `WatchScope`'s explicit include/exclude lists.
 
 use super::{
-    roots::{host_path, open_relative},
+    watch_scope::{RootEntry, WorkspaceScope},
     *,
 };
 use cap_std::fs::Dir;
 use maka_sandbox::filesystem::Compiled;
 use schemars::JsonSchema;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     io,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 const PREFIX: &str = "discovery/workspace-map/";
@@ -163,13 +163,6 @@ pub(super) struct WorkspaceMap {
     pub frontier: Vec<FrontierBranch>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct WanderTarget {
-    pub path: PathBuf,
-    pub is_frontier: bool,
-    pub hint: String,
-}
-
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Update {
@@ -209,12 +202,10 @@ pub(super) fn map_key(workspace: &Path) -> String {
     )
 }
 
-fn top_bucket(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .and_then(|rel| rel.components().next())
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .unwrap_or_default()
+#[derive(PartialEq, Eq)]
+pub(super) struct MapWatches {
+    pub(super) ready: bool,
+    pub(super) roots: Vec<PathBuf>,
 }
 
 impl WorkspaceMap {
@@ -225,105 +216,49 @@ impl WorkspaceMap {
             .max_by_key(|s| s.path.components().count())
     }
 
-    pub(super) fn watch_roots(&self) -> Vec<PathBuf> {
-        self.sources
-            .iter()
-            .filter(|s| s.watch_mode == SourceWatchMode::Watch)
-            .map(|s| s.path.clone())
-            .collect()
+    pub(super) fn watch_roots(&self) -> MapWatches {
+        MapWatches {
+            ready: self.phase == MapPhase::Ready,
+            roots: self
+                .sources
+                .iter()
+                .filter(|s| s.watch_mode == SourceWatchMode::Watch)
+                .map(|s| s.path.clone())
+                .collect(),
+        }
     }
 
-    /// Select up to `limit` targets from due frontier branches and due mapped sources,
-    /// spreading across distinct top-level buckets when possible and backing off on
-    /// repeated low-yield sources while guaranteeing starved entries get a turn.
-    pub(super) fn select_wander_targets(
-        &self,
-        root: &Path,
-        now_ms: i64,
-        limit: usize,
-        mut allowed: impl FnMut(&Path) -> bool,
-    ) -> Vec<WanderTarget> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let mut candidates: Vec<(f64, String, WanderTarget)> = Vec::new();
-
+    /// Rank only timed frontier branches and due periodic sources. The accompanying
+    /// cutoff lets an opening pace retries independently of a successful verification.
+    pub(super) fn due_wander_paths(&self, at: i64) -> Vec<(PathBuf, UnixMillis)> {
+        let mut due = Vec::new();
         for branch in &self.frontier {
-            if branch.next_probe_after.is_some_and(|after| after > now_ms) {
-                continue;
+            if let Some(deadline) = branch.next_probe_after.filter(|deadline| *deadline <= at) {
+                // A new deadline is eligible immediately. Retry an interrupted probe at high priority.
+                let cutoff = deadline
+                    .saturating_sub(1)
+                    .max(at.saturating_sub(SourcePriority::High.base_interval_ms()));
+                due.push((100.0, &branch.path, cutoff));
             }
-            if !allowed(&branch.path) {
-                continue;
-            }
-            let bucket = top_bucket(root, &branch.path);
-            // Frontier branches represent unexamined blind spots; give them strong priority.
-            candidates.push((
-                100.0,
-                bucket,
-                WanderTarget {
-                    path: branch.path.clone(),
-                    is_frontier: true,
-                    hint: branch.reason.clone(),
-                },
-            ));
         }
-
         for source in &self.sources {
-            if !allowed(&source.path) {
+            if source.watch_mode != SourceWatchMode::Periodic {
                 continue;
             }
-            let age_ms = now_ms.saturating_sub(source.last_verified_at).max(0);
             let backoff = 1_i64 << source.low_yield_streak.min(3);
-            let due_interval = source.priority.base_interval_ms().saturating_mul(backoff);
-            // Always allow sources never verified or overdue; cap starvation at 7 days.
-            let max_starve_ms = 7 * 86_400_000_i64;
-            if source.last_verified_at > 0 && age_ms < due_interval.min(max_starve_ms) {
+            let interval = (source.priority.base_interval_ms() * backoff).min(7 * 86_400_000);
+            let cutoff = at.saturating_sub(interval);
+            if source.last_verified_at > 0 && source.last_verified_at > cutoff {
                 continue;
             }
-            let overdue_ratio = (age_ms as f64) / (due_interval.max(1) as f64);
-            let score = source.priority.weight() * (1.0 + overdue_ratio.min(10.0));
-            let bucket = top_bucket(root, &source.path);
-            let hint = if source.recheck_hint.is_empty() {
-                source.summary.clone()
-            } else {
-                format!("{} ({})", source.summary, source.recheck_hint)
-            };
-            candidates.push((
-                score,
-                bucket,
-                WanderTarget {
-                    path: source.path.clone(),
-                    is_frontier: false,
-                    hint,
-                },
-            ));
+            let age = at.saturating_sub(source.last_verified_at).max(0);
+            let score = source.priority.weight() * (1.0 + (age as f64 / interval as f64).min(10.0));
+            due.push((score, &source.path, cutoff));
         }
-
-        // Highest score first, deterministic path tie-breaker.
-        candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.path.cmp(&b.2.path)));
-
-        // First pass: pick highest-scoring candidate per distinct top-level bucket.
-        let mut chosen = Vec::with_capacity(limit);
-        let mut used_buckets = BTreeSet::new();
-        let mut used_paths = BTreeSet::new();
-        for (_, bucket, target) in &candidates {
-            if chosen.len() >= limit {
-                break;
-            }
-            if used_buckets.insert(bucket.clone()) && used_paths.insert(target.path.clone()) {
-                chosen.push(target.clone());
-            }
-        }
-        // Second pass: fill any remaining slots by score.
-        for (_, _, target) in candidates {
-            if chosen.len() >= limit {
-                break;
-            }
-            if used_paths.insert(target.path.clone()) {
-                chosen.push(target);
-            }
-        }
-        chosen
+        due.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        due.into_iter()
+            .map(|(_, path, cutoff)| (path.clone(), UnixMillis(cutoff)))
+            .collect()
     }
 
     pub(super) fn compact_checkpoint(&self, root: &Path) -> String {
@@ -372,88 +307,15 @@ impl WorkspaceMap {
     }
 }
 
-struct MapValidator {
-    root: PathBuf,
-    dir: Dir,
-    home: Option<PathBuf>,
-    policy: Compiled,
-}
-
-fn is_broad_system_root(path: &Path, home: Option<&Path>) -> bool {
-    path.parent().is_none()
-        || home.is_some_and(|home| {
-            path.strip_prefix(home).is_ok_and(|rel| {
-                let lower = rel.as_os_str().to_ascii_lowercase();
-                [
-                    "",
-                    "library",
-                    "library/containers",
-                    "library/application support",
-                    "library/group containers",
-                    "library/caches",
-                    "appdata",
-                    "appdata/local",
-                    "appdata/roaming",
-                ]
-                .iter()
-                .any(|b| Path::new(&lower) == Path::new(b))
-            })
-        })
-}
-
-impl MapValidator {
-    fn resolve(&self, supplied: &Path, must_exist: bool) -> Result<PathBuf, String> {
-        let supplied = host_path(supplied).map_err(reason)?;
-        let absolute = if let Ok(rel) = supplied.strip_prefix("~") {
-            self.home.as_ref().ok_or("home unavailable")?.join(rel)
-        } else {
-            self.root.join(supplied)
-        };
-        let rel = absolute
-            .strip_prefix(&self.root)
-            .map_err(|_| "path outside workspace")?;
-        if rel.as_os_str().is_empty()
-            || !rel.components().all(|c| matches!(c, Component::Normal(_)))
-        {
-            return Err("provide a concrete path strictly inside this workspace".into());
-        }
-        if !self.policy.access(&absolute).can_read() {
-            return Err("workspace read access required".into());
-        }
-        match open_relative(&self.dir, rel) {
-            Ok(_) => {
-                let canonical = self.root.join(self.dir.canonicalize(rel).map_err(reason)?);
-                if !canonical.starts_with(&self.root)
-                    || canonical == self.root
-                    || !self.policy.access(&canonical).can_read()
-                {
-                    return Err("path outside authorized scope".into());
-                }
-                Ok(canonical)
-            }
-            Err(_) if !must_exist => Ok(absolute),
-            // Allow single files inside the workspace (e.g. a top-level urgent file).
-            Err(_) => {
-                if let Some(parent) = rel.parent()
-                    && let Some(name) = rel.file_name()
-                    && let Ok(parent_dir) = open_relative(&self.dir, parent)
-                    && parent_dir.symlink_metadata(name).is_ok()
-                {
-                    return Ok(absolute);
-                }
-                Err("expected an existing path without symlinks inside workspace".into())
-            }
-        }
-    }
-
+impl WorkspaceScope {
     fn upsert_source(
         &self,
         map: &mut WorkspaceMap,
         input: MappedSourceInput,
         at: i64,
     ) -> Result<(), String> {
-        let path = self.resolve(&input.path, true)?;
-        if is_broad_system_root(&path, self.home.as_deref()) {
+        let path = self.path(&input.path, RootEntry::MappedSource, true)?;
+        if watch_scope::broad_root(&path, self.home.as_deref()) {
             return Err("map a concrete content directory below the system root".into());
         }
         let summary = input.summary.trim();
@@ -507,7 +369,7 @@ impl MapValidator {
         map: &mut WorkspaceMap,
         input: FrontierBranchInput,
     ) -> Result<(), String> {
-        let path = self.resolve(&input.path, false)?;
+        let path = self.path(&input.path, RootEntry::MappedSource, false)?;
         let reason_text = input.reason.trim();
         if reason_text.is_empty()
             || reason_text.chars().count() > 200
@@ -535,7 +397,7 @@ impl MapValidator {
         Ok(())
     }
 
-    fn apply(&self, map: &mut WorkspaceMap, update: Update, at: i64) -> Result<(), String> {
+    fn update_map(&self, map: &mut WorkspaceMap, update: Update, at: i64) -> Result<(), String> {
         match update {
             Update::Inspect => return Ok(()),
             Update::UpsertSources { sources } => {
@@ -552,7 +414,7 @@ impl MapValidator {
                 material_finding,
             } => {
                 for raw in paths {
-                    let path = self.resolve(&raw, false)?;
+                    let path = self.path(&raw, RootEntry::MappedSource, false)?;
                     if let Some(src) = map.sources.iter_mut().find(|s| s.path == path) {
                         src.last_verified_at = at;
                         if material_finding {
@@ -575,13 +437,13 @@ impl MapValidator {
             }
             Update::ResolveFrontier { paths } => {
                 for raw in paths {
-                    let path = self.resolve(&raw, false)?;
+                    let path = self.path(&raw, RootEntry::MappedSource, false)?;
                     map.frontier.retain(|b| b.path != path);
                 }
             }
             Update::RemoveSources { paths } => {
                 for raw in paths {
-                    let path = self.resolve(&raw, false)?;
+                    let path = self.path(&raw, RootEntry::MappedSource, false)?;
                     map.sources.retain(|s| s.path != path);
                 }
             }
@@ -631,7 +493,7 @@ impl scheduler::Scheduler {
 
     pub(super) async fn all_mapped_watch_roots(
         &self,
-    ) -> Result<BTreeMap<String, Vec<PathBuf>>, String> {
+    ) -> Result<BTreeMap<String, MapWatches>, String> {
         let mut after = None;
         let mut by_key = BTreeMap::new();
         loop {
@@ -644,9 +506,8 @@ impl scheduler::Scheduler {
                 .await
                 .map_err(reason)?;
             for entry in page.entries {
-                if let Data::Present(data) = entry.record.data
-                    && let Ok(map) = serde_json::from_value::<WorkspaceMap>(data)
-                {
+                if let Data::Present(data) = entry.record.data {
+                    let map: WorkspaceMap = serde_json::from_value(data).map_err(reason)?;
                     by_key.insert(entry.key, map.watch_roots());
                 }
             }
@@ -660,6 +521,25 @@ impl scheduler::Scheduler {
 }
 
 impl Owner {
+    pub(super) async fn mapped_read_policy(
+        &self,
+        approval: &BackgroundApproval,
+    ) -> Result<Option<Compiled>, String> {
+        let reserved =
+            access::reserved_sandbox_floor(&self.store, &approval.target.workspace).await?;
+        let ceiling = match &approval.sandbox_ceiling {
+            Some(maka_sandbox::Sandbox::External { .. }) => return Ok(None),
+            Some(ceiling) => reserved.intersect(ceiling).map_err(reason)?,
+            None => reserved,
+        };
+        match ceiling {
+            maka_sandbox::Sandbox::Managed { filesystem, .. } => {
+                filesystem.compile().map(Some).map_err(reason)
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(super) async fn update_workspace_map(
         &self,
         context: &ToolCallContext,
@@ -716,7 +596,7 @@ impl Owner {
                 .map_err(ToolError::Failed)?;
             return serde_json::to_value(map).map_err(|e| ToolError::Failed(e.to_string()));
         }
-        let validator = MapValidator {
+        let validator = WorkspaceScope {
             root: root.clone(),
             dir,
             home: self.watch_scopes.home.clone(),
@@ -736,7 +616,7 @@ impl Owner {
         let key = map_key(&root);
         let at = now() as i64;
         let map = tokio::task::spawn_blocking(move || {
-            validator.apply(&mut map, update, at)?;
+            validator.update_map(&mut map, update, at)?;
             Ok::<_, String>(map)
         })
         .await
@@ -767,8 +647,10 @@ impl Owner {
 /// Fast 0-token top-level directory listing (including dotfiles and common app containers)
 /// used as the starting inventory for `DiscoveryMode::Onboard`.
 pub(super) fn onboard_inventory(root: &Path, dir: &Dir, policy: &Compiled) -> io::Result<String> {
-    let mut rows: Vec<(i64, String, &'static str)> = Vec::new();
-    for entry in dir.entries()? {
+    const SAMPLE_LIMIT: usize = 256;
+    let mut entries = dir.entries()?;
+    let mut rows = Vec::new();
+    for entry in entries.by_ref().take(SAMPLE_LIMIT) {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name();
         let path = root.join(&name);
@@ -796,7 +678,9 @@ pub(super) fn onboard_inventory(root: &Path, dir: &Dir, policy: &Compiled) -> io
     for (mtime, name, kind) in rows.iter().take(60) {
         out.push_str(&format!("- {name} ({kind}, {mtime})\n"));
     }
-    if rows.len() > 60 {
+    if entries.next().is_some() {
+        out.push_str("Inventory sampled the first 256 directory entries.\n");
+    } else if rows.len() > 60 {
         out.push_str(&format!("... (+{} more entries)\n", rows.len() - 60));
     }
     Ok(out)
@@ -807,7 +691,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_wander_targets_prioritizes_frontier_and_spreads_across_buckets() {
+    fn discovery_ranks_timed_frontier_before_due_periodic_sources() {
         let root = PathBuf::from("/home/u");
         let now_ms = 10 * 86_400_000_i64;
         let map = WorkspaceMap {
@@ -853,18 +737,20 @@ mod tests {
             frontier: vec![FrontierBranch {
                 path: root.join("Desktop/urgent"),
                 reason: "unchecked desktop folder".into(),
-                next_probe_after: None,
+                next_probe_after: Some(now_ms),
             }],
         };
 
-        let picked = map.select_wander_targets(&root, now_ms, 3, |_| true);
-        assert_eq!(picked.len(), 3);
-        assert_eq!(picked[0].path, root.join("Desktop/urgent"));
-        assert!(picked[0].is_frontier);
-        // Should spread across Documents and Developer rather than picking two Documents entries.
-        let paths: Vec<_> = picked.iter().map(|t| t.path.clone()).collect();
-        assert!(paths.contains(&root.join("Documents/a")));
-        assert!(paths.contains(&root.join("Developer/proj")));
+        let paths: Vec<_> = map
+            .due_wander_paths(now_ms)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        // Watched sources are driven by events, even when their verification timestamp is old.
+        assert_eq!(
+            paths,
+            ["Desktop/urgent", "Documents/a", "Documents/b"].map(|p| root.join(p))
+        );
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub struct StoredSessionConfiguration {
     pub dossier_seed: Option<String>,
     #[serde(default)]
     pub dossier_elevated: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discovery_worker: bool,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -77,6 +79,8 @@ pub struct ResolvedConfiguration {
     pub dossier_seed: Option<String>,
     #[serde(default)]
     pub dossier_elevated: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discovery_worker: bool,
     pub title: String,
     pub title_is_manual: bool,
     #[serde(default)]
@@ -108,6 +112,7 @@ impl StoredSessionConfiguration {
             compaction_prompt: self.compaction_prompt,
             dossier_seed: self.dossier_seed,
             dossier_elevated: self.dossier_elevated,
+            discovery_worker: self.discovery_worker,
             title: self.title,
             title_is_manual: self.title_is_manual,
             pinned: self.pinned,

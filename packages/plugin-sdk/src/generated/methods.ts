@@ -3389,6 +3389,7 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: {
         text: string;
+        entityKey?: string | null;
         paths?: string[];
       };
       output: {
@@ -4685,6 +4686,14 @@ export interface ServiceMethods {
       input: {
         topicId: string;
         resolved: boolean;
+      };
+      output: null;
+    };
+    setDossierUnfollowed: {
+      mode: 'mutation';
+      input: {
+        topicId: string;
+        unfollowed: boolean;
       };
       output: null;
     };
@@ -6168,6 +6177,7 @@ export interface AgentDeletePresetOutput_ModelSelection {
 }
 export interface AgentDossierOutput_DossierDetail {
   topicId: string;
+  entityKey?: string | null;
   title: string;
   signal: AgentDossierOutput_DossierSignal;
   priorityWeight: number;
@@ -6178,6 +6188,7 @@ export interface AgentDossierOutput_DossierDetail {
   linkedTaskIds: string[];
   threadSessionId?: string | null;
   muted: boolean;
+  unfollowed?: boolean;
   lastCheckedAt: number;
   lastMaterialChangeAt: number;
   lastNotifiedRevision: number;
@@ -6233,6 +6244,8 @@ export interface AgentDossierOutput_DossierRevision {
   title: string;
   signal: AgentDossierOutput_DossierSignal;
   summaryMd: string;
+  evidenceMd?: string | null;
+  factState?: string | null;
   changeNote?: string | null;
   artifacts?: AgentDossierOutput_DossierArtifact[];
   choices?: AgentDossierOutput_DossierChoice[];
@@ -6248,12 +6261,15 @@ export interface AgentDossierOutput_DossierChoice {
 }
 export interface AgentDossiersOutput_DossierSummary {
   topicId: string;
+  entityKey?: string | null;
   title: string;
   signal: AgentDossiersOutput_DossierSignal;
   windowAt?: number | null;
   revision: number;
   lastMaterialChangeAt: number;
   muted: boolean;
+  unfollowed?: boolean;
+  preview?: string;
   artifactCount: number;
   lastNotifiedRevision: number;
   lastInterruptReason?: string | null;
@@ -7671,12 +7687,15 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
 }
 export interface AgentWatchDossiersOutput_DossierSummary {
   topicId: string;
+  entityKey?: string | null;
   title: string;
   signal: AgentWatchDossiersOutput_DossierSignal;
   windowAt?: number | null;
   revision: number;
   lastMaterialChangeAt: number;
   muted: boolean;
+  unfollowed?: boolean;
+  preview?: string;
   artifactCount: number;
   lastNotifiedRevision: number;
   lastInterruptReason?: string | null;

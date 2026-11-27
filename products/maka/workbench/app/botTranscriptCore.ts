@@ -342,12 +342,14 @@ export function activeWorkers<
     parentSessionId: string | null;
     activity: string;
     archived: boolean;
+    discoveryWorker?: boolean;
   },
 >(sessions: readonly T[], bot: string | null | undefined): ActiveWorker[] {
   if (!bot) return [];
   const found: ActiveWorker[] = [];
   for (const session of sessions) {
-    if (session.parentSessionId !== bot || session.archived) continue;
+    if (session.parentSessionId !== bot || session.archived || session.discoveryWorker === true)
+      continue;
     if (session.activity === 'working' || session.activity === 'waiting')
       found.push({ id: session.id, title: session.title, activity: session.activity });
   }

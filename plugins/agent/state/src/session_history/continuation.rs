@@ -168,6 +168,9 @@ pub(crate) fn admit_continuation(
         }
         _ => return Ok(()),
     };
+    if crate::discovery::worker_session(c, &view.spec.session_id)? {
+        return Err(invalid("discovery worker sessions cannot be continued"));
+    }
     let execution = ExecutionIdentity {
         session_id: view.spec.session_id.clone(),
         turn_id: view.spec.turn_id.clone(),

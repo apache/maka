@@ -1624,7 +1624,7 @@ async fn desktop_asks_a_side_question_beside_a_reply() {
         .await;
     desktop.artifact("side-4-answered");
     desktop.press("More features").await;
-    desktop.press("Discovery dossiers").await;
+    desktop.press("Discovery").await;
     desktop.control("Drop lead").await;
     assert!(desktop.controls("Close side question").is_empty());
     desktop.press("Close").await;
@@ -2303,21 +2303,17 @@ async fn desktop_discovery_switches_in_place_and_preserves_drafts() {
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.type_text("Keep this draft").await;
     desktop.press("More features").await;
-    desktop.press("Discovery dossiers").await;
+    desktop.press("Discovery").await;
     desktop.control("Drop lead").await;
     desktop.press("Open conversation NSH real Agent").await;
     desktop.expect_text("Keep this draft").await;
     desktop.press("Maka Bot").await;
-    // The Bot header lays out again when its conversation loads.
-    desktop
-        .press_until("Proactive discovery", "Drop lead")
-        .await;
+    desktop.press("Proactive discovery").await;
+    desktop.control("Drop lead").await;
     desktop.control("Mute").await;
-    desktop
-        .press("Review the contract, New findings, Muted")
-        .await;
+    desktop.press("Review the contract").await;
     desktop.control("Unmute").await;
-    desktop.press("Review the release, New findings").await;
+    desktop.press("Review the release").await;
     desktop.control("Mute").await;
     let viewport = desktop.platform.viewport_size();
     let scale = desktop.platform.scale_factor();
@@ -2335,7 +2331,7 @@ async fn desktop_discovery_switches_in_place_and_preserves_drafts() {
     desktop.control("Conversations").await;
     desktop.press("Conversations").await;
     desktop.press("More features").await;
-    desktop.press("Discovery dossiers").await;
+    desktop.press("Discovery").await;
     desktop.control("Discovery dossiers").await;
     desktop.artifact("inline-discovery-dossiers");
     desktop.press("Maka Bot").await;

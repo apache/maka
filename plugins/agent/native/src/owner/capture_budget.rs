@@ -62,6 +62,8 @@ pub(super) struct ScheduleBudget {
     pub revision: u64,
     pub fire_id: String,
     pub expires_at: Option<UnixMillis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
     pub approval: super::scheduler::BackgroundGrant,
 }
 
@@ -155,6 +157,7 @@ impl Owner {
             {
                 let current = self.scheduler.capture_budget(task_id, message_id).await?;
                 check_background(basis, &current.approval)?;
+                budget.tokens = current.token_budget;
                 budget.deadline = current.expires_at;
                 BudgetBasis::Schedule(current)
             }
@@ -412,22 +415,14 @@ impl AdmissionGuard for BudgetGuard {
             }
             BudgetBasis::Schedule(source) => {
                 check_source(&self.source, spec, &source.message_id).map_err(invalid)?;
-                let mut current = super::scheduler::Scheduler::budget_in_transaction(
+                let current = super::scheduler::Scheduler::budget_in_transaction(
                     &self.storage,
                     connection,
                     &source.task_id,
                     &source.message_id,
                     &self.data,
                 )?;
-                // Pausing affects subsequent fires. The pending fire still owns
-                // its frozen authorization even if the task revision advances.
-                current.revision = source.revision;
-                if serde_json::to_value(&current)? != serde_json::to_value(source)?
-                    || self.budget.deadline != source.expires_at
-                    || self.budget.tokens.is_some()
-                {
-                    return Err(invalid("scheduler_budget_source_changed"));
-                }
+                validate_schedule_budget(&self.budget, source, current)?;
             }
             BudgetBasis::Interactive => {
                 return Err(invalid(
@@ -436,5 +431,123 @@ impl AdmissionGuard for BudgetGuard {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_schedule_budget(
+    budget: &Budget,
+    source: &ScheduleBudget,
+    mut current: ScheduleBudget,
+) -> Result<(), StoreError> {
+    // Pausing affects subsequent fires. The pending fire still owns
+    // its frozen authorization even if the task revision advances.
+    current.revision = source.revision;
+    if serde_json::to_value(&current)? != serde_json::to_value(source)?
+        || budget.deadline != source.expires_at
+        || budget.tokens != source.token_budget
+    {
+        return Err(invalid("scheduler_budget_source_changed"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::owner::{
+        discovery,
+        scheduler::{Plan, Scheduler},
+    };
+    use maka_event_log::{
+        root_store::DataWriter,
+        writeback::{Notification, Prepared, Statement},
+    };
+    use maka_plugin_core::storage::{Data, Mutation, Store};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+
+    struct Check {
+        scheduler: Arc<Scheduler>,
+        writer: DataWriter,
+        source: ScheduleBudget,
+        actual: Budget,
+    }
+    impl Statement for Check {
+        type Value = ();
+        type Output = ();
+        fn committed(_: ()) {}
+        fn isolated_rejection(e: &StoreError) -> bool {
+            matches!(e.underlying(), StoreError::InvalidTransition(_))
+        }
+        fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<()>, StoreError> {
+            let current = Scheduler::budget_in_transaction(
+                &self.scheduler.storage,
+                c,
+                &self.source.task_id,
+                &self.source.message_id,
+                &self.writer,
+            )?;
+            validate_schedule_budget(&self.actual, &self.source, current)?;
+            Ok(Prepared {
+                value: (),
+                changed: false,
+                notification: Notification::NONE,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_budget_schedule_rechecks_the_frozen_discovery_allowance_at_admission() {
+        let (_dir, root, _) = discovery::test_store().await;
+        let writer = root.data_writer().unwrap();
+        let scheduler = Arc::new(Scheduler::new(root, String::new()));
+        let target = json!({"sessionId":"bot","workspace":{"path":"/work"},"permissions":{"access":"read_only","requestPermissions":false},
+            "boundaryRevision":0,"binding":{"id":Uuid::new_v4(),"permissionEpoch":0}});
+        let model = json!({"connectionId":"test","modelId":"test"});
+        let grant = json!({"target":target,"model":model,"language":"en","acceptedModel":{
+            "binding":{"connection_id":"test","connection_slug":"test","model":"test"},
+            "tool_mode":"direct","editing_tools":null,"public_model":null,
+            "provider":{"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+            "route":{"adapter":"test","protocol":"openai_chat_completions","base_url":"http://localhost"}}});
+        let mut plan = Plan::create("digest".into(),serde_json::from_value(json!({
+            "title":"Digest","intentBody":"Weekly review","schedule":{"kind":"interval","everySeconds":3600,"startAt":1},
+            "effect":{"kind":"discovery","target":target,"model":model,"workerTools":"read_only"}
+        })).unwrap(), maka_scheduler::task::Creator::User,"UTC".into(),0).unwrap();
+        plan.authorization = Some(serde_json::from_value(json!({"kind":"discovery","approval":grant,
+            "tools":{"profile":"read_only","names":[]},"authority":{"kind":"user","generation":Uuid::new_v4()}})).unwrap());
+        let fire = plan.claim(1).unwrap().unwrap().id.clone();
+        let message = format!("m_{}", hex::encode(Sha256::digest(fire.as_bytes())));
+        let mut catalog = scheduler.load().await.unwrap();
+        scheduler
+            .commit(&mut catalog, "digest", Some(plan), None)
+            .await
+            .unwrap();
+        let mut active = Mutation {
+            key: discovery::ACTIVE.into(),
+            expected_revision: None,
+            data: Data::Present(json!({"fire_id":fire,"allowance":{"day":1,"tokens":1_500_000}})),
+        };
+        let records = scheduler.storage.batch(vec![active.clone()]).await.unwrap();
+        let source = scheduler.capture_budget("digest", &message).await.unwrap();
+        assert_eq!(source.token_budget, Some(1_500_000));
+        let validate = |tokens| {
+            writer.write(Check {
+                scheduler: scheduler.clone(),
+                writer: writer.clone(),
+                source: source.clone(),
+                actual: Budget {
+                    tokens,
+                    deadline: None,
+                    retries: 9,
+                },
+            })
+        };
+        validate(Some(1_500_000)).await.unwrap();
+        assert!(validate(None).await.is_err());
+        assert!(validate(Some(200_000)).await.is_err());
+        active.expected_revision = Some(records[0].revision);
+        active.data = Data::Present(json!({"fire_id":fire,"allowance":{"day":1,"tokens":1_000}}));
+        scheduler.storage.batch(vec![active]).await.unwrap();
+        assert!(validate(Some(1_500_000)).await.is_err());
     }
 }

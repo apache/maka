@@ -224,6 +224,12 @@ async fn discovery_both_hash_guards_block_changed_and_missing_inputs_and_release
         "StagePendingAction",
         mail(&topic, "worker", "review", json!(["discovery.txt"])),
     );
+    let (socket, _) = next(&mut model).await;
+    tool(
+        socket,
+        "FinishNoChange",
+        json!({"note":"Action ready for review"}),
+    );
     assert_eq!(
         f.settled(&task, 1).await["task"]["runs"][0]["outcome"],
         "ok"

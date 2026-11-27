@@ -415,6 +415,10 @@ async fn mcp_mutation_policy(
     Ok((policy, live))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Approval must bind this invocation's access, policy, tool, method, exact input and cancellation"
+)]
 async fn request_write_approval(
     access: &Arc<RunAccess>,
     policy: &McpMutationPolicy,

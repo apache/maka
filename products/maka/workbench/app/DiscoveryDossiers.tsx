@@ -34,6 +34,7 @@ import {
 import { Button, Checkbox } from 'nsh/base';
 import { LocalMessageCopy } from './CompactReplyFooter';
 import { ChoiceIndicator } from './ChoiceIndicator';
+import { DiscoveryRuns, ProbeIndicator } from './DiscoveryRuns';
 import { DiscoveryDialog } from './DiscoveryPanel';
 import { DossierThread, readingColumn, ThreadBubble } from './DossierThread';
 import { Icon } from './Icon';
@@ -44,6 +45,8 @@ import { SettingsEditor } from './SettingsField';
 import { SettingsButton } from './SettingsPage';
 import {
   buildDossierStream,
+  discoveryRuns,
+  type WorkerSession,
   formatChoiceDispatch,
   formatRelativeTime,
   leadFilePaths,
@@ -51,6 +54,7 @@ import {
   pendingActionControls,
   sortDossiers,
   splitArtifactPath,
+  splitBubbleBodyAndEvidence,
   type DossierChoiceItem,
   type DossierDetail,
   type DossierSelection,
@@ -83,9 +87,10 @@ import {
 type DossiersProps = {
   browser: BrowserHeader;
   commands(): void;
-  route(): { topicId: string | null } | null;
+  route(): { topicId: string | null; runId?: string | null } | null;
   snapshot(): DossiersSnapshot | null;
   watchError(): string;
+  workers(): readonly WorkerSession[];
   botSession(): string | null;
   openBot(): Promise<string>;
   control(method: string, input: unknown): Promise<unknown>;
@@ -133,12 +138,13 @@ function UrgentHalo() {
   );
 }
 
-/** Pure graphical state: red when awaiting attention/updated, green check when resolved. */
-function StatusGraphic(props: { signal: DossierSummary['signal'] }) {
+/** Pure graphical state: eyeOff when unfollowed, green check when done, dot otherwise. */
+function StatusGraphic(props: { signal: DossierSummary['signal']; unfollowed?: boolean }) {
+  const label = () => (props.unfollowed ? tr('Dossier unfollowed') : tr(signals[props.signal]));
   return (
     <View
-      accessibilityLabel={tr(signals[props.signal])}
-      tooltip={textTooltip(() => tr(signals[props.signal]))}
+      accessibilityLabel={label()}
+      tooltip={textTooltip(label)}
       style={{
         width: 16,
         height: 16,
@@ -148,24 +154,31 @@ function StatusGraphic(props: { signal: DossierSummary['signal'] }) {
       }}
     >
       <If
-        when={props.signal === 'done'}
+        when={Boolean(props.unfollowed)}
         else={
-          <>
-            <If when={props.signal === 'red' && motionEnabled()}>
-              <UrgentHalo />
-            </If>
-            <View
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: statusAccentColor(props.signal),
-              }}
-            />
-          </>
+          <If
+            when={props.signal === 'done'}
+            else={
+              <>
+                <If when={props.signal === 'red' && motionEnabled()}>
+                  <UrgentHalo />
+                </If>
+                <View
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 4,
+                    backgroundColor: statusAccentColor(props.signal),
+                  }}
+                />
+              </>
+            }
+          >
+            <Icon name="statusSuccess" size={15} color={C.success} />
+          </If>
         }
       >
-        <Icon name="statusSuccess" size={15} color={C.success} />
+        <Icon name="eyeOff" size={14} color={C.muted} />
       </If>
     </View>
   );
@@ -325,74 +338,42 @@ function ChoiceCards(props: {
       when={Boolean(props.chosenKey)}
       else={
         <If when={props.interactive && props.choices.length > 0}>
-          <View style={{ gap: 8, paddingTop: 4 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 2 }}>
             <Each of={indexed()} key={(item) => item.choice.key}>
               {(item) => (
                 <Button
                   accessibilityLabel={`${item().badge} ${item().choice.label}`}
+                  tooltip={textTooltip(() => item().choice.detail || item().choice.label)}
                   disabled={props.busy}
                   onPress={inputAction(props.onChoose, item().choice)}
                   style={{
                     ...rowStyle,
-                    gap: 12,
-                    paddingHorizontal: 13,
-                    paddingVertical: 10,
-                    borderRadius: 12,
+                    gap: 6,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 16,
                     borderWidth: 1,
-                    borderColor: C.line,
+                    borderColor: item().choice.recommended ? C.accent + '66' : C.line,
                     backgroundColor: C.surface,
                   }}
                   hoverStyle={{ backgroundColor: C.raised, borderColor: C.accent + '88' }}
-                  activeStyle={motionEnabled() ? { transform: [{ scale: 0.99 }] } : undefined}
+                  activeStyle={motionEnabled() ? { transform: [{ scale: 0.98 }] } : undefined}
                   focusStyle={quietFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
-                  <View
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 7,
-                      borderWidth: 1,
-                      borderColor: C.line,
-                      backgroundColor: C.background,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Text
+                  <If when={item().choice.recommended}>
+                    <View
                       style={{
-                        ...codeTextStyle,
-                        fontSize: 12,
-                        fontWeight: '600',
-                        color: C.text,
+                        width: 6,
+                        height: 6,
+                        borderRadius: 3,
+                        backgroundColor: C.accent,
                       }}
-                    >
-                      {item().badge}
-                    </Text>
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                    <View style={{ ...rowStyle, gap: 6 }}>
-                      <Text style={{ ...secondaryTextStyle, fontWeight: '600', color: C.text }}>
-                        {item().choice.label}
-                      </Text>
-                      <If when={item().choice.recommended}>
-                        <View
-                          tooltip={textTooltip(() => tr('Dossier choice recommended'))}
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: 3,
-                            backgroundColor: C.accent,
-                          }}
-                        />
-                      </If>
-                    </View>
-                    <If when={item().choice.detail}>
-                      <Text style={{ ...mutedText(), lineHeight: 18 }}>{item().choice.detail}</Text>
-                    </If>
-                  </View>
-                  <Icon name="nowrap" size={14} color={C.muted} />
+                    />
+                  </If>
+                  <Text style={{ ...mutedText(), color: C.text, fontWeight: '500' }}>
+                    {item().choice.label}
+                  </Text>
                 </Button>
               )}
             </Each>
@@ -407,7 +388,7 @@ function ChoiceCards(props: {
           alignSelf: 'flex-start',
           paddingHorizontal: 10,
           paddingVertical: 5,
-          borderRadius: 12,
+          borderRadius: 14,
           backgroundColor: C.surface,
           borderWidth: 0.5,
           borderColor: C.line,
@@ -534,18 +515,26 @@ function PendingActionRow(props: {
 
 function DossierStickyHeader(props: {
   detail: DossierDetail;
-  session: string | null;
-  time(at: number): string;
+  detailsOpen: boolean;
   saving: boolean;
   scrollToLatest(): void;
-  openSession(id: string): void;
+  toggleDetails(): void;
   resolve(resolved: boolean): void;
+  unfollow(unfollowed: boolean): void;
   mute(muted: boolean): void;
 }) {
-  const expanded = signal(false);
-  const resolved = () => props.detail.signal === 'done';
+  const unfollowed = () => Boolean(props.detail.unfollowed);
+  const resolved = () => !unfollowed() && props.detail.signal === 'done';
   const resolveLabel = () => tr(resolved() ? 'Reopen dossier' : 'Resolve dossier');
+  const unfollowLabel = () => tr(unfollowed() ? 'Follow dossier again' : 'Unfollow dossier');
   const muteLabel = () => tr(props.detail.muted ? 'Unmute dossier' : 'Mute dossier');
+  const activeWatches = () => (unfollowed() ? 0 : props.detail.watches.length);
+  const subtitle = () => {
+    const parts = [unfollowed() ? tr('Dossier unfollowed') : tr(signals[props.detail.signal])];
+    if (activeWatches() > 0) parts.push(`${activeWatches()} ${tr('Dossier watches and activity')}`);
+    if (props.detail.muted && !unfollowed()) parts.push(tr('Dossier muted'));
+    return parts.join(' · ');
+  };
   return (
     <View
       style={{
@@ -555,168 +544,285 @@ function DossierStickyHeader(props: {
         flexShrink: 0,
       }}
     >
-      <View style={{ ...readingColumn, paddingVertical: 11, gap: 8 }}>
+      <View style={{ ...readingColumn, paddingVertical: 11, gap: 4 }}>
         <View style={{ ...rowStyle, gap: 8 }}>
           <Button
             onPress={props.scrollToLatest}
             style={{ ...rowStyle, flex: 1, minWidth: 0, gap: 8, paddingVertical: 2 }}
             focusStyle={quietFocusStyle()}
           >
-            <StatusGraphic signal={props.detail.signal} />
-            <Text
-              role="header"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                color: C.text,
-                fontSize: 15,
-                lineHeight: 22,
-                fontWeight: '600',
-                numberOfLines: 1,
-              }}
-            >
-              {props.detail.title}
-            </Text>
+            <StatusGraphic signal={props.detail.signal} unfollowed={unfollowed()} />
+            <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+              <Text
+                role="header"
+                style={{
+                  color: C.text,
+                  fontSize: 15,
+                  lineHeight: 20,
+                  fontWeight: '600',
+                  numberOfLines: 1,
+                }}
+              >
+                {props.detail.title}
+              </Text>
+              <Text style={{ ...mutedText(), fontSize: 11, numberOfLines: 1 }}>{subtitle()}</Text>
+            </View>
           </Button>
           <View style={{ ...rowStyle, gap: 4, flexShrink: 0 }}>
-            <If when={props.session !== null}>
-              <SettingsButton
-                label={tr('Open full thread')}
-                tone="quiet"
-                onPress={inputAction(props.openSession, props.session!)}
-              />
-            </If>
             <Button
               accessibilityLabel={tr('Dossier watches and activity')}
-              tooltip={textTooltip(() => tr('Dossier watches and activity'))}
-              selected={expanded()}
+              tooltip={textTooltip(() => tr('Dossier details'))}
+              selected={props.detailsOpen}
               onPress={() => {
                 animateDisclosure();
-                expanded.set(!expanded());
+                props.toggleDetails();
               }}
-              style={{ ...rowStyle, gap: 3, paddingHorizontal: 7, height: 26, borderRadius: 13 }}
+              style={{ ...rowStyle, gap: 4, paddingHorizontal: 8, height: 28, borderRadius: 14 }}
               selectedStyle={{ backgroundColor: C.surface }}
               hoverStyle={controlHoverStyle()}
               focusStyle={quietFocusStyle()}
             >
-              <Icon name="readOnly" size={14} color={C.muted} />
-              <DisclosureChevron open={expanded()} size={11} color={C.muted} />
+              <Icon name="readOnly" size={14} color={props.detailsOpen ? C.text : C.muted} />
+              <If when={activeWatches() > 0}>
+                <Text style={{ ...mutedText(), fontSize: 11, color: C.secondary }}>
+                  {activeWatches()}
+                </Text>
+              </If>
+              <DisclosureChevron open={props.detailsOpen} size={11} color={C.muted} />
             </Button>
             <Button
               accessibilityLabel={resolveLabel()}
               tooltip={textTooltip(resolveLabel)}
-              disabled={props.saving}
+              disabled={props.saving || unfollowed()}
               onPress={inputAction(props.resolve, !resolved())}
               style={{
-                width: 26,
-                height: 26,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 13,
+                ...rowStyle,
+                gap: 4,
+                paddingHorizontal: 8,
+                height: 28,
+                borderRadius: 14,
                 backgroundColor: resolved() ? C.success + '18' : 'transparent',
               }}
               hoverStyle={controlHoverStyle()}
-              activeStyle={motionEnabled() ? { transform: [{ scale: 0.92 }] } : undefined}
+              activeStyle={motionEnabled() ? { transform: [{ scale: 0.94 }] } : undefined}
               focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="statusSuccess" size={15} color={resolved() ? C.success : C.muted} />
+              <Text
+                style={{
+                  ...mutedText(),
+                  fontSize: 12,
+                  color: resolved() ? C.success : C.secondary,
+                }}
+              >
+                {tr('Dossier resolved short')}
+              </Text>
+            </Button>
+            <Button
+              accessibilityLabel={unfollowLabel()}
+              tooltip={textTooltip(unfollowLabel)}
+              disabled={props.saving}
+              onPress={inputAction(props.unfollow, !unfollowed())}
+              style={{
+                ...rowStyle,
+                gap: 5,
+                paddingHorizontal: 9,
+                height: 28,
+                borderRadius: 14,
+                borderWidth: 0.5,
+                borderColor: unfollowed() ? C.warning + '88' : C.line,
+                backgroundColor: unfollowed() ? C.warning + '18' : C.surface,
+              }}
+              hoverStyle={controlHoverStyle()}
+              activeStyle={motionEnabled() ? { transform: [{ scale: 0.94 }] } : undefined}
+              focusStyle={quietFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <Icon name="eyeOff" size={14} color={unfollowed() ? C.warning : C.secondary} />
+              <Text
+                style={{
+                  ...mutedText(),
+                  fontSize: 12,
+                  fontWeight: '500',
+                  color: unfollowed() ? C.warning : C.text,
+                }}
+              >
+                {unfollowLabel()}
+              </Text>
             </Button>
             <Button
               accessibilityLabel={muteLabel()}
               tooltip={textTooltip(muteLabel)}
-              disabled={props.saving}
+              disabled={props.saving || unfollowed()}
               onPress={inputAction(props.mute, !props.detail.muted)}
               style={{
-                width: 26,
-                height: 26,
+                width: 28,
+                height: 28,
                 alignItems: 'center',
                 justifyContent: 'center',
-                borderRadius: 13,
+                borderRadius: 14,
+                backgroundColor:
+                  props.detail.muted && !unfollowed() ? C.accent + '18' : 'transparent',
               }}
               hoverStyle={controlHoverStyle()}
               activeStyle={motionEnabled() ? { transform: [{ scale: 0.92 }] } : undefined}
               focusStyle={quietFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
-              <Icon name="muted" size={15} color={props.detail.muted ? C.accent : C.muted} />
+              <Icon
+                name="muted"
+                size={15}
+                color={props.detail.muted && !unfollowed() ? C.accent : C.muted}
+              />
             </Button>
           </View>
         </View>
-        <If when={props.detail.windowAt != null || props.detail.linkedTaskIds.length > 0}>
-          <View style={{ ...rowStyle, flexWrap: 'wrap', gap: 6 }}>
-            <If when={props.detail.windowAt != null}>
-              <MetadataChip
-                text={tr('Dossier window', { time: props.time(props.detail.windowAt!) })}
-              />
-            </If>
-            <If when={props.detail.linkedTaskIds.length > 0}>
-              <MetadataChip
-                text={tr(
-                  props.detail.linkedTaskIds.length === 1
-                    ? 'One linked schedule'
-                    : 'Linked schedules count',
-                  { count: props.detail.linkedTaskIds.length },
-                )}
-              />
-            </If>
-          </View>
-        </If>
-        <If when={expanded()}>
-          <View style={{ borderLeftWidth: 2, borderColor: C.line, paddingLeft: 12, gap: 4 }}>
-            <Each of={props.detail.watches} key={(watch) => watch.watchId}>
-              {(watch) => (
-                <View tooltip={textTooltip(() => watch().target)} style={rowStyle}>
-                  <Text style={mutedText()}>{tr(watches[watch().kind])}</Text>
-                  <Text
-                    style={{ ...mutedText(), color: C.secondary, flexShrink: 1, numberOfLines: 1 }}
-                  >
-                    {watch().kind === 'file_hash'
-                      ? splitArtifactPath(watch().target).name
-                      : watch().target}
-                  </Text>
-                </View>
-              )}
-            </Each>
-            <Text style={mutedText()}>
-              {tr('Dossier last checked', { time: props.time(props.detail.lastCheckedAt) })}
-            </Text>
-            <Text style={mutedText()}>
-              {tr('Dossier last changed', { time: props.time(props.detail.lastMaterialChangeAt) })}
-            </Text>
-          </View>
-        </If>
       </View>
     </View>
   );
 }
 
-function RevisionDivider(props: { label: string; isLatest: boolean }) {
+function DossierDetailsDrawer(props: {
+  detail: DossierDetail;
+  session: string | null;
+  topicId: string;
+  saving: boolean;
+  artifactPath: string | null;
+  toggleArtifact(path: string): void;
+  time(at: number): string;
+  close(): void;
+  openSession(id: string): void;
+  mute(muted: boolean): void;
+  unfollow(unfollowed: boolean): void;
+}) {
+  const unfollowed = () => Boolean(props.detail.unfollowed);
   return (
-    <View style={{ ...rowStyle, gap: 10, paddingTop: 2 }}>
-      <View style={{ flex: 1, height: 0.5, backgroundColor: C.line }} />
+    <View
+      style={{
+        width: 268,
+        maxWidth: '40%',
+        minHeight: 0,
+        borderLeftWidth: 1,
+        borderColor: C.line,
+        backgroundColor: C.chrome,
+      }}
+    >
       <View
         style={{
-          paddingHorizontal: 9,
-          paddingVertical: 2,
-          borderRadius: 10,
-          backgroundColor: props.isLatest ? C.surface : 'transparent',
-          borderWidth: props.isLatest ? 0.5 : 0,
+          ...rowStyle,
+          justifyContent: 'space-between',
+          paddingHorizontal: 14,
+          paddingVertical: 11,
+          borderBottomWidth: 0.5,
           borderColor: C.line,
         }}
       >
-        <Text
-          style={{
-            ...captionTextStyle,
-            fontSize: 11,
-            color: props.isLatest ? C.text : C.muted,
-            fontWeight: props.isLatest ? '500' : undefined,
-          }}
-        >
-          {props.label}
-        </Text>
+        <Text style={titleStyle()}>{tr('Dossier details')}</Text>
+        <IconButton compact label={tr('Close')} icon="close" onPress={props.close} />
       </View>
-      <View style={{ flex: 1, height: 0.5, backgroundColor: C.line }} />
+      <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 14, gap: 14 }}>
+        <View style={{ gap: 6 }}>
+          <Text style={mutedText()}>
+            {tr('Dossier last checked', { time: props.time(props.detail.lastCheckedAt) })}
+          </Text>
+          <Text style={mutedText()}>
+            {tr('Dossier last changed', { time: props.time(props.detail.lastMaterialChangeAt) })}
+          </Text>
+          <If when={props.detail.windowAt != null || props.detail.linkedTaskIds.length > 0}>
+            <View style={{ ...rowStyle, flexWrap: 'wrap', gap: 6, paddingTop: 2 }}>
+              <If when={props.detail.windowAt != null}>
+                <MetadataChip
+                  text={tr('Dossier window', { time: props.time(props.detail.windowAt!) })}
+                />
+              </If>
+              <If when={props.detail.linkedTaskIds.length > 0}>
+                <MetadataChip
+                  text={tr(
+                    props.detail.linkedTaskIds.length === 1
+                      ? 'One linked schedule'
+                      : 'Linked schedules count',
+                    { count: props.detail.linkedTaskIds.length },
+                  )}
+                />
+              </If>
+            </View>
+          </If>
+        </View>
+        <View style={{ gap: 6, borderTopWidth: 0.5, borderColor: C.line, paddingTop: 10 }}>
+          <View style={{ ...rowStyle, justifyContent: 'space-between' }}>
+            <Text style={mutedText()}>{tr('Dossier notifications')}</Text>
+            <SettingsButton
+              label={tr(props.detail.muted ? 'Unmute dossier' : 'Mute dossier')}
+              tone="quiet"
+              disabled={props.saving || unfollowed()}
+              onPress={() => props.mute(!props.detail.muted)}
+            />
+          </View>
+          <View style={{ ...rowStyle, justifyContent: 'space-between' }}>
+            <Text style={mutedText()}>{tr('Dossier follow status')}</Text>
+            <SettingsButton
+              label={tr(unfollowed() ? 'Follow dossier again' : 'Unfollow dossier')}
+              tone="quiet"
+              disabled={props.saving}
+              onPress={() => props.unfollow(!unfollowed())}
+            />
+          </View>
+          <If when={props.session !== null}>
+            <SettingsButton
+              label={tr('Open full thread')}
+              tone="quiet"
+              onPress={() => props.openSession(props.session!)}
+            />
+          </If>
+        </View>
+        <View style={{ gap: 6, borderTopWidth: 0.5, borderColor: C.line, paddingTop: 10 }}>
+          <Text style={eyebrowStyle()}>{tr('Dossier watches and activity')}</Text>
+          <If
+            when={!unfollowed() && props.detail.watches.length > 0}
+            else={
+              <Text style={mutedText()}>
+                {tr(unfollowed() ? 'Dossier unfollowed preview' : 'Dossier no watches')}
+              </Text>
+            }
+          >
+            <Each of={props.detail.watches} key={(watch) => watch.watchId}>
+              {(watch) => (
+                <View
+                  tooltip={textTooltip(() => watch().target)}
+                  style={{ ...cardStyle(), paddingHorizontal: 10, paddingVertical: 8, gap: 2 }}
+                >
+                  <Text style={{ ...mutedText(), fontWeight: '500', color: C.text }}>
+                    {tr(watches[watch().kind])}
+                  </Text>
+                  <Text style={{ ...mutedText(), numberOfLines: 2 }}>{watch().target}</Text>
+                </View>
+              )}
+            </Each>
+          </If>
+        </View>
+        <View style={{ gap: 6, borderTopWidth: 0.5, borderColor: C.line, paddingTop: 10 }}>
+          <Text style={eyebrowStyle()}>{tr('Dossier artifacts')}</Text>
+          <If
+            when={props.detail.artifacts.length > 0}
+            else={<Text style={mutedText()}>{tr('Dossier no artifacts')}</Text>}
+          >
+            <Each
+              of={props.detail.artifacts}
+              key={(artifact) => JSON.stringify([artifact.path, artifact.sha256])}
+            >
+              {(artifact) => (
+                <ArtifactCard
+                  artifact={artifact()}
+                  topicId={props.topicId}
+                  open={props.artifactPath === artifact().path}
+                  toggle={props.toggleArtifact}
+                />
+              )}
+            </Each>
+          </If>
+        </View>
+      </Scroll>
     </View>
   );
 }
@@ -731,6 +837,15 @@ function DossierPane(
   const host = useHost();
   const topicId = props.topicId;
   const detail = signal<DossierDetail | null>(null);
+  const detailsOpen = signal(false);
+  const evidenceOpen = signal<ReadonlySet<number>>(new Set());
+  const toggleEvidence = (rev: number) => {
+    animateDisclosure();
+    const next = new Set(evidenceOpen());
+    if (next.has(rev)) next.delete(rev);
+    else next.add(rev);
+    evidenceOpen.set(next);
+  };
   const artifactPath = signal<string | null>(null);
   const toggleArtifact = (path: string) => {
     animateDisclosure();
@@ -818,255 +933,381 @@ function DossierPane(
       if (alive) saving.set(false);
     }
   };
+  const unfollow = async (unfollowed: boolean) => {
+    if (!alive || saving()) return;
+    saving.set(true);
+    error.set('');
+    try {
+      await host.mutateAgent('setDossierUnfollowed', { topicId, unfollowed });
+      if (alive) await refresh();
+    } catch (reason) {
+      if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
+    } finally {
+      if (alive) saving.set(false);
+    }
+  };
   const scope = () => detail()?.threadSessionId ?? props.botSession();
   const hasMultipleRevisions = () => (detail()?.revisions?.length ?? 0) > 1;
+  const threadSession = signal<string | null>(null);
 
   return (
     <View
       style={[
-        { flex: 1, minWidth: 0, minHeight: 0, backgroundColor: C.background },
+        { flex: 1, minWidth: 0, minHeight: 0, flexDirection: 'row', backgroundColor: C.background },
         motionEnabled() ? entrance : undefined,
       ]}
     >
-      <DossierThread
-        topicId={topicId}
-        ready={detail() !== null}
-        hasHistory={hasMultipleRevisions}
-        threadSessionId={() => detail()?.threadSessionId ?? null}
-        openSession={props.openSession}
-        header={({ scrollToLatest, session }) => (
-          <If when={detail() !== null}>
-            <DossierStickyHeader
-              detail={detail()!}
-              session={session()}
-              time={props.time}
-              saving={saving()}
-              scrollToLatest={scrollToLatest}
-              openSession={props.openSession}
-              resolve={(next) => void resolve(next)}
-              mute={(next) => void mute(next)}
-            />
-          </If>
-        )}
-        renderStream={({ turns, sendMessage, sending, anchorLatest, onTurnArrival }) => {
-          const stream = computed(() => (detail() ? buildDossierStream(detail()!, turns()) : null));
-          const choose = async (revision: number, choice: DossierChoiceItem) => {
-            if (!alive || saving() || sending()) return;
-            saving.set(true);
-            error.set('');
-            try {
-              await host.mutateAgent('chooseDossierOption', {
-                topicId,
-                revision,
-                key: choice.key,
-                resolve: Boolean(choice.resolves),
-              });
-              if (!alive) return;
-              await sendMessage(formatChoiceDispatch(choice), { elevate: !choice.resolves });
-              if (alive) await refresh();
-            } catch (reason) {
-              if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
-            } finally {
-              if (alive) saving.set(false);
-            }
-          };
-          return (
-            <>
-              <If when={readError()}>
-                <View style={rowStyle}>
-                  <Text style={{ ...mutedText(), flex: 1 }}>{readError()}</Text>
-                  <SettingsButton label={tr('Retry')} tone="quiet" onPress={() => void refresh()} />
-                </View>
+      <View style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+        <DossierThread
+          topicId={topicId}
+          ready={detail() !== null}
+          hasHistory={hasMultipleRevisions}
+          threadSessionId={() => detail()?.threadSessionId ?? null}
+          openSession={props.openSession}
+          header={({ scrollToLatest, session }) => {
+            if (threadSession() !== session()) threadSession.set(session());
+            return (
+              <If when={detail() !== null}>
+                <DossierStickyHeader
+                  detail={detail()!}
+                  detailsOpen={detailsOpen()}
+                  saving={saving()}
+                  scrollToLatest={scrollToLatest}
+                  toggleDetails={() => detailsOpen.set(!detailsOpen())}
+                  resolve={(next) => void resolve(next)}
+                  unfollow={(next) => void unfollow(next)}
+                  mute={(next) => void mute(next)}
+                />
               </If>
-              <If when={error()}>
-                <Text style={{ ...mutedText(), color: C.danger }}>{error()}</Text>
-              </If>
-              <If
-                when={stream() !== null}
-                else={
-                  <If when={!readError()}>
-                    <LoadingIndicator />
-                  </If>
-                }
-              >
-                <If when={stream()!.hasHistory}>
-                  <Text style={{ ...mutedText(), fontSize: 11, textAlign: 'center', opacity: 0.7 }}>
-                    {tr('Dossier earlier records')}
-                  </Text>
+            );
+          }}
+          renderStream={({ turns, sendMessage, sending, anchorLatest, onTurnArrival }) => {
+            const stream = computed(() =>
+              detail() ? buildDossierStream(detail()!, turns()) : null,
+            );
+            const choose = async (revision: number, choice: DossierChoiceItem) => {
+              if (!alive || saving() || sending()) return;
+              saving.set(true);
+              error.set('');
+              try {
+                await host.mutateAgent('chooseDossierOption', {
+                  topicId,
+                  revision,
+                  key: choice.key,
+                  resolve: Boolean(choice.resolves),
+                });
+                if (!alive) return;
+                await sendMessage(formatChoiceDispatch(choice), { elevate: !choice.resolves });
+                if (alive) await refresh();
+              } catch (reason) {
+                if (alive) error.set(errorText(reason, 'Could not update dossier status.'));
+              } finally {
+                if (alive) saving.set(false);
+              }
+            };
+            return (
+              <>
+                <If when={readError()}>
+                  <View style={rowStyle}>
+                    <Text style={{ ...mutedText(), flex: 1 }}>{readError()}</Text>
+                    <SettingsButton
+                      label={tr('Retry')}
+                      tone="quiet"
+                      onPress={() => void refresh()}
+                    />
+                  </View>
                 </If>
-                <Each of={stream()!.entries} key={(entry) => entry.key}>
-                  {(entry: () => DossierStreamEntry) => (
-                    <If
-                      when={entry().kind === 'revision'}
-                      else={(() => {
-                        const turnEntry = () =>
-                          entry() as Extract<DossierStreamEntry, { kind: 'turn' }>;
-                        return (
-                          <ThreadBubble
-                            turn={turnEntry().turn}
-                            timeLabel={
-                              turnEntry().turn.at !== undefined
-                                ? props.relative(turnEntry().turn.at!)
-                                : undefined
-                            }
-                            dimmed={turnEntry().isHistorical}
-                            onArrival={onTurnArrival}
-                          />
-                        );
-                      })()}
+                <If when={error()}>
+                  <Text style={{ ...mutedText(), color: C.danger }}>{error()}</Text>
+                </If>
+                <If
+                  when={stream() !== null}
+                  else={
+                    <If when={!readError()}>
+                      <LoadingIndicator />
+                    </If>
+                  }
+                >
+                  <If when={stream()!.hasHistory}>
+                    <Text
+                      style={{ ...mutedText(), fontSize: 11, textAlign: 'center', opacity: 0.7 }}
                     >
-                      {(() => {
-                        const revEntry = () =>
-                          entry() as Extract<DossierStreamEntry, { kind: 'revision' }>;
-                        const rev = () => revEntry().revision;
-                        const artifacts = () => rev().artifacts ?? [];
-                        const dividerLabel = () => {
-                          const stage =
-                            revEntry().index === 0
-                              ? tr('Dossier first finding')
-                              : tr('Dossier revised finding');
-                          const suffix =
-                            revEntry().isLatest && revEntry().totalRevisions > 1
-                              ? ` · ${tr('Dossier latest badge')}`
-                              : '';
-                          return `${props.relative(rev().at)} · ${stage}${suffix}`;
-                        };
-                        const summaryText = computed(() => rev().summaryMd);
-                        const markdownRow = computed(() => ({
-                          key: `${topicId}/${rev().revision}`,
-                          field: 'body',
-                          role: 'assistant',
-                          text: summaryText(),
-                          prefix: true,
-                        }));
-                        return (
-                          <View
-                            onLayout={
-                              revEntry().isLatest
-                                ? ({ bounds }) => anchorLatest(bounds.origin.y)
-                                : undefined
-                            }
-                            style={{ gap: 10 }}
-                          >
-                            <RevisionDivider
-                              label={dividerLabel()}
-                              isLatest={revEntry().isLatest}
+                      {tr('Dossier earlier records')}
+                    </Text>
+                  </If>
+                  <Each of={stream()!.entries} key={(entry) => entry.key}>
+                    {(entry: () => DossierStreamEntry) => (
+                      <If
+                        when={entry().kind === 'revision'}
+                        else={(() => {
+                          const turnEntry = () =>
+                            entry() as Extract<DossierStreamEntry, { kind: 'turn' }>;
+                          return (
+                            <ThreadBubble
+                              turn={turnEntry().turn}
+                              timeLabel={
+                                turnEntry().turn.at !== undefined
+                                  ? props.relative(turnEntry().turn.at!)
+                                  : undefined
+                              }
+                              dimmed={turnEntry().isHistorical}
+                              onArrival={onTurnArrival}
                             />
+                          );
+                        })()}
+                      >
+                        {(() => {
+                          const revEntry = () =>
+                            entry() as Extract<DossierStreamEntry, { kind: 'revision' }>;
+                          const rev = () => revEntry().revision;
+                          const artifacts = () => rev().artifacts ?? [];
+                          const split = computed(() =>
+                            splitBubbleBodyAndEvidence(rev().summaryMd, rev().evidenceMd),
+                          );
+                          const hasEvidence = () =>
+                            Boolean(split().evidence) || artifacts().length > 0;
+                          const isEvidenceOpen = () => evidenceOpen().has(rev().revision);
+                          const bodyText = computed(() => split().body);
+                          const bodyRow = computed(() => ({
+                            key: `${topicId}/${rev().revision}`,
+                            field: 'body',
+                            role: 'assistant',
+                            text: bodyText(),
+                            prefix: true,
+                          }));
+                          const evidenceText = computed(() => split().evidence ?? '');
+                          const evidenceRow = computed(() => ({
+                            key: `${topicId}/${rev().revision}/evidence`,
+                            field: 'body',
+                            role: 'assistant',
+                            text: evidenceText(),
+                            prefix: true,
+                          }));
+                          const openLink = async (target: string, restoreFocus: () => boolean) => {
+                            try {
+                              await props.openLink(scope(), target, restoreFocus);
+                            } catch (reason) {
+                              if (alive)
+                                error.set(errorText(reason, 'The link could not be opened'));
+                            }
+                          };
+                          return (
                             <View
-                              style={{
-                                borderRadius: 14,
-                                borderWidth: 1,
-                                borderColor: C.line,
-                                backgroundColor: revEntry().isHistorical ? C.surface : C.background,
-                                opacity: revEntry().isHistorical ? 0.78 : 1,
-                                paddingHorizontal: 18,
-                                paddingVertical: 15,
-                                gap: 12,
-                              }}
+                              onLayout={
+                                revEntry().isLatest
+                                  ? ({ bounds }) => anchorLatest(bounds.origin.y)
+                                  : undefined
+                              }
+                              style={{ width: '100%', minWidth: 0, gap: 10 }}
                             >
-                              <If when={rev().title !== detail()!.title}>
-                                <Text
+                              <Text
+                                style={{
+                                  ...mutedText(),
+                                  fontSize: 11,
+                                  textAlign: 'center',
+                                  opacity: 0.78,
+                                }}
+                              >
+                                {props.time(rev().at)}
+                              </Text>
+                              <View
+                                style={{
+                                  alignSelf: 'flex-start',
+                                  width: '94%',
+                                  maxWidth: '94%',
+                                  minWidth: 0,
+                                  gap: 8,
+                                  opacity: revEntry().isHistorical ? 0.78 : 1,
+                                }}
+                              >
+                                <View
                                   style={{
-                                    color: C.text,
-                                    fontSize: revEntry().isHistorical ? 15 : 17,
-                                    lineHeight: 24,
-                                    fontWeight: '600',
+                                    width: '100%',
+                                    minWidth: 0,
+                                    borderRadius: 16,
+                                    borderBottomLeftRadius: 5,
+                                    borderWidth: 0.5,
+                                    borderColor: C.line,
+                                    backgroundColor: revEntry().isHistorical ? C.surface : C.card,
+                                    paddingHorizontal: 15,
+                                    paddingVertical: 11,
+                                    gap: 8,
                                   }}
                                 >
-                                  {rev().title}
-                                </Text>
-                              </If>
-                              <If when={Boolean(rev().changeNote)}>
-                                <Text style={{ ...mutedText(), color: C.secondary }}>
-                                  {'↳ ' + rev().changeNote}
-                                </Text>
-                              </If>
-                              <MarkdownBody
-                                row={markdownRow}
-                                text={summaryText}
-                                sourceId={`dossier/${topicId}/${rev().revision}`}
-                                sessionId={null}
-                                interactiveBlocks={false}
-                                userScroll={() => {}}
-                                openLink={async (target, restoreFocus) => {
-                                  try {
-                                    await props.openLink(scope(), target, restoreFocus);
-                                  } catch (reason) {
-                                    if (alive)
-                                      error.set(errorText(reason, 'The link could not be opened'));
-                                  }
-                                }}
-                              />
-                              <If when={artifacts().length > 0}>
-                                <View style={{ gap: 8 }}>
-                                  <Text role="header" style={eyebrowStyle()}>
-                                    {tr('Dossier artifacts')}
-                                  </Text>
-                                  <Each
-                                    of={artifacts()}
-                                    key={(artifact) =>
-                                      JSON.stringify([
-                                        rev().revision,
-                                        artifact.path,
-                                        artifact.sha256,
-                                      ])
+                                  <If when={rev().title !== detail()!.title}>
+                                    <Text
+                                      style={{
+                                        color: C.text,
+                                        fontSize: revEntry().isHistorical ? 14 : 15,
+                                        lineHeight: 21,
+                                        fontWeight: '600',
+                                      }}
+                                    >
+                                      {rev().title}
+                                    </Text>
+                                  </If>
+                                  <MarkdownBody
+                                    row={bodyRow}
+                                    text={bodyText}
+                                    sourceId={`dossier/${topicId}/${rev().revision}`}
+                                    sessionId={null}
+                                    interactiveBlocks={false}
+                                    userScroll={() => {}}
+                                    openLink={openLink}
+                                  />
+                                  <If when={hasEvidence()}>
+                                    <View
+                                      style={{
+                                        borderTopWidth: 0.5,
+                                        borderColor: C.line,
+                                        paddingTop: 6,
+                                        gap: 8,
+                                      }}
+                                    >
+                                      <Button
+                                        accessibilityLabel={tr(
+                                          isEvidenceOpen()
+                                            ? 'Dossier hide evidence'
+                                            : 'Dossier show evidence',
+                                        )}
+                                        onPress={() => toggleEvidence(rev().revision)}
+                                        style={{ alignSelf: 'flex-start', paddingVertical: 2 }}
+                                        focusStyle={quietFocusStyle()}
+                                      >
+                                        <Text style={{ ...mutedText(), color: C.muted }}>
+                                          {tr(
+                                            isEvidenceOpen()
+                                              ? 'Dossier hide evidence'
+                                              : 'Dossier show evidence',
+                                          )}
+                                        </Text>
+                                      </Button>
+                                      <If when={isEvidenceOpen()}>
+                                        <View style={{ gap: 8 }}>
+                                          <If when={Boolean(split().evidence)}>
+                                            <MarkdownBody
+                                              row={evidenceRow}
+                                              text={evidenceText}
+                                              sourceId={`dossier/${topicId}/${rev().revision}/evidence`}
+                                              sessionId={null}
+                                              interactiveBlocks={false}
+                                              userScroll={() => {}}
+                                              openLink={openLink}
+                                            />
+                                          </If>
+                                          <Each
+                                            of={artifacts()}
+                                            key={(artifact) =>
+                                              JSON.stringify([
+                                                rev().revision,
+                                                artifact.path,
+                                                artifact.sha256,
+                                              ])
+                                            }
+                                          >
+                                            {(artifact) => (
+                                              <ArtifactCard
+                                                artifact={artifact()}
+                                                topicId={topicId}
+                                                dimmed={revEntry().isHistorical}
+                                                open={artifactPath() === artifact().path}
+                                                toggle={toggleArtifact}
+                                              />
+                                            )}
+                                          </Each>
+                                        </View>
+                                      </If>
+                                    </View>
+                                  </If>
+                                  <If
+                                    when={
+                                      revEntry().isLatest && detail()!.pendingActions.length > 0
                                     }
                                   >
-                                    {(artifact) => (
-                                      <ArtifactCard
-                                        artifact={artifact()}
-                                        topicId={topicId}
-                                        dimmed={revEntry().isHistorical}
-                                        open={artifactPath() === artifact().path}
-                                        toggle={toggleArtifact}
-                                      />
-                                    )}
-                                  </Each>
+                                    <View style={{ gap: 8, paddingTop: 4 }}>
+                                      <Text role="header" style={eyebrowStyle()}>
+                                        {tr('Dossier pending actions')}
+                                      </Text>
+                                      <Each
+                                        of={detail()!.pendingActions}
+                                        key={(action) => action.actionId}
+                                      >
+                                        {(action) => (
+                                          <PendingActionRow
+                                            action={action}
+                                            refresh={refresh}
+                                            feedback={(text) => {
+                                              if (alive) actionFeedback.set(text);
+                                            }}
+                                          />
+                                        )}
+                                      </Each>
+                                    </View>
+                                  </If>
+                                  <If when={revEntry().isLatest && Boolean(actionFeedback())}>
+                                    <Text style={mutedText()}>{actionFeedback()}</Text>
+                                  </If>
                                 </View>
-                              </If>
-                              <If when={revEntry().isLatest && detail()!.pendingActions.length > 0}>
-                                <View style={{ gap: 8 }}>
-                                  <Text role="header" style={eyebrowStyle()}>
-                                    {tr('Dossier pending actions')}
-                                  </Text>
-                                  <Each
-                                    of={detail()!.pendingActions}
-                                    key={(action) => action.actionId}
-                                  >
-                                    {(action) => (
-                                      <PendingActionRow
-                                        action={action}
-                                        refresh={refresh}
-                                        feedback={(text) => {
-                                          if (alive) actionFeedback.set(text);
-                                        }}
-                                      />
-                                    )}
-                                  </Each>
-                                </View>
-                              </If>
-                              <If when={revEntry().isLatest && Boolean(actionFeedback())}>
-                                <Text style={mutedText()}>{actionFeedback()}</Text>
-                              </If>
-                              <ChoiceCards
-                                choices={revEntry().choices}
-                                chosenKey={rev().chosenKey}
-                                interactive={revEntry().isLatest}
-                                busy={saving() || sending()}
-                                onChoose={(choice) => void choose(rev().revision, choice)}
-                              />
+                                <ChoiceCards
+                                  choices={revEntry().choices}
+                                  chosenKey={rev().chosenKey}
+                                  interactive={revEntry().isLatest && !detail()!.unfollowed}
+                                  busy={saving() || sending()}
+                                  onChoose={(choice) => void choose(rev().revision, choice)}
+                                />
+                              </View>
                             </View>
-                          </View>
-                        );
-                      })()}
-                    </If>
-                  )}
-                </Each>
-              </If>
-            </>
-          );
-        }}
-      />
+                          );
+                        })()}
+                      </If>
+                    )}
+                  </Each>
+                  <If when={Boolean(detail()!.unfollowed)}>
+                    <View
+                      style={{
+                        ...rowStyle,
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        paddingHorizontal: 14,
+                        paddingVertical: 10,
+                        borderRadius: 12,
+                        borderWidth: 0.5,
+                        borderColor: C.line,
+                        backgroundColor: C.surface,
+                      }}
+                    >
+                      <Text style={{ ...mutedText(), flex: 1 }}>
+                        {tr('Dossier unfollowed banner')}
+                      </Text>
+                      <SettingsButton
+                        label={tr('Follow dossier again')}
+                        tone="quiet"
+                        disabled={saving()}
+                        onPress={() => void unfollow(false)}
+                      />
+                    </View>
+                  </If>
+                </If>
+              </>
+            );
+          }}
+        />
+      </View>
+      <If when={detailsOpen() && detail() !== null}>
+        <DossierDetailsDrawer
+          detail={detail()!}
+          session={threadSession()}
+          topicId={topicId}
+          saving={saving()}
+          artifactPath={artifactPath()}
+          toggleArtifact={toggleArtifact}
+          time={props.time}
+          close={() => detailsOpen.set(false)}
+          openSession={props.openSession}
+          mute={(next) => void mute(next)}
+          unfollow={(next) => void unfollow(next)}
+        />
+      </If>
     </View>
   );
 }
@@ -1146,6 +1387,8 @@ export function DiscoveryDossiers(props: DossiersProps) {
   const list = signal<ListRef | null>(null);
   const selection = signal<DossierSelection>(null);
   const sortMode = signal<DossierSortMode>('recent');
+  const showingRuns = signal<{ runId: string | null } | null>(null);
+  const runs = computed(() => discoveryRuns(props.workers()));
   const plans = signal<string | null>(null);
   const lead = signal<string[] | null>(null);
   const saving = signal(false);
@@ -1166,9 +1409,14 @@ export function DiscoveryDossiers(props: DossiersProps) {
   const select = (topicId: string) => selection.set({ topicId });
   effect(() => {
     const request = props.route();
-    if (request?.topicId != null) {
+    if (request?.runId != null) {
+      plans.set(null);
+      showingRuns.set({ runId: request.runId });
+      lead.set(null);
+    } else if (request?.topicId != null) {
       selection.set({ topicId: request.topicId, requested: true });
       plans.set(null);
+      showingRuns.set(null);
       lead.set(null);
     }
   });
@@ -1237,6 +1485,18 @@ export function DiscoveryDossiers(props: DossiersProps) {
             >
               <Text style={mutedText()}>{tr('Dossier notifications')}</Text>
             </Checkbox>
+            <Button
+              accessibilityLabel={tr('Discovery runs')}
+              onPress={() => showingRuns.set({ runId: null })}
+              style={{ ...rowStyle, paddingHorizontal: 8, minHeight: 28, borderRadius: 6 }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={quietFocusStyle()}
+            >
+              <Text style={mutedText()}>{tr('Discovery runs')}</Text>
+              <If when={runs()[0] && runs()[0]!.activity !== 'idle'}>
+                <ProbeIndicator />
+              </If>
+            </Button>
             <SettingsButton
               label={tr('Discovery plans')}
               tone="quiet"
@@ -1326,76 +1586,91 @@ export function DiscoveryDossiers(props: DossiersProps) {
             estimatedItemSize={64}
             style={{ flex: 1, minHeight: 0 }}
           >
-            {(row) => (
-              <Button
-                accessibilityLabel={[
-                  row().title,
-                  tr(signals[row().signal]),
-                  ...(row().muted ? [tr('Dossier muted')] : []),
-                ].join(tr('Discovery list separator'))}
-                selected={selection()?.topicId === row().topicId}
-                onPress={inputAction(select, row().topicId)}
-                style={{
-                  ...rowStyle,
-                  paddingHorizontal: 11,
-                  paddingVertical: 10,
-                  marginVertical: 2,
-                  borderRadius: 10,
-                  gap: 8,
-                }}
-                selectedStyle={{ backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle()}
-                activeStyle={motionEnabled() ? { transform: [{ scale: 0.985 }] } : undefined}
-                focusStyle={quietFocusStyle()}
-              >
-                <If when={selection()?.topicId === row().topicId}>
-                  <View
-                    accessibilityElementsHidden
-                    style={{
-                      position: 'absolute',
-                      left: 0,
-                      top: 9,
-                      bottom: 9,
-                      width: 2.5,
-                      borderRadius: 2,
-                      backgroundColor: statusAccentColor(row().signal),
-                      pointerEvents: 'none',
-                    }}
-                  />
-                </If>
-                <View style={{ alignSelf: 'flex-start', marginTop: 2 }}>
-                  <StatusGraphic signal={row().signal} />
-                </View>
-                <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                  <Text
-                    style={[
-                      {
-                        ...secondaryTextStyle,
-                        color: row().signal === 'done' ? C.muted : C.text,
-                        fontWeight: selection()?.topicId === row().topicId ? '600' : undefined,
-                      },
-                      { numberOfLines: 2 },
-                    ]}
-                  >
-                    {row().title}
-                  </Text>
-                  <View style={{ ...rowStyle, gap: 6 }}>
-                    <Text style={{ ...mutedText(), flexShrink: 1, numberOfLines: 1 }}>
-                      {relative(row().lastMaterialChangeAt)}
-                    </Text>
-                    <If when={row().artifactCount > 0}>
-                      <View style={{ ...rowStyle, gap: 3 }}>
-                        <Icon name="paperclip" size={11} color={C.muted} />
-                        <Text style={mutedText()}>{row().artifactCount}</Text>
-                      </View>
-                    </If>
-                    <If when={row().muted}>
-                      <Icon name="muted" size={13} color={C.muted} />
-                    </If>
+            {(row) => {
+              const inactive = () => row().signal === 'done' || Boolean(row().unfollowed);
+              return (
+                <Button
+                  accessibilityLabel={[
+                    row().title,
+                    row().unfollowed ? tr('Dossier unfollowed') : tr(signals[row().signal]),
+                    ...(row().muted && !row().unfollowed ? [tr('Dossier muted')] : []),
+                  ].join(tr('Discovery list separator'))}
+                  selected={selection()?.topicId === row().topicId}
+                  onPress={inputAction(select, row().topicId)}
+                  style={{
+                    ...rowStyle,
+                    paddingHorizontal: 11,
+                    paddingVertical: 9,
+                    marginVertical: 2,
+                    borderRadius: 10,
+                    gap: 8,
+                    opacity: inactive() ? 0.68 : 1,
+                  }}
+                  selectedStyle={{ backgroundColor: C.raised }}
+                  hoverStyle={controlHoverStyle()}
+                  activeStyle={motionEnabled() ? { transform: [{ scale: 0.985 }] } : undefined}
+                  focusStyle={quietFocusStyle()}
+                >
+                  <If when={selection()?.topicId === row().topicId}>
+                    <View
+                      accessibilityElementsHidden
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 9,
+                        bottom: 9,
+                        width: 2.5,
+                        borderRadius: 2,
+                        backgroundColor: row().unfollowed
+                          ? C.muted
+                          : statusAccentColor(row().signal),
+                        pointerEvents: 'none',
+                      }}
+                    />
+                  </If>
+                  <View style={{ alignSelf: 'flex-start', marginTop: 3 }}>
+                    <StatusGraphic signal={row().signal} unfollowed={Boolean(row().unfollowed)} />
                   </View>
-                </View>
-              </Button>
-            )}
+                  <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                    <View style={{ ...rowStyle, justifyContent: 'space-between', gap: 6 }}>
+                      <Text
+                        style={[
+                          {
+                            ...secondaryTextStyle,
+                            flex: 1,
+                            minWidth: 0,
+                            color: inactive() ? C.muted : C.text,
+                            fontWeight: selection()?.topicId === row().topicId ? '600' : undefined,
+                          },
+                          { numberOfLines: 1 },
+                        ]}
+                      >
+                        {row().title}
+                      </Text>
+                      <Text style={{ ...mutedText(), fontSize: 11, flexShrink: 0 }}>
+                        {row().unfollowed
+                          ? tr('Dossier unfollowed short')
+                          : relative(row().lastMaterialChangeAt)}
+                      </Text>
+                    </View>
+                    <View style={{ ...rowStyle, gap: 6 }}>
+                      <Text style={{ ...mutedText(), flex: 1, minWidth: 0, numberOfLines: 1 }}>
+                        {row().unfollowed ? tr('Dossier unfollowed preview') : row().preview}
+                      </Text>
+                      <If when={row().artifactCount > 0 && !row().unfollowed}>
+                        <View style={{ ...rowStyle, gap: 3, flexShrink: 0 }}>
+                          <Icon name="paperclip" size={11} color={C.muted} />
+                          <Text style={mutedText()}>{row().artifactCount}</Text>
+                        </View>
+                      </If>
+                      <If when={row().muted && !row().unfollowed}>
+                        <Icon name="muted" size={13} color={C.muted} />
+                      </If>
+                    </View>
+                  </View>
+                </Button>
+              );
+            }}
           </List>
         </View>
         <If when={!selection()}>
@@ -1426,6 +1701,14 @@ export function DiscoveryDossiers(props: DossiersProps) {
           )}
         </Each>
       </View>
+      <If when={showingRuns() !== null}>
+        <DiscoveryRuns
+          runs={runs}
+          initialRunId={showingRuns()!.runId}
+          time={time}
+          close={() => showingRuns.set(null)}
+        />
+      </If>
       <If when={lead() !== null}>
         <DropLead
           paths={lead()!}
@@ -1444,7 +1727,10 @@ export function DiscoveryDossiers(props: DossiersProps) {
             host={host}
             sessionId={id()}
             control={props.control}
-            openWorker={props.openSession}
+            openWorker={(workerId) => {
+              plans.set(null);
+              showingRuns.set({ runId: workerId });
+            }}
             chooseModel={() => props.chooseModel(id())}
             close={() => plans.set(null)}
           />

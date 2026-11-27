@@ -36,7 +36,11 @@ import {
   type DossierToolStep,
 } from './history';
 import { observeDiscovery } from './discoveryObservation';
-import type { DossierThreadTurn } from './discoveryDossiersCore';
+import {
+  nextDossierScrollState,
+  type DossierScrollState,
+  type DossierThreadTurn,
+} from './discoveryDossiersCore';
 import { activityTitle } from './toolActivityPresentation';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -144,23 +148,23 @@ export function DossierThread(props: {
   const sendError = createText();
   const awayFromLatest = signal(false);
   const canSend = () => props.ready && !sending() && draft().trim().length > 0;
-  let scroll: ScrollRef | undefined;
-  let stickToBottom = false;
-  let initialAnchored = false;
-  let userInteracted = false;
-  let programmaticUntil = 0;
-  let latestAnchorY: number | null = null;
-  let lastScrollY = 0;
-  let lastContentHeight = 0;
   let lastTurnsJson = '[]';
   let lastActivityJson = '{"steps":[],"active":false}';
+  let scroll: ScrollRef | undefined;
+  let scrollState: DossierScrollState = {
+    stickToBottom: true,
+    userInteracted: false,
+    lastScrollY: 0,
+    lastContentHeight: 0,
+  };
+  let programmaticUntil = 0;
   let alive = true;
   let stopWatch: (() => void) | null = null;
 
   const pinToBottom = (animated = false) => {
-    stickToBottom = true;
+    scrollState = { ...scrollState, stickToBottom: true };
     awayFromLatest.set(false);
-    programmaticUntil = Date.now() + (animated ? 400 : 300);
+    programmaticUntil = Date.now() + (animated ? 400 : 150);
     scroll?.scrollToEnd({ animated: animated && motionEnabled() });
   };
 
@@ -213,8 +217,10 @@ export function DossierThread(props: {
           activity.set(nextActivity);
         }
         historyError.set('');
-        if (recent.length > 0 && ((!live && !userInteracted) || stickToBottom)) {
-          initialAnchored = true;
+        if (
+          recent.length > 0 &&
+          ((!live && !scrollState.userInteracted) || scrollState.stickToBottom)
+        ) {
           pinToBottom(false);
         }
       }
@@ -251,32 +257,13 @@ export function DossierThread(props: {
   });
 
   const scrollToLatest = (animated = true) => {
-    initialAnchored = true;
-    if (latestAnchorY !== null && turns().length === 0 && !activity().active) {
-      stickToBottom = false;
-      awayFromLatest.set(false);
-      programmaticUntil = Date.now() + (animated ? 400 : 300);
-      scroll?.scrollTo({
-        y: Math.max(0, latestAnchorY - 16),
-        animated: animated && motionEnabled(),
-      });
-    } else {
-      pinToBottom(animated);
-    }
+    scrollState = { ...scrollState, userInteracted: false };
+    pinToBottom(animated);
   };
 
-  const anchorLatest = (y: number) => {
-    latestAnchorY = y;
-    if (initialAnchored || userInteracted || sending()) return;
-    if (turns().length > 0 || activity().active) {
-      initialAnchored = true;
+  const anchorLatest = (_y: number) => {
+    if (scrollState.stickToBottom && !scrollState.userInteracted && !sending()) {
       pinToBottom(false);
-    } else if (props.hasHistory() && y > 20) {
-      initialAnchored = true;
-      stickToBottom = false;
-      programmaticUntil = Date.now() + 300;
-      awayFromLatest.set(false);
-      scroll?.scrollTo({ y: Math.max(0, y - 16), animated: false });
     }
   };
 
@@ -285,8 +272,7 @@ export function DossierThread(props: {
     if (!alive || !props.ready || sending() || message.length === 0) return false;
     sending.set(true);
     sendError.set('');
-    initialAnchored = true;
-    userInteracted = false;
+    scrollState = { ...scrollState, userInteracted: false };
     pinToBottom(false);
     try {
       let sessionId = session();
@@ -337,39 +323,31 @@ export function DossierThread(props: {
         <Scroll
           ref={(node) => {
             scroll = node;
+            if (node && scrollState.stickToBottom && !scrollState.userInteracted) {
+              pinToBottom(false);
+            }
           }}
           style={{ flex: 1, minWidth: 0, minHeight: 0 }}
           onScroll={({ offset, contentSize, size }) => {
-            const distanceFromBottom = contentSize.height - offset.y - size.height;
-            const pastLatest =
-              latestAnchorY !== null &&
-              turns().length === 0 &&
-              !activity().active &&
-              offset.y < latestAnchorY - 120;
-            const contentGrew =
-              contentSize.height !== lastContentHeight && Math.abs(offset.y - lastScrollY) < 4;
-            const scrolledUp = offset.y < lastScrollY - 4;
-            lastScrollY = offset.y;
-            lastContentHeight = contentSize.height;
-            if (Date.now() <= programmaticUntil) return;
-            if (contentGrew && stickToBottom) {
-              pinToBottom(false);
-              return;
-            }
-            userInteracted = true;
-            initialAnchored = true;
-            if (distanceFromBottom <= 48) {
-              stickToBottom = true;
-              awayFromLatest.set(false);
-            } else if (scrolledUp || distanceFromBottom > 140) {
-              stickToBottom = false;
-              awayFromLatest.set(pastLatest || distanceFromBottom > 140);
-            }
+            const next = nextDossierScrollState(scrollState, {
+              offsetY: offset.y,
+              contentHeight: contentSize.height,
+              viewportHeight: size.height,
+              inProgrammaticWindow: Date.now() <= programmaticUntil,
+            });
+            scrollState = {
+              stickToBottom: next.stickToBottom,
+              userInteracted: next.userInteracted,
+              lastScrollY: next.lastScrollY,
+              lastContentHeight: next.lastContentHeight,
+            };
+            if (next.awayFromLatest !== null) awayFromLatest.set(next.awayFromLatest);
+            if (next.action === 'pin') pinToBottom(false);
           }}
         >
           <View
             onLayout={() => {
-              if (stickToBottom) pinToBottom(false);
+              if (scrollState.stickToBottom) pinToBottom(false);
             }}
             style={{ ...readingColumn, paddingVertical: 18, gap: 14 }}
           >
@@ -379,7 +357,7 @@ export function DossierThread(props: {
               sending,
               anchorLatest,
               onTurnArrival: () => {
-                if (stickToBottom) pinToBottom(false);
+                if (scrollState.stickToBottom) pinToBottom(false);
               },
               session,
             })}

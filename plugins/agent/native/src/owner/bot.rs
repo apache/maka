@@ -206,7 +206,7 @@ impl Bot {
             .as_deref()
             == Some(session)
     }
-    async fn is_or_was(&self, session: &str) -> Result<bool, String> {
+    pub(super) async fn is_or_was(&self, session: &str) -> Result<bool, String> {
         Ok(self.is(session)
             || self
                 .storage

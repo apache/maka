@@ -189,10 +189,7 @@ impl StageArtifact {
                     if matches!(
                         e.kind(),
                         io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                    ) =>
-                {
-                    ()
-                }
+                    ) => {}
                 Err(e) => return Err(e),
             }
         }

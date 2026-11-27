@@ -215,6 +215,7 @@ impl Owner {
             compaction_prompt: None,
             dossier_seed: None,
             dossier_elevated: false,
+            discovery_worker: false,
             collaboration_mode: CollaborationMode::Agent,
             tools,
             title,

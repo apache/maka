@@ -433,6 +433,11 @@ pub const MIGRATIONS: &[maka_event_log::migration::Migration] = &[
         configure: None,
         data: None,
     },
+    maka_event_log::migration::Migration::sql(
+        61,
+        "discovery activity pacing timestamp",
+        include_str!("../migrations/0061_discovery_activity_pacing.sql"),
+    ),
 ];
 
 #[cfg(test)]

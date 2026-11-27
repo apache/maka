@@ -703,6 +703,40 @@ impl Owner {
             tokio::select! {_=self.stop.cancelled()=>return,_=changes.changed()=>{},_=schedules.changed()=>{},_=wait_until(retry)=>{}}
         }
     }
+    /// Bind a waiting watch to a due broad timer in the same transaction that claims it.
+    pub(in crate::owner) async fn bind_timer_followup(
+        &self,
+        plan: &mut scheduler::Plan,
+    ) -> Result<Option<(WatchId, UnixMillis)>, String> {
+        let Some((approval, _)) = scheduler::file_change_grant(plan) else {
+            return Ok(None);
+        };
+        if !plan
+            .pending
+            .as_ref()
+            .is_some_and(|f| f.source == FireSource::Schedule && f.intent.body().trim().is_empty())
+        {
+            return Ok(None);
+        }
+        for (id, topic, observed, auth) in self
+            .discovery
+            .pending_watch_followups()
+            .await
+            .map_err(reason)?
+        {
+            let auth: WatchAuthority = serde_json::from_value(auth).map_err(reason)?;
+            if watch_matches_plan(&auth, &plan.task.id, approval) {
+                target_watch(
+                    plan.pending.as_mut().expect("claimed timer"),
+                    &topic,
+                    observed,
+                );
+                return Ok(Some((id, observed)));
+            }
+        }
+        Ok(None)
+    }
+
     async fn dispatch_watch_followup(&self) -> Result<(), String> {
         if self.scheduler.investigation.read().unwrap().is_some() {
             return Ok(());
@@ -729,9 +763,9 @@ impl Owner {
                 let Some((approval, _)) = scheduler::file_change_grant(plan) else {
                     continue;
                 };
-                if plan.task.expires_at.is_some_and(|end| end <= at)
-                    || auth.plan.as_ref().is_some_and(|id| id != &plan.task.id)
-                    || approval.target.workspace != auth.target.workspace
+                if plan.pending.is_some()
+                    || plan.task.expires_at.is_some_and(|end| end <= at)
+                    || !watch_matches_plan(&auth, &plan.task.id, approval)
                 {
                     continue;
                 }
@@ -752,14 +786,7 @@ impl Owner {
                     continue;
                 }
                 let fire = plan.pending.as_mut().expect("just claimed");
-                fire.intent = maka_scheduler::task::Intent::Text {
-                    body: format!(
-                        "Review dossier {} after its watch matched at {}.\n{}",
-                        topic.0,
-                        observed.0,
-                        fire.intent.body()
-                    ),
-                };
+                target_watch(fire, &topic, observed);
                 let writes = catalog.watch_fire(&plan)?;
                 self.commit_discovery_writes(
                     self.discovery.acknowledge_followup(id, observed),
@@ -775,6 +802,27 @@ impl Owner {
         Ok(())
     }
 }
+fn watch_matches_plan(auth: &WatchAuthority, plan: &str, approval: &BackgroundApproval) -> bool {
+    auth.plan.as_deref().is_none_or(|id| id == plan)
+        && auth.target.workspace == approval.target.workspace
+}
+
+fn target_watch(
+    fire: &mut Fire<ScheduledEffect, scheduler::Approval>,
+    topic: &TopicId,
+    observed: UnixMillis,
+) {
+    fire.source = FireSource::Watch;
+    fire.intent = maka_scheduler::task::Intent::Text {
+        body: format!(
+            "Review dossier {} after its watch matched at {}.\n{}",
+            topic.0,
+            observed.0,
+            fire.intent.body()
+        ),
+    };
+}
+
 async fn wait_until(at: Option<i64>) {
     match at {
         Some(at) => {

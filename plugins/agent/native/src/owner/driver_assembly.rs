@@ -398,9 +398,12 @@ impl Owner {
                 let mode = basis.model.as_ref().map(|model| model.tool_mode).unwrap_or_default();
                 let uses_maka_tools = basis.model.is_some() || basis.executor.as_ref().is_some_and(|executor| executor.selection.executor == "external");
                 let cells_enabled = uses_maka_tools && mode == ToolMode::CodeMode;
+                let discovery = if basis.model.is_some() {
+                    self.scheduler.discovery_progress(&view).await.map_err(RunError::InvalidInput)?.map(|p| Arc::new(std::sync::Mutex::new(p)))
+                } else { None };
                 let cells = cells_enabled.then(|| driver_cells::RunCells::new(
                     self.clone(), access.clone(), self.code_executor.clone().with_language(language),
-                    workers.clone(), cleanup.clone(),
+                    workers.clone(), cleanup.clone(), discovery.clone(),
                 )).transpose().map_err(RunError::Tool)?;
                 let backend = match (&basis.model, &basis.executor) {
                     (Some(accepted), None) => {
@@ -414,10 +417,8 @@ impl Owner {
                         let source = if let Some(pricing) = &self.pricing {
                             source.with_pricing(pricing.clone())
                         } else { source };
-                        let discovery = matches!(&view.spec.trigger, Trigger::Schedule { schedule_id } if
-                            self.scheduler.investigation.read().unwrap().as_ref().is_some_and(|j| j.worker == view.spec.session_id && j.task_id == *schedule_id));
                         let model = driver_model::DriverModel {
-                        discovery: discovery.then(Default::default),
+                        discovery,
                         state: state.clone(),
                         history: state.session_history(view.spec.owner.clone(), view.spec.session_id.clone()),
                         log: Arc::new(lease.store()),

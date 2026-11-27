@@ -571,6 +571,7 @@ impl Rig {
                 "watchDossiers",
                 "setDossierMuted",
                 "setDossierResolved",
+                "setDossierUnfollowed",
                 "chooseDossierOption",
                 "setDiscoveryNotifications",
                 "dropDiscoveryLead",
@@ -980,6 +981,7 @@ impl Rig {
             owner.code_executor.clone(),
             workers.clone(),
             cleanup.clone(),
+            None,
         )?;
         self.cells = Some(cells.clone());
         let model = DriverModel {

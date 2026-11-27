@@ -192,9 +192,13 @@ struct CapsuleManifest {
 #[serde(rename_all = "camelCase")]
 struct DiscoveryCapsule {
     topic_id: String,
+    #[serde(default)]
+    entity_key: Option<String>,
     thread_session_id: String,
     #[serde(default)]
     additional_deltas: usize,
+    #[serde(default)]
+    metered: bool,
 }
 
 struct FixtureSecret;
@@ -879,11 +883,12 @@ async fn open_compat_settings(root: &Path) -> ConfigurationStore {
 }
 
 async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCapsule, Value) {
+    let entity_key = format!("compat:{nonce}").to_lowercase();
     let lead = call(
         client,
         "agent",
         "dropDiscoveryLead",
-        json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"]}),
+        json!({"text":format!("compat discovery {nonce}"), "paths":["annex.md"], "entityKey":entity_key}),
         Attachments::new(),
     )
     .await;
@@ -926,8 +931,10 @@ async fn create_discovery_capsule(client: &Client, nonce: &str) -> (DiscoveryCap
     (
         DiscoveryCapsule {
             topic_id,
+            entity_key: Some(entity_key),
             thread_session_id,
             additional_deltas: 17,
+            metered: true,
         },
         target,
     )
@@ -955,6 +962,22 @@ fn seed_discovery_tracking(root: &Path, saved: &DiscoveryCapsule, target: Value)
         )
         .unwrap();
     let artifacts = json!([{"path":"annex.md","purpose":"Review the annex","sha256":hex::encode(Sha256::digest(COMPAT_DRAFT)),"inputHashes":{}}]);
+    tx.execute(
+        "INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+         VALUES('maka.agent.discovery',?1,'activity:compat-discovery',1,?2)",
+        rusqlite::params![
+            owner,
+            json!({"day":0,"tokens":450_000,"last_run_at":0,"model_runs":6,"skipped":12,
+            "deferred":0,"revised":1,"notified":0})
+            .to_string()
+        ],
+    )
+    .unwrap();
+    assert_eq!(tx.execute(
+        "UPDATE plugin_data SET value_json=json_set(value_json,'$[#-1].factState','Annex pending')
+         WHERE package_id='maka.agent.discovery' AND scope_id=?1 AND key=?2",
+        rusqlite::params![owner,format!("revisions:{topic}")],
+    ).unwrap(), 1);
     tx.execute(
         "UPDATE discovery_dossiers SET artifacts_json=?2 WHERE topic_id=?1",
         [topic, &artifacts.to_string()],
@@ -1020,6 +1043,17 @@ async fn verify_dossiers(
             Attachments::new(),
         )
         .await;
+        if saved.metered {
+            assert_eq!(detail["revisions"][0]["factState"], "Annex pending");
+        }
+        assert_eq!(detail["entityKey"].as_str(), saved.entity_key.as_deref());
+        let summary = page["dossiers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["topicId"] == saved.topic_id)
+            .unwrap();
+        assert_eq!(summary["entityKey"], detail["entityKey"]);
         assert_eq!(detail["muted"], true);
         if staged {
             assert_eq!(detail["artifacts"][0]["path"], "annex.md");
@@ -1120,15 +1154,36 @@ async fn verify_dossiers(
         client,
         "agent",
         "dropDiscoveryLead",
-        json!({"text":format!("post-upgrade discovery {post_nonce}")}),
+        json!({"text":format!("post-upgrade discovery {post_nonce}"), "entityKey":format!("COMPAT:{post_nonce}")}),
         Attachments::new(),
     )
     .await;
-    let detail = call(client, "agent", "dossier", lead, Attachments::new()).await;
+    let detail = call(client, "agent", "dossier", lead.clone(), Attachments::new()).await;
     assert_eq!(detail["revision"], 1);
+    assert_eq!(
+        detail["entityKey"],
+        format!("compat:{post_nonce}").to_lowercase()
+    );
+    assert!(detail["revisions"][0]["factState"].is_null());
+    call(
+        client,
+        "agent",
+        "setDossierResolved",
+        json!({"topicId":lead["topicId"],"resolved":true}),
+        Attachments::new(),
+    )
+    .await;
+    let closed = call(client, "agent", "dossier", lead, Attachments::new()).await;
+    assert_eq!(closed["revision"], 2);
+    assert_eq!(closed["signal"], "done");
 }
 
-async fn consume_upgraded_discovery_deltas(root: &Path, owner: &str, expected: usize) {
+async fn consume_upgraded_discovery_deltas(
+    root: &Path,
+    owner: &str,
+    expected: usize,
+    metered: bool,
+) {
     use maka_agent_facts::{discovery::SourceUri, durable::UnixMillis};
     use maka_agent_state::discovery::{
         DiscoveryStore,
@@ -1145,24 +1200,59 @@ async fn consume_upgraded_discovery_deltas(root: &Path, owner: &str, expected: u
     let discovery =
         DiscoveryStore::new(data.clone(), &serde_json::from_str(owner).unwrap()).unwrap();
     let at = UnixMillis(1);
+    let activity = discovery.plan_activity("compat-discovery").await.unwrap();
+    let allowance = activity.allowance(at, 1_500_000, false).unwrap();
+    assert_eq!((allowance.day, allowance.tokens), (0, 1_500_000));
+    assert_eq!(
+        (
+            activity.tokens,
+            activity.last_run_at,
+            activity.model_runs,
+            activity.skipped
+        ),
+        if metered {
+            (450_000, 0, 6, 12)
+        } else {
+            (0, 0, 0, 0)
+        }
+    );
+    data.write(discovery.charge_statement(
+        "compat-discovery".into(),
+        Some(allowance),
+        at,
+        Some(maka_agent_state::discovery::activity::ModelCharge::Admitted(2_000_000)),
+    ))
+    .await
+    .unwrap();
+    let continued = discovery.plan_activity("compat-discovery").await.unwrap();
+    assert_eq!(
+        (
+            continued.tokens,
+            continued.last_run_at,
+            continued.model_runs
+        ),
+        (activity.tokens + 2_000_000, at.0, activity.model_runs + 1)
+    );
+    assert_eq!(
+        continued.allowance(at, 1_500_000, false).unwrap_err(),
+        UnixMillis(at.0 + 7_200_000)
+    );
     let snapshot = || {
-        discovery.change_snapshot(at, ChangeQuery::Opening { limit: 15 }, |path, _| {
+        discovery.change_snapshot(at, ChangeQuery::opening(15, Path::new("")), |path, _| {
             path == Path::new("annex.md") || path.starts_with("compat-inbox")
         })
     };
-    let mut remaining = expected;
-    loop {
-        let ready = snapshot().await.unwrap();
-        assert_eq!(ready.deltas.len(), remaining.min(15));
-        assert_eq!(ready.omitted_deltas, remaining - ready.deltas.len());
-        if remaining == 0 {
-            break;
-        }
-        remaining = ready.omitted_deltas;
-        data.write(discovery.record_opening(OpeningSources::FollowUp(ready.deltas), false, at))
-            .await
-            .unwrap();
-    }
+    let ready = snapshot().await.unwrap();
+    assert_eq!(
+        ready.omitted_deltas, 0,
+        "all capsule inbox members fit in one group"
+    );
+    let deltas = ready.into_deltas();
+    assert_eq!(deltas.len(), expected);
+    data.write(discovery.record_opening(OpeningSources::FollowUp(deltas), at))
+        .await
+        .unwrap();
+    assert!(snapshot().await.unwrap().groups.is_empty());
     let cursor = discovery
         .get_source_cursor(SourceUri("annex.md".into()))
         .await
@@ -1763,6 +1853,7 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             )
             .await;
             assert_eq!(obs["session"]["id"], *session_id, "{obs}");
+            assert_ne!(obs["session"]["discoveryWorker"], true, "historical interactive session: {obs}");
             let hist = call(
                 &client,
                 "agent",
@@ -2314,15 +2405,27 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
                 JOIN discovery_preferences p USING(owner) JOIN discovery_source_cursors c USING(owner)
                 WHERE d.topic_id=?1 AND c.source_uri='annex.md'", [&dossier.topic_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
             assert_eq!((cycle,explored), if staged { (3,42) } else { (0,0) });
-            Some((owner, 1 + dossier.additional_deltas))
+            if let Some(key) = &dossier.entity_key {
+                let bound: String = conn.query_row("SELECT json_extract(value_json,'$') FROM plugin_data
+                    WHERE package_id='maka.agent.discovery' AND scope_id=?1 AND key='entity:'||?2",
+                    rusqlite::params![owner, key], |r| r.get(0)).unwrap();
+                assert_eq!(bound, dossier.topic_id);
+            }
+            if dossier.metered {
+                let last_run: i64 = conn.query_row("SELECT json_extract(value_json,'$.last_run_at') FROM plugin_data
+                    WHERE package_id='maka.agent.discovery' AND scope_id=?1 AND key='activity:compat-discovery'",
+                    [&owner], |r| r.get(0)).unwrap();
+                assert_eq!(last_run, 0);
+            }
+            Some((owner, 1 + dossier.additional_deltas, dossier.metered))
         } else {
             None
         };
         drop(conn);
-        if let Some((owner, expected)) = owner
+        if let Some((owner, expected, metered)) = owner
             && captured_changes
         {
-            consume_upgraded_discovery_deltas(&dirs.root, &owner, expected).await;
+            consume_upgraded_discovery_deltas(&dirs.root, &owner, expected, metered).await;
         }
         let upgraded_migrations = verify_sqlite_integrity_and_migrations(&dirs.root);
         for (db, prev_versions) in &manifest.migrations {

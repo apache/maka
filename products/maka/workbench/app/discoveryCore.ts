@@ -68,7 +68,7 @@ export function approvedDiscoveryNames(
 ) {
   const readsFiles = Object.values(selection).includes('read_files');
   return preview.names.filter((name) =>
-    name === 'UpdateWatchScope'
+    name === 'UpdateWatchScope' || name === 'UpdateWorkspaceMap'
       ? readsFiles
       : !Object.hasOwn(preview.groups, name) || Object.hasOwn(selection, name),
   );

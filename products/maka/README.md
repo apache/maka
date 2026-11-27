@@ -42,11 +42,11 @@ With Clipboard History and the quick launcher enabled, type `cb` to search recen
 
 Open **Proactive discovery** in the Bot header. Leave the direction blank for broad exploration, or enter a topic for focused checks. New interval plans wait 30 minutes after each run finishes. The editor also offers a fixed interval, manual checks, and pause or resume controls.
 
-Choose **Read-only tools** or **Standard Session tools** and review the exact names under **Show selected tools**. Both profiles read the original workspace. Workers prepare drafts, diffs and checklists under the State Root’s `discovery/staging/<topic_id>/` directory. Select an attachment in the dossier to preview or copy it.
+Choose **Read-only tools** or **Standard Session tools** and review the exact names under **Show selected tools**. Both profiles read the original workspace. Short drafts and replies appear in the dossier summary. A worker can attach one standalone file when it will remain useful. Open the dossier thread to act on a finding or prepare a code change.
 
-Every fourth periodic broad check starts with cold workspace sources. Directed checks and file changes follow up on existing topics. Tell the Bot or a dossier thread which topics to skip or revisit. Discovery saves these instructions locally in `discovery/preferences.md`.
+After onboarding, a broad timer starts a worker when files change, a watch triggers, or a mapped check is due. Idle timers advance without a model call. Automatic checks, including subscribed briefings, run at least two hours apart at 50% of the plan’s daily weighted token budget and at least four hours apart at 80%. At 100% they resume at UTC midnight. Manual checks and onboarding can run at any level and still count toward usage. Tell the Bot or a dossier thread which topics to skip or revisit. Discovery saves these instructions locally in `discovery/preferences.md`.
 
-Use **View investigation** to open the original worker conversation. Select and quote text from a Bot reply to attach feedback to its investigation.
+Open **Discovery → Runs** to inspect an active or recent probe and its recorded work. Select and quote text from a Bot reply to attach feedback to its investigation.
 
 ## Running and testing
 

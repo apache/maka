@@ -163,6 +163,7 @@ fn pause_plan(plan: &Plan, at: i64, source: Option<PauseSource>) -> Plan {
     if let Some(fire) = &mut paused.pending
         && matches!(fire.effect, ScheduledEffect::Discovery { .. })
     {
+        fire.deferred_until = None;
         fire.authorization = fire.authorization.take().map(|a| match a {
             Approval::Discovery {
                 approval, tools, ..
@@ -229,7 +230,6 @@ impl BackgroundGrant {
 }
 
 pub(super) struct ActiveInvestigation {
-    pub(super) task_id: String,
     pub(super) worker: String,
     pub(super) profile: DiscoveryWorkerTools,
 }
@@ -675,8 +675,9 @@ fn schedule_candidate(
             if next.authorization.is_none() {
                 return Err("scheduler_execution_unavailable".into());
             }
+            next.consecutive_incomplete = 0;
             next.task.next_fire_at = Some(at);
-            next.claim(at).map_err(reason)?;
+            next.claim_manual(at).map_err(reason)?;
             next
         }
         ScheduleChange::ClearHistory { .. } => plan()?.clear_history(at),

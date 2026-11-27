@@ -113,6 +113,7 @@ pub struct Status {
 }
 #[derive(Clone, Debug)]
 pub struct Record {
+    pub legacy_discovery_worker: bool,
     pub metadata: SessionRecord,
     pub is_room: bool,
     pub control_revision: u64,

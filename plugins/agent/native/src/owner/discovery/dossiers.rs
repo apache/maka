@@ -94,18 +94,18 @@ impl scheduler::Scheduler {
     pub(in crate::owner) fn dossier_tools(self: &Arc<Self>) -> Vec<ToolRegistration> {
         [
             (UPSERT,
-             "Save one topic with expected_revision (0 for creation). title must concisely name the project/subject and core problem (16-32 chars, e.g. 'ETF 轮动明早开跑：缺 4 只 CSV 与 pandas'); NEVER start title with timestamps, rev numbers, or correction words ('更正'/'撤回'/'补坑'/'上一版'). Omit title on updates (expected_revision>0) to keep the existing stable title unless the core subject changed; put what changed into change_note (1 short line). Write summary_md as a self-contained current-state brief without internal revision archaeology. Existing staged artifacts are preserved and merged by path unless replace_artifacts is true. When asking the user to pick concrete actions, populate choices (2-3 clickable options with key, label, detail, recommended, resolves, instruction). schedule_ops can revise linked once tasks or cancel them. Use interrupt only when the user needs to act now.",
+             "Save one topic with expected_revision (0 for creation). Use a stable entity_key across titles: github:<owner>/<repo>#<number> or <project>:<obligation>. Reuse the matching topic_id and revision. Skip unfollowed topics. Reopening a resolved topic requires reopen=true and its current revision. title must concisely name the project/subject and core issue or status (16-32 chars, e.g. '<Subject>: <core issue>'); NEVER start title with timestamps, rev numbers, or correction words ('更正'/'撤回'/'补坑'/'上一版'). Omit title on updates (expected_revision>0) to keep the existing stable title unless the core subject changed; put what changed into change_note (1 short line). For an alert (follow-up, file change, watch or deadline), write summary_md in 2–4 natural sentences: what changed now, why it matters and an optional next step. Open with the change, never a timestamped recheck label such as 'HH:MM 复查'. For an explicitly requested briefing or periodic synthesis, write 4–7 prose paragraphs with light lead-ins, source attribution and clear caveats. Link sources inline in Markdown. Keep headings, wide tables and technical logs out of summary_md. Use fact_state for the stable core fact or blocker and keep it unchanged on rechecks. Rephrasing or timestamps alone do not create a revision. Set briefing=true only when delivering an explicitly subscribed edition. Put detailed file paths, hashes, mtimes, command outputs, line numbers, or verification lists in optional evidence_md. Existing staged artifacts are preserved and merged by path unless replace_artifacts is true. When asking the user to pick concrete actions, populate choices (2-3 short pill options with key, label, detail, recommended, resolves, instruction). schedule_ops can revise linked once tasks or cancel them. Use interrupt only when the user needs to act now.",
              schemars::schema_for!(Upsert), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (STAGE, "Prepare a ready-to-use UTF-8 draft, diff, checklist or brief in this topic’s isolated staging directory. Workers pass the receipt verbatim in UpsertDossier.artifacts. In a dossier thread the draft attaches to that topic automatically. input_paths are source files in the authorized workspace.",
              schemars::schema_for!(artifacts::StageArtifact), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (REGISTER, "Monitor an existing topic without a model. Pass predicate as a JSON object matching kind: file_hash -> {expected_hash: null|sha256}; deadline -> {trigger_at_ms: <unix_ms>}; http_check -> {status_code?, contains_text?, not_contains_text?, json_pointer_equals?}. HTTP intervals are in seconds.",
-             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+             schemars::schema_for!(watches::RegisterWatch), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (PENDING, "Stage an exact connector mutation for desktop confirmation and finish this turn. Include every source file, staged input and overwrite destination. Use workspace paths or staging/<topic_id>/<path> for staged files.",
              schemars::schema_for!(actions::StagePendingAction), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
             (WATCH_SCOPE, "Inspect or adjust this workspace’s discovery watch scope. Use concrete content directories and a brief reason for each. mark_surveyed can add includes and exclusions together.",
-             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+             schemars::schema_for!(watch_scope::Update), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (WORKSPACE_MAP, "Inspect or update the durable workspace semantic map (sources, recheck_hints, unfinished frontier, and onboarding readiness). Independent of WatchScope's 16-root limit. Use upsert_sources / record_frontier during onboarding and mark_ready once primary areas are mapped; use mark_verified after checking a mapped source.",
-             schemars::schema_for!(workspace_map::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
+             schemars::schema_for!(workspace_map::Update), ToolSemantics::ExclusiveStep, ToolNesting::DirectOnly),
             (PREFERENCES, "Save an explicit user instruction for future discovery. Append a concise natural-language rule, or replace the rules for one scope. The host records the date.",
              schemars::schema_for!(preferences::Update), ToolSemantics::ExclusiveStep, ToolNesting::Nestable),
             (FINISH,
@@ -113,7 +113,7 @@ impl scheduler::Scheduler {
              schemars::schema_for!(Finish), ToolSemantics::FinishTurn, ToolNesting::DirectOnly),
             (LIST, "List compact discovery topics and user leads in urgency order.",
              schemars::schema_for!(DossiersRead), ToolSemantics::Parallel, ToolNesting::Nestable),
-            (READ, "Read one topic with its summary, artifacts, linked reminders, watches and pending actions.",
+            (READ, "Read one topic with its latest facts, evidence, change note, choices, artifacts, linked reminders, watches and pending actions.",
              schemars::schema_for!(ReadTopic), ToolSemantics::Parallel, ToolNesting::Nestable),
         ].into_iter().map(|(name, description, schema, semantics, nesting)| ToolRegistration {
             definition: ToolDefinition {
@@ -222,6 +222,7 @@ impl Owner {
                 }
                 self.complete_discovery(
                     context,
+                    FINISH,
                     Report::NoReport {
                         note: input.note,
                         notes: vec![],
@@ -271,6 +272,11 @@ impl Owner {
                 if input.dossier.expected_revision.is_none() {
                     return Err(ToolError::Failed("expected_revision is required".into()));
                 }
+                if input.dossier.briefing && !matches!(job.mode, Some(DiscoveryMode::Briefing)) {
+                    return Err(ToolError::Failed(
+                        "briefing requires an explicitly directed briefing run".into(),
+                    ));
+                }
                 let custody = context
                     .custody
                     .as_deref()
@@ -295,6 +301,7 @@ impl Owner {
                     },
                     fingerprint,
                     source: guard,
+                    plan: job.task_id,
                     worker: job.worker,
                     target: job.approval.target,
                     scheduler: self.scheduler.clone(),
@@ -345,7 +352,7 @@ impl Owner {
         }
     }
 
-    pub(super) async fn commit_discovery_writes<S: Statement>(
+    pub(in crate::owner) async fn commit_discovery_writes<S: Statement>(
         &self,
         dossier: S,
         writes: Vec<Mutation>,
@@ -409,7 +416,7 @@ pub(super) fn validate_stable_title(title: &str) -> Result<(), ToolError> {
             .any(|p| trimmed_unquoted.starts_with(p) || lower.starts_with(p))
     {
         return Err(ToolError::Failed(
-            "title must concisely name the project/subject and core problem (e.g. 'ETF 轮动明早开跑：缺 4 只 CSV 与 pandas'), not a timestamp, revision number, or correction prefix. Put what changed into change_note, or omit title on updates to preserve the existing stable title.".into(),
+            "title must concisely name the project/subject and core issue or status (e.g. '<Subject>: <core issue>'), not a timestamp, revision number, or correction prefix. Put what changed into change_note, or omit title on updates to preserve the existing stable title.".into(),
         ));
     }
     Ok(())
@@ -417,9 +424,9 @@ pub(super) fn validate_stable_title(title: &str) -> Result<(), ToolError> {
 
 fn model_summary(row: maka_agent_facts::discovery::DossierSummary) -> Value {
     serde_json::json!({
-        "topic_id": row.topic_id, "title": row.title, "signal": row.signal, "window_at": row.window_at,
+        "topic_id": row.topic_id, "entity_key": row.entity_key, "title": row.title, "signal": row.signal, "window_at": row.window_at,
         "revision": row.revision, "last_material_change_at": row.last_material_change_at,
-        "muted": row.muted, "artifact_count": row.artifact_count,
+        "muted": row.muted, "unfollowed": row.unfollowed, "artifact_count": row.artifact_count,
         "last_notified_revision": row.last_notified_revision, "last_interrupt_reason": row.last_interrupt_reason,
         "last_interrupt_at": row.last_interrupt_at,
     })
@@ -427,10 +434,16 @@ fn model_summary(row: maka_agent_facts::discovery::DossierSummary) -> Value {
 
 fn model_detail(detail: DossierDetail) -> Value {
     let dossier = detail.dossier;
+    let latest = detail.revisions.last();
     serde_json::json!({
-        "topic_id": dossier.topic_id, "title": dossier.title, "signal": dossier.signal,
+        "topic_id": dossier.topic_id, "entity_key": dossier.entity_key, "title": dossier.title, "signal": dossier.signal,
         "revision": dossier.revision, "priority_weight": dossier.priority_weight, "window_at": dossier.window_at,
         "summary_md": dossier.summary_md, "linked_task_ids": dossier.linked_task_ids,
+        "fact_state": latest.and_then(|r| r.fact_state.as_ref()),
+        "evidence_md": latest.and_then(|r| r.evidence_md.as_ref()),
+        "change_note": latest.and_then(|r| r.change_note.as_ref()),
+        "choices": latest.map_or(&[][..], |r| r.choices.as_slice()),
+        "chosen_key": latest.and_then(|r| r.chosen_key.as_ref()), "unfollowed": dossier.unfollowed,
         "thread_session_id": dossier.thread_session_id, "muted": dossier.muted,
         "last_checked_at": dossier.last_checked_at, "last_material_change_at": dossier.last_material_change_at,
         "last_notified_revision": dossier.last_notified_revision, "last_interrupt_reason": dossier.last_interrupt_reason,
@@ -452,7 +465,7 @@ fn model_detail(detail: DossierDetail) -> Value {
     })
 }
 
-struct WithStorage<A, B>(A, B);
+pub(super) struct WithStorage<A, B>(pub(super) A, pub(super) B);
 impl<A: Statement, B: Statement> Statement for WithStorage<A, B> {
     type Value = (A::Value, B::Value);
     type Output = B::Output;
@@ -490,6 +503,7 @@ struct DossierMutation {
     source: maka_event_log::root_store::SessionRevisionGuard,
     call_id: String,
     fingerprint: String,
+    plan: String,
     worker: String,
     target: ScheduledTarget,
     scheduler: Arc<scheduler::Scheduler>,
@@ -569,7 +583,7 @@ impl Statement for DossierMutation {
         };
         let dossier = self
             .discovery
-            .upsert_statement(dossier, reason, self.at)
+            .plan_upsert_statement(Some(self.plan), dossier, reason, self.at)
             .execute(c)?;
         let result = serde_json::to_value(&dossier.value.result)?;
         let receipt = UpsertReceipt {
@@ -582,7 +596,8 @@ impl Statement for DossierMutation {
             expected_revision: last.map(|r| r.revision),
             data: Data::Present(serde_json::to_value(receipt)?),
         });
-        if let Some(active) = storage.read_in_transaction(c, ACTIVE, &self.writer)?
+        if dossier.value.result.material_change
+            && let Some(active) = storage.read_in_transaction(c, ACTIVE, &self.writer)?
             && let Some(value) = active.data.value()
         {
             let mut job: Job = serde_json::from_value(value.clone())?;
@@ -663,12 +678,17 @@ impl Owner {
         let state = self.discovery.upsert_statement(
             DossierUpsert {
                 topic_id: topic_id.clone(),
+                entity_key: input.entity_key,
+                reopen: false,
                 expected_revision: Some(0),
                 title,
                 signal: maka_agent_facts::discovery::DossierSignal::Yellow,
                 priority_weight: 100.,
                 window_at: None,
                 summary_md: summary,
+                fact_state: None,
+                briefing: false,
+                evidence_md: None,
                 change_note: None,
                 choices: vec![],
                 artifacts: vec![],
@@ -845,7 +865,70 @@ impl Owner {
 mod schema_tests {
     use super::*;
 
-    fn find_boolean_subschema<'a>(schema: &'a Value, path: &str, out: &mut Vec<String>) {
+    #[tokio::test]
+    async fn dossier_tools_expose_state_updates_at_top_level_in_code_mode() {
+        let (_dir, root, _) = test_store().await;
+        let scheduler = Arc::new(scheduler::Scheduler::new(root, String::new()));
+        let catalog = maka_tools::ToolCatalog::new(scheduler.dossier_tools()).unwrap();
+        let top_level = catalog.direct_only();
+        for name in [
+            UPSERT,
+            FINISH,
+            PENDING,
+            REGISTER,
+            WATCH_SCOPE,
+            WORKSPACE_MAP,
+        ] {
+            assert!(top_level.contains(name), "{name} must be a top-level tool");
+        }
+        let nested = catalog.nested();
+        for name in [LIST, READ, STAGE, PREFERENCES] {
+            assert!(nested.contains(name), "{name} must be available in exec");
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_read_dossier_exposes_the_latest_evidence_choice_and_follow_state() {
+        let (_dir, root, owner) = test_store().await;
+        let writer = root.data_writer().unwrap();
+        let store = DiscoveryStore::new(writer.clone(), &owner).unwrap();
+        let topic = TopicId("build".into());
+        let upsert = |rev, signal, evidence: &str| {
+            serde_json::from_value(serde_json::json!({
+            "topic_id":"build","entity_key":"Build:Release","expected_revision":rev,"title":"Build","signal":signal,
+            "priority_weight":1,"summary_md":"Build status","fact_state":evidence,"evidence_md":evidence,
+            "change_note":format!("Observed {evidence}"), "choices":[{"key":"a","label":"Inspect","instruction":"Inspect build log"}]
+        })).unwrap()
+        };
+        store
+            .upsert_dossier(upsert(0, "yellow", "Waiting"), UnixMillis(1))
+            .await
+            .unwrap();
+        store
+            .upsert_dossier(upsert(1, "red", "Build 82 failed"), UnixMillis(2))
+            .await
+            .unwrap();
+        writer
+            .write(store.choose_statement(topic.clone(), 2, "a".into(), false, UnixMillis(3)))
+            .await
+            .unwrap();
+        writer
+            .write(store.unfollow_statement(topic.clone(), true, UnixMillis(4)))
+            .await
+            .unwrap();
+        let output = model_detail(store.detail(topic).await.unwrap().unwrap());
+        assert_eq!(output["evidence_md"], "Build 82 failed");
+        assert_eq!(output["change_note"], "Observed Build 82 failed");
+        assert_eq!(output["choices"][0]["label"], "Inspect");
+        assert_eq!(output["chosen_key"], "a");
+        assert_eq!(output["unfollowed"], true);
+        assert_eq!(output["entity_key"], "build:release");
+        let summary = model_summary(store.list_dossiers().await.unwrap().pop().unwrap());
+        assert_eq!(summary["entity_key"], output["entity_key"]);
+        assert_eq!(summary["unfollowed"], true);
+    }
+
+    fn find_boolean_subschema(schema: &Value, path: &str, out: &mut Vec<String>) {
         if schema.is_boolean() {
             out.push(path.to_owned());
             return;

@@ -175,6 +175,42 @@ pub(super) fn sync_watch_scope(
     })
 }
 
+fn set_unfollowed_rule(
+    state: &RootOwner,
+    topic: &TopicId,
+    title: &str,
+    unfollowed: bool,
+) -> io::Result<()> {
+    let scope = format!("unfollowed:{}", topic.0);
+    if !unfollowed {
+        let prefix = format!("- [{scope}] ");
+        return edit_file(state, RULES, |old| {
+            let lines: Vec<_> = old
+                .lines()
+                .filter(|line| !line.trim().is_empty() && !line.starts_with(&prefix))
+                .collect();
+            if lines.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", lines.join("\n"))
+            }
+        });
+    }
+    let clean_title: String = title
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(120)
+        .collect();
+    Update {
+        mode: Edit::Replace,
+        scope: Some(scope),
+        rule: format!(
+            "User stopped following \"{clean_title}\". Do not investigate, update, or re-open this topic."
+        ),
+    }
+    .apply(state, "global")
+}
+
 fn outcome(state: &RootOwner, topic: &TopicId, action: &str) -> io::Result<()> {
     let label: String = topic
         .0
@@ -375,6 +411,72 @@ impl Owner {
         };
         Ok(self.observe_discovery_outcome(&writer, state, input.topic_id, action))
     }
+
+    pub(crate) fn prepare_dossier_unfollow(
+        self: &Arc<Self>,
+        input: DossierUnfollow,
+    ) -> Result<DataChange, String> {
+        let writer = self.store.data_writer().map_err(reason)?;
+        let state = self.discovery.unfollow_statement(
+            input.topic_id.clone(),
+            input.unfollowed,
+            UnixMillis(now() as i64),
+        );
+        let (committed, observed) = tokio::sync::oneshot::channel::<String>();
+        let owner = self.clone();
+        let topic = input.topic_id;
+        let unfollowed = input.unfollowed;
+        self.workers.spawn(async move {
+            let Ok(title) = observed.await else { return };
+            if let Ok(root) = owner.store.owned_root()
+                && let Err(error) = tokio::task::spawn_blocking(move || {
+                    set_unfollowed_rule(&root, &topic, &title, unfollowed)?;
+                    let action = if unfollowed {
+                        "stopped following the topic"
+                    } else {
+                        "resumed following the topic"
+                    };
+                    outcome(&root, &topic, action)
+                })
+                .await
+                .map_err(io::Error::other)
+                .and_then(|r| r)
+            {
+                tracing::warn!(%error, "Could not record discovery unfollow rule");
+            }
+        });
+        Ok(writer.prepare(UnfollowObserved(state, committed)))
+    }
+}
+
+struct UnfollowObserved<S>(S, tokio::sync::oneshot::Sender<String>);
+
+impl<S: Statement<Output = String>> Statement for UnfollowObserved<S> {
+    type Value = (S::Value, tokio::sync::oneshot::Sender<String>);
+    type Output = S::Output;
+    const PREPARE_OFF_THREAD: bool = S::PREPARE_OFF_THREAD;
+    fn retain(&self) -> Vec<Arc<dyn std::marker::Send + Sync>> {
+        self.0.retain()
+    }
+    fn prepare(self) -> Result<Self, StoreError> {
+        Ok(Self(self.0.prepare()?, self.1))
+    }
+    fn execute(self, c: &rusqlite::Connection) -> Result<Prepared<Self::Value>, StoreError> {
+        let state = self.0.execute(c)?;
+        Ok(Prepared {
+            value: (state.value, self.1),
+            changed: state.changed,
+            notification: state.notification,
+        })
+    }
+    fn committed((value, signal): Self::Value) -> Self::Output {
+        let title = S::committed(value);
+        let _ = signal.send(title.clone());
+        title
+    }
+    fn isolated_rejection(error: &StoreError) -> bool {
+        S::isolated_rejection(error)
+    }
 }
 
 #[cfg(test)]
@@ -429,5 +531,26 @@ mod tests {
             }
         }
         panic!("rules exceeded the file size budget");
+    }
+
+    #[test]
+    fn unfollow_rule_is_written_and_cleanly_removed() {
+        let base = tempfile::tempdir().unwrap();
+        let state = RootOwner::create(
+            &base.path().join("state"),
+            &RootNamespaces {
+                ownership: base.path().join("owners"),
+                control: base.path().join("control"),
+            },
+        )
+        .unwrap();
+        let topic = TopicId("pr-3684".into());
+        set_unfollowed_rule(&state, &topic, "PR #3684", true).unwrap();
+        let dir = discovery_dir(&state, false).unwrap();
+        let rules = read_text(&dir, RULES, MAX_BYTES).unwrap();
+        assert!(rules.contains("[unfollowed:pr-3684]") && rules.contains("PR #3684"));
+        set_unfollowed_rule(&state, &topic, "PR #3684", false).unwrap();
+        let after = read_text(&dir, RULES, MAX_BYTES).unwrap();
+        assert!(!after.contains("[unfollowed:pr-3684]"));
     }
 }

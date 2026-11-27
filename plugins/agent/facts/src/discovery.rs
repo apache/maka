@@ -67,6 +67,8 @@ pub struct DossierArtifact {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossierRecord {
     pub topic_id: TopicId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_key: Option<String>,
     pub title: String,
     pub signal: DossierSignal,
     pub priority_weight: f64,
@@ -77,6 +79,8 @@ pub struct DossierRecord {
     pub linked_task_ids: Vec<String>,
     pub thread_session_id: Option<String>,
     pub muted: bool,
+    #[serde(default)]
+    pub unfollowed: bool,
     pub last_checked_at: UnixMillis,
     pub last_material_change_at: UnixMillis,
     pub last_notified_revision: u64,
@@ -90,12 +94,18 @@ pub struct DossierRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DossierSummary {
     pub topic_id: TopicId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_key: Option<String>,
     pub title: String,
     pub signal: DossierSignal,
     pub window_at: Option<UnixMillis>,
     pub revision: u64,
     pub last_material_change_at: UnixMillis,
     pub muted: bool,
+    #[serde(default)]
+    pub unfollowed: bool,
+    #[serde(default)]
+    pub preview: String,
     pub artifact_count: u64,
     pub last_notified_revision: u64,
     pub last_interrupt_reason: Option<String>,
@@ -176,6 +186,10 @@ pub struct DossierRevision {
     pub title: String,
     pub signal: DossierSignal,
     pub summary_md: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_md: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_state: Option<String>,
     #[serde(default)]
     pub change_note: Option<String>,
     #[serde(default)]

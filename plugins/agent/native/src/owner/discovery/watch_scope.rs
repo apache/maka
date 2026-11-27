@@ -42,20 +42,39 @@ pub(in crate::owner) struct WatchScopes {
 #[derive(Default)]
 pub(super) struct SavedScopes {
     by_key: BTreeMap<String, Arc<WatchScope>>,
+    included: Arc<BTreeSet<PathBuf>>,
     excluded: Arc<BTreeSet<PathBuf>>,
-    mapped_watch_roots: BTreeMap<String, Vec<PathBuf>>,
+    registered: BTreeSet<PathBuf>,
+    mapped_watch_roots: BTreeMap<String, workspace_map::MapWatches>,
 }
 
 impl WatchScopes {
-    pub(super) fn set_mapped_watch_roots(&self, key: String, roots: Vec<PathBuf>) {
-        self.changed.send_modify(|scopes| {
+    pub(super) fn set_mapped_watch_roots(&self, key: String, roots: workspace_map::MapWatches) {
+        self.changed.send_if_modified(|scopes| {
+            if scopes.mapped_watch_roots.get(&key) == Some(&roots) {
+                return false;
+            }
             scopes.mapped_watch_roots.insert(key, roots);
+            scopes.index_roots();
+            true
         });
     }
 }
 
 impl SavedScopes {
-    fn index_exclusions(&mut self) {
+    fn index_roots(&mut self) {
+        self.included = Arc::new(
+            self.by_key
+                .values()
+                .flat_map(|s| s.include_roots.iter().map(|r| r.path.clone()))
+                .collect(),
+        );
+        self.registered = self
+            .included
+            .iter()
+            .chain(self.mapped_watch_roots.values().flat_map(|m| &m.roots))
+            .cloned()
+            .collect();
         self.excluded = Arc::new(
             self.by_key
                 .values()
@@ -154,11 +173,6 @@ pub(super) enum Update {
 
 const PREFIX: &str = "discovery/watch-scope/";
 
-pub(super) enum ScopeView {
-    Watcher,
-    Workspace,
-}
-
 fn scope_key(workspace: &Path) -> String {
     format!(
         "{PREFIX}{}",
@@ -166,7 +180,7 @@ fn scope_key(workspace: &Path) -> String {
     )
 }
 
-fn broad_root(path: &Path, home: Option<&Path>) -> bool {
+pub(super) fn broad_root(path: &Path, home: Option<&Path>) -> bool {
     path.parent().is_none()
         || home.is_some_and(|home| {
             path.strip_prefix(home).is_ok_and(|rel| {
@@ -188,11 +202,16 @@ fn broad_root(path: &Path, home: Option<&Path>) -> bool {
         })
 }
 
-struct WorkspaceScope {
-    root: PathBuf,
-    dir: Dir,
-    home: Option<PathBuf>,
-    policy: Compiled,
+pub(super) enum RootEntry {
+    Directory,
+    MappedSource,
+}
+
+pub(super) struct WorkspaceScope {
+    pub(super) root: PathBuf,
+    pub(super) dir: Dir,
+    pub(super) home: Option<PathBuf>,
+    pub(super) policy: Compiled,
 }
 
 impl WorkspaceScope {
@@ -209,7 +228,7 @@ impl WorkspaceScope {
         if rel.as_os_str().is_empty()
             || !rel.components().all(|c| matches!(c, Component::Normal(_)))
         {
-            return Err("provide a directory strictly inside this workspace".into());
+            return Err("provide a concrete path strictly inside this workspace".into());
         }
         if !self.policy.access(&absolute).can_read() {
             return Err("workspace read access required".into());
@@ -217,7 +236,12 @@ impl WorkspaceScope {
         Ok(absolute)
     }
 
-    fn path(&self, supplied: &Path, must_exist: bool) -> Result<PathBuf, String> {
+    pub(super) fn path(
+        &self,
+        supplied: &Path,
+        kind: RootEntry,
+        must_exist: bool,
+    ) -> Result<PathBuf, String> {
         let absolute = self.absolute(supplied)?;
         let rel = absolute
             .strip_prefix(&self.root)
@@ -233,6 +257,20 @@ impl WorkspaceScope {
                 }
                 Ok(canonical)
             }
+            // A concrete map entry may also name a single file.
+            Err(_)
+                if matches!(kind, RootEntry::MappedSource)
+                    && rel
+                        .parent()
+                        .zip(rel.file_name())
+                        .is_some_and(|(parent, name)| {
+                            open_relative(&self.dir, parent)
+                                .and_then(|dir| dir.symlink_metadata(name))
+                                .is_ok_and(|m| m.is_file())
+                        }) =>
+            {
+                Ok(absolute)
+            }
             Err(e)
                 if !must_exist
                     && matches!(
@@ -242,7 +280,9 @@ impl WorkspaceScope {
             {
                 Ok(absolute)
             }
-            Err(e) => Err(format!("expected a real directory without symlinks: {e}")),
+            Err(e) => Err(format!(
+                "expected a real workspace entry without symlinks: {e}"
+            )),
         }
     }
 
@@ -252,7 +292,7 @@ impl WorkspaceScope {
         input: ScopedRoot,
         include: bool,
     ) -> Result<(), String> {
-        let path = self.path(&input.path, include)?;
+        let path = self.path(&input.path, RootEntry::Directory, include)?;
         if include && broad_root(&path, self.home.as_deref()) {
             return Err("include a concrete content directory below the system root".into());
         }
@@ -354,8 +394,8 @@ impl WatchScopes {
                 break;
             }
         }
-        saved.mapped_watch_roots = scheduler.all_mapped_watch_roots().await.unwrap_or_default();
-        saved.index_exclusions();
+        saved.mapped_watch_roots = scheduler.all_mapped_watch_roots().await?;
+        saved.index_roots();
         self.changed.send_replace(saved);
         Ok(())
     }
@@ -381,69 +421,46 @@ impl WatchScopes {
         }
         Some(match language {
             Language::ZH_CN => {
-                "此主目录需要调查监测范围。先查看顶层目录、云盘或即时通讯应用中具体的文档/接收文件目录、本地 AI 工具会话目录，以及噪声缓存/构建目录（注意：系统 Library 与隐藏点目录默认不会递归监听，需要显式加入 include_roots 才会监听）。调用一次 UpdateWatchScope，使用 mark_surveyed 提交 include_roots、exclude_roots 和简短理由，然后继续调查。"
+                "此主目录需要调查监测范围。先查看顶层目录、云盘或即时通讯应用中具体的文档/接收文件目录、本地 AI 工具会话目录，以及噪声缓存/构建目录（注意：系统 Library 与隐藏点目录默认不会递归监听，需要显式加入 include_roots 才会监听）。地图中的 watch 来源会自动监听。用 UpdateWatchScope 的 mark_surveyed 提交额外的 include_roots、exclude_roots 和简短理由，然后继续调查。"
             }
             Language::ZH_TW => {
-                "此家目錄需要調查監測範圍。先查看頂層目錄、雲端硬碟或即時通訊應用程式中具體的文件/接收檔案目錄、本地 AI 工具會話目錄，以及雜訊快取/建置目錄（注意：系統 Library 與隱藏點目錄預設不會遞迴監聽，需明確加入 include_roots 才會監聽）。呼叫一次 UpdateWatchScope，使用 mark_surveyed 提交 include_roots、exclude_roots 和簡短理由，然後繼續調查。"
+                "此家目錄需要調查監測範圍。先查看頂層目錄、雲端硬碟或即時通訊應用程式中具體的文件/接收檔案目錄、本地 AI 工具會話目錄，以及雜訊快取/建置目錄（注意：系統 Library 與隱藏點目錄預設不會遞迴監聽，需明確加入 include_roots 才會監聽）。地圖中的 watch 來源會自動監聽。以 UpdateWatchScope 的 mark_surveyed 提交額外的 include_roots、exclude_roots 和簡短理由，然後繼續調查。"
             }
             _ => {
-                "This home directory is due for a watch-scope survey. Inspect top-level folders, concrete document/attachment folders inside cloud drives or messaging apps, local AI coding/chat session directories, and noisy cache/build subdirectories (note: system Library and hidden dot-directories are not watched recursively by default unless explicitly included). Call UpdateWatchScope once with action mark_surveyed, include_roots and exclude_roots with brief reasons. Then continue discovery."
+                "This home directory is due for a watch-scope survey. Inspect top-level folders, concrete document/attachment folders inside cloud drives or messaging apps, local AI coding/chat session directories, and noisy cache/build subdirectories (note: system Library and hidden dot-directories are not watched recursively by default unless explicitly included). Mapped watch sources subscribe automatically. Use UpdateWatchScope mark_surveyed for any additional include_roots or exclude_roots with brief reasons. Then continue discovery."
             }
         })
     }
 
-    pub(super) fn delta_roots(&self, workspaces: BTreeSet<PathBuf>, view: ScopeView) -> DeltaRoots {
+    pub(super) fn delta_roots(&self, workspaces: BTreeSet<PathBuf>) -> DeltaRoots {
         let saved = self.changed.borrow();
         let mut roots = DeltaRoots {
             private: self.private.clone(),
+            included: saved.included.clone(),
             excluded: saved.excluded.clone(),
             ..Default::default()
         };
-        let add_includes = |scope: &Arc<WatchScope>, out: &mut BTreeSet<PathBuf>| {
-            out.extend(
-                scope
-                    .include_roots
-                    .iter()
-                    .map(|r| &r.path)
-                    .filter(|p| p.ancestors().any(|a| workspaces.contains(a)))
+        for workspace in &workspaces {
+            roots.recursive.extend(
+                saved
+                    .registered
+                    .range::<PathBuf, _>(workspace..)
+                    .take_while(|p| p.starts_with(workspace))
                     .cloned(),
             );
-        };
-        match view {
-            ScopeView::Watcher => {
-                for scope in saved.by_key.values() {
-                    add_includes(scope, &mut roots.recursive);
-                }
-                for mapped in saved.mapped_watch_roots.values().flatten() {
-                    if mapped.ancestors().any(|a| workspaces.contains(a)) {
-                        roots.recursive.insert(mapped.clone());
-                    }
-                }
-            }
-            ScopeView::Workspace => {
-                let policies: BTreeSet<_> = workspaces
-                    .iter()
-                    .flat_map(|p| {
-                        p.ancestors()
-                            .filter(move |a| *a == p || self.directories.contains_key(*a))
-                    })
-                    .collect();
-                for path in policies {
-                    if let Some(scope) = saved.by_key.get(&scope_key(path)) {
-                        add_includes(scope, &mut roots.recursive);
-                    }
-                    if let Some(mapped) =
-                        saved.mapped_watch_roots.get(&workspace_map::map_key(path))
-                    {
-                        for p in mapped {
-                            if p.ancestors().any(|a| workspaces.contains(a)) {
-                                roots.recursive.insert(p.clone());
-                            }
-                        }
-                    }
-                }
-            }
         }
+        roots.surveyed_home = self.home.as_ref().is_some_and(|home| {
+            if !workspaces.contains(home) {
+                return false;
+            }
+            let map = saved.mapped_watch_roots.get(&workspace_map::map_key(home));
+            map.is_some_and(|m| m.ready)
+                || saved.by_key.get(&scope_key(home)).is_some_and(|scope| {
+                    scope.surveyed_at.is_some()
+                        && (!scope.include_roots.is_empty()
+                            || map.is_some_and(|m| !m.roots.is_empty()))
+                })
+        });
         roots.recursive.extend(workspaces);
         roots.home = self
             .home
@@ -537,9 +554,7 @@ impl Owner {
                 .watch_scope(&root)
                 .await
                 .map_err(ToolError::Failed)?;
-            let mut base = self
-                .watch_scopes
-                .delta_roots([root.clone()].into(), ScopeView::Workspace);
+            let mut base = self.watch_scopes.delta_roots([root.clone()].into());
             base.recursive.retain(|p| p == &root);
             let caps = self.watch_scopes.directories.clone();
             let baseline = tokio::task::spawn_blocking(move || {
@@ -551,6 +566,12 @@ impl Owner {
             let mut result =
                 serde_json::to_value(scope).map_err(|e| ToolError::Failed(reason(e)))?;
             result["baseline"] = serde_json::json!(baseline);
+            let scopes = self.watch_scopes.changed.borrow();
+            let mapped = scopes
+                .mapped_watch_roots
+                .get(&workspace_map::map_key(&root));
+            result["mapped_watch_roots"] =
+                serde_json::json!(mapped.map_or(&[][..], |map| map.roots.as_slice()));
             return Ok(result);
         }
         if cancel.is_cancelled() {
@@ -565,15 +586,16 @@ impl Owner {
             .save(&self.scheduler, state, workspace, update, &cancel)
             .await?;
         if prune_exclusions {
-            let scope = self
-                .watch_scopes
-                .delta_roots([root.clone()].into(), ScopeView::Workspace);
-            let _ = self
-                .discovery
-                .prune_cursors_matching(move |p| {
-                    p.starts_with(&root) && !scope.permits(p, false) && !scope.permits(p, true)
-                })
-                .await;
+            let scope = self.watch_scopes.delta_roots([root.clone()].into());
+            self.discovery
+                .prune_cursors_matching(
+                    maka_agent_state::discovery::changes::CursorSelection::All,
+                    move |p| {
+                        p.starts_with(&root) && !scope.permits(p, false) && !scope.permits(p, true)
+                    },
+                )
+                .await
+                .map_err(dossiers::write_error)?;
         }
         Ok(serde_json::json!({"updated":true}))
     }
@@ -618,7 +640,7 @@ impl WatchScopes {
             .map_err(result_write_error)?;
         self.changed.send_modify(|scopes| {
             scopes.by_key.insert(key.clone(), Arc::new(scope));
-            scopes.index_exclusions();
+            scopes.index_roots();
         });
         drop(edit);
         let saved = self.changed.clone();
@@ -640,6 +662,91 @@ mod tests {
     use super::*;
     use maka_sandbox::filesystem::{Access, Policy, Rule};
     use std::fs;
+
+    #[tokio::test]
+    async fn discovery_surveyed_home_subscribes_only_to_mapped_and_included_projects() {
+        use notify::RecursiveMode::{NonRecursive, Recursive};
+        let (temp, log, _) = test_store().await;
+        let home = temp.path().join("home");
+        for child in [
+            "Documents/unrelated",
+            "Developer/mapped",
+            "Developer/included",
+            "generated/mapped",
+            ".incoming",
+            "guards",
+        ] {
+            fs::create_dir_all(home.join(child)).unwrap();
+        }
+        let home = host_path(&home.canonicalize().unwrap()).unwrap().to_owned();
+        let state = log.owned_root().unwrap();
+        let configured = workspace::open(
+            vec![maka_host_runtime::DirectoryRootSpec {
+                label: "home".into(),
+                path: home.clone(),
+            }],
+            state.canonical_path(),
+        )
+        .unwrap();
+        let mut scopes = WatchScopes::open(&configured, &state).unwrap();
+        scopes.home = Some(home.clone());
+        let mapped = home.join("Developer/mapped");
+        let included = home.join("Developer/included");
+        let single = home.join(".incoming/manifest.md");
+        fs::write(&single, "release").unwrap();
+        let excluded = home.join("generated");
+        scopes.set_mapped_watch_roots(
+            workspace_map::map_key(&home),
+            workspace_map::MapWatches {
+                ready: true,
+                roots: vec![mapped.clone(), single.clone(), excluded.join("mapped")],
+            },
+        );
+        for includes in [
+            vec![],
+            vec![ScopedRoot {
+                path: included.clone(),
+                reason: "docs".into(),
+            }],
+        ] {
+            let has_include = !includes.is_empty();
+            scopes.changed.send_modify(|saved| {
+                saved.by_key.insert(
+                    scope_key(&home),
+                    Arc::new(WatchScope {
+                        surveyed_at: Some(1),
+                        include_roots: includes,
+                        exclude_roots: vec![ScopedRoot {
+                            path: excluded.clone(),
+                            reason: "generated files".into(),
+                        }],
+                    }),
+                );
+                saved.index_roots();
+            });
+            let roots = scopes.delta_roots([home.clone()].into());
+            assert!(roots.permits(&single, false));
+            assert!(!roots.permits(&home.join(".incoming/unrelated"), false));
+            assert!(!roots.permits_mapped(&excluded.join("mapped/file")));
+            let target = home.join("guards/exact");
+            let actual = roots
+                .subscriptions(&scopes.directories, [target.as_path()].into_iter(), |_| {
+                    true
+                })
+                .unwrap();
+            let mut wanted: BTreeMap<_, _> = [
+                (home.clone(), NonRecursive),
+                (home.join("guards"), NonRecursive),
+                (home.join(".incoming"), NonRecursive),
+                (mapped.clone(), Recursive),
+            ]
+            .into();
+            if has_include {
+                wanted.insert(included.clone(), Recursive);
+            }
+            assert_eq!(actual, wanted);
+        }
+    }
 
     #[tokio::test]
     async fn discovery_scope_validates_the_whole_survey_before_persisting_and_reloading() {
@@ -697,7 +804,11 @@ mod tests {
                 "{path}"
             );
         }
-        assert!(workspace().path(temp.path(), false).is_err());
+        assert!(
+            workspace()
+                .path(temp.path(), RootEntry::Directory, false)
+                .is_err()
+        );
         for (include, limit) in [(true, 16), (false, 64)] {
             let mut entries = Vec::new();
             for i in 0..=limit {
@@ -782,7 +893,7 @@ mod tests {
                     .contains("mark_surveyed")
             );
         }
-        let roots = restored.delta_roots([home.clone()].into(), ScopeView::Workspace);
+        let roots = restored.delta_roots([home.clone()].into());
         assert!(roots.permits(&home.join(leaf).join("file"), false));
         assert!(!roots.permits(&home.join("build/stale"), false));
         #[cfg(target_os = "macos")]

@@ -903,10 +903,22 @@ pub struct DataSource {
     pub deployment: uuid::Uuid,
     pub namespace: maka_plugin_core::composition::InstanceId,
 }
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentDiscoveryRunStatus")]
+pub struct DiscoveryRunStatus {
+    pub started_at: u64,
+    pub terminal: Option<maka_agent_facts::durable::Terminal>,
+}
+
 #[derive(Clone, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discovery_worker: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_run: Option<DiscoveryRunStatus>,
     #[serde(default)]
     pub incognito: bool,
     pub kind: SessionKind,
@@ -2385,6 +2397,7 @@ pub fn contract() -> Contract {
                 ("watchDossiers".into(), method::<DossiersRead, DossiersUpdate>(MethodMode::Subscription)),
                 ("setDossierMuted".into(), method::<DossierMute, ()>(MethodMode::Mutation)),
                 ("setDossierResolved".into(), method::<DossierResolve, ()>(MethodMode::Mutation)),
+                ("setDossierUnfollowed".into(), method::<DossierUnfollow, ()>(MethodMode::Mutation)),
                 ("chooseDossierOption".into(), method::<DossierChoose, ()>(MethodMode::Mutation)),
                 ("setDiscoveryNotifications".into(), method::<DiscoveryNotifications, ()>(MethodMode::Mutation)),
                 ("dropDiscoveryLead".into(), method::<DiscoveryLead, DossierRead>(MethodMode::Mutation)),

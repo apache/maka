@@ -128,6 +128,7 @@ test('built installation publishes the session methods on the original Agent exp
     ['watchDossiers', 'subscription'],
     ['setDossierMuted', 'mutation'],
     ['setDossierResolved', 'mutation'],
+    ['setDossierUnfollowed', 'mutation'],
     ['chooseDossierOption', 'mutation'],
     ['setDiscoveryNotifications', 'mutation'],
     ['dropDiscoveryLead', 'mutation'],

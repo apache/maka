@@ -2797,6 +2797,7 @@ export type HistoryRowAddress =
       partOrdinal: number;
     };
 export type FactId = string;
+export type Terminal = 'completed' | 'failed' | 'cancelled';
 export type PresetRevision = number;
 /**
  * A complete logical Turn boundary within the source session.
@@ -7817,6 +7818,8 @@ export interface MemoryMetadata {
   temporal: MemoryTemporal;
 }
 export interface AgentSession {
+  discoveryWorker?: boolean;
+  discoveryRun?: AgentDiscoveryRunStatus | null;
   incognito?: boolean;
   kind: AgentSessionKind;
   appliedPreset?: AppliedPreset | null;
@@ -7845,6 +7848,10 @@ export interface AgentSession {
    */
   tailMessageId: string | null;
   activity: AgentSessionActivity;
+}
+export interface AgentDiscoveryRunStatus {
+  startedAt: number;
+  terminal?: Terminal | null;
 }
 /**
  * Immutable execution configuration captured when a session is created.

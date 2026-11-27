@@ -19,7 +19,7 @@
 
 //! Logical delta scope and the physical subscriptions needed to cover it.
 use super::{
-    changes::{ignored, visible_in_workspace},
+    changes::{generated_directory, ignored, visible_in_workspace},
     *,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
@@ -174,41 +174,60 @@ impl CacheTags {
 #[derive(Default)]
 pub(super) struct DeltaRoots {
     pub home: Option<PathBuf>,
+    pub surveyed_home: bool,
     pub recursive: BTreeSet<PathBuf>,
+    pub included: Arc<BTreeSet<PathBuf>>,
     pub excluded: Arc<BTreeSet<PathBuf>>,
     pub private: Vec<PathBuf>,
 }
 
 impl DeltaRoots {
     pub(super) fn permits(&self, path: &Path, directory: bool) -> bool {
+        let dir = if directory {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        self.in_scope(path, directory) && !self.generated(dir)
+    }
+
+    fn generated(&self, path: &Path) -> bool {
+        path.ancestors()
+            .take_while(|p| !self.recursive.contains(*p) && Some(*p) != self.home.as_deref())
+            .any(generated_directory)
+    }
+
+    pub(super) fn permits_mapped(&self, path: &Path) -> bool {
         if ignored(path, &self.private) {
             return false;
         }
-        // Longest-prefix precedence: a more specific explicit include root overrides
-        // an ancestor exclude root (e.g. excluding Library while including a concrete
-        // document folder under it).
-        let excluded_depth = path
-            .ancestors()
-            .find(|p| self.excluded.contains(*p))
-            .map(|p| p.components().count());
-        let included_depth = path
-            .ancestors()
-            .find(|p| self.recursive.contains(*p))
-            .map(|p| p.components().count());
-        if let Some(ex) = excluded_depth
-            && included_depth.is_none_or(|inc| inc <= ex)
-        {
+        // The nearest explicit rule wins. A mapped watch root cannot override an exclusion.
+        for ancestor in path.ancestors() {
+            if self.excluded.contains(ancestor) {
+                return false;
+            }
+            if self.included.contains(ancestor) {
+                return true;
+            }
+        }
+        true
+    }
+
+    fn in_scope(&self, path: &Path, directory: bool) -> bool {
+        if !self.permits_mapped(path) {
             return false;
         }
-        visible_in_workspace(path, directory, |p| {
-            self.recursive.contains(p)
-                || self.home.as_deref().is_some_and(|home| {
-                    p == home
-                        && path
-                            .strip_prefix(home)
-                            .is_ok_and(|rel| rel.iter().next().is_none_or(home_child))
-                })
-        })
+        self.recursive.contains(path)
+            || visible_in_workspace(path, directory, |p| {
+                self.recursive.contains(p)
+                    || self.home.as_deref().is_some_and(|home| {
+                        p == home
+                            && (!self.surveyed_home || path == home || path.parent() == Some(home))
+                            && path
+                                .strip_prefix(home)
+                                .is_ok_and(|rel| rel.iter().next().is_none_or(home_child))
+                    })
+            })
     }
 
     pub(super) fn subscriptions<'a>(
@@ -220,20 +239,35 @@ impl DeltaRoots {
         let mut wanted = BTreeMap::new();
         let mut tags = CacheTags::default();
         let mut subscribe = |path: &Path, mode| {
-            if !can_read(path) || !self.permits(path, true) {
+            if !can_read(path) || !self.in_scope(path, true) {
                 return;
             }
             let Some((root, cap)) = roots.iter().find(|(p, _)| path.starts_with(p)) else {
                 return;
             };
             // Persisted roots and directory entries can be replaced by symlinks between reloads.
-            if let Err(error) = open_relative(cap, path.strip_prefix(root).expect("matched root")) {
+            let relative = path.strip_prefix(root).expect("matched root");
+            if let Err(error) = open_relative(cap, relative) {
+                // A mapped single file needs its parent to observe atomic replacement.
+                if let (Some(parent), Some(name)) = (relative.parent(), relative.file_name())
+                    && can_read(&root.join(parent))
+                    && open_relative(cap, parent)
+                        .and_then(|dir| dir.symlink_metadata(name))
+                        .is_ok_and(|m| m.is_file())
+                {
+                    wanted
+                        .entry(root.join(parent))
+                        .or_insert(RecursiveMode::NonRecursive);
+                    return;
+                }
                 tracing::debug!(?path, %error, "Skipping unavailable discovery directory");
                 return;
             }
             // A tagged root only needs to observe changes to its own marker.
             let mode = if tags.ignored(path, roots) {
                 RecursiveMode::NonRecursive
+            } else if self.generated(path) {
+                return;
             } else {
                 mode
             };
@@ -244,17 +278,19 @@ impl DeltaRoots {
             && self.permits(home, true)
         {
             subscribe(home, RecursiveMode::NonRecursive);
-            let (root, cap) = roots
-                .iter()
-                .find(|(p, _)| home.starts_with(p))
-                .ok_or(io::ErrorKind::PermissionDenied)?;
-            let dir = open_relative(cap, home.strip_prefix(root).expect("matched root"))?;
-            for entry in dir.entries()? {
-                let entry = entry?;
-                let name = entry.file_name();
-                let path = home.join(&name);
-                if home_child(&name) && can_read(&path) && entry.file_type()?.is_dir() {
-                    subscribe(&path, RecursiveMode::Recursive);
+            if !self.surveyed_home {
+                let (root, cap) = roots
+                    .iter()
+                    .find(|(p, _)| home.starts_with(p))
+                    .ok_or(io::ErrorKind::PermissionDenied)?;
+                let dir = open_relative(cap, home.strip_prefix(root).expect("matched root"))?;
+                for entry in dir.entries()? {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let path = home.join(&name);
+                    if home_child(&name) && can_read(&path) && entry.file_type()?.is_dir() {
+                        subscribe(&path, RecursiveMode::Recursive);
+                    }
                 }
             }
         }
@@ -327,7 +363,9 @@ mod tests {
         let caps = [(home.to_owned(), cap)].into();
         let scope = DeltaRoots {
             home: Some(home.to_owned()),
+            surveyed_home: false,
             recursive: [leaf.clone(), content.join("notes")].into(),
+            included: Arc::new([leaf.clone()].into()),
             excluded: Arc::new([home.join("skip")].into()),
             private: vec![],
         };

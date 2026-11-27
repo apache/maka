@@ -151,6 +151,7 @@ impl PlannedCatalog {
             Some(_) => unreachable!("with_control only accepts the original lineage command"),
         };
         let mut record = Record {
+            legacy_discovery_worker: false,
             metadata,
             is_room: false,
             control_revision,

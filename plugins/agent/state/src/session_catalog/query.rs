@@ -29,7 +29,7 @@ use serde_json::Value;
 use std::sync::LazyLock;
 
 const BASE: &str = "WITH base AS (
- SELECT s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
+ SELECT {LEGACY_WORKER} AS legacy_worker,s.id,s.revision,s.created_at,max(s.updated_at,COALESCE((SELECT MAX(at) FROM agent_catalog_messages m WHERE m.owner=?1 AND m.session=s.id AND m.sequence>COALESCE(source.sequence,0)),0),COALESCE((SELECT MAX(at) FROM agent_room_messages m WHERE m.owner=?1 AND m.session=s.id),0)) AS updated_at,s.archived,s.configuration,
  b.id AS binding_id,b.workspace_json,b.permission_epoch,b.metadata_epoch,
  COALESCE(k.revision,0) AS control_revision,k.read_message,k.lineage,
  CASE WHEN room.session IS NOT NULL THEN COALESCE(a.last_sequence,0)>COALESCE(k.read_through,0)
@@ -91,12 +91,14 @@ const CANDIDATE_FILTERS: &str = "AND (?4 IS NULL OR s.id=?4)
    AND COALESCE(json_extract(k.lineage,'$.origin.parent_session_id'),json_extract(k.lineage,'$.branch.parent_session_id'))=?15))";
 const FILTER: &str =
     "(?11=0 OR json_extract(configuration,'$.parentSessionId') IS NULL) AND (?12=0 OR needs_you=1)";
-const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room";
+const COLUMNS: &str = "id,revision,created_at,updated_at,archived,configuration,binding_id,workspace_json,permission_epoch,metadata_epoch,control_revision,read_message,lineage,has_unread,tail,message_at,preview,pending_since,run,terminal,stopped,run_blocked,run_unknown,run_cleanup,late_sequence,working,blocked,unknown_effects,cleanup_pending,late_evidence,index_gap,latest_schema,control_schema,source_run,source_unread,is_room,legacy_worker";
 const SELECTION_PARAMS: usize = 15;
 const RECORD_BUCKETS: [usize; 4] = [8, 32, 128, 256];
 
-static BASE_SQL: LazyLock<String> =
-    LazyLock::new(|| BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS));
+static BASE_SQL: LazyLock<String> = LazyLock::new(|| {
+    BASE.replace("{CANDIDATE_FILTERS}", CANDIDATE_FILTERS)
+        .replace("{LEGACY_WORKER}", crate::discovery::LEGACY_WORKER)
+});
 static KEY_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{} SELECT unpinned,recency,id FROM selected WHERE {FILTER} AND id=?16",
@@ -463,6 +465,7 @@ struct Raw {
     source_run: Option<String>,
     source_unread: bool,
     is_room: bool,
+    legacy_worker: bool,
 }
 impl Raw {
     fn read(r: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -503,6 +506,7 @@ impl Raw {
             source_run: r.get(33)?,
             source_unread: r.get(34)?,
             is_room: r.get(35)?,
+            legacy_worker: r.get(36)?,
         })
     }
     fn decode(self) -> Result<Record, StoreError> {
@@ -598,6 +602,7 @@ impl Raw {
             _ => return Err(invalid("catalog message index incomplete")),
         };
         Ok(Record {
+            legacy_discovery_worker: self.legacy_worker,
             is_room: self.is_room,
             metadata: SessionRecord {
                 id: self.id,

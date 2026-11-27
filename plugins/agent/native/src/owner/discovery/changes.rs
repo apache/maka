@@ -25,7 +25,8 @@ use cap_std::fs::{Dir, OpenOptions};
 use maka_agent_state::discovery::{
     DiscoveryStore,
     changes::{
-        ChangeQuery, ChangeSnapshot, DeltaKind, FileWrite, Fingerprint, ProbeResult, WriteKind,
+        ChangeQuery, ChangeSnapshot, CursorSelection, DeltaKind, FileWrite, Fingerprint,
+        ProbeResult, WriteKind,
     },
 };
 use notify::{
@@ -38,6 +39,8 @@ use std::{
     time::UNIX_EPOCH,
 };
 use tokio::sync::{broadcast, mpsc, watch};
+
+mod rescan;
 
 const BATCH: usize = 128;
 
@@ -68,10 +71,7 @@ pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
         || path
             .ancestors()
             .any(|p| match p.file_name().and_then(|s| s.to_str()) {
-                Some(
-                    ".git" | "__pycache__" | ".venv" | ".next" | ".nuxt" | ".Trash"
-                    | "node_modules" | "target" | "Caches" | "Logs",
-                ) => true,
+                Some(".git" | ".Trash" | "Caches" | "Logs") => true,
                 Some(name) => [".photoslibrary", ".musiclibrary", ".tvlibrary"]
                     .iter()
                     .any(|s| name.ends_with(s)),
@@ -98,6 +98,27 @@ pub(super) fn ignored(path: &Path, private: &[PathBuf]) -> bool {
                     .iter()
                     .any(|suffix| name.ends_with(suffix))
             })
+}
+
+pub(super) fn generated_directory(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|s| s.to_str()),
+        Some(
+            "build"
+                | "dist"
+                | ".turbo"
+                | ".cache"
+                | "out"
+                | "coverage"
+                | "scratch"
+                | "__pycache__"
+                | ".venv"
+                | ".next"
+                | ".nuxt"
+                | "node_modules"
+                | "target"
+        )
+    )
 }
 
 pub(super) fn visible_in_workspace(
@@ -176,15 +197,19 @@ impl Routing {
             let tagged_root = marker
                 && parent.is_some_and(|p| {
                     self.deltas.recursive.contains(p)
-                        || self
-                            .deltas
-                            .home
-                            .as_deref()
-                            .is_some_and(|home| p == home || p.parent() == Some(home))
+                        || self.deltas.home.as_deref().is_some_and(|home| {
+                            p == home || (!self.deltas.surveyed_home && p.parent() == Some(home))
+                        })
                 });
             if tagged_root
                 || (structural
                     && home_child
+                    && (!self.deltas.surveyed_home
+                        || self
+                            .deltas
+                            .recursive
+                            .iter()
+                            .any(|root| root.starts_with(path)))
                     && path.file_name().is_some_and(roots::home_child)
                     && !matches!(
                         event.kind,
@@ -241,19 +266,21 @@ fn watch_files<W: Watcher>(
     let dirs = roots.clone();
     let mut tags = CacheTags::default();
     let topology = reload.clone();
+    let rescans = Arc::new(rescan::Rescans::default());
+    let callback_rescans = rescans.clone();
+    let writes = tx.clone();
+    let explicit = watch_paths.clone();
     let mut watcher = W::new(
         move |event: notify::Result<notify::Event>| match event {
             Ok(event) if event.need_rescan() => {
-                tags = CacheTags::default();
-                topology.send_replace(());
-                tracing::warn!("Discovery filesystem event stream reported lost changes");
+                callback_rescans.lost(&event.paths);
             }
             Ok(event) => {
                 if current.has_changed().unwrap_or(false) {
                     tags = CacheTags::default();
                 }
                 let routing = current.borrow_and_update().clone();
-                routing.file_events(event, &dirs, &mut tags, &tx, &watch_paths, &topology);
+                routing.file_events(event, &dirs, &mut tags, &writes, &explicit, &topology);
             }
             Err(error) => tracing::warn!(%error, "Discovery filesystem watcher error"),
         },
@@ -261,7 +288,16 @@ fn watch_files<W: Watcher>(
     )
     .map_err(reason)?;
     let mut installed: BTreeMap<PathBuf, RecursiveMode> = BTreeMap::new();
-    while let Some(routing) = updates.blocking_recv() {
+    let runtime = tokio::runtime::Handle::current();
+    while let Some(update) = runtime.block_on(rescan::next(&rescans, &mut updates, &reload)) {
+        let routing = match update {
+            rescan::Update::Routing(routing) => routing,
+            rescan::Update::Scan(burst) => {
+                let routing = route.borrow().clone();
+                rescan::scan(burst, &routing, &roots, &installed, &tx, &watch_paths);
+                continue;
+            }
+        };
         let wanted = routing
             .deltas
             .subscriptions(&roots, routing.files.keys().map(PathBuf::as_path), |_| true)
@@ -673,8 +709,7 @@ impl Owner {
             let deltas = if track {
                 let mut roots = active.clone();
                 roots.extend(self.watch_scopes.directories.keys().cloned());
-                self.watch_scopes
-                    .delta_roots(roots, watch_scope::ScopeView::Watcher)
+                self.watch_scopes.delta_roots(roots)
             } else {
                 DeltaRoots::default()
             };
@@ -712,7 +747,7 @@ impl Owner {
         &self,
         approval: &BackgroundApproval,
         at: UnixMillis,
-        query: ChangeQuery,
+        mut query: ChangeQuery,
     ) -> Result<ChangeSnapshot, String> {
         let selected = Path::new(&approval.target.workspace.path);
         let roots = self
@@ -721,9 +756,7 @@ impl Owner {
             .keys()
             .map(|p| discovery_root(p, selected).to_owned())
             .collect();
-        let scope = self
-            .watch_scopes
-            .delta_roots(roots, watch_scope::ScopeView::Workspace);
+        let scope = Arc::new(self.watch_scopes.delta_roots(roots));
         let caps = self.watch_scopes.directories.clone();
         let mut tags = CacheTags::default();
         let policy = match &approval.sandbox_ceiling {
@@ -733,21 +766,21 @@ impl Owner {
             Some(maka_sandbox::Sandbox::External { .. }) => return Ok(ChangeSnapshot::default()),
             _ => None,
         };
-        if matches!(query, ChangeQuery::Opening { .. }) {
+        let first_ready = matches!(query, ChangeQuery::FirstReady);
+        if let ChangeQuery::Opening { projects, .. } = &mut query {
+            projects.extend(
+                scope
+                    .recursive
+                    .iter()
+                    .filter(|p| p.as_path() != selected || !caps.contains_key(selected))
+                    .cloned(),
+            );
             // Prune stale/deleted or newly-excluded cursors so removed temp directories
             // and excluded trees do not replay ghost deltas across subsequent turns.
-            let prune_scope = self.watch_scopes.delta_roots(
-                self.watch_scopes
-                    .directories
-                    .keys()
-                    .map(|p| discovery_root(p, selected).to_owned())
-                    .collect(),
-                watch_scope::ScopeView::Workspace,
-            );
+            let prune_scope = scope.clone();
             let prune_root = selected.to_owned();
-            let _ = self
-                .discovery
-                .prune_cursors_matching(move |path| {
+            self.discovery
+                .prune_cursors_matching(CursorSelection::Deltas, move |path| {
                     if !path.starts_with(&prune_root) {
                         return false;
                     }
@@ -759,10 +792,12 @@ impl Owner {
                     }
                     // If the path and its parent directory are both gone, it's a deleted
                     // directory tree (e.g. removed worktree) whose orphan deltas should vanish.
-                    !path.exists() && path.parent().is_some_and(|parent| !parent.exists())
+                    orphaned_delta(path)
                 })
-                .await;
+                .await
+                .map_err(reason)?;
         }
+        let selected = selected.to_owned();
         self.discovery
             .change_snapshot(at, query, move |path, kind| {
                 let Ok(path) = host_path(path) else {
@@ -771,6 +806,7 @@ impl Owner {
                 let directory = kind == DeltaKind::Directory;
                 scope.permits(path, directory)
                     && policy.as_ref().is_none_or(|p| p.access(path).can_read())
+                    && !(first_ready && path.starts_with(&selected) && orphaned_delta(path))
                     && !tags.ignored(
                         if directory {
                             path
@@ -784,149 +820,54 @@ impl Owner {
             .map_err(reason)
     }
 
-    pub(super) async fn wander_sources(
+    pub(super) async fn due_wander_source(
         &self,
         approval: &BackgroundApproval,
-    ) -> Result<Vec<String>, String> {
+        map: &workspace_map::WorkspaceMap,
+        at: UnixMillis,
+    ) -> Result<Option<String>, String> {
         let selected = &approval.target.workspace;
-        let dir =
-            workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
-                .await?;
         let root = PathBuf::from(&selected.path);
-        let scope = Arc::new(
-            self.watch_scopes
-                .delta_roots([root.clone()].into(), watch_scope::ScopeView::Workspace),
-        );
-        let reserved = access::reserved_sandbox_floor(&self.store, selected).await?;
-        let ceiling = match &approval.sandbox_ceiling {
-            Some(maka_sandbox::Sandbox::External { .. }) => return Ok(vec![]),
-            Some(ceiling) => reserved.intersect(ceiling).map_err(reason)?,
-            None => reserved,
+        let candidates = map.due_wander_paths(at.0);
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let due = self
+            .discovery
+            .available_wander_paths(candidates, at)
+            .await
+            .map_err(reason)?;
+        if due.is_empty() {
+            return Ok(None);
+        }
+        let scope = self.watch_scopes.delta_roots([root.clone()].into());
+        let Some(policy) = self.mapped_read_policy(approval).await? else {
+            return Ok(None);
         };
-        let maka_sandbox::Sandbox::Managed { filesystem, .. } = ceiling else {
-            return Ok(vec![]);
-        };
-        let policy = Arc::new(filesystem.compile().map_err(reason)?);
-        let can_list_root = policy.access(&root).can_read() && scope.permits(&root, true);
         let caps = if root
             .ancestors()
             .any(|p| self.watch_scopes.directories.contains_key(p))
         {
             self.watch_scopes.directories.clone()
         } else {
-            Arc::new([(root.clone(), dir.try_clone().map_err(reason)?)].into())
+            let dir =
+                workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
+                    .await?;
+            Arc::new([(root.clone(), dir)].into())
         };
-        let includes = scope
-            .recursive
-            .iter()
-            .filter(|p| **p != root && scope.permits(p, true) && policy.access(p).can_read())
-            .filter_map(|p| p.to_str().map(str::to_owned))
-            .collect::<Vec<_>>();
-        let base = root.clone();
-        let mut tags = CacheTags::default();
-        let scan_caps = caps.clone();
-        let allowed = move |p: &Path| {
-            let Ok(p) = host_path(p) else { return false };
-            p != base
-                && p.starts_with(&base)
-                && scope.permits(p, true)
-                && policy.access(p).can_read()
-                && !tags.source_ignored(p, &caps)
-        };
-        let at = UnixMillis(now() as i64);
-        // Prefer targets from the durable WorkspaceMap (due frontier + due mapped sources)
-        // when available so Wander follows the semantic map rather than blind top-level names.
-        if let Ok((_, map)) = self.scheduler.workspace_map(&root).await
-            && (!map.sources.is_empty() || !map.frontier.is_empty())
-        {
-            let mut permit_map = allowed.clone();
-            let picked = map.select_wander_targets(&root, at.0, 3, move |p| permit_map(p));
-            if !picked.is_empty() {
-                return Ok(picked
-                    .into_iter()
-                    .filter_map(|t| t.path.to_str().map(str::to_owned))
-                    .collect());
-            }
-        }
-        if !includes.is_empty() {
-            self.discovery
-                .seed_cold_sources(includes, at)
-                .await
-                .map_err(reason)?;
-        }
-        let pick_bucketed = |candidates: Vec<String>, base: &Path, limit: usize| -> Vec<String> {
-            let mut chosen = Vec::with_capacity(limit);
-            let mut buckets = BTreeSet::new();
-            let mut rest = Vec::new();
-            for path in candidates {
-                let bucket = Path::new(&path)
-                    .strip_prefix(base)
-                    .ok()
-                    .and_then(|rel| rel.components().next())
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if chosen.len() < limit && buckets.insert(bucket) {
-                    chosen.push(path);
-                } else {
-                    rest.push(path);
-                }
-            }
-            for path in rest {
-                if chosen.len() >= limit {
-                    break;
-                }
-                chosen.push(path);
-            }
-            chosen
-        };
-        let cold = self
-            .discovery
-            .cold_sources(at, 24, allowed.clone())
-            .await
-            .map_err(reason)?;
-        if cold.len() > 3 || !can_list_root {
-            return Ok(pick_bucketed(cold, &root, 3));
-        }
-        let mut permit = allowed.clone();
-        let (batches, mut pending) = mpsc::channel(1);
-        let scan_root = root.clone();
-        let scan = tokio::task::spawn_blocking(move || {
-            if CacheTags::default().ignored(&scan_root, &scan_caps) {
-                return Ok(());
-            }
-            let mut paths = Vec::with_capacity(BATCH);
-            for entry in dir.entries()? {
-                let entry = entry?;
-                let path = scan_root.join(entry.file_name());
-                if permit(&path)
-                    && let Some(path) = path.to_str()
-                {
-                    paths.push(path.to_owned());
-                    if paths.len() == BATCH {
-                        batches
-                            .blocking_send(std::mem::take(&mut paths))
-                            .map_err(io::Error::other)?;
-                    }
-                }
-            }
-            if !paths.is_empty() {
-                batches.blocking_send(paths).map_err(io::Error::other)?;
-            }
-            Ok::<_, io::Error>(())
-        });
-        while let Some(paths) = pending.recv().await {
-            self.discovery
-                .seed_cold_sources(paths, at)
-                .await
-                .map_err(reason)?;
-        }
-        scan.await.map_err(reason)?.map_err(reason)?;
-        let candidates = self
-            .discovery
-            .cold_sources(at, 24, allowed)
-            .await
-            .map_err(reason)?;
-        Ok(pick_bucketed(candidates, &root, 3))
+        tokio::task::spawn_blocking(move || {
+            let mut tags = CacheTags::default();
+            due.into_iter()
+                .find(|path| {
+                    path.starts_with(&root)
+                        && scope.permits_mapped(path)
+                        && policy.access(path).can_read()
+                        && !tags.source_ignored(path, &caps)
+                })
+                .map(|p| p.to_str().expect("validated UTF-8 source").to_owned())
+        })
+        .await
+        .map_err(reason)
     }
 
     async fn wake_changed_discovery(&self, at: UnixMillis) -> Result<Option<i64>, String> {
@@ -953,8 +894,17 @@ impl Owner {
             let Some((approval, tools)) = scheduler::file_change_grant(plan) else {
                 continue;
             };
-            if plan.task.expires_at.is_some_and(|end| end <= at.0) {
+            if plan.pending.is_some() || plan.task.expires_at.is_some_and(|end| end <= at.0) {
                 continue;
+            }
+            if let Some(last) = plan.task.last_fire_at {
+                let until = incomplete_deadline(plan)?.unwrap_or_else(|| {
+                    last.saturating_add(file_change_cooldown_ms(&plan.task.schedule))
+                });
+                if at.0 < until {
+                    next_cooldown = Some(next_cooldown.map_or(until, |t: i64| t.min(until)));
+                    continue;
+                }
             }
             let source = match self.session(&approval.target.session_id).await {
                 Ok(source) => source,
@@ -971,17 +921,10 @@ impl Owner {
                 || self
                     .discovery_changes(approval, at, ChangeQuery::FirstReady)
                     .await?
-                    .deltas
+                    .groups
                     .is_empty()
             {
                 continue;
-            }
-            if let Some(last) = plan.task.last_fire_at {
-                let until = last.saturating_add(file_change_cooldown_ms(&plan.task.schedule));
-                if at.0 < until {
-                    next_cooldown = Some(next_cooldown.map_or(until, |t: i64| t.min(until)));
-                    continue;
-                }
             }
             let mut plan = plan.clone();
             let id = plan.task.id.clone();
@@ -1027,12 +970,51 @@ impl Owner {
     }
 }
 
+fn orphaned_delta(path: &Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
+        && path
+            .parent()
+            .is_some_and(|parent| matches!(parent.try_exists(), Ok(false)))
+}
+
 fn discovery_root<'a>(configured: &'a Path, selected: &'a Path) -> &'a Path {
     if selected.starts_with(configured) && selected != configured {
         selected
     } else {
         configured
     }
+}
+
+pub(in crate::owner) fn incomplete_deadline(plan: &scheduler::Plan) -> Result<Option<i64>, String> {
+    let Some(last) = plan
+        .task
+        .last_fire_at
+        .filter(|_| plan.consecutive_incomplete > 0)
+    else {
+        return Ok(None);
+    };
+    let interval = match &plan.task.schedule {
+        TaskSchedule::Interval { every_seconds, .. } => i64::from(*every_seconds) * 1000,
+        TaskSchedule::Calendar { .. } | TaskSchedule::Cron { .. } => {
+            let zone = jiff::tz::TimeZone::get(&plan.timezone).map_err(reason)?;
+            let Some(first) = plan.task.schedule.next_after(last, &zone).map_err(reason)? else {
+                return Ok(None);
+            };
+            plan.task
+                .schedule
+                .next_after(first, &zone)
+                .map_err(reason)?
+                .map_or(first - last, |second| second - first)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(last.saturating_add(interval.saturating_mul(
+        if plan.consecutive_incomplete == 1 {
+            1
+        } else {
+            2
+        },
+    ))))
 }
 
 fn file_change_cooldown_ms(schedule: &TaskSchedule) -> i64 {
@@ -1049,6 +1031,38 @@ fn file_change_cooldown_ms(schedule: &TaskSchedule) -> i64 {
 mod tests {
     use super::*;
     use maka_agent_facts::discovery::SourceUri;
+
+    #[test]
+    fn discovery_incomplete_backoff_survives_plan_reload_and_caps_at_two_intervals() {
+        let input = serde_json::from_value(serde_json::json!({
+            "title":"Review","intentBody":"","schedule":{"kind":"interval","everySeconds":3600,"startAt":0},
+            "effect":{"kind":"discovery","target":{"sessionId":"bot","workspace":{"path":"/work"},"permissions":{"access":"read_only","requestPermissions":false},
+                "boundaryRevision":0,"binding":{"id":uuid::Uuid::new_v4(),"permissionEpoch":0}},
+                "model":{"modelId":"model","connectionId":"test"},"workerTools":"read_only"}
+        })).unwrap();
+        let mut plan = scheduler::Plan::create(
+            "plan".into(),
+            input,
+            maka_scheduler::task::Creator::User,
+            "UTC".into(),
+            0,
+        )
+        .unwrap();
+        plan.task.last_fire_at = Some(1000);
+        for (streak, delay) in [
+            (0, None),
+            (1, Some(3_600_000)),
+            (2, Some(7_200_000)),
+            (8, Some(7_200_000)),
+        ] {
+            plan.consecutive_incomplete = streak;
+            let restored = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+            assert_eq!(
+                incomplete_deadline(&restored).unwrap(),
+                delay.map(|ms| 1000 + ms)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn discovery_live_subscriptions_add_home_children_and_explicit_watch_parents() {
@@ -1201,6 +1215,9 @@ mod tests {
             ".gemini/scratch/selected/.cache/noise",
             "p/node_modules/a",
             "p/target/out",
+            "p/build/cache",
+            "p/dist/bundle.js",
+            "p/.turbo/trace",
             "p/__pycache__/module",
             "p/Caches/index",
             "p/Logs/output",
@@ -1278,11 +1295,7 @@ mod tests {
             },
         };
         let snapshot = |at| {
-            store.change_snapshot(
-                UnixMillis(at),
-                ChangeQuery::Opening { limit: 15 },
-                |_, _| true,
-            )
+            store.change_snapshot(UnixMillis(at), ChangeQuery::opening(15, &work), |_, _| true)
         };
         let file = work.join("terms.md");
         std::fs::write(&file, "first").unwrap();
@@ -1294,14 +1307,14 @@ mod tests {
             .await
             .unwrap();
         tracker.flush(UnixMillis(111), &cancel).await.unwrap();
-        assert!(snapshot(111).await.unwrap().deltas.is_empty());
+        assert!(snapshot(111).await.unwrap().groups.is_empty());
         tracker.flush(UnixMillis(112), &cancel).await.unwrap();
-        let quiet = snapshot(112).await.unwrap();
-        assert_eq!(quiet.deltas.len(), 1);
-        assert_eq!(quiet.deltas[0].kind, DeltaKind::Created);
+        let quiet = snapshot(112).await.unwrap().into_deltas();
+        assert_eq!(quiet.len(), 1);
+        assert_eq!(quiet[0].kind, DeltaKind::Created);
         root.data_writer()
             .unwrap()
-            .write(store.acknowledge_changes(quiet.deltas))
+            .write(store.acknowledge_changes(quiet))
             .await
             .unwrap();
         let uri = SourceUri(file.to_str().unwrap().into());
@@ -1312,7 +1325,7 @@ mod tests {
             .await
             .unwrap();
         tracker.flush(UnixMillis(130), &cancel).await.unwrap();
-        assert!(snapshot(130).await.unwrap().deltas.is_empty());
+        assert!(snapshot(130).await.unwrap().groups.is_empty());
         let after = store.get_source_cursor(uri).await.unwrap().unwrap();
         assert_eq!(after.last_hash, before.last_hash);
         assert!(after.last_mtime_ms.0 > 0);
@@ -1322,7 +1335,7 @@ mod tests {
             .await
             .unwrap();
         tracker.flush(UnixMillis(150), &cancel).await.unwrap();
-        assert_eq!(snapshot(150).await.unwrap().deltas.len(), 1);
+        assert_eq!(snapshot(150).await.unwrap().into_deltas().len(), 1);
         std::fs::write(&file, "revised").unwrap();
         tracker
             .observe(vec![write("terms.md", 160, false)])
@@ -1336,7 +1349,7 @@ mod tests {
         };
         tracker.flush(UnixMillis(170), &cancel).await.unwrap();
         let hot = snapshot(170).await.unwrap();
-        assert!(hot.deltas.is_empty());
+        assert!(hot.groups.is_empty());
         assert_eq!(
             hot.cooling,
             [(work.to_str().unwrap().into(), UnixMillis(760))]
@@ -1346,19 +1359,20 @@ mod tests {
             .await
             .unwrap();
         tracker.flush(UnixMillis(510), &cancel).await.unwrap();
-        assert!(snapshot(760).await.unwrap().deltas.is_empty());
+        assert!(snapshot(760).await.unwrap().groups.is_empty());
         tracker.flush(UnixMillis(1100), &cancel).await.unwrap();
         let cooled = snapshot(1100).await.unwrap();
         assert!(cooled.cooling.is_empty());
-        assert_eq!(cooled.deltas.len(), 1);
-        assert_eq!(cooled.deltas[0].kind, DeltaKind::Directory);
-        assert_eq!(Path::new(&cooled.deltas[0].path), work);
+        let cooled = cooled.into_deltas();
+        assert_eq!(cooled.len(), 1);
+        assert_eq!(cooled[0].kind, DeltaKind::Directory);
+        assert_eq!(Path::new(&cooled[0].path), work);
         root.data_writer()
             .unwrap()
-            .write(store.acknowledge_changes(cooled.deltas))
+            .write(store.acknowledge_changes(cooled))
             .await
             .unwrap();
-        assert!(snapshot(1101).await.unwrap().deltas.is_empty());
+        assert!(snapshot(1101).await.unwrap().groups.is_empty());
         // Editors can replace an existing file by renaming over it, even preserving its mtime.
         let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
         std::fs::write(&file, "latest").unwrap();
@@ -1373,8 +1387,8 @@ mod tests {
             .await
             .unwrap();
         tracker.flush(UnixMillis(1410), &cancel).await.unwrap();
-        let revised = snapshot(1410).await.unwrap();
-        assert_eq!(revised.deltas.len(), 1);
-        assert_eq!(revised.deltas[0].kind, DeltaKind::Modified);
+        let revised = snapshot(1410).await.unwrap().into_deltas();
+        assert_eq!(revised.len(), 1);
+        assert_eq!(revised[0].kind, DeltaKind::Modified);
     }
 }

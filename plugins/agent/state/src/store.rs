@@ -739,6 +739,15 @@ impl Store {
     pub async fn find_run(&self, run: RunId) -> Result<Option<RunView>, StoreError> {
         self.data.query(FindRun(run)).await
     }
+    pub async fn find_run_full(&self, run: RunId) -> Result<Option<RunView>, StoreError> {
+        self.data.query(FindRunFull(run)).await
+    }
+    pub async fn run_admitted_usages(
+        &self,
+        run: RunId,
+    ) -> Result<Vec<Option<maka_agent_facts::model::ModelUsage>>, StoreError> {
+        self.data.query(RunAdmittedUsages(run)).await
+    }
     pub async fn fact(&self, run: RunId, id: FactId) -> Result<Option<RecordedFact>, StoreError> {
         self.data.query(ReadFact { run, id }).await
     }
@@ -1438,6 +1447,33 @@ impl Query for FindRun {
         } else {
             Ok(None)
         }
+    }
+}
+struct FindRunFull(RunId);
+impl Query for FindRunFull {
+    type Output = Option<RunView>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        if sql::exists(c, self.0)? {
+            Ok(Some(sql::load(c, self.0, &[], true)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+struct RunAdmittedUsages(RunId);
+impl Query for RunAdmittedUsages {
+    type Output = Vec<Option<maka_agent_facts::model::ModelUsage>>;
+    fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
+        let mut stmt = c.prepare_cached("SELECT body FROM agent_attempts WHERE run=?1")?;
+        let rows = stmt.query_map([self.0.to_string()], |r| r.get::<_, String>(0))?;
+        let mut usages = Vec::new();
+        for row in rows {
+            let attempt: crate::fold::Attempt = serde_json::from_str(&row?)?;
+            if attempt.admission.is_some() {
+                usages.push(attempt.closed.map(|c| c.usage));
+            }
+        }
+        Ok(usages)
     }
 }
 struct ReadFact {

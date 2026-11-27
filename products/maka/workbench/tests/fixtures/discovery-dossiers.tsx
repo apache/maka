@@ -38,6 +38,7 @@ mount(() => {
     artifacts: [],
     linkedTaskIds: [],
     muted: false,
+    unfollowed: false,
     lastCheckedAt: 1000,
     lastMaterialChangeAt: 1000,
     lastNotifiedRevision: 0,
@@ -79,10 +80,14 @@ mount(() => {
   const files = signal([first, dossier('two', 'Release')]);
   const enabled = signal(true);
   const snapshot = computed(() => ({
-    dossiers: files().map((d) => ({ ...d, artifactCount: d.artifacts.length })),
+    dossiers: files().map((d) => ({
+      ...d,
+      preview: d.summaryMd,
+      artifactCount: d.artifacts.length,
+    })),
     notificationsEnabled: enabled(),
   }));
-  const route = signal<{ topicId: string | null } | null>(null);
+  const route = signal<{ topicId: string | null; runId?: string | null } | null>(null);
   const opened = signal('planning');
   const expanded = signal(true);
   const browser = () => ({
@@ -96,6 +101,16 @@ mount(() => {
     opened.set(id);
     route.set(null);
   };
+  const workers = () => [
+    {
+      id: 'probe',
+      title: 'Probe fixture',
+      discoveryWorker: true,
+      activity: 'working' as const,
+      updatedAt: 1000,
+      archived: false,
+    },
+  ];
   const messages: { text: string; role: 'user' | 'assistant' }[] = [];
   let threadOpens = 0;
   let wake: (() => void) | undefined;
@@ -111,20 +126,63 @@ mount(() => {
       if (method === 'readDossierArtifact' && input.topicId === 'one' && input.path === 'draft.md')
         return 'Ready to review\n+ revised clause\n' + 'line\n'.repeat(1100) + 'End of draft';
       if (method === 'dossier') return files().find((d) => d.topicId === input.topicId) ?? null;
-      if (method === 'history' && input.sessionId === 'thread-two')
+      if (method === 'history' && (input.sessionId === 'thread-two' || input.sessionId === 'probe'))
         return {
           kind: 'ready',
           through: messages.length,
-          chunks: messages.map(({ text, role }, i) => ({
-            position: { kind: 'live', sequence: i + 1, fact: 'message', itemIndex: 0 },
-            order: { path: [i + 1], itemIndex: 0 },
-            messageId: String(i + 1),
-            role,
-            field: 'body',
-            offset: 0,
-            totalBytes: text.length,
-            text,
-          })),
+          chunks:
+            input.sessionId === 'probe'
+              ? [
+                  {
+                    position: { kind: 'live', sequence: 1, fact: 'tool', itemIndex: 0 },
+                    order: { path: [1], itemIndex: 0 },
+                    role: 'tool_call',
+                    field: 'arguments',
+                    offset: 0,
+                    totalBytes: 0,
+                    text: '',
+                    tool: {
+                      toolUseId: 'probe-tool-1',
+                      call: {
+                        name: 'Shell',
+                        title: 'Run read-only probe',
+                        presentation: 'execute',
+                        pending: false,
+                        dispatched: true,
+                        origin: 'code_mode',
+                        ancestorToolUseIds: [],
+                        position: { kind: 'live', sequence: 1, fact: 'tool', itemIndex: 0 },
+                      },
+                      result: {
+                        settlement: 'returned',
+                        isError: false,
+                        image: false,
+                        images: 0,
+                        position: { kind: 'live', sequence: 2, fact: 'tool', itemIndex: 0 },
+                      },
+                    },
+                  },
+                  {
+                    position: { kind: 'live', sequence: 3, fact: 'message', itemIndex: 0 },
+                    order: { path: [3], itemIndex: 0 },
+                    messageId: 'probe-msg-1',
+                    role: 'assistant',
+                    field: 'body',
+                    offset: 0,
+                    totalBytes: 24,
+                    text: 'Read-only probe evidence',
+                  },
+                ]
+              : messages.map(({ text, role }, i) => ({
+                  position: { kind: 'live', sequence: i + 1, fact: 'message', itemIndex: 0 },
+                  order: { path: [i + 1], itemIndex: 0 },
+                  messageId: String(i + 1),
+                  role,
+                  field: 'body',
+                  offset: 0,
+                  totalBytes: text.length,
+                  text,
+                })),
         };
       throw Error(method);
     },
@@ -187,6 +245,13 @@ mount(() => {
           return null;
         case 'setDossierResolved':
           update(input.topicId, { signal: input.resolved ? 'done' : 'yellow' });
+          return null;
+        case 'setDossierUnfollowed':
+          update(input.topicId, {
+            unfollowed: input.unfollowed,
+            muted: input.unfollowed,
+            signal: input.unfollowed ? 'done' : 'yellow',
+          });
           return null;
         case 'chooseDossierOption': {
           const target = files().find((d) => d.topicId === input.topicId);
@@ -274,6 +339,7 @@ mount(() => {
         navigation={() => (
           <WorkspaceBrowser
             browsing={browsing}
+            botWorkers={workers}
             selected={opened}
             docked={expanded}
             switching={() => false}
@@ -311,6 +377,7 @@ mount(() => {
             route={route}
             browser={browser()}
             commands={() => {}}
+            workers={workers}
             snapshot={snapshot}
             watchError={() => ''}
             botSession={() => 'bot'}

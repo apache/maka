@@ -22,6 +22,8 @@ use jiff::{Timestamp, tz::TimeZone};
 use maka_agent_state::discovery::changes::{
     ChangeQuery, ChangeSnapshot, Delta, IndexedDossier, OpeningSources,
 };
+use maka_agent_state::session_catalog::{Filter, Position, SessionCatalog, SideQuestions};
+use maka_event_log::sessions::{CatalogFilter, CatalogScope};
 use std::path::Path;
 
 pub(super) fn timestamp(ms: u64) -> Option<String> {
@@ -56,107 +58,139 @@ pub(super) fn environment(language: Language, workspace: &str, timezone: &str) -
 const HEADER_BYTES: usize = 1600;
 const ROW_LIMIT: usize = 15;
 
-impl Owner {
-    async fn recent_conversation_topics(&self, bot_id: &str) -> Vec<String> {
-        let Ok(page) = crate::service::catalog_page_for_tool(
-            self,
-            &maka_agent_api::contract::List {
-                kind: Some(maka_agent_api::contract::SessionKind::Agent),
-                filter: maka_agent_api::contract::SessionFilter::All,
-                include_archived: false,
-                roots_only: true,
-                position: maka_agent_api::contract::SessionPosition::Start,
-                scope: maka_agent_api::contract::SessionListScope::All,
-                title_query: String::new(),
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TopicMetadata {
+    title: String,
+    dossier_seed: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    discovery_worker: bool,
+}
+
+async fn recent_conversation_topics(
+    catalog: SessionCatalog,
+    bot: &bot::Bot,
+) -> Result<Vec<String>, String> {
+    let page = catalog
+        .page(
+            CatalogScope::Profile,
+            None,
+            Position::Start,
+            Filter {
+                base: CatalogFilter {
+                    roots_only: true,
+                    archived_only: false,
+                    include_archived: false,
+                },
+                needs_you_only: false,
+                room: Some(false),
+                side: SideQuestions::Hidden,
             },
-            &self.stop,
+            32,
         )
         .await
-        else {
-            return Vec::new();
-        };
-        page.sessions
-            .into_iter()
-            .filter(|s| s.id != bot_id && !s.title.trim().is_empty())
-            .take(5)
-            .map(|s| clipped(s.title.trim(), 72, false))
-            .collect()
+        .map_err(reason)?;
+    let mut topics = Vec::new();
+    for record in page.sessions {
+        let config: TopicMetadata =
+            serde_json::from_value(record.metadata.configuration).map_err(reason)?;
+        let title = config.title.trim();
+        if !title.is_empty()
+            && config.dossier_seed.is_none()
+            && !config.discovery_worker
+            && !record.legacy_discovery_worker
+            && !bot.is_or_was(&record.metadata.id).await?
+        {
+            topics.push(clipped(title, 72, false));
+            if topics.len() == 5 {
+                break;
+            }
+        }
+    }
+    Ok(topics)
+}
+
+impl Owner {
+    async fn mapped_context(&self, language: Language) -> Result<Vec<String>, String> {
+        let mut sections = Vec::new();
+        let preferences = self.discovery_preferences_excerpt().await?;
+        if !preferences.is_empty() {
+            sections.push(preferences);
+        }
+        let topics = recent_conversation_topics(
+            self.canonical_catalog()?
+                .with_cancellation(self.stop.clone()),
+            &self.bot,
+        )
+        .await?;
+        if !topics.is_empty() {
+            let heading = match language {
+                Language::ZH_CN => "近期对话主题（可静默留意相关兴趣）",
+                Language::ZH_TW => "近期對話主題（可靜默留意相關興趣）",
+                _ => "Recent conversation topics (quiet interest signal)",
+            };
+            sections.push(format!("{heading}\n{}", serde_json::json!(topics)));
+        }
+        Ok(sections)
     }
 
     pub(super) async fn discovery_opening(
         &self,
         mode: &DiscoveryMode,
         job: &Job,
+        fire: &Fire<ScheduledEffect, scheduler::Approval>,
         tools: &[String],
     ) -> Result<(String, OpeningSources), String> {
+        if fire.source == FireSource::Watch
+            || fire
+                .authorization
+                .as_ref()
+                .and_then(scheduler::Approval::followup_grant)
+                .is_some()
+        {
+            // The frozen intent identifies the watch/topic. Other pending file changes keep their own fire.
+            return Ok((
+                self.discovery_preferences_excerpt().await?,
+                OpeningSources::None,
+            ));
+        }
         let root = Path::new(&job.approval.target.workspace.path);
-        let workspace_map = self
-            .scheduler
-            .workspace_map(root)
-            .await
-            .map(|(_, m)| m)
-            .unwrap_or_default();
+        let (_, workspace_map) = self.scheduler.workspace_map(root).await?;
 
         if matches!(mode, DiscoveryMode::Onboard) {
             let mut sections = Vec::new();
             let selected = &job.approval.target.workspace;
-            if let Ok(dir) =
-                workspace::open_workspace(&self.workspace_roots, selected, &self.managed_worktrees)
-                    .await
-            {
-                let reserved = access::reserved_sandbox_floor(&self.store, selected).await;
-                let ceiling = reserved
-                    .ok()
-                    .and_then(|r| match &job.approval.sandbox_ceiling {
-                        Some(c) => r.intersect(c).ok(),
-                        None => Some(r),
-                    });
-                if let Some(maka_sandbox::Sandbox::Managed { filesystem, .. }) = ceiling
-                    && let Ok(policy) = filesystem.compile()
-                {
-                    let root_owned = root.to_path_buf();
-                    if let Ok(Ok(inv)) = tokio::task::spawn_blocking(move || {
-                        workspace_map::onboard_inventory(&root_owned, &dir, &policy)
-                    })
-                    .await
-                    {
-                        sections.push(inv);
-                    }
-                }
+            if let Some(policy) = self.mapped_read_policy(&job.approval).await? {
+                let dir = workspace::open_workspace(
+                    &self.workspace_roots,
+                    selected,
+                    &self.managed_worktrees,
+                )
+                .await?;
+                let root = root.to_owned();
+                let inventory = tokio::task::spawn_blocking(move || {
+                    workspace_map::onboard_inventory(&root, &dir, &policy)
+                })
+                .await
+                .map_err(reason)?
+                .map_err(reason)?;
+                sections.push(inventory);
             }
             let checkpoint = workspace_map.compact_checkpoint(root);
             if !checkpoint.is_empty() {
                 sections.push(checkpoint);
             }
-            let excerpt = self.discovery_preferences_excerpt().await?;
-            if !excerpt.is_empty() {
-                sections.push(excerpt);
-            }
-            let topics = self.recent_conversation_topics(&job.bot).await;
-            if !topics.is_empty() {
-                let heading = match job.approval.language {
-                    Language::ZH_CN => {
-                        "近期对话主题（可静默留意用户关注方向，切勿因纯闲聊弹窗打扰）"
-                    }
-                    Language::ZH_TW => {
-                        "近期對話主題（可靜默留意使用者關注方向，切勿因純閒聊彈窗打擾）"
-                    }
-                    _ => {
-                        "Recent conversation topics (quiet interest signal; do not interrupt for chat alone)"
-                    }
-                };
-                sections.push(format!("{heading}\n{}", serde_json::json!(topics)));
-            }
-            return Ok((sections.join("\n\n"), OpeningSources::Onboard));
+            sections.extend(self.mapped_context(job.approval.language).await?);
+            return Ok((sections.join("\n\n"), OpeningSources::None));
         }
 
         if let DiscoveryMode::Wander { sources } = mode {
-            let cold = if self.discovery_reads_files(tools) {
+            let selected = if self.discovery_reads_files(tools) {
                 sources.clone()
             } else {
                 Vec::new()
             };
-            let displayed: Vec<_> = cold
+            let displayed: Vec<_> = selected
                 .iter()
                 .map(|p| {
                     let path = Path::new(p);
@@ -182,58 +216,38 @@ impl Owner {
                     }
                 })
                 .collect();
-            let map_driven = workspace_map.phase == workspace_map::MapPhase::Ready
-                || !workspace_map.sources.is_empty()
-                || !workspace_map.frontier.is_empty();
             let label = match job.approval.language {
                 Language::ZH_CN => "冷门探索起点",
                 Language::ZH_TW => "冷門探索起點",
                 _ => "Cold starting points",
             };
-            let mut prompt = format!("{label}\n{}", serde_json::json!(displayed));
-            if map_driven {
-                let excerpt = self.discovery_preferences_excerpt().await?;
-                if !excerpt.is_empty() {
-                    prompt.push_str("\n\n");
-                    prompt.push_str(&excerpt);
-                }
-                let topics = self.recent_conversation_topics(&job.bot).await;
-                if !topics.is_empty() {
-                    let heading = match job.approval.language {
-                        Language::ZH_CN => {
-                            "近期对话主题（若与本地或公开线索呼应，可默认静默建档关注，不主动弹窗）"
-                        }
-                        Language::ZH_TW => {
-                            "近期對話主題（若與本地或公開線索呼應，可預設靜默建檔關注，不主動彈窗）"
-                        }
-                        _ => {
-                            "Recent conversation topics (quietly track recurring interests if relevant; default quiet)"
-                        }
-                    };
-                    prompt.push_str(&format!("\n\n{heading}\n{}", serde_json::json!(topics)));
-                }
-            }
-            let opening_sources = if workspace_map.phase == workspace_map::MapPhase::Ready {
-                // WorkspaceMap tracks real verification via mark_verified instead of
-                // advancing cursors prematurely at turn opening.
-                OpeningSources::Onboard
-            } else {
-                OpeningSources::Wander(cold)
-            };
-            return Ok((prompt, opening_sources));
+            let mut sections = vec![format!("{label}\n{}", serde_json::json!(displayed))];
+            sections.extend(self.mapped_context(job.approval.language).await?);
+            return Ok((sections.join("\n\n"), OpeningSources::Wander(selected)));
         }
 
         let changes = if self.discovery_reads_files(tools) {
             self.discovery_changes(
                 &job.approval,
                 UnixMillis(now() as i64),
-                ChangeQuery::Opening { limit: ROW_LIMIT },
+                ChangeQuery::Opening {
+                    limit: ROW_LIMIT,
+                    workspace: root.to_owned(),
+                    projects: workspace_map
+                        .sources
+                        .iter()
+                        .map(|src| src.path.clone())
+                        .collect(),
+                },
             )
             .await?
         } else {
             ChangeSnapshot::default()
         };
-        let dossiers = if tools.iter().any(|t| matches!(t.as_str(), LIST | READ)) {
+        let dossiers = if (fire.source == FireSource::Manual
+            || matches!(mode, DiscoveryMode::Briefing))
+            && tools.iter().any(|t| matches!(t.as_str(), LIST | READ))
+        {
             self.discovery
                 .active_dossier_index(ROW_LIMIT as u32)
                 .await
@@ -241,13 +255,12 @@ impl Owner {
         } else {
             Vec::new()
         };
-        let (mut prompt, displayed_deltas) =
-            header(job.approval.language, root, changes, &dossiers);
+        let (mut prompt, displayed_rows) = header(job.approval.language, root, changes, &dossiers);
         // Annotate matched mapped sources for the displayed deltas so FollowUp can follow recheck_hint.
-        if !displayed_deltas.is_empty() && !workspace_map.sources.is_empty() {
+        if !displayed_rows.is_empty() && !workspace_map.sources.is_empty() {
             let mut hints = Vec::new();
             let mut seen = BTreeSet::new();
-            for delta in &displayed_deltas {
+            for delta in displayed_rows.iter().filter_map(|members| members.first()) {
                 if let Some(src) = workspace_map.deepest_source_for(Path::new(&delta.path))
                     && seen.insert(src.path.clone())
                 {
@@ -274,24 +287,32 @@ impl Owner {
             prompt.push_str("\n\n");
             prompt.push_str(&excerpt);
         }
-        Ok((prompt, OpeningSources::FollowUp(displayed_deltas)))
+        Ok((
+            prompt,
+            OpeningSources::FollowUp(displayed_rows.into_iter().flatten().collect()),
+        ))
     }
 }
 
 fn header(
     language: Language,
     workspace: &Path,
-    mut changes: ChangeSnapshot,
+    changes: ChangeSnapshot,
     dossiers: &[IndexedDossier],
-) -> (String, Vec<Delta>) {
-    let delta_count = changes.deltas.len() + changes.omitted_deltas;
+) -> (String, Vec<Vec<Delta>>) {
+    let delta_count = changes
+        .groups
+        .iter()
+        .map(|g| g.members.len())
+        .sum::<usize>()
+        + changes.omitted_deltas;
     let guidance = match language {
         Language::ZH_CN => "避开正在编辑的目录。可核查周边约束，或静默结束。",
         Language::ZH_TW => "避開正在編輯的目錄。可核查周邊限制，或靜默結束。",
         _ => "Skip active edits. Check related constraints or finish quietly.",
     };
     let labels = [
-        "Deltas [kind,path,ms]",
+        "Deltas [kind,path,ms] / [project,path,count,latest_ms,samples]",
         "Editing [dir,until_ms]",
         "Dossiers [topic_id,title,signal,revision,window_at]",
     ];
@@ -307,7 +328,7 @@ fn header(
         - 2 * "\nnone".len()
         - (1 + overflow(delta_count).len()).max("\nnone".len());
     let populated = [
-        !changes.deltas.is_empty(),
+        !changes.groups.is_empty(),
         !changes.cooling.is_empty(),
         !dossiers.is_empty(),
     ]
@@ -327,15 +348,9 @@ fn header(
             true,
         )
     };
+    let (rows, mut members) = delta_rows(changes.groups, share, path);
     let rows = [
-        changes
-            .deltas
-            .iter()
-            .take(ROW_LIMIT)
-            .map(|d| {
-                serde_json::json!([d.kind.as_str(), path(&d.path, share - 40), d.at]).to_string()
-            })
-            .collect::<Vec<_>>(),
+        rows,
         changes
             .cooling
             .iter()
@@ -362,9 +377,9 @@ fn header(
     for _ in 0..ROW_LIMIT {
         for (i, section) in sections.iter_mut().enumerate() {
             let row = if i == 2 {
-                topics.find(|r| r.len() + 1 <= remaining)
+                topics.find(|r| r.len() < remaining)
             } else {
-                rows[i].get(counts[i]).filter(|r| r.len() + 1 <= remaining)
+                rows[i].get(counts[i]).filter(|r| r.len() < remaining)
             };
             if let Some(row) = row {
                 section.push('\n');
@@ -374,7 +389,10 @@ fn header(
             }
         }
     }
+    members.truncate(counts[0]);
+    let covered = members.iter().map(Vec::len).sum();
     for (i, section) in sections.iter_mut().enumerate() {
+        let shown = if i == 0 { covered } else { counts[i] };
         let available = match i {
             0 => delta_count,
             1 => changes.cooling.len(),
@@ -382,20 +400,72 @@ fn header(
         };
         if available == 0 {
             section.push_str("\nnone");
-        } else if counts[i] < available {
+        } else if shown < available {
             section.push('\n');
             if i == 0 {
-                section.push_str(&overflow(available - counts[i]));
+                section.push_str(&overflow(available - shown));
             } else {
                 section.push('…');
             }
         }
     }
-    changes.deltas.truncate(counts[0]);
-    (
-        format!("{}\n{guidance}", sections.join("\n")),
-        changes.deltas,
-    )
+
+    (format!("{}\n{guidance}", sections.join("\n")), members)
+}
+
+fn delta_rows(
+    groups: Vec<maka_agent_state::discovery::changes::DeltaGroup>,
+    share: usize,
+    path: impl Fn(&str, usize) -> String,
+) -> (Vec<String>, Vec<Vec<Delta>>) {
+    const FOLD_THRESHOLD: usize = 3;
+    // Visit each project once before spending another slot on a project's individual files.
+    let row_bytes = (share / groups.len().clamp(1, 6)).max(75);
+    let mut projects: Vec<_> = groups
+        .into_iter()
+        .map(|group| {
+            let mut rows = Vec::new();
+            if group.members.len() > FOLD_THRESHOLD {
+                let width = (row_bytes - 45) / 3;
+                let samples: Vec<_> = group
+                    .members
+                    .iter()
+                    .take(2)
+                    .map(|d| {
+                        let member = Path::new(&d.path)
+                            .strip_prefix(&group.project)
+                            .ok()
+                            .and_then(Path::to_str)
+                            .filter(|p| !p.is_empty())
+                            .unwrap_or(&d.path);
+                        clipped(member, width, true)
+                    })
+                    .collect();
+                let row = serde_json::json!([
+                    "project",
+                    path(&group.project.to_string_lossy(), width),
+                    group.members.len(),
+                    group.members[0].at,
+                    samples
+                ])
+                .to_string();
+                rows.push((row, group.members));
+            } else {
+                rows.extend(group.members.into_iter().map(|d| {
+                    let row =
+                        serde_json::json!([d.kind.as_str(), path(&d.path, row_bytes - 38), d.at])
+                            .to_string();
+                    (row, vec![d])
+                }));
+            }
+            rows.into_iter()
+        })
+        .collect();
+    let mut delta_rows = Vec::new();
+    for _ in 0..FOLD_THRESHOLD {
+        delta_rows.extend(projects.iter_mut().filter_map(Iterator::next));
+    }
+    delta_rows.into_iter().unzip()
 }
 
 fn clipped(value: &str, bytes: usize, tail: bool) -> String {
@@ -443,6 +513,45 @@ mod tests {
         DossierSignal,
         changes::{Delta, DeltaKind},
     };
+    #[tokio::test]
+    async fn discovery_recent_topics_keep_only_ordinary_chats_after_elevation() {
+        use serde_json::json;
+        let (_dir, root, owner) = test_store().await;
+        let prefix = "topic-";
+        let bot = bot::Bot::new(root.clone(), prefix.into());
+        bot.observe(
+            bot::Registration::from_record(maka_plugin_core::storage::Record {
+                revision: 1,
+                data: Data::Present(json!({"sessionId":"topic-bot"})),
+            })
+            .unwrap(),
+        );
+        let catalog =
+            SessionCatalog::new(root.data_writer().unwrap(), owner, prefix.into()).unwrap();
+        for (id, metadata) in [
+            ("topic-chat", json!({"title":"Shipment timing"})),
+            ("topic-bot", json!({"title":"Bot notebook"})),
+            (
+                "topic-thread",
+                json!({"title":"Dossier","dossierSeed":"Initial summary"}),
+            ),
+            (
+                "topic-elevated",
+                json!({"title":"Existing dossier marker","dossierSeed":"Initial summary","dossierElevated":true}),
+            ),
+            (
+                "topic-worker",
+                json!({"title":"Scheduled probe","discoveryWorker":true}),
+            ),
+        ] {
+            root.create_session(id, id, &metadata, 1).await.unwrap();
+        }
+        assert_eq!(
+            recent_conversation_topics(catalog, &bot).await.unwrap(),
+            ["Shipment timing"]
+        );
+    }
+
     #[tokio::test]
     async fn discovery_opening_acknowledges_only_rendered_versions_and_drains_overflow() {
         use maka_agent_state::discovery::{
@@ -493,17 +602,23 @@ mod tests {
             .unwrap();
         loop {
             let snapshot = store
-                .change_snapshot(at, ChangeQuery::Opening { limit: ROW_LIMIT }, |_, _| true)
+                .change_snapshot(at, ChangeQuery::opening(ROW_LIMIT, work), |_, _| true)
                 .await
                 .unwrap();
             assert_eq!(
-                snapshot.deltas.len() + snapshot.omitted_deltas,
+                snapshot
+                    .groups
+                    .iter()
+                    .map(|g| g.members.len())
+                    .sum::<usize>()
+                    + snapshot.omitted_deltas,
                 remaining.len()
             );
             if remaining.is_empty() {
                 break;
             }
-            let (text, shown) = header(Language::EN, work, snapshot, &[]);
+            let (text, rows) = header(Language::EN, work, snapshot, &[]);
+            let shown: Vec<_> = rows.into_iter().flatten().collect();
             assert!(!shown.is_empty() && shown.len() <= ROW_LIMIT && text.len() <= HEADER_BYTES);
             let rendered: Vec<_> = text
                 .lines()
@@ -517,26 +632,124 @@ mod tests {
                 .collect();
             assert_eq!(rendered.len(), shown.len());
             for (row, delta) in rendered.iter().zip(&shown) {
-                assert_eq!(work.join(row), Path::new(&delta.path));
+                assert!(delta.path.ends_with(row.trim_start_matches('…')));
                 assert!(remaining.remove(&delta.path));
             }
             root.data_writer()
                 .unwrap()
-                .write(store.record_opening(OpeningSources::FollowUp(shown), false, at))
+                .write(store.record_opening(OpeningSources::FollowUp(shown), at))
                 .await
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_grouped_opening_freezes_the_busy_project_and_leaves_racing_probes_ready() {
+        use maka_agent_state::discovery::{
+            DiscoveryStore,
+            changes::{FileWrite, Fingerprint, ProbeResult, WriteKind},
+        };
+        let (_temp, root, owner) = test_store().await;
+        let store = DiscoveryStore::new(root.data_writer().unwrap(), &owner).unwrap();
+        let write = |path: String, at| FileWrite {
+            path,
+            kind: WriteKind::Modified,
+            at: UnixMillis(at),
+        };
+        let settle = |probes: Vec<maka_agent_state::discovery::changes::Probe>| {
+            store.finish_probes(
+                probes
+                    .into_iter()
+                    .map(|p| {
+                        let fp = Fingerprint {
+                            mtime: p.observed,
+                            hash: format!("v{}", p.observed.0),
+                        };
+                        (p, ProbeResult::Stable(fp))
+                    })
+                    .collect(),
+            )
+        };
+        let mut files: Vec<_> = (0..40)
+            .map(|i| write(format!("/work/clients/busy/s{i}/quote"), 100 + i))
+            .collect();
+        files.push(write("/work/quiet/deadline".into(), 20));
+        store.observe_writes(files, 0, 100, 100).await.unwrap();
+        settle(store.due_probes(UnixMillis(200), 100).await.unwrap())
+            .await
+            .unwrap();
+        let snapshot = || {
+            store.change_snapshot(
+                UnixMillis(300),
+                ChangeQuery::Opening {
+                    limit: 2,
+                    workspace: "/work".into(),
+                    projects: ["/work/clients/busy".into()].into(),
+                },
+                |_, _| true,
+            )
+        };
+        let (opening, covered) = header(
+            Language::EN,
+            Path::new("/work"),
+            snapshot().await.unwrap(),
+            &[],
+        );
+        assert!(
+            opening.contains(r#"["project","clients/busy",40,139,["s39/quote","s38/quote"]]"#),
+            "{opening}"
+        );
+        assert!(opening.contains("quiet/deadline") && opening.len() <= HEADER_BYTES);
+        let covered: Vec<_> = covered.into_iter().flatten().collect();
+        assert_eq!(covered.len(), 41);
+        store
+            .observe_writes(
+                vec![
+                    write("/work/clients/busy/s39/quote".into(), 201),
+                    write("/work/clients/busy/late".into(), 17),
+                ],
+                0,
+                100,
+                100,
+            )
+            .await
+            .unwrap();
+        settle(store.due_probes(UnixMillis(300), 10).await.unwrap())
+            .await
+            .unwrap();
+        root.data_writer()
+            .unwrap()
+            .write(store.record_opening(OpeningSources::FollowUp(covered), UnixMillis(300)))
+            .await
+            .unwrap();
+        let pending = snapshot().await.unwrap().into_deltas();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|d| (d.path.as_str(), d.at.0))
+                .collect::<Vec<_>>(),
+            [
+                ("/work/clients/busy/s39/quote", 201),
+                ("/work/clients/busy/late", 17)
+            ]
+        );
     }
 
     #[test]
     fn discovery_header_is_bounded_in_every_locale_and_counts_omitted_deltas() {
         for language in [Language::EN, Language::ZH_CN, Language::ZH_TW] {
             let changes = || ChangeSnapshot {
-                deltas: (0..30)
-                    .map(|i| Delta {
-                        path: format!("/work/合同-{i}.pdf"),
-                        kind: DeltaKind::Created,
-                        at: UnixMillis(2000 - i),
+                groups: (0..30)
+                    .map(|i| {
+                        let project = Path::new("/work").join(format!("p{i}"));
+                        maka_agent_state::discovery::changes::DeltaGroup {
+                            members: vec![Delta {
+                                path: format!("/work/p{i}/合同-{i}.pdf"),
+                                kind: DeltaKind::Created,
+                                at: UnixMillis(2000 - i),
+                            }],
+                            project,
+                        }
                     })
                     .collect(),
                 omitted_deltas: 0,
@@ -552,7 +765,7 @@ mod tests {
             let (text, shown) = header(language, Path::new("/work"), changes(), &topics);
             assert!(text.len() <= HEADER_BYTES, "{text}");
             assert!(
-                text.contains(r#"["created","合同-0.pdf",2000]"#)
+                text.contains(r#"["created","p0/合同-0.pdf",2000]"#)
                     && text.contains(r#"["editing",4000]"#),
                 "{text}"
             );
@@ -569,13 +782,13 @@ mod tests {
             assert!(text.contains(&expected(15)), "{text}");
             assert_eq!(shown.len(), ROW_LIMIT);
             let mut changes = changes();
-            for delta in &mut changes.deltas {
+            for delta in changes.groups.iter_mut().flat_map(|g| &mut g.members) {
                 delta.path = format!("/work/{}.pdf", "合同".repeat(200));
             }
             let (text, shown) = header(language, Path::new("/work"), changes, &topics);
             let displayed = text.matches(".pdf").count();
             assert!(
-                text.len() <= HEADER_BYTES && (1..ROW_LIMIT).contains(&displayed),
+                text.len() <= HEADER_BYTES && (1..=ROW_LIMIT).contains(&displayed),
                 "{text}"
             );
             assert_eq!(shown.len(), displayed);

@@ -716,6 +716,9 @@ export function createConversationUi(
       controlsKnown.set(true);
     }
   };
+  const isDiscoveryWorker = (id: string) =>
+    botWorkers.sessions().some((s) => s.id === id && s.discoveryWorker === true) ||
+    browsing.sessions().some((s) => s.id === id && s.discoveryWorker === true);
   const switchSession = async (
     id: string,
     source: ActionContext = {
@@ -727,6 +730,10 @@ export function createConversationUi(
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
     if (!current() || switching() || reloading()) return false;
+    if (isDiscoveryWorker(id) && shell()?.discovery?.openRun) {
+      await shell()!.discovery!.openRun!(id);
+      return true;
+    }
     const priorFork = forkNotice();
     const owner = handle();
     const sourceOverlay = overlay();
@@ -1595,7 +1602,7 @@ export function createConversationUi(
   const botWorkers = createBotWorkers(
     host,
     () => botSession() ?? null,
-    () => platform.idiom !== 'terminal',
+    () => platform.idiom !== 'terminal' || !!dossiers,
   );
   const refreshBotSession = async () => {
     const head = await host.query('agent', 'botOutbox', { limit: 0 });
@@ -2948,6 +2955,7 @@ export function createConversationUi(
               browser={browserHeader(selected())}
               commands={() => invokeOwn('commands')}
               close={() => input.shell.dismissRoute()}
+              workers={botWorkers.sessions}
               snapshot={dossiers!.snapshot}
               watchError={dossiers!.error}
               botSession={() => botSession() ?? null}
@@ -2965,6 +2973,10 @@ export function createConversationUi(
               openLink={async (id, target, restoreFocus) => {
                 const linked = sessionIdFromLink(target);
                 if (linked !== undefined) {
+                  if (isDiscoveryWorker(linked) && input.shell.discovery?.openRun) {
+                    await input.shell.discovery.openRun(linked);
+                    return;
+                  }
                   await input.shell.openSession(linked);
                   return;
                 }
@@ -3208,8 +3220,12 @@ export function createConversationUi(
                   previewTerminal={(ref, restoreFocus) => previewTerminal(id(), ref, restoreFocus)}
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
                   knownSession={(sessionId) =>
-                    browsing.sessions().find((session) => session.id === sessionId)
+                    browsing.sessions().find((session) => session.id === sessionId) ??
+                    botWorkers.sessions().find((session) => session.id === sessionId)
                   }
+                  openDiscoveryRun={(runId) => {
+                    void input.shell.discovery?.openRun?.(runId);
+                  }}
                   openSessionBeside={
                     shell()?.openBeside ??
                     (side

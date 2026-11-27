@@ -53,6 +53,7 @@ pub enum PauseSource {
 pub enum FireSource {
     #[default]
     Schedule,
+    Manual,
     FileChange,
     Watch,
 }
@@ -73,6 +74,9 @@ pub struct Fire<E, A> {
     pub source: FireSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preserved_next_fire_at: Option<i64>,
+    /// Keep the original trigger and its payload until the plan can admit work again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_until: Option<i64>,
     pub id: String,
     pub task_id: String,
     pub scheduled_at: i64,
@@ -110,6 +114,8 @@ pub struct TaskPlan<E, A> {
     last_dedupe_key: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
     consecutive_errors: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub consecutive_incomplete: u32,
     #[serde(default)]
     pub authorization: Option<A>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,6 +215,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             script_state: None,
             last_dedupe_key: None,
             consecutive_errors: 0,
+            consecutive_incomplete: 0,
             authorization: None,
             pause_source: None,
         })
@@ -249,6 +256,10 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
     /// commit the changed Plan before the caller may dispatch the Fire.
     pub fn claim(&mut self, now: i64) -> Result<Option<&Fire<E, A>>, Error> {
         self.claim_inner(now, FireSource::Schedule, None)
+    }
+
+    pub fn claim_manual(&mut self, now: i64) -> Result<Option<&Fire<E, A>>, Error> {
+        self.claim_inner(now, FireSource::Manual, None)
     }
 
     /// An overdue schedule has first claim on the single execution slot.
@@ -300,7 +311,9 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         }
         self.pending = Some(Fire {
             source,
-            preserved_next_fire_at: (source != FireSource::Schedule).then_some(deadline),
+            preserved_next_fire_at: matches!(source, FireSource::FileChange | FireSource::Watch)
+                .then_some(deadline),
+            deferred_until: None,
             id: format!("fire-{}", uuid::Uuid::new_v4()),
             task_id: self.task.id.clone(),
             scheduled_at: if source == FireSource::Schedule {
@@ -372,6 +385,21 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         self.advance(now, None)
     }
 
+    /// Consume an idle timer without recording an execution or using a max_fires slot.
+    pub fn skip_pending_schedule(&mut self, at: i64) -> Result<(), Error> {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|fire| fire.source == FireSource::Schedule && fire.scheduled_at <= at)
+        {
+            return Err(invalid("no due scheduled trigger to skip"));
+        }
+        self.advance(at, Some(at))?;
+        self.task.updated_at = self.task.updated_at.max(at);
+        self.pending = None;
+        Ok(())
+    }
+
     pub fn settle(&mut self, run: Run) -> Result<(), Error> {
         let mut next = self.clone();
         next.settle_inner(run)?;
@@ -389,7 +417,7 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
         }
         let paused = self.task.status == Status::Paused;
         let preserved = match fire.source {
-            FireSource::Schedule => None,
+            FireSource::Schedule | FireSource::Manual => None,
             FireSource::FileChange | FireSource::Watch => fire.preserved_next_fire_at,
         };
         self.task.last_fire_at = Some(run.at);
@@ -411,6 +439,14 @@ impl<E: TaskEffect, A: Clone> TaskPlan<E, A> {
             self.task.status = Status::Paused;
         }
         Ok(())
+    }
+    /// Delay an active trigger while respecting its expiry and fire limit.
+    pub fn defer_next(&mut self, until: i64) {
+        if self.task.status == Status::Active
+            && self.task.next_fire_at.is_some_and(|next| next < until)
+        {
+            self.set_next(self.task.updated_at, Some(until));
+        }
     }
     fn advance(&mut self, after: i64, settled_at: Option<i64>) -> Result<(), Error> {
         let next = if self.consecutive_errors > 0

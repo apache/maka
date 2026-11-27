@@ -33,16 +33,19 @@ const hooks = registerHooks({
 const {
   buildDossierStream,
   discoveryTag,
+  discoveryRuns,
   dossierInterrupt,
   extractFallbackChoices,
   formatChoiceDispatch,
   formatRelativeTime,
   leadFilePaths,
+  nextDossierScrollState,
   notificationTarget,
   pinDossier,
   pendingActionControls,
   sortDossiers,
   splitArtifactPath,
+  splitBubbleBodyAndEvidence,
 } = await import(core.href).finally(() => hooks.deregister());
 const { dossierThreadActivity } = await import(new URL('../app/history.ts', import.meta.url).href);
 
@@ -54,6 +57,7 @@ const dossier = (topicId, fields = {}) => ({
   revision: 1,
   lastMaterialChangeAt: 1000,
   artifactCount: 0,
+  unfollowed: false,
   lastNotifiedRevision: 0,
   lastInterruptReason: null,
   lastInterruptAt: null,
@@ -61,6 +65,26 @@ const dossier = (topicId, fields = {}) => ({
 });
 const a = dossier('a');
 const b = dossier('b', { signal: 'yellow' });
+
+test('runs show active probes first and recent finished probes in timestamp order', () => {
+  const run = (id, activity, updatedAt, fields = {}) => ({
+    id,
+    activity,
+    updatedAt,
+    discoveryWorker: true,
+    ...fields,
+  });
+  assert.deepEqual(
+    discoveryRuns([
+      run('active', 'working', 3),
+      run('chat', 'working', 6, { discoveryWorker: false }),
+      run('archived', 'idle', 5, { archived: true }),
+      run('latest', 'idle', 7),
+      run('older', 'idle', 4),
+    ]).map((r) => r.id),
+    ['active', 'latest', 'older'],
+  );
+});
 
 test('relative time follows the local calendar and all three dossier locales', () => {
   const now = new Date(2026, 0, 2, 12).getTime();
@@ -381,4 +405,147 @@ test('dossier activity uses turn completion when folded work is read back from h
   ]) {
     assert.equal(dossierThreadActivity(ended).active, false);
   }
+});
+
+test('splitBubbleBodyAndEvidence separates explicit evidence and long legacy dumps cleanly', () => {
+  assert.deepEqual(splitBubbleBodyAndEvidence('Concise update.', '## Checks\n- Item A'), {
+    body: 'Concise update.',
+    evidence: '## Checks\n- Item A',
+  });
+  assert.deepEqual(
+    splitBubbleBodyAndEvidence('Short two-sentence summary. No extra table.', null),
+    {
+      body: 'Short two-sentence summary. No extra table.',
+      evidence: null,
+    },
+  );
+
+  const legacyLong = [
+    'Your workspace has three pending PR checks that need attention today before the release branch cuts.',
+    'Two workflows already failed with missing signing credentials and one review thread remains unresolved after yesterday.',
+    'Please review the updated status summary below before running the release checklist again.',
+    'If you want me to mute the build alert until Monday, choose one of the quick options underneath.',
+    '',
+    '## Verification Evidence',
+    '| Workflow | Status | Link |',
+    '| --- | --- | --- |',
+    '| ci-release | failed | run-123 |',
+  ].join('\n');
+  const split = splitBubbleBodyAndEvidence(legacyLong, null);
+  assert.match(split.body, /pending PR checks/);
+  assert.doesNotMatch(split.body, /Verification Evidence/);
+  assert.match(split.evidence ?? '', /## Verification Evidence/);
+  assert.match(split.evidence ?? '', /ci-release/);
+  const table = '| Workflow | Status\n| --- | ---\n| ci-release | failed';
+  assert.deepEqual(splitBubbleBodyAndEvidence(`${split.body}\n\n${table}`), {
+    body: split.body,
+    evidence: table,
+  });
+});
+
+test('a five-paragraph Chinese briefing stays in the bubble with its links and caveats', () => {
+  const briefing = [
+    '主线：本周交付的变化集中在验收时间。采购方在[周三的会议纪要](https://example.org/minutes)中确认，首批设备仍按原计划进场，但网络验收可以提前两天。现场负责人已经签字，这一项可以据此排班。',
+    '进展——原先拖慢试点的登录问题已经在两个站点复测通过。第三个站点使用不同版本的网关，目前只有厂商口径称问题已修复。值班同事尚未拿到该站点的复测结果，因此本周没有把它计入通过数量。',
+    '供应方面，交货单上列出的备件已全部到仓。群里提到的追加订单仍未证实，采购记录中也没有对应的审批。按现有库存排班足以覆盖首批设备，暂时无需为追加数量预留人手。',
+    '成本上的变化来自运输方式。财务给出的[修订估算](https://example.org/estimate)只涵盖首批设备，节省的费用不能直接套用到后续批次。要判断整季的影响，还要等其余站点确认是否接受同一交付窗口。',
+    '下周看点：周一的联合验收将决定第三个站点能否随首批上线。如果届时仍缺网关复测记录，可以先确认另外两个站点的交付时间，并请现场负责人单独约定补测窗口。',
+  ].join('\n\n');
+  assert.deepEqual(splitBubbleBodyAndEvidence(briefing), { body: briefing, evidence: null });
+});
+
+test('unfollowed dossiers sort below active topics and suppress desktop interrupts', () => {
+  const active = dossier('active-topic', {
+    signal: 'green',
+    lastMaterialChangeAt: 1000,
+    lastNotifiedRevision: 0,
+  });
+  const unfollowed = dossier('unfollowed-topic', {
+    signal: 'yellow',
+    unfollowed: true,
+    revision: 3,
+    lastMaterialChangeAt: 9000,
+    lastNotifiedRevision: 3,
+    lastInterruptReason: 'action_required',
+    lastInterruptAt: 9000,
+  });
+
+  assert.deepEqual(
+    sortDossiers([unfollowed, active], 'recent').map((d) => d.topicId),
+    ['active-topic', 'unfollowed-topic'],
+  );
+  const interrupt = dossierInterrupt(new Map([['unfollowed-topic', 1]]), {
+    dossiers: [unfollowed],
+    notificationsEnabled: true,
+  });
+  assert.deepEqual(interrupt.notifications, []);
+});
+
+test('nextDossierScrollState keeps initial open pinned to bottom across async expansion and respects manual scroll up', () => {
+  const initial = {
+    stickToBottom: true,
+    userInteracted: false,
+    lastScrollY: 0,
+    lastContentHeight: 60,
+  };
+  const grown = nextDossierScrollState(initial, {
+    offsetY: 0,
+    contentHeight: 2400,
+    viewportHeight: 600,
+    inProgrammaticWindow: false,
+  });
+  assert.equal(grown.action, 'pin');
+  assert.equal(grown.stickToBottom, true);
+  assert.equal(grown.userInteracted, false);
+  assert.equal(grown.awayFromLatest, false);
+
+  // Even during the programmatic scroll window, asynchronous Markdown growth keeps re-pinning.
+  const asyncGrown = nextDossierScrollState(
+    { ...grown, lastScrollY: 1800 },
+    {
+      offsetY: 1800,
+      contentHeight: 2800,
+      viewportHeight: 600,
+      inProgrammaticWindow: true,
+    },
+  );
+  assert.equal(asyncGrown.action, 'pin');
+  assert.equal(asyncGrown.stickToBottom, true);
+  assert.equal(asyncGrown.userInteracted, false);
+
+  // Real user upward scroll disengages sticking and surfaces the "back to latest" pill.
+  const readingHistory = nextDossierScrollState(
+    { ...asyncGrown, lastScrollY: 2200 },
+    {
+      offsetY: 400,
+      contentHeight: 2800,
+      viewportHeight: 600,
+      inProgrammaticWindow: false,
+    },
+  );
+  assert.equal(readingHistory.action, 'none');
+  assert.equal(readingHistory.stickToBottom, false);
+  assert.equal(readingHistory.userInteracted, true);
+  assert.equal(readingHistory.awayFromLatest, true);
+
+  // Expanding an evidence drawer while reading old history does not jump back to the bottom.
+  const expandedEvidence = nextDossierScrollState(readingHistory, {
+    offsetY: 400,
+    contentHeight: 3300,
+    viewportHeight: 600,
+    inProgrammaticWindow: false,
+  });
+  assert.equal(expandedEvidence.action, 'none');
+  assert.equal(expandedEvidence.stickToBottom, false);
+  assert.equal(expandedEvidence.awayFromLatest, null);
+
+  // Scrolling back within 48px of bottom re-engages sticky bottom tracking.
+  const returned = nextDossierScrollState(expandedEvidence, {
+    offsetY: 2680,
+    contentHeight: 3300,
+    viewportHeight: 600,
+    inProgrammaticWindow: false,
+  });
+  assert.equal(returned.stickToBottom, true);
+  assert.equal(returned.awayFromLatest, false);
 });

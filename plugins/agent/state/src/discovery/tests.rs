@@ -23,6 +23,7 @@ use maka_event_log::{
     root::{RootNamespaces, RootOwner},
 };
 use serde_json::json;
+use std::path::Path;
 use std::sync::Arc;
 
 async fn fixture() -> (tempfile::TempDir, RootStore, DiscoveryStore) {
@@ -54,8 +55,13 @@ async fn fixture() -> (tempfile::TempDir, RootStore, DiscoveryStore) {
 fn dossier(topic: &str, signal: DossierSignal, weight: f64, expected: u64) -> DossierUpsert {
     DossierUpsert {
         topic_id: TopicId(topic.into()),
+        entity_key: None,
+        reopen: false,
         title: topic.into(),
         summary_md: "evidence".into(),
+        fact_state: None,
+        briefing: false,
+        evidence_md: None,
         change_note: None,
         choices: vec![],
         expected_revision: Some(expected),
@@ -66,6 +72,177 @@ fn dossier(topic: &str, signal: DossierSignal, weight: f64, expected: u64) -> Do
         replace_artifacts: false,
         linked_task_ids: None,
     }
+}
+
+#[tokio::test]
+async fn discovery_continuation_identity_survives_job_settlement_and_ignores_other_scheduled_children()
+ {
+    let (_dir, root, store) = fixture().await;
+    let digest = "a".repeat(64);
+    let worker = format!("owner-{}", &digest[..32]);
+    for (id, fp, config) in [
+        (
+            worker.as_str(),
+            digest.as_str(),
+            json!({"parentSessionId":"bot","discoveryWorker":false}),
+        ),
+        ("new-worker", "new", json!({"discoveryWorker":true})),
+        ("scheduled-child", "task", json!({"parentSessionId":"bot"})),
+        (
+            "thread",
+            "thread",
+            json!({"dossierSeed":"topic","dossierElevated":true}),
+        ),
+    ] {
+        root.create_session(id, fp, &config, 1).await.unwrap();
+    }
+    assert!(store.is_worker_session("new-worker".into()).await.unwrap());
+    for id in [&*worker, "scheduled-child", "thread"] {
+        assert!(!store.is_worker_session(id.into()).await.unwrap());
+    }
+    for active in [true, false] {
+        let worker = worker.clone();
+        let id = worker.clone();
+        let digest = digest.clone();
+        root.data_writer().unwrap().write(store.mutation(false,move |c,_| {
+            c.execute("DELETE FROM plugin_data WHERE package_id='maka.agent.scheduler'",[])?;
+            let (key, value) = if active {("owner-discovery/active".to_owned(),json!({"worker":worker}))}
+                else {(format!("owner-discovery/completed/{digest}"),json!({"run":{"sessionId":worker}}))};
+            c.execute("INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json) VALUES('maka.agent.scheduler','profile',?1,1,?2)",rusqlite::params![key,value.to_string()])?;
+            Ok(())
+        })).await.unwrap();
+        assert!(store.is_worker_session(id).await.unwrap());
+    }
+    // Older workers whose scheduler completion receipt was pruned still carry discovery finish tools.
+    root.data_writer()
+        .unwrap()
+        .write(store.mutation(false, |c, _| {
+            c.execute(
+                "DELETE FROM plugin_data WHERE package_id='maka.agent.scheduler'",
+                [],
+            )?;
+            Ok(())
+        }))
+        .await
+        .unwrap();
+    let pruned_digest = "b".repeat(64);
+    let pruned_worker = format!("owner-{}", &pruned_digest[..32]);
+    root.create_session(
+        &pruned_worker,
+        &pruned_digest,
+        &json!({"parentSessionId": "bot", "tools": ["Read", "FinishNoChange"]}),
+        1,
+    )
+    .await
+    .unwrap();
+    root.create_session(
+        "ordinary-bot-child",
+        "c".repeat(64).as_str(),
+        &json!({"parentSessionId": "bot", "tools": ["Read", "Shell"]}),
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(store.is_worker_session(pruned_worker).await.unwrap());
+    assert!(
+        !store
+            .is_worker_session("ordinary-bot-child".into())
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn unfollow_statement_clears_tracking_and_evidence_md_persists_with_preview() {
+    use maka_agent_facts::discovery::PendingActionStatus;
+    let (_dir, root, store) = fixture().await;
+    let mut input = dossier("topic-u", DossierSignal::Yellow, 2.0, 0);
+    input.summary_md =
+        "## 标题\n你的 [PR #3684](https://example.com) 已通过检查。\n| a | b |\n| - | - |".into();
+    input.evidence_md = Some("Checks: 6/6 passed".into());
+    let upserted = store.upsert_dossier(input, UnixMillis(100)).await.unwrap();
+    assert_eq!(upserted.revision, 1);
+
+    let summary = store
+        .list_dossiers()
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(!summary.unfollowed);
+    assert_eq!(summary.preview, "你的 PR #3684 已通过检查。");
+    let detail = store
+        .detail(TopicId("topic-u".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        detail.revisions[0].evidence_md.as_deref(),
+        Some("Checks: 6/6 passed")
+    );
+
+    root.data_writer()
+        .unwrap()
+        .write(store.mutation(false, |c, owner| {
+            c.execute(
+                "INSERT INTO discovery_watches(owner,watch_id,topic_id,kind,target,predicate_json,on_trigger,created_at,updated_at)
+                 VALUES(?1,'w1','topic-u','deadline','due','{}','notify_direct',100,100)",
+                [owner],
+            )?;
+            c.execute(
+                "INSERT INTO discovery_pending_actions(owner,action_id,topic_id,connector_tool,params_json,input_hashes_json,idempotency_key,status,expires_at,created_at,updated_at)
+                 VALUES(?1,'a1','topic-u','Send','{}','{}','k1',?2,999999,100,100)",
+                rusqlite::params![owner, PendingActionStatus::AwaitingConfirm.as_str()],
+            )?;
+            Ok(())
+        }))
+        .await
+        .unwrap();
+
+    let title = root
+        .data_writer()
+        .unwrap()
+        .write(store.unfollow_statement(TopicId("topic-u".into()), true, UnixMillis(200)))
+        .await
+        .unwrap();
+    assert_eq!(title, "topic-u");
+    assert!(
+        store
+            .is_unfollowed(TopicId("topic-u".into()))
+            .await
+            .unwrap()
+    );
+    let after = store
+        .detail(TopicId("topic-u".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after.dossier.unfollowed);
+    assert!(after.dossier.muted);
+    assert_eq!(after.dossier.signal, DossierSignal::Done);
+    assert!(after.watches.is_empty());
+    assert!(after.pending_actions.is_empty());
+
+    root.data_writer()
+        .unwrap()
+        .write(store.unfollow_statement(TopicId("topic-u".into()), false, UnixMillis(300)))
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .is_unfollowed(TopicId("topic-u".into()))
+            .await
+            .unwrap()
+    );
+    let restored = store
+        .get_dossier(TopicId("topic-u".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!restored.unfollowed);
+    assert!(!restored.muted);
+    assert_eq!(restored.signal, DossierSignal::Yellow);
 }
 
 #[tokio::test]
@@ -112,44 +289,47 @@ async fn opening_acknowledges_its_snapshot_and_preserves_concurrent_and_out_of_s
     let snapshot = store
         .change_snapshot(
             UnixMillis(11),
-            ChangeQuery::Opening { limit: 64 },
+            ChangeQuery::opening(64, Path::new("/work")),
             |path, _| path.starts_with("/work"),
         )
         .await
         .unwrap();
-    assert_eq!(snapshot.deltas.len(), 2);
+    let deltas = snapshot.into_deltas();
+    assert_eq!(deltas.len(), 2);
     assert_eq!(
         store.next_change_deadline(UnixMillis(11)).await.unwrap(),
         Some(12)
     );
+    // A probe can become ready after the opening with an observation older than every frozen row.
+    store
+        .observe_writes(vec![write("/work/late/from-before", 5)], 8, 100, 100)
+        .await
+        .unwrap();
     publish(vec![write("/work/report", 13)], 13).await;
     root.data_writer()
         .unwrap()
-        .write(store.record_opening(
-            OpeningSources::FollowUp(snapshot.deltas),
-            false,
-            UnixMillis(14),
-        ))
+        .write(store.record_opening(OpeningSources::FollowUp(deltas), UnixMillis(14)))
         .await
         .unwrap();
     let pending = store
         .change_snapshot(
             UnixMillis(14),
-            ChangeQuery::Opening { limit: 64 },
+            ChangeQuery::opening(64, Path::new("/work")),
             |_, _| true,
         )
         .await
         .unwrap();
     assert_eq!(
         pending
-            .deltas
+            .into_deltas()
             .into_iter()
             .map(|d| (d.path, d.at.0))
             .collect::<Vec<_>>(),
         [
             ("/work/report".into(), 13),
             ("/work/later".into(), 12),
-            ("/other/quote".into(), 10)
+            ("/other/quote".into(), 10),
+            ("/work/late/from-before".into(), 5)
         ]
     );
 }
@@ -232,6 +412,327 @@ async fn reviews_preserve_material_order_and_stale_writers_cannot_overwrite() {
     }
     assert_eq!(s.get_dossier(topic).await.unwrap().unwrap().revision, 2);
 }
+#[tokio::test]
+async fn reworded_reviews_preserve_revision_and_evidence_until_a_fact_or_briefing_changes() {
+    let (_dir, _root, s) = fixture().await;
+    let topic = TopicId("release".into());
+    let update = |rev| dossier("release", DossierSignal::Yellow, 1., rev);
+    let mut first = update(0);
+    first.fact_state = Some("Waiting for signoff".into());
+    first.evidence_md = Some("Board minutes".into());
+    first.change_note = Some("Signoff requested".into());
+    s.upsert_dossier(first, UnixMillis(10)).await.unwrap();
+
+    let mut paraphrase = update(1);
+    paraphrase.title = "Review at noon".into();
+    paraphrase.summary_md = "Still waiting as of 12:00".into();
+    paraphrase.change_note = Some("Rechecked again".into());
+    paraphrase.evidence_md = Some("Board minutes, retrieved at 12:00".into());
+    paraphrase.fact_state = Some(" Waiting  for\nsignoff ".into());
+    let quiet = s.upsert_dossier(paraphrase, UnixMillis(30)).await.unwrap();
+    assert!(!quiet.material_change);
+    assert_eq!(quiet.revision, 1);
+    s.upsert_dossier(update(1), UnixMillis(20)).await.unwrap();
+    let detail = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(
+        (
+            detail.dossier.last_checked_at.0,
+            detail.dossier.last_material_change_at.0
+        ),
+        (30, 10)
+    );
+    assert_eq!(detail.revisions.len(), 1);
+    assert_eq!(detail.dossier.summary_md, "evidence");
+    assert_eq!(
+        detail.revisions[0].evidence_md.as_deref(),
+        Some("Board minutes")
+    );
+    assert_eq!(
+        detail.revisions[0].change_note.as_deref(),
+        Some("Signoff requested")
+    );
+
+    let mut blocker = update(1);
+    blocker.fact_state = Some("Waiting for legal review".into());
+    blocker.summary_md = "The board requested legal review".into();
+    blocker.evidence_md = Some("Decision 8".into());
+    assert!(
+        s.upsert_dossier(blocker, UnixMillis(40))
+            .await
+            .unwrap()
+            .material_change
+    );
+    let changed = s.detail(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(
+        changed.dossier.summary_md,
+        "The board requested legal review"
+    );
+    assert_eq!(
+        changed.revisions[1].evidence_md.as_deref(),
+        Some("Decision 8")
+    );
+    let mut edition = update(2);
+    edition.briefing = true;
+    edition.summary_md = "Daily edition".into();
+    let delivered = s.upsert_dossier(edition, UnixMillis(50)).await.unwrap();
+    assert!(delivered.material_change);
+    let latest = s
+        .detail(topic)
+        .await
+        .unwrap()
+        .unwrap()
+        .revisions
+        .pop()
+        .unwrap();
+    assert_eq!(latest.revision, 3);
+    assert_eq!(
+        latest.fact_state.as_deref(),
+        Some("Waiting for legal review")
+    );
+}
+
+#[tokio::test]
+async fn closing_or_unfollowing_invalidates_stale_workers_and_repeated_requests_are_idempotent() {
+    let (_dir, _root, s) = fixture().await;
+    for (name, unfollow) in [("closed", false), ("unfollowed", true)] {
+        let topic = TopicId(name.into());
+        s.upsert_dossier(dossier(name, DossierSignal::Red, 1., 0), UnixMillis(1))
+            .await
+            .unwrap();
+        for at in [10, 11] {
+            if unfollow {
+                s.data
+                    .write(s.unfollow_statement(topic.clone(), true, UnixMillis(at)))
+                    .await
+                    .unwrap();
+            } else {
+                s.data
+                    .write(s.resolve_statement(topic.clone(), true, UnixMillis(at)))
+                    .await
+                    .unwrap();
+            }
+        }
+        let e = s
+            .upsert_dossier(dossier(name, DossierSignal::Yellow, 1., 1), UnixMillis(12))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e.underlying(), StoreError::RevisionConflict {expected, actual} if expected == "1" && actual == "2")
+        );
+        let closed = s.get_dossier(topic).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                closed.revision,
+                closed.signal,
+                closed.last_material_change_at.0
+            ),
+            (2, DossierSignal::Done, 10)
+        );
+    }
+}
+
+#[tokio::test]
+async fn discovery_revision_and_notification_counts_follow_material_writes() {
+    let (_dir, _root, store) = fixture().await;
+    let plan = "reviews";
+    let mut input = serde_json::json!({"topic_id":"annex","title":"Annex","expected_revision":0,
+        "signal":"yellow","summary_md":"Awaiting review","priority_weight":1});
+    let mut revision = 0;
+    for (at, (patch, material)) in [
+        (serde_json::json!({}), true),
+        (serde_json::json!({"window_at":10000}), true),
+        (serde_json::json!({"linked_task_ids":["b","a"]}), true),
+        (serde_json::json!({"linked_task_ids":["a","b","a"]}), false),
+        (serde_json::json!({"choices":[{"key":"a","label":"Approve","instruction":"Approve annex"}]}), true),
+        (serde_json::json!({"choices":[{"key":"a","label":"Review","instruction":"Review annex"}]}), true),
+        (serde_json::json!({"choices":[],"summary_md":"Still awaiting review"}), false),
+    ].into_iter().enumerate() {
+        input.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+        input["expected_revision"] = revision.into();
+        let outcome = store.data.write(store.plan_upsert_statement(Some(plan.into()),
+            serde_json::from_value(input.clone()).unwrap(), (at == 1).then(|| "Deadline added".into()), UnixMillis(at as i64))).await.unwrap();
+        assert_eq!(outcome.material_change, material);
+        revision += u64::from(material);
+        assert_eq!(outcome.revision, revision);
+    }
+    let activity = store.plan_activity(plan).await.unwrap();
+    assert_eq!(
+        (
+            activity.revised,
+            activity.notified,
+            activity.model_runs,
+            activity.skipped
+        ),
+        (5, 1, 0, 0)
+    );
+}
+
+#[tokio::test]
+async fn discovery_meter_tiers_pacing_keeps_full_run_limit_and_allows_bypass() {
+    use activity::ModelCharge;
+    const HOUR: i64 = 3_600_000;
+    const DAY: i64 = 24 * HOUR;
+    const LIMIT: u64 = 1_500_000;
+    let (_dir, _root, store) = fixture().await;
+    let plan = "digest";
+    let start = DAY + HOUR;
+    for (hour, charge, spent, next) in [
+        (0, 1_999_999, 1_999_999, 0),
+        (0, 1, 2_000_000, 2),
+        (2, 1_199_999, 3_199_999, 4),
+        (4, 1, 3_200_000, 8),
+        (8, 799_999, 3_999_999, 12),
+        (12, 1, 4_000_000, 23),
+    ] {
+        let at = UnixMillis(start + hour * HOUR);
+        let activity = store.plan_activity(plan).await.unwrap();
+        let allowance = activity.allowance(at, LIMIT, false).unwrap();
+        assert_eq!((allowance.day, allowance.tokens), (1, LIMIT));
+        store
+            .data
+            .write(store.charge_statement(
+                plan.into(),
+                Some(allowance),
+                at,
+                Some(ModelCharge::Admitted(charge)),
+            ))
+            .await
+            .unwrap();
+        let meter = store.plan_activity(plan).await.unwrap();
+        assert_eq!((meter.tokens, meter.last_run_at), (spent, at.0));
+        let due = UnixMillis(start + next * HOUR);
+        if next > hour {
+            assert_eq!(
+                meter
+                    .allowance(UnixMillis(due.0 - 1), LIMIT, false)
+                    .unwrap_err(),
+                due
+            );
+            assert_eq!(
+                meter
+                    .allowance(UnixMillis(DAY - 1), LIMIT, false)
+                    .unwrap_err(),
+                due
+            );
+        }
+        assert_eq!(meter.allowance(due, LIMIT, false).unwrap().tokens, LIMIT);
+        assert_eq!(meter.allowance(at, LIMIT, true).unwrap().tokens, LIMIT);
+    }
+    let at = UnixMillis(start + 13 * HOUR);
+    let meter = store.plan_activity(plan).await.unwrap();
+    let bypass = meter.allowance(at, LIMIT, true).unwrap();
+    store
+        .data
+        .write(store.charge_statement(
+            plan.into(),
+            Some(bypass),
+            at,
+            Some(ModelCharge::Admitted(50_000)),
+        ))
+        .await
+        .unwrap();
+    let meter = store.plan_activity(plan).await.unwrap();
+    assert_eq!(
+        (meter.tokens, meter.last_run_at, meter.model_runs),
+        (4_050_000, at.0, 7)
+    );
+    assert_eq!(
+        meter.allowance(at, LIMIT, false).unwrap_err(),
+        UnixMillis(2 * DAY)
+    );
+    assert_eq!(
+        store
+            .plan_activity("other")
+            .await
+            .unwrap()
+            .allowance(at, LIMIT, false)
+            .unwrap()
+            .tokens,
+        LIMIT
+    );
+}
+
+#[tokio::test]
+async fn discovery_pacing_resets_at_utc_midnight_and_charges_the_admission_day_under_clock_skew() {
+    use activity::{DiscoveryActivity, ModelCharge};
+    const HOUR: i64 = 3_600_000;
+    const MIDNIGHT: i64 = 48 * HOUR;
+    const LIMIT: u64 = 1_500_000;
+    let (_dir, _root, store) = fixture().await;
+    let plan = "rollover";
+    let charge = |allowance, at, charge| {
+        store.data.write(store.charge_statement(
+            plan.into(),
+            Some(allowance),
+            UnixMillis(at),
+            Some(charge),
+        ))
+    };
+    let yesterday = DiscoveryActivity::default()
+        .allowance(UnixMillis(MIDNIGHT - HOUR), LIMIT, false)
+        .unwrap();
+    charge(yesterday, MIDNIGHT - HOUR, ModelCharge::Admitted(2_000_000))
+        .await
+        .unwrap();
+    let meter = store.plan_activity(plan).await.unwrap();
+    assert_eq!(
+        meter
+            .allowance(UnixMillis(MIDNIGHT - 1), LIMIT, false)
+            .unwrap_err(),
+        UnixMillis(MIDNIGHT)
+    );
+    // A run finishing after midnight still belongs to the day that admitted it.
+    charge(
+        yesterday,
+        MIDNIGHT + 2 * HOUR,
+        ModelCharge::Admitted(1_200_000),
+    )
+    .await
+    .unwrap();
+    let meter = store.plan_activity(plan).await.unwrap();
+    assert_eq!((meter.day, meter.tokens), (1, 3_200_000));
+    assert_eq!(
+        meter
+            .allowance(UnixMillis(MIDNIGHT - 1), LIMIT, false)
+            .unwrap_err(),
+        UnixMillis(MIDNIGHT)
+    );
+    let today = meter.allowance(UnixMillis(MIDNIGHT), LIMIT, false).unwrap();
+    assert_eq!((today.day, today.tokens), (2, LIMIT));
+    charge(today, MIDNIGHT - 1, ModelCharge::Admitted(1_900_000))
+        .await
+        .unwrap();
+    let meter = store.plan_activity(plan).await.unwrap();
+    assert_eq!(
+        (meter.day, meter.tokens, meter.last_run_at),
+        (2, 1_900_000, MIDNIGHT)
+    );
+    let skewed = meter
+        .allowance(UnixMillis(MIDNIGHT - HOUR), LIMIT, false)
+        .unwrap();
+    assert_eq!((skewed.day, skewed.tokens), (2, LIMIT));
+    charge(skewed, MIDNIGHT + HOUR, ModelCharge::Unobserved(100_000))
+        .await
+        .unwrap();
+    charge(today, MIDNIGHT - HOUR, ModelCharge::Admitted(1))
+        .await
+        .unwrap();
+    charge(yesterday, MIDNIGHT + 2 * HOUR, ModelCharge::Admitted(456))
+        .await
+        .unwrap();
+    let meter = store.plan_activity(plan).await.unwrap();
+    assert_eq!(
+        (meter.day, meter.tokens, meter.last_run_at, meter.model_runs),
+        (2, 2_000_001, MIDNIGHT + HOUR, 5)
+    );
+    assert_eq!(
+        meter
+            .allowance(UnixMillis(MIDNIGHT - HOUR), LIMIT, false)
+            .unwrap_err(),
+        UnixMillis(MIDNIGHT + 3 * HOUR)
+    );
+}
+
 #[tokio::test]
 async fn persisted_tracking_records_keep_their_cas_and_receipt() {
     let (_dir, root, s) = fixture().await;
@@ -452,46 +953,260 @@ async fn discovery_snapshot_retains_concurrent_topic_interrupts_after_quiet_revi
 }
 
 #[tokio::test]
-async fn discovery_cold_openings_preserve_other_cursor_fields_and_cycle_independently_of_followups()
-{
+async fn discovery_wander_opening_creates_or_advances_only_the_selected_cursor() {
     use changes::OpeningSources;
     let (_dir, _root, s) = fixture().await;
-    let paths = ["a", "b", "c", "d", "e", "f"].map(str::to_owned);
-    s.seed_cold_sources(paths.to_vec(), UnixMillis(10))
+    let record = |at| {
+        s.data.write(s.record_opening(
+            OpeningSources::Wander(vec!["mapped".into()]),
+            UnixMillis(at),
+        ))
+    };
+    record(14).await.unwrap();
+    record(10).await.unwrap();
+    let candidates = |cutoff| {
+        vec![
+            ("mapped".into(), UnixMillis(cutoff)),
+            ("next".into(), UnixMillis(cutoff)),
+        ]
+    };
+    let available = s
+        .available_wander_paths(candidates(13), UnixMillis(20))
         .await
         .unwrap();
-    let cold = |at| s.cold_sources(UnixMillis(at), 3, |_| true);
-    let first = cold(11).await.unwrap();
-    assert_eq!(first, paths[..3]);
-    for n in 1..=3 {
-        s.data
-            .write(s.record_opening(OpeningSources::FollowUp(vec![]), true, UnixMillis(12)))
-            .await
-            .unwrap();
-        assert_eq!(s.broad_cycle().await.unwrap(), n);
-    }
-    s.data
-        .write(s.record_opening(OpeningSources::FollowUp(vec![]), false, UnixMillis(13)))
-        .await
-        .unwrap();
-    assert_eq!(s.broad_cycle().await.unwrap(), 3);
-    s.data
-        .write(s.record_opening(OpeningSources::Wander(first), true, UnixMillis(14)))
-        .await
-        .unwrap();
-    s.seed_cold_sources(paths.to_vec(), UnixMillis(15))
-        .await
-        .unwrap();
-    assert_eq!(s.broad_cycle().await.unwrap(), 0);
-    assert_eq!(cold(16).await.unwrap(), paths[3..]);
+    assert_eq!(available, [std::path::Path::new("next")]);
     assert_eq!(
-        s.get_source_cursor(SourceUri("a".into()))
+        s.available_wander_paths(candidates(14), UnixMillis(20))
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        s.get_source_cursor(SourceUri("mapped".into()))
             .await
             .unwrap()
             .unwrap()
             .last_explored_at,
         UnixMillis(14)
     );
+    assert!(
+        s.get_source_cursor(SourceUri("next".into()))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn discovery_entity_key_prevents_splits_and_requires_explicit_reopen() {
+    let (_dir, _root, s) = fixture().await;
+    let topic = TopicId("release".into());
+    let keyed = |name: &str, revision, key: &str| {
+        let mut input = dossier(name, DossierSignal::Yellow, 1., revision);
+        input.entity_key = Some(key.into());
+        input
+    };
+    let at = UnixMillis(100);
+    let key = "github:apache/maka#3819";
+    assert!(
+        s.upsert_dossier(keyed("failed-claim", 1, key), at)
+            .await
+            .is_err()
+    );
+    s.upsert_dossier(dossier("release", DossierSignal::Yellow, 1., 0), at)
+        .await
+        .unwrap();
+    let attached = s
+        .upsert_dossier(keyed("release", 1, "  GitHub:Apache/Maka#3819 "), at)
+        .await
+        .unwrap();
+    assert!(!attached.material_change);
+    let duplicate = || keyed("completely-different-title", 0, key);
+    let error = s
+        .upsert_dossier(duplicate(), at)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("update existing topic_id release at revision 1"),
+        "{error}"
+    );
+    let error = s
+        .upsert_dossier(keyed("release", 1, "github:apache/maka#999"), at)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("cannot change"));
+
+    s.data
+        .write(s.resolve_statement(topic.clone(), true, at))
+        .await
+        .unwrap();
+    for input in [duplicate(), keyed("release", 2, key)] {
+        let error = s.upsert_dossier(input, at).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("topic already resolved under release")
+        );
+    }
+    let mut reopen = keyed("release", 2, key);
+    reopen.reopen = true;
+    assert_eq!(s.upsert_dossier(reopen, at).await.unwrap().revision, 3);
+    s.data
+        .write(s.unfollow_statement(topic.clone(), true, at))
+        .await
+        .unwrap();
+    for mut input in [
+        duplicate(),
+        keyed("release", 1, key),
+        keyed("release", 4, key),
+    ] {
+        input.reopen = true;
+        let error = s.upsert_dossier(input, at).await.unwrap_err();
+        assert!(error.to_string().contains(UNFOLLOWED));
+    }
+    assert!(
+        s.data
+            .write(s.resolve_statement(topic.clone(), false, at))
+            .await
+            .is_err()
+    );
+    let rows = s.list_dossiers().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].unfollowed);
+    assert_eq!(rows[0].entity_key.as_deref(), Some(key));
+    assert_eq!(
+        s.get_dossier(topic).await.unwrap().unwrap().entity_key,
+        rows[0].entity_key
+    );
+}
+
+#[tokio::test]
+async fn discovery_fired_watches_respect_resolved_and_unfollowed_topics() {
+    use guards::{ScheduledWatch, WatchCheck};
+    let (_dir, _root, s) = fixture().await;
+    let at = UnixMillis(1);
+    let topic = TopicId("contract".into());
+    s.upsert_dossier(dossier("contract", DossierSignal::Green, 1., 0), at)
+        .await
+        .unwrap();
+    let watch = |id: &str| ScheduledWatch {
+        watch: WatchRecord {
+            watch_id: WatchId(id.into()),
+            topic_id: topic.clone(),
+            kind: WatchKind::Deadline,
+            target: "deadline".into(),
+            predicate: json!({"trigger_at_ms":5}),
+            on_trigger: WatchTrigger::NotifyDirect,
+            last_state_hash: None,
+            expires_at: None,
+            created_at: at,
+            updated_at: at,
+        },
+        authority: json!({}),
+        interval_ms: 1,
+        action_id: None,
+    };
+    let check = || WatchCheck {
+        state_hash: "due".into(),
+        matched: true,
+        observed_at: UnixMillis(5),
+        reason: "deadline passed".into(),
+    };
+    for id in ["resolved", "unfollowed"] {
+        s.register_watch(watch(id), at, Default::default())
+            .await
+            .unwrap();
+    }
+    s.data
+        .write(s.resolve_statement(topic.clone(), true, UnixMillis(2)))
+        .await
+        .unwrap();
+    s.observe_watch(watch("resolved"), check(), 6)
+        .await
+        .unwrap();
+    let closed = s.get_dossier(topic.clone()).await.unwrap().unwrap();
+    assert_eq!(
+        (closed.signal, closed.revision, closed.last_checked_at),
+        (DossierSignal::Done, 2, at)
+    );
+
+    s.data
+        .write(s.resolve_statement(topic.clone(), false, UnixMillis(3)))
+        .await
+        .unwrap();
+    // Historical callers could set a topic back to yellow while its unfollow marker remained.
+    s.data
+        .write(s.mutation(false, |c, owner| {
+            c.execute(
+                "INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+            VALUES(?1,?2,'unfollowed:contract',1,'true')",
+                params![REVISION_PACKAGE, owner],
+            )?;
+            Ok(())
+        }))
+        .await
+        .unwrap();
+    s.observe_watch(watch("unfollowed"), check(), 6)
+        .await
+        .unwrap();
+    assert!(
+        s.register_watch(watch("late"), at, Default::default())
+            .await
+            .is_err()
+    );
+    let ignored = s.get_dossier(topic).await.unwrap().unwrap();
+    assert_eq!((ignored.revision, ignored.last_checked_at), (3, at));
+    assert!(s.latest_interrupt().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn discovery_invalidated_action_stays_stale_without_reopening_its_closed_dossier() {
+    let (_dir, _root, s) = fixture().await;
+    let at = UnixMillis(1);
+    let topic = TopicId("annex".into());
+    s.upsert_dossier(dossier("annex", DossierSignal::Yellow, 1., 0), at)
+        .await
+        .unwrap();
+    let action: PendingActionRecord = serde_json::from_value(json!({
+        "actionId":"send","topicId":"annex","connectorTool":"mail","params":{},"inputHashes":{"annex.md":"v1"},
+        "idempotencyKey":"draft","status":"awaiting_confirm","expiresAt":100,"createdAt":1,"updatedAt":1
+    })).unwrap();
+    s.data
+        .write(s.stage_action_statement(action, json!({}), json!({})))
+        .await
+        .unwrap();
+    let watch = s
+        .due_watches(WatchKind::FileHash, at, 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    s.data
+        .write(s.resolve_statement(topic.clone(), true, UnixMillis(2)))
+        .await
+        .unwrap();
+    let closed = s.get_dossier(topic.clone()).await.unwrap().unwrap();
+    s.observe_watch(
+        watch,
+        guards::WatchCheck {
+            state_hash: "v2".into(),
+            matched: true,
+            observed_at: UnixMillis(3),
+            reason: "annex changed".into(),
+        },
+        4,
+    )
+    .await
+    .unwrap();
+    let pending = s
+        .get_pending_action(ActionId("send".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.status, PendingActionStatus::Stale);
+    assert_eq!(s.get_dossier(topic).await.unwrap().unwrap(), closed);
 }
 
 #[tokio::test]
@@ -551,7 +1266,12 @@ async fn dossier_revisions_choices_and_resolution_persist_in_plugin_data() {
     let reopened = s.detail(topic.clone()).await.unwrap().unwrap();
     assert_eq!(reopened.dossier.signal, DossierSignal::Yellow);
 
-    let mut v3 = dossier("key-rot", DossierSignal::Red, 3.0, 2);
+    let mut v3 = dossier(
+        "key-rot",
+        DossierSignal::Red,
+        3.0,
+        reopened.dossier.revision,
+    );
     v3.summary_md = "New leaked key in staging".into();
     s.upsert_dossier(v3, UnixMillis(300)).await.unwrap();
     let updated = s.detail(topic).await.unwrap().unwrap();
@@ -591,7 +1311,7 @@ async fn dossier_update_preserves_stable_title_and_merges_artifacts_by_default()
     );
 
     // Updating same path replaces sha256 in place; new path appends.
-    let mut v3 = dossier("etf-check", DossierSignal::Yellow, 10.0, 2);
+    let mut v3 = dossier("etf-check", DossierSignal::Yellow, 10.0, 1);
     v3.title = String::new();
     v3.summary_md = "Updated script and added checklist".into();
     v3.artifacts = vec![
@@ -617,7 +1337,7 @@ async fn dossier_update_preserves_stable_title_and_merges_artifacts_by_default()
     );
 
     // Explicit replace_artifacts clears prior attachments.
-    let mut v4 = dossier("etf-check", DossierSignal::Done, 10.0, 3);
+    let mut v4 = dossier("etf-check", DossierSignal::Done, 10.0, 2);
     v4.title = String::new();
     v4.summary_md = "Done".into();
     v4.replace_artifacts = true;

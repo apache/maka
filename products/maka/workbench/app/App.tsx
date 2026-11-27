@@ -116,7 +116,7 @@ function App(
   const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const settingsNavigation = signal(0);
   const session = signal<ConversationSessionHandle | null>(null);
-  const discovery = signal<{ topicId: string | null } | null>(null);
+  const discovery = signal<{ topicId: string | null; runId?: string | null } | null>(null);
   const discoveryOpen = () => discovery() !== null;
   windowTitle(() =>
     discoveryOpen()
@@ -514,6 +514,20 @@ function App(
           workspaceMode.set('conversations');
           if (topicId !== undefined || !discoveryOpen())
             discovery.set({ topicId: topicId ?? null });
+        });
+      },
+      async openRun(runId) {
+        if (!alive || blocked()) return;
+        const generation = ++navigationGeneration;
+        ++sideOpening;
+        if (workspaceMode() === 'rooms') await roomWorkspace()?.flush();
+        if (!alive || blocked() || generation !== navigationGeneration) return;
+        batch(() => {
+          const panel = plugins.panel();
+          if (panel) plugins.closePanel(panel.instance);
+          settingsOpened.set(false);
+          workspaceMode.set('conversations');
+          discovery.set({ topicId: null, runId });
         });
       },
     },

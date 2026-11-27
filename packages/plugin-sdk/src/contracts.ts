@@ -1177,6 +1177,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -1303,6 +1316,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -2859,6 +2898,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -2985,6 +3037,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -8149,6 +8227,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -8275,6 +8366,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -9948,6 +10065,9 @@ export const contracts: {
                   topicId: {
                     type: 'string',
                   },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
                   title: {
                     type: 'string',
                   },
@@ -9987,6 +10107,10 @@ export const contracts: {
                   },
                   muted: {
                     type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
                   },
                   lastCheckedAt: {
                     type: 'integer',
@@ -10217,6 +10341,12 @@ export const contracts: {
                   summaryMd: {
                     type: 'string',
                   },
+                  evidenceMd: {
+                    type: ['string', 'null'],
+                  },
+                  factState: {
+                    type: ['string', 'null'],
+                  },
                   changeNote: {
                     type: ['string', 'null'],
                     default: null,
@@ -10307,6 +10437,9 @@ export const contracts: {
                   topicId: {
                     type: 'string',
                   },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
                   title: {
                     type: 'string',
                   },
@@ -10328,6 +10461,14 @@ export const contracts: {
                   },
                   muted: {
                     type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  preview: {
+                    type: 'string',
+                    default: '',
                   },
                   artifactCount: {
                     type: 'integer',
@@ -10376,6 +10517,9 @@ export const contracts: {
             properties: {
               text: {
                 type: 'string',
+              },
+              entityKey: {
+                type: ['string', 'null'],
               },
               paths: {
                 type: 'array',
@@ -12651,6 +12795,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -12777,6 +12934,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -13443,6 +13626,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -13569,6 +13765,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -21001,6 +21223,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -21127,6 +21362,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -22210,6 +22471,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -22336,6 +22610,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -24471,6 +24771,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -24597,6 +24910,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -29915,6 +30254,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -30041,6 +30393,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -31857,6 +32235,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -31983,6 +32374,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -33199,6 +33616,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -33325,6 +33755,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -37044,6 +37500,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -37170,6 +37639,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -44960,6 +45455,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -45086,6 +45594,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -47372,6 +47906,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -47498,6 +48045,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -53695,6 +54268,19 @@ export const contracts: {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  discoveryWorker: {
+                    type: 'boolean',
+                  },
+                  discoveryRun: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDiscoveryRunStatus',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   incognito: {
                     type: 'boolean',
                     default: false,
@@ -53821,6 +54407,32 @@ export const contracts: {
                   'tailMessageId',
                   'activity',
                 ],
+              },
+              AgentDiscoveryRunStatus: {
+                type: 'object',
+                properties: {
+                  startedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  terminal: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Terminal',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['startedAt'],
+              },
+              Terminal: {
+                type: 'string',
+                enum: ['completed', 'failed', 'cancelled'],
               },
               AgentSessionKind: {
                 type: 'string',
@@ -54406,6 +55018,30 @@ export const contracts: {
             },
             additionalProperties: false,
             required: ['topicId', 'resolved'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'null',
+            type: 'null',
+          },
+          resources: {},
+        },
+        setDossierUnfollowed: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'DossierUnfollow',
+            type: 'object',
+            properties: {
+              topicId: {
+                type: 'string',
+              },
+              unfollowed: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['topicId', 'unfollowed'],
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -58745,6 +59381,9 @@ export const contracts: {
                   topicId: {
                     type: 'string',
                   },
+                  entityKey: {
+                    type: ['string', 'null'],
+                  },
                   title: {
                     type: 'string',
                   },
@@ -58766,6 +59405,14 @@ export const contracts: {
                   },
                   muted: {
                     type: 'boolean',
+                  },
+                  unfollowed: {
+                    type: 'boolean',
+                    default: false,
+                  },
+                  preview: {
+                    type: 'string',
+                    default: '',
                   },
                   artifactCount: {
                     type: 'integer',

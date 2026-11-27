@@ -117,6 +117,13 @@ impl Fronts {
             .send(registration)
             .map_err(|_| Error::Provider("agy ACP supervisor exited before admission".into()))?;
         owner.take();
+        #[cfg_attr(
+            not(windows),
+            expect(
+                clippy::never_loop,
+                reason = "Only Windows retries connections from a different client PID"
+            )
+        )]
         let socket = loop {
             let socket = tokio::select! {
                 connection = listener.accept() => connection.map_err(provider)?,

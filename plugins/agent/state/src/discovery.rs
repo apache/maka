@@ -30,6 +30,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::watch;
 
+pub mod activity;
 pub mod changes;
 pub mod guards;
 #[cfg(test)]
@@ -40,6 +41,12 @@ mod tracking;
 #[serde(deny_unknown_fields)]
 pub struct DossierUpsert {
     pub topic_id: TopicId,
+    /// Stable identity across titles, e.g. github:<owner>/<repo>#<number> or <project>:<obligation>. Omission preserves the existing key.
+    #[serde(default)]
+    pub entity_key: Option<String>,
+    /// Explicitly reopen a resolved topic using its existing topic_id and current expected_revision.
+    #[serde(default)]
+    pub reopen: bool,
     #[schemars(required, with = "u64")]
     pub expected_revision: Option<u64>,
     /// Required on creation (expected_revision=0). Omit on updates to keep the existing stable topic title unless the core subject itself changed.
@@ -49,6 +56,15 @@ pub struct DossierUpsert {
     pub priority_weight: f64,
     pub window_at: Option<UnixMillis>,
     pub summary_md: String,
+    /// Stable core fact or blocker. Reuse the previous value until the observed facts change.
+    /// Omit verification times and presentation text. Omission preserves the last fact state.
+    #[serde(default)]
+    pub fact_state: Option<String>,
+    /// Deliver a new edition of an explicitly subscribed briefing.
+    #[serde(default)]
+    pub briefing: bool,
+    #[serde(default)]
+    pub evidence_md: Option<String>,
     #[serde(default)]
     pub change_note: Option<String>,
     #[serde(default)]
@@ -172,7 +188,33 @@ where
     }
 }
 
+// Workers created before the role flag used the fire digest as their creation fingerprint.
+// Both scheduler records are keyed lookups and bind that fire to the exact worker Session;
+// older runs whose completion receipt was pruned still retain discovery-only finish tools.
+pub(crate) const LEGACY_WORKER: &str = "CASE WHEN json_extract(s.configuration,'$.discoveryWorker') IS NOT 1
+    AND length(s.fingerprint)=64 AND substr(s.id,-32)=substr(s.fingerprint,1,32)
+    THEN EXISTS(SELECT 1 FROM plugin_data WHERE package_id='maka.agent.scheduler' AND scope_id='profile'
+        AND key IN (substr(s.id,1,length(s.id)-32)||'discovery/active',
+                    substr(s.id,1,length(s.id)-32)||'discovery/completed/'||s.fingerprint)
+        AND coalesce(json_extract(value_json,'$.worker'),json_extract(value_json,'$.run.sessionId'))=s.id)
+      OR (json_type(s.configuration,'$.tools')='array'
+          AND EXISTS(SELECT 1 FROM json_each(s.configuration,'$.tools')
+                     WHERE value IN ('DiscoveryComplete','FinishNoChange')))
+    ELSE 0 END";
+
+pub(crate) fn worker_session(c: &Connection, session: &str) -> Result<bool, StoreError> {
+    let sql = format!(
+        "SELECT json_extract(s.configuration,'$.discoveryWorker') IS 1 OR ({LEGACY_WORKER})
+                       FROM session_control s WHERE s.id=?1"
+    );
+    Ok(c.prepare_cached(&sql)?.query_row([session], |r| r.get(0))?)
+}
+
 impl DiscoveryStore {
+    pub async fn is_worker_session(&self, session: String) -> Result<bool, StoreError> {
+        self.read(move |c, _| worker_session(c, &session)).await
+    }
+
     pub fn new(data: DataWriter, owner: &RunOwner) -> Result<Self, StoreError> {
         Ok(Self {
             data,
@@ -211,6 +253,17 @@ impl DiscoveryStore {
         at: UnixMillis,
     ) -> impl Statement<Value = DiscoveryCommit<DossierUpsertOutcome>, Output = DossierUpsertOutcome>
     + use<> {
+        self.plan_upsert_statement(None, input, reason, at)
+    }
+
+    pub fn plan_upsert_statement(
+        &self,
+        plan: Option<String>,
+        input: DossierUpsert,
+        reason: Option<String>,
+        at: UnixMillis,
+    ) -> impl Statement<Value = DiscoveryCommit<DossierUpsertOutcome>, Output = DossierUpsertOutcome>
+    + use<> {
         Write {
             owner: self.owner.clone(),
             changes: Some(self.changed.clone()),
@@ -223,6 +276,14 @@ impl DiscoveryStore {
                     None => None,
                 };
                 outcome.notified = event.is_some();
+                if let Some(plan) = plan
+                    && (outcome.material_change || outcome.notified)
+                {
+                    activity::update(c, owner, &plan, |activity| {
+                        activity.revised += u64::from(outcome.material_change);
+                        activity.notified += u64::from(outcome.notified);
+                    })?;
+                }
                 Ok((outcome, event))
             },
         }
@@ -392,6 +453,60 @@ impl DiscoveryStore {
     ) -> Result<(), StoreError> {
         self.data.write(self.mute_statement(topic, muted, at)).await
     }
+    pub async fn is_unfollowed(&self, topic: TopicId) -> Result<bool, StoreError> {
+        self.read(move |c, owner| is_unfollowed(c, owner, &topic))
+            .await
+    }
+    pub fn unfollow_statement(
+        &self,
+        topic: TopicId,
+        unfollowed: bool,
+        at: UnixMillis,
+    ) -> impl Statement<Value = DiscoveryCommit<String>, Output = String> + use<> {
+        self.mutation(true, move |c, owner| {
+            let title: String = c
+                .query_row(
+                    "SELECT title FROM discovery_dossiers WHERE owner=?1 AND topic_id=?2",
+                    params![owner, topic.0],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| crate::store::invalid("discovery_topic_missing"))?;
+            let key = unfollowed_key(&topic);
+            let marker_changed = if unfollowed {
+                let changed = c.execute(
+                    "INSERT INTO plugin_data(package_id, scope_id, key, revision, value_json)
+                     VALUES (?1, ?2, ?3, 1, 'true')
+                     ON CONFLICT(package_id, scope_id, key) DO UPDATE SET
+                         revision = revision + 1, value_json = 'true' WHERE value_json IS NOT 'true'",
+                    params![REVISION_PACKAGE, owner, key],
+                )?;
+                c.execute(
+                    "DELETE FROM discovery_watches WHERE owner=?1 AND topic_id=?2",
+                    params![owner, topic.0],
+                )?;
+                c.execute(
+                    "UPDATE discovery_pending_actions SET status='done', updated_at=max(updated_at,?3)
+                     WHERE owner=?1 AND topic_id=?2 AND status IN ('awaiting_confirm','stale')",
+                    params![owner, topic.0, at.0],
+                )?;
+                changed != 0
+            } else {
+                c.execute(
+                    "DELETE FROM plugin_data WHERE package_id=?1 AND scope_id=?2 AND key=?3",
+                    params![REVISION_PACKAGE, owner, key],
+                )? != 0
+            };
+            let signal = if unfollowed { DossierSignal::Done } else { DossierSignal::Yellow };
+            c.execute(
+                "UPDATE discovery_dossiers SET signal=?3, muted=?4, revision=revision+1,
+                     last_material_change_at=max(last_material_change_at,?5), updated_at=max(updated_at,?5)
+                 WHERE owner=?1 AND topic_id=?2 AND (signal!=?3 OR muted!=?4 OR ?6)",
+                params![owner, topic.0, signal.as_str(), unfollowed, at.0, marker_changed],
+            )?;
+            Ok(title)
+        })
+    }
     pub fn resolve_statement(
         &self,
         topic: TopicId,
@@ -404,10 +519,10 @@ impl DiscoveryStore {
             DossierSignal::Yellow
         };
         self.mutation(true, move |c, owner| {
-            require_dossier(c.execute(
-                "UPDATE discovery_dossiers SET signal=?3, updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",
-                params![owner, topic.0, signal.as_str(), at.0],
-            )?)
+            if !resolved && is_unfollowed(c, owner, &topic)? {
+                return Err(crate::store::invalid(UNFOLLOWED));
+            }
+            set_signal(c, owner, &topic, signal, at)
         })
     }
     pub fn choose_statement(
@@ -441,10 +556,7 @@ impl DiscoveryStore {
             entry.chosen_key = Some(trimmed.to_owned());
             write_revisions(c, owner, &topic, &revisions)?;
             if resolve {
-                c.execute(
-                    "UPDATE discovery_dossiers SET signal=?3, updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",
-                    params![owner, topic.0, DossierSignal::Done.as_str(), at.0],
-                )?;
+                set_signal(c, owner, &topic, DossierSignal::Done, at)?;
             } else {
                 c.execute(
                     "UPDATE discovery_dossiers SET updated_at=max(updated_at,?3) WHERE owner=?1 AND topic_id=?2",
@@ -538,6 +650,20 @@ impl DiscoveryStore {
 const TOUCH: &str = "UPDATE discovery_dossiers SET last_checked_at=max(last_checked_at,?3),
     updated_at=max(updated_at,?3) WHERE owner=?1 AND topic_id=?2";
 
+fn set_signal(
+    c: &Connection,
+    owner: &str,
+    topic: &TopicId,
+    signal: DossierSignal,
+    at: UnixMillis,
+) -> Result<(), StoreError> {
+    require_dossier(c.execute(
+        "UPDATE discovery_dossiers SET signal=?3, revision=revision+(signal!=?3),
+             last_material_change_at=CASE WHEN signal!=?3 THEN max(last_material_change_at,?4) ELSE last_material_change_at END,
+             updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",
+        params![owner, topic.0, signal.as_str(), at.0],
+    )?)
+}
 fn require_dossier(rows: usize) -> Result<(), StoreError> {
     if rows == 0 {
         Err(crate::store::invalid("discovery_topic_missing"))
@@ -603,17 +729,110 @@ fn sql_revision(value: u64) -> Result<i64, StoreError> {
 fn optional_time(r: &Row<'_>, col: usize) -> rusqlite::Result<Option<UnixMillis>> {
     Ok(r.get::<_, Option<i64>>(col)?.map(UnixMillis))
 }
+fn unfollowed_key(topic: &TopicId) -> String {
+    format!("unfollowed:{}", topic.0)
+}
+const UNFOLLOWED: &str = "topic is unfollowed by user; skip it and do not re-open";
+fn is_unfollowed(c: &Connection, owner: &str, topic: &TopicId) -> Result<bool, StoreError> {
+    let raw: Option<Option<String>> = c
+        .query_row(
+            "SELECT value_json FROM plugin_data WHERE package_id=?1 AND scope_id=?2 AND key=?3",
+            params![REVISION_PACKAGE, owner, unfollowed_key(topic)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(matches!(raw.flatten().as_deref(), Some("true")))
+}
+fn strip_md_links(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        if let Some(close) = after_open.find("](")
+            && let Some(end) = after_open[close + 2..].find(')')
+        {
+            out.push_str(&after_open[..close]);
+            rest = &after_open[close + 2 + end + 1..];
+            continue;
+        }
+        out.push('[');
+        rest = after_open;
+    }
+    out.push_str(rest);
+    out
+}
+pub(crate) fn summary_preview(summary_md: &str) -> String {
+    let clean_line = |line: &str| -> String {
+        let trimmed = line
+            .trim_start_matches('#')
+            .trim_start_matches(['>', '-', '*', '+'])
+            .trim();
+        let stripped = strip_md_links(trimmed)
+            .replace("**", "")
+            .replace(['`', '*'], "");
+        stripped.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+
+    let mut parts = Vec::new();
+    let mut heading_fallback: Option<String> = None;
+    for raw in summary_md.lines() {
+        let line = raw.trim();
+        if line.is_empty()
+            || line.starts_with('|')
+            || line.starts_with("```")
+            || line
+                .chars()
+                .all(|c| matches!(c, '-' | '_' | '*' | '=' | ' '))
+        {
+            continue;
+        }
+        if line.starts_with('#') {
+            if heading_fallback.is_none() {
+                let heading = clean_line(line);
+                if !heading.is_empty() {
+                    heading_fallback = Some(heading);
+                }
+            }
+            continue;
+        }
+        let normalized = clean_line(line);
+        if !normalized.is_empty() {
+            parts.push(normalized);
+            if parts.iter().map(String::len).sum::<usize>() >= 120 {
+                break;
+            }
+        }
+    }
+    if parts.is_empty()
+        && let Some(heading) = heading_fallback
+    {
+        parts.push(heading);
+    }
+    let joined = parts.join(" ");
+    let mut chars = joined.chars();
+    let preview: String = chars.by_ref().take(96).collect();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
 fn get(c: &Connection, owner: &str, topic: &TopicId) -> Result<Option<DossierRecord>, StoreError> {
+    let unfollowed = is_unfollowed(c, owner, topic)?;
     Ok(c.query_row(
         "SELECT topic_id, title, signal, priority_weight, window_at, revision, summary_md,
                 artifacts_json, linked_task_ids_json, thread_session_id, muted, last_checked_at,
                 last_material_change_at, last_notified_revision, last_interrupt_reason,
-                last_interrupt_at, created_at, updated_at
+                last_interrupt_at, created_at, updated_at,
+                (SELECT json_extract(value_json,'$') FROM plugin_data
+                 WHERE package_id=?3 AND scope_id=?1 AND key='topic-entity:'||?2)
          FROM discovery_dossiers WHERE owner=?1 AND topic_id=?2",
-        params![owner, topic.0],
+        params![owner, topic.0, REVISION_PACKAGE],
         |row| {
             Ok(DossierRecord {
                 topic_id: TopicId(row.get(0)?),
+                entity_key: row.get(18)?,
                 title: row.get(1)?,
                 signal: vocabulary(row, 2)?,
                 priority_weight: row.get(3)?,
@@ -624,6 +843,7 @@ fn get(c: &Connection, owner: &str, topic: &TopicId) -> Result<Option<DossierRec
                 linked_task_ids: json(row, 8)?,
                 thread_session_id: row.get(9)?,
                 muted: row.get(10)?,
+                unfollowed,
                 last_checked_at: UnixMillis(row.get(11)?),
                 last_material_change_at: UnixMillis(row.get(12)?),
                 last_notified_revision: unsigned(row, 13)?,
@@ -638,9 +858,18 @@ fn get(c: &Connection, owner: &str, topic: &TopicId) -> Result<Option<DossierRec
 }
 fn list(c: &Connection, owner: &str) -> Result<Vec<DossierSummary>, StoreError> {
     // Each signal is an ordered range of the priority index, including its topic-id tie breaker.
-    let mut stmt=c.prepare_cached("SELECT topic_id,title,window_at,revision,last_material_change_at,muted,json_array_length(artifacts_json),
-               last_notified_revision,last_interrupt_reason,last_interrupt_at
-        FROM discovery_dossiers WHERE owner=?1 AND signal=?2 ORDER BY priority_weight DESC,last_material_change_at DESC,topic_id")?;
+    let mut stmt = c.prepare_cached(
+        "SELECT d.topic_id, d.title, d.window_at, d.revision, d.last_material_change_at, d.muted,
+                json_array_length(d.artifacts_json), d.last_notified_revision,
+                d.last_interrupt_reason, d.last_interrupt_at, d.summary_md,
+                EXISTS(SELECT 1 FROM plugin_data p WHERE p.package_id=?3 AND p.scope_id=d.owner
+                       AND p.key=('unfollowed:'||d.topic_id) AND p.value_json='true'),
+                (SELECT json_extract(value_json,'$') FROM plugin_data
+                 WHERE package_id=?3 AND scope_id=d.owner AND key='topic-entity:'||d.topic_id)
+         FROM discovery_dossiers d
+         WHERE d.owner=?1 AND d.signal=?2
+         ORDER BY d.priority_weight DESC, d.last_material_change_at DESC, d.topic_id",
+    )?;
     let mut result = Vec::new();
     for signal in [
         DossierSignal::Red,
@@ -648,15 +877,19 @@ fn list(c: &Connection, owner: &str) -> Result<Vec<DossierSummary>, StoreError> 
         DossierSignal::Green,
         DossierSignal::Done,
     ] {
-        let rows = stmt.query_map(params![owner, signal.as_str()], |r| {
+        let rows = stmt.query_map(params![owner, signal.as_str(), REVISION_PACKAGE], |r| {
+            let summary_md: String = r.get(10)?;
             Ok(DossierSummary {
                 topic_id: TopicId(r.get(0)?),
+                entity_key: r.get(12)?,
                 title: r.get(1)?,
                 signal,
                 window_at: optional_time(r, 2)?,
                 revision: unsigned(r, 3)?,
                 last_material_change_at: UnixMillis(r.get(4)?),
                 muted: r.get(5)?,
+                unfollowed: r.get(11)?,
+                preview: summary_preview(&summary_md),
                 artifact_count: unsigned(r, 6)?,
                 last_notified_revision: unsigned(r, 7)?,
                 last_interrupt_reason: r.get(8)?,
@@ -684,6 +917,8 @@ fn synthesize_revision(dossier: &DossierRecord) -> DossierRevision {
         title: dossier.title.clone(),
         signal: dossier.signal,
         summary_md: dossier.summary_md.clone(),
+        evidence_md: None,
+        fact_state: None,
         change_note: None,
         artifacts: dossier.artifacts.clone(),
         choices: vec![],
@@ -704,7 +939,7 @@ fn read_revisions(
         )
         .optional()?;
     match raw.flatten() {
-        Some(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+        Some(text) => Ok(serde_json::from_str(&text)?),
         None => Ok(Vec::new()),
     }
 }
@@ -766,6 +1001,102 @@ fn merge_artifacts(
     merged
 }
 
+fn check_reopen(record: &DossierRecord, reopen: bool) -> Result<(), StoreError> {
+    if record.unfollowed {
+        return Err(crate::store::invalid(UNFOLLOWED));
+    }
+    if record.signal == DossierSignal::Done && !reopen {
+        return Err(crate::store::invalid(format!(
+            "topic already resolved under {}; reopen only via user action or explicit reopen",
+            record.topic_id.0
+        )));
+    }
+    Ok(())
+}
+
+fn bind_entity(
+    c: &Connection,
+    owner: &str,
+    topic: &TopicId,
+    key: &str,
+    existing: Option<&str>,
+) -> Result<(), StoreError> {
+    let key = key.trim();
+    let normalized = key
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_lowercase();
+    if normalized.is_empty() || normalized.len() > 256 || key.chars().any(char::is_control) {
+        return Err(crate::store::invalid(
+            "provide a nonempty, single-line entity_key of at most 256 bytes",
+        ));
+    }
+    if existing == Some(&normalized) {
+        return Ok(());
+    }
+    let forward = format!("entity:{normalized}");
+    let bound: Option<String> = c.query_row(
+        "SELECT json_extract(value_json,'$') FROM plugin_data WHERE package_id=?1 AND scope_id=?2 AND key=?3",
+        params![REVISION_PACKAGE, owner, forward], |r| r.get(0),
+    ).optional()?;
+    if let Some(id) = bound {
+        let record = get(c, owner, &TopicId(id))?
+            .ok_or_else(|| crate::store::invalid("entity_key refers to a missing dossier"))?;
+        check_reopen(&record, false)?;
+        return Err(crate::store::invalid(format!(
+            "update existing topic_id {} at revision {} for this entity_key",
+            record.topic_id.0, record.revision
+        )));
+    }
+    if existing.is_some() {
+        return Err(crate::store::invalid(
+            "a dossier's entity_key cannot change",
+        ));
+    }
+    // Both directions are keyed reads, including when projecting a page of dossiers.
+    c.execute(
+        "INSERT INTO plugin_data(package_id,scope_id,key,revision,value_json)
+         VALUES (?1,?2,?3,1,json_quote(?4)), (?1,?2,?5,1,json_quote(?6))",
+        params![
+            REVISION_PACKAGE,
+            owner,
+            forward,
+            topic.0,
+            format!("topic-entity:{}", topic.0),
+            normalized
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_base_revision(
+    input: &DossierUpsert,
+    existing: Option<&DossierRecord>,
+) -> Result<u64, StoreError> {
+    let revision = existing.map_or(0, |record| record.revision);
+    let access = existing.map_or(Ok(()), |record| {
+        check_reopen(
+            record,
+            input.reopen && input.expected_revision == Some(revision),
+        )
+    });
+    if let Some(expected) = input.expected_revision
+        && expected != revision
+    {
+        // A stale keyed worker must learn that the entity was closed before it retries.
+        if input.entity_key.is_some() {
+            access?;
+        }
+        return Err(StoreError::RevisionConflict {
+            expected: expected.to_string(),
+            actual: revision.to_string(),
+        });
+    }
+    access?;
+    Ok(revision)
+}
+
 fn upsert(
     c: &Connection,
     owner: &str,
@@ -780,6 +1111,18 @@ fn upsert(
         return Err(crate::store::invalid("invalid discovery dossier"));
     }
     let existing_record = get(c, owner, &input.topic_id)?;
+    if let Some(key) = &input.entity_key {
+        bind_entity(
+            c,
+            owner,
+            &input.topic_id,
+            key,
+            existing_record
+                .as_ref()
+                .and_then(|r| r.entity_key.as_deref()),
+        )?;
+    }
+    let previous = upsert_base_revision(&input, existing_record.as_ref())?;
     let resolved_title = if input.title.trim().is_empty() {
         existing_record
             .as_ref()
@@ -788,7 +1131,7 @@ fn upsert(
     } else {
         input.title.trim().to_owned()
     };
-    let incoming_artifacts: Vec<_> = input
+    let incoming_artifacts = input
         .artifacts
         .into_iter()
         .map(DossierArtifact::from)
@@ -801,71 +1144,44 @@ fn upsert(
         ),
         None => incoming_artifacts,
     };
-    let artifacts = serde_json::to_string(&artifact_list)?;
+    let linked_task_ids = input.linked_task_ids.map(|mut ids| {
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    });
     let choices = sanitize_choices(input.choices);
-    let change_note = input
-        .change_note
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    let links = input
-        .linked_task_ids
-        .map(|mut ids| {
-            ids.sort_unstable();
-            ids.dedup();
-            serde_json::to_string(&ids)
-        })
-        .transpose()?;
-    let window = input.window_at.map(|t| t.0);
-    let args = params![
-        owner,
-        input.topic_id.0,
-        resolved_title,
-        input.signal.as_str(),
-        input.priority_weight,
-        window,
-        input.summary_md,
-        artifacts,
-        links,
-    ];
-    let old = c
-        .query_row(
-            "SELECT revision,
-                title != ?3 OR signal != ?4 OR window_at IS NOT ?6 OR summary_md != ?7
-                  OR artifacts_json != ?8 OR (?9 IS NOT NULL AND linked_task_ids_json != ?9),
-                priority_weight != ?5
-         FROM discovery_dossiers WHERE owner=?1 AND topic_id=?2",
-            args,
-            |row| {
-                Ok((
-                    unsigned(row, 0)?,
-                    row.get::<_, bool>(1)?,
-                    row.get::<_, bool>(2)?,
-                ))
-            },
-        )
-        .optional()?;
-    let (previous, mut changed, reweighted) = old.unwrap_or((0, true, false));
-    if let Some(expected) = input.expected_revision
-        && expected != previous
-    {
-        return Err(StoreError::RevisionConflict {
-            expected: expected.to_string(),
-            actual: previous.to_string(),
-        });
-    }
     let mut existing_revisions = read_revisions(c, owner, &input.topic_id)?;
-    let choices_changed =
-        !choices.is_empty() && existing_revisions.last().map(|r| &r.choices) != Some(&choices);
-    if choices_changed {
-        changed = true;
-    }
-    let previous_record = if changed && previous > 0 && existing_revisions.is_empty() {
-        existing_record
-    } else {
-        None
-    };
+    let latest = existing_revisions.last();
+    let previous_fact = latest.and_then(|revision| revision.fact_state.as_deref());
+    let fact_state = input
+        .fact_state
+        .as_deref()
+        .map(|fact| fact.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|fact| !fact.is_empty());
+    let changed = existing_record.as_ref().is_none_or(|record| {
+        input.briefing
+            || input.signal != record.signal
+            || input.window_at != record.window_at
+            || artifact_list != record.artifacts
+            || linked_task_ids
+                .as_ref()
+                .is_some_and(|ids| ids != &record.linked_task_ids)
+            || (!choices.is_empty() && latest.is_none_or(|r| choices != r.choices))
+            || fact_state
+                .as_deref()
+                .is_some_and(|fact| Some(fact) != previous_fact)
+    });
     let revision = previous + u64::from(changed);
     if changed {
+        let artifacts = serde_json::to_string(&artifact_list)?;
+        let links = linked_task_ids
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let fact_state = fact_state.or_else(|| previous_fact.map(str::to_owned));
+        let clean = |s: String| s.trim().to_owned();
+        let evidence_md = input.evidence_md.map(clean).filter(|s| !s.is_empty());
+        let change_note = input.change_note.map(clean).filter(|s| !s.is_empty());
         c.execute(
             "INSERT INTO discovery_dossiers(
                  owner, topic_id, title, signal, priority_weight, window_at, summary_md, artifacts_json,
@@ -878,10 +1194,12 @@ fn upsert(
                  last_checked_at=max(last_checked_at,?11), last_material_change_at=max(last_material_change_at,?11),
                  updated_at=max(updated_at,?11)",
             params![owner, input.topic_id.0, resolved_title, input.signal.as_str(), input.priority_weight,
-                    window, input.summary_md, artifacts, links, sql_revision(revision)?, at.0],
+                    input.window_at.map(|t| t.0), input.summary_md, artifacts, links, sql_revision(revision)?, at.0],
         )?;
-        if let Some(prev) = previous_record {
-            existing_revisions.push(synthesize_revision(&prev));
+        if existing_revisions.is_empty()
+            && let Some(prev) = &existing_record
+        {
+            existing_revisions.push(synthesize_revision(prev));
         }
         existing_revisions.push(DossierRevision {
             revision,
@@ -889,13 +1207,16 @@ fn upsert(
             title: resolved_title,
             signal: input.signal,
             summary_md: input.summary_md,
+            fact_state,
+            evidence_md,
             change_note,
             artifacts: artifact_list,
             choices,
             chosen_key: None,
         });
         write_revisions(c, owner, &input.topic_id, &existing_revisions)?;
-    } else if reweighted {
+    } else if existing_record.is_some_and(|record| record.priority_weight != input.priority_weight)
+    {
         c.execute(
             "UPDATE discovery_dossiers SET priority_weight=?3, last_checked_at=max(last_checked_at,?4),
                     updated_at=max(updated_at,?4) WHERE owner=?1 AND topic_id=?2",

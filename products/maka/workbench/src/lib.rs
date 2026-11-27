@@ -139,7 +139,18 @@ mod tests {
         app.wait_for("role:button[Proactive discovery]").unwrap();
         app.press("role:button[Proactive discovery]").unwrap();
         app.wait_for("text:Review copy").unwrap();
-        let discovery = "role:button[Discovery dossiers]";
+        let discovery = "role:button[Discovery]";
+        app.wait_for("label:Probe running").unwrap();
+        assert!(
+            !app.screen()
+                .matches("role:button[Open conversation Probe fixture]")
+                .unwrap()
+        );
+        app.press("role:button[Runs]").unwrap();
+        app.press("role:button[Probe fixture]").unwrap();
+        app.wait_for("text:Read-only probe evidence").unwrap();
+        assert!(!app.screen().matches("role:button[Continue]").unwrap());
+        app.press("role:button[Close Runs]").unwrap();
         let conversation = "role:button[Open conversation Planning]";
         assert!(app.screen().selected(discovery).unwrap());
         assert!(!app.screen().selected(conversation).unwrap());

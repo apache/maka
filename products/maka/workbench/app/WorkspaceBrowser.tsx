@@ -55,6 +55,8 @@ import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import { SessionMenuItems, type SessionMenuAction } from './SessionMenu';
+import type { WorkerSession } from './discoveryDossiersCore';
+import { ProbeIndicator } from './DiscoveryRuns';
 import { Automations } from './Automations';
 import {
   groupWorkspace,
@@ -112,7 +114,7 @@ export type WorkspaceBrowserProps = {
   /** The Bot Session, listed only through its own entry. */
   botSession?(): string | null | undefined;
   /** The conversations the Bot created; the running and waiting ones show under its entry. */
-  botWorkers?(): readonly AgentSession[];
+  botWorkers?(): readonly WorkerSession[];
   settings(expectedSessionId: string | null): void;
   search(expectedSessionId: string | null): void;
   changeSession(action: SessionAction, expectedSessionId: string | null): Promise<void>;
@@ -199,12 +201,22 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   });
   // Running and waiting first-hand work of the Bot, waiting first; the open
   // one stays while it is open. The rest are on the Bot's page.
+  const probing = () =>
+    props
+      .botWorkers?.()
+      .some(
+        (worker) =>
+          worker.discoveryWorker === true && !worker.archived && worker.activity !== 'idle',
+      );
   const activeBotWorkers = computed(() => {
     if (platform.idiom === 'terminal') return [];
     const selected = props.selected();
     return (props.botWorkers?.() ?? [])
       .filter(
-        (session) => !session.archived && (session.activity !== 'idle' || session.id === selected),
+        (session) =>
+          session.discoveryWorker !== true &&
+          !session.archived &&
+          (session.activity !== 'idle' || session.id === selected),
       )
       .sort(
         (a, b) =>
@@ -546,7 +558,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const optionalFeatures = computed<
     Array<{
       id: SidebarFeature;
-      icon: 'bot' | 'activity' | 'rooms';
+      icon: Parameters<typeof Icon>[0]['name'];
       label: string;
       disabled: boolean;
       open(): void;
@@ -580,8 +592,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       ? [
           {
             id: 'discovery' as const,
-            icon: 'activity' as const,
-            label: tr('Discovery dossiers'),
+            icon: 'book' as const,
+            label: tr('Discovery navigation'),
             disabled: props.connectionLost(),
             open: () => {
               setMoreFeaturesOpen(false);
@@ -865,7 +877,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           }
         >
           <Button
-            accessibilityLabel={tr('Discovery dossiers')}
+            accessibilityLabel={tr('Discovery navigation')}
             selected={props.discoveryOpen?.() ?? false}
             disabled={props.connectionLost()}
             onPress={() => props.openDiscovery?.()}
@@ -883,10 +895,13 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
-            <Icon name="activity" color={navIcon()} />
+            <Icon name="book" color={navIcon()} />
             <Text style={{ ...selectedNavText(props.discoveryOpen?.() ?? false), flex: 1 }}>
-              {tr('Discovery dossiers')}
+              {tr('Discovery navigation')}
             </Text>
+            <If when={probing()}>
+              <ProbeIndicator />
+            </If>
           </Button>
         </If>
         <If when={showRoomsNav()}>
@@ -1010,6 +1025,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     <Text style={[{ color: C.text, flex: 1, fontSize: 14 }, { numberOfLines: 1 }]}>
                       {item().label}
                     </Text>
+                    <If when={item().id === 'discovery' && probing()}>
+                      <ProbeIndicator />
+                    </If>
                   </Button>
                   <Switch
                     accessibilityLabel={tr('Show {name} in sidebar', { name: item().label })}

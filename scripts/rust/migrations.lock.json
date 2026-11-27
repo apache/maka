@@ -237,6 +237,10 @@
       "plugins/agent/state/migrations/0060_discovery_watch_runner.sql": {
         "version": 60,
         "sha384": "f94cea0098941388d8378a2de377098db9b007daf66c158e999831ce97c36b84aa41e648b6ff4f78c3d65c609e24fedd"
+      },
+      "plugins/agent/state/migrations/0061_discovery_activity_pacing.sql": {
+        "version": 61,
+        "sha384": "635ef14fb1ebba7b3142114d33f45be0e0a76adf804a05b9c49ecb0ff012c0ddd4525e0c7b5ae7e91028b5993b85a13e"
       }
     },
     "checkpoint-repository": {

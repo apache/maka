@@ -179,12 +179,18 @@ pub(crate) fn summary_for(data_source: &DataSource, record: Record) -> Result<Se
             position: origin.position.clone(),
             side: origin.side,
         });
+    let discovery_worker = session.configuration.discovery_worker || record.legacy_discovery_worker;
     Ok(Session {
         kind: if record.is_room {
             SessionKind::Room
         } else {
             SessionKind::Agent
         },
+        discovery_worker,
+        discovery_run: discovery_worker.then(|| DiscoveryRunStatus {
+            started_at: session.created_at,
+            terminal: record.status.latest.and_then(|r| r.terminal),
+        }),
         incognito: session.configuration.incognito,
         parent_session_id: session.configuration.parent_session_id,
         branch,

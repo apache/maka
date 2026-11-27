@@ -41,8 +41,9 @@ export interface ConversationShell {
   openRooms?(): void;
   /** The dossiers route in the main conversation pane. */
   discovery?: {
-    route(): { topicId: string | null } | null;
+    route(): { topicId: string | null; runId?: string | null } | null;
     open(topicId?: string): Promise<void>;
+    openRun?(runId: string): Promise<void>;
   };
   openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;

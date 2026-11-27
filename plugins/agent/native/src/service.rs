@@ -966,6 +966,12 @@ impl Handler for Agent {
                         .prepare(state),
                 )
             }),
+            "setDossierUnfollowed" => handler_rpc(&mut args, |owner, input, context| async move {
+                discovery_desktop(&context)?;
+                context.operation().ok_or("agent_mutation_required")?;
+                let input: DossierUnfollow = decode(input)?;
+                context.complete_change(Value::Null, owner.prepare_dossier_unfollow(input)?)
+            }),
             "chooseDossierOption" => handler_rpc(&mut args, |owner, input, context| async move {
                 discovery_desktop(&context)?;
                 context.operation().ok_or("agent_mutation_required")?;

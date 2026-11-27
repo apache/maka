@@ -445,6 +445,8 @@ type ConversationProps = {
   stopAction(): () => void;
   /** Starts the Bot over; offered only on the Bot's own conversation. */
   restartBot?(): Promise<void>;
+  /** Opens the read-only Discovery Runs view on a discovery worker run ID. */
+  openDiscoveryRun?(runId: string): void;
   openDiscovery(): void;
   /** Shows only the latest exchange, as tall as its content, with no header. */
   compact?: boolean;
@@ -1235,7 +1237,16 @@ export function Conversation(props: ConversationProps) {
     });
   }
   const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
-  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  const isDiscoveryWorker = (id: string) =>
+    props.knownSession?.(id)?.discoveryWorker === true ||
+    botWorkers.sessions().some((session) => session.id === id && session.discoveryWorker === true);
+  const openWorker = (id: string) => {
+    if (isDiscoveryWorker(id) && props.openDiscoveryRun) {
+      props.openDiscoveryRun(id);
+      return;
+    }
+    (props.openSessionBeside ?? props.openSessionHere)?.(id);
+  };
   const openLink: ConversationProps['openLink'] = async (target, restoreFocus) => {
     const id = sessionIdFromLink(target);
     if (id !== undefined) openWorker(id);
@@ -5286,7 +5297,7 @@ export function Conversation(props: ConversationProps) {
                   changeDraft(draft());
                   props.focusComposer();
                 }}
-                openInvestigation={openWorker}
+                openInvestigation={props.openDiscoveryRun ?? openWorker}
                 worker={
                   worker() !== undefined && canOpenWorker()
                     ? {

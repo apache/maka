@@ -89,6 +89,16 @@ impl Owner {
                 ContinuationRejection::SourceChanged,
             ));
         }
+        if self
+            .discovery
+            .is_worker_session(session_id.clone())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(ContinuationReadiness::Rejected(
+                ContinuationRejection::SafetyCheckFailed,
+            ));
+        }
         if actual.terminal.is_none() {
             return Ok(ContinuationReadiness::Rejected(
                 ContinuationRejection::SourceNotTerminal,

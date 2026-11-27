@@ -16,6 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Output } from './host';
 import { fileURLToPath } from 'url';
 
@@ -23,6 +24,21 @@ export type DossiersSnapshot = Output<'agent', 'watchDossiers'>;
 export type DossierSummary = DossiersSnapshot['dossiers'][number];
 export type DossierDetail = NonNullable<Output<'agent', 'dossier'>>;
 export type DossierSortMode = 'recent' | 'priority';
+
+export type WorkerSession = Pick<
+  AgentSession,
+  'id' | 'title' | 'updatedAt' | 'activity' | 'archived' | 'discoveryWorker' | 'discoveryRun'
+>;
+
+export function discoveryRuns(workers: readonly WorkerSession[]) {
+  return workers
+    .filter((worker) => worker.discoveryWorker === true && !worker.archived)
+    .sort(
+      (a, b) =>
+        Number(a.activity === 'idle') - Number(b.activity === 'idle') || b.updatedAt - a.updatedAt,
+    )
+    .slice(0, 32);
+}
 
 export type DossierChoiceItem = {
   key: string;
@@ -39,6 +55,7 @@ export type DossierRevisionItem = {
   title: string;
   signal: DossierSummary['signal'];
   summaryMd: string;
+  evidenceMd?: string | null;
   changeNote?: string | null;
   artifacts?: DossierDetail['artifacts'];
   choices?: DossierChoiceItem[];
@@ -81,11 +98,44 @@ export function sortDossiers(
 ): DossierSummary[] {
   if (mode === 'priority') return [...rows];
   return [...rows].sort((a, b) => {
-    const aDone = a.signal === 'done' ? 1 : 0;
-    const bDone = b.signal === 'done' ? 1 : 0;
-    if (aDone !== bDone) return aDone - bDone;
+    const aInactive = a.signal === 'done' || Boolean(a.unfollowed) ? 1 : 0;
+    const bInactive = b.signal === 'done' || Boolean(b.unfollowed) ? 1 : 0;
+    if (aInactive !== bInactive) return aInactive - bInactive;
     return b.lastMaterialChangeAt - a.lastMaterialChangeAt;
   });
+}
+
+const LEGACY_SPLIT_MIN_CHARS = 340;
+const DETAIL_SECTION_RE = /\n(?:#{1,3}[ \t]+[^\n]+|\|[^\n]+\n\|?[ \t]*:?-+:?[ \t]*\|)/;
+
+/**
+ * Separates concise assistant message prose from detailed evidence so the bubble stays
+ * lightweight by default and puts lengthy audit tables or references under a fold toggle.
+ */
+export function splitBubbleBodyAndEvidence(
+  summaryMd: string,
+  evidenceMd?: string | null,
+): { body: string; evidence: string | null } {
+  const cleanSummary = summaryMd.trim();
+  const explicitEvidence = evidenceMd?.trim() ?? '';
+  if (explicitEvidence.length > 0) {
+    return { body: cleanSummary, evidence: explicitEvidence };
+  }
+  if (cleanSummary.length <= LEGACY_SPLIT_MIN_CHARS) {
+    return { body: cleanSummary, evidence: null };
+  }
+  const searchFrom = cleanSummary.startsWith('#') ? cleanSummary.indexOf('\n') : 0;
+  const tail = searchFrom >= 0 ? cleanSummary.slice(searchFrom) : cleanSummary;
+  const match = DETAIL_SECTION_RE.exec(tail);
+  if (match && match.index !== undefined) {
+    const splitAt = Math.max(0, searchFrom) + match.index;
+    const head = cleanSummary.slice(0, splitAt).trim();
+    const rest = cleanSummary.slice(splitAt).trim();
+    if (head.length >= 24 && rest.length > 0) {
+      return { body: head, evidence: rest };
+    }
+  }
+  return { body: cleanSummary, evidence: null };
 }
 
 export function extractFallbackChoices(summaryMd: string): DossierChoiceItem[] {
@@ -305,7 +355,13 @@ export function dossierInterrupt(
   for (const row of snapshot.dossiers) {
     if (row.lastNotifiedRevision <= (next.get(row.topicId) ?? 0)) continue;
     next.set(row.topicId, row.lastNotifiedRevision);
-    if (seen && snapshot.notificationsEnabled && !row.muted && row.lastInterruptAt != null) {
+    if (
+      seen &&
+      snapshot.notificationsEnabled &&
+      !row.muted &&
+      !row.unfollowed &&
+      row.lastInterruptAt != null
+    ) {
       notifications.push({
         tag: discoveryTag(row.topicId),
         title: row.title,
@@ -343,4 +399,84 @@ export function pendingActionControls(
     dismiss: showButtons && !busy,
     notice,
   } as const;
+}
+
+export type DossierScrollState = {
+  stickToBottom: boolean;
+  userInteracted: boolean;
+  lastScrollY: number;
+  lastContentHeight: number;
+};
+
+export type DossierScrollEvent = {
+  offsetY: number;
+  contentHeight: number;
+  viewportHeight: number;
+  inProgrammaticWindow: boolean;
+};
+
+export type DossierScrollTransition = DossierScrollState & {
+  awayFromLatest: boolean | null;
+  action: 'none' | 'pin';
+};
+
+/**
+ * Compute the next scroll-following state from a `<Scroll>` viewport change.
+ * Content growth while `stickToBottom` is active re-pins even during a short
+ * programmatic scroll window so asynchronous Markdown layout expansion never
+ * leaves the viewport stranded above the latest message.
+ */
+export function nextDossierScrollState(
+  state: DossierScrollState,
+  event: DossierScrollEvent,
+): DossierScrollTransition {
+  const distanceFromBottom = event.contentHeight - event.offsetY - event.viewportHeight;
+  const contentResized = Math.abs(event.contentHeight - state.lastContentHeight) > 1;
+  const movedManually = Math.abs(event.offsetY - state.lastScrollY) >= 4;
+  const scrolledUp = event.offsetY < state.lastScrollY - 4;
+  const nextBase: DossierScrollState = {
+    stickToBottom: state.stickToBottom,
+    userInteracted: state.userInteracted,
+    lastScrollY: event.offsetY,
+    lastContentHeight: event.contentHeight,
+  };
+
+  if (contentResized && state.stickToBottom) {
+    return {
+      ...nextBase,
+      awayFromLatest: false,
+      action: distanceFromBottom > 8 ? 'pin' : 'none',
+    };
+  }
+  if (event.inProgrammaticWindow || !movedManually) {
+    return {
+      ...nextBase,
+      awayFromLatest: null,
+      action: 'none',
+    };
+  }
+  if (distanceFromBottom <= 48) {
+    return {
+      ...nextBase,
+      stickToBottom: true,
+      userInteracted: true,
+      awayFromLatest: false,
+      action: 'none',
+    };
+  }
+  if (scrolledUp || distanceFromBottom > 140) {
+    return {
+      ...nextBase,
+      stickToBottom: false,
+      userInteracted: true,
+      awayFromLatest: true,
+      action: 'none',
+    };
+  }
+  return {
+    ...nextBase,
+    userInteracted: true,
+    awayFromLatest: null,
+    action: 'none',
+  };
 }

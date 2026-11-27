@@ -496,6 +496,7 @@ test('the Bot’s running and waiting conversations are listed, waiting first', 
     session('waiting-worker', { activity: 'waiting' }),
     session('archived-worker', { activity: 'waiting', archived: true }),
     session('someone-elses', { activity: 'waiting', parentSessionId: 'other' }),
+    session('probe', { activity: 'working', parentSessionId: 'bot', discoveryWorker: true }),
     session('ordinary', { activity: 'waiting', parentSessionId: null }),
   ];
   assert.deepEqual(activeWorkers(sessions, 'bot'), [

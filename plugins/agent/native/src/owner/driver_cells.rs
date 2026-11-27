@@ -68,6 +68,7 @@ use uuid::Uuid;
 /// One physical Run's actual handles. This is not a serialized CellOwner or a recovery grant.
 #[derive(Clone)]
 pub(super) struct RunCells {
+    discovery: Option<super::driver::discovery::SharedProgress>,
     owner: Arc<Owner>,
     access: Arc<RunAccess>,
     cells: CellsStore,
@@ -139,6 +140,7 @@ impl RunCells {
         executor: CodeExecutor,
         workers: TaskTracker,
         cleanup: Evidence,
+        discovery: Option<super::driver::discovery::SharedProgress>,
     ) -> Result<Arc<Self>, ToolError> {
         owner
             .store
@@ -165,6 +167,7 @@ impl RunCells {
         let coordinator =
             CodeCells::new(executor.clone(), maka_code_runtime::CellStore::new(reader));
         Ok(Arc::new(Self {
+            discovery,
             owner,
             access,
             cells,
@@ -1733,6 +1736,36 @@ impl NativeCellPort {
                 || view.terminal.is_some()
             {
                 return Err(ToolError::Failed("Cell admission is stopped".into()));
+            }
+            // A yielded exec can request another child after a later model step entered wrap-up.
+            // Recheck at the same head as ChildPrepared/ChildAdmitted on every CAS retry.
+            if let Some(progress) = &self.run.discovery {
+                let progress = progress.lock().map_err(persistence)?;
+                let budget = view
+                    .current_step
+                    .and_then(|id| progress.budget(id))
+                    .unwrap_or_else(|| progress.next_budget());
+                for change in &changes {
+                    let name = match &change.fact {
+                        Fact::Cell {
+                            event: CellEvent::ChildPrepared { name, .. },
+                        } => name,
+                        Fact::Cell {
+                            event: CellEvent::ChildAdmitted { cell, operation },
+                        } => {
+                            &view
+                                .cells
+                                .get(cell)
+                                .and_then(|c| c.children.get(operation))
+                                .ok_or_else(|| persistence("missing prepared discovery child"))?
+                                .name
+                        }
+                        _ => continue,
+                    };
+                    if let Some(message) = progress.rejection(budget, name, view.spec.language) {
+                        return Err(ToolError::Failed(message));
+                    }
+                }
             }
             view.check_effect_admission().map_err(|error| {
                 ToolError::Failed(format!("Cell admission is quarantined: {error}"))

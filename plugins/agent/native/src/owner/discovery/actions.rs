@@ -186,12 +186,6 @@ impl Owner {
             if !matches!(job.phase, Phase::Investigating { result: None }) {
                 return Err(ToolError::Failed("discovery_result_conflict".into()));
             }
-            job.phase = Phase::Investigating {
-                result: Some(Report::NoReport {
-                    note: "Staged an action for confirmation".into(),
-                    notes: vec![],
-                }),
-            };
             job.execution = Some(context.execution.clone());
             self.commit_discovery_writes(
                 state,
@@ -199,8 +193,6 @@ impl Owner {
             )
             .await
             .map_err(dossiers::write_error)?;
-            self.scheduler.notify_status_changed();
-            self.scheduler.wake.notify_one();
         } else {
             let custody = context
                 .custody
