@@ -56,6 +56,14 @@ fn main() -> std::process::ExitCode {
             cases::subtree_reachability,
         ),
         (
+            "scroll_to_keeps_its_offset_across_layout_rounds",
+            cases::scroll_to_keeps_its_offset_across_layout_rounds,
+        ),
+        (
+            "scroll_to_uses_viewport_before_next_layout_round",
+            cases::scroll_to_uses_viewport_before_next_layout_round,
+        ),
+        (
             "scrolling_dismisses_hover_tooltip",
             cases::scrolling_dismisses_hover_tooltip,
         ),
