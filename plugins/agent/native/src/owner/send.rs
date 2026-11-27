@@ -327,7 +327,8 @@ impl Owner {
             language,
             allowed_tools.as_deref(),
         );
-        let user_run = !matches!(pins, PinCapture::Excluded)
+        let user_run = !external
+            && !matches!(pins, PinCapture::Excluded)
             && matches!(
                 parent.identity,
                 maka_capabilities::call::Identity::Native

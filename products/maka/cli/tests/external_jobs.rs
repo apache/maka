@@ -1636,7 +1636,7 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pinned_memory_rejects_external_send_before_original_provider_submission() {
+async fn pinned_memory_is_skipped_for_external_executor_without_blocking_send() {
     let mut rig = Rig::new().await.expect("owned external job fixture");
     let outcome = AssertUnwindSafe(async {
         let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
@@ -1658,10 +1658,20 @@ async fn pinned_memory_rejects_external_send_before_original_provider_submission
             "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"gpt-fixture"}}}
         })).await?;
         assert_eq!(session["kind"],"created","{session}");
-        let error = mutate(&sdk,"agent","send",json!({"sessionId":session["session"]["id"],"message":"Run with pinned memory"})).await.unwrap_err();
-        assert!(error.contains("agent_memory_executor_unavailable"),"{error}");
-        let events = rig.controller.events();
-        assert!(events.is_empty(), "external process contacted the controller: {events:?}");
+        let session_id = session["session"]["id"].as_str().ok_or("missing session id")?;
+        let run = send_native(&sdk, session_id, "B", "External memory boundary", false).await?;
+        let ready = rig.controller.event("B", "ready").await?;
+        let pid = ready["pid"].as_u64().unwrap();
+        rig.controller.send(pid, json!({"action":"complete"}))?;
+        terminal_state(&sdk, session_id, &run, "completed").await?;
+        let loaded = query(&sdk, "agent", "loadedMemories", json!({"sessionId": session_id, "runId": run})).await?;
+        assert_eq!(loaded, json!([]), "external executor should skip pinned memories: {loaded}");
+        let wire = rig.transcript(pid).await?;
+        assert!(
+            !wire.input.iter().any(|row| row.to_string().contains("External boundary fixture")),
+            "pinned memory leaked into external executor prompt: {:?}",
+            wire.input
+        );
         sdk.close().await?;
         rig.clients.pop();
         rig.hosts[0].quit(&mut anchor).await?;
