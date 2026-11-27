@@ -5860,6 +5860,167 @@ mod model_recovery {
         result.expect("steered completion test timed out").unwrap();
     }
 
+    #[tokio::test]
+    async fn session_read_tail_claims_completion_notice() {
+        use maka_plugin_core::contract::ServiceTarget;
+        let mut rig = Rig::new().unwrap();
+        let mut server = MockAiBuilder::new().interactive(4).start().await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(90), async {
+            let base = rig.directory.path().to_path_buf();
+            let boot = bootstrap_with(&base, server.base_url(), |c| {
+                c["todo"] = json!(false);
+            })
+            .await?;
+            rig.attach_host(root(&base, false).await?, boot.deployment, boot.gateway, true, None)
+                .await?;
+            let client = rig.client.as_ref().unwrap();
+            let catalog = call(client, "settings", "connections", json!({"kind":"start"})).await?;
+            let connection = call(client, "settings", "create", json!({
+                "expectedCatalogRevision": catalog["revision"],
+                "connection": {
+                    "slug": "tail-claim", "name": "tail-claim",
+                    "provider": {"packageId":"maka.providers","entryId":"maka.providers","scope":"profile","name":"ollama"},
+                    "configuration": {"baseUrl": boot.base_url}, "enabled": true, "enabledModelIds": ["llama3.2"],
+                    "modelOverrides": {"llama3.2": {"codeMode": false, "apiProtocol": "openai-chat-completions"}}
+                }
+            })).await?;
+            let backend = json!({"kind":"model","connectionId":connection["connection"]["connectionId"],"modelId":"llama3.2"});
+            let mut sessions = Vec::new();
+            for title in ["Caller", "Worker"] {
+                let created = call(client, "agent", "create", json!({
+                    "title": title, "automaticTitle": false, "labels": [], "tools": [],
+                    "workspace": {"kind":"directory","path": base.join("workspace")}
+                })).await?;
+                sessions.push(created["session"]["id"].as_str().ok_or("session missing")?.to_owned());
+            }
+            let (caller, worker) = (&sessions[0], &sessions[1]);
+            let owner = rig.captured.lock().unwrap().clone().unwrap();
+
+            let read_as_caller = |input: Value| {
+                let owner = owner.clone();
+                let caller = caller.clone();
+                async move {
+                    let access = owner
+                        .runs
+                        .state()
+                        .await
+                        .controls
+                        .get(&caller)
+                        .and_then(|control| control.access.upgrade())
+                        .ok_or("caller access missing")?;
+                    let target = ServiceTarget::Export { name: "agent".into() };
+                    let services = owner.services.select_method(&target, "sessionRead")?;
+                    let request = services.request_with_work(
+                        maka_capabilities::call::Identity::Agent {
+                            execution: access.execution().clone(),
+                            operation_id: None,
+                        },
+                        CancellationToken::new(),
+                        access.custody().clone(),
+                    )?;
+                    let output = owner
+                        .session_read_tool(serde_json::from_value(input)?, request.scope())
+                        .await?;
+                    request.finish().await?;
+                    Ok::<_, Box<dyn Error + Send + Sync>>(output)
+                }
+            };
+
+            // 1. Delivery-window claim + stale-snapshot replay: tail SessionRead claims before
+            //    deliver_completions runs; a concurrent sweep holding an older watch snapshot
+            //    must not re-enqueue the retracted completion.
+            let t1 = call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn 1","backend":backend})).await?;
+            let caller_1 = server.next_turn().await.ok_or("caller 1 turn missing")?;
+            let caller_1_run = owner.durable.latest_run(caller.clone()).await?.ok_or("caller 1 run missing")?;
+            let w1 = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Task 1.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let stale_snapshot = owner
+                .store
+                .message_completions_for_recipient(&owner.prefix, worker, caller, None)
+                .await?;
+            assert_eq!(stale_snapshot.len(), 1);
+            let worker_1 = server.next_turn().await.ok_or("worker 1 turn missing")?;
+            worker_1.reply_text_with_usage("Run 1 done.", Usage::new(20, 10));
+            completed_message(client, worker, &w1["messageId"]).await?;
+
+            let read_1 = read_as_caller(json!({"sessionId": worker})).await?;
+            assert!(serde_json::to_string(&read_1)?.contains("Run 1 done."));
+            owner.deliver_completion_batch(stale_snapshot, now()).await?;
+            owner.deliver_completions().await?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+            caller_1.reply_text_with_usage("Integrated Run 1.", Usage::new(10, 5));
+            quiescent_message(client, caller, &t1["messageId"]).await?;
+            owner.deliver_completions().await?;
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(caller_1_run));
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+
+            // 2. Already-enqueued completion: deliver_completions enqueues first, then caller
+            //    reads the finished tail; pending completion is retracted and no followup runs.
+            let t2 = call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn 2","backend":backend})).await?;
+            let caller_2 = server.next_turn().await.ok_or("caller 2 turn missing")?;
+            let caller_2_run = owner.durable.latest_run(caller.clone()).await?.ok_or("caller 2 run missing")?;
+            let w2 = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Task 2.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let worker_2 = server.next_turn().await.ok_or("worker 2 turn missing")?;
+            worker_2.reply_text_with_usage("Run 2 done.", Usage::new(20, 10));
+            completed_message(client, worker, &w2["messageId"]).await?;
+            owner.deliver_completions().await?;
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"].as_array().map(Vec::len), Some(1));
+
+            let read_2 = read_as_caller(json!({"sessionId": worker})).await?;
+            assert!(serde_json::to_string(&read_2)?.contains("Run 2 done."));
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+            caller_2.reply_text_with_usage("Integrated Run 2.", Usage::new(10, 5));
+            quiescent_message(client, caller, &t2["messageId"]).await?;
+            assert_eq!(owner.durable.latest_run(caller.clone()).await?, Some(caller_2_run));
+
+            // 3. Negative controls: status_only and position=start must NOT retract completion.
+            call(client, "agent", "send", json!({"sessionId":caller,"message":"Turn 3","backend":backend})).await?;
+            let caller_3 = server.next_turn().await.ok_or("caller 3 turn missing")?;
+            let w3 = bot_tools::agent_call(&owner, caller, "send", json!({
+                "sessionId": worker, "message": "Task 3.", "backend": backend, "onComplete": "notify_caller"
+            })).await?;
+            let worker_3 = server.next_turn().await.ok_or("worker 3 turn missing")?;
+            worker_3.reply_text_with_usage("Run 3 done.", Usage::new(20, 10));
+            completed_message(client, worker, &w3["messageId"]).await?;
+
+            let _ = read_as_caller(json!({"sessionId": worker, "view": "status_only"})).await?;
+            let _ = read_as_caller(json!({"sessionId": worker, "view": "turns", "position": "start"})).await?;
+            owner.deliver_completions().await?;
+            caller_3.reply_text_with_usage("Checked status only.", Usage::new(10, 5));
+
+            let r3_notice = server.next_turn().await.ok_or("Run 3 completion wakeup missing")?;
+            let r3_text = r3_notice.body()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["role"] == "user")
+                .unwrap()
+                .to_string();
+            assert!(r3_text.contains("Run 3 done."), "{r3_text}");
+            let r3_run = owner.durable.latest_run(caller.clone()).await?.ok_or("r3 caller run missing")?;
+            let Trigger::Message { message_id: r3_msg } = owner.durable.frontier(r3_run).await?.spec.trigger else {
+                return Err("missing r3 trigger".into());
+            };
+            r3_notice.reply_text_with_usage("Handled Run 3.", Usage::new(10, 5));
+            quiescent_message(client, caller, &json!(r3_msg)).await?;
+            assert!(owner.store.message_completions(&owner.prefix, None).await?.is_empty());
+            assert_eq!(call(client, "agent", "queue", json!({"sessionId": caller})).await?["entries"], json!([]));
+            Ok::<_, Box<dyn Error + Send + Sync>>(())
+        })
+        .await;
+        server.shutdown().await;
+        let cleanup = rig.finish().await;
+        assert!(cleanup.is_empty(), "{cleanup:?}");
+        result
+            .expect("session_read tail claim test timed out")
+            .unwrap();
+    }
+
     /// What the delegated task waits on after it asks its caller.
     #[derive(Clone, Copy, PartialEq)]
     enum Waits {

@@ -18,12 +18,12 @@
  */
 use super::*;
 use maka_agent_facts::{
-    durable::{RunId, Terminal, UnixMillis},
+    durable::{FactId, RunId, Terminal, UnixMillis},
     message::MessageOrigin,
 };
 use maka_agent_state::{
     NotificationAttention, NotificationState,
-    queue::{MessageResolution, Placement as QueuePlacement},
+    queue::{MessageResolution, Placement as QueuePlacement, QueueCommand, QueueEdit, RequestId},
 };
 use maka_event_log::root_store::completions::{Completion, RegisterCompletion};
 
@@ -102,13 +102,30 @@ enum Notice {
     },
 }
 
+fn finished_run_identity(session_id: &str, run: RunId) -> String {
+    let key = format!("session-completion/{session_id}/{run}");
+    hex::encode(Sha256::digest(key.as_bytes()))[..32].to_owned()
+}
+
+fn claim_retract_command_id(recipient: &str, worker_session: &str, run: RunId) -> FactId {
+    let mut hash = Sha256::new();
+    hash.update(b"session-read-claim");
+    hash.update(recipient.as_bytes());
+    hash.update([0]);
+    hash.update(worker_session.as_bytes());
+    hash.update([0]);
+    hash.update(run.as_uuid().as_bytes());
+    let bytes: [u8; 16] = hash.finalize()[..16].try_into().expect("SHA-256 prefix");
+    FactId::try_from(Uuid::from_bytes(bytes)).expect("non-nil claim command id")
+}
+
 impl Notice {
     /// Scoped per worker Run (rather than per `SessionSend` message) once a message has
     /// landed in a Run, so steering an active worker never fans out duplicate notifications.
     fn identity(&self, session_id: &str, message_id: &str) -> String {
         let key = match self {
             Self::Finished { run: Some(run), .. } => {
-                format!("session-completion/{session_id}/{run}")
+                return finished_run_identity(session_id, *run);
             }
             Self::Finished { run: None, .. } => {
                 format!("session-completion/{session_id}/{message_id}")
@@ -482,6 +499,117 @@ impl Owner {
     pub(super) async fn deliver_completions(self: &Arc<Self>) -> Result<(), String> {
         self.deliver_completions_at(now()).await
     }
+    /// Settle the completion notice for `(worker_session, run)` when `recipient` has already
+    /// read the finished tail via `SessionRead`. Uses the queue's sticky `RequestId` row as
+    /// the sole serialization point so a concurrent background sweep with an older watch
+    /// snapshot can never re-enqueue a retracted completion.
+    pub(super) async fn claim_completion_on_session_read(
+        self: &Arc<Self>,
+        worker_session: &str,
+        recipient: &str,
+        run: RunId,
+    ) -> Result<(), String> {
+        if worker_session == recipient {
+            return Ok(());
+        }
+        let request = RequestId(finished_run_identity(worker_session, run));
+        if self
+            .durable
+            .queue()
+            .entry(recipient.to_owned(), request.clone())
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return self
+                .retract_pending_completion(recipient, worker_session, run, &request)
+                .await;
+        }
+        if !self
+            .store
+            .has_message_completions(&self.prefix, worker_session, recipient)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(());
+        }
+        let mut entries = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .store
+                .message_completions_for_recipient(
+                    &self.prefix,
+                    worker_session,
+                    recipient,
+                    after.as_deref(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().map(|entry| entry.key.clone());
+            entries.extend(page);
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+        self.deliver_completion_batch(entries, now()).await?;
+        self.retract_pending_completion(recipient, worker_session, run, &request)
+            .await
+    }
+    async fn retract_pending_completion(
+        &self,
+        recipient: &str,
+        worker_session: &str,
+        run: RunId,
+        request: &RequestId,
+    ) -> Result<(), String> {
+        let queue = self.durable.queue();
+        let command_id = claim_retract_command_id(recipient, worker_session, run);
+        let _ordered = self.runs.ordered(recipient).await;
+        for _ in 0..4 {
+            let current = queue
+                .read(recipient.to_owned())
+                .await
+                .map_err(|error| error.to_string())?;
+            if !current
+                .entries
+                .iter()
+                .any(|entry| entry.request.id == *request)
+            {
+                return Ok(());
+            }
+            match queue
+                .execute(
+                    recipient.to_owned(),
+                    QueueCommand {
+                        id: command_id,
+                        at: UnixMillis(now() as i64),
+                        expected_revision: current.revision,
+                        edit: QueueEdit::Retract {
+                            request: request.clone(),
+                        },
+                    },
+                    vec![],
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error)
+                    if matches!(
+                        error.underlying(),
+                        maka_event_log::StoreError::RevisionConflict { .. }
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("agent_queue_revision_conflict".into())
+    }
     /// `now` decides which unanswered requests have passed the limit.
     pub(super) async fn deliver_completions_at(self: &Arc<Self>, now: u64) -> Result<(), String> {
         let mut after = None;
@@ -526,7 +654,7 @@ impl Owner {
         }
     }
 
-    async fn deliver_completion_batch(
+    pub(super) async fn deliver_completion_batch(
         self: &Arc<Self>,
         entries: Vec<Completion>,
         now: u64,

@@ -23,7 +23,7 @@ use crate::service;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use maka_agent_facts::{
     attachment::StorageRef,
-    durable::Terminal,
+    durable::{RunId, Terminal},
     history::HistoryRowAddress,
     message::MessageOrigin,
     read::ResourceAddress,
@@ -477,6 +477,18 @@ impl Owner {
         observed: Option<&crate::contract::Run>,
         scope: &Scope,
     ) -> Result<Option<SessionRunOverview>, String> {
+        Ok(self
+            .session_run_overview_with_terminal(session_id, observed, scope)
+            .await?
+            .map(|(overview, _)| overview))
+    }
+
+    async fn session_run_overview_with_terminal(
+        &self,
+        session_id: &str,
+        observed: Option<&crate::contract::Run>,
+        scope: &Scope,
+    ) -> Result<Option<(SessionRunOverview, Option<RunId>)>, String> {
         let latest = match observed {
             Some(active) => Some(active.run_id),
             None => self
@@ -501,19 +513,23 @@ impl Owner {
                 .filter(|b| b.decision.is_none() && b.resolved_by.is_none())
                 .map(|b| format!("{:?}", b.reason))
                 .collect();
-            return Ok(Some(SessionRunOverview {
-                run_id: active.run_id,
-                state: enum_snake(&active.state),
-                stopped: view.as_ref().is_some_and(|v| v.stopped),
-                error: None,
-                blockers,
-            }));
+            return Ok(Some((
+                SessionRunOverview {
+                    run_id: active.run_id,
+                    state: enum_snake(&active.state),
+                    stopped: view.as_ref().is_some_and(|v| v.stopped),
+                    error: None,
+                    blockers,
+                },
+                None,
+            )));
         }
         let Some(view) = view else {
             return Ok(None);
         };
 
         let latest_id = view.run;
+        let terminal_run = view.terminal.as_ref().map(|_| latest_id);
         let state = match &view.terminal {
             Some(term) => enum_snake(term),
             None if view.stopped => "stopped".into(),
@@ -544,13 +560,16 @@ impl Owner {
                 .await
                 .failure;
         }
-        Ok(Some(SessionRunOverview {
-            run_id: latest_id,
-            state,
-            stopped: view.stopped,
-            error,
-            blockers: Vec::new(),
-        }))
+        Ok(Some((
+            SessionRunOverview {
+                run_id: latest_id,
+                state,
+                stopped: view.stopped,
+                error,
+                blockers: Vec::new(),
+            },
+            terminal_run,
+        )))
     }
 
     pub async fn session_read_tool(
@@ -604,6 +623,7 @@ impl Owner {
         let summary = SessionSummary::from(observed.session);
 
         let mut run_overview = None;
+        let mut terminal_run = None;
         let mut live_output_preview = None;
         if !is_room {
             if let Some(active_run) = &observed.run
@@ -619,9 +639,13 @@ impl Owner {
                 }
                 live_output_preview = Some(preview);
             }
-            run_overview = self
-                .session_run_overview(&session_id, observed.run.as_ref(), scope)
-                .await?;
+            if let Some((overview, terminal)) = self
+                .session_run_overview_with_terminal(&session_id, observed.run.as_ref(), scope)
+                .await?
+            {
+                run_overview = Some(overview);
+                terminal_run = terminal;
+            }
         }
 
         let mut pending_interactions = Vec::new();
@@ -674,6 +698,12 @@ impl Owner {
             members: st.members.clone(),
             pinned_message_ids: st.pinned.iter().map(|m| m.id.clone()).collect(),
         });
+
+        let requested_tail = !is_room
+            && !matches!(input.view, SessionTranscriptView::StatusOnly)
+            && cursor.is_none()
+            && input.row.is_none()
+            && matches!(input.position, None | Some(SessionWindowPosition::Tail));
 
         let transcript = if matches!(input.view, SessionTranscriptView::StatusOnly) {
             None
@@ -889,6 +919,26 @@ impl Owner {
                 HistoryPage::Room { .. } => None,
             }
         };
+
+        let tail_read = requested_tail
+            && matches!(
+                &transcript,
+                Some(SessionTranscript::Agent {
+                    items,
+                    after_cursor: None,
+                    ..
+                }) if items
+                    .last()
+                    .is_none_or(|entry| entry.offset.is_none_or(|offset| offset == 0))
+            );
+        if tail_read
+            && let Some(caller) = scope.identity.agent()
+            && let Some(run) = terminal_run
+        {
+            self.claim_completion_on_session_read(&session_id, &caller.session_id, run)
+                .await
+                .map_err(humanize_agent_error)?;
+        }
 
         Ok(SessionReadOutput {
             session: summary,
