@@ -18,8 +18,8 @@
  */
 
 import { platform, safeAreaInsets, Scroll, Text, View, token, type JSX } from 'nsh';
-import { AlertDialog, Input, MenuButton, NavPage } from 'nsh/base';
-import { Switch } from 'nsh/mobile';
+import { AlertDialog, Input, MenuButton, NavPage, Switch as BaseSwitch } from 'nsh/base';
+import { isAvailable, Switch as NativeSwitch } from 'nsh/mobile';
 import { tr } from '../../locale';
 import { hostById } from '../../state/hostPool';
 import type { SettingsWork } from '../../state/settings/rpc';
@@ -171,6 +171,49 @@ export function SettingField(props: {
   );
 }
 
+export function SettingSwitchControl(props: {
+  accessibilityLabel: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <If
+      when={isAvailable}
+      else={
+        <BaseSwitch
+          accessibilityLabel={props.accessibilityLabel}
+          checked={props.checked}
+          disabled={props.disabled}
+          onChange={({ checked }) => props.onChange(checked)}
+          hitSlop={6}
+          style={{
+            flexShrink: 0,
+            borderRadius: 9999,
+            alignItems: 'center',
+            justifyContent: 'center',
+            opacity: props.disabled ? 0.45 : 1,
+          }}
+          trackClass="w-[44px] h-[26px] p-[2px] rounded-full flex-row items-center checked:justify-end"
+          trackStyle={{
+            backgroundColor: props.checked ? token('success') : token('surface-muted'),
+          }}
+          thumbClass="size-[22px] rounded-full"
+          thumbStyle={{ backgroundColor: token('primary-foreground') }}
+        />
+      }
+    >
+      <NativeSwitch
+        accessibilityLabel={props.accessibilityLabel}
+        checked={props.checked}
+        disabled={props.disabled}
+        onChange={({ checked }) => props.onChange(checked)}
+        style={{ accentColor: token('success') }}
+      />
+    </If>
+  );
+}
+
 export function SettingSwitch(props: {
   title: string;
   checked: boolean;
@@ -185,12 +228,11 @@ export function SettingSwitch(props: {
       divider={props.divider}
       accessible={false}
       trailing={
-        <Switch
+        <SettingSwitchControl
           accessibilityLabel={props.title}
           checked={props.checked}
           disabled={props.disabled}
-          onChange={({ checked }) => props.change(checked)}
-          style={{ accentColor: token('success') }}
+          onChange={props.change}
         />
       }
     />
