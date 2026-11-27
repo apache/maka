@@ -125,8 +125,26 @@ impl RootStore {
         owner: &str,
         after: Option<&str>,
     ) -> Result<Vec<Completion>, StoreError> {
+        self.scan_message_completions(owner_prefix(owner), after)
+            .await
+    }
+    /// Range scan scoped to a single `(owner, session, recipient)` watch pair.
+    pub async fn message_completions_for_recipient(
+        &self,
+        owner: &str,
+        session: &str,
+        recipient: &str,
+        after: Option<&str>,
+    ) -> Result<Vec<Completion>, StoreError> {
+        self.scan_message_completions(recipient_prefix(owner, session, recipient), after)
+            .await
+    }
+    async fn scan_message_completions(
+        &self,
+        prefix: String,
+        after: Option<&str>,
+    ) -> Result<Vec<Completion>, StoreError> {
         self.require_open()?;
-        let prefix = owner_prefix(owner);
         if after.is_some_and(|key| !key.starts_with(&prefix)) {
             return Err(StoreError::InvalidTransition(
                 "foreign completion cursor".into(),
