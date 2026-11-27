@@ -199,9 +199,21 @@ pub(super) fn run_spec(c: &Connection, run: RunId) -> Result<RunSpec, StoreError
     Ok(spec)
 }
 pub(super) fn content_id(c: &Connection, reference: &ContentRef) -> Result<i64, StoreError> {
+    content_id_with_encoding(c, reference, true)
+}
+pub(super) fn content_id_with_encoding(
+    c: &Connection,
+    reference: &ContentRef,
+    encoded: bool,
+) -> Result<i64, StoreError> {
     reference.validate().map_err(invalid)?;
+    let sql = if encoded {
+        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?"
+    } else {
+        "SELECT id FROM contents WHERE content_sha256=? AND length(payload)=?"
+    };
     c.query_row(
-        "SELECT id FROM contents WHERE content_sha256=? AND COALESCE(logical_bytes,length(payload))=?",
+        sql,
         params![reference.digest, to_sql_integer(reference.bytes)?],
         |r| r.get(0),
     )

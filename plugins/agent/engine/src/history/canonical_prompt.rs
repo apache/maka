@@ -758,91 +758,93 @@ pub(crate) async fn validate_external_media_directory(
     if !valid_version {
         return Err(invalid());
     }
-    let owner: Arc<dyn Send + Sync> = Arc::new(());
-    async fn read_record(
-        arena: &CaptureArena,
-        offset: u64,
-        byte_len: u64,
-        owner: &Arc<dyn Send + Sync>,
-    ) -> io::Result<Record> {
-        if offset
-            .checked_add(RECORD_BYTES as u64)
-            .is_none_or(|end| end > byte_len)
-        {
-            return Err(invalid());
-        }
-        let bytes = arena
-            .read_control_owned::<RECORD_BYTES>(offset, owner.clone())
-            .await?;
-        Ok(std::array::from_fn(|i| {
-            u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap())
-        }))
-    }
-    async fn read_list_item(
-        arena: &CaptureArena,
-        list: List,
-        index: usize,
-        byte_len: u64,
-        owner: &Arc<dyn Send + Sync>,
-    ) -> io::Result<Record> {
-        let entry_offset = list
-            .offset
-            .checked_add((index as u64).checked_mul(8).ok_or_else(overflow)?)
-            .ok_or_else(overflow)?;
-        if entry_offset.checked_add(8).is_none_or(|end| end > byte_len) {
-            return Err(invalid());
-        }
-        let bytes = arena
-            .read_control_owned::<8>(entry_offset, owner.clone())
-            .await?;
-        read_record(arena, u64::from_le_bytes(bytes), byte_len, owner).await
-    }
-    async fn check_content_list(
-        arena: &CaptureArena,
-        list: List,
+    struct MediaCheckCtx<'a> {
+        arena: &'a CaptureArena,
         byte_len: u64,
         version: u32,
-        expected_media: &[([u8; 32], u64)],
-        referenced: &mut [bool],
-        owner: &Arc<dyn Send + Sync>,
-        cancellation: &CancellationToken,
-    ) -> io::Result<()> {
-        if list
-            .offset
-            .checked_add((list.len as u64).checked_mul(8).ok_or_else(overflow)?)
-            .is_none_or(|end| end > byte_len)
-        {
-            return Err(invalid());
-        }
-        for i in 0..list.len {
-            if cancellation.is_cancelled() {
-                return Err(crate::preparation_cancelled(
-                    "frozen prompt restore cancelled",
-                ));
+        expected_media: &'a [([u8; 32], u64)],
+        owner: Arc<dyn Send + Sync>,
+        cancellation: &'a CancellationToken,
+    }
+    impl MediaCheckCtx<'_> {
+        async fn read_record(&self, offset: u64) -> io::Result<Record> {
+            if offset
+                .checked_add(RECORD_BYTES as u64)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
             }
-            let r = read_list_item(arena, list, i, byte_len, owner).await?;
-            match r[0] {
-                1 | 2 => {}
-                3 => {
-                    if version != 3 {
-                        return Err(invalid());
-                    }
-                    let slot = usize::try_from(r[1]).map_err(|_| invalid())?;
-                    let expected_bytes = r[2];
-                    let expected_digest = digest(&r[6..10]);
-                    let (actual_digest, actual_bytes) =
-                        expected_media.get(slot).ok_or_else(invalid)?;
-                    if *actual_digest != expected_digest || *actual_bytes != expected_bytes {
-                        return Err(invalid());
-                    }
-                    referenced[slot] = true;
+            let bytes = self
+                .arena
+                .read_control_owned::<RECORD_BYTES>(offset, self.owner.clone())
+                .await?;
+            Ok(std::array::from_fn(|i| {
+                u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap())
+            }))
+        }
+        async fn read_list_item(&self, list: List, index: usize) -> io::Result<Record> {
+            let entry_offset = list
+                .offset
+                .checked_add((index as u64).checked_mul(8).ok_or_else(overflow)?)
+                .ok_or_else(overflow)?;
+            if entry_offset
+                .checked_add(8)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
+            }
+            let bytes = self
+                .arena
+                .read_control_owned::<8>(entry_offset, self.owner.clone())
+                .await?;
+            self.read_record(u64::from_le_bytes(bytes)).await
+        }
+        async fn check_content_list(&self, list: List, referenced: &mut [bool]) -> io::Result<()> {
+            if list
+                .offset
+                .checked_add((list.len as u64).checked_mul(8).ok_or_else(overflow)?)
+                .is_none_or(|end| end > self.byte_len)
+            {
+                return Err(invalid());
+            }
+            for i in 0..list.len {
+                if self.cancellation.is_cancelled() {
+                    return Err(crate::preparation_cancelled(
+                        "frozen prompt restore cancelled",
+                    ));
                 }
-                _ => return Err(invalid()),
+                let r = self.read_list_item(list, i).await?;
+                match r[0] {
+                    1 | 2 => {}
+                    3 => {
+                        if self.version != 3 {
+                            return Err(invalid());
+                        }
+                        let slot = usize::try_from(r[1]).map_err(|_| invalid())?;
+                        let expected_bytes = r[2];
+                        let expected_digest = digest(&r[6..10]);
+                        let (actual_digest, actual_bytes) =
+                            self.expected_media.get(slot).ok_or_else(invalid)?;
+                        if *actual_digest != expected_digest || *actual_bytes != expected_bytes {
+                            return Err(invalid());
+                        }
+                        referenced[slot] = true;
+                    }
+                    _ => return Err(invalid()),
+                }
             }
+            Ok(())
         }
-        Ok(())
     }
 
+    let ctx = MediaCheckCtx {
+        arena,
+        byte_len: layout.byte_len,
+        version: layout.version,
+        expected_media,
+        owner: Arc::new(()),
+        cancellation,
+    };
     let root = List {
         offset: layout.index_offset,
         len: layout.message_count,
@@ -861,7 +863,7 @@ pub(crate) async fn validate_external_media_directory(
                 "frozen prompt restore cancelled",
             ));
         }
-        let msg = read_list_item(arena, root, msg_idx, layout.byte_len, &owner).await?;
+        let msg = ctx.read_list_item(root, msg_idx).await?;
         let list = List {
             offset: msg[3],
             len: usize::try_from(msg[4]).map_err(|_| invalid())?,
@@ -869,17 +871,7 @@ pub(crate) async fn validate_external_media_directory(
         match role(msg[2])? {
             MessageRole::System => {}
             MessageRole::User => {
-                check_content_list(
-                    arena,
-                    list,
-                    layout.byte_len,
-                    layout.version,
-                    expected_media,
-                    &mut referenced,
-                    &owner,
-                    cancellation,
-                )
-                .await?;
+                ctx.check_content_list(list, &mut referenced).await?;
             }
             MessageRole::Assistant => {
                 if list
@@ -895,24 +887,13 @@ pub(crate) async fn validate_external_media_directory(
                             "frozen prompt restore cancelled",
                         ));
                     }
-                    let item =
-                        read_list_item(arena, list, item_idx, layout.byte_len, &owner).await?;
+                    let item = ctx.read_list_item(list, item_idx).await?;
                     if item[0] == 7 && item[5] == 4 {
                         let content = List {
                             offset: item[6],
                             len: usize::try_from(item[7]).map_err(|_| invalid())?,
                         };
-                        check_content_list(
-                            arena,
-                            content,
-                            layout.byte_len,
-                            layout.version,
-                            expected_media,
-                            &mut referenced,
-                            &owner,
-                            cancellation,
-                        )
-                        .await?;
+                        ctx.check_content_list(content, &mut referenced).await?;
                     }
                 }
             }
@@ -930,24 +911,13 @@ pub(crate) async fn validate_external_media_directory(
                             "frozen prompt restore cancelled",
                         ));
                     }
-                    let item =
-                        read_list_item(arena, list, item_idx, layout.byte_len, &owner).await?;
+                    let item = ctx.read_list_item(list, item_idx).await?;
                     if item[5] == 4 {
                         let content = List {
                             offset: item[6],
                             len: usize::try_from(item[7]).map_err(|_| invalid())?,
                         };
-                        check_content_list(
-                            arena,
-                            content,
-                            layout.byte_len,
-                            layout.version,
-                            expected_media,
-                            &mut referenced,
-                            &owner,
-                            cancellation,
-                        )
-                        .await?;
+                        ctx.check_content_list(content, &mut referenced).await?;
                     }
                 }
             }

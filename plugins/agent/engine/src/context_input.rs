@@ -187,10 +187,7 @@ async fn fit_generated_summary(
         } else {
             format!(
                 "{notice}{}",
-                maka_agent_facts::i18n::summary::media_omitted(
-                    language,
-                    i64::try_from(omitted).unwrap_or(i64::MAX),
-                )
+                maka_agent_facts::i18n::summary::media_omitted(language, i64::from(omitted),)
             )
         };
         let omission = if omitted == 0 {

@@ -366,8 +366,7 @@ mod tests {
 
     fn seed_memory_evidence(
         db: &Connection,
-        owner: &RunOwner,
-        session: &str,
+        (owner, session): (&RunOwner, &str),
         fact_id: FactId,
         seq: u64,
         body: &str,
@@ -671,8 +670,7 @@ mod tests {
             );
             let (ev_quote, _) = seed_memory_evidence(
                 &db,
-                &owner,
-                "s-upgrade",
+                (&owner, "s-upgrade"),
                 ev_fact.id,
                 ev_seq,
                 "pinned-delta-quote",
@@ -767,8 +765,7 @@ mod tests {
             );
             seed_memory_evidence(
                 &db,
-                &owner,
-                "s-upgrade",
+                (&owner, "s-upgrade"),
                 ev_loc_fact,
                 ev_loc,
                 "evidenced-local-return-body",
@@ -1168,8 +1165,7 @@ alpha-midcut-cell-needle"#;
             let end = start + "alpha-midcut-cell-needle".len();
             seed_memory_evidence(
                 &db,
-                &owner,
-                "s-midcut",
+                (&owner, "s-midcut"),
                 acc_fact,
                 acc_seq,
                 full_loc_body,
@@ -1179,8 +1175,7 @@ alpha-midcut-cell-needle"#;
             let comp_body = "alpha-midcut-cell-needle\nRead";
             seed_memory_evidence(
                 &db,
-                &owner,
-                "s-midcut",
+                (&owner, "s-midcut"),
                 comp_fact,
                 comp_seq,
                 comp_body,
@@ -1565,8 +1560,7 @@ alpha-midcut-cell-needle"#;
             let db = open_raw_db(&db_path);
             seed_memory_evidence(
                 &db,
-                &owner,
-                "s-ext",
+                (&owner, "s-ext"),
                 d2_fact,
                 d2_seq,
                 "early-alpha-window late-beta-window",
@@ -1699,8 +1693,7 @@ alpha-midcut-cell-needle"#;
             // NOT split S_last back into single deltas.
             seed_memory_evidence(
                 &db,
-                &owner,
-                "s-ext",
+                (&owner, "s-ext"),
                 live_tail_fact,
                 u2_seq,
                 "live-gamma-tail-needle",

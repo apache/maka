@@ -940,7 +940,7 @@ mod tests {
                         Box::pin(async move { Ok(item) })
                     }
                 }
-                Box::new(VecCursor(self.0[start..].to_vec().into_iter()))
+                Box::new(VecCursor(Vec::from(&self.0[start..]).into_iter()))
             }
         }
 
@@ -1021,7 +1021,6 @@ mod tests {
             resident_bytes: base_meta + 64 * 1024,
             work_bytes: 64 * 1024,
             progress_bytes: 128 * 1024,
-            ..PreparationPolicy::default()
         })
         .unwrap();
         let many_parts: Vec<_> = (0u8..20)

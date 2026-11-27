@@ -499,7 +499,7 @@ fn evidence_source(
     };
     let seq_i64 = i64::try_from(sequence).map_err(|_| invalid("source sequence overflow"))?;
     let ord_i64 = i64::try_from(item_index).map_err(|_| invalid("source ordinal overflow"))?;
-    let source: Option<(
+    type EvidenceSourceRow = (
         String,
         Option<i64>,
         Option<i64>,
@@ -507,7 +507,8 @@ fn evidence_source(
         String,
         i64,
         String,
-    )> = c
+    );
+    let source: Option<EvidenceSourceRow> = c
         .query_row(
             "SELECT d.body,d.body_ref_sequence,d.body_ref_start,d.body_ref_end,h.fact_id,d.at,s.configuration FROM agent_recall_messages d JOIN agent_session_history h ON h.namespace_id=d.namespace_id AND h.sequence=d.sequence JOIN session_control s ON s.id=?2 WHERE d.namespace_id=?1 AND d.sequence=?3 AND d.ordinal=?4 AND d.internal=0 AND s.archived=0 AND NOT EXISTS(SELECT 1 FROM session_retirements WHERE session_id=?2 AND remove_session=1)",
             params![ns_id, session, seq_i64, ord_i64],

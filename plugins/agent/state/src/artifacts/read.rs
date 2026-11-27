@@ -31,18 +31,35 @@ pub(super) fn lookup(
     scope: &ArtifactReadScope,
     id: &str,
 ) -> Result<Option<Material>, StoreError> {
+    lookup_with_encoding(c, scope, id, true)
+}
+pub(super) fn lookup_with_encoding(
+    c: &Connection,
+    scope: &ArtifactReadScope,
+    id: &str,
+    encoded: bool,
+) -> Result<Option<Material>, StoreError> {
     identity(scope.session())?;
     identity(id)?;
     let owner = serde_json::to_string(scope.owner())?;
     let (body, proof, retained_content_id, provenance) = match scope {
         ArtifactReadScope::Session { scope } => {
-            let row:Option<(Vec<u8>,String,i64,i64)>=c.query_row("SELECT maka_content_bytes(b.payload,b.encoding),b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?",params![scope.session,id,owner],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+            let sql = if encoded {
+                "SELECT maka_content_bytes(b.payload,b.encoding),b.content_sha256,COALESCE(b.logical_bytes,length(b.payload)),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?"
+            } else {
+                "SELECT b.payload,b.content_sha256,length(b.payload),r.content_id FROM agent_session_artifact_registrations r JOIN contents b ON b.id=r.body_content_id WHERE r.session=? AND r.artifact=? AND r.owner=?"
+            };
+            let row: Option<(Vec<u8>, String, i64, i64)> = c
+                .query_row(sql, params![scope.session, id, owner], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .optional()?;
             let Some((bytes, digest, length, raw_content_id)) = row else {
                 return Ok(None);
             };
             let registration: session::Registration = serde_json::from_slice(&bytes)?;
             registration.validate(scope)?;
-            let provenance = registration.provenance(c)?;
+            let provenance = registration.provenance_with_encoding(c, encoded)?;
             if registration.record.artifact.id != id {
                 return Err(invalid("session artifact canonical identity differs"));
             }
@@ -106,7 +123,7 @@ pub(super) fn lookup(
     if body.artifact.session_id != scope.session() || body.artifact.id != id {
         return Err(invalid("artifact identity differs from scoped lookup"));
     }
-    let rowid = tool::content_id(c, &body.payload)?;
+    let rowid = tool::content_id_with_encoding(c, &body.payload, encoded)?;
     if rowid != retained_content_id {
         return Err(invalid(
             "artifact payload reference differs from original ownership pin",

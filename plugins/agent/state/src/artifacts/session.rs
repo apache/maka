@@ -63,16 +63,17 @@ impl Registration {
         }
     }
     pub(super) fn retained_provenance(&self, c: &Connection) -> Result<(), StoreError> {
-        self.provenance(c).map(|_| ())
+        self.provenance_with_encoding(c, true).map(|_| ())
     }
-    pub(super) fn provenance(
+    pub(super) fn provenance_with_encoding(
         &self,
         c: &Connection,
+        encoded: bool,
     ) -> Result<Option<(ContentRef, i64)>, StoreError> {
         let Some(provenance) = self.provenance_ref() else {
             return Ok(None);
         };
-        let rowid = tool::content_id(c, provenance)?;
+        let rowid = tool::content_id_with_encoding(c, provenance, encoded)?;
         let retained: Option<i64> = c.query_row(
             "SELECT provenance_content_id FROM agent_session_artifact_registrations WHERE session=? AND artifact=? AND owner=?",
             params![self.record.artifact.session_id, self.record.artifact.id, serde_json::to_string(&self.owner)?],

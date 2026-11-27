@@ -603,7 +603,7 @@ mod tests {
             .unwrap(),
             policy::worker::Dispatch::Local {
                 current: current.clone(),
-                pending: Some(target.clone()),
+                pending: Some(Box::new(target.clone())),
             }
         );
 

@@ -471,6 +471,7 @@ impl Owner {
         })
     }
 
+    #[cfg(test)]
     pub(super) async fn session_run_overview(
         &self,
         session_id: &str,
