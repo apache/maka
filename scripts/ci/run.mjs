@@ -401,6 +401,7 @@ export function executor(
         ...globSync(
           [
             'scripts/**/*.test.mjs',
+            'products/maka/ios-shell/tests/*.test.mjs',
             'products/maka/workbench/tests/*.test.mjs',
             'packages/cli/tests/*.test.mjs',
           ],

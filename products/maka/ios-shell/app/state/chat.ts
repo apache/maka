@@ -106,6 +106,8 @@ export interface HistoryRow {
 }
 
 const chunkEnd = (chunk: AgentHistoryChunk) => chunk.offset + Buffer.byteLength(chunk.text, 'utf8');
+const historyOrderKey = (chunk: AgentHistoryChunk) =>
+  chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex);
 
 function sameHistoryField(a: AgentHistoryChunk, b: AgentHistoryChunk) {
   return (
@@ -116,30 +118,42 @@ function sameHistoryField(a: AgentHistoryChunk, b: AgentHistoryChunk) {
 }
 
 export function assembleHistoryRows(chunks: readonly AgentHistoryChunk[]): HistoryRow[] {
-  const rows: HistoryRow[] = [];
-  for (const chunk of chunks) {
-    const row = rows.at(-1);
-    if (
-      row &&
-      chunk.offset > 0 &&
-      chunkEnd(row.last) === chunk.offset &&
-      sameHistoryField(row.first, chunk)
-    ) {
-      row.text += chunk.text;
-      row.last = chunk;
-    } else {
-      rows.push({
-        key:
-          row && sameHistoryField(row.first, chunk)
-            ? row.key + ':' + chunk.offset
-            : chunk.order.path.join('/') + ':' + String(chunk.order.itemIndex),
-        first: chunk,
-        last: chunk,
-        text: chunk.text,
-      });
+  return coalesceHistoryRows(
+    chunks.map((chunk) => ({
+      key: historyOrderKey(chunk),
+      first: chunk,
+      last: chunk,
+      text: chunk.text,
+    })),
+  );
+}
+
+export function coalesceHistoryRows(rows: HistoryRow[]): HistoryRow[] {
+  const compare = (a: HistoryRow, b: HistoryRow) =>
+    compareHistoryRows(a.first, b.first) || a.first.offset - b.first.offset;
+  if (rows.some((row, i) => i > 0 && compare(rows[i - 1], row) > 0)) rows.sort(compare);
+  const merged: HistoryRow[] = [];
+  for (const row of rows) {
+    const previous = merged.at(-1);
+    if (!previous || !sameHistoryField(previous.first, row.first)) {
+      merged.push(row);
+      continue;
+    }
+    const end = chunkEnd(previous.last);
+    const overlap = end - row.first.offset;
+    if (overlap < 0) {
+      merged.push({ ...row, key: historyOrderKey(row.first) + ':' + row.first.offset });
+    } else if (chunkEnd(row.last) > end) {
+      merged[merged.length - 1] = {
+        ...previous,
+        last: row.last,
+        text:
+          previous.text +
+          (overlap ? Buffer.from(row.text, 'utf8').subarray(overlap).toString('utf8') : row.text),
+      };
     }
   }
-  return rows;
+  return merged;
 }
 
 export function historyAddressKey(position: HistoryRowAddress): string {
