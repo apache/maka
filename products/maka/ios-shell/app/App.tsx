@@ -63,6 +63,7 @@ import { ConnectionModelScreen } from './screens/settings/ConnectionModelScreen'
 import { WebSearchSettingsScreen } from './screens/settings/WebSearchSettingsScreen';
 import { NetworkSettingsScreen } from './screens/settings/NetworkSettingsScreen';
 import { SettingsRootScreen } from './screens/settings/SettingsRootScreen';
+import type { ConnectionCatalog } from './state/settings/models';
 import type { ParsedDiffFile } from './state/chat';
 import {
   closeAddComputerFlow,
@@ -101,7 +102,7 @@ type SettingsRoute =
   | { name: 'device'; rootId: string }
   | { name: 'computer'; rootId: string }
   | { name: 'hostSetting'; domain: HostSettingDomain; rootId: string; backLabel?: string }
-  | { name: 'providers'; rootId: string; catalogRevision: number }
+  | { name: 'providers'; rootId: string; catalog: () => ConnectionCatalog | null }
   | { name: 'connection'; rootId: string; target: ConnectionTarget; backLabel?: string }
   | {
       name: 'model';
@@ -353,11 +354,12 @@ function MainTabShell() {
                   rootId={route.rootId}
                   backLabel={tr('Models & Connections')}
                   onBack={back}
-                  onSelect={(provider) =>
+                  catalog={route.catalog}
+                  onSelect={(provider, catalog) =>
                     settingsNav.push({
                       name: 'connection',
                       rootId: route.rootId,
-                      target: { provider, catalogRevision: route.catalogRevision },
+                      target: { provider, catalog },
                       backLabel: tr('Provider'),
                     })
                   }
@@ -503,6 +505,7 @@ function MainTabShell() {
                       onBack={back}
                       backLabel={backLabel}
                       revision={modelSettingsRevision()}
+                      onChanged={modelSettingsChanged}
                       openConnection={(row) =>
                         settingsNav.push({
                           name: 'connection',
@@ -510,11 +513,11 @@ function MainTabShell() {
                           target: { connectionId: row.basis.connectionId },
                         })
                       }
-                      openProviders={(catalogRevision) =>
+                      openProviders={(catalog) =>
                         settingsNav.push({
                           name: 'providers',
                           rootId: route.rootId,
-                          catalogRevision,
+                          catalog,
                         })
                       }
                     />
@@ -541,6 +544,7 @@ function MainTabShell() {
             }
             return (
               <SettingsRootScreen
+                modelSettingsRevision={modelSettingsRevision()}
                 onOpenComputer={(rootId) => settingsNav.push({ name: 'computer', rootId })}
                 onOpenDevice={(rootId) => settingsNav.push({ name: 'device', rootId })}
                 onOpenHostSetting={(domain, rootId) =>

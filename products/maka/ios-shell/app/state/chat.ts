@@ -44,10 +44,39 @@ import { LivePreviewAccumulator, type LivePreviewSnapshot } from '../streaming';
 import { activeHostInfo, hostById, showToast } from './hostPool';
 import { dismissInboxRequest, refreshHostInbox } from './inbox';
 import { hapticNotification, hapticSelection } from './preferences';
-import { refreshHostSessions } from './sessions';
-import { modelBackend, readDefaultModel } from './settings/models';
+import { listHostModels, refreshHostSessions } from './sessions';
+import {
+  loadModelCatalog,
+  labelModelChoices,
+  modelBackend,
+  modelConnectionLabels,
+  readDefaultModel,
+} from './settings/models';
 import { settingsRpc } from './settings/rpc';
 import { tr } from '../locale';
+
+export const backendKey = (backend: AgentBackendPreference) =>
+  JSON.stringify(
+    backend.kind === 'model'
+      ? [
+          'model',
+          backend.connectionId,
+          backend.modelId,
+          backend.serviceTier ?? null,
+          backend.thinkingLevel ?? null,
+        ]
+      : [
+          'executor',
+          backend.selection.executor,
+          backend.selection.settings?.runtime ?? null,
+          backend.selection.settings?.model ?? null,
+        ],
+  );
+
+export const displayModelKey = (backend: AgentBackendPreference) =>
+  backend.kind === 'model'
+    ? JSON.stringify(['model', backend.connectionId, backend.modelId])
+    : backendKey(backend);
 
 export function compareHistoryRows(a: AgentHistoryChunk, b: AgentHistoryChunk): number {
   for (let i = 0; i < Math.min(a.order.path.length, b.order.path.length); i++) {
@@ -362,19 +391,23 @@ export function createConversationController(rootId: string, initialSession: Age
   };
 
   const loadModels = async () => {
+    const connection = activeHostInfo(rootId);
+    if (!connection || isRoom()) return;
+    const current = () => !disposed && connection.generation === activeHostInfo(rootId)?.generation;
+    const metadata = connection.endpoints.includes('settings')
+      ? loadModelCatalog(settingsRpc(rootId))
+      : null;
     try {
-      const page = await hostQuery<{ kind: string; choices?: AgentModelChoice[] }>(
-        'agent',
-        'models',
-        { kind: 'start', query: '' },
-        undefined,
-        rootId,
-      );
-      if (!disposed && page?.kind === 'ready' && Array.isArray(page.choices)) {
-        models.set(page.choices);
-      }
-    } catch {
-      // Models list is optional when offline or unsupported.
+      const choices = await listHostModels(rootId, current);
+      if (!current()) return;
+      models.set(choices);
+      void metadata?.then((catalog) => {
+        if (catalog && current() && models() === choices) {
+          models.set(labelModelChoices(choices, modelConnectionLabels(catalog)));
+        }
+      });
+    } catch (cause) {
+      if (current()) showToast(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
@@ -571,11 +604,17 @@ export function createConversationController(rootId: string, initialSession: Age
   const selectModel = (backend: AgentBackendPreference) => {
     const generation = activeHostInfo(rootId)?.generation;
     if (disposed || isRoom() || generation === undefined || selectingModel() || sending()) return;
+    const alreadySelected = () => {
+      const chosen = selectedBackend();
+      return chosen !== null && displayModelKey(chosen) === displayModelKey(backend);
+    };
+    if (alreadySelected()) return;
     const done = (async () => {
       try {
         if (!observation()) await loadObserve(false);
         if (disposed || activeHostInfo(rootId)?.generation !== generation) return false;
         if (!observation()) throw new Error(error() ?? tr('Select model'));
+        if (alreadySelected()) return true;
         const result = await hostMutate<
           import('../../../../../packages/plugin-sdk/src/generated/runtime').AgentMetadataResult
         >('agent', 'selectBackend', { sessionId, backend }, { rootId, generation });
