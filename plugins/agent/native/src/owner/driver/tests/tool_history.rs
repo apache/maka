@@ -455,7 +455,6 @@ async fn external_return_keeps_the_name_of_its_original_call() -> TestResult<()>
         session_id: session.clone(),
         turn_id: external.spec.turn_id,
     };
-
     let task = ExternalTaskId::new();
     let key = ExternalEffectKey {
         task,

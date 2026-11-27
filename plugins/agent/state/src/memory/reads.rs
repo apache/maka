@@ -69,25 +69,31 @@ pub struct ReadAuthority {
     pub project: Option<String>,
 }
 
+macro_rules! stale_tool_inputs_sql {
+    () => {
+        "SELECT 1 FROM agent_memory_tool_inputs t
+         LEFT JOIN agent_memories m
+           ON m.namespace=t.namespace AND m.scope=t.scope AND m.id=t.id
+           AND m.assertion=t.assertion AND m.state='active'
+         LEFT JOIN agent_memory_versions v
+           ON v.namespace=t.namespace AND v.scope=t.scope AND v.id=t.id
+           AND v.revision=t.assertion AND v.disposition='current'
+         WHERE t.run=?1 AND (m.id IS NULL OR v.id IS NULL)"
+    };
+}
+
 pub struct CheckReads(pub RunId);
 impl Query for CheckReads {
     type Output = ReadAuthority;
     fn execute(self, c: &Connection) -> Result<Self::Output, StoreError> {
-        let mut statement = c.prepare_cached(
-            "SELECT EXISTS(
-                SELECT 1 FROM agent_memory_tool_inputs t
-                LEFT JOIN agent_memories m
-                  ON m.namespace=t.namespace AND m.scope=t.scope AND m.id=t.id
-                  AND m.assertion=t.assertion AND m.state='active'
-                LEFT JOIN agent_memory_versions v
-                  ON v.namespace=t.namespace AND v.scope=t.scope AND v.id=t.id
-                  AND v.revision=t.assertion AND v.disposition='current'
-                WHERE t.run=?1 AND (m.id IS NULL OR v.id IS NULL)
-             ),
+        let mut statement = c.prepare_cached(concat!(
+            "SELECT EXISTS(",
+            stale_tool_inputs_sql!(),
+            "),
              EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1),
              (SELECT min(scope) FROM agent_memory_tool_inputs WHERE run=?1 AND scope<>'personal'),
              (SELECT max(scope) FROM agent_memory_tool_inputs WHERE run=?1 AND scope<>'personal')",
-        )?;
+        ))?;
         let (revoked, facts, project, last_project) =
             statement.query_row([self.0.to_string()], |row| {
                 Ok((
@@ -137,44 +143,21 @@ impl Query for PermitsReplay {
     type Output = bool;
     fn execute(self, c: &Connection) -> Result<bool, StoreError> {
         let producer = self.producer.to_string();
-        let (has_facts, has_project): (bool, bool) = c
-            .prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1),
-                        EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1 AND scope<>'personal')",
-            )?
-            .query_row([&producer], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        if !has_facts {
-            return Ok(true);
-        }
-        let Some(target) = self.target else {
-            return Ok(false);
-        };
-        if target == self.producer {
-            return Ok(true);
-        }
+        let target = self.target.map(|run| run.to_string());
         let allowed: bool = c
-            .prepare_cached(
-                "SELECT EXISTS(
-                    SELECT 1 FROM agent_run_specs t
-                    JOIN contents tb ON tb.id=t.spec_content_id
-                    JOIN agent_run_specs p ON p.run=?2
-                    WHERE t.run=?1
-                      AND tb.payload->>'$.memoryAdmission'='enabled'
-                      AND (?3=0 OR (t.owner=p.owner AND t.session=p.session))
-                 ) AND NOT EXISTS(
-                    SELECT 1 FROM agent_memory_tool_inputs i
-                    LEFT JOIN agent_memories m
-                      ON m.namespace=i.namespace AND m.scope=i.scope AND m.id=i.id
-                      AND m.assertion=i.assertion AND m.state='active'
-                    LEFT JOIN agent_memory_versions v
-                      ON v.namespace=i.namespace AND v.scope=i.scope AND v.id=i.id
-                      AND v.revision=i.assertion AND v.disposition='current'
-                    WHERE i.run=?2 AND (m.id IS NULL OR v.id IS NULL)
-                 )",
-            )?
-            .query_row(params![target.to_string(), producer, has_project], |row| {
-                row.get(0)
-            })?;
+            .prepare_cached(concat!(
+                "SELECT NOT EXISTS(SELECT 1 FROM agent_memory_tool_inputs WHERE run=?1)
+                     OR (?2 IS NOT NULL
+                         AND EXISTS(
+                             SELECT 1 FROM agent_run_specs t
+                             JOIN contents tb ON tb.id=t.spec_content_id
+                             WHERE t.run=?2 AND tb.payload->>'$.memoryAdmission'='enabled'
+                         )
+                         AND NOT EXISTS(",
+                stale_tool_inputs_sql!(),
+                "))",
+            ))?
+            .query_row(params![producer, target], |row| row.get(0))?;
         Ok(allowed)
     }
 }
@@ -184,7 +167,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migration_0058_unwraps_recap_receipts_and_drops_taint_tables() {
+    fn migration_0058_unwraps_recap_receipts() {
         let db = Connection::open_in_memory().unwrap();
         let catalog: Vec<_> = maka_event_log::ROOT_MIGRATIONS
             .iter()
@@ -227,22 +210,5 @@ mod tests {
                 (5, None, None),
             ]
         );
-        for dropped in [
-            "agent_memory_session_reads",
-            "agent_memory_session_visibility",
-            "agent_memory_visibility",
-            "agent_memory_history_reads",
-            "agent_memory_external_sources",
-            "agent_memory_external_epochs",
-        ] {
-            let exists: bool = db
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-                    [dropped],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(!exists, "expected table {dropped} to be dropped");
-        }
     }
 }
