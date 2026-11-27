@@ -12,7 +12,7 @@ use crate::rich_editor::{
     commands::{self as cmd, BoxCommand, CommandRegistry, Dispatch, command},
     extensions::{history, input_rules},
     formats::{DocFormat, DomParser, MarkdownFormat, MarkdownNames, ParseOptions, slice_from_text},
-    model::{Attrs, Fragment, Node, Schema},
+    model::{Attrs, Fragment, Node, Schema, Slice},
     state::{EditorState, NodeSelection, TextSelection},
     transform::MarkMatch,
 };
@@ -412,10 +412,14 @@ pub(crate) fn resolve_with(
                     )(state, dispatch)
                 }
                 _ => match fragment_of(&schema, &content, format) {
-                    Ok(fragment) => cmd::tiptap::insert_content(
-                        fragment,
-                        cmd::tiptap::InsertContentOptions::default(),
-                    )(state, dispatch),
+                    Ok(fragment) => {
+                        if let Some(dispatch) = dispatch {
+                            let mut tr = state.tr();
+                            tr.replace_selection(Slice::max_open(fragment, true));
+                            dispatch(tr);
+                        }
+                        true
+                    }
                     Err(error) => {
                         log::warn!("insertContent: {error}");
                         false
@@ -505,4 +509,81 @@ fn resolve_all(
         .iter()
         .map(|c| resolve_with(c, schema, registry))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::rich_editor::commands::test_util::{apply, n, p, schema, state};
+
+    fn inserted(content: Content, format: Option<RichFormat>, anchor: usize, head: usize) -> Node {
+        let s = schema();
+        let command = resolve(
+            &RichCommand {
+                command: RichCommandName::InsertContent,
+                content: Some(content),
+                format,
+                ..RichCommand::default()
+            },
+            &s,
+        )
+        .unwrap();
+        let doc = n(&s, "doc", vec![p(&s, "abc")]);
+        apply(&state(doc, anchor, head), command.as_ref())
+            .unwrap()
+            .doc()
+            .clone()
+    }
+
+    #[test]
+    fn insert_content_opens_markdown_and_json_at_the_selection() {
+        let markdown = inserted(Content::Text("X".into()), Some(RichFormat::Markdown), 2, 2);
+        assert_eq!(markdown.child_count(), 1);
+        assert_eq!(markdown.child(0).text_content(), "aXbc");
+
+        let markdown = inserted(
+            Content::Text("X\n\nY".into()),
+            Some(RichFormat::Markdown),
+            2,
+            2,
+        );
+        assert_eq!(markdown.child_count(), 2);
+        assert_eq!(markdown.child(0).text_content(), "aX");
+        assert_eq!(markdown.child(1).text_content(), "Ybc");
+
+        let json = inserted(
+            Content::Json(json!({
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "X"}]}],
+            })),
+            None,
+            2,
+            2,
+        );
+        assert_eq!(json.child_count(), 1);
+        assert_eq!(json.child(0).text_content(), "aXbc");
+    }
+
+    #[test]
+    fn insert_content_replaces_a_text_selection_with_markdown_inline() {
+        let markdown = inserted(Content::Text("X".into()), Some(RichFormat::Markdown), 2, 3);
+        assert_eq!(markdown.child_count(), 1);
+        assert_eq!(markdown.child(0).text_content(), "aXc");
+    }
+
+    #[test]
+    fn insert_content_keeps_html_blocks_as_tiptap_inserts_them() {
+        let html = inserted(
+            Content::Text("<p>X</p>".into()),
+            Some(RichFormat::Html),
+            2,
+            2,
+        );
+        assert_eq!(html.child_count(), 3);
+        assert_eq!(html.child(0).text_content(), "a");
+        assert_eq!(html.child(1).text_content(), "X");
+        assert_eq!(html.child(2).text_content(), "bc");
+    }
 }

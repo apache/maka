@@ -1,16 +1,22 @@
-use std::{cell::RefCell, sync::Mutex};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Mutex,
+};
 
+use nsh_core::Color;
 use nsh_engine::{Bundle, Root};
 use objc2::{
-    ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
-    runtime::AnyObject,
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    rc::Retained, runtime::AnyObject,
 };
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSObject, NSObjectProtocol, NSSet, NSString, NSURL, NSUserActivity};
+use objc2_foundation::{
+    NSBundle, NSObject, NSObjectProtocol, NSSet, NSString, NSURL, NSUserActivity,
+};
 use objc2_ui_kit::{
-    UIApplication, UIApplicationDelegate, UIInterfaceOrientationMask, UIResponder, UIScene,
-    UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession,
-    UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIApplication, UIApplicationDelegate, UIColor, UIInterfaceOrientationMask, UIResponder,
+    UIScene, UISceneConfiguration, UISceneConnectionOptions, UISceneDelegate, UISceneSession,
+    UIUserInterfaceStyle, UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
     UIWindowSceneSessionRoleApplication,
 };
 
@@ -57,7 +63,9 @@ pub struct AppOptions {
     /// Logs the performance monitor's readings once a second
     /// ([`SurfaceOptions::fps`]).
     pub fps: bool,
-    /// Rust handlers and events available to the bundled app.
+    /// The app's channel with the apps it runs (`nsh/host`): their launch
+    /// parameters, events to them and handlers of their calls and posts
+    /// ([`SurfaceOptions::host`]). A new one by default.
     pub host: nsh_engine::HostChannel,
     /// Runtime for app work. When omitted NSH owns the runtime.
     pub runtime: Option<tokio::runtime::Handle>,
@@ -188,11 +196,14 @@ define_class!(
     unsafe impl UIWindowSceneDelegate for SceneDelegate {}
 );
 
+const WHITE_BACKDROP: Color = Color::rgba(255, 255, 255, 255);
+
 define_class!(
     /// The window's root controller: shows the status bar the app sets,
     /// and takes the orientations of the page shown.
     #[unsafe(super(UIViewController, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = Cell<Color>]
     pub(crate) struct RootController;
 
     impl RootController {
@@ -223,9 +234,49 @@ define_class!(
 );
 
 impl RootController {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        // SAFETY: UIViewController's designated initializer.
-        unsafe { msg_send![Self::alloc(mtm), init] }
+    fn install(window: &UIWindow) -> Retained<UIView> {
+        let this = Self::alloc(window.mtm()).set_ivars(Cell::new(WHITE_BACKDROP));
+        // SAFETY: the superclass's designated initializer, without a nib.
+        let controller: Retained<Self> = unsafe {
+            msg_send![super(this), initWithNibName: None::<&NSString>, bundle: None::<&NSBundle>]
+        };
+        controller.apply_appearance(window, crate::system::appearance());
+        let root = controller.view().expect("view controller has a view");
+        // A surface without a background still draws black text by default.
+        let background = UIColor::whiteColor();
+        root.setBackgroundColor(Some(&background));
+        window.setBackgroundColor(Some(&background));
+        window.setRootViewController(Some(&controller));
+        root
+    }
+
+    pub(crate) fn for_surface(root: &UIView) -> Option<(Retained<Self>, Retained<UIWindow>)> {
+        let window = root.window()?;
+        let controller = window.rootViewController()?.downcast::<Self>().ok()?;
+        let view = controller.viewIfLoaded()?;
+        root.isDescendantOfView(&view)
+            .then_some((controller, window))
+    }
+
+    pub(crate) fn set_backdrop(&self, window: &UIWindow, color: Option<Color>) {
+        let color = color.unwrap_or(WHITE_BACKDROP);
+        if self.ivars().replace(color) == color {
+            return;
+        }
+        let background = if color == WHITE_BACKDROP {
+            UIColor::whiteColor()
+        } else {
+            let (r, g, b, a) = color.to_f64();
+            UIColor::colorWithRed_green_blue_alpha(r, g, b, a)
+        };
+        let root = self.view().expect("view controller has a view");
+        root.setBackgroundColor(Some(&background));
+        window.setBackgroundColor(Some(&background));
+    }
+
+    pub(crate) fn apply_appearance(&self, window: &UIWindow, style: UIUserInterfaceStyle) {
+        window.setOverrideUserInterfaceStyle(style);
+        self.setOverrideUserInterfaceStyle(style);
     }
 }
 
@@ -270,12 +321,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) {
     }
     hide_title(scene);
     let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), scene);
-    let controller = RootController::new(mtm);
-    let root = controller.view().expect("view controller has a view");
-    // Behind an app that sets no background: white, as in React Native (a
-    // window shows black otherwise, and text defaults to black).
-    root.setBackgroundColor(Some(&objc2_ui_kit::UIColor::whiteColor()));
-    window.setRootViewController(Some(&controller));
+    let root = RootController::install(&window);
     window.makeKeyAndVisible();
     let view = AppView::new(
         mtm,
@@ -350,4 +396,327 @@ pub fn run_app(source: AppSource, options: AppOptions) -> ! {
             .expect("class name is UTF-8"),
     );
     UIApplication::main(None, Some(&delegate), mtm)
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{Color, platform::Appearance};
+    use objc2::MainThreadMarker;
+    use objc2_core_foundation::CGRect;
+    use objc2_ui_kit::{
+        UIColor, UIUserInterfaceStyle as Style, UIView, UIViewController, UIWindow,
+    };
+
+    use super::{AppView, RootController};
+    use crate::system::set_appearance;
+
+    #[test]
+    #[ignore = "requires a UIKit main-thread harness"]
+    fn standalone_backdrops_keep_unstyled_text_readable_and_follow_app_colors() {
+        let mtm = MainThreadMarker::new().expect("UIKit needs the main thread");
+        let surface = UIView::new(mtm);
+        set_appearance(Appearance::Dark, &surface);
+
+        let window = UIWindow::new(mtm);
+        let root = RootController::install(&window);
+        let controller = window.rootViewController().unwrap();
+        let assert_backdrop = |expected: &UIColor| {
+            assert_eq!(root.backgroundColor().as_deref(), Some(expected));
+            assert_eq!(window.backgroundColor().as_deref(), Some(expected));
+        };
+        assert_backdrop(&UIColor::whiteColor());
+        assert_eq!(window.overrideUserInterfaceStyle(), Style::Dark);
+        assert_eq!(controller.overrideUserInterfaceStyle(), Style::Dark);
+
+        window.addSubview(&root);
+        root.addSubview(&surface);
+        for (appearance, style) in [
+            (Appearance::Light, Style::Light),
+            (Appearance::Dark, Style::Dark),
+            (Appearance::System, Style::Unspecified),
+        ] {
+            set_appearance(appearance, &surface);
+            assert_eq!(window.overrideUserInterfaceStyle(), style);
+            assert_eq!(controller.overrideUserInterfaceStyle(), style);
+            assert_eq!(surface.overrideUserInterfaceStyle(), style);
+            assert_backdrop(&UIColor::whiteColor());
+        }
+
+        let controller = controller.downcast::<RootController>().unwrap();
+        for color in [Color::BLACK, Color::rgba(242, 242, 247, 255)] {
+            controller.set_backdrop(&window, Some(color));
+            let (r, g, b, a) = color.to_f64();
+            assert_backdrop(&UIColor::colorWithRed_green_blue_alpha(r, g, b, a));
+        }
+        controller.set_backdrop(&window, None);
+        assert_backdrop(&UIColor::whiteColor());
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    #[ignore = "requires a UIKit main-thread harness"]
+    fn animated_backdrop_follows_color_only_while_the_view_covers_the_surface() {
+        use std::{cell::RefCell, sync::Arc};
+
+        use dispatch2::MainThreadBound;
+        use nsh_core::{
+            ApproxTextEngine, ClipInset, ColorStop, Effects, Gradient, GradientKind,
+            KeyframeAnimation, Keyframes, LayoutAnimation, LayoutCurve, LayoutTransition,
+            MountBatch, MountItem, ROOT_ID, Transition, TransitionProps, ViewKind, ViewStyle,
+            animation::{AnimationOp, AnimationProp, Easing, Extrapolate, Output},
+            geometry::{Radians, point, px, size},
+        };
+        use nsh_engine::{Bundle, Engine, EngineConfig, MountSink, Policy};
+        use objc2_core_foundation::{CGPoint, CGSize};
+        use objc2_foundation::{NSDate, NSRunLoop, ns_string};
+        use objc2_quartz_core::{CABasicAnimation, CAMediaTiming};
+
+        use crate::mount::Mounter;
+
+        struct IgnoreMounts;
+        impl MountSink for IgnoreMounts {
+            fn submit(&self, _: MountBatch) {}
+        }
+
+        let mtm = MainThreadMarker::new().expect("UIKit needs the main thread");
+        let engine = Engine::start(
+            EngineConfig::new(Bundle::source(String::new())),
+            || ApproxTextEngine,
+            IgnoreMounts,
+        )
+        .unwrap();
+        let window = UIWindow::new(mtm);
+        let bounds = CGRect::new(CGPoint::ZERO, CGSize::new(390.0, 844.0));
+        window.setFrame(bounds);
+        let root = RootController::install(&window);
+        window.addSubview(&root);
+        window.setHidden(false);
+        let surface = UIView::initWithFrame(mtm.alloc(), bounds);
+        root.addSubview(&surface);
+        let shared = Arc::new(MainThreadBound::new(RefCell::new(None), mtm));
+        let mounter = Mounter::new(
+            mtm,
+            surface,
+            engine.control(),
+            shared.clone(),
+            None,
+            Arc::new(Policy::default().access()),
+            Default::default(),
+        );
+        *shared.get(mtm).borrow_mut() = Some(mounter);
+        let apply = |items| {
+            shared
+                .get(mtm)
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .apply(MountBatch { items });
+        };
+        let assert_backdrop = |expected: &UIColor| {
+            assert_eq!(root.backgroundColor().as_deref(), Some(expected));
+            assert_eq!(window.backgroundColor().as_deref(), Some(expected));
+        };
+
+        let id = 2;
+        let light = Color::rgba(242, 242, 247, 255);
+        apply(vec![
+            MountItem::Create {
+                id,
+                kind: ViewKind::View,
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: id,
+                before: None,
+            },
+            MountItem::Frame {
+                id,
+                frame: nsh_core::Bounds::new(point(px(0.0), px(0.0)), size(px(390.0), px(844.0))),
+            },
+            MountItem::Animation(AnimationOp::CreateValue {
+                node: 1,
+                value: 0.0,
+            }),
+            MountItem::Animation(AnimationOp::CreateInterpolate {
+                node: 2,
+                input: 1,
+                input_range: vec![0.0, 1.0],
+                output: Output::Colors(vec![Color::BLACK.0, light.0]),
+                extrapolate_left: Extrapolate::Clamp,
+                extrapolate_right: Extrapolate::Clamp,
+                easing: Easing::Linear,
+            }),
+            MountItem::AnimationBindings {
+                id,
+                bindings: vec![(AnimationProp::BackgroundColor, 2)],
+            },
+        ]);
+        let black = UIColor::colorWithRed_green_blue_alpha(0.0, 0.0, 0.0, 1.0);
+        assert_backdrop(&black);
+        apply(vec![MountItem::Animation(AnimationOp::Set {
+            node: 1,
+            value: 1.0,
+        })]);
+        let (r, g, b, a) = light.to_f64();
+        assert_backdrop(&UIColor::colorWithRed_green_blue_alpha(r, g, b, a));
+
+        apply(vec![MountItem::Animation(AnimationOp::Set {
+            node: 1,
+            value: 0.0,
+        })]);
+        assert_backdrop(&black);
+        let rounded = ViewStyle {
+            border_radius: px(24.0),
+            ..Default::default()
+        };
+        let clipped = ViewStyle {
+            effects: Some(Arc::new(Effects {
+                clip_path: Some(ClipInset::new().inset(px(8.0))),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let masked = ViewStyle {
+            effects: Some(Arc::new(Effects {
+                mask_images: vec![Gradient {
+                    kind: GradientKind::Linear {
+                        angle: Radians(0.0),
+                    },
+                    stops: [Color::BLACK, Color::TRANSPARENT]
+                        .map(|color| ColorStop {
+                            color,
+                            position: None,
+                        })
+                        .to_vec(),
+                    repeating: false,
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let pulsing = ViewStyle {
+            animation: Some(KeyframeAnimation::new(Keyframes::Pulse)),
+            ..Default::default()
+        };
+        for style in [rounded, clipped, masked, pulsing] {
+            apply(vec![MountItem::ViewStyle {
+                id,
+                style: Box::new(ViewStyle::default()),
+            }]);
+            assert_backdrop(&black);
+            apply(vec![MountItem::ViewStyle {
+                id,
+                style: Box::new(style),
+            }]);
+            assert_backdrop(&UIColor::whiteColor());
+        }
+        let mut transition = Transition::default();
+        transition.properties = TransitionProps(TransitionProps::OPACITY);
+        transition.duration = 100.0;
+        let fade_in = ViewStyle {
+            transition: Some(transition),
+            ..Default::default()
+        };
+        apply(vec![MountItem::ViewStyle {
+            id,
+            style: Box::new(fade_in.clone()),
+        }]);
+        assert_backdrop(&black);
+        apply(vec![MountItem::ViewStyle {
+            id,
+            style: Box::new(ViewStyle {
+                opacity: 0.5,
+                ..Default::default()
+            }),
+        }]);
+        apply(vec![MountItem::ViewStyle {
+            id,
+            style: Box::new(fade_in),
+        }]);
+        assert_backdrop(&UIColor::whiteColor());
+        let run_animation = || {
+            NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(1.0));
+        };
+        run_animation();
+        assert_backdrop(&black);
+
+        let incoming = 4;
+        apply(vec![
+            MountItem::Remove { id },
+            MountItem::Delete { id },
+            MountItem::LayoutAnimation(LayoutAnimation {
+                create: Some(LayoutTransition::new(LayoutCurve::Linear, 100.0)),
+                ..Default::default()
+            }),
+            MountItem::Create {
+                id: incoming,
+                kind: ViewKind::View,
+            },
+            MountItem::Frame {
+                id: incoming,
+                frame: nsh_core::Bounds::new(point(px(0.0), px(0.0)), size(px(390.0), px(844.0))),
+            },
+            MountItem::Insert {
+                parent: ROOT_ID,
+                child: incoming,
+                before: None,
+            },
+            MountItem::ViewStyle {
+                id: incoming,
+                style: Box::new(ViewStyle {
+                    background_color: Color::BLACK,
+                    ..Default::default()
+                }),
+            },
+        ]);
+        assert_backdrop(&UIColor::whiteColor());
+        run_animation();
+        assert_backdrop(&black);
+        {
+            let mut mounter = shared.get(mtm).borrow_mut();
+            let mounter = mounter.as_mut().unwrap();
+            let layer = mounter.ui_view(incoming).unwrap().layer();
+            let opacity = ns_string!("opacity");
+            let viewport = size(px(390.0), px(844.0));
+            for (repeat_count, speed) in [(f32::MAX, 1.0), (0.0, 0.0)] {
+                let animation = CABasicAnimation::animationWithKeyPath(Some(opacity));
+                animation.setDuration(1.0);
+                animation.setRepeatCount(repeat_count);
+                animation.setSpeed(speed);
+                layer.addAnimation_forKey(&animation, Some(opacity));
+                mounter.resized(viewport);
+                assert_backdrop(&UIColor::whiteColor());
+                assert!(mounter.frame_link_paused());
+                layer.removeAnimationForKey(opacity);
+                mounter.resized(viewport);
+                assert_backdrop(&black);
+            }
+        }
+        shared.get(mtm).borrow_mut().take();
+    }
+
+    #[test]
+    #[ignore = "requires a UIKit main-thread harness"]
+    fn embedded_appearance_keeps_a_full_screen_presenters_style() {
+        let mtm = MainThreadMarker::new().expect("UIKit needs the main thread");
+        let window = UIWindow::new(mtm);
+        let controller = UIViewController::new(mtm);
+        window.setOverrideUserInterfaceStyle(Style::Light);
+        controller.setOverrideUserInterfaceStyle(Style::Light);
+        window.setRootViewController(Some(&controller));
+        let presenter_view = controller.view().unwrap();
+        let presented = UIViewController::new(mtm);
+        let shown_view = presented.view().unwrap();
+        // After a full-screen presentation UIKit removes the presenting view.
+        window.addSubview(&shown_view);
+        assert!(presenter_view.window().is_none());
+        let app = AppView::new(mtm, CGRect::ZERO, Default::default());
+        shown_view.addSubview(app.view());
+
+        set_appearance(Appearance::Dark, app.view());
+        assert_eq!(app.view().overrideUserInterfaceStyle(), Style::Dark);
+        assert_eq!(window.overrideUserInterfaceStyle(), Style::Light);
+        assert_eq!(controller.overrideUserInterfaceStyle(), Style::Light);
+        assert_eq!(presented.overrideUserInterfaceStyle(), Style::Unspecified);
+    }
 }

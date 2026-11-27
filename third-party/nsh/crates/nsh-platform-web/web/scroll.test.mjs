@@ -740,3 +740,59 @@ test('onPinch hears a Safari touchpad pinch from its start to its end', (t) => {
   // Over no listener the scroll view's own zoom handles it.
   assert.ok(!p.pinchEvent(gesture(other, 1), 0));
 });
+
+test('refresh spinner keeps turning while fading out on dismiss and clears on new pull', () => {
+  const { p, el } = scroller();
+  const classList = () => {
+    const set = new Set();
+    return {
+      add: (...c) => c.forEach((v) => set.add(v)),
+      remove: (...c) => c.forEach((v) => set.delete(v)),
+      toggle: (v, on) => { if (on) set.add(v); else set.delete(v); },
+      has: (v) => set.has(v),
+    };
+  };
+  const node = () => ({ classList: classList(), style: {}, children: [] });
+  const spinner = node();
+  for (let i = 0; i < 8; i++) spinner.children.push(node());
+  const listeners = new Map();
+  Object.assign(el, {
+    _id: 1, _events: new Set(['onRefresh']), _pull: 56, _pulling: false, _refreshing: true,
+    _spinner: spinner, _layer: { style: {} }, _spacer: { style: {} }, _content: [300, 800],
+    addEventListener: (type, fn) => listeners.set(type, fn),
+  });
+  p.views.set(1, el);
+  p.ensureLayer = () => {};
+  p.placeLayer = () => {};
+  p.scrolled = () => {};
+  p.call = () => {};
+  let animatedTo = null;
+  p.animatePull = (_el, target) => { animatedTo = target; };
+  globalThis.cancelAnimationFrame = () => {};
+
+  p.op_ref([0, 1, false]);
+  assert.equal(el._refreshDismissing, true);
+  assert.equal(animatedTo, 0);
+  assert.ok(spinner.classList.has('spin') && spinner.classList.has('full'));
+  assert.equal(spinner.style.opacity, '1');
+
+  p.setPull(el, 28);
+  assert.equal(el._refreshDismissing, true);
+  assert.ok(spinner.classList.has('spin') && spinner.classList.has('full'));
+  assert.equal(spinner.style.opacity, '0.5');
+
+  // Starting a fresh touch pull clears dismissing and returns to pull progress.
+  p.installPull(el);
+  listeners.get('touchstart')({ touches: [{ clientY: 100 }] });
+  listeners.get('touchmove')({ touches: [{ clientY: 164 }], cancelable: true, preventDefault() {} });
+  assert.equal(el._refreshDismissing, false);
+  assert.ok(!spinner.classList.has('spin'));
+  assert.equal(spinner.style.opacity, '');
+
+  // Settling pull back to 0 hides the spinner and resets classes/opacity.
+  el._refreshDismissing = true;
+  p.setPull(el, 0);
+  assert.equal(el._refreshDismissing, false);
+  assert.ok(spinner.classList.has('nsh-gone') && !spinner.classList.has('spin'));
+  assert.equal(spinner.style.opacity, '');
+});

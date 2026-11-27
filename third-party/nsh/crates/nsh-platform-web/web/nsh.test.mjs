@@ -8,8 +8,8 @@ import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
 // `Player` is not exported; the page only gets it from `createPlayer`.
-const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork } = await import(
-  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork };`)}`
+const { Player, keyCode, elementTag, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed } = await import(
+  `data:text/javascript,${encodeURIComponent(`${source}\nexport { Player, keyCode, runtimeSheet, charLength, clipChars, webNetwork, webShareAllowed };`)}`
 );
 
 test("the network is the browser's link, none while it is offline", () => {
@@ -3852,6 +3852,66 @@ test("a copy gives attachments' copy texts where the layout put them among the r
   assert.equal(player.selectedText(root, reaching(0, 2)), "Area is  here,\n next");
 });
 
+test("a selection's start counts the copy before it, with the break before its text", (t) => {
+  const saved = ["getComputedStyle", "document", "getSelection"].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
+  t.after(() => {
+    for (const [k, d] of saved) d ? Object.defineProperty(globalThis, k, d) : delete globalThis[k];
+  });
+  globalThis.getComputedStyle = () => ({ visibility: "visible" });
+  const { player } = fakePlayer();
+  // Two paragraphs, one under the other, then a row of two cells on one
+  // line: the area copies as "First para.\nSecond para.\nName\tValue".
+  const box = (top) => ({ getBoundingClientRect: () => ({ top, bottom: top + 20 }) });
+  const texts = [["First para.", box(0)], ["Second para.", box(30)], ["Name", box(60)], ["Value", box(60)]];
+  const runs = texts.map(([text, parentNode], i) => {
+    const run = { _run: 0, textContent: text, parentNode };
+    run.contains = (node) => node === run;
+    return run;
+  });
+  const area = { contains: (node) => node === area || runs.includes(node), querySelectorAll: () => runs, childNodes: runs };
+  // A DOM range over the runs (each its own text node): a boundary in the
+  // area itself is before every run, or after them at its end.
+  const at = (node, offset) => (node === area ? (offset === 0 ? -1 : Infinity) : runs.indexOf(node) * 1000 + offset);
+  class Range {
+    setStart(node, offset) {
+      [this.startContainer, this.startOffset] = [node, offset];
+    }
+    setEnd(node, offset) {
+      [this.endContainer, this.endOffset] = [node, offset];
+    }
+    get collapsed() {
+      return at(this.startContainer, this.startOffset) === at(this.endContainer, this.endOffset);
+    }
+    intersectsNode(run) {
+      const from = runs.indexOf(run) * 1000;
+      return from <= at(this.endContainer, this.endOffset) && from + run.textContent.length >= at(this.startContainer, this.startOffset);
+    }
+    // `runOffset`'s: from the run's start to the boundary in it.
+    toString() {
+      return "x".repeat(this.endOffset);
+    }
+  }
+  globalThis.document = { createRange: () => new Range() };
+  let selected;
+  globalThis.getSelection = () => ({ rangeCount: 1, getRangeAt: () => selected });
+  player.selectableText = () => true;
+  player.areaOf = () => area;
+  const startAt = (run, offset) => {
+    selected = new Range();
+    selected.setStart(runs[run], offset);
+    selected.setEnd(runs[3], 5);
+    return player.selectionStart(area);
+  };
+  assert.equal(player.selectedText(area, (startAt(0, 0), selected)), "First para.\nSecond para.\nName\tValue");
+  // The first paragraph's start, and a place inside it.
+  assert.equal(startAt(0, 0), 0);
+  assert.equal(startAt(0, 6), 6);
+  // The second paragraph's start: after the first and the break.
+  assert.equal(startAt(1, 0), 12);
+  // The row's second cell: after the first cell and the tab.
+  assert.equal(startAt(3, 0), 30);
+});
+
 test("a selectable view's selection carries the box around it", (t) => {
   const saved = ["getComputedStyle", "document", "getSelection"].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]);
   t.after(() => {
@@ -5148,4 +5208,49 @@ test("point, corner, wheel, context menu, pinch, and scrollbar drag undo ancesto
     if (savedStyle === undefined) delete globalThis.getComputedStyle;
     else globalThis.getComputedStyle = savedStyle;
   }
+});
+
+test("sharing is available when the browser says the document may share", () => {
+  const share = () => {};
+  const canShare = (answer) => (data) => {
+    assert.equal(typeof data.text, "string", "canShare gets valid share data");
+    return answer;
+  };
+  // No share sheet at all.
+  assert.equal(webShareAllowed({}, {}), false);
+  assert.equal(webShareAllowed(undefined, {}), false);
+  // `canShare` is the answer, and a throw is "no".
+  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, {}), true);
+  assert.equal(webShareAllowed({ share, canShare: canShare(false) }, {}), false);
+  assert.equal(
+    webShareAllowed({ share, canShare: () => { throw new TypeError("no"); } }, {}),
+    false,
+  );
+  // With `canShare` the policy is never asked by name (that is what logs
+  // "Unrecognized feature").
+  const asked = [];
+  const policy = { features: () => [], allowsFeature: (name) => (asked.push(name), false) };
+  assert.equal(webShareAllowed({ share, canShare: canShare(true) }, { permissionsPolicy: policy }), true);
+  assert.deepEqual(asked, []);
+});
+
+test("without canShare the permissions policy decides, and an unlisted name is not asked", () => {
+  const nav = { share() {} };
+  const asked = [];
+  const policy = (features, allowed) => ({
+    features: () => features,
+    allowsFeature: (name) => (asked.push(name), allowed),
+  });
+  // Listed: the policy's answer, for `permissionsPolicy` and the older `featurePolicy`.
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], true) }), true);
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["web-share"], false) }), false);
+  assert.equal(webShareAllowed(nav, { featurePolicy: policy(["web-share"], false) }), false);
+  assert.deepEqual(asked, ["web-share", "web-share", "web-share"]);
+  // Not listed: the browser does not gate sharing on it; no lookup, no console warning.
+  asked.length = 0;
+  assert.equal(webShareAllowed(nav, { permissionsPolicy: policy(["camera"], false) }), true);
+  assert.deepEqual(asked, []);
+  // No policy API at all.
+  assert.equal(webShareAllowed(nav, {}), true);
+  assert.equal(webShareAllowed(nav, undefined), true);
 });

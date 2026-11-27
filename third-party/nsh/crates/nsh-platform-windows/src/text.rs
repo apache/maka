@@ -1188,6 +1188,14 @@ impl DWriteTextEngine {
         }
     }
 
+    /// The height of a line in `style` when it sets no line height, as this
+    /// engine stacks lines: its font's ascent and descent, whatever font a
+    /// character falls back to.
+    pub(crate) fn natural_line_height(&self, style: &ResolvedTextStyle) -> f32 {
+        let m = self.face(style).metrics;
+        (m.ascent + m.descent) * style.font_size.0
+    }
+
     /// The registered fonts' collection, current.
     fn custom(&self) -> Option<IDWriteFontCollection> {
         let generation = FONT_GENERATION.load(Ordering::Acquire);

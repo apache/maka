@@ -34,12 +34,10 @@ fn granted(sys: &System) -> Result<(), JsError> {
 }
 
 /// Whether the platform puts images on the clipboard and reads them back:
-/// what a platform built outside NSH says, otherwise every OS but Android,
-/// whose backend holds text only
+/// what a platform built outside NSH says, otherwise yes
 /// ([`crate::platform::Environment::clipboard_images`]).
 fn has_images(sys: &System) -> bool {
-    sys.clipboard_images
-        .unwrap_or(sys.os != crate::platform::Os::Android)
+    sys.clipboard_images.unwrap_or(true)
 }
 
 /// Why `call` cannot run where the platform has no clipboard images.
@@ -151,7 +149,7 @@ impl Clipboard {
     }
 
     /// Whether the clipboard holds an image, without reading it (no paste
-    /// notice); `false` where the clipboard holds text only (Android).
+    /// notice); `false` where the clipboard holds text only.
     pub(crate) async fn has_image(sys: System) -> Result<bool, JsError> {
         granted(&sys)?;
         if !has_images(&sys) {

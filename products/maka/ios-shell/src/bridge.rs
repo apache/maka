@@ -21,7 +21,7 @@ use maka_remote_client::{
     Attachments, DeviceIdentity, HostProfile, PendingPairing, ReadResource, RelayAuthorization,
     RemoteCallHandle, RemoteClientError, RemoteHostConnection, SavedHosts, TlsTrust,
 };
-use nsh_engine::{HostCall, HostCaller, HostChannel};
+use nsh_engine::{HostCall, HostChannel, HostSender};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -281,7 +281,7 @@ struct Bridge {
 }
 
 struct MutationProgress<'a> {
-    caller: &'a HostCall,
+    sender: HostSender,
     progress_id: &'a str,
     delivery_id: u64,
     retired: CancellationToken,
@@ -312,9 +312,9 @@ impl MutationProgress<'_> {
             if window.sent - *ack.borrow_and_update() < PROGRESS_WINDOW {
                 let sequence = window.sent + 1;
                 event["sequence"] = sequence.into();
-                if bridge
-                    .channel
-                    .send_to_caller(self.caller, "ios.mutationProgress", event)
+                if self
+                    .sender
+                    .send("ios.mutationProgress", event)
                     .expect("valid progress event name")
                 {
                     window.sent = sequence;
@@ -326,7 +326,7 @@ impl MutationProgress<'_> {
             tokio::select! {
                 biased;
                 _ = self.retired.cancelled() => return,
-                _ = bridge.channel.caller_detached(self.caller) => return,
+                _ = self.sender.closed() => return,
                 changed = ack.changed() => {
                     if changed.is_err() {
                         return;
@@ -396,7 +396,7 @@ impl HostBridge {
                 let bridge = bridge.clone();
                 bridge.runtime.clone().spawn(async move {
                     if name == "ios.subscribe" {
-                        let caller = bridge.channel.caller(&call);
+                        let caller = call.sender();
                         let opened = tokio::select! {
                             biased;
                             _ = caller.closed() => return,
@@ -679,7 +679,7 @@ impl Bridge {
                         },
                     );
                     MutationProgress {
-                        caller,
+                        sender: caller.sender(),
                         progress_id,
                         delivery_id,
                         retired,
@@ -1394,7 +1394,7 @@ impl Bridge {
     async fn open_subscription(
         &self,
         data: Value,
-        caller: HostCaller,
+        caller: HostSender,
     ) -> Result<(RootId, String, u64, oneshot::Sender<()>), String> {
         let rpc = read_only_rpc(data)?;
         let (root, active, calls) = self.calls(&rpc).await?;
@@ -1618,7 +1618,7 @@ mod tests {
                 let args = json!({"endpoint":"web","method":"saveKey","input":input});
                 let error = if call == "ios.subscribe" {
                     bridge
-                        .open_subscription(args, bridge.channel.caller(&HostCall::default()))
+                        .open_subscription(args, HostSender::default())
                         .await
                         .unwrap_err()
                 } else if call == "ios.hostMutate" {
@@ -1777,8 +1777,10 @@ mod tests {
                 mutation.unwrap_err(),
                 "remote Host anchor no longer matches UI"
             );
-            assert!(matches!(attached.bridge.open_subscription(stale, attached.bridge.channel.caller(&HostCall::default())).await,
-                Err(reason) if reason == "remote Host anchor no longer matches UI"));
+            assert!(
+                matches!(attached.bridge.open_subscription(stale, HostSender::default()).await,
+                Err(reason) if reason == "remote Host anchor no longer matches UI")
+            );
         })
         .await
         .unwrap();

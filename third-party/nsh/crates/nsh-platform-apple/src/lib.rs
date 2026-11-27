@@ -22,6 +22,11 @@ pub mod image_source;
 #[doc(hidden)]
 pub mod network;
 pub mod notifications;
+// Whether a view shows through the ancestors that clip it, for the backends'
+// view trees, no API of apps': hidden from the docs, so it stays out of what
+// NSH keeps compatible.
+#[doc(hidden)]
+pub mod sight;
 // How drawn text splits into screen reader elements on macOS and iOS, no API
 // of apps': hidden from the docs, so it stays out of what NSH keeps compatible.
 #[doc(hidden)]

@@ -163,7 +163,7 @@ view()
 | `onContextMenu` | `.on_context_menu` | `ContextMenuEvent` | 在视图上请求了上下文菜单：辅助按钮、浏览器中的键盘，或 macOS 和 Windows 上的读屏软件（见[上下文菜单](./index.md#上下文菜单)）。 |
 | `onFileDragEnter` | `.on_file_drag_enter` | `{ uris: string[], mimeTypes: string[] }`（`FileDragEvent`） | 本地文件进入当前桌面拖放目标，附带文件列表及其类型。 |
 | `onFileDragLeave` | `.on_file_drag_leave` | 无 | 本地文件离开当前桌面拖放目标。 |
-| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[] }`（`FileDropEvent`） | 本地文件或目录被放到拖放目标（桌面、iOS 与 Android）。 |
+| `onFileDrop` | `.on_file_drop` | `{ uris: string[], mimeTypes: string[], pagePosition? }`（`FileDropEvent`） | 本地文件或目录被放到拖放目标（桌面、iOS、Android 与 Web）。 |
 | `onLayout` | `.on_layout` | `{ bounds }`（`Bounds<Points>`） | 相对父视图的 frame 发生变化。 |
 | `onPanStart` / `onPanEnd` | `.on_pan_start` / `.on_pan_end` | `PanEvent` | 通过 `pan` 绑定的拖动开始 / 结束；系统取消时 `cancelled` 为 true。 |
 | `onPinchStart` / `onPinchEnd` | `.on_pinch_start` / `.on_pinch_end` | `{ scale, velocity }` | 通过 `pinch` 绑定的捏合开始 / 结束。 |
@@ -176,9 +176,13 @@ view()
 
 在 AppKit、GTK、Win32 和 GPUI 上，带有 `onFileDrop` 的视图可以接收从其他应用拖入的本地文件和目录。`onFileDragEnter` 和 `onFileDrop` 都接收 `{ uris: string[], mimeTypes: string[] }`，顺序与原生文件列表一致。`uris` 的每项都是绝对 `file:` URL，空格和非 ASCII 字符使用 URL 转义。请解析 URL 获取文件系统路径。`mimeTypes[i]` 是 `uris[i]` 按文件名得出的 MIME 类型（`a.png` 为 `image/png`），文件名看不出类型时（例如目录）为 `""`，与 DOM 的 `File.type` 相同。各平台结果一致，得出它不读取任何文件。
 
+`onFileDrop` 还给出 `pagePosition`：文件松手的位置，坐标与鼠标事件的 `pagePosition` 相同（窗口根视图中的位置，单位为点），编辑器可以据此把文件生成的内容放在松手处，而不是光标处。AppKit、GTK、Win32、iOS、Android 和 Web 都会给出；GPUI 后端上没有（Rust 中为 `None`）。
+
 进入时的列表可用于预告文件名、数量与类型（“松开添加 2 张图片”），只传元数据；松手后仍需重新校验文件。AppKit 把 Finder 文件引用解析为路径 URL。GTK 等异步文件列表预加载完成后报告进入，鼠标停住也会通知；离开或重置后的迟到通知会被忽略。跨目标移动时先报告离开，再携同一列表报告进入；`onFileDragLeave` 用于清除预告。Rust 进入回调接收 `&FileDragEvent`，原有的 `||`、`|_: &()|` 和 `Listener<()>` 仍可使用。
 
 在 AppKit 上，不带文件 URL、只承诺提供文件（file promise）的拖动也会被接收，例如从 Safari 或 Chrome 网页里拖出的图片、从邮件拖出的附件。这些文件要松手后才写出，所以 `onFileDragEnter` 给出 `uris: []` 和承诺文件的 `mimeTypes`；`onFileDrop` 给出 `uris: []`，文件内容在 `files` 里（与 Web 和 `Picker.pickFiles` 相同的 `{ file, name, type, size, status }`），顺序与拖动项一致，并带 `pagePosition`。NSH 把它们写到临时目录，读取后删除该目录。同时带文件 URL 的拖动（例如截图缩略图）仍按上文给出 `uris`。
+
+在 AppKit 上，以图片数据形式携带图片的拖动也会被接收。聊天应用等 App 就这样拖出图片：有时只有图片数据，有时图片旁还带着一个文件 URL，指向它们自己容器里、你的应用读不到的文件。这类拖动常常只提供通用（generic）拖放操作而不提供 Copy，NSH 同样接收。它的放下方式与承诺文件相同：`onFileDragEnter` 给出 `uris: []` 和图片的 `mimeTypes`；`onFileDrop` 给出 `uris: []`，内容在 `files` 里，顺序与拖动项一致，并带 `pagePosition`。图片保持原有类型，只有 TIFF 和 BMP 转成 PNG；文件名取旁边那个文件的名字，没有时为 `image-<n>`。同一次拖动里可读的文件也读进 `files`，目录不包含在内。拖动项全是可读的文件（或旁边没有图片的文件）时，仍按上文给出 `uris`；承诺提供文件的拖动给出那些文件，而不是图片。
 
 在 iOS（和 iPadOS）上，带有 `onFileDrop` 的视图接收拖入的文件，例如从照片、文件 App、Safari 或应用自己的网页视图拖来的图片和文档。与桌面一致，由最近的监听视图接收。拖动项不带文件 URL，只带按类型提供、松手时才读取的数据，所以 `onFileDragEnter` 在 iOS 上给出 `uris: []`，`onFileDrop` 给出复制到应用临时目录里的文件的 `file:` URL（也带 `pagePosition`），顺序与拖动项一致。NSH 不删除这些副本，由系统适时清理临时目录：应用要保留的文件请自行移走或上传。只带文字或链接的项不是文件，不会提供给视图。视图里的文本输入框保留它能接收的内容：UIKit 的文本拖放接收文字和链接，所以带着自身链接的图片（来自网页）拖到输入框上会作为链接插入。
 
@@ -225,7 +229,7 @@ view()
     .child(text(move || files.get().join("\n")))
 ```
 
-最近的、已启用且监听 `onFileDrop` 的祖先视图接收文件，搜索范围止于模态根节点。`disabled` 会移除文件拖入、离开和放下的监听；离开、取消、完成或移除目标会清除当前拖放状态。原生侧根据已挂载的状态同步接受 Copy 操作。应用决定如何读取、打开或传输收到的文件。
+最近的、已启用且监听 `onFileDrop` 的祖先视图接收文件，搜索范围止于模态根节点。`disabled` 会移除文件拖入、离开和放下的监听；离开、取消、完成或移除目标会清除当前拖放状态。原生侧根据已挂载的状态同步接受 Copy 操作（在 AppKit 上，来源不提供 Copy 时接受通用操作）。应用决定如何读取、打开或传输收到的文件。
 
 文本输入框属于包住它的拖放目标：文件放到输入框的文字上，和放到目标其他位置一样由该目标接收，拖入、离开事件也相同，输入框里的文字保持不变。拖进输入框的文字，以及放到不在任何拖放目标内的输入框上的文件，按平台文本框的方式处理。
 

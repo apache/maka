@@ -10,7 +10,11 @@
 //! attachments in it), a node view's element where the app renders nodes
 //! of a type itself.
 
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use nsh_core::{
     PropertyValue, StyleDecl, StyleKey,
@@ -21,7 +25,7 @@ use serde_json::Value;
 
 use super::{
     controller::{BlockItem, Rv},
-    geometry::{DOC, InlineMap, Run, slot_id},
+    geometry::{COMPOSITION_SIDE, DOC, InlineMap, Run, slot_id},
     node_view::{MarkView, NodeView, NodeViewCx},
     parts::{self, Part},
     table,
@@ -34,6 +38,8 @@ use crate::{
         state::{Decoration, DecorationKind},
         tables::{TableRole, table_role},
     },
+    syntax::Token,
+    text_view::{highlight::Tokens, merge_styles},
     theme,
 };
 
@@ -69,13 +75,9 @@ pub(crate) fn parts<E: Element>(el: E, rv: &Rv, list: &'static [Part]) -> E {
         })
     })
     .inline_style(move || {
-        props.styles.with(|s| {
-            Style::from_decls(
-                list.iter()
-                    .filter_map(|p| s.part(*p))
-                    .flat_map(|s| s.decls().iter().cloned()),
-            )
-        })
+        props
+            .styles
+            .with(|s| merge_styles(list.iter().filter_map(|p| s.part(*p))))
     })
 }
 
@@ -246,7 +248,10 @@ fn content(rv: Rv) -> impl IntoElement {
         false => up.end_sweep(),
     })
     .on_responder_terminate(move |_: &ResponderEvent| match desktop {
-        true => end.release(),
+        true => {
+            end.cancel_table_press();
+            end.release()
+        }
         false => end.end_sweep(),
     })
     // Keep the intrinsic extent separate from the content box, whose
@@ -591,20 +596,39 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
         Some((block_ref, _)) => view().element_ref(&block_ref),
         None => view(),
     };
+    let wrapper = wrapper.on_layout(move |b: &Bounds<Points>| {
+        if let Some(frame) = scroll_frame {
+            frame.update(|parts| parts.1 = *b);
+            update_scrolled_table(&layout_rv, id, parent, frame);
+        } else {
+            layout_rv.set_frame(id, Some(parent), *b);
+        }
+        if let Some((_, size)) = slotted
+            && size.get_untracked() != b.size
+        {
+            size.set(b.size);
+        }
+    });
+    // A list's item carries its marker, placed in the indent before it;
+    // a terminal's goes in flow before the content instead, as TextView
+    // sets its markers, since its Cells round the indent down.
+    let marked = list_marker(&rv, &first).is_some();
+    let wrapper = match marked {
+        true if terminal => wrapper.flex_row().child(marker(rv.clone(), item, true)),
+        true => wrapper.relative().child(marker(rv.clone(), item, false)),
+        false => wrapper,
+    };
+    // Tables are grids of their cells (`table.rs`).
+    let wrapper = match (table_role(first.node.ty()), &kind) {
+        (_, Kind::View(_)) => wrapper,
+        (Some(TableRole::Table), _) => table::grid(wrapper, &rv, item),
+        (Some(TableRole::Cell | TableRole::HeaderCell), _) => table::cell(wrapper, &rv, item),
+        _ => wrapper,
+    };
+    // The parts' classes and styles after the block's own styles: a table's
+    // theme colors are bound, and an app's typed part style bound before
+    // them would be covered by them.
     let wrapper = wrapper
-        .on_layout(move |b: &Bounds<Points>| {
-            if let Some(frame) = scroll_frame {
-                frame.update(|parts| parts.1 = *b);
-                update_scrolled_table(&layout_rv, id, parent, frame);
-            } else {
-                layout_rv.set_frame(id, Some(parent), *b);
-            }
-            if let Some((_, size)) = slotted
-                && size.get_untracked() != b.size
-            {
-                size.set(b.size);
-            }
-        })
         .app_class(move || {
             let it = item.get();
             let (selected, focused) = active.get();
@@ -638,25 +662,9 @@ fn block(rv: Rv, item: ReadSignal<BlockItem>) -> AnyElement {
                 if focused && let Some(style) = s.part(Part::FocusedNode) {
                     list.push(style.clone());
                 }
-                parts::merge(&list)
+                merge_styles(&list)
             })
         });
-    // A list's item carries its marker, placed in the indent before it;
-    // a terminal's goes in flow before the content instead, as TextView
-    // sets its markers, since its Cells round the indent down.
-    let marked = list_marker(&rv, &first).is_some();
-    let wrapper = match marked {
-        true if terminal => wrapper.flex_row().child(marker(rv.clone(), item, true)),
-        true => wrapper.relative().child(marker(rv.clone(), item, false)),
-        false => wrapper,
-    };
-    // Tables are grids of their cells (`table.rs`).
-    let wrapper = match (table_role(first.node.ty()), &kind) {
-        (_, Kind::View(_)) => wrapper,
-        (Some(TableRole::Table), _) => table::grid(wrapper, &rv, item),
-        (Some(TableRole::Cell | TableRole::HeaderCell), _) => table::cell(wrapper, &rv, item),
-        _ => wrapper,
-    };
     let task = render_kind(&first.node) == Some("task");
     let content = match kind {
         Kind::View(view) => {
@@ -1094,12 +1102,14 @@ fn class_of(attrs: &std::collections::BTreeMap<String, Value>) -> Option<String>
 /// A piece of a textblock's text.
 #[derive(Debug, Clone, PartialEq)]
 enum Piece {
-    /// Text with its marks and its inline decorations' classes.
+    /// Text with its marks, its inline decorations' classes and, in a
+    /// highlighted code block, its token.
     Text {
         text: String,
         source_bytes: std::ops::Range<usize>,
         marks: Vec<Mark>,
         classes: Vec<String>,
+        token: Option<Token>,
     },
     /// An inline leaf node at `offset` of the content, drawn as `text`
     /// where it has one ([`Rv::leaf_text`]).
@@ -1126,18 +1136,23 @@ struct Inline {
 
 /// The pieces of textblock `node` whose content starts at `start`, under
 /// `decorations`, with `composition` (its position and text) where it is
-/// in the block; `leaf_text` is the text an inline leaf is drawn as.
+/// in the block; `leaf_text` is the text an inline leaf is drawn as;
+/// `tokens` color a code block's text (offsets in its content).
 fn inline_of(
     node: &Node,
     start: usize,
     decorations: &[Decoration],
     composition: Option<(usize, &str)>,
+    tokens: &[(usize, usize, Token)],
     leaf_text: impl Fn(&Node) -> Option<String>,
 ) -> Inline {
     let size = node.content().size();
     let end = start + size;
-    // Where inline decorations start and end, and widgets sit.
+    // Where inline decorations and tokens start and end, and widgets sit.
     let mut cuts: Vec<usize> = Vec::new();
+    for (a, b, _) in tokens {
+        cuts.extend([*a, *b]);
+    }
     let mut inline: Vec<(usize, usize, Option<String>)> = Vec::new();
     let mut replacements = Vec::new();
     // A widget's class, or the composition's text.
@@ -1171,15 +1186,16 @@ fn inline_of(
             _ => {}
         }
     }
-    // After the caret's position, so the caret (and the input method's
-    // candidates at it) stays at the composition's start.
+    // After the caret's position, so the caret's offset (and the input
+    // method's candidates at it) stays at the composition's start; the
+    // drawn caret goes past it (`Geometry::caret_glyph_rect`).
     if let Some((pos, text)) = composition
         && pos >= start
         && pos <= end
         && !text.is_empty()
     {
         cuts.push(pos - start);
-        widgets.push((pos - start, i32::MAX, Err(text.to_owned())));
+        widgets.push((pos - start, COMPOSITION_SIDE, Err(text.to_owned())));
     }
     crate::sort::sort_by_key(&mut widgets, |w| (w.0, w.1));
     let mut out = Inline::default();
@@ -1247,6 +1263,10 @@ fn inline_of(
                         .filter(|(a, b, _)| *a <= from && *b >= to)
                         .filter_map(|(_, _, c)| c.clone())
                         .collect();
+                    let token = tokens
+                        .iter()
+                        .find(|(a, b, _)| *a <= from && *b >= to)
+                        .map(|(_, _, t)| *t);
                     out.map.runs.push(Run {
                         doc: from,
                         doc_len: to - from,
@@ -1261,6 +1281,7 @@ fn inline_of(
                             source_bytes: piece_offset..byte_offset,
                             marks: child.marks().to_vec(),
                             classes,
+                            token,
                         });
                     }
                     from = to;
@@ -1309,6 +1330,10 @@ fn inline_of(
 fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoElement {
     let id = item.get_untracked().id;
     let inline_rv = rv.clone();
+    // A code block's code and its tokens, once highlighted off the engine
+    // thread, and the code being highlighted there.
+    let highlighted: Signal<Option<(String, Tokens)>> = signal(None);
+    let pending: Rc<RefCell<Option<String>>> = Rc::default();
     let content = computed(move || {
         inline_rv.deco_rev.get();
         let it = item.get();
@@ -1333,6 +1358,7 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
             start,
             &decorations,
             head.zip(composition.as_deref()),
+            &code_tokens(&inline_rv, &it.node, highlighted, &pending),
             |n| inline_rv.leaf_text(n),
         );
         if let Some(geo) = inline_rv.geo.borrow_mut().texts.get_mut(&id) {
@@ -1376,6 +1402,106 @@ fn text_block(rv: Rv, item: ReadSignal<BlockItem>, owner: u64) -> impl IntoEleme
         .on_layout(move |b: &Bounds<Points>| frame_rv.set_text_frame(id, owner, *b))
         .child(selection_rects(sel_rv, id))
         .child(text)
+}
+
+/// The tokens coloring code block `node`'s text, as offsets in its
+/// content, when the editor highlights code blocks (`codeBlockHighlight`)
+/// and the block names a language: those that cost little now (as
+/// `TextView`'s code blocks), the rest set in `highlighted` from off the
+/// engine thread.
+fn code_tokens(
+    rv: &Rv,
+    node: &Node,
+    highlighted: Signal<Option<(String, Tokens)>>,
+    pending: &Rc<RefCell<Option<String>>>,
+) -> Vec<(usize, usize, Token)> {
+    use crate::rich_editor::extensions::code_block::highlights_code_blocks;
+    if !node.ty().spec().code
+        || !node.content().iter().all(Node::is_text)
+        || !highlights_code_blocks(&rv.st.borrow())
+    {
+        return Vec::new();
+    }
+    let Some(language) = node.attrs().get("language").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let code = node.text_content();
+    let tokens = match crate::text_view::highlight::tokens_now(language, &code) {
+        None => return Vec::new(),
+        Some(Ok(tokens)) => tokens,
+        Some(Err(partial)) => {
+            let known = highlighted.with(|h| match h {
+                Some((done, tokens)) if *done == code => Some(tokens.clone()),
+                _ => None,
+            });
+            if let Some(tokens) = known {
+                tokens
+            } else {
+                if pending.borrow().as_deref() != Some(code.as_str()) {
+                    *pending.borrow_mut() = Some(code.clone());
+                    let (language, code, pending) =
+                        (language.to_owned(), code.clone(), pending.clone());
+                    spawn(async move {
+                        let tokens =
+                            crate::text_view::highlight::tokens_later(language, code.clone()).await;
+                        if pending.borrow().as_deref() == Some(code.as_str()) {
+                            *pending.borrow_mut() = None;
+                        }
+                        if let Some(tokens) = tokens {
+                            highlighted.set(Some((code, tokens)));
+                        }
+                    });
+                }
+                // Until the new ones come, the last tokens of this block
+                // before what changed (typing does not flash it plain).
+                let stale = highlighted.with_untracked(|h| {
+                    let Some((old, tokens)) = h else {
+                        return Tokens::new();
+                    };
+                    let same = old
+                        .bytes()
+                        .zip(code.bytes())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    tokens
+                        .iter()
+                        .take_while(|(range, _)| range.end <= same)
+                        .cloned()
+                        .collect()
+                });
+                if partial.is_empty() { stale } else { partial }
+            }
+        }
+    };
+    utf16_tokens(&code, &tokens)
+}
+
+/// `tokens` (byte ranges of `code`) as UTF-16 offsets in its text.
+fn utf16_tokens(code: &str, tokens: &Tokens) -> Vec<(usize, usize, Token)> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let (mut byte, mut unit) = (0usize, 0usize);
+    let mut chars = code.char_indices();
+    let mut at = |target: usize| -> Option<usize> {
+        while byte < target {
+            let (i, c) = chars.next()?;
+            byte = i + c.len_utf8();
+            unit += c.len_utf16();
+        }
+        (byte == target).then_some(unit)
+    };
+    for (range, token) in tokens {
+        if range.start >= code.len() {
+            break;
+        }
+        let end = range.end.min(code.len());
+        let (Some(a), Some(b)) = (at(range.start), at(end)) else {
+            continue;
+        };
+        if a < b {
+            out.push((a, b, *token));
+        }
+    }
+    out
 }
 
 /// The placeholder of an empty textblock that shows one (Tiptap's
@@ -1451,6 +1577,7 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, id: u64) -> Vec<AnyElement> {
                 source_bytes,
                 marks,
                 classes,
+                token,
             } => {
                 if let Some((mark, view)) = marks
                     .iter()
@@ -1476,28 +1603,31 @@ fn spans(rv: &Rv, pieces: Vec<Piece>, id: u64) -> Vec<AnyElement> {
                             HintAt::Pointer,
                         )
                     });
-                text(t)
-                    .app_class(move || {
-                        props.classes.with(|c| {
-                            let mut list: Vec<String> = marks
-                                .iter()
-                                .flat_map(|m| parts::mark_classes(c, m))
-                                .collect();
-                            list.extend(classes.iter().cloned());
-                            parts::join(list)
-                        })
+                let mut span = text(t);
+                if let Some(token) = token {
+                    *span.style() = token.style();
+                }
+                span.app_class(move || {
+                    props.classes.with(|c| {
+                        let mut list: Vec<String> = marks
+                            .iter()
+                            .flat_map(|m| parts::mark_classes(c, m))
+                            .collect();
+                        list.extend(classes.iter().cloned());
+                        parts::join(list)
                     })
-                    .inline_style(move || {
-                        props.styles.with(|s| {
-                            let list: Vec<Style> = style_marks
-                                .iter()
-                                .flat_map(|m| parts::mark_styles(s, m))
-                                .collect();
-                            parts::merge(&list)
-                        })
+                })
+                .inline_style(move || {
+                    props.styles.with(|s| {
+                        let list: Vec<Style> = style_marks
+                            .iter()
+                            .flat_map(|m| parts::mark_styles(s, m))
+                            .collect();
+                        merge_styles(&list)
                     })
-                    .when_some(hint, |t, hint| t.child(hint))
-                    .into_element()
+                })
+                .when_some(hint, |t, hint| t.child(hint))
+                .into_element()
             }
             Piece::Leaf { node, offset, text } => {
                 leaves += 1;
@@ -1553,7 +1683,7 @@ fn leaf(
         .inline_style(move || {
             props
                 .styles
-                .with(|s| parts::merge(&parts::node_styles(s, &style_node)))
+                .with(|s| merge_styles(&parts::node_styles(s, &style_node)))
         })
     };
     if let Some(view) = rv.node_view(node.ty().name()) {
@@ -1610,7 +1740,7 @@ fn leaf(
             .inline_style(move || {
                 props
                     .styles
-                    .with(|s| parts::merge(&parts::node_styles(s, &style_node)))
+                    .with(|s| merge_styles(&parts::node_styles(s, &style_node)))
             })
             .into_element();
     }
@@ -1875,7 +2005,7 @@ fn caret(rv: Rv) -> impl IntoElement {
         rv.sel_rev.get();
         rv.layout_rev.get();
         rv.doc_rev.get();
-        if rv.composition.get().is_some() || !rv.props.editable.get() {
+        if !rv.props.editable.get() {
             return None;
         }
         let empty_text = {
@@ -1987,10 +2117,8 @@ fn sink(rv: Rv) -> impl IntoElement {
         .readonly(move || {
             editable.notified.get();
             editable.props.editable.get();
-            !editable.editable()
+            editable.props.readonly_sink.get() && !editable.editable()
         })
-        // The terminal applies native autofocus after the sink is attached.
-        .auto_focus(move || crate::terminal::is_terminal() && props.auto_focus.get())
         // The app's scroll bars (`Scrollbar.setTheme`) are for what people
         // see: a thumb here would show at the caret once the text it
         // holds overflows.
@@ -2173,7 +2301,7 @@ mod tests {
             Decoration::inline(2, 4, attrs),
             Decoration::widget(4, "w", -1),
         ];
-        let inline = inline_of(&p, 1, &decorations, None, |_| None);
+        let inline = inline_of(&p, 1, &decorations, None, &[], |_| None);
         let texts: Vec<_> = inline
             .pieces
             .iter()
@@ -2206,6 +2334,7 @@ mod tests {
                 Decoration::conceal(9, 11),
             ],
             None,
+            &[],
             |_| None,
         );
         assert!(
@@ -2218,12 +2347,60 @@ mod tests {
     }
 
     #[test]
+    fn tokens_take_utf16_offsets_and_split_the_text() {
+        let code = "é😀 fn";
+        // Bytes: é 0..2, 😀 2..6, space 6..7, fn 7..9.
+        let tokens = vec![
+            (0..1, Token::Title),
+            (2..6, Token::String),
+            (7..9, Token::Keyword),
+        ];
+        // 😀 is two UTF-16 units; a range off a character boundary is
+        // dropped.
+        assert_eq!(
+            utf16_tokens(code, &tokens),
+            [(1, 3, Token::String), (4, 6, Token::Keyword)]
+        );
+        let schema = starter::schema();
+        let doc = schema
+            .node_from_json(&json!({"type": "doc", "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": code}]}
+            ]}))
+            .unwrap();
+        let inline = inline_of(
+            &doc.child(0).clone(),
+            1,
+            &[],
+            None,
+            &utf16_tokens(code, &tokens),
+            |_| None,
+        );
+        let pieces: Vec<_> = inline
+            .pieces
+            .iter()
+            .map(|p| match p {
+                Piece::Text { text, token, .. } => (text.as_str(), *token),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            pieces,
+            [
+                ("é", None),
+                ("😀", Some(Token::String)),
+                (" ", None),
+                ("fn", Some(Token::Keyword))
+            ]
+        );
+    }
+
+    #[test]
     fn an_empty_textblock_has_a_filler() {
         let schema = starter::schema();
         let p = schema
             .node("paragraph", None, Default::default(), vec![])
             .unwrap();
-        let inline = inline_of(&p, 1, &[], None, |_| None);
+        let inline = inline_of(&p, 1, &[], None, &[], |_| None);
         assert_eq!(inline.pieces, [Piece::Filler]);
         assert_eq!(inline.map.to_text(0), 1);
     }

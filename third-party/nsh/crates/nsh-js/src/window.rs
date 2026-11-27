@@ -919,6 +919,7 @@ fn unregister(cx: *mut JsContext, id: NodeId) {
         return;
     };
     reactive::set_signal(cx, w.state, qjs::JS_NULL);
+    reactive::set_signal(cx, w.title_bar, title_bar_value(cx, &Edges::default()));
     bump(cx);
     fire(cx, id, Event::Close, UNDEFINED);
     let gone: Vec<Listener> = {
@@ -1665,7 +1666,8 @@ pub(crate) unsafe extern "C" fn focused_window(
         .unwrap_or(qjs::JS_NULL)
 }
 
-/// `windowState()`: the current window's state (tracked).
+/// `windowState()`: the current window's state, or `"main"`'s outside a
+/// reactive owner (tracked).
 pub(crate) unsafe extern "C" fn window_state(
     cx: *mut JsContext,
     _this: JsValue,
@@ -1675,16 +1677,17 @@ pub(crate) unsafe extern "C" fn window_state(
     if !windows_supported(cx) {
         return qjs::JS_NULL;
     }
-    let Some(id) = current_ref_id(cx) else {
-        return type_error(
-            cx,
-            "windowState() reads the current window: call it inside <Window>, or use focusedWindow()/windows() in the app root",
-        );
-    };
-    state_of(cx, id)
+    match current_ref_id(cx) {
+        Some(id) => state_of(cx, id),
+        None => {
+            free(cx, read(cx, version(cx)));
+            qjs::JS_NULL
+        }
+    }
 }
 
-/// `titleBar()`: the current window's title bar area (tracked).
+/// `titleBar()`: the current window's title bar area, or `"main"`'s outside
+/// a reactive owner (tracked).
 pub(crate) unsafe extern "C" fn title_bar(
     cx: *mut JsContext,
     _this: JsValue,
@@ -1694,13 +1697,13 @@ pub(crate) unsafe extern "C" fn title_bar(
     if !windows_supported(cx) {
         return title_bar_value(cx, &Edges::default());
     }
-    let Some(id) = current_ref_id(cx) else {
-        return type_error(
-            cx,
-            "titleBar() reads the current window: call it inside <Window>, or use focusedWindow()/windows() in the app root",
-        );
-    };
-    title_bar_of(cx, id)
+    match current_ref_id(cx) {
+        Some(id) => title_bar_of(cx, id),
+        None => {
+            free(cx, read(cx, version(cx)));
+            title_bar_value(cx, &Edges::default())
+        }
+    }
 }
 
 /// The node of the window code renders in, if any (`keymap.bind`'s
@@ -1730,28 +1733,23 @@ fn current_id(cx: *mut JsContext) -> Option<NodeId> {
     id
 }
 
-/// The node of the window the code renders in, the implicit first window
-/// included (`windowState`, `titleBar`): while the app root renders it is
-/// the pending window, and where the root declares windows it is the
-/// window named `"main"`, if the app has one open.
+/// The node of the window `windowState()` and `titleBar()` read: the window
+/// the code renders in when inside a reactive owner, or the open `"main"`
+/// window outside a render (for compatibility with event handlers, timers
+/// and async callbacks).
 fn current_ref_id(cx: *mut JsContext) -> Option<NodeId> {
     if !reactive::has_owner(cx) {
-        return None;
+        return node_of_key(cx, "main").or_else(|| is_embedded(cx).then_some(ROOT_ID));
     }
     let Some(handle) = reactive::lookup(cx, context_key(cx)) else {
-        return is_embedded(cx).then_some(ROOT_ID);
-    };
-    let pending = {
-        let implicit = get(cx, handle, c"implicit");
-        let is_implicit = truthy(cx, implicit);
-        free(cx, implicit);
-        if is_implicit {
-            windows(cx).pending.borrow().as_ref().map(|(id, _, _)| *id)
-        } else {
-            None
+        if is_embedded(cx) {
+            return Some(ROOT_ID);
         }
+        return (!dom::inline_root(cx))
+            .then(|| node_of_key(cx, "main"))
+            .flatten();
     };
-    let id = pending.or_else(|| key_node(cx, handle));
+    let id = key_node(cx, handle);
     free(cx, handle);
     id
 }
@@ -1762,4 +1760,278 @@ fn key_node(cx: *mut JsContext, handle: JsValue) -> Option<NodeId> {
     let key = dom::string_arg(cx, id);
     free(cx, id);
     key.and_then(|k| node_of_key(cx, &k))
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::{
+        Command, EventKind, EventPayload, Op,
+        desktop::{DesktopCommand, WindowEvent, WindowMode, WindowPlacement, WindowState},
+        geometry::{Bounds, Edges, Points, point, size},
+        platform::{Environment, Idiom, Os},
+    };
+
+    use crate::Host;
+
+    fn desktop_host() -> Host {
+        let host = Host::new().unwrap();
+        host.set_environment(&Environment {
+            os: Os::MacOs,
+            idiom: Idiom::Desktop,
+            ..Environment::default()
+        });
+        host
+    }
+
+    #[allow(clippy::field_reassign_with_default)]
+    fn sample_state(width: f32) -> WindowState {
+        let bounds = Bounds::new(
+            point(Points(0.0), Points(0.0)),
+            size(Points(width), Points(600.0)),
+        );
+        let mut state = WindowState::default();
+        state.mode = WindowMode::Normal;
+        state.minimized = false;
+        state.visible = true;
+        state.focused = true;
+        state.bounds = bounds;
+        state.content_bounds = bounds;
+        state.placement = WindowPlacement::new(WindowMode::Normal, bounds);
+        state.display = None;
+        state.scale_factor = 2.0;
+        state
+    }
+
+    fn opened_window_id(host: &Host, wanted: &str) -> u32 {
+        let mut ops = Vec::new();
+        host.take_ops(&mut ops);
+        ops.into_iter()
+            .find_map(|op| match op {
+                Op::Command {
+                    id,
+                    command: Command::Desktop(cmd),
+                } => match *cmd {
+                    DesktopCommand::OpenWindow(open) if open.options.id == wanted => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("opened window id")
+    }
+
+    #[test]
+    fn title_bar_and_window_state_read_main_outside_a_render() {
+        let host = desktop_host();
+        host.eval_source(
+            r#"
+            import { mount } from "nsh";
+            import { currentWindow, titleBar, windowState, Window } from "nsh/desktop";
+            import { element } from "nsh:rt";
+
+            // Before any window opens: safe defaults, never throws.
+            const beforeBar = titleBar();
+            if (beforeBar.height !== 0 || beforeBar.left !== 0 || beforeBar.right !== 0) {
+                throw new Error(`expected zero titleBar before open, got ${JSON.stringify(beforeBar)}`);
+            }
+            if (windowState() !== null) {
+                throw new Error("expected null windowState before open");
+            }
+
+            mount(() => element("view"));
+
+            globalThis.__checkOutside = () => {
+                const bar = titleBar();
+                const state = windowState();
+                let currentThrew = false;
+                try {
+                    currentWindow();
+                } catch (e) {
+                    currentThrew = e instanceof TypeError;
+                }
+                if (!currentThrew) {
+                    throw new Error("currentWindow() must still throw TypeError outside a render");
+                }
+                return `${bar.height},${bar.left},${state ? state.bounds.size.width : "null"}`;
+            };
+
+            globalThis.__asyncResult = "";
+            "#,
+        )
+        .unwrap();
+
+        let main_id = opened_window_id(&host, "main");
+        host.dispatch_event(
+            main_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::TitleBar(Edges {
+                top: Points(38.0),
+                right: Points(0.0),
+                bottom: Points(0.0),
+                left: Points(78.0),
+            }))),
+        );
+        host.dispatch_event(
+            main_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::State(Box::new(sample_state(960.0))))),
+        );
+
+        host.eval_source(
+            r#"
+            Promise.resolve().then(() => {
+                globalThis.__asyncResult = globalThis.__checkOutside();
+            });
+            "#,
+        )
+        .unwrap();
+        host.run_jobs();
+
+        host.eval_source(
+            r#"
+            const syncResult = globalThis.__checkOutside();
+            if (syncResult !== "38,78,960") {
+                throw new Error(`unexpected outside-render read: ${syncResult}`);
+            }
+            if (globalThis.__asyncResult !== "38,78,960") {
+                throw new Error(`unexpected async read: ${globalThis.__asyncResult}`);
+            }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn closing_a_window_does_not_throw_in_effects_or_when_main_is_absent() {
+        let host = desktop_host();
+        host.eval_source(
+            r#"
+            import { effect, mount, signal } from "nsh";
+            import { titleBar, windowState, Window } from "nsh/desktop";
+            import { element } from "nsh:rt";
+
+            const open = signal(true);
+            const seen = [];
+            const bars = [];
+            globalThis.__open = open;
+            globalThis.__seen = seen;
+            globalThis.__bars = bars;
+
+            mount(() => {
+                // App root effect reads windowState() and titleBar() while the
+                // "main" window opens, closes, and reopens.
+                effect(() => {
+                    const s = windowState();
+                    seen.push(s ? s.bounds.size.width : null);
+                });
+                effect(() => {
+                    bars.push(titleBar().height);
+                });
+                return Window({
+                    id: "main",
+                    get open() { return open(); },
+                    get children() {
+                        effect(() => {
+                            void windowState();
+                            void titleBar();
+                        });
+                        return element("view");
+                    },
+                });
+            });
+            "#,
+        )
+        .unwrap();
+
+        let main_id = opened_window_id(&host, "main");
+        host.dispatch_event(
+            main_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::TitleBar(Edges {
+                top: Points(44.0),
+                right: Points(0.0),
+                bottom: Points(0.0),
+                left: Points(72.0),
+            }))),
+        );
+        host.dispatch_event(
+            main_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::State(Box::new(sample_state(800.0))))),
+        );
+
+        // Close "main": effects must receive null / 0 instead of throwing TypeError.
+        host.eval_source(
+            r#"
+            import { titleBar, windowState } from "nsh/desktop";
+            globalThis.__open.set(false);
+            if (globalThis.__seen[globalThis.__seen.length - 1] !== null) {
+                throw new Error(`expected null after close, got ${JSON.stringify(globalThis.__seen)}`);
+            }
+            if (globalThis.__bars[globalThis.__bars.length - 1] !== 0) {
+                throw new Error(`expected 0 titleBar after close, got ${JSON.stringify(globalThis.__bars)}`);
+            }
+            if (windowState() !== null || titleBar().height !== 0) {
+                throw new Error("expected safe defaults outside render when no main window is open");
+            }
+            // Reopen "main": version tracking resumes reporting its new state.
+            globalThis.__open.set(true);
+            "#,
+        )
+        .unwrap();
+
+        let reopened_id = opened_window_id(&host, "main");
+        host.dispatch_event(
+            reopened_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::State(Box::new(sample_state(1024.0))))),
+        );
+        host.dispatch_event(
+            reopened_id,
+            EventKind::Window,
+            &EventPayload::Window(Box::new(WindowEvent::TitleBar(Edges {
+                top: Points(32.0),
+                right: Points(0.0),
+                bottom: Points(0.0),
+                left: Points(70.0),
+            }))),
+        );
+        host.eval_source(
+            r#"
+            if (globalThis.__seen[globalThis.__seen.length - 1] !== 1024) {
+                throw new Error(`expected 1024 after reopen, got ${JSON.stringify(globalThis.__seen)}`);
+            }
+            if (globalThis.__bars[globalThis.__bars.length - 1] !== 32) {
+                throw new Error(`expected 32 after reopen, got ${JSON.stringify(globalThis.__bars)}`);
+            }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn inline_root_and_detached_root_do_not_throw_in_window_accessors() {
+        let context = crate::with_inline_root(nsh_core::element::EngineContext::default());
+        let _context = context.enter();
+        let host = desktop_host();
+        host.eval_source(
+            r#"
+            import { effect, mount } from "nsh";
+            import { titleBar, windowState } from "nsh/desktop";
+            import { element } from "nsh:rt";
+
+            mount(() => {
+                if (windowState() !== null || titleBar().height !== 0) {
+                    throw new Error("expected null / 0 in inline root");
+                }
+                return element("view");
+            });
+            effect(() => {
+                if (windowState() !== null || titleBar().height !== 0) {
+                    throw new Error("expected null / 0 in detached effect");
+                }
+            });
+            "#,
+        )
+        .unwrap();
+    }
 }

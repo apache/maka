@@ -2393,41 +2393,15 @@ impl Screen {
     }
 
     /// The texts of selectable view `area` that take part in its selection,
-    /// in document order: each text view, its text and its content box in
-    /// `area`'s points. Hidden views and texts kept out
-    /// (`selectable={false}`) are left out.
-    pub(crate) fn area_texts(
-        &self,
-        area: NodeId,
-    ) -> Vec<(NodeId, Arc<nsh_core::AttributedText>, Bounds<Points>)> {
-        let mut out = Vec::new();
-        let Some(origin) = self.bounds_in_root(area).map(|b| b.origin) else {
-            return out;
-        };
-        let mut stack = vec![area];
-        while let Some(id) = stack.pop() {
-            let Some(view) = self.nodes.get(&id) else {
-                continue;
-            };
-            if view.hidden {
-                continue;
-            }
-            if let Some(text) = &view.attributed
-                && text.selectable != Some(false)
-                && let Some(bounds) = self.bounds_in_root(id)
-            {
-                let content = view.text_content;
-                out.push((
-                    id,
-                    Arc::clone(text),
-                    Bounds::new(bounds.origin - origin + content.origin, content.size),
-                ));
-            }
-            if let Some(children) = self.children.get(&id) {
-                stack.extend(children.iter().rev());
-            }
-        }
-        out
+    /// in document order, as the backends list them
+    /// (`selection::list_texts`): each text view, its text, its content box
+    /// in `area`'s points and the list marker beside it. Hidden views and
+    /// texts kept out (`selectable={false}`) are left out.
+    pub(crate) fn area_texts(&self, area: NodeId) -> Vec<AreaText> {
+        nsh_core::selection::list_texts(&AreaViews(self), &area)
+            .into_iter()
+            .map(|t| (t.view, t.text, t.frame, t.marker))
+            .collect()
     }
 
     /// Whether the view `selector` names is selected (its accessibility
@@ -3789,6 +3763,44 @@ pub(crate) fn protocol_accessibility(n: AccessibilityNode) -> nsh_dev::protocol:
     out.description = n.description;
     out.children = n.children.into_iter().map(protocol_accessibility).collect();
     out
+}
+
+/// One text of a selectable area: its view, text, content box in the
+/// area's points and the list marker it carries, if any.
+pub(crate) type AreaText = (
+    NodeId,
+    Arc<nsh_core::AttributedText>,
+    Bounds<Points>,
+    Option<String>,
+);
+
+/// The screen's views as `selection::list_texts` walks them: frames from
+/// where each view is in the root, so scroll offsets are in them already.
+struct AreaViews<'a>(&'a Screen);
+
+impl nsh_core::selection::TextTree for AreaViews<'_> {
+    type View = NodeId;
+
+    fn hidden(&self, id: &NodeId) -> bool {
+        self.0.nodes.get(id).is_none_or(|v| v.hidden)
+    }
+
+    fn text(&self, id: &NodeId) -> Option<(Arc<nsh_core::AttributedText>, Bounds<Points>)> {
+        let view = self.0.nodes.get(id)?;
+        self.0.bounds_in_root(*id)?;
+        Some((Arc::clone(view.attributed.as_ref()?), view.text_content))
+    }
+
+    fn children(&self, id: &NodeId, out: &mut Vec<(NodeId, Bounds<Points>)>) {
+        let Some(origin) = self.0.bounds_in_root(*id).map(|b| b.origin) else {
+            return;
+        };
+        for &child in self.0.children.get(id).into_iter().flatten() {
+            if let Some(b) = self.0.bounds_in_root(child) {
+                out.push((child, Bounds::new(b.origin - origin, b.size)));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

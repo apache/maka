@@ -177,15 +177,13 @@ pub(crate) struct Hit {
 /// What is under `point` of the rows' box.
 pub(crate) fn hit(st: &State, point: Point<Points>) -> Hit {
     let near = st.offset_at(point);
-    let lh = st.line_height().0.max(1.0);
-    let rows = st.display.row_count();
-    if point.x.0 < 0.0 || point.y.0 < 0.0 || point.y.0 >= lh * rows as f32 {
+    if point.x.0 < 0.0 || point.y.0 < 0.0 || point.y >= st.display.rows_height() {
         return Hit {
             offset: near,
             over: false,
         };
     }
-    let row = st.display.row((point.y.0 / lh) as usize);
+    let row = st.display.row(st.display.row_at_y(point.y));
     let x = st.caret_point(near).x;
     if x > point.x {
         // The nearest boundary is right of the point: the character before
@@ -289,10 +287,8 @@ fn hover_at(
         .into_iter()
         .next()
         .unwrap_or_else(|| {
-            Bounds::new(
-                st.caret_point(hit.offset),
-                Size::new(px(0.0), st.line_height()),
-            )
+            let (at, height) = st.caret_box(hit.offset);
+            Bounds::new(at, Size::new(px(0.0), height))
         });
     // The pointer says exactly where the rows are now.
     let rows_page = page - local;
@@ -322,15 +318,18 @@ pub(crate) fn rows_in_view(
     rows_top: Points,
     height: Points,
 ) -> Range<usize> {
-    let lh = st.line_height().0.max(1.0);
     let last_row = st.display.row_count() - 1;
-    let top = (scroll_y - rows_top).0.max(0.0);
-    let first = ((top / lh).floor() as usize).min(last_row);
-    let bottom = top + height.0.max(0.0);
-    let last = ((bottom / lh).ceil() as usize)
-        .saturating_sub(1)
-        .clamp(first, last_row);
-    first..last + 1
+    let top = (scroll_y - rows_top).max(px(0.0));
+    let first = st.display.row_at_y(top);
+    let bottom = top + height.max(px(0.0));
+    // The last row starting above the bottom edge.
+    let last = st.display.row_at_y(bottom);
+    let last = if last > 0 && st.display.row_top(last) >= bottom {
+        last - 1
+    } else {
+        last
+    };
+    first..last.clamp(first, last_row) + 1
 }
 
 impl Ed {
@@ -557,10 +556,10 @@ impl Ed {
     pub(crate) fn caret_bounds(&self) -> Option<EditorBounds> {
         let local = {
             let st = self.st.borrow();
-            let p = st.caret_point(st.primary_head());
+            let (p, height) = st.caret_box(st.primary_head());
             Bounds::new(
                 Point::new(p.x - px(CARET_WIDTH / 2.0), p.y),
-                Size::new(px(CARET_WIDTH), st.line_height()),
+                Size::new(px(CARET_WIDTH), height),
             )
         };
         self.place_bounds(local)
@@ -573,10 +572,8 @@ impl Ed {
             let b = st.offset_of(range.end);
             let (start, end) = (a.min(b), a.max(b));
             if start == end {
-                vec![Bounds::new(
-                    st.caret_point(start),
-                    Size::new(px(0.0), st.line_height()),
-                )]
+                let (at, height) = st.caret_box(start);
+                vec![Bounds::new(at, Size::new(px(0.0), height))]
             } else {
                 st.range_rects(start..end, 0..st.display.row_count(), false)
             }
@@ -631,7 +628,7 @@ impl Ed {
             let mut st = self.st.borrow_mut();
             let offset = st.offset_of(position);
             st.reveal(offset);
-            (st.caret_point(offset), st.line_height())
+            st.caret_box(offset)
         };
         self.bump_text();
         self.scroll_into_view(point, lh);
@@ -649,7 +646,7 @@ impl Ed {
         self.after(Outcome::Moved);
         let (point, lh) = {
             let st = self.st.borrow();
-            (st.caret_point(st.primary_head()), st.line_height())
+            st.caret_box(st.primary_head())
         };
         self.center_vertically(point, lh);
     }

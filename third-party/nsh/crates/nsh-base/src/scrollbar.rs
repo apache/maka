@@ -659,9 +659,14 @@ pub fn Scrollbar(props: ScrollbarProps, _cx: Scope<NoEvent>) -> impl IntoElement
         .on_responder_release(move |_: &ResponderEvent| ctl.release())
         .on_responder_terminate(move |_: &ResponderEvent| ctl.release())
         .bind_opacity(&ctl.opacity)
+        // On touch screens the track is invisible and passes touches
+        // through, as iOS's and Android's indicators do: a tap near the
+        // edge must not jump the content. Only the thumb drags there.
         .pointer_events(move || {
-            if takes() {
+            if takes() && is_desktop() {
                 PointerEvents::Auto
+            } else if takes() {
+                PointerEvents::BoxNone
             } else {
                 PointerEvents::None
             }

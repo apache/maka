@@ -73,7 +73,12 @@ impl Manifest {
             if module.is_none() && !platform {
                 bail!("{what}: no #[native_module(\"...\")] at the crate's root: is this an nshm?");
             }
-            if let Some(req) = nsh_core_requirement(&text) {
+            let req = match nsh_core_requirement(&text, "dependencies") {
+                Some(Requirement::Workspace) => workspace_manifest(dir)
+                    .and_then(|root| nsh_core_requirement(&root, "workspace.dependencies")),
+                req => req,
+            };
+            if let Some(Requirement::Version(req)) = req {
                 check_nsh(&req, &format!("{what}: Cargo.toml: nsh-core"))?;
             }
         }
@@ -117,6 +122,13 @@ impl Manifest {
             )?,
         };
         let dependencies = dep::read_all(&config).map_err(|e| e.context(what.to_string()))?;
+        if let Some(d) = dependencies.iter().find(|d| !d.targets.is_empty()) {
+            bail!(
+                "{what}: nsh.json: dependencies: {}: \"targets\" is the app's to choose, in its \
+                 own nsh.json; an nshm's dependencies are linked wherever the nshm is",
+                d.name
+            );
+        }
         let platform = field("platform");
         Self::finish(
             dir,
@@ -212,9 +224,9 @@ pub(crate) fn package_version(text: &str) -> Option<String> {
 }
 
 /// The version a crate in `dir` (manifest `text`) takes from its workspace
-/// (`version.workspace = true`): `[workspace.package]`'s version in the
-/// nearest manifest above with a `[workspace]`, as Cargo reads it. An nshm
-/// developed in a workspace (the app's `"path"` dependency) has one.
+/// (`version.workspace = true`): `[workspace.package]`'s version in its
+/// [`workspace_manifest`]. An nshm developed in a workspace (the app's
+/// `"path"` dependency) has one.
 fn inherited_version(dir: &Path, text: &str) -> Option<String> {
     let inherits = rust_app::toml_tables(text).any(|(table, line)| {
         let line = line.replace(' ', "");
@@ -225,45 +237,64 @@ fn inherited_version(dir: &Path, text: &str) -> Option<String> {
     if !inherits {
         return None;
     }
-    let dir = dir.canonicalize().ok()?;
-    let root = dir.ancestors().skip(1).find_map(|d| {
-        let text = fs::read_to_string(d.join("Cargo.toml")).ok()?;
-        text.lines()
-            .map(str::trim)
-            .any(|l| l == "[workspace]" || l.starts_with("[workspace."))
-            .then_some(text)
-    })?;
+    let root = workspace_manifest(dir)?;
     rust_app::toml_tables(&root)
         .find(|(table, line)| *table == "workspace.package" && line.starts_with("version"))
         .and_then(|(_, line)| rust_app::toml_string(line, "version"))
 }
 
-/// The version requirement of `nsh-core` in the `[dependencies]` of the
-/// manifest `text` (`nsh-core = "0.6"` or `nsh-core = { version = "0.6", .. }`).
-pub(crate) fn nsh_core_requirement(text: &str) -> Option<String> {
-    for (table, line) in rust_app::toml_tables(text) {
-        if table != "dependencies" {
+/// The manifest of the workspace the crate in `dir` belongs to, as Cargo
+/// finds it: the nearest manifest from `dir` up with a `[workspace]`. That
+/// is the crate's own when the crate is the workspace's root package.
+fn workspace_manifest(dir: &Path) -> Option<String> {
+    let dir = dir.canonicalize().ok()?;
+    dir.ancestors().find_map(|d| {
+        let text = fs::read_to_string(d.join("Cargo.toml")).ok()?;
+        text.lines()
+            .map(str::trim)
+            .any(|l| l == "[workspace]" || l.starts_with("[workspace."))
+            .then_some(text)
+    })
+}
+
+/// How a manifest requires `nsh-core`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Requirement {
+    /// A version requirement (`"0.6"`, `">=0.6, <0.8"`).
+    Version(String),
+    /// The workspace's (`nsh-core.workspace = true`), to be read from its
+    /// `[workspace.dependencies]`.
+    Workspace,
+}
+
+/// How `nsh-core` is required in the `table` of the manifest `text`
+/// (`dependencies`, or a workspace root's `workspace.dependencies`):
+/// `nsh-core = "0.6"`, `nsh-core = { version = "0.6", .. }`, or from the
+/// workspace with `nsh-core.workspace = true` or `{ workspace = true, .. }`.
+/// `None` when it names no version (`{ path = ".." }`) or is not there.
+pub(crate) fn nsh_core_requirement(text: &str, table: &str) -> Option<Requirement> {
+    for (in_table, line) in rust_app::toml_tables(text) {
+        if in_table != table {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        if key.trim() != "nsh-core" {
+        let key = key.replace(' ', "");
+        let value = value.split(" #").next()?.trim();
+        if key == "nsh-core.workspace" {
+            return (value == "true").then_some(Requirement::Workspace);
+        }
+        if key != "nsh-core" {
             continue;
         }
-        let value = value.trim();
-        return if value.starts_with('{') {
-            rust_app::toml_string(value, "version")
-        } else {
-            Some(
-                value
-                    .split(" #")
-                    .next()?
-                    .trim()
-                    .trim_matches('"')
-                    .to_owned(),
-            )
-        };
+        if !value.starts_with('{') {
+            return Some(Requirement::Version(value.trim_matches('"').to_owned()));
+        }
+        if value.replace(' ', "").contains("workspace=true") {
+            return Some(Requirement::Workspace);
+        }
+        return rust_app::toml_string(value, "version").map(Requirement::Version);
     }
     None
 }
@@ -340,6 +371,15 @@ mod tests {
             .unwrap();
             assert!(Manifest::read(&d, "acme-ui").is_err(), "{exports}");
         }
+        // The app chooses the targets of what it links, not an nshm.
+        fs::write(
+            d.join("nsh.json"),
+            r#"{ "name": "acme-ui", "version": "1.4.0", "exports": { "acme-ui": "src/index.tsx" },
+                "dependencies": { "nsh-extra": { "version": "^0.6", "targets": ["ios"] } } }"#,
+        )
+        .unwrap();
+        let err = Manifest::read(&d, "acme-ui").unwrap_err().to_string();
+        assert!(err.contains("\"targets\" is the app's to choose"), "{err}");
         // A newer NSH required.
         fs::write(
             d.join("nsh.json"),
@@ -410,20 +450,64 @@ mod tests {
 
     #[test]
     fn nsh_core_requirement_is_read() {
-        let req = |t: &str| nsh_core_requirement(t);
+        let req = |t: &str| nsh_core_requirement(t, "dependencies");
+        let version = |v: &str| Some(Requirement::Version(v.to_owned()));
+        assert_eq!(req("[dependencies]\nnsh-core = \"0.6\"\n"), version("0.6"));
         assert_eq!(
-            req("[dependencies]\nnsh-core = \"0.6\"\n").as_deref(),
-            Some("0.6")
-        );
-        assert_eq!(
-            req("[dependencies]\nnsh-core = { version = \">=0.6, <0.8\", features = [\"x\"] }\n")
-                .as_deref(),
-            Some(">=0.6, <0.8")
+            req("[dependencies]\nnsh-core = { version = \">=0.6, <0.8\", features = [\"x\"] }\n"),
+            version(">=0.6, <0.8")
         );
         assert_eq!(req("[dev-dependencies]\nnsh-core = \"0.6\"\n"), None);
         assert_eq!(
             req("[dependencies]\nnsh-core = { path = \"../core\" }\n"),
             None
         );
+        for line in [
+            "nsh-core.workspace = true",
+            "nsh-core = { workspace = true, features = [\"x\"] }",
+        ] {
+            assert_eq!(
+                req(&format!("[dependencies]\n{line}\n")),
+                Some(Requirement::Workspace),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            nsh_core_requirement(
+                "[workspace.dependencies]\nnsh-core = { version = \"0.6\", path = \"crates/nsh-core\" }\n",
+                "workspace.dependencies"
+            ),
+            version("0.6")
+        );
+    }
+
+    /// An nshm that is its workspace's root package takes its version and its
+    /// `nsh-core` requirement from its own `[workspace.*]` tables, and the
+    /// requirement it inherits is checked as one it writes out.
+    #[test]
+    fn a_workspace_root_package_inherits_from_itself() {
+        let d = dir("workspace-root");
+        fs::write(
+            d.join("src/lib.rs"),
+            "#[native_module(\"acme-gauge\")]\nfn native(r: &mut Registry) {}\n",
+        )
+        .unwrap();
+        let manifest = |nsh_core: &str| {
+            format!(
+                "[package]\nname = \"acme-gauge\"\nversion.workspace = true\n\n\
+                 [dependencies]\nnsh-core.workspace = true\n\n\
+                 [workspace]\nmembers = [\".\"]\n\n\
+                 [workspace.package]\nversion = \"0.3.0\"\n\n\
+                 [workspace.dependencies]\nnsh-core = \"{nsh_core}\"\n"
+            )
+        };
+        fs::write(d.join("Cargo.toml"), manifest(">=0.1")).unwrap();
+        let m = Manifest::read(&d, "acme-gauge").unwrap();
+        assert_eq!(m.version, semver::Version::new(0, 3, 0));
+
+        fs::write(d.join("Cargo.toml"), manifest("<0.1")).unwrap();
+        let err = Manifest::read(&d, "acme-gauge").unwrap_err().to_string();
+        assert!(err.contains("nsh-core"), "{err}");
+        fs::remove_dir_all(&d).unwrap();
     }
 }

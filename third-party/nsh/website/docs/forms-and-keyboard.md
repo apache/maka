@@ -546,10 +546,12 @@ ref's `insertText` (Rust `insert_text`) puts the text it allows in place of the 
 `maxLength` and the line rules apply, `onChange` reports it, and on Linux, Windows and the web it is one step of the input's
 undo history, so Ctrl+Z takes it out again. A new `value` replaces the text instead.
 
-`insertText` inserts text on iOS, macOS, Linux, Windows, the web and in headless tests (`nsh test`); on Android
-and GPUI it does nothing yet and logs a warning, so use it on supported targets. Use it with
+`insertText` inserts text on iOS, macOS, Linux, Windows, Android, the web and in headless tests (`nsh test`); on
+GPUI it does nothing yet and logs a warning, so use it on supported targets. Use it with
 `pasteBehavior="report"`: with `"insert"`, the default, the input has inserted the paste already and `insertText`
-inserts it a second time. While an input method is composing, `insertText` inserts nothing.
+inserts it a second time. While an input method is composing, `insertText` inserts nothing. Android keyboards mark
+the word being typed as a composition most of the time, so there the word is committed as typed and the text goes in
+after it.
 
 ```tsx tabs
 import type { InputRef } from "nsh";

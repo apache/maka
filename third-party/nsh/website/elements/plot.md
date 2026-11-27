@@ -7,18 +7,36 @@ demo: el-plot
 
 # Plot
 
-A plot is the frame of a chart: the rows of data it shows, the scales of its x and y axes, the pointer over it and its
-motion. Its marks draw what it holds: a `Line` through a series, an `Area` between a series and a baseline, a `Bar`
-per row in the bands of a band scale, a `Rule` per row from a start to an end (a candle's wick), a `Dot` per row where two of its values meet (a scatter's points, a bubble chart's bubbles), a `Cell` per row in the bands of two categories, colored by its value (a heatmap), a `Grid` of lines across, a `Pie` of the rows' shares (a donut with a hole), an
-`Arc` between two angles, and a `RadialLine` around the center with the rings and spokes of a `RadialGrid` behind it (a
-radar), a `Sankey` of flows between the rows, and a `Treemap` of nested rectangles, each leaf's area its value (a market map); a `PlotAxis` labels an edge with the ticks of its scale, and a `PlotLabel` writes texts at
-points of the scales. Each mark is one canvas filling the plot, drawn natively from the rows: the app's rows are read once when
-it sets them, then scaled, recorded and drawn in Rust, so a chart of a thousand points runs no JS per point. The pointer
-is followed in Rust too: the hover's cross line, dots and tooltip move and fade on the platform's animator, and the app
-hears of a new row, nothing more. The look is the app's: marks paint with CSS's paint properties of SVG shapes
-(`stroke-*`, `fill-*`), `currentColor` where none is set, an area or a bar shows a background (a gradient,
-`bg-linear-*`) inside its shape, and the hover's parts (each mark's dot among them) and the axes' labels, tick marks and
-lines are the app's to style and fill.
+A plot is the frame of a chart. It holds the rows of data, the scales of the x and y axes, the pointer over the chart
+and its motion. Marks inside the plot draw the data:
+
+| Mark | Draws |
+| --- | --- |
+| `Line` | A line through a series |
+| `Area` | The area between a series and a baseline |
+| `Bar` | One bar per row, in the bands of a band scale |
+| `Rule` | One line per row from a start to an end (a candle's wick) |
+| `Dot` | One dot per row where two of its values meet (scatter points, bubbles) |
+| `Cell` | One cell per row in the bands of two categories, colored by its value (a heatmap) |
+| `Grid` | Grid lines across the plot |
+| `Pie` | The rows' shares (a donut, with a hole) |
+| `Arc` | An arc between two angles |
+| `RadialLine` | A line around the center, with the rings and spokes of a `RadialGrid` behind it (a radar) |
+| `Sankey` | Flows between the rows |
+| `Treemap` | Nested rectangles, each leaf's area is its value (a market map) |
+
+A `PlotAxis` labels an edge with the ticks of its scale. A `PlotLabel` writes text at points of the scales.
+
+Each mark is one canvas that fills the plot and draws natively. NSH reads your rows once when you set them. It then
+scales, records and draws them in Rust, so a chart of a thousand points runs no JS per point. Rust also tracks the
+pointer: the hover's cross line, dots and tooltip move and fade on the platform's animator. Your app only hears about a
+new row under the pointer.
+
+Your app owns the look. Marks paint with the CSS paint properties of SVG shapes (`stroke-*`, `fill-*`), and use
+`currentColor` where none is set. An area or a bar can show a background inside its shape, such as a gradient
+(`bg-linear-*`). You style and fill the hover's parts (including each mark's dot) and the axes' labels, tick marks and
+lines.
+
 
 ```tsx tabs
 import { mount, signal, Text, View } from "nsh";

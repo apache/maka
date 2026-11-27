@@ -37,7 +37,10 @@ colored with the theme's tokens; the app restyles each part over it.
   position, same kind) and only that row is made again. A block that changes kind mid-stream (a paragraph becoming a
   table once its delimiter row arrives) gets a new row. A row's item (`Row`) is its block (shared), its position,
   what comes before it (a heading's room above it) and whether it is the last (the caret's), so a row hears of a
-  change through its own item alone and an update runs no memo per row. Footnotes follow the blocks in one region of
+  change through its own item alone and an update runs no memo per row. A row's root is a view only because an `Each`
+  keeps rows by their root's key; it passes its position on (`Element::__pass_position`), as do the views `block` wraps
+  a block in (the caret's line, a terminal's blank row), so a part's `first:` / `last:` read the block's place among
+  the blocks, as they do inside a quote. Footnotes follow the blocks in one region of
   their own.
 - **Built on `Text`** (`text.md`): every paragraph, heading, table cell and code block is one native text
   block, so wrapping, font scale, selection, span backgrounds (inline code), pressable
@@ -227,7 +230,8 @@ build without syntect. Without the feature, code blocks the app does not highlig
   `:::`, as `remark-directive`).
 - **Rust plugins** (`MarkdownPlugin`) read mdast nodes themselves: `configure` turns on markdown-rs constructs,
   `block` / `inline` read a node (the first plugin returning `Some` wins; `ParseContext` reads children as the parser
-  does), `render` shows a custom node in Rust. A view provides them to every `TextView` below it with
+  does; `ParseContext::conversion_id` is the same in every callback of one conversion, a `Parser::markdown` call or a
+  text a view reads, and new for each), `render` shows a custom node in Rust. A view provides them to every `TextView` below it with
   `provide_context(MarkdownPlugins::new().with(..))`. A plugin's `render` comes before `renderCustom`, which comes
   before the node's content.
 - **`MarkdownOptions`**: `math`, `html`, `alerts`, `links`, `images` (default on), `frontmatter`, `mdx`, `streaming` (default off).
@@ -341,7 +345,7 @@ only when its color is a CSS color (`selection.rs` `style_color`): a document of
 On the terminal backend (`is_terminal()`) the document takes the forms of a terminal reader, in `text_view/view.rs`
 next to the screen forms; the full list is `TextView`'s row in `docs/dev/components.md` "In a terminal". In short:
 blocks are one blank row apart and nothing trails the last (`shown_before` skips the blocks that show nothing: a
-rule, a paragraph of images without alt text); headings drop their `#` marks and take their level's color in bold,
+rule); headings drop their `#` marks and take their level's color in bold,
 with a `─` rule under h1 only (`terminal_heading`); a quote is `▎` in the accent before muted text; code blocks and
 formulas are bands as wide as their longest line plus a Cell each side (`terminal_band`), a code block under its
 language label; an alert is one band across the body text's width, its icon and text a Cell in, and keeps a `│` in its

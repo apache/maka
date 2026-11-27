@@ -79,7 +79,7 @@ fn release_notes() -> impl IntoElement {
 }
 ```
 
-在 Rust 中，`text_view()` 像 `view()` 创建视图一样创建它：每个属性一个设置方法（`.markdown(..)`、`.options(..)`、`.selectable(..)`），每个渲染函数一个闭包（`.render_image(|image| ..)`），每个事件一个监听方法（`.on_link_press(..)`），根节点使用类型化的样式方法（`.p_5()`、`.text_color(..)`），其中的文本样式会传给每个部件。
+在 Rust 中，`text_view()` 像 `view()` 创建视图一样创建它：每个属性一个设置方法（`.markdown(..)`、`.options(..)`、`.selectable(..)`），每个渲染函数一个闭包（`.render_code_block(|code| ..)`），每个事件一个监听方法（`.on_link_press(..)`），根节点使用类型化的样式方法（`.p_5()`、`.text_color(..)`），其中的文本样式会传给每个部件。
 
 <a id="built-on-text"></a>
 
@@ -98,7 +98,7 @@ fn release_notes() -> impl IntoElement {
 内容来自以下三个属性之一，按此顺序读取：
 
 - **`markdown`**：CommonMark 加上 GitHub 的扩展（表格、任务列表、删除线、自动链接、脚注、提示块）、公式（`$…$` 和 `$$…$$`）以及 Markdown 中的 HTML。中日韩文字旁的强调按 CommonMark 的 CJK 友好修订判定，`**涨幅：**5%` 会加粗到冒号为止；裸网址遇到中日韩文字或弯引号即结束：`https://example.com。下一句` 只链接 `https://example.com`。写在尖括号里（`<https://zh.wikipedia.org/wiki/中文>`）或写成链接的网址保留全部字符。标签名既不是 HTML 元素、也不是 `tag` 扩展时（`<US tech>`、`<公司名>`），按原样显示为文字。
-- **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留，文字颜色也会保留（`<span style="color: …">` 和 `<font color="…">` 读成带该颜色的 `textStyle`）；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。
+- **`html`**：按阅读模式的方式显示 HTML。文本、结构和行内格式都会保留，文字颜色也会保留（`<span style="color: …">` 和 `<font color="…">` 读成带该颜色的 `textStyle`）；脚本、样式、表单控件和隐藏元素不会显示。片段和完整页面都可以（完整页面显示其 body）。只有标明了表头的表格才有表头行（`<thead>`，或第一行全是 `<th>` 单元格）；邮件里用 `<td>` 排版的表格没有表头。加载不了的图片（邮件的 `cid:` 部件、下载失败）在原位显示 alt 文本，不再留出一块同样大小的空白。
 - **`document`**：应用构建或保存的文档块：TSX 中是普通对象，Rust 中是 `nsh_base::text_view::Document`（[文档模型](#the-document-model)）。
 
 ```tsx tabs
@@ -135,7 +135,7 @@ fn total() -> impl IntoElement {
 
 ## 部件样式
 
-`class` 和 `style` 设定根节点（各文档块组成的一列）的样式；在那里设置的文本样式（颜色、字号、字体）会传给每个部件。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。
+`class` 和 `style` 设定根节点（各文档块组成的一列）的样式；在那里设置的文本样式（颜色、字号、字体）会传给每个部件。根节点也是部件 `root`：`styles.root` 以带类型的方式接收文本样式（`style` 的类型是视图样式），`classes.root` 接收类。`classes` 按部件接收 Tailwind 类，`styles` 按部件接收内联样式。部件的类排在它自己的默认样式之后，因此优先生效；它的 `styles` 又优先于它的类。在 Rust 中，部件接收类型化的样式：`TextViewParts` 为每个 `TextViewPart` 提供一个细化其样式的函数，作用于提供它的视图下面的每个 `TextView`（[类型化的部件样式](#typed-part-styles)），根节点则使用样式方法。默认样式的行高以点为单位：改变某个部件字号的类也要设定行高（Tailwind 的 `text-*` 类会一并设定）。文档块的位置变体（`first:`、`last:`、`odd:`、`even:`、`only:`）按它在周围各块中的位置生效：`heading: "mt-6 first:mt-0"` 让位于文档或引用开头的标题上方不留空。
 
 ```tsx tabs
 <TextView
@@ -350,7 +350,7 @@ text_view().markdown(doc).links(TextViewLinks::Open)
 | `renderCodeBlockAction` | `.render_code_block_action(\|action\| ..)` | `TextViewCodeAction` | 应用自己的代码块操作（`codeBlockActions`）的图标；外面的按钮由 `TextView` 绘制。 |
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `TextViewTable`（`Table`） | 在表格上方添加内容（复制、导出）。 |
 | `renderMath` | `.render_math(\|math\| ..)` | `TextViewMath` | 替换公式：`{ tex, display }`，`display` 表示 `$$…$$` 公式块。 |
-| `renderImage` | `.render_image(\|image\| ..)` | `TextViewImage`（`Image`） | 替换图片（`{ src, alt, title }`）：自己的加载方式、尺寸、点击查看大图。 |
+| `renderImage` | `.render_image(\|InContext(image, context)\| ..)` | `TextViewImage`（`Image`），然后是 `TextViewImageContext` | 替换图片（`{ src, alt, title }`）：自己的加载方式、尺寸、点击查看大图。第二个参数说明图片周围的内容：`context.link`（`{ url, title }`）是图片所在的链接。 |
 | `renderCustom` | `.render_custom(\|node\| ..)` | `TextViewCustomNode`（`CustomNode`） | 按 `name` 显示自定义节点（[Markdown 扩展](#markdown-extensions)）。 |
 
 代码块的右上角浮动着操作按钮，外观统一：幽灵按钮，悬停或按下时显示背景；桌面上指针悬停在代码块上时显示，触摸屏上始终显示。`copy` 是内置的：复制代码，并短暂显示一个对勾。其他操作由应用定义：`renderCodeBlockAction` 绘制它们的图标，`onCodeBlockAction` 报告按下（内置的 `copy` 复制后也会报告）。`copy` 与 `Clipboard` 一样写入剪贴板，因此需要应用的 `clipboard` 权限（`nsh.json`）。
@@ -408,14 +408,14 @@ import { Image, View } from "nsh";
 ```rust tabs
 use nsh_base::text_view;
 use nsh_base::text_view::{CodeBlock, Image};
-use nsh_base::TextViewMath;
+use nsh_base::{TextViewImageContext, TextViewMath};
 use nsh_core::prelude::*;
 
 fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     text_view()
         .markdown(move || markdown.get())
         .render_code_block(|code: &CodeBlock| highlighted(code.language.clone(), code.code.clone()))
-        .render_image(|img: &Image| {
+        .render_image(|InContext(img, _): &InContext<Image, TextViewImageContext>| {
             image(img.src.clone())
                 .label(img.alt.clone())
                 .aspect_ratio(16.0 / 9.0)
@@ -745,6 +745,43 @@ fn chat() -> impl IntoElement {
 
 `ParseContext::source` 是整篇 Markdown 文本，节点位置是它里面的偏移；长文本分段读取时也一样。带插件的长文档同样读得快；`configure` 打开或关闭某个语法结构（construct）的插件会让文本每次按整篇一次解析。
 
+`ParseContext::conversion_id` 用来区分各次转换。同一次转换（一次 `Parser::markdown` 调用，或 `TextView` 读取的一份文本）的所有回调拿到同一个 `ConversionId`：包括用 `ParseContext::blocks` 和 `inlines` 读取的节点、长文本的各个分段、容器的内容和脚注。每次转换都拿到新的 id，即使文本相同、视图共享插件，或在回调里再调用 `Parser::markdown` 也是如此。插件从整篇源文本推导出的数据，每次转换只需算一次，按 id 保存即可；id 不表示节点被提供的次数或顺序。
+
+```rust
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use nsh_base::text_view::{ConversionId, ParseContext};
+
+/// Abbreviations and their titles.
+type Terms = Rc<HashMap<String, String>>;
+
+/// `*[HTML]: HyperText Markup Language` lines anywhere in the text, read once
+/// per conversion and consulted by the plugin's `inline`.
+#[derive(Default)]
+struct Abbreviations {
+    last: RefCell<Option<(ConversionId, Terms)>>,
+}
+
+impl Abbreviations {
+    fn of(&self, cx: &ParseContext<'_>) -> Terms {
+        let mut last = self.last.borrow_mut();
+        if let Some((id, terms)) = &*last
+            && *id == cx.conversion_id()
+        {
+            return terms.clone();
+        }
+        let terms: Terms = Rc::new(
+            cx.source()
+                .lines()
+                .filter_map(|line| line.strip_prefix("*[")?.split_once("]: "))
+                .map(|(term, title)| (term.to_owned(), title.to_owned()))
+                .collect(),
+        );
+        *last = Some((cx.conversion_id(), terms.clone()));
+        terms
+    }
+}
+```
+
 <a id="props"></a>
 
 ## 属性
@@ -769,7 +806,7 @@ fn chat() -> impl IntoElement {
 | `renderCodeBlockAction` | `.render_code_block_action(\|action\| ..)` | `(action: TextViewCodeAction) => JSX.Element` | | 应用自己的操作的图标。 |
 | `renderTableActions` | `.render_table_actions(\|table\| ..)` | `(table: TextViewTable) => JSX.Element` | | 每个表格上方的内容。 |
 | `renderMath` | `.render_math(\|math\| ..)` | `(math: TextViewMath) => JSX.Element` | | 显示公式。 |
-| `renderImage` | `.render_image(\|image\| ..)` | `(image: TextViewImage) => JSX.Element` | | 显示图片。 |
+| `renderImage` | `.render_image(\|InContext(image, context)\| ..)` | `(image: TextViewImage, context: TextViewImageContext) => JSX.Element` | | 显示图片；`context.link` 是图片外层的链接（如果有）。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | | 根节点，即各文档块组成的一列；其文本样式传给每个部件（带类型的文本样式：`styles.root`）。 |
 
 在 Rust 中，按部件给出的类和样式是 `TextViewClasses` 和 `TextViewStyles`；Rust 视图通常用 [`TextViewParts`](#typed-part-styles) 设定部件样式。

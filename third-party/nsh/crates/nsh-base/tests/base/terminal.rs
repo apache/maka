@@ -478,6 +478,8 @@ fn text_bounds<C: Component<Props = ()>>() -> std::collections::HashMap<String, 
         std::collections::HashMap<NodeId, String>,
         std::collections::HashMap<NodeId, Bounds<Points>>,
         std::collections::HashMap<NodeId, NodeId>,
+        // Image views.
+        std::collections::HashSet<NodeId>,
     );
     let seen = Arc::new(Mutex::new(Seen::default()));
     let into = seen.clone();
@@ -493,6 +495,9 @@ fn text_bounds<C: Component<Props = ()>>() -> std::collections::HashMap<String, 
                 }
                 MountItem::Insert { parent, child, .. } => {
                     seen.2.insert(*child, *parent);
+                }
+                MountItem::Image { id, .. } => {
+                    seen.3.insert(*id);
                 }
                 _ => {}
             }
@@ -529,6 +534,10 @@ fn text_bounds<C: Component<Props = ()>>() -> std::collections::HashMap<String, 
     };
     // A text shown twice (a day of two months) is where it shows.
     let mut origins = std::collections::HashMap::new();
+    // An image view as `<image>`.
+    for id in &seen.3 {
+        origins.insert("<image>".to_string(), at(*id).0);
+    }
     let mut shown = std::collections::HashSet::new();
     for (id, t) in &seen.0 {
         let (origin, shows) = at(*id);
@@ -764,14 +773,31 @@ fn Picture() -> impl IntoElement {
     text_view().markdown("Intro.\n\n![Green mountains](https://example.com/a.png)\n\nAfter.")
 }
 
+/// Where `Intro.`, the block image and `After.` of `C` are.
+fn picture_rows<C: Component<Props = ()>>() -> (f32, Bounds<Points>, f32) {
+    let at = text_bounds::<C>();
+    let get = |t: &str| *at.get(t).unwrap_or_else(|| panic!("no {t} in {at:?}"));
+    (
+        get("Intro.").origin.y.0,
+        get("<image>"),
+        get("After.").origin.y.0,
+    )
+}
+
 #[test]
-fn a_terminals_block_image_reads_as_its_alt_text_on_a_line() {
-    let at = text_origins::<Picture>();
-    let row = |t: &str| at.get(t).unwrap_or_else(|| panic!("no {t} in {at:?}")).1;
-    // A line of its own, a blank row on each side as any block has.
-    let image = row("[Green mountains]");
-    assert!(image > row("Intro."), "{at:?}");
-    assert_eq!(image - row("Intro."), row("After.") - image, "{at:?}");
+fn a_terminals_block_image_is_a_picture_a_blank_row_from_the_blocks() {
+    // The terminal draws the picture in the image's box (or, where it
+    // cannot, its alt text there): the document keeps the image, not a
+    // line of text, a blank row on each side as any block has.
+    let (intro, image, after) = picture_rows::<Picture>();
+    assert_eq!(image.origin.y.0 - intro, 2.0 * CELL, "{image:?}");
+    assert_eq!(
+        after - (image.origin.y.0 + image.size.height.0),
+        CELL,
+        "{image:?}"
+    );
+    let at = text_bounds::<Picture>();
+    assert!(!at.contains_key("[Green mountains]"), "{at:?}");
 }
 
 /// The same with an image without alt text.
@@ -781,14 +807,20 @@ fn Unlabeled() -> impl IntoElement {
 }
 
 #[test]
-fn a_terminal_leaves_out_an_image_without_alt_text_and_its_row() {
-    let at = text_origins::<Unlabeled>();
-    let row = |t: &str| at.get(t).unwrap_or_else(|| panic!("no {t} in {at:?}")).1;
-    assert!(!at.keys().any(|t| t.contains('[')), "{at:?}");
-    // One blank row from Intro to Next, as from Next to After.
+fn a_terminals_image_without_alt_text_keeps_its_place() {
+    // Drawn as any picture: nothing to read, but the picture shows, a
+    // blank row from the blocks around it.
+    let at = text_bounds::<Unlabeled>();
+    let get = |t: &str| *at.get(t).unwrap_or_else(|| panic!("no {t} in {at:?}"));
+    let image = get("<image>");
     assert_eq!(
-        row("Next.") - row("Intro."),
-        row("After.") - row("Next."),
+        image.origin.y.0 - get("Intro.").origin.y.0,
+        2.0 * CELL,
+        "{at:?}"
+    );
+    assert_eq!(
+        get("Next.").origin.y.0 - (image.origin.y.0 + image.size.height.0),
+        CELL,
         "{at:?}"
     );
 }

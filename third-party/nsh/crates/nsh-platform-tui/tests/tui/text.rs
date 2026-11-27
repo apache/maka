@@ -21,11 +21,12 @@ fn wrapping_prefers_spaces_and_keeps_utf16_grapheme_ranges() {
     text.push("ab 界👩‍💻z", Default::default());
     let prepared = engine.prepare(&text);
     let measured = engine.measure(&prepared, Some(Points(32.0)));
-    assert_eq!(measured, nsh_core::Size::new(Points(32.0), Points(48.0)));
+    // An ideograph allows a break after it, so `界` ends the second line.
+    assert_eq!(measured, nsh_core::Size::new(Points(24.0), Points(48.0)));
     let lines = engine.lines(&engine.layout(&prepared, measured));
     assert_eq!(
         lines.iter().map(|l| (l.start, l.end)).collect::<Vec<_>>(),
-        [(0, 2), (3, 9), (9, 10)]
+        [(0, 2), (3, 4), (4, 10)]
     );
     assert_eq!(lines[1].y, Points(16.0));
 }

@@ -26,6 +26,13 @@
 //! An nshm may be both, depend on other nshm (its own `"dependencies"`) and
 //! provide a target (`"platform"`, [`platform_program`]).
 //!
+//! The app's entry for a Rust nshm may name the targets it is linked for
+//! (`"targets": ["macos", "ios"]`, by `platform.os` name; [`linked_for`]).
+//! Resolution and the lock are the same for every target: only what a
+//! command links changes, so a target that leaves an nshm out builds no
+//! Rust of it, and the bundler refuses its static imports there unless
+//! `"resolve"` `"alias"` names a stand-in (`nsh_bundler::nshm`).
+//!
 //! [`resolve`] settles one version of each package, transitively, and
 //! `nsh.lock` beside `nsh.json` pins it (the app commits both); a build
 //! takes only what the lock pins. Each version is installed once in
@@ -43,6 +50,7 @@ mod manifest;
 mod resolve;
 
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -52,7 +60,8 @@ use anyhow::{Context as _, bail};
 pub(crate) use cargo_toml::relative;
 pub(crate) use dep::Added;
 use dep::{Dep, Origin};
-use resolve::{Lock, Resolved};
+use nsh_core::platform::Os;
+use resolve::{Lock, Locked, Resolved};
 
 use crate::rust_app::{self, AppCrate, Nsh};
 
@@ -122,30 +131,99 @@ fn patch_id(r: &Resolved) -> String {
 }
 
 /// The Rust nshm of the app in `dir` (`config` its `nsh.json`, `nsh` the
-/// nsh it builds with), each installed at its locked version, with how the
-/// workspace patches it: its TSX nshm are the bundler's. Resolved and
-/// locked first where needed.
+/// nsh it builds with) linked for `target` (`None`: every target), each
+/// installed at its locked version, with how the workspace patches it: its
+/// TSX nshm are the bundler's. Resolved and locked first where needed.
 pub(crate) fn crates(
     dir: &Path,
     config: &serde_json::Value,
     nsh: &NshOf,
+    target: Option<Os>,
 ) -> anyhow::Result<Vec<(String, AppCrate)>> {
     let deps = dep::read_all(config)?;
     let resolved = ensure(dir, config, nsh)?;
-    rust_crates(&resolved, &deps, Some(nsh))
+    check_targets(&resolved, &deps)?;
+    rust_crates(&resolved, &deps, Some(nsh), target)
 }
 
-/// The crates of the Rust nshm in `resolved`; nsh's own linked as nsh's
-/// crates are ([`AppCrate::linked_with`]) when `nsh` says where from.
+/// The names of `packages` (the lock's, or a resolution's) linked for
+/// `target`: those the app's entries for `target` ([`Dep::is_for`]) name,
+/// and what they depend on, transitively. A package left out of one entry
+/// is linked all the same when another linked one depends on it.
+fn linked_for(deps: &[Dep], packages: &[&Locked], target: Option<Os>) -> BTreeSet<String> {
+    let mut linked = BTreeSet::new();
+    let mut queue: Vec<&str> = deps
+        .iter()
+        .filter(|d| d.is_for(target))
+        .map(|d| d.name.as_str())
+        .collect();
+    while let Some(name) = queue.pop() {
+        if !linked.insert(name.to_owned()) {
+            continue;
+        }
+        if let Some(p) = packages.iter().find(|p| p.name == name) {
+            queue.extend(p.dependencies.iter().map(String::as_str));
+        }
+    }
+    linked
+}
+
+/// The Rust nshm of the app whose entry is `entry` that `target` leaves
+/// out, by package name, as its `nsh.lock` has them.
+pub(crate) fn left_out(entry: &Path, target: Option<Os>) -> anyhow::Result<Vec<String>> {
+    let Ok(entry) = dunce::canonicalize(entry) else {
+        return Ok(Vec::new());
+    };
+    let dir = nsh_bundler::app_dir::app_dir_of(&entry);
+    let Ok(text) = nsh_bundler::app_dir::read(&dir.join("nsh.json")) else {
+        return Ok(Vec::new());
+    };
+    let config: serde_json::Value = serde_json::from_str(&text).context("nsh.json is not JSON")?;
+    let deps = dep::read_all(&config)?;
+    let lock = Lock::read(&dir)?;
+    let packages: Vec<&Locked> = lock.packages.iter().collect();
+    let linked = linked_for(&deps, &packages, target);
+    Ok(lock
+        .packages
+        .iter()
+        .filter(|p| p.module.is_some() && !linked.contains(&p.name))
+        .map(|p| p.name.clone())
+        .collect())
+}
+
+/// Refuses `"targets"` on an entry whose nshm has no Rust: its TSX is in
+/// the bundle, which is the same on every target.
+fn check_targets(resolved: &[Resolved], deps: &[Dep]) -> anyhow::Result<()> {
+    for d in deps.iter().filter(|d| !d.targets.is_empty()) {
+        if let Some(r) = resolved.iter().find(|r| r.locked.name == d.name)
+            && r.manifest.module.is_none()
+        {
+            bail!(
+                "nsh.json: dependencies: {}: \"targets\" chooses where an nshm's Rust is \
+                 linked, and {} has none: its TSX is part of the bundle on every target",
+                d.name,
+                d.name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The crates of the Rust nshm in `resolved` linked for `target`
+/// ([`linked_for`]); nsh's own linked as nsh's crates are
+/// ([`AppCrate::linked_with`]) when `nsh` says where from.
 fn rust_crates(
     resolved: &[Resolved],
     deps: &[Dep],
     nsh: Option<&NshOf>,
+    target: Option<Os>,
 ) -> anyhow::Result<Vec<(String, AppCrate)>> {
     let mut own = None;
+    let packages: Vec<&Locked> = resolved.iter().map(|r| &r.locked).collect();
+    let linked = linked_for(deps, &packages, target);
     resolved
         .iter()
-        .filter(|r| r.manifest.module.is_some())
+        .filter(|r| r.manifest.module.is_some() && linked.contains(&r.locked.name))
         .map(|r| {
             let features = deps
                 .iter()
@@ -383,7 +461,7 @@ fn say_rust_needed(app: &App, lock: &Lock, resolved: &[Resolved]) {
 /// packages or modules is reported here, before a build.
 fn check_rust(app: &App, resolved: &[Resolved], deps: &[Dep]) -> anyhow::Result<()> {
     let mut all = app.own_crates()?;
-    all.extend(rust_crates(resolved, deps, None)?);
+    all.extend(rust_crates(resolved, deps, None, None)?);
     if all.len() > 1 {
         rust_app::check_crates(&all)?;
     }
@@ -444,11 +522,18 @@ fn add_to(app: &mut App, backup: &mut Backup, added: Added) -> anyhow::Result<()
         }
         None => added.features.clone(),
     };
+    // Added again, it keeps the targets it was listed for.
+    let targets = deps
+        .iter()
+        .find(|d| d.name == name)
+        .map(|d| d.targets.clone())
+        .unwrap_or_default();
     let dep = Dep {
         name: name.clone(),
         origin: added.origin.clone(),
         req: req.clone(),
         features: features.clone(),
+        targets,
     }
     .with_features(Vec::new())?;
     match deps.iter_mut().find(|d| d.name == name) {
@@ -499,6 +584,7 @@ fn add_to(app: &mut App, backup: &mut Backup, added: Added) -> anyhow::Result<()
         }
     }
     check_rust(app, &resolved, &deps)?;
+    check_targets(&resolved, &deps)?;
     app.write_dependencies(&deps)?;
     write_lock(&app.dir, &lock, &resolved)?;
     if this.manifest.module.is_some() {
@@ -856,6 +942,92 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// What each target links: the entries for it and what they depend
+    /// on; a package another linked one needs is linked everywhere it is.
+    #[test]
+    fn targets_choose_what_is_linked() {
+        let deps = dep::read_all(&serde_json::json!({ "dependencies": {
+            "nsh-extra": { "version": "^0.6", "targets": ["macos", "ios", "android"] },
+            "acme-charts": { "version": "^1", "targets": ["web"] },
+            "acme-ui": "^1"
+        } }))
+        .unwrap();
+        let package = |name: &str, dependencies: &[&str]| Locked {
+            name: name.into(),
+            version: "1.0.0".into(),
+            source: Some("crates.io".into()),
+            path: None,
+            commit: None,
+            checksum: None,
+            dir: None,
+            module: Some(name.into()),
+            exports: Default::default(),
+            platform: None,
+            dependencies: dependencies.iter().map(|d| (*d).to_owned()).collect(),
+        };
+        let lock = [
+            package("acme-charts", &["acme-plot"]),
+            package("acme-plot", &[]),
+            package("acme-ui", &["acme-icons"]),
+            package("acme-icons", &[]),
+            package("nsh-extra", &[]),
+        ];
+        let packages: Vec<&Locked> = lock.iter().collect();
+        let linked =
+            |target| -> Vec<String> { linked_for(&deps, &packages, target).into_iter().collect() };
+        assert_eq!(
+            linked(Some(Os::Ios)),
+            ["acme-icons", "acme-ui", "nsh-extra"]
+        );
+        assert_eq!(
+            linked(Some(Os::Web)),
+            ["acme-charts", "acme-icons", "acme-plot", "acme-ui"]
+        );
+        assert_eq!(linked(Some(Os::Linux)), ["acme-icons", "acme-ui"]);
+        assert_eq!(linked(None).len(), 5);
+        // An nshm a linked one depends on is linked, whatever the app's
+        // own entry for it says.
+        let deps = dep::read_all(&serde_json::json!({ "dependencies": {
+            "acme-ui": "^1",
+            "acme-icons": { "version": "^1", "targets": ["ios"] }
+        } }))
+        .unwrap();
+        assert!(linked_for(&deps, &packages, Some(Os::Web)).contains("acme-icons"));
+    }
+
+    /// `nsh.lock` is the same on every target; what a target leaves out is
+    /// read from it with `nsh.json`'s entries.
+    #[test]
+    fn left_out_reads_the_lock() {
+        let app = std::env::temp_dir().join(format!("nsh-left-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&app);
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("App.tsx"), "").unwrap();
+        fs::write(
+            app.join("nsh.json"),
+            r#"{ "dependencies": {
+                "nsh-extra": { "version": "^0.6", "features": ["speech"], "targets": ["macos", "ios"] },
+                "acme-ui": { "github": "acme/ui", "version": "^1" }
+            } }"#,
+        )
+        .unwrap();
+        let entry = app.join("App.tsx");
+        // No lock yet: nothing to leave out.
+        assert!(left_out(&entry, Some(Os::Web)).unwrap().is_empty());
+        fs::write(
+            app.join(LOCK),
+            r#"{ "version": 2, "packages": [
+                { "name": "acme-ui", "version": "1.0.0", "source": "git+https://github.com/acme/ui", "exports": { "acme-ui": "index.tsx" } },
+                { "name": "nsh-extra", "version": "0.7.0", "source": "crates.io", "module": "nsh-extra" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(left_out(&entry, Some(Os::Web)).unwrap(), ["nsh-extra"]);
+        assert!(left_out(&entry, Some(Os::MacOs)).unwrap().is_empty());
+        assert!(left_out(&entry, None).unwrap().is_empty());
+        fs::remove_dir_all(&app).unwrap();
+    }
+
     #[test]
     fn add_finds_the_app_above() {
         let root = std::env::temp_dir().join(format!("nsh-app-dir-{}", std::process::id()));
@@ -949,9 +1121,16 @@ mod tests {
         assert_eq!(exports[0].0, "acme-ui");
         assert!(exports[0].1.starts_with(&installed));
         // A build with the lock in place reads nothing new: unchanged.
-        let again = crates(&app, &config, &|| Ok(Nsh::Registry)).unwrap();
+        let again = crates(&app, &config, &|| Ok(Nsh::Registry), None).unwrap();
         assert!(again.is_empty(), "a TSX nshm is no crate");
         assert_eq!(Lock::read(&app).unwrap(), lock);
+        // Its TSX is in the bundle of every target: no targets to choose.
+        let mut targeted = config.clone();
+        targeted["dependencies"]["acme-ui"]["targets"] = serde_json::json!(["web"]);
+        let err = crates(&app, &targeted, &|| Ok(Nsh::Registry), Some(Os::Web))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("acme-ui has none"), "{err}");
         // A new version within the requirement: `nsh upgrade` takes it.
         commit("1.1.0");
         upgrade(&app, &[]).unwrap();

@@ -468,6 +468,44 @@ fn BottomBar(cx: Scope<NoEvent>) -> impl IntoElement {
 
 在 Android 上，嵌入在工具栏下方的视图只会得到与它重叠的那部分系统栏，与 UIKit 的安全区域一致：如果它没有延伸到状态栏，顶部 inset 就为 0。
 
+## 保留区域
+
+在安全区域之内，设备还可能保留界面的一部分。iPhone Duo 半开时，内屏的折痕把界面分成两半；摄像头也会透过屏幕露出来。`reserved_regions()`（TSX：`reservedRegions()`）按界面的点（与布局相同的坐标）列出这些区域，设备折叠、展开时随之更新：
+
+- `"division"`：屏幕在这里分开（折痕）。让内容避开它：把居中的栏移到一侧，或在中间留出空隙。
+- `"occlusion"`：这里被遮住（摄像头）。让重要内容避开它。
+
+每个区域的 `bounds` 已经包含可交互内容需要留出的边距。系统自己的控件（alert、菜单、sheet、分栏视图）会自己避开；这个列表是给应用自己的布局用的。只做小调整，不要整体换布局，这样折叠时界面不会跳动。平台不报告时列表为空：iOS 27.1 之前、其他设备，以及其他平台。Android 的折叠屏（Jetpack WindowManager 的 display feature）可能是下一个来源。
+
+```tsx tabs
+import { View, reservedRegions } from "nsh";
+
+function Chat() {
+  // 折痕在中间：聊天栏移到右半边。
+  const fold = () => reservedRegions().find((r) => r.kind === "division");
+  return (
+    <View style={{ flex: 1, paddingLeft: fold() ? fold()!.bounds.origin.x + fold()!.bounds.size.width : 0 }}>
+      <Messages />
+    </View>
+  );
+}
+```
+
+```rust tabs
+use nsh_core::{platform::ReservedRegionKind, prelude::*};
+
+fn chat() -> impl IntoElement {
+    view().flex_1().child(messages()).pl(move || {
+        let fold = reserved_regions()
+            .iter()
+            .find(|r| r.kind == ReservedRegionKind::Division);
+        Length::from(fold.map_or(px(0.0), |r| r.bounds.right()))
+    })
+}
+```
+
+在测试中，`nsh/test` 的 `open(entry, { reservedRegions })` 可以在无头运行时给应用一条折痕，用来检查布局（[测试](./testing-and-trace.md)）。在 iPhone Duo 模拟器上，用 Xcode 的 Device Hub 折叠设备。
+
 ## 平台
 
 Rust 中的 `os()`、`os_version()`、`idiom()`、`is_desktop()` 和 `is_catalyst()`，以及 TSX 中 `nsh` 的常量 `platform`，描述应用运行的平台。它们在应用运行期间保持不变。

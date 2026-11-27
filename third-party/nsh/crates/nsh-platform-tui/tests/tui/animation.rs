@@ -224,9 +224,8 @@ fn canvas_slots_follow_native_values_and_appear_effects_end_visible() {
     assert_eq!(buffer[(0, 0)].symbol(), " ");
     assert_eq!(buffer[(2, 0)].symbol(), "A");
     assert_eq!(buffer[(0, 1)].symbol(), " ");
-    assert_eq!(buffer[(2, 1)].symbol(), "⣿");
-    assert_eq!(buffer[(3, 1)].symbol(), "⣿");
-    assert_eq!(buffer[(2, 1)].fg, CANVAS_GREEN);
+    assert_eq!(buffer[(2, 1)].bg, CANVAS_GREEN);
+    assert_eq!(buffer[(3, 1)].bg, CANVAS_GREEN);
 }
 
 #[test]
@@ -368,8 +367,8 @@ fn canvas_reset_transform_preserves_the_views_animated_transform() {
         contents(buffer).contains("Canvas transform")
     });
     let buffer = terminal.backend().buffer();
-    assert_eq!(buffer[(4, 1)].symbol(), "⣿");
-    assert_eq!(buffer[(4, 1)].fg, CANVAS_RED);
+    assert_eq!(buffer[(4, 1)].symbol(), " ");
+    assert_eq!(buffer[(4, 1)].bg, CANVAS_RED);
     assert_eq!(buffer[(5, 1)].symbol(), " ");
     assert_eq!(buffer[(2, 1)].symbol(), " ");
 }

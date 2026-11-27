@@ -60,7 +60,10 @@ fn review() -> impl IntoElement {
 
 The view fills the box the app gives it (`flex-1`, a height) and scrolls inside: vertically through the rows, and
 sideways to the longest line, the two sides of a split view together. With `softWrap` long lines wrap at the side's
-width instead, and a split row is as tall as its taller side, so the sides stay aligned.
+width instead, and a split row is as tall as its taller side, so the sides stay aligned. Lines break where the
+[`Editor`](./editor.md)'s rows do: code and Latin text at spaces, Chinese, Japanese and Korean text where Unicode's line
+breaking rules allow, between characters but never before closing punctuation such as `，` or after opening
+punctuation such as `「`.
 
 ## Two texts or a patch
 

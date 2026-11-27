@@ -200,6 +200,7 @@ let Some(doc) = open_window(
 | | `titleBar` | `{ style: "default" \| "hidden"; height?; controlsOffset? }`：系统标题栏，或应用自己的标题栏（[见下](#自定义标题栏)）。`controlsOffset`（`{ x, y }`）设置隐藏标题栏中 macOS 红绿灯的位置。 |
 | | `frame` | `"default"`，或 `"none"`：没有标题栏和边框，由应用绘制全部内容。 |
 | 尺寸 | `minSize`、`maxSize` | 用户能调整到的最小和最大内容尺寸，`{ width, height }`，单位为点；`null` 清除。 |
+| | `aspectRatio` | 用户调整大小时内容保持的比例：宽除以高（`16 / 9`），用户拖动边或角时视频、画布始终铺满窗口。`null` 清除。只限制用户的调整：`setBounds`、`sizeToContent` 和最大化不受它约束；设置后窗口保持当前尺寸，直到用户调整。Windows 和 macOS 支持（GPUI 应用只有 macOS）；Linux 暂不支持（[见下文](#宽高比)）。 |
 | | `sizeToContent` | `true`、`"width"` 或 `"height"`：窗口跟随内容布局后的尺寸，原生完成，不经过 JS。 |
 | 行为 | `resizable`、`movable`、`minimizable`、`maximizable`、`closable` | 用户能对它做什么。应用的请求不受它们限制。 |
 | | `focusable` | 它接受键盘焦点。 |
@@ -217,6 +218,22 @@ let Some(doc) = open_window(
 
 平台的窗口没有的属性会被保留，在那里不起作用：Linux 上由窗口管理器放置窗口和安排层叠，因此位置、层级和 `taskbar` 由它决定。
 
+### 宽高比
+
+`aspectRatio` 约束的是内容区域，不是窗口外框：标题栏和边框另算。视频播放器知道视频比例后设置一次即可：
+
+```tsx
+<Window id="player" aspectRatio={video.width / video.height} minSize={{ width: 320, height: 180 }}>
+```
+
+| 平台 | 用户看到的效果 |
+|---|---|
+| macOS | AppKit 的 `contentAspectRatio`：拖动任何边或角都保持比例。 |
+| Windows | 在 `WM_SIZING` 里修正拖动的矩形：拖左右边按宽度定高度，拖上下边按高度定宽度，拖角按宽度。用户按住的边始终跟着指针。`minSize` 和 `maxSize` 仍然有效；比例和它们冲突时以它们为准。 |
+| Linux | 暂不生效。GTK 4 没有对应的调用；Wayland 在交互式调整时根本没有宽高比约束（尺寸由合成器决定），X11 上 GDK 4 每次排版窗口（包括拖动中的每一步）都会整个重写 `WM_NORMAL_HINTS`，不带宽高比字段，另外写进去的比例会在用户拖动时被冲掉。可以让内容加黑边显示，或者在 `onBoundsChange` 里修正尺寸。 |
+| GPUI 应用（Windows、Linux） | 不生效：调整大小的过程由 GPUI 控制。 |
+| iOS、Android、Web、终端 | 没有窗口，不生效。 |
+
 ### currentWindow
 
 ```ts
@@ -230,7 +247,7 @@ function focusedWindow(): WindowRef | null;
 ```tsx
 function SaveButton() {
   const win = currentWindow(); // 渲染时
-  return <Button onPress={() => save().then(() => win.close())}>Save</Button>;
+  return <Button onPress={() => save().then(() => win.close())}><Text>Save</Text></Button>;
 }
 ```
 
@@ -421,8 +438,8 @@ async function changeLanguage(language: string) {
 ### 退出
 
 应用的生命周期由应用自己负责。关闭窗口只关闭那个窗口；最后一个窗口关闭时按退出模式处理：
-`"platform"`（默认）让 macOS 应用留在 Dock 中，在 Windows 和 Linux 上退出；`"lastWindowClosed"` 在所有平台上退出；
-`"explicit"` 让应用继续运行，以便打开另一个窗口、显示托盘菜单或调用 `quit()`。应用用
+`"platform"`（声明了 `<Window>` 场景的应用的默认值）让 macOS 应用留在 Dock 中，在 Windows 和 Linux 上退出；`"lastWindowClosed"` 在所有平台上退出；
+`"explicit"` 让应用继续运行，以便打开另一个窗口、显示托盘菜单或调用 `quit()`。未声明 `<Window>` 的裸 `mount(App)` 应用使用隐式主窗口，除非显式在 nsh.json 中配置 `application.quitMode` 或调用 `Application.setQuitMode`，关闭该窗口时在所有平台（包括 macOS）上都会直接退出。应用用
 `Application.setQuitMode("platform")`（Rust：`set_quit_mode(QuitMode::Platform)`）设置它；nsh.json 的
 `application.quitMode` 保存启动时的同一个模式。`Application.on("lastWindowClosed")` 在最后一个窗口
 关闭后收到通知。Rust listener 在退出模式生效前同步运行；JS listener 在后续提交中、决定之后运行。
@@ -733,7 +750,7 @@ interface TitleBarArea {
 }
 ```
 
-当前窗口隐藏的标题栏的区域，单位为点（响应式）：它的 `height`，以及系统窗口按钮在左端（`left`）和右端（`right`）占用的宽度。用它来布局标题栏，避免内容被窗口按钮遮住。系统显示标题栏时（以及全屏时、桌面平台之外和终端应用中）三者都为 0。Rust：`title_bar() -> Edges<Points>`，其中 `top` 是高度，`left` 和 `right` 是窗口按钮的宽度；读取它会订阅变化。
+当前窗口隐藏的标题栏的区域，单位为点（响应式）：它的 `height`，以及系统窗口按钮在左端（`left`）和右端（`right`）占用的宽度。用它来布局标题栏，避免内容被窗口按钮遮住。系统显示标题栏时（以及全屏时、桌面平台之外、终端应用中或窗口已关闭时）三者都为 0。在渲染期外调用（事件回调、定时器或异步回调）时，为兼容单窗口应用会读取已打开的 `"main"` 窗口（未打开时返回全 0）；多窗口应用应在渲染时先捕获 `currentWindow()` 再调用 `win.titleBar()`。Rust：`title_bar() -> Edges<Points>`，其中 `top` 是高度，`left` 和 `right` 是窗口按钮的宽度；读取它会订阅变化。
 
 | | `height` | `left` | `right` |
 |---|---|---|---|
@@ -778,7 +795,7 @@ interface Display {
 }
 ```
 
-`win.state()` 是平台报告的一个窗口的状态，`windowState()` 是当前窗口的，`displays()` 是各个显示器，主显示器排在最前；它们都是响应式的。除 `nativeContentBounds` 外，矩形的单位都是点，使用屏幕坐标：从主显示器的左上角量起，`y` 向下增长，与 `setBounds` 相同。模式、所在显示器、焦点、最小化或可见状态的变化立即报告；移动和调整大小在窗口停下片刻后报告，读取它们的代码每次移动只运行一次，而不是每一步都运行。Press handler 执行前会先发布最新的待报告位置，保证 handler 读取当前位置。Rust：`WindowRef::state() -> Option<WindowState>` 和 `displays() -> Vec<Display>`（类型在 `nsh_core::desktop` 中）；读取即订阅变化。
+`win.state()` 是平台报告的一个窗口的状态，`windowState()` 是当前窗口的（在渲染期外的事件回调、定时器或异步回调中调用时，为兼容单窗口应用会读取已打开的 `"main"` 窗口，窗口未打开或已关闭时返回 `null`；多窗口应用应在渲染时先捕获 `currentWindow()` 再调用 `win.state()`），`displays()` 是各个显示器，主显示器排在最前；它们都是响应式的。除 `nativeContentBounds` 外，矩形的单位都是点，使用屏幕坐标：从主显示器的左上角量起，`y` 向下增长，与 `setBounds` 相同。模式、所在显示器、焦点、最小化或可见状态的变化立即报告；移动和调整大小在窗口停下片刻后报告，读取它们的代码每次移动只运行一次，而不是每一步都运行。Press handler 执行前会先发布最新的待报告位置，保证 handler 读取当前位置。Rust：`WindowRef::state() -> Option<WindowState>` 和 `displays() -> Vec<Display>`（类型在 `nsh_core::desktop` 中）；读取即订阅变化。
 
 显示器的 `cutouts` 是摄像头外壳挡住的区域，使用同样的屏幕坐标：在有刘海的 MacBook 上，是屏幕顶部正中的一个矩形，高度与菜单栏相同。窗口可以据此贴在刘海旁边，或者让内容从刘海里展开；其他显示器上这个列表为空。
 

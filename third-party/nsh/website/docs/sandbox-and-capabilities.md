@@ -7,12 +7,14 @@ group: delivery
 
 # Sandbox and Capabilities
 
-An app written in Rust is native code compiled into the app that ships it, as the rest of that app is, and runs with
-its trust; its calls into NSH's services (`fetch`, images, web views, the status bar) go through the same native
-checks as TSX's, under what a host grants. The TSX and JavaScript an app runs, its own or a [signed
-package](./signed-packages.md) it downloads, run in a QuickJS VM per view, and everything they can do outside that VM
-goes through NSH's native runtime. That makes it possible to run code you did not write, such as third-party mini apps
-or downloaded updates, under rules the host app controls:
+The sandbox lets a host app run code it did not write, such as third-party mini apps or downloaded updates, under
+rules the host controls.
+
+The TSX and JavaScript an app runs, its own or a [signed package](./signed-packages.md) it downloads, run in a QuickJS
+VM per view, and everything they can do outside that VM goes through NSH's native runtime. Rust code is different: it
+is native code compiled into the app and runs with the app's trust. Its calls into NSH's services (`fetch`, images,
+web views, the status bar) still go through the same native checks as TSX's, under what a host grants. The runtime
+applies three layers:
 
 - **Limits** bound the memory, time and native resources one app can use.
 - **Hardening** removes the ways to turn strings into code in release builds.

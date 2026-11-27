@@ -18,9 +18,12 @@
 // third folds where the app's `foldRanges` say, by level, recursively and
 // by hand, reporting the folded ranges (`onFoldChange`, `folds`), its text
 // colored by the app's tokens alone (`decorations` with a `token`,
-// `highlighting={false}`). A context menu asked for over the text reports
-// where in it, and whether a touch selection asked for it (`selection`,
-// its box in the root view) or a pointer (`onContextMenu`). A fourth
+// `highlighting={false}`), a word shown as a label (a decoration's
+// `label`, `labelClass`, `labelStyle`) and its scroll bars kept clear of
+// its container's rounded corners (`scrollbarInset`). A context menu
+// asked for over the text reports where in it, and whether a touch
+// selection asked for it (`selection`, its box in the root view) or a
+// pointer (`onContextMenu`). A fourth
 // editor completes (`completion`): typing a word asks the app
 // (`onCompletionRequest`), whose answer (`presentCompletions`) shows as
 // a list that typing on filters; pressing an item inserts it
@@ -36,7 +39,10 @@
 // (`onDefinitionRequest`, trigger `hover`), whose answer underlines it
 // (`presentDefinitionLink`, `hideDefinitionLink`); `run("goToDefinition")`
 // asks at the caret (trigger `key`), and `run("showCodeActions")` asks for
-// the code actions at the selection (`onCodeActionRequest`).
+// the code actions at the selection (`onCodeActionRequest`). A seventh
+// editor reports where its text is scrolled, the content's size and the
+// viewport's (`onScroll`), once laid out and as the ref scrolls it
+// (`setScrollOffset`).
 import { Text, View, signal } from "nsh";
 import { Editor, type EditorFoldRange, type EditorRef } from "nsh/base";
 
@@ -58,11 +64,13 @@ export default function BaseEditor() {
   const tagged = signal("none");
   const defined = signal("none");
   const acted = signal("none");
+  const scrolled = signal("none");
   let editor!: EditorRef;
   let grown!: EditorRef;
   let outline!: EditorRef;
   let completer!: EditorRef;
   let navigator!: EditorRef;
+  let scroller!: EditorRef;
   const show = (folds: EditorFoldRange[]) => folds.map(f => `${f.startLine}-${f.endLine}`).join(" ") || "-";
   const track = async () => history.set(`Undo ${await editor.canUndo()} Redo ${await editor.canRedo()}`);
   return (
@@ -112,8 +120,15 @@ export default function BaseEditor() {
               overviewRuler: { lane: "left", style: { backgroundColor: "#22c55e" } },
             },
             { range: { start: { line: 3, column: 0 }, end: { line: 3, column: 0 } }, gutter: { placement: "before", style: { backgroundColor: "#ef4444" } } },
+            {
+              range: { start: { line: 0, column: 4 }, end: { line: 0, column: 5 } },
+              label: "alpha",
+              labelClass: "px-1 rounded",
+              labelStyle: { backgroundColor: "#e5e7eb" },
+            },
           ]}
           gutterDecorationsWidth={4}
+          scrollbarInset={{ top: 6, right: 2, bottom: 6 }}
           classes={{ overviewRuler: "w-[12px]" }}
           onFoldChange={({ folds }) => folded.set(show(folds))}
           style={{ flex: 1 }}
@@ -329,6 +344,20 @@ export default function BaseEditor() {
           navigator.run("showCodeActions");
         }}
       />
+      <View style={{ width: 390, height: 100 }}>
+        <Editor
+          ref={r => (scroller = r)}
+          defaultValue={Array.from({ length: 30 }, (_, i) => `row ${i}`).join("\n")}
+          softWrap
+          scrollBeyondLastLine={false}
+          onScroll={({ offset, contentSize, size }) =>
+            scrolled.set(`${offset.x} ${offset.y} ${contentSize.width}x${contentSize.height} ${size.width}x${size.height}`)
+          }
+          style={{ flex: 1 }}
+        />
+      </View>
+      <Text>{() => `Scroll: ${scrolled()}`}</Text>
+      <View testID="scroll-to" style={{ height: 20 }} onPress={() => scroller.setScrollOffset({ x: 0, y: 470 })} />
     </View>
   );
 }

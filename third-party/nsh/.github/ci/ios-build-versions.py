@@ -1,7 +1,10 @@
 """Reject release runtimes linked with an old SDK or a raised deployment target.
 
-Run on macOS after `cargo xtask dist`, before packing the iOS component.
-Read the actual Mach-O load commands; never rewrite them.
+Run on macOS after `cargo xtask dist`, before packing the iOS component:
+`ios-build-versions.py <runtime/ios> <minimum SDK major> <devices|simulator>`.
+`devices` (Apple silicon) expects the device runner too; `simulator` (an Intel
+Mac, whose Xcode has an older SDK) the simulator and Mac Catalyst runtimes
+only. Read the actual Mach-O load commands; never rewrite them.
 """
 
 import pathlib
@@ -10,13 +13,14 @@ import subprocess
 import sys
 
 
-def check(root):
+def check(root, min_sdk, devices):
     runtimes = {
-        "iphoneos/nsh-ios-app": "2",
         "iphonesimulator/nsh-ios-app": "7",
         "iphonesimulator/nsh-ios-host": "7",
         "maccatalyst/nsh-ios-host": "6",
     }
+    if devices:
+        runtimes["iphoneos/nsh-ios-app"] = "2"
     failed = False
     for runtime, platform in runtimes.items():
         binary = root / runtime
@@ -34,12 +38,17 @@ def check(root):
             if (
                 actual_platform != platform
                 or minimum not in ("15.0", "15.0.0")
-                or int(sdk.split(".")[0]) < 26
+                or int(sdk.split(".")[0]) < min_sdk
             ):
-                print(f"::error::{binary}: expected platform {platform}, minos 15.0, SDK >= 26")
+                print(
+                    f"::error::{binary}: expected platform {platform}, minos 15.0, SDK >= {min_sdk}"
+                )
                 failed = True
     return int(failed)
 
 
 if __name__ == "__main__":
-    sys.exit(check(pathlib.Path(sys.argv[1])))
+    root, min_sdk, mode = sys.argv[1:4]
+    if mode not in ("devices", "simulator"):
+        sys.exit(f"mode must be devices or simulator, not {mode}")
+    sys.exit(check(pathlib.Path(root), int(min_sdk), mode == "devices"))

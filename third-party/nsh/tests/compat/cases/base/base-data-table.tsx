@@ -67,12 +67,24 @@ export default function BaseDataTable() {
       <Text>{() => `Read: ${read()}`}</Text>
       <View testID="select" style={{ height: 20 }} onPress={() => table.select({ row: 2, column: 1 })} />
       <View
+        testID="select-range"
+        style={{ height: 20 }}
+        onPress={() => table.select({
+          range: { start: { row: 2, column: 1 }, end: { row: 1, column: 0 } },
+        })}
+      />
+      <View
         testID="read"
         style={{ height: 20 }}
         onPress={async () => {
           const s = await table.selection();
           const v = await table.visibleRows();
-          read.set(`${s?.row}:${s?.column} ${v.start}-${v.end}`);
+          if (s?.range) {
+            const { start, end } = s.range;
+            read.set(`range ${start.row}:${start.column} to ${end.row}:${end.column} active ${s.row}:${s.column}`);
+          } else {
+            read.set(`${s?.row}:${s?.column} ${v.start}-${v.end}`);
+          }
         }}
       />
       <View testID="scroll" style={{ height: 20 }} onPress={() => table.scrollToRow(2)} />

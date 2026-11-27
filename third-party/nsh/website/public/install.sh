@@ -69,9 +69,12 @@ step() {
       1) frame=⠋ ;; 2) frame=⠙ ;; 3) frame=⠹ ;; 4) frame=⠸ ;; 5) frame=⠼ ;;
       6) frame=⠴ ;; 7) frame=⠦ ;; 8) frame=⠧ ;; 9) frame=⠇ ;; 10) frame=⠏ ;;
     esac
-    printf '\r\033[K\033[36m%s\033[0m %s' "$frame" "$label" >&2
+    # Build the whole line first and write it once, then clear what is
+    # left of the previous frame. Clearing first and appending the size
+    # from a separate command shows a frame without it: the size blinks.
+    size=
     if [ -n "${download_file:-}" ] && [ -f "$download_file" ]; then
-      wc -c < "$download_file" | awk -v total="${download_total:-0}" '{
+      size=$(wc -c < "$download_file" | awk -v total="${download_total:-0}" '{
         mb = $1 / 1048576
         if (total > 0) {
           pct = int($1 * 100 / total); if (pct > 100) pct = 100
@@ -79,8 +82,9 @@ step() {
         } else {
           printf "  \033[2m%.1f MB\033[0m", mb
         }
-      }' >&2
+      }')
     fi
+    printf '\r\033[36m%s\033[0m %s%s\033[K' "$frame" "$label" "$size" >&2
     sleep 0.1
   done
   status=0
@@ -170,6 +174,16 @@ esac
 command -v curl > /dev/null 2>&1 || fail "curl is required"
 
 asset="nsh-$platform.tar.gz"
+# Name the release before downloading it: `releases/latest` redirects to
+# `releases/tag/<tag>`. The download then uses that tag, so a release
+# published meanwhile cannot mix in. Without an answer it falls back to
+# the `latest` download URL.
+if [ "$version" = "latest" ]; then
+  tag=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$repository/releases/latest" 2> /dev/null) || tag=
+  case "$tag" in
+    */releases/tag/?*) version="${tag##*/releases/tag/}" ;;
+  esac
+fi
 if [ "$version" = "latest" ]; then
   url="https://github.com/$repository/releases/latest/download/$asset"
 else
@@ -178,7 +192,10 @@ fi
 
 work="$(mktemp -d)"
 
-echo "Installing NSH $version for $platform"
+case "$version" in
+  latest) echo "Installing the latest NSH release for $platform" ;;
+  *) echo "Installing NSH $version for $platform" ;;
+esac
 if [ -n "$tty" ]; then
   download_file="$work/$asset"
   # The total size comes from Content-Length after redirects; without it the

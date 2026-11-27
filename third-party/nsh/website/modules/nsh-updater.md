@@ -59,7 +59,7 @@ never rejects.
 
 ```tsx
 promptForUpdate({ quiet: true }); // at startup
-<Button onPress={() => promptForUpdate()}>Check for Updates…</Button>;
+<Button onPress={() => promptForUpdate()}><Text>Check for Updates…</Text></Button>;
 ```
 
 The prompt's text is English. The app's name comes from `nsh.json`'s `"name"`.
@@ -139,7 +139,7 @@ Downloads the archive of the update the last `checkForUpdate` found into the app
 `onProgress` as bytes arrive (`total` is missing when the server does not say), then checks its size and SHA-256
 against the manifest. An interrupted download keeps its partial file keyed to the asset and resumes on the next call
 with an HTTP `Range` request when the server supports it, restarting from the beginning if the server ignores the range
-or the asset changed. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when no update was found or `canInstall` is
+or the asset changed. A dropped connection, a body that stalls for 60 seconds, a truncated response or a `5xx`/`408`/`429` is retried on its own from the bytes already on disk, waiting longer between tries, and fails after five tries in a row that bring no new bytes. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when no update was found or `canInstall` is
 false, and when the download fails or does not match.
 
 ```tsx
@@ -195,7 +195,10 @@ build: each package names the lowest runtime it runs on, and older apps are not 
 ### checkForPackage
 
 ```ts
-function checkForPackage(options?: { locale?: string | null }): Promise<PackageUpdate | null>;
+function checkForPackage(options?: {
+  locale?: string | null;
+  url?: string | null;
+}): Promise<PackageUpdate | null>;
 
 interface PackageUpdate {
   version: string;
@@ -210,6 +213,12 @@ running one (the running package's, else the build the app shipped with) and thi
 when there is none, the app trusts no package roots, or it runs where apps do not update (the web, `nsh run`). It
 rejects as `checkForUpdate` does.
 
+`url` checks that manifest instead, for an app built with `"packages": { "source": "runtime" }`
+([A feed chosen at run time](../docs/ota-updates.md#a-feed-chosen-at-run-time)). The signatures are checked against the
+keys in `nsh.json` as for any source, and `downloadPackage` downloads what this check found. It rejects for an app
+without `"source": "runtime"`, for a URL that is not HTTPS (or plain HTTP with `"allowHttp": true`), and for a URL with
+a user name or password. An app with `"source": "runtime"` and no `github` or `url` must pass `url`.
+
 ### downloadPackage
 
 ```ts
@@ -221,7 +230,7 @@ verifies it as the app's next start will: signed by a release key one of the roo
 than the running build and than every build the app ran before, for this runtime. It then waits in the app's data
 directory for the next start. An interrupted download keeps its partial file keyed to the package and resumes on the
 next call with an HTTP `Range` request when the server supports it, restarting from the beginning if the server ignores
-the range or the package changed. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
+the range or the package changed. A dropped connection, a body that stalls for 60 seconds, a truncated response or a `5xx`/`408`/`429` is retried on its own from the bytes already on disk, waiting longer between tries, and fails after five tries in a row that bring no new bytes. It rejects with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the check found none, and
 with an error saying why (`package refused: …`) when the download fails or the package is refused (a refused package
 leaves nothing behind).
 
@@ -343,6 +352,8 @@ file; with it, unsigned manifests are refused. `channels` names other manifests 
 | `channels` | object | Channel name (letters, digits, `-`, `_`, `.`) to the HTTPS URL of its manifest, for `checkForUpdate({ channel })`. Requires `publicKey` |
 | `publicKey` | string | The Ed25519 key that signs the manifests (`latest.json.sig`). Required with `url` and `channels` |
 | `packages.roots` | string[] | Root public keys (`nsh keygen`'s `root.pub`) whose certified release keys sign the app's [OTA packages](#ota-updates). Without it the app runs no packages |
+| `packages.source` | `"runtime"` | The app's code names the package manifest at each check: `checkForPackage({ url })`. Requires `publicKey`; `github` and `url` become optional |
+| `packages.allowHttp` | boolean | With `source: "runtime"`: the feed may be plain HTTP. Its signature, notes, package and redirects stay on its origin |
 
 `nsh package` checks the keys and adds them, with the app's `build`, to the package, so the source is fixed when the
 app is built. `version` must be

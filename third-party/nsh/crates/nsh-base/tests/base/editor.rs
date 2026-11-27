@@ -2,7 +2,8 @@
 //! into the editor's input inserts at the caret and reports the text; the
 //! keys of code editors move, select and edit; a controlled value replaces
 //! the text; the ref searches, replaces and folds; a read-only editor
-//! moves but never edits; and a long text makes only the rows in view.
+//! moves but never edits; a long text makes only the rows in view; and a
+//! decoration's label shows in place of its range until the caret comes.
 
 use std::{
     collections::HashMap,
@@ -11,7 +12,8 @@ use std::{
 };
 
 use nsh_base::editor::{
-    Editor, EditorApi, EditorCommand, EditorSearch, EditorSearchResult, EditorSelection, editor,
+    Editor, EditorApi, EditorCommand, EditorEvent, EditorSearch, EditorSearchResult,
+    EditorSelection, editor,
 };
 use nsh_core::{
     MountItem, NodeId, PayloadValue, PointerEvents, Size,
@@ -19,7 +21,7 @@ use nsh_core::{
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{Headless, Screen};
 
 #[derive(Clone, PartialEq, Props)]
 struct HarnessProps {
@@ -58,7 +60,9 @@ fn selections_text(selections: &[EditorSelection]) -> String {
 
 /// An editor of 600 × 400 at the top left (in a view `editor`), and what
 /// the app heard from it: the text (`Value "…"`), how many changes, the
-/// selections, the search's result; buttons run the ref's methods.
+/// selections, the search's result, where it scrolled (`Scrolled x y
+/// content-width content-height width height`) and how many times; buttons
+/// run the ref's methods.
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let value = signal(props.text.clone());
@@ -68,6 +72,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let replaced = signal(0u32);
     let from_api = signal(String::new());
     let search = signal(None::<EditorSearch>);
+    let scrolled = signal(String::from("-"));
+    let scrolls = signal(0u32);
+    let wrap = signal(false);
     let ed = component_ref::<Editor>();
     let api = move |f: &dyn Fn(&EditorApi)| {
         if let Some(api) = ed.api::<EditorApi>() {
@@ -86,6 +93,21 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .read_only(props.read_only)
         .tab_size(4u32)
         .search(move || search.get())
+        .soft_wrap(move || wrap.get())
+        .on_scroll(move |e: &EditorEvent| {
+            if let EditorEvent::Scroll(offset, content, size) = e {
+                scrolled.set(format!(
+                    "{} {} {} {} {} {}",
+                    offset.x.0,
+                    offset.y.0,
+                    content.width.0,
+                    content.height.0,
+                    size.width.0,
+                    size.height.0
+                ));
+                scrolls.update(|n| *n += 1);
+            }
+        })
         .on_change(move |text: &SharedString| {
             value.set(text.to_string());
             changes.update(|n| *n += 1);
@@ -117,6 +139,8 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .child(text(move || format!("Matches {}", matches.get())))
         .child(text(move || format!("Replaced {}", replaced.get())))
         .child(text(move || format!("Api {:?}", from_api.get())))
+        .child(text(move || format!("Scrolled {}", scrolled.get())))
+        .child(text(move || format!("Scrolls {}", scrolls.get())))
         .child(
             view()
                 .flex_row()
@@ -149,7 +173,18 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                 .child(button("fold-0", Box::new(|a| a.fold(0))))
                 .child(button("unfold-0", Box::new(|a| a.unfold(0))))
                 .child(button("to-4000", Box::new(|a| a.scroll_to_line(4000))))
-                .child(button("to-2000", Box::new(|a| a.scroll_to_line(2000)))),
+                .child(button("to-2000", Box::new(|a| a.scroll_to_line(2000))))
+                .child(button(
+                    "to-offset",
+                    Box::new(|a| a.set_scroll_offset(point(px(40.0), px(200.0)))),
+                ))
+                .child(
+                    view()
+                        .test_id("wrap")
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .on_press(move || wrap.update(|w| *w = !*w)),
+                ),
         )
 }
 
@@ -252,6 +287,120 @@ fn the_caret_sink_has_no_built_in_scrollbar() {
     assert!(
         in_scroll,
         "the remaining bar belongs to the editor's scroll view"
+    );
+}
+
+/// `scrollbarInset` keeps the editor's bars within it, as a scroll view's:
+/// the vertical scroll view takes it whole; the horizontal one (no soft
+/// wrap) its left, right and bottom, the left less the gutter's width,
+/// which already keeps its bar that far from the editor's left.
+#[test]
+fn the_scroll_bars_keep_within_the_scrollbar_inset() {
+    const INSET: EdgeInsets = EdgeInsets {
+        top: Points(8.0),
+        right: Points(4.0),
+        bottom: Points(6.0),
+        left: Points(12.0),
+    };
+
+    #[component]
+    fn InsetEditor() -> impl IntoElement {
+        let inset = signal(INSET);
+        let gutter = signal(true);
+        let button =
+            |id: &str, f: Box<dyn Fn()>| view().test_id(id).w(px(20.0)).h(px(20.0)).on_press(f);
+        view()
+            .child(
+                view().w(px(600.0)).h(px(200.0)).child(
+                    editor()
+                        .default_value("a long line ".repeat(200))
+                        .line_numbers(move || gutter.get())
+                        .folding(move || gutter.get())
+                        .scrollbar_inset(move || inset.get())
+                        .size_full(),
+                ),
+            )
+            .child(button("no-gutter", Box::new(move || gutter.set(false))))
+            .child(button(
+                "clear",
+                Box::new(move || inset.set(EdgeInsets::default())),
+            ))
+    }
+
+    #[derive(Default)]
+    struct Seen {
+        horizontal: HashMap<NodeId, bool>,
+        insets: HashMap<NodeId, EdgeInsets>,
+    }
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(nsh_testing::windowed_root::<InsetEditor>())
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::ScrollConfig { id, horizontal, .. } => {
+                    seen.horizontal.insert(*id, *horizontal);
+                }
+                MountItem::ScrollBehavior { id, behavior } => {
+                    seen.insets.insert(*id, behavior.scrollbar_inset);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    app.run_for(Duration::from_millis(50)).unwrap();
+    // The editor's scroll view along each axis: the one sent an inset.
+    let (vertical_id, horizontal_id) = {
+        let seen = seen.lock().unwrap();
+        let of = |horizontal: bool| {
+            let mut found = seen.insets.iter().filter(|(id, inset)| {
+                seen.horizontal.get(id) == Some(&horizontal) && **inset != EdgeInsets::default()
+            });
+            let (id, _) = found.next().expect("the scroll view's inset");
+            assert!(found.next().is_none(), "one scroll view per axis");
+            *id
+        };
+        (of(false), of(true))
+    };
+    // The last inset each of them was sent.
+    let insets = |app: &mut Headless| {
+        app.run_for(Duration::from_millis(50)).unwrap();
+        let seen = seen.lock().unwrap();
+        (seen.insets[&vertical_id], seen.insets[&horizontal_id])
+    };
+    let along_the_bottom = |left: f32| EdgeInsets {
+        top: px(0.0),
+        left: px(left),
+        ..INSET
+    };
+
+    let (vertical, horizontal) = insets(&mut app);
+    assert_eq!(vertical, INSET, "the vertical bar takes the inset whole");
+    assert_eq!(
+        horizontal,
+        along_the_bottom(0.0),
+        "the gutter is wider than the left inset"
+    );
+
+    // Without a gutter the text area starts at the editor's left.
+    app.press("id:no-gutter").unwrap();
+    let (vertical, horizontal) = insets(&mut app);
+    assert_eq!(vertical, INSET);
+    assert_eq!(horizontal, along_the_bottom(12.0));
+
+    app.press("id:clear").unwrap();
+    assert_eq!(
+        insets(&mut app),
+        (EdgeInsets::default(), EdgeInsets::default())
     );
 }
 
@@ -651,6 +800,88 @@ fn a_long_text_makes_only_the_rows_in_view() {
     );
 }
 
+/// What the editor reported last (`onScroll`): `[x, y, content width,
+/// content height, width, height]`, `None` before it reported.
+fn scrolled(screen: &Screen) -> Option<[f32; 6]> {
+    let line = screen
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
+        .filter(|s| s != "-")?;
+    let values: Vec<f32> = line.split(' ').map(|v| v.parse().unwrap()).collect();
+    values.try_into().ok()
+}
+
+/// How many times the editor reported where it scrolled.
+fn scrolls(app: &Headless) -> u32 {
+    app.screen()
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Scrolls "))
+        .expect("the count shows")
+        .parse()
+        .unwrap()
+}
+
+/// Waits for a report `done` accepts and gives it: a report follows the
+/// layout or the scroll it tells of, not a fixed time.
+fn wait_scrolled(app: &mut Headless, what: &str, done: impl Fn(&[f32; 6]) -> bool) -> [f32; 6] {
+    app.wait_until(what, Duration::from_secs(5), |s| {
+        scrolled(s).is_some_and(|r| done(&r))
+    })
+    .unwrap_or_else(|e| panic!("{e}; reported: {:?}", scrolled(app.screen())));
+    scrolled(app.screen()).unwrap()
+}
+
+/// The editor reports where its text is scrolled, the content's size and
+/// the viewport's (`onScroll`): once laid out, on a scroll, on the ref's
+/// `setScrollOffset`, and when soft wrap stops the sideways scrolling;
+/// nothing when nothing moved. An app draws a line or a fade at an edge
+/// the text scrolls under from it.
+#[test]
+fn the_editor_reports_where_its_text_is_scrolled() {
+    let mut lines: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+    lines[0] = format!("wide {}", "word ".repeat(60));
+    let mut app = start(props(&lines.join("\n")));
+    see(&mut app, "line 1");
+    // Once laid out: at the top left, the viewport the editor's box, the
+    // content taller (100 rows) and wider (the long line) than it.
+    let first = wait_scrolled(&mut app, "the first layout", |r| {
+        r[2] > 640.0 && r[3] >= 2000.0
+    });
+    let content_h = first[3];
+    assert_eq!(
+        [first[0], first[1], first[4], first[5]],
+        [0.0, 0.0, 600.0, 400.0],
+        "{first:?}"
+    );
+    // The user scrolls down.
+    app.scroll("id:editor", px(100.0)).unwrap();
+    wait_scrolled(&mut app, "the scroll down", |r| {
+        r[0] == 0.0 && r[1] == 100.0
+    });
+    // The ref scrolls both ways at once.
+    app.press("id:to-offset").unwrap();
+    let moved = wait_scrolled(&mut app, "the ref's offset", |r| {
+        r[0] == 40.0 && r[1] == 200.0
+    });
+    assert_eq!(&moved[2..], &first[2..], "the sizes stay");
+    // Nothing moved (a search that matches nothing; the text read back
+    // would take the screen's height and push the buttons off it):
+    // nothing more is reported.
+    let before = scrolls(&app);
+    app.press("id:search").unwrap();
+    app.wait(Duration::from_millis(100)).unwrap();
+    assert_eq!(scrolls(&app), before);
+    // Wrapped, the text no longer scrolls sideways: the content is as wide
+    // as the viewport, and taller (the long line takes several rows).
+    app.press("id:wrap").unwrap();
+    let wrapped = wait_scrolled(&mut app, "the wrapped content", |r| {
+        r[0] == 0.0 && r[2] == 600.0 && r[3] > content_h
+    });
+    assert_eq!(wrapped[4..], [600.0, 400.0], "{wrapped:?}");
+}
+
 /// The top of the row reading `text`, as laid out.
 fn row_top(app: &Headless, text: &str) -> f32 {
     app.screen()
@@ -883,4 +1114,222 @@ fn auto_focus_cancelled_before_mount_does_not_focus() {
     assert_eq!(*auto_focused_inputs.lock().unwrap(), 0);
     app.press_key("a").unwrap();
     see(&mut app, &value(""));
+}
+
+/// A replacing decoration shows its label in place of its range's text;
+/// the text comes back while the caret touches the range, and the label
+/// when the caret leaves it. The document keeps the text throughout.
+#[test]
+fn a_label_shows_in_place_of_its_range_until_the_caret_touches_it() {
+    use nsh_base::editor::{EditorDecoration, EditorPosition, EditorRange};
+
+    #[component]
+    fn Labeled() -> impl IntoElement {
+        let mut due = EditorDecoration::default();
+        due.range = EditorRange::new(EditorPosition::new(0, 4), EditorPosition::new(0, 15));
+        due.label = Some("Tomorrow".into());
+        due.label_class = Some("px-1 rounded bg-muted".into());
+        view().test_id("editor").w(px(600.0)).h(px(200.0)).child(
+            editor()
+                .default_value("due @2026-11-25 ok\nnext")
+                .decorations(vec![due])
+                .size_full(),
+        )
+    }
+
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root::<Labeled>())
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    see(&mut app, "Tomorrow");
+    let source = |app: &Headless| {
+        app.screen()
+            .texts()
+            .iter()
+            .any(|t| t.contains("2026-11-25"))
+    };
+    assert!(!source(&app), "the range's text is not drawn");
+    focus(&mut app);
+    // At the range's start the caret touches it: its text shows.
+    keys(&mut app, &["right", "right", "right", "right"]);
+    see(&mut app, "due @2026-11-25 ok");
+    assert!(!app.shows("Tomorrow"));
+    // On the next line, the label again.
+    keys(&mut app, &["down"]);
+    see(&mut app, "Tomorrow");
+    assert!(!source(&app));
+    assert_eq!(
+        app.screen().input_text("id:editor"),
+        Ok(Some("due @2026-11-25 ok\nnext"))
+    );
+}
+
+/// A row made again keeps a label's box only for the same label: a kept
+/// box first hears the frame it was last laid out at, which for another
+/// label's box would report that label's width as this one's. A new label
+/// for the same range is a new box, and shows.
+#[test]
+fn a_label_box_is_kept_only_for_the_same_label() {
+    use nsh_base::editor::{EditorDecoration, EditorPosition, EditorRange};
+
+    #[component]
+    fn Relabeled() -> impl IntoElement {
+        let later = signal(false);
+        let decorations = move || {
+            let mut due = EditorDecoration::default();
+            due.range = EditorRange::new(EditorPosition::new(0, 4), EditorPosition::new(0, 15));
+            due.label = Some(if later.get() { "Next week" } else { "Tomorrow" }.into());
+            vec![due]
+        };
+        view()
+            .child(
+                view().test_id("editor").w(px(600.0)).h(px(200.0)).child(
+                    editor()
+                        .default_value("due @2026-11-25 ok\nnext")
+                        .decorations(decorations)
+                        .size_full(),
+                ),
+            )
+            .child(
+                view()
+                    .test_id("later")
+                    .w(px(20.0))
+                    .h(px(20.0))
+                    .on_press(move || later.set(true)),
+            )
+    }
+
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        clock: nsh_engine::Clock::manual(std::time::SystemTime::now()),
+        ..EngineConfig::new(nsh_testing::windowed_root::<Relabeled>())
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    see(&mut app, "Tomorrow");
+    let source = "label:@2026-11-25";
+    let first = app.screen().id(source).unwrap();
+    // Typing at the line's end, away from the range (which the app's
+    // decorations keep), makes the row again with the same label: the same
+    // box.
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    app.type_text("id:editor", "!").unwrap();
+    app.run_for(Duration::from_millis(50)).unwrap();
+    assert_eq!(
+        app.screen().input_text("id:editor"),
+        Ok(Some("due @2026-11-25 ok!\nnext"))
+    );
+    assert!(app.shows("Tomorrow"));
+    assert_eq!(app.screen().id(source), Ok(first));
+    // Another label over the range: shown, in a box of its own.
+    app.press("id:later").unwrap();
+    see(&mut app, "Next week");
+    assert!(!app.shows("Tomorrow"));
+    let now = app.screen().id(source).expect("the new label's box");
+    assert_ne!(now, first);
+}
+
+/// A text color as a Rust app types it (`StyleRefinement`), not as
+/// declarations.
+fn typed_color(color: u32) -> nsh_core::element::Style {
+    nsh_core::element::StyleRefinement::default()
+        .text_color(rgb(color))
+        .into()
+}
+
+/// Component `C` on a Linux desktop's headless surface, shown once
+/// `text` is.
+fn start_component<C: Component<Props = ()>>(text: &str) -> Headless {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(nsh_testing::windowed_root::<C>())
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    see(&mut app, text);
+    app
+}
+
+/// Typed part styles reach a line number of one part and the caret's,
+/// which takes `lineNumber` then `activeLineNumber`, the later winning.
+#[test]
+fn typed_part_styles_reach_line_numbers_of_one_part_and_of_two() {
+    use nsh_base::{editor::EditorStyles, text_view::PartStyle};
+    use nsh_core::Color;
+
+    #[component]
+    fn Numbered() -> impl IntoElement {
+        let mut styles = EditorStyles::default();
+        styles.line_number = Some(PartStyle(typed_color(0xff0000)));
+        styles.active_line_number = Some(PartStyle(typed_color(0x0000ff)));
+        view().test_id("editor").w(px(600.0)).h(px(200.0)).child(
+            editor()
+                .default_value("abc\ndef")
+                .styles(styles)
+                .size_full(),
+        )
+    }
+
+    let app = start_component::<Numbered>("def");
+    let color = |selector: &str| app.screen().span_style(selector).unwrap().color;
+    assert_eq!(color("id:editor >> text:1"), Color(0x0000_ffff));
+    assert_eq!(color("id:editor >> text:2"), Color(0xff00_00ff));
+}
+
+/// Typed decoration styles reach their range's text (`style`) and their
+/// lines' rows (`lineStyle`), whose text takes their color; where two
+/// decorations cover the same text or line, the later one wins.
+#[test]
+fn typed_decoration_styles_reach_their_text_and_rows_the_later_winning() {
+    use nsh_base::editor::{EditorDecoration, EditorPosition, EditorRange};
+    use nsh_core::Color;
+
+    #[component]
+    fn Decorated() -> impl IntoElement {
+        let range = |line, from, to| {
+            EditorRange::new(
+                EditorPosition::new(line, from),
+                EditorPosition::new(line, to),
+            )
+        };
+        let text = |line, from, to, color| {
+            let mut d = EditorDecoration::default();
+            d.range = range(line, from, to);
+            d.style = Some(typed_color(color));
+            d
+        };
+        let row = |line, color| {
+            let mut d = EditorDecoration::default();
+            d.range = range(line, 0, 3);
+            d.line_style = Some(typed_color(color));
+            d
+        };
+        view().test_id("editor").w(px(600.0)).h(px(200.0)).child(
+            editor()
+                .default_value("abc and xyz\ndef\nghi")
+                .decorations(vec![
+                    text(0, 0, 3, 0xff0000),
+                    text(0, 8, 11, 0xff0000),
+                    text(0, 8, 11, 0x0000ff),
+                    row(1, 0x00ff00),
+                    row(2, 0x00ff00),
+                    row(2, 0x0000ff),
+                ])
+                .size_full(),
+        )
+    }
+
+    let app = start_component::<Decorated>("ghi");
+    let color = |selector: &str| app.screen().span_style(selector).unwrap().color;
+    assert_eq!(color("id:editor >> text:abc"), Color(0xff00_00ff));
+    assert_ne!(color("id:editor >> text: and "), Color(0xff00_00ff));
+    assert_eq!(color("id:editor >> text:xyz"), Color(0x0000_ffff));
+    assert_eq!(color("id:editor >> text:def"), Color(0x00ff_00ff));
+    assert_eq!(color("id:editor >> text:ghi"), Color(0x0000_ffff));
 }

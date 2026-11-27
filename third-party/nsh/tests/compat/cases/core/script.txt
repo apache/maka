@@ -90,6 +90,12 @@ covers [nsh] CanvasGradient
 covers [nsh] CanvasRenderingContext2D
 covers [nsh] Path2D
 covers [props] Canvas.draw
+# core-gpu-view
+tap id:case-core-gpu-view
+expect Over the scene
+frame id:scene 0 64 200 100
+frame id:label 10 10 180 17
+covers [nsh] gpuView
 # core-shader
 tap id:case-core-shader
 expect Over the shader

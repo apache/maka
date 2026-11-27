@@ -200,6 +200,7 @@ Each platform shows a kind as its own windows of that role: an `NSPanel` on macO
 | | `titleBar` | `{ style: "default" \| "hidden"; height?; controlsOffset? }`: the system's title bar, or a title bar of the app's own ([below](#a-title-bar-of-your-own)). `controlsOffset` (`{ x, y }`) places macOS's traffic lights in a hidden title bar. |
 | | `frame` | `"default"`, or `"none"`: no title bar or border, the app draws everything. |
 | Size | `minSize`, `maxSize` | The least and largest content size the user may give it, `{ width, height }` in points; `null` clears it. |
+| | `aspectRatio` | The shape the user's resizes keep the content at: width divided by height (`16 / 9`), so a video or a canvas fills the window as the user drags an edge or a corner. `null` clears it. It limits only the user's resizes: `setBounds`, `sizeToContent` and maximizing do not keep it, and the window keeps its current size until the user resizes it. Windows and macOS keep it (in GPUI apps, macOS only); Linux does not yet ([below](#aspect-ratio)). |
 | | `sizeToContent` | `true`, `"width"` or `"height"`: the window follows its content's laid-out size, natively, without JS on the path. |
 | Behavior | `resizable`, `movable`, `minimizable`, `maximizable`, `closable` | What the user may do with it. The app's requests are not limited by them. |
 | | `focusable` | It takes the keyboard focus. |
@@ -217,6 +218,22 @@ Each platform shows a kind as its own windows of that role: an `NSPanel` on macO
 
 An attribute a platform's windows do not have is kept and has no effect there: the window manager on Linux places and stacks windows itself, so positions, levels and `taskbar` are its.
 
+### Aspect ratio
+
+`aspectRatio` holds the content, not the frame, at its ratio: the title bar and borders come on top. A video player sets the video's ratio once it knows it:
+
+```tsx
+<Window id="player" aspectRatio={video.width / video.height} minSize={{ width: 320, height: 180 }}>
+```
+
+| Platform | What the user sees |
+|---|---|
+| macOS | AppKit's `contentAspectRatio`: every edge and corner keeps the ratio as the user drags. |
+| Windows | The drag's rectangle is fixed in `WM_SIZING`: a side edge sets the height from the width, the top or bottom edge sets the width from the height, a corner follows its width. The edge the user holds stays under the pointer. `minSize` and `maxSize` still apply; a ratio they cannot meet gives way to them. |
+| Linux | No effect yet. GTK 4 has no call for it; Wayland has no aspect ratio for a resize at all (the compositor picks the size), and on X11 GDK 4 rewrites the whole `WM_NORMAL_HINTS` property, without an aspect field, each time it lays the window out, which includes every step of a drag, so a ratio set beside it would vanish while the user resizes. Draw the content letterboxed, or correct the size in `onBoundsChange` if you must. |
+| GPUI apps (Windows, Linux) | No effect: GPUI owns the window's resize loop. |
+| iOS, Android, Web, terminal | No windows: no effect. |
+
 ### currentWindow
 
 ```ts
@@ -230,7 +247,7 @@ function focusedWindow(): WindowRef | null;
 ```tsx
 function SaveButton() {
   const win = currentWindow(); // while rendering
-  return <Button onPress={() => save().then(() => win.close())}>Save</Button>;
+  return <Button onPress={() => save().then(() => win.close())}><Text>Save</Text></Button>;
 }
 ```
 
@@ -430,12 +447,14 @@ async function changeLanguage(language: string) {
 ### Quitting
 
 The app owns its lifecycle. Closing a window closes that window only; closing the last window follows the quit mode:
-`"platform"` (the default) keeps a macOS app running in the Dock and quits on Windows and Linux, `"lastWindowClosed"`
-quits on every platform, `"explicit"` leaves the app running so it can open another window, show a tray menu or call
-`quit()`. The app sets it with `Application.setQuitMode("platform")` (Rust: `set_quit_mode(QuitMode::Platform)`);
-nsh.json's `application.quitMode` holds the same mode from launch. `Application.on("lastWindowClosed")` hears the last
-window go, after its close path. Rust listeners run synchronously before the quit mode acts; JS listeners run in a later
-commit, after the decision.
+`"platform"` (the default for apps that declare `<Window>` scenes) keeps a macOS app running in the Dock and quits on
+Windows and Linux, `"lastWindowClosed"` quits on every platform, `"explicit"` leaves the app running so it can open
+another window, show a tray menu or call `quit()`. A plain `mount(App)` root with no `<Window>` scenes uses an implicit
+main window that quits on every platform when closed unless the app explicitly sets `application.quitMode` in nsh.json
+or calls `Application.setQuitMode`. The app sets it with `Application.setQuitMode("platform")` (Rust:
+`set_quit_mode(QuitMode::Platform)`); nsh.json's `application.quitMode` holds the same mode from launch.
+`Application.on("lastWindowClosed")` hears the last window go, after its close path. Rust listeners run synchronously
+before the quit mode acts; JS listeners run in a later commit, after the decision.
 
 A macOS Dock or Finder reopen, or a later launch on Windows and Linux, reaches `Application.on("reopen")` (Rust:
 `on_reopen`): the app opens or focuses the window it wants. NSH never shows a window of its own.
@@ -766,7 +785,7 @@ interface TitleBarArea {
 }
 ```
 
-The hidden title bar's area of the current window, in points (reactive): its `height`, and the widths the system's window controls take at its `left` and `right` ends. Lay your bar out with it so that nothing goes under the controls. All three are 0 while the system shows its title bar (and in full screen, off the desktops, and in a terminal app). Rust: `title_bar() -> Edges<Points>`, whose `top` is the height and `left` and `right` the controls' widths; reading it subscribes to changes.
+The hidden title bar's area of the current window, in points (reactive): its `height`, and the widths the system's window controls take at its `left` and `right` ends. Lay your bar out with it so that nothing goes under the controls. All three are 0 while the system shows its title bar (and in full screen, off the desktops, in a terminal app, or when the window is closed). Called outside a render (in an event handler, timer or async callback), it reads the open `"main"` window for compatibility (all 0 when none is open); in multi-window apps, capture `currentWindow()` while rendering and call `win.titleBar()`. Rust: `title_bar() -> Edges<Points>`, whose `top` is the height and `left` and `right` the controls' widths; reading it subscribes to changes.
 
 | | `height` | `left` | `right` |
 |---|---|---|---|
@@ -811,7 +830,7 @@ interface Display {
 }
 ```
 
-`win.state()` is a window as the platform reports it, `windowState()` the current window's, and `displays()` the displays, the primary one first; all are reactive. Except for `nativeContentBounds`, rectangles are in points, in screen coordinates: from the primary display's top left corner, with `y` growing down, as `setBounds` takes them. A change of mode, of display, of focus, or of being minimized or visible is reported at once; a move or a resize once the window stops for a moment, so what reads them runs once per move rather than at every step. Before a press handler runs, the latest pending geometry is published so the handler reads the current placement. Rust: `WindowRef::state() -> Option<WindowState>` and `displays() -> Vec<Display>` (`nsh_core::desktop`'s types); reading them subscribes to changes.
+`win.state()` is a window as the platform reports it, `windowState()` the current window's (or the open `"main"` window's when called outside a render such as an event handler, timer or async callback, returning `null` when closed or none is open; in multi-window apps, capture `currentWindow()` while rendering and call `win.state()`), and `displays()` the displays, the primary one first; all are reactive. Except `nativeContentBounds`, every rectangle is in points, in screen coordinates: from the primary display's top left corner, with `y` growing down, as `setBounds` takes them. A change of mode, of display, of focus, or of being minimized or visible is reported at once; a move or a resize once the window stops for a moment, so what reads them runs once per move rather than at every step. Press handlers flush any pending position first so they read the current location. Rust: `WindowRef::state() -> Option<WindowState>` and `displays() -> Vec<Display>` (`nsh_core::desktop`'s types); reading them subscribes to changes.
 
 A display's `cutouts` are the parts of it a camera housing covers, in the same screen coordinates: on a MacBook with a notch, one rectangle at the top's middle, as tall as the menu bar. A window can sit beside the notch, or show content that grows out of it; on every other display the list is empty.
 

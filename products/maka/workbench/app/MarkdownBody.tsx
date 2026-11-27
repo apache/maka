@@ -265,11 +265,11 @@ export function MarkdownBody(props: {
                             return target.focus();
                           });
                       }}
-                      renderImage={(context) => (
+                      renderImage={(image, context) => (
                         <MarkdownImageView
-                          image={() => context.image}
+                          image={() => image}
                           sessionId={props.sessionId}
-                          linked={context.linked}
+                          linked={context.link != null}
                           flow={context.flow}
                           lineHeight={context.lineHeight}
                         />

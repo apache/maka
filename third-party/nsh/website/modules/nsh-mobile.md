@@ -6,16 +6,20 @@ order: 12.2
 
 # nsh/mobile
 
-`nsh/mobile` holds the capabilities specific to iOS and Android: the system's tab bar, `TabBar`,
-[`DateTimePicker`](#datetimepicker), the system's date and time picker, [`Switch`](#switch), the system's switch, and
-[`Haptics`](#haptics), the device's haptic feedback, and [`AppSettings`](#appsettings), the app's page in the system's
-settings, on both;
-[`SegmentedControl`](#segmentedcontrol), the system's segmented control, and
-[`InputAccessoryView`](#inputaccessoryview), a bar over the keyboard, on iOS; and [`BackHandler`](#backhandler), the
-back button, on Android. Rust code uses `nsh_core::mobile` and `nsh_core::prelude`; TSX imports `nsh/mobile`. The
-module can be imported on every platform, so one bundle runs everywhere: on the other platforms its components take no
-room and its calls return at once, and `isAvailable` tells you whether you are on iOS or Android (`platform.os` from
-`nsh` tells which). What desktops have is in [nsh/desktop](./nsh-desktop.md).
+`nsh/mobile` holds the components and APIs that exist only on iOS and Android. TSX imports `nsh/mobile`. Rust code uses `nsh_core::mobile` and `nsh_core::prelude`.
+
+| API | What it is | Platforms |
+|---|---|---|
+| `TabBar` | The system's tab bar | iOS, Android |
+| [`DateTimePicker`](#datetimepicker) | The system's date and time picker | iOS, Android |
+| [`Switch`](#switch) | The system's switch | iOS, Android |
+| [`Haptics`](#haptics) | The device's haptic feedback | iOS, Android |
+| [`AppSettings`](#appsettings) | The app's page in the system's settings | iOS, Android |
+| [`SegmentedControl`](#segmentedcontrol) | The system's segmented control | iOS |
+| [`InputAccessoryView`](#inputaccessoryview) | A bar over the keyboard | iOS |
+| [`BackHandler`](#backhandler) | The back button | Android |
+
+You can import the module on every platform, so one bundle runs everywhere. On other platforms its components take no room and its calls return at once. `isAvailable` tells you whether you are on iOS or Android, and `platform.os` from `nsh` tells you which. Desktop APIs are in [nsh/desktop](./nsh-desktop.md).
 
 ```tsx tabs
 import {

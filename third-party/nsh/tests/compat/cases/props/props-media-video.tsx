@@ -1,5 +1,5 @@
 // A case of the API's test suite (docs/dev/compatibility.md): how a video
-// plays, as the platform receives it: its source, paused (then playing),
+// plays, as the platform receives it: its source, its poster, paused (then playing),
 // muted, its volume and speed, looping, the platform's controls, how it
 // fits its box (`objectFit`), how often it reports progress and what its sound does to
 // other apps' audio. Its script checks each.
@@ -16,6 +16,7 @@ function App() {
       <Video
         testID="clip"
         src="https://example.com/clip.mp4"
+        poster="https://example.com/poster.png"
         paused={paused()}
         muted
         volume={0.25}

@@ -4,9 +4,11 @@
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
 import Backdrop from "./backdrop";
+import ModKeymapOverFocusedPointer from "./mod-keymap-over-focused-pointer";
 
 const cases: Record<string, () => JSX.Element> = {
   "backdrop": Backdrop,
+  "mod-keymap-over-focused-pointer": ModKeymapOverFocusedPointer,
 };
 const shown = signal("");
 

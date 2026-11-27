@@ -68,7 +68,17 @@ export function createNavigation(reactive, dom, environment, animation) {
         popped.set(page, () => entries.set(untracked(entries).filter(value => value !== entry)));
         return page;
       };
-      return typeof rendered === "function" ? computed(() => { const value = rendered(); return untracked(() => screenFor(value)); }) : screenFor(rendered);
+      if (typeof rendered !== "function") return screenFor(rendered);
+      // A component rendering another gives an accessor around the next one
+      // (each made hot is one): read them all, tracked, down to what the
+      // innermost rendered, so a `<NavPage>` there is the screen itself and
+      // an edit of any of them renders the screen again (as nsh-js's
+      // `screen_of_accessor`).
+      return computed(() => {
+        let value = rendered();
+        while (typeof value === "function") value = value();
+        return untracked(() => screenFor(value));
+      });
     });
     rt.insert(node, rows);
     return node;
