@@ -26558,6 +26558,116 @@ mod views {
         assert_eq!(shown, ["mail 2", "new 3 (last)"]);
     }
 
+    #[derive(Clone, PartialEq, Props)]
+    struct ReplacedListProps {
+        #[prop(default)]
+        refresh_replacement: crate::element::Prop<bool>,
+    }
+
+    #[component]
+    fn ReplacedList(props: ReplacedListProps) -> impl IntoElement {
+        let refresh_replacement = props.refresh_replacement.get_untracked();
+        let rows = signal(vec![(0, "old")]);
+        let replacement = signal(false);
+        view()
+            .flex_1()
+            .child(view().h(px(20.0)).on_press(move || {
+                // Queue an update from the old binding before replacing its scope.
+                rows.set(vec![(0, "new")]);
+                replacement.set(true);
+            }))
+            .child(dynamic(move || {
+                let replaced = replacement.get();
+                let source = if replaced { "second" } else { "first" };
+                let list = virtual_list(
+                    move || rows.with(Vec::len),
+                    move |at| {
+                        text(move || rows.with(|r| format!("{source}: {}", r[at.index()].1)))
+                            .h(px(40.0))
+                    },
+                )
+                .keys(move || rows.with(|r| r.iter().map(|row| row.0).collect::<Vec<_>>()))
+                .flex_1();
+                let refresh = (replaced && refresh_replacement).then(|| {
+                    // Runs after the new list binds, before its reused cells render.
+                    dynamic(move || rows.set(vec![(0, "latest")]))
+                });
+                let mut children = vec![list.into_element()];
+                children.extend(refresh);
+                children
+            }))
+    }
+
+    #[test]
+    fn replacing_a_lists_row_scope_while_its_rows_update_keeps_the_visible_row() {
+        let mut c = core();
+        c.mount_root(&Root::of::<ReplacedList>());
+        let initial = c.commit().unwrap();
+        assert_eq!(texts(&initial), ["first: old"]);
+        let replace = pressable(&initial)[0];
+        assert!(c.component_event(replace, EventKind::Press, &EventPayload::None));
+        let updated = c.commit().unwrap();
+        assert_eq!(texts(&updated), ["second: new"]);
+    }
+
+    #[test]
+    fn a_replacement_lists_own_patch_keeps_the_visible_row() {
+        let mut c = core();
+        c.mount_root(&Root::new::<ReplacedList>(|| ReplacedListProps {
+            refresh_replacement: true.into(),
+        }));
+        let initial = c.commit().unwrap();
+        assert_eq!(texts(&initial), ["first: old"]);
+        let replace = pressable(&initial)[0];
+        assert!(c.component_event(replace, EventKind::Press, &EventPayload::None));
+        assert_eq!(texts(&c.commit().unwrap()), ["second: latest"]);
+    }
+
+    #[component]
+    fn ReplacedListLayout() -> impl IntoElement {
+        let padding = signal(0.0);
+        let replacement = signal(false);
+        view()
+            .flex_1()
+            .child(view().on_press(move || {
+                padding.set(100.0);
+                replacement.set(true);
+            }))
+            .child(view().on_press(move || padding.set(100.0)))
+            .child(dynamic(move || {
+                let replaced = replacement.get();
+                let list = virtual_list(1, move |_| {
+                    text(if replaced { "new" } else { "old" }).h(px(40.0))
+                })
+                .flex_1();
+                if replaced {
+                    list.content_padding_top(px(0.0))
+                } else {
+                    list.content_padding_top(move || px(padding.get()))
+                }
+            }))
+    }
+
+    #[test]
+    fn a_replacement_list_uses_its_own_layout() {
+        for commit_old_padding in [false, true] {
+            let mut c = core();
+            c.mount_root(&Root::of::<ReplacedListLayout>());
+            let initial = c.commit().unwrap();
+            let buttons = pressable(&initial);
+            if commit_old_padding {
+                assert!(c.component_event(buttons[1], EventKind::Press, &EventPayload::None));
+                c.commit().unwrap();
+            }
+            assert!(c.component_event(buttons[0], EventKind::Press, &EventPayload::None));
+            let updated = c.commit().unwrap();
+            let row = text_node(&updated, "new");
+            let cell = native_parent(&c, row).unwrap();
+            let key = c.key(cell).unwrap();
+            assert_eq!(c.nodes[key as usize].frame.origin.y, px(0.0));
+        }
+    }
+
     #[test]
     fn a_views_list_cells_show_other_rows_through_their_bindings() {
         let (mut c, batch) = mailbox(1000);
