@@ -86,7 +86,11 @@ const distributionInputs = [
   'scripts/rust/migrations.lock.json',
   'scripts/install-nightly.sh',
 ];
-const bundledSkillInputs = ['skills/maka-generative-ui', 'skills/maka-plugin-authoring'];
+const bundledSkillInputs = [
+  'skills/maka-generative-ui',
+  'skills/maka-plugin-authoring',
+  'skills/maka-theme',
+];
 const skillInputs = [...bundledSkillInputs, 'platform/computer-use/skills'];
 const externalCodexFixture = 'products/maka/cli/tests/support/external_codex_cli.mjs';
 const externalAgentFixture = 'products/maka/terminal-shell/tests/support/external-agent-cli.mjs';

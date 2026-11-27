@@ -132,6 +132,7 @@ test('an embedded product Markdown change selects its actual runtime consumers',
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',
     'skills/maka-plugin-authoring/SKILL.md',
+    'skills/maka-theme/SKILL.md',
     'platform/computer-use/skills/computer.md',
   ]) {
     assert.equal(documentation(path), false);
@@ -278,6 +279,7 @@ test('skill and product inputs still select the native Windows skills consumer',
   for (const path of [
     'skills/maka-generative-ui/SKILL.md',
     'skills/maka-plugin-authoring/SKILL.md',
+    'skills/maka-theme/SKILL.md',
   ]) {
     const plan = createPlan({
       root,
