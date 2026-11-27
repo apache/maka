@@ -3436,6 +3436,288 @@ fn mark_final(row: &mut Value) {
     row["foldedWork"] = json!({"thoughts":0,"tools":1,"messages":0,"imageCount":0,"images":[]});
 }
 
+fn thought_row(sequence: u64, text: &str) -> Value {
+    let mut row = quote_history_row(sequence, "assistant", text);
+    row["field"] = json!("thinking");
+    row
+}
+
+fn activity_tool_row(sequence: u64, id: &str, name: &str) -> Value {
+    let mut row = quote_history_row(sequence, "tool_call", "");
+    row["tool"] = json!({"toolUseId":id,"call":{"name":name}});
+    row
+}
+
+fn assert_activity_order(app: &mut Headless, labels: &[&str]) {
+    for label in labels {
+        app.wait_for(&format!("text:{label}")).unwrap();
+    }
+    let positions: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            app.screen()
+                .layout(&format!("text:{label}"))
+                .unwrap()
+                .unwrap()
+                .bounds
+                .origin
+                .y
+                .0
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "expected {labels:?} in order, got y positions {positions:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_activity_keeps_tool_result_at_its_call() {
+    let mut thought = thought_row(2, "Café");
+    thought["totalBytes"] = json!("Café thought".len());
+    let mut suffix = thought.clone();
+    suffix["offset"] = json!(3);
+    suffix["text"] = json!("é thought");
+    let mut rows = vec![
+        quote_history_row(1, "user", "Inspect the files"),
+        thought.clone(),
+        suffix,
+        thought,
+        activity_tool_row(3, "a", "Read source"),
+        thought_row(4, "Second thought"),
+        activity_tool_row(5, "b", "Check tests"),
+        quote_history_row(7, "assistant", "Here are the findings"),
+    ];
+    let mut fx = ProjectionFixture::start(history_page(11, rows.clone(), Value::Null)).await;
+    fx.app.wait_for("label:Thought process · 2 tools").unwrap();
+    fx.app.press("label:Thought process · 2 tools").unwrap();
+    assert_activity_order(
+        &mut fx.app,
+        &[
+            "Café thought",
+            "Read source",
+            "Second thought",
+            "Check tests",
+        ],
+    );
+    assert_eq!(fx.app.screen().count("text:/^Café$/").unwrap(), 0);
+    let color = |app: &Headless, title: &str| {
+        let screen = app.screen();
+        let id = screen.id(&format!("text:{title}")).unwrap();
+        screen
+            .layout_nodes()
+            .into_iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .text
+            .unwrap()
+            .text
+            .spans[0]
+            .style
+            .color
+    };
+    let initial_color = color(&fx.app, "Read source");
+
+    let mut result = activity_tool_row(6, "a", "Read source");
+    result["role"] = json!("tool_result");
+    result["tool"]["call"]["title"] = json!({"fallback":"Could not read source"});
+    result["tool"]["result"] = json!({"isError":true});
+    rows.insert(rows.len() - 1, result);
+    fx.ended();
+    let (_, tail) = fixture_recv(&mut fx.queries).await;
+    tail.resolve(history_page(12, rows, Value::Null));
+    assert_activity_order(
+        &mut fx.app,
+        &[
+            "Café thought",
+            "Could not read source",
+            "Second thought",
+            "Check tests",
+        ],
+    );
+    assert_ne!(color(&fx.app, "Could not read source"), initial_color);
+    fx.app.wait_for("label:Thought process · 2 tools").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn folded_activity_opens_before_its_visible_tail() {
+    let prompt = quote_history_row(1, "user", "Check the plan");
+    let first = thought_row(2, "Think through the inputs");
+    let tool_a = activity_tool_row(3, "a", "Read plan");
+    let mut group = first.clone();
+    group["text"] = json!("");
+    group["totalBytes"] = json!(0);
+    group["work"] = json!({"end":history_cursor(&tool_a),"kinds":[{"kind":"thought"}],
+        "last":{"kind":"tool"},"thoughts":1,"tools":1,"messages":0,"imageCount":0,"images":[]});
+    let middle = quote_history_row(4, "assistant", "The plan needs a second pass");
+    let second = thought_row(5, "Consider the edge cases");
+    let mut second_suffix = second.clone();
+    second_suffix["offset"] = json!("Consider the ".len());
+    second_suffix["text"] = json!("edge cases");
+    let tool_b = activity_tool_row(6, "b", "Validate plan");
+    let mut reply = quote_history_row(7, "assistant", "The plan is ready");
+    reply["finalOutput"] = json!(true);
+    let mut folded = reply.clone();
+    folded["foldedWork"] = json!({"thoughts":1,"tools":1,"messages":1,"imageCount":0,"images":[]});
+    let mut fx = ProjectionFixture::start(history_page(
+        11,
+        vec![prompt.clone(), second_suffix, tool_b.clone(), folded],
+        Value::Null,
+    ))
+    .await;
+    fx.app.wait_for("text:The plan is ready").unwrap();
+    assert!(!fx.app.shows("The plan needs a second pass"));
+    fx.app.press("label:Thought process · 2 tools").unwrap();
+    let (input, turn) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "turn");
+    fx.app.wait_for("text:Loading…").unwrap();
+    turn.resolve(history_page(
+        11,
+        vec![prompt, group, middle, second, tool_b, reply],
+        Value::Null,
+    ));
+    let (input, steps) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["view"], "steps");
+    assert_eq!(input["position"]["position"], first["position"]);
+    steps.resolve(history_page(11, vec![first, tool_a], Value::Null));
+    assert_activity_order(
+        &mut fx.app,
+        &[
+            "Think through the inputs",
+            "Read plan",
+            "The plan needs a second pass",
+            "Consider the edge cases",
+            "Validate plan",
+            "The plan is ready",
+        ],
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn visible_prose_stays_between_work_groups_and_their_tool_is_counted_once() {
+    let first = thought_row(2, "Check the first step");
+    let mut parent = activity_tool_row(3, "parent", "Run Code Mode");
+    parent["tool"]["result"] = json!({"isError":false});
+    let mut tool = activity_tool_row(4, "a", "Read the first step");
+    tool["tool"]["call"]["origin"] = json!("code_mode");
+    tool["tool"]["call"]["ancestorToolUseIds"] = json!(["parent"]);
+    let middle = quote_history_row(5, "assistant", "Midway update");
+    let second = thought_row(6, "Check the next step");
+    let mut result = quote_history_row(7, "tool_result", "");
+    result["tool"] = tool["tool"].clone();
+    result["tool"]["call"]["position"] = tool["position"].clone();
+    result["tool"]["result"] = json!({"position":result["position"],"isError":false});
+    let group = |start: &Value, end: &Value, tools| {
+        let mut row = start.clone();
+        row["text"] = json!("");
+        row["totalBytes"] = json!(0);
+        row["work"] = json!({"end":history_cursor(end),"kinds":[{"kind":"thought"}],
+            "last":{"kind":"thought"},"thoughts":1,"tools":tools,"messages":0,"imageCount":0,"images":[]});
+        row
+    };
+    let mut reply = quote_history_row(8, "assistant", "Final update");
+    reply["finalOutput"] = json!(true);
+    let mut fx = ProjectionFixture::start(history_page(
+        11,
+        vec![
+            quote_history_row(1, "user", "Check both steps"),
+            group(&first, &tool, 1),
+            middle,
+            group(&second, &second, 0),
+            result,
+            reply,
+        ],
+        Value::Null,
+    ))
+    .await;
+    let summary = "label:Thought process · 1 tool";
+    fx.app.wait_for(summary).unwrap();
+    fx.app.wait_for("text:Midway update").unwrap();
+    let mut quote = watch_quote_menus(&mut fx.app);
+    fx.app.press(summary).unwrap();
+    let (input, read) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["position"]["position"], first["position"]);
+    read.resolve(history_page(11, vec![first, parent, tool], Value::Null));
+    let (input, read) = fixture_recv(&mut fx.queries).await;
+    assert_eq!(input["position"]["position"], second["position"]);
+    read.resolve(history_page(11, vec![second], Value::Null));
+    assert_activity_order(
+        &mut fx.app,
+        &[
+            "Check the first step",
+            "Run Code Mode",
+            "Read the first step",
+            "Midway update",
+            "Check the next step",
+            "Final update",
+        ],
+    );
+    fx.app.wait_for(summary).unwrap();
+    assert!(quote(&mut fx.app, "text:Midway update", Some("Midway")));
+    fx.app.wait_for("label:Remove quote: Midway").unwrap();
+    fx.app.press("role:button[Copy reply]").unwrap();
+    assert_eq!(
+        fx.app.screen().clipboard(),
+        Some("Midway update\n\nFinal update")
+    );
+    fx.app.press(summary).unwrap();
+    fx.app.wait_for(summary).unwrap();
+    assert!(!fx.app.shows("text:Run Code Mode"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_preview_displays_thinking_and_tools_in_order() {
+    let mut fx = ProjectionFixture::start(history_page(11, vec![], Value::Null)).await;
+    let long_thought =
+        "Think about how the next file handles an empty response and whether it should retry";
+    let long_tool = "Open the next file and inspect how it handles an empty response from the workspace service";
+    let thought = |ordinal, started_at, text: &str| {
+        json!({"ordinal":ordinal,"startedAt":started_at,"text":text,"offset":0,"totalBytes":text.len(),
+            "field":{"kind":"text","textKind":"thinking"}})
+    };
+    let tool = |id, started_at, name| {
+        json!({"ordinal":null,"startedAt":started_at,"text":"","offset":0,"totalBytes":0,
+            "field":{"kind":"tool_input","toolUseId":id,"name":name}})
+    };
+    fx.watch["item"] = json!({"kind":"preview","page":{
+        "kind":"cut","hostEpoch":"ea","runId":"live","turnId":"t2","stepId":"s1","attemptId":"a1",
+        "revision":1,"dependsOn":11,"first":true,"last":true,
+        "parts":[
+            thought(0, 1, "Think about the first file"),
+            thought(2, 3, long_thought),
+            tool("a", 2, "Open first file"),
+            tool("b", 4, long_tool)
+        ]
+    }});
+    fx.app
+        .send_host_event("ios.subscriptionItem", fx.watch)
+        .unwrap();
+    fx.app
+        .wait_for("label:Thinking · 2 tools running…")
+        .unwrap();
+    fx.app.press("label:Thinking · 2 tools running…").unwrap();
+    assert_activity_order(
+        &mut fx.app,
+        &[
+            "Think about the first file",
+            "Open first file",
+            long_thought,
+            long_tool,
+        ],
+    );
+    for text in [long_thought, long_tool] {
+        let bounds = fx
+            .app
+            .screen()
+            .layout(&format!("text:{text}"))
+            .unwrap()
+            .unwrap()
+            .bounds;
+        assert!(bounds.origin.x.0 + bounds.size.width.0 <= 390.);
+        assert!(bounds.size.height.0 > 20., "{text:?} did not wrap");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_tail_supersedes_a_late_before_from_the_live_projection() {
     let prompt = quote_history_row(1, "user", "What changed?");
@@ -3702,8 +3984,13 @@ async fn expanded_user_headed_work_follows_new_steps_and_ignores_an_old_generati
             "events":[{"sequence":through,"runId":Uuid::nil(),"turnId":"t1","fact":{"kind":"tool_settled"}}]});
         app.send_host_event("ios.subscriptionItem", watch).unwrap();
     };
+    app.press("label:Used 1 tool").unwrap();
+    assert!(!app.shows("text:Read source"));
     deliver(&mut app, 2);
     app.wait_for("text:Working answer 2").unwrap();
+    app.wait_for("label:Used 2 tools").unwrap();
+    assert!(steps_rx.try_recv().is_err(), "collapsed work was reread");
+    app.press("label:Used 2 tools").unwrap();
     let (updated, first_page) = fixture_recv(&mut steps_rx).await;
     assert_eq!(updated["through"], 22);
     let mut partial = page(22, vec![message.clone(), first_tool.clone()]);

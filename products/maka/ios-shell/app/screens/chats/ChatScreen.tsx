@@ -30,6 +30,7 @@ import {
   token,
   type Accessor,
   type InputRef,
+  type JSX,
   type ListRef,
 } from 'nsh';
 import { Button, Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
@@ -61,6 +62,8 @@ import {
   assembleHistoryRows,
   backendKey,
   clearDraftQuotes,
+  coalesceHistoryRows,
+  compareHistoryRows,
   conversationKey,
   draftQuote,
   createConversationController,
@@ -111,19 +114,20 @@ import {
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
 import { SideQuestionList } from './ChatSideQuestions';
 
-interface ToolSummaryItem {
-  id: string;
-  label: string;
-  isError: boolean;
-}
+type ActivityEntry =
+  | { kind: 'thinking'; key: string; text: string }
+  | { kind: 'tool'; key: string; label?: string; isError: boolean }
+  | ActivityBody;
+
+type ActivityBody = { kind: 'body'; key: string; row: HistoryRow; projected: boolean };
+type ActivitySummary = { thoughts: number; tools: number };
 
 interface DisplayTurn {
   kind: 'agent';
   key: string;
   role: 'user' | 'assistant';
   activityKey: string;
-  thinking: string;
-  tools: Map<string, ToolSummaryItem>;
+  activity: HistoryRow[];
   bodies: HistoryRow[];
   folded?: AgentHistoryChunk;
   groups: AgentHistoryChunk[];
@@ -136,35 +140,111 @@ interface RoomTranscriptRow {
   message: AgentRoomMessage;
 }
 
-function collectActivity(
-  activity: Pick<DisplayTurn, 'tools' | 'thinking' | 'bodies'>,
-  row: HistoryRow,
-) {
-  const ch = row.first;
-  if (ch.tool) {
-    const id = ch.tool.toolUseId || row.key;
-    const label = readableToolTitle(ch.tool);
-    const existing = activity.tools.get(id);
-    if (existing) {
-      existing.label = label;
-      existing.isError ||= Boolean(ch.tool.result?.isError);
-    } else {
-      activity.tools.set(id, { id, label, isError: Boolean(ch.tool.result?.isError) });
-    }
-  } else if (ch.field === 'thinking' && row.text) {
-    activity.thinking += (activity.thinking ? '\n\n' : '') + row.text;
-  } else if (row.text) {
-    activity.bodies.push(row);
-  }
+function isToolCall({ first }: HistoryRow) {
+  return Boolean(first.tool?.call) && first.role !== 'tool_result';
 }
 
-function readableToolTitle(tool: NonNullable<AgentHistoryChunk['tool']>): string {
-  return (
-    tool.call?.title?.translations?.[currentLocale()] ??
-    tool.call?.title?.fallback ??
-    tool.call?.name ??
-    tr('Tool call')
-  );
+function splitActivityBodies(turn: DisplayTurn, detail: readonly HistoryRow[] = []) {
+  let lastWork = turn.groups.at(-1);
+  for (const rows of [turn.activity, detail]) {
+    const last = rows.findLast(
+      (row) => isToolCall(row) || (row.first.field === 'thinking' && row.text.trim()),
+    )?.first;
+    if (last && (!lastWork || compareHistoryRows(last, lastWork) > 0)) lastWork = last;
+  }
+  const middle: HistoryRow[] = [];
+  const tail: HistoryRow[] = [];
+  for (const body of turn.bodies) {
+    const { first } = body;
+    if (
+      lastWork &&
+      first.role === 'assistant' &&
+      !first.finalOutput &&
+      !first.finalAnswer &&
+      compareHistoryRows(first, lastWork) < 0
+    ) {
+      middle.push(body);
+    } else {
+      tail.push(body);
+    }
+  }
+  return { middle, tail };
+}
+
+const historyField = ({ first }: HistoryRow) =>
+  first.field + ':' + historyAddressKey(first.position);
+
+function orderedActivity(
+  turn: DisplayTurn,
+  detail: readonly HistoryRow[] | undefined,
+  middle: readonly HistoryRow[],
+  tail: readonly HistoryRow[],
+): ActivityEntry[] {
+  // A folded reply anchors the read, not the work. Merge the source byte ranges
+  // in history order before reducing tool updates to their original seat.
+  const middleFields = new Set(middle.map(historyField));
+  const tailFields = new Set(tail.map(historyField));
+  const timeline = coalesceHistoryRows([...turn.activity, ...middle, ...(detail ?? [])]);
+  const entries = new Map<string, ActivityEntry>();
+  for (const row of timeline) {
+    const { field, tool } = row.first;
+    if (tool) {
+      const key = 'tool:' + (tool.toolUseId || row.key);
+      const previous = entries.get(key);
+      entries.set(key, {
+        kind: 'tool',
+        key,
+        label:
+          tool.call?.title?.translations?.[currentLocale()] ??
+          tool.call?.title?.fallback ??
+          tool.call?.name ??
+          (previous?.kind === 'tool' ? previous.label : undefined),
+        isError: Boolean(tool.result?.isError || (previous?.kind === 'tool' && previous.isError)),
+      });
+    } else if (field === 'thinking') {
+      const key = 'thinking:' + row.key;
+      if (row.text.trim()) entries.set(key, { kind: 'thinking', key, text: row.text });
+    } else if (row.text) {
+      const source = historyField(row);
+      if (tailFields.has(source)) continue;
+      const key = 'body:' + row.key;
+      entries.set(key, { kind: 'body', key, row, projected: middleFields.has(source) });
+    }
+  }
+  return [...entries.values()];
+}
+
+function summarizeActivity(activity: readonly ActivityEntry[]): ActivitySummary {
+  let thoughts = 0;
+  const tools = new Set<string>();
+  for (const entry of activity) {
+    if (entry.kind === 'thinking') thoughts++;
+    else if (entry.kind === 'tool') tools.add(entry.key);
+  }
+  return { thoughts, tools: tools.size };
+}
+
+function historyActivitySummary(turn: DisplayTurn): ActivitySummary | undefined {
+  const work = turn.folded?.foldedWork;
+  const hasHiddenWork = Boolean(work || turn.groups.length);
+  const tools = new Set<string>();
+  let thoughts = 0;
+  for (const row of turn.activity) {
+    if (row.first.tool) {
+      // Host summaries count calls, not returns. A result can carry paired call
+      // metadata from a hidden group, but it is not a second call.
+      if (!hasHiddenWork || isToolCall(row)) tools.add(row.first.tool.toolUseId || row.key);
+    } else if (row.text.trim()) {
+      thoughts++;
+    }
+  }
+  const counts = { thoughts, tools: tools.size };
+  if (work) return { thoughts: thoughts + work.thoughts, tools: tools.size + work.tools };
+  for (const { work } of turn.groups) {
+    counts.thoughts += work!.thoughts;
+    counts.tools += work!.tools;
+  }
+  if (counts.thoughts || counts.tools || hasHiddenWork) return counts;
 }
 
 function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] {
@@ -179,8 +259,7 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
           key: row.key,
           role: 'user',
           activityKey: row.key,
-          thinking: '',
-          tools: new Map(),
+          activity: [],
           groups: [],
           bodies: row.text ? [row] : [],
           quotes: ch.quotes,
@@ -197,8 +276,7 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
         key: row.key,
         role: 'assistant',
         activityKey: turn ?? row.key,
-        thinking: '',
-        tools: new Map(),
+        activity: [],
         bodies: [],
         groups: [],
       };
@@ -207,7 +285,9 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
     lastTurn = turn;
     if (ch.foldedWork) target.folded ??= ch;
     if (ch.work) target.groups.push(ch);
-    else collectActivity(target, row);
+    else if (!ch.tool && ch.field !== 'thinking') {
+      if (row.text) target.bodies.push(row);
+    } else target.activity.push(row);
     // Use a surviving message as the list key even when older tools are
     // prepended to this group.
     if (target.bodies.length) target.key = target.bodies.at(-1)!.key;
@@ -215,50 +295,35 @@ function groupHistoryTurns(chunks: readonly AgentHistoryChunk[]): DisplayTurn[] 
   return turns;
 }
 
-type Activity = Pick<DisplayTurn, 'thinking' | 'tools' | 'bodies'>;
 type ActivityRead = {
   generation: number;
   fingerprint: string;
   kind: 'loading' | 'failed' | 'ready';
-  value?: Activity;
+  value?: HistoryRow[];
 };
 
 function CollapsibleActivity(props: {
-  thinking: string;
-  tools: readonly ToolSummaryItem[];
+  activity: readonly ActivityEntry[];
   live?: boolean;
-  folded?: AgentHistoryChunk;
-  groups?: readonly AgentHistoryChunk[];
   history?: {
+    summary?: ActivitySummary;
     expanded: boolean;
     detail?: ActivityRead;
     onToggle: () => void;
     onRetry: () => void;
   };
-  limitReached?: boolean;
-  onQuote?: (row: HistoryRow, text: string) => boolean;
+  renderBody?: (entry: Accessor<ActivityBody>) => JSX.Element;
 }) {
   const localExpanded = signal(false);
   const expanded = () => props.history?.expanded ?? localExpanded();
-  const summary = () => {
-    const work = props.folded?.foldedWork;
-    if (work) return work;
-    let thoughts = 0;
-    let tools = 0;
-    for (const { work } of props.groups ?? []) {
-      thoughts += work!.thoughts;
-      tools += work!.tools;
-    }
-    return { thoughts, tools };
-  };
-  const detail = () => props.history?.detail?.value;
-  const thinking = () => [props.thinking, detail()?.thinking].filter(Boolean).join('\n\n');
-  const tools = () => [...props.tools, ...(detail()?.tools.values() ?? [])];
+  const summary = computed(() =>
+    props.history ? props.history.summary : summarizeActivity(props.activity),
+  );
 
   const summaryText = () => {
     const counts = summary();
-    const toolCount = props.tools.length + counts.tools;
-    const hasThink = counts.thoughts > 0 || props.thinking.trim().length > 0;
+    const toolCount = counts?.tools ?? 0;
+    const hasThink = (counts?.thoughts ?? 0) > 0;
     if (toolCount > 0 && hasThink) {
       return props.live
         ? tr('Thinking · {count, plural, one {# tool running} other {# tools running}}…', {
@@ -277,15 +342,7 @@ function CollapsibleActivity(props: {
   };
 
   return (
-    <If
-      when={
-        props.live ||
-        props.folded ||
-        props.groups?.length ||
-        props.thinking.trim().length > 0 ||
-        props.tools.length > 0
-      }
-    >
+    <If when={props.live || summary()}>
       <View style={{ marginBottom: 8 }}>
         <View
           role="button"
@@ -337,7 +394,7 @@ function CollapsibleActivity(props: {
               gap: 6,
             }}
           >
-            <If when={props.history?.detail?.kind === 'loading' && !detail()}>
+            <If when={props.history?.detail?.kind === 'loading' && !props.history.detail.value}>
               <Text style={{ ...type.footnote, color: token('muted-foreground') }}>
                 {tr('Loading…')}
               </Text>
@@ -350,48 +407,62 @@ function CollapsibleActivity(props: {
                 onPress={() => props.history?.onRetry()}
               />
             </If>
-            <If when={thinking().trim().length > 0}>
-              <Text
-                style={{
-                  ...type.footnote,
-                  color: token('muted-foreground'),
-                  lineHeight: 19,
-                }}
-              >
-                {thinking()}
-              </Text>
-            </If>
-            <Each of={tools()} key={(t) => t.id}>
-              {(tool) => (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <StatusDot kind={tool().isError ? 'error' : 'online'} size={6} />
-                  <Text
-                    style={{
-                      ...type.footnote,
-                      color: tool().isError ? token('destructive') : token('muted-foreground'),
-                      flex: 1,
-                      numberOfLines: 2,
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {tool().label}
-                  </Text>
-                </View>
-              )}
+            <Each of={props.activity} key={(entry) => entry.key}>
+              {(entry) => {
+                const thought = () => {
+                  const item = entry();
+                  return item.kind === 'thinking' ? item : undefined;
+                };
+                const tool = () => {
+                  const item = entry();
+                  return item.kind === 'tool' ? item : undefined;
+                };
+                const body = () => {
+                  const item = entry();
+                  return item.kind === 'body' ? item : undefined;
+                };
+                return (
+                  <>
+                    <If when={thought()}>
+                      {(thought) => (
+                        <Text
+                          style={{
+                            ...type.footnote,
+                            color: token('muted-foreground'),
+                            lineHeight: 19,
+                            minWidth: 0,
+                          }}
+                        >
+                          {thought().text}
+                        </Text>
+                      )}
+                    </If>
+                    <If when={tool()}>
+                      {(tool) => (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <StatusDot kind={tool().isError ? 'error' : 'online'} size={6} />
+                          <Text
+                            style={{
+                              ...type.footnote,
+                              color: tool().isError
+                                ? token('destructive')
+                                : token('muted-foreground'),
+                              flex: 1,
+                              minWidth: 0,
+                              numberOfLines: 2,
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
+                            {tool().label ?? tr('Tool call')}
+                          </Text>
+                        </View>
+                      )}
+                    </If>
+                    <If when={body()}>{(entry) => props.renderBody?.(entry)}</If>
+                  </>
+                );
+              }}
             </Each>
-            <If when={props.onQuote}>
-              {(quote) => (
-                <Each of={detail()?.bodies ?? []} key={(row) => row.key}>
-                  {(row) => (
-                    <MessageBody
-                      row={row()}
-                      limitReached={props.limitReached ?? false}
-                      onQuote={quote()}
-                    />
-                  )}
-                </Each>
-              )}
-            </If>
           </View>
         </If>
       </View>
@@ -767,8 +838,17 @@ export function ChatScreen(
   });
   const hasLivePreview = () => {
     const p = ctrl.livePreview();
-    return isRunning() || Boolean(p.body.trim() || p.thinking.trim() || p.tools.length > 0);
+    return isRunning() || Boolean(p.body.trim() || p.activity.length);
   };
+  const liveActivity = computed<ActivityEntry[]>(() =>
+    ctrl
+      .livePreview()
+      .activity.map((entry) =>
+        entry.kind === 'thinking'
+          ? entry
+          : { kind: 'tool', key: entry.key, label: entry.tool.name, isError: false },
+      ),
+  );
 
   const currentModelLabel = () => {
     const chosen = ctrl.selectedBackend();
@@ -928,7 +1008,7 @@ export function ChatScreen(
       activityTurns().has(key);
     update(request);
     try {
-      const value: Activity = { thinking: '', tools: new Map(), bodies: [] };
+      const value: HistoryRow[] = [];
       const rows = turn.folded ? await readFoldedTurn(turn.folded, fence) : turn.groups;
       if (!rows || !current()) return;
       // Turn pages can split a prose row; join it before collecting it.
@@ -937,9 +1017,9 @@ export function ChatScreen(
         if (anchor.work) {
           const steps = await ctrl.readHistoryDetail(anchor, 'steps', fence, () => !!current());
           if (!steps || !current()) return;
-          for (const step of assembleHistoryRows(steps)) collectActivity(value, step);
+          for (const step of assembleHistoryRows(steps)) value.push(step);
         } else if (anchor.role !== 'user' && !anchor.finalOutput) {
-          collectActivity(value, row);
+          value.push(row);
         }
       }
       if (current()) update({ ...request, kind: 'ready', value });
@@ -984,136 +1064,155 @@ export function ChatScreen(
     });
   };
 
-  const AgentTranscriptItem = (props: { turn: DisplayTurn }) => (
-    <If
-      when={props.turn.role === 'user'}
-      else={
-        <View style={{ width: '100%', gap: 4 }}>
-          <Text style={{ ...type.caption, color: token('muted-foreground') }}>Maka</Text>
-          <CollapsibleActivity
-            thinking={props.turn.thinking}
-            tools={[...props.turn.tools.values()]}
-            folded={props.turn.folded}
-            groups={props.turn.groups}
-            history={{
-              expanded: expandedTurns().has(props.turn.activityKey),
-              detail: activityDetail(props.turn.activityKey),
-              onToggle: () => toggleActivity(props.turn.activityKey),
-              onRetry: () => retryActivity(props.turn.activityKey),
+  const AssistantBody = (props: { row: HistoryRow; projected: boolean }) => (
+    <View style={{ gap: 2 }}>
+      <MessageBody
+        row={props.row}
+        limitReached={quoteLimitReached()}
+        onQuote={quoteMessage}
+        onAskSide={
+          props.projected && canAskSide() && rowAnchor(props.row) ? askAboutRow : undefined
+        }
+      />
+      <If
+        when={
+          props.projected && canAskSide() && props.row.first.position
+            ? sideAtAnchor().get(historyAddressKey(props.row.first.position))
+            : undefined
+        }
+      >
+        {(items) => (
+          <Button
+            accessibilityLabel={
+              items().some((item) => item.activity === 'waiting')
+                ? tr('{title} · Waiting for your response', {
+                    title: tr('Side questions ({count})', {
+                      count: items().length,
+                    }),
+                  })
+                : tr('Side questions ({count})', { count: items().length })
+            }
+            class="active:opacity-60"
+            style={{
+              minHeight: 44,
+              minWidth: 44,
+              alignSelf: 'flex-start',
+              justifyContent: 'center',
             }}
-            limitReached={quoteLimitReached()}
-            onQuote={quoteMessage}
-          />
-          <Each of={props.turn.bodies} key={(row) => row.key}>
-            {(row) => (
-              <View style={{ gap: 2 }}>
+            onPress={() =>
+              items().length === 1
+                ? openSide(items()[0])
+                : sideList.set({
+                    kind: 'anchor',
+                    key: historyAddressKey(props.row.first.position),
+                  })
+            }
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 6,
+                borderRadius: 12,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                backgroundColor: token('inline-card'),
+              }}
+            >
+              <Icon name="sideQuestion" size={14} color={token('muted-foreground')} />
+              <Text style={{ ...type.footnote, color: token('foreground') }}>
+                {formatCount(items().length)}
+              </Text>
+              <If when={items().some((item) => item.activity === 'waiting')}>
+                <StatusDot kind="waiting" size={7} />
+              </If>
+            </View>
+          </Button>
+        )}
+      </If>
+    </View>
+  );
+
+  const AgentTranscriptItem = (props: { turn: DisplayTurn }) => {
+    const detail = () => activityDetail(props.turn.activityKey);
+    const expanded = () => expandedTurns().has(props.turn.activityKey);
+    const bodies = computed(() =>
+      expanded()
+        ? splitActivityBodies(props.turn, detail()?.value)
+        : { middle: [], tail: props.turn.bodies },
+    );
+    const activity = computed(() =>
+      orderedActivity(props.turn, detail()?.value, bodies().middle, bodies().tail),
+    );
+    return (
+      <If
+        when={props.turn.role === 'user'}
+        else={
+          <View style={{ width: '100%', gap: 4 }}>
+            <Text style={{ ...type.caption, color: token('muted-foreground') }}>Maka</Text>
+            <CollapsibleActivity
+              activity={activity()}
+              history={{
+                summary: historyActivitySummary(props.turn),
+                expanded: expanded(),
+                detail: detail(),
+                onToggle: () => toggleActivity(props.turn.activityKey),
+                onRetry: () => retryActivity(props.turn.activityKey),
+              }}
+              renderBody={(entry) => (
+                <AssistantBody row={entry().row} projected={entry().projected} />
+              )}
+            />
+            <Each of={bodies().tail} key={(row) => row.key}>
+              {(row) => <AssistantBody row={row()} projected />}
+            </Each>
+            <If
+              when={
+                props.turn.bodies.length && (!hasMoreBefore() || props.turn.key !== turns()[0]?.key)
+              }
+            >
+              <ReplyActions
+                bodies={props.turn.bodies}
+                loadBodies={props.turn.folded ? () => fullReply(props.turn.folded!) : undefined}
+                limitReached={quoteLimitReached()}
+                onQuote={quoteMessage}
+                onAskSide={
+                  canAskSide() && replyAnchor(props.turn.bodies)
+                    ? () => askAboutReply(props.turn.bodies)
+                    : undefined
+                }
+              />
+            </If>
+          </View>
+        }
+      >
+        <View style={{ alignItems: 'flex-end' }}>
+          <View
+            style={{
+              maxWidth: '84%',
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+              borderRadius: 18,
+              borderCurve: 'continuous',
+              backgroundColor: token('user-bubble-tint'),
+              gap: 4,
+            }}
+          >
+            <HistoryQuotes quotes={props.turn.quotes ?? []} />
+            <Each of={props.turn.bodies} key={(row) => row.key}>
+              {(row) => (
                 <MessageBody
                   row={row()}
                   limitReached={quoteLimitReached()}
                   onQuote={quoteMessage}
-                  onAskSide={canAskSide() && rowAnchor(row()) ? askAboutRow : undefined}
                 />
-                <If
-                  when={
-                    canAskSide() && row().first.position
-                      ? sideAtAnchor().get(historyAddressKey(row().first.position))
-                      : undefined
-                  }
-                >
-                  {(items) => (
-                    <Button
-                      accessibilityLabel={
-                        items().some((item) => item.activity === 'waiting')
-                          ? tr('{title} · Waiting for your response', {
-                              title: tr('Side questions ({count})', {
-                                count: items().length,
-                              }),
-                            })
-                          : tr('Side questions ({count})', { count: items().length })
-                      }
-                      class="active:opacity-60"
-                      style={{
-                        minHeight: 44,
-                        minWidth: 44,
-                        alignSelf: 'flex-start',
-                        justifyContent: 'center',
-                      }}
-                      onPress={() =>
-                        items().length === 1
-                          ? openSide(items()[0])
-                          : sideList.set({
-                              kind: 'anchor',
-                              key: historyAddressKey(row().first.position),
-                            })
-                      }
-                    >
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                          borderRadius: 12,
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
-                          backgroundColor: token('inline-card'),
-                        }}
-                      >
-                        <Icon name="sideQuestion" size={14} color={token('muted-foreground')} />
-                        <Text style={{ ...type.footnote, color: token('foreground') }}>
-                          {formatCount(items().length)}
-                        </Text>
-                        <If when={items().some((item) => item.activity === 'waiting')}>
-                          <StatusDot kind="waiting" size={7} />
-                        </If>
-                      </View>
-                    </Button>
-                  )}
-                </If>
-              </View>
-            )}
-          </Each>
-          <If
-            when={
-              props.turn.bodies.length && (!hasMoreBefore() || props.turn.key !== turns()[0]?.key)
-            }
-          >
-            <ReplyActions
-              bodies={props.turn.bodies}
-              loadBodies={props.turn.folded ? () => fullReply(props.turn.folded!) : undefined}
-              limitReached={quoteLimitReached()}
-              onQuote={quoteMessage}
-              onAskSide={
-                canAskSide() && replyAnchor(props.turn.bodies)
-                  ? () => askAboutReply(props.turn.bodies)
-                  : undefined
-              }
-            />
-          </If>
+              )}
+            </Each>
+          </View>
         </View>
-      }
-    >
-      <View style={{ alignItems: 'flex-end' }}>
-        <View
-          style={{
-            maxWidth: '84%',
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            borderRadius: 18,
-            borderCurve: 'continuous',
-            backgroundColor: token('user-bubble-tint'),
-            gap: 4,
-          }}
-        >
-          <HistoryQuotes quotes={props.turn.quotes ?? []} />
-          <Each of={props.turn.bodies} key={(row) => row.key}>
-            {(row) => (
-              <MessageBody row={row()} limitReached={quoteLimitReached()} onQuote={quoteMessage} />
-            )}
-          </Each>
-        </View>
-      </View>
-    </If>
-  );
+      </If>
+    );
+  };
 
   return (
     <NavPage
@@ -1345,15 +1444,7 @@ export function ChatScreen(
               {/* Live Streaming Preview */}
               <If when={hasLivePreview()}>
                 <View style={{ width: '100%', gap: 4 }}>
-                  <CollapsibleActivity
-                    thinking={ctrl.livePreview().thinking}
-                    tools={ctrl.livePreview().tools.map((t) => ({
-                      id: t.toolUseId,
-                      label: t.name,
-                      isError: false,
-                    }))}
-                    live
-                  />
+                  <CollapsibleActivity activity={liveActivity()} live />
                   <If when={ctrl.livePreview().body.trim().length > 0}>
                     <TextView
                       markdown={ctrl.livePreview().body}
