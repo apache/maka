@@ -24,7 +24,7 @@ import { useHost } from './host';
 import { tr } from './locale';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
 import type { MessageMenu } from './messageMenu';
-import { forgetPassage, selectedPassage } from './sideQuestions';
+import type { MessageSelection } from './messageSelection';
 import { errorText, renderText } from './text';
 import { toast } from './toastStore';
 import { IconButton } from './ui';
@@ -61,6 +61,7 @@ export function MessageQuote(props: {
   sessionId: string;
   through(): number;
   menu?: MessageMenu;
+  selection?: MessageSelection;
   quote(quote: QuoteRef): boolean;
 }) {
   const host = useHost();
@@ -69,8 +70,6 @@ export function MessageQuote(props: {
   cleanup(() => {
     alive = false;
   });
-  const sourceId = () => `${props.sessionId}/${props.ownerKey()}`;
-  const passage = () => selectedPassage(props.sessionId, sourceId());
   const target = computed<QuoteTarget | null>(
     () => {
       const row = props.row();
@@ -101,21 +100,20 @@ export function MessageQuote(props: {
   });
   const quote = async (original: QuoteTarget | null, selected: string | null) => {
     if (original === null || !owns(original) || busy()) return;
-    if (selected) {
-      if (props.quote(buildQuote(original, selected))) forgetPassage();
+    if (selected && selected.trim()) {
+      if (props.quote(buildQuote(original, selected))) props.selection?.clear();
       return;
     }
     const current = props.row();
     if (hasCompleteBody(current)) {
-      const content = current.text.trim();
-      if (content) props.quote(buildQuote(original, content));
+      if (current.text.trim()) props.quote(buildQuote(original, current.text));
       return;
     }
     busy.set(true);
     try {
       const content = await readOriginal(host, original, () => owns(original));
-      const trimmed = content?.trim();
-      if (trimmed && owns(original)) props.quote(buildQuote(original, trimmed));
+      if (content !== null && content.trim() && owns(original))
+        props.quote(buildQuote(original, content));
     } catch (reason) {
       if (owns(original)) {
         toast.show({
@@ -129,7 +127,7 @@ export function MessageQuote(props: {
     }
   };
   const label = () =>
-    passage()
+    props.selection?.current()
       ? tr('Quote selection')
       : props.row().role === 'user'
         ? tr('Quote user message')
@@ -142,11 +140,14 @@ export function MessageQuote(props: {
     action: () => {
       const current = target();
       if (current === null) return null;
-      const selected = passage();
+      const selected = props.selection?.current() ?? null;
       return () => void quote(current, selected);
     },
   });
   if (props.menuOnly) return null;
+  const press = props.selection
+    ? props.selection.bindPress((selected) => void quote(target(), selected))
+    : { onPress: () => void quote(target(), null) };
   return (
     <IconButton
       compact={props.compact}
@@ -154,7 +155,7 @@ export function MessageQuote(props: {
       tooltip={busy() ? tr('Reading original message…') : undefined}
       icon="snippet"
       disabled={busy() || target() === null}
-      onPress={() => void quote(target(), passage())}
+      {...press}
     />
   );
 }

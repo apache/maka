@@ -71,44 +71,6 @@ export function sideQuestionsAt<T extends Pick<AgentSession, 'branch'>>(
     .reverse();
 }
 
-// The passage selected in a message, by conversation and message source id.
-// Pressing a button clears the selection just before the press arrives, so a
-// cleared selection still counts for a moment, and no longer: an old or
-// accidental selection must not become a quote.
-const clearedGrace = 1500;
-const passage = signal<{
-  sessionId: string;
-  source: string;
-  text: string;
-  clearedAt: number | null;
-} | null>(null);
-
-/** `source` is the reporting text's own id: only its own clearing counts. */
-export function notePassage(sessionId: string, source: string, text: string) {
-  const current = passage();
-  if (text.trim()) passage.set({ sessionId, source, text: text.trim(), clearedAt: null });
-  else if (
-    current &&
-    current.clearedAt === null &&
-    current.sessionId === sessionId &&
-    current.source === source
-  )
-    passage.set({ ...current, clearedAt: Date.now() });
-}
-
-/** The passage selected in that message, if one is. */
-export function selectedPassage(sessionId: string, source: string): string | null {
-  const current = passage();
-  return current !== null &&
-    current.sessionId === sessionId &&
-    current.source === source &&
-    (current.clearedAt === null || Date.now() - current.clearedAt < clearedGrace)
-    ? current.text
-    : null;
-}
-
-export const forgetPassage = () => passage.set(null);
-
 /** A passage of a reply, kept to ask about together with others. */
 export type GatheredPassage = { position: HistoryRowAddress; turnId?: string; text: string };
 

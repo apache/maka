@@ -24,7 +24,8 @@ import type { JSX, Signal } from 'nsh';
 import { platform, reduceMotion } from 'nsh';
 import { ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { createMessageMenu, type MessageMenu } from './messageMenu';
-import { notePassage, selectedPassage, type SideMark } from './sideQuestions';
+import { createMessageSelection, type MessageSelection } from './messageSelection';
+import type { SideMark } from './sideQuestions';
 import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import {
@@ -230,7 +231,12 @@ export function MessageRow({
   toolProgress?(id: string): ToolActivity['phase'] | null;
   onToolReading?(key: string): void;
   inspectTool?(key: string): void;
-  finalActions?(row: () => Row, ownerKey: () => string, menu?: MessageMenu): JSX.Element;
+  finalActions?(
+    row: () => Row,
+    ownerKey: () => string,
+    menu?: MessageMenu,
+    selection?: MessageSelection,
+  ): JSX.Element;
   /** What stays under a reply whether or not its actions show. */
   replyNotes?(row: () => Row, marked: () => ReadonlySet<string>): JSX.Element;
   /** The side questions asked beside a reply, to underline what they quote. */
@@ -539,6 +545,7 @@ export function MessageRow({
         // On the desktop a message's actions show while the pointer is on it or
         // the keyboard focus is in them; its context menu has the same commands.
         const menu = platform.idiom === 'terminal' || compact() ? undefined : createMessageMenu();
+        const selection = createMessageSelection();
         const revealed = menu && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100';
         const toggleSource = () =>
           inputAction(setSourceMode, { sessionId, key: rowKey(row()), value: !sourceMode() });
@@ -557,7 +564,7 @@ export function MessageRow({
         );
         // The passage selected as the menu opened; the selection may go as it opens.
         const copySelection = () => {
-          const passage = selectedPassage(sessionId, sourceId());
+          const passage = selection.current();
           return passage ? () => void Clipboard.writeText(passage) : null;
         };
         const marks = () => (sideMarks && !user() ? sideMarks(row()) : []);
@@ -621,23 +628,21 @@ export function MessageRow({
                         else={
                           <If
                             when={row().role === 'assistant' && row().field === 'body'}
-                            else={
-                              <View
-                                selectable
-                                onSelectionChange={(event: { text: string }) =>
-                                  notePassage(sessionId, sourceId(), event.text)
-                                }
-                              >
-                                <Text
-                                  style={[
-                                    { color: C.text, ...bodyTextStyle },
-                                    { userSelect: 'text' },
-                                  ]}
+                            else={(() => {
+                              const plain = (
+                                <View
+                                  selectable
+                                  onSelectionChange={(event: { text: string }) =>
+                                    selection.set(event.text, 'plain')
+                                  }
                                 >
-                                  <SourceText row={row} sourceId={sourceId()} />
-                                </Text>
-                              </View>
-                            }
+                                  <Text style={{ color: C.text, ...bodyTextStyle }}>
+                                    <SourceText row={row} sourceId={sourceId()} />
+                                  </Text>
+                                </View>
+                              );
+                              return menu ? withMenu(plain) : plain;
+                            })()}
                           >
                             <MarkdownBody
                               citations={citations}
@@ -648,6 +653,7 @@ export function MessageRow({
                               openLink={openLink}
                               userScroll={userScroll}
                               menu={menu ? withMenu : undefined}
+                              selection={selection}
                               marks={marks}
                               openSide={openSide}
                               onMarksMatch={(ids) => marked.set(ids)}
@@ -655,18 +661,21 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <View
-                          selectable
-                          onSelectionChange={(event: { text: string }) =>
-                            notePassage(sessionId, sourceId(), event.text)
-                          }
-                        >
-                          <Text
-                            style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}
-                          >
-                            <SourceText row={row} sourceId={sourceId()} />
-                          </Text>
-                        </View>
+                        {(() => {
+                          const sourceBody = (
+                            <View
+                              selectable
+                              onSelectionChange={(event: { text: string }) =>
+                                selection.set(event.text, 'source')
+                              }
+                            >
+                              <Text style={{ color: C.text, ...bodyTextStyle }}>
+                                <SourceText row={row} sourceId={sourceId()} />
+                              </Text>
+                            </View>
+                          );
+                          return menu ? withMenu(sourceBody) : sourceBody;
+                        })()}
                       </If>
                       <If when={replyNotes !== undefined && replyActions()}>
                         {replyNotes?.(row, marked)}
@@ -709,7 +718,7 @@ export function MessageRow({
                                     />
                                   }
                                 >
-                                  {finalActions?.(row, () => rowKey(row()), menu)}
+                                  {finalActions?.(row, () => rowKey(row()), menu, selection)}
                                 </If>
                               </If>
                               <If when={hasSources?.() && !(compactChat && replyActions())}>
@@ -904,6 +913,8 @@ export function MessageRow({
                         openSession={openSession}
                         openLink={openLink}
                         userScroll={userScroll}
+                        menu={menu ? withMenu : undefined}
+                        selection={selection}
                       />
                       <If when={(row().attachments?.length ?? 0) > 0}>
                         <HistoryAttachments
@@ -978,6 +989,7 @@ export function MessageRow({
                                 sessionId={sessionId}
                                 through={through}
                                 menu={menu}
+                                selection={selection}
                                 quote={quoteMessage!}
                               />
                             </If>

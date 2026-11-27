@@ -33,7 +33,7 @@ import { MessageQuote } from './MessageQuote';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { Button } from 'nsh/base';
 import type { MessageMenu } from './messageMenu';
-import { forgetPassage, selectedPassage } from './sideQuestions';
+import type { MessageSelection } from './messageSelection';
 import { ExecutorTokenCounts, TurnUsage } from './TurnUsage';
 import {
   C,
@@ -72,6 +72,7 @@ export function FinalActions(props: {
   /** Another action on this turn, after the fork. */
   extra?: JSX.Element;
   menu?: MessageMenu;
+  selection?: MessageSelection;
   compact?: boolean;
   /** Quotes this reply or its selected passage into the current conversation's draft. */
   quote?(quote: QuoteRef): boolean;
@@ -143,15 +144,12 @@ export function FinalActions(props: {
       if (alive) pending.set(false);
     }
   };
-  const sourceId = () => `${props.sessionId}/${props.ownerKey()}`;
   const askLabel = () =>
-    selectedPassage(props.sessionId, sourceId())
-      ? tr('Ask about the selection beside')
-      : tr('Ask beside');
+    props.selection?.current() ? tr('Ask about the selection beside') : tr('Ask beside');
   const askBeside = (passage: string | null) => {
     if (target() === null) return;
     props.side?.ask(props.row(), passage);
-    forgetPassage();
+    props.selection?.clear();
   };
   if (props.side)
     props.menu?.add({
@@ -161,7 +159,7 @@ export function FinalActions(props: {
       // The menu holds the passage selected as it opened.
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, sourceId());
+        const passage = props.selection?.current() ?? null;
         return () => askBeside(passage);
       },
     });
@@ -172,11 +170,11 @@ export function FinalActions(props: {
       busy: () => false,
       action: () => {
         if (target() === null) return null;
-        const passage = selectedPassage(props.sessionId, sourceId());
+        const passage = props.selection?.current() ?? null;
         return passage
           ? () => {
               props.side?.gather(props.row(), passage);
-              forgetPassage();
+              props.selection?.clear();
             }
           : null;
       },
@@ -208,6 +206,7 @@ export function FinalActions(props: {
         sessionId={props.sessionId}
         through={props.through}
         menu={props.menu}
+        selection={props.selection}
         quote={props.quote}
       />
     ) : null;
@@ -263,7 +262,9 @@ export function FinalActions(props: {
           <IconButton
             label={askLabel()}
             icon="ask"
-            onPress={() => askBeside(selectedPassage(props.sessionId, sourceId()))}
+            {...(props.selection
+              ? props.selection.bindPress(askBeside)
+              : { onPress: () => askBeside(null) })}
           />
         </If>
         <If

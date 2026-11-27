@@ -5505,7 +5505,7 @@ export function Conversation(props: ConversationProps) {
                     )
                   : undefined
               }
-              finalActions={(row, ownerKey, menu) => (
+              finalActions={(row, ownerKey, menu, selection) => (
                 <FinalActions
                   compact={props.compact}
                   row={row}
@@ -5514,6 +5514,7 @@ export function Conversation(props: ConversationProps) {
                   through={() => latestKnown}
                   fork={props.side ? undefined : props.fork}
                   menu={menu}
+                  selection={selection}
                   quote={quoteDraft}
                   side={sideActions}
                   extra={
