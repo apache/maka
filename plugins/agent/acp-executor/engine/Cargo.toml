@@ -28,6 +28,7 @@ maka-process.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
+maka-session-title.workspace = true
 maka-capabilities.workspace = true
 agent-client-protocol.workspace = true
 base64 = "0.23.1"

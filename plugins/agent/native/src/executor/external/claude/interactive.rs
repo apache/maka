@@ -637,7 +637,8 @@ impl OutputSink for BootstrapOutput<'_> {
             | Output::OutputDelta { .. }
             | Output::ThinkingDelta { .. }
             | Output::ContextUsage(_)
-            | Output::TurnUsage { .. } => Box::pin(async { Ok(()) }),
+            | Output::TurnUsage { .. }
+            | Output::SessionTitle { .. } => Box::pin(async { Ok(()) }),
             output => self.0.emit(output),
         }
     }

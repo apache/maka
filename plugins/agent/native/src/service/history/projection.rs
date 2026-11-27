@@ -116,7 +116,8 @@ pub(super) fn visible(fact: &Fact) -> bool {
         Fact::ExternalTaskObserved {
             output:
                 maka_agent_facts::executor::Output::TurnUsage { .. }
-                | maka_agent_facts::executor::Output::ContextUsage(_),
+                | maka_agent_facts::executor::Output::ContextUsage(_)
+                | maka_agent_facts::executor::Output::SessionTitle { .. },
             ..
         } => false,
         Fact::ExternalEffect { event } => {
@@ -1127,7 +1128,8 @@ pub(super) async fn project(
                 Output::MessageStart { .. }
                 | Output::MessageEnd { .. }
                 | Output::ContextUsage(_)
-                | Output::TurnUsage { .. } => return Ok(result),
+                | Output::TurnUsage { .. }
+                | Output::SessionTitle { .. } => return Ok(result),
             }
             result.push(row);
         }

@@ -3144,26 +3144,65 @@ async fn antigravity_automatic_title_falls_back_to_first_message() {
             terminal_state(&sdk, &session, &run, "completed"),
         )
         .await?;
-        let observed = phase("automatic fallback title is committed", async {
+        phase("automatic fallback title is committed", async {
             loop {
                 let state = query(&sdk, "agent", "observe", json!({"sessionId": session})).await?;
                 if state["session"]["title"].as_str() == Some(expected.as_str()) {
-                    return Ok::<_, String>(state);
+                    return Ok::<_, String>(());
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await?;
-        let revision = observed["session"]["revision"]
-            .as_u64()
-            .ok_or("session revision missing")?;
+        let send_and_finish = |msg: String| {
+            let (sdk, session) = (&sdk, session.clone());
+            async move {
+                let sent = mutate(sdk, "agent", "send", json!({"sessionId": session, "message": msg, "delivery": "queue"})).await?;
+                let mut tick = tokio::time::interval(Duration::from_millis(20));
+                let run = loop {
+                    tick.tick().await;
+                    let work = query(sdk, "agent", "work", json!({"sessionId": session, "target": {"kind": "message", "messageId": sent["messageId"]}})).await?;
+                    if work["kind"].as_str() == Some("delivered") {
+                        break work["execution"]["runId"].clone();
+                    }
+                };
+                terminal_state(sdk, &session, &run, "completed").await
+            }
+        };
+
+        // Live session_info_update overwrites fallback and ignores omitted / null / blank titles.
+        let live_case = json!({
+            "label": "ACP-steer-title-live",
+            "sessionInfoUpdates": [
+                {"sessionUpdate": "session_info_update", "updatedAt": "2026-11-26T00:00:00Z"},
+                {"sessionUpdate": "session_info_update", "title": null},
+                {"sessionUpdate": "session_info_update", "title": "  \t\n  "},
+                {"sessionUpdate": "session_info_update", "title": "  Fixing ACP\tTitle   Sync  "}
+            ]
+        });
+        phase("live session_info_update turn", send_and_finish(format!("Follow-up\nMAKA_EXTERNAL_CASE {live_case}"))).await?;
+        assert_eq!(query(&sdk, "agent", "observe", json!({"sessionId": session})).await?["session"]["title"], "Fixing ACP Title Sync");
+
+        // Setup session_info_update during session/resume refines the title while title_is_manual is false.
+        let resume_titles = rig.sandbox.home.join("acp-resume-title.json");
+        tokio::fs::write(
+            &resume_titles,
+            serde_json::to_vec(&json!([
+                {"sessionUpdate": "session_info_update", "title": "Refined via Resume Setup"},
+                {"sessionUpdate": "session_info_update", "title": null}
+            ])).unwrap(),
+        ).await.map_err(|e| e.to_string())?;
+        phase("resume setup title turn", send_and_finish(format!("Refine\nMAKA_EXTERNAL_CASE {}", json!({"label": "ACP-steer-title-resume"})))).await?;
+        let after_resume = query(&sdk, "agent", "observe", json!({"sessionId": session})).await?;
+        assert_eq!(after_resume["session"]["title"], "Refined via Resume Setup");
+
         let renamed = mutate(
             &sdk,
             "agent",
             "metadata",
             json!({
                 "sessionId": session,
-                "expectedRevision": revision,
+                "expectedRevision": after_resume["session"]["revision"],
                 "title": "Manual override",
                 "labels": []
             }),
@@ -3171,6 +3210,17 @@ async fn antigravity_automatic_title_falls_back_to_first_message() {
         .await?;
         assert_eq!(renamed["kind"], "committed", "{renamed}");
         assert_eq!(renamed["session"]["title"], "Manual override");
+        let manual_rev = renamed["session"]["revision"].as_u64();
+
+        // Subsequent ACP title updates must not overwrite a manual rename.
+        let locked_case = json!({
+            "label": "ACP-steer-title-locked",
+            "sessionInfoUpdates": [{"sessionUpdate": "session_info_update", "title": "Must Not Overwrite"}]
+        });
+        phase("post-manual ACP turn", send_and_finish(format!("Locked\nMAKA_EXTERNAL_CASE {locked_case}"))).await?;
+        let after_locked = query(&sdk, "agent", "observe", json!({"sessionId": session})).await?;
+        assert_eq!(after_locked["session"]["title"], "Manual override");
+        assert_eq!(after_locked["session"]["revision"].as_u64(), manual_rev);
 
         let (manual_session, manual_run) = phase(
             "launch manual-title turn",

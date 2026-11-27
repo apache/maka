@@ -303,3 +303,109 @@ async fn automatic_title_persists_for_model_sessions() {
     );
     assert!(cleanup.is_empty(), "{cleanup:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_title_sync_guards_normalization_refinement_and_locks() {
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let base = rig.directory.path().to_path_buf();
+        let boot = bootstrap_with(&base, "http://127.0.0.1:1/v1".into(), |config| {
+            config["automaticTitles"] = json!(true);
+        })
+        .await?;
+        attach(&mut rig, &boot).await?;
+        let client = rig.client.as_ref().ok_or("test client missing")?;
+        let owner = rig.captured.lock().unwrap().clone().ok_or("captured owner missing")?;
+        let cancel = CancellationToken::new();
+
+        let create_session = |title: &str| {
+            let (ws, title) = (base.join("workspace"), title.to_owned());
+            async move {
+                let created = call(
+                    client,
+                    "agent",
+                    "create",
+                    json!({"title": title, "automaticTitle": true, "labels": [], "workspace": {"kind": "directory", "path": ws}}),
+                )
+                .await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>((
+                    created["session"]["id"].as_str().ok_or("missing session")?.to_owned(),
+                    created["session"]["revision"].as_u64().ok_or("missing rev")?,
+                ))
+            }
+        };
+        let observe = |session_id: &str| {
+            let session_id = session_id.to_owned();
+            async move {
+                let state = call(client, "agent", "observe", json!({"sessionId": session_id})).await?;
+                Ok::<_, Box<dyn Error + Send + Sync>>((
+                    state["session"]["title"].as_str().unwrap_or_default().to_owned(),
+                    state["session"]["revision"].as_u64().unwrap(),
+                ))
+            }
+        };
+        let open_lease = |session_id: &str| {
+            let (owner, session_id) = (owner.clone(), session_id.to_owned());
+            async move {
+                let current = owner.mutable_session(&session_id).await?;
+                let scope = owner.current_work_scope(&session_id, &current.configuration).await?;
+                let (lease, effects) = scope.accept(CancellationToken::new());
+                let custody = lease.store().work_custody()?;
+                Ok::<_, Box<dyn Error + Send + Sync>>((lease, effects, custody))
+            }
+        };
+
+        // 1. Normalize, skip identical/blank without bumping revision, refine, then lock on manual rename.
+        let (session, _) = create_session("New conversation").await?;
+        let (lease, _effects, custody) = open_lease(&session).await?;
+        owner.apply_executor_title(&session, "  First\tACP\nTitle  ", custody.as_ref(), &cancel).await;
+        let (title, rev1) = observe(&session).await?;
+        assert_eq!(title, "First ACP Title");
+
+        owner.apply_executor_title(&session, "  First   ACP Title ", custody.as_ref(), &cancel).await;
+        owner.apply_executor_title(&session, " \t\n\u{200b} ", custody.as_ref(), &cancel).await;
+        assert_eq!(observe(&session).await?, ("First ACP Title".into(), rev1));
+
+        owner.apply_executor_title(&session, "Refined ACP Title", custody.as_ref(), &cancel).await;
+        let (title, rev2) = observe(&session).await?;
+        assert_eq!(title, "Refined ACP Title");
+        assert!(rev2 > rev1);
+
+        let renamed = call(
+            client,
+            "agent",
+            "metadata",
+            json!({"sessionId": session, "expectedRevision": rev2, "title": "Manual Title", "labels": []}),
+        )
+        .await?;
+        let rev_manual = renamed["session"]["revision"].as_u64().unwrap();
+        owner.apply_executor_title(&session, "Should Not Overwrite", custody.as_ref(), &cancel).await;
+        assert_eq!(observe(&session).await?, ("Manual Title".into(), rev_manual));
+        lease.finish();
+
+        // 2. Archived sessions ignore ACP title updates even when title_is_manual is false.
+        let (archived_id, archived_rev) = create_session("Archive Me").await?;
+        let (archived_lease, _archived_effects, archived_custody) = open_lease(&archived_id).await?;
+        archived_lease.finish();
+        let archived = call(
+            client,
+            "agent",
+            "changeSession",
+            json!({"sessionId": archived_id, "expectedRevision": archived_rev, "action": "archive"}),
+        )
+        .await?;
+        let rev_archived = archived["session"]["revision"].as_u64().unwrap();
+        owner.apply_executor_title(&archived_id, "Ignored While Archived", archived_custody.as_ref(), &cancel).await;
+        assert_eq!(observe(&archived_id).await?, ("Archive Me".into(), rev_archived));
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(
+        matches!(result, Ok(Ok(Ok(())))),
+        "executor title sync fixture failed: {result:?}"
+    );
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}

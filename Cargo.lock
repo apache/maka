@@ -9472,6 +9472,7 @@ dependencies = [
  "maka-capabilities",
  "maka-plugin-core",
  "maka-process",
+ "maka-session-title",
  "schemars 1.2.3",
  "serde",
  "serde_json",

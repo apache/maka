@@ -729,6 +729,7 @@ pub(super) struct Pipe {
     encoding: Option<BoxFuture<'static, Result<String, Error>>>,
     events: std::collections::VecDeque<(Value, usize)>,
     pub(super) setup_usage: Option<Value>,
+    pub(super) setup_title: Option<Value>,
     pub cancellation: CancellationToken,
     pub retired: CancellationToken,
     pub stop: CancellationToken,
@@ -758,6 +759,7 @@ impl Pipe {
             encoding: None,
             events: Default::default(),
             setup_usage: None,
+            setup_title: None,
             cancellation: stop.clone(),
             retired: observation.retired.clone(),
             stop,
@@ -939,13 +941,20 @@ impl Pipe {
             }
             // Startup/load notifications may contain historical tools.
             if !matches!(method, "turn/start" | "turn/steer") {
-                if (value["method"] == "session/update"
-                    && value
+                if value["method"] == "session/update" {
+                    match value
                         .pointer("/params/update/sessionUpdate")
                         .and_then(Value::as_str)
-                        == Some("usage_update"))
-                    || value["method"] == "thread/tokenUsage/updated"
-                {
+                    {
+                        Some("usage_update") => self.setup_usage = Some(value),
+                        Some("session_info_update")
+                            if super::agy_acp::is_valid_session_title_update(&value) =>
+                        {
+                            self.setup_title = Some(value);
+                        }
+                        _ => {}
+                    }
+                } else if value["method"] == "thread/tokenUsage/updated" {
                     self.setup_usage = Some(value);
                 }
                 continue;
@@ -1184,6 +1193,7 @@ async fn pipe_owned<P: PipeProtocol<Output = Outcome>>(
                 encoding: None,
                 events: Default::default(),
                 setup_usage: None,
+                setup_title: None,
                 cancellation: cancellation.clone(),
                 retired: retired.clone(),
                 stop: cancellation,
@@ -1427,6 +1437,7 @@ async fn pipe_unowned<P: PipeProtocol>(
                     encoding: None,
                     events: Default::default(),
                     setup_usage: None,
+                    setup_title: None,
                     cancellation,
                     retired: retired.clone(),
                     stop: soft_stop.clone(),
