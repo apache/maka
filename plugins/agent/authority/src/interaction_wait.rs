@@ -79,6 +79,7 @@ pub async fn withdraw(
             .await
             .map_err(|_| "interaction_cleanup_unconfirmed")?
     } else {
+        access.settled(&record);
         record
     };
     Ok(record.outcome)

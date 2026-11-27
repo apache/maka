@@ -856,6 +856,9 @@ impl RunAccess {
             if binding != approval {
                 return Err("agent_interaction_binding_conflict".into());
             }
+            if let Some(p) = self.worker_progress() {
+                p.interaction(&original);
+            }
             return Ok(original);
         }
         loop {
