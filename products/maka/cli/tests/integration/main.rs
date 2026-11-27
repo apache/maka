@@ -38,6 +38,7 @@ fn executable_tempdir() -> tempfile::TempDir {
 
 mod candidate;
 
+mod host_diagnostics;
 mod initialize;
 #[cfg(target_os = "linux")]
 mod network_sandbox;

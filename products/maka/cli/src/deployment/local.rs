@@ -18,6 +18,7 @@
  */
 
 use super::{activation, directory, store};
+use crate::host_client::absent;
 use maka_event_log::root::{self, FileLease, RootNamespaces, RootOwner};
 use maka_host_runtime::HostError;
 use maka_host_runtime::{
@@ -667,13 +668,6 @@ async fn target_gone(
         }
         Err(error) => Err(error),
     }
-}
-
-fn absent(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
 }
 
 #[cfg(test)]

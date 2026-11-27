@@ -18,7 +18,7 @@
  */
 
 use super::{Admission, Deployment, RootId, directory, service, store, updates};
-use crate::host_client::{HostClient, LiveHost};
+use crate::host_client::{ConnectError, HostClient, LiveHost};
 use clap::Args;
 use maka_host_runtime::HostError;
 use rusqlite::OptionalExtension;
@@ -80,30 +80,15 @@ enum HostObservation {
 impl Status {
     pub async fn run(self) -> Result<(), HostError> {
         if let Some(root) = self.root {
-            let location = maka_event_log::root::resolve(&root).map_err(|error| -> HostError {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    format!(
-                        "State Root {} does not exist or is not initialized",
-                        root.display()
-                    )
-                    .into()
-                } else {
-                    format!("State Root {} is not usable: {error}", root.display()).into()
-                }
-            })?;
             let mut client = HostClient::connect(&root, None)
                 .await
                 .map_err(|error| -> HostError {
-                    if host_absent(&error) {
-                        format!(
-                            "no Host is running for State Root {} (root id {}); use `maka host status --root-id {}` to observe its managed deployment",
-                            root.display(),
-                            location.root_id(),
-                            location.root_id()
+                    match error {
+                        ConnectError::HostNotRunning { ref root_id, .. } => format!(
+                            "{error}; use `maka host status --root-id {root_id}` to observe its managed deployment"
                         )
-                        .into()
-                    } else {
-                        error
+                        .into(),
+                        error => error.into(),
                     }
                 })?;
             println!("{}", serde_json::to_string(&client.status().await?)?);
@@ -178,20 +163,8 @@ async fn observe_host(deployment: &Deployment) -> HostObservation {
     }
     .await;
     result.unwrap_or_else(|error| HostObservation::Unavailable {
-        message: if host_absent(&error) {
-            "no Host is running for this State Root".to_owned()
-        } else {
-            error.to_string().chars().take(2048).collect()
-        },
+        message: error.to_string().chars().take(2048).collect(),
     })
-}
-
-/// A stopped Host is an expected observation, not an O/S failure: the live
-/// discovery record is simply absent until a Host registers for this State Root.
-fn host_absent(error: &HostError) -> bool {
-    error
-        .downcast_ref::<std::io::Error>()
-        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 pub(super) async fn pending(
@@ -212,4 +185,73 @@ pub(super) async fn pending(
         }
         Ok(target)
     }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deployment::Mode;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    use std::{fs, path::PathBuf};
+    use uuid::Uuid;
+
+    fn deployment(root: &Path, root_id: &str) -> Deployment {
+        Deployment {
+            deployment_id: Uuid::new_v4(),
+            config_revision: 1,
+            root_id: root_id.to_owned(),
+            root_path: root.to_owned(),
+            executable: PathBuf::from("maka"),
+            sha256: "0".repeat(64),
+            mode: Mode::OnDemand,
+            websocket: "127.0.0.1:0".parse().unwrap(),
+            project_directory_roots: None,
+            admission: Admission::Active,
+        }
+    }
+
+    /// Removes the account-level lease files even when an assertion panics.
+    struct RootFiles {
+        control: PathBuf,
+        lock: PathBuf,
+    }
+
+    impl Drop for RootFiles {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.control);
+            let _ = fs::remove_file(&self.lock);
+        }
+    }
+
+    #[tokio::test]
+    async fn observes_a_stopped_host_and_a_missing_deployment_root_differently() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let namespaces = RootNamespaces::for_current_account().unwrap();
+        let owner = RootOwner::create(&root, &namespaces).unwrap();
+        let _root_files = RootFiles {
+            control: owner.control_directory().to_owned(),
+            lock: owner.lock_path().to_owned(),
+        };
+        let deployment = deployment(&root, owner.root_id());
+
+        match observe_host(&deployment).await {
+            HostObservation::Unavailable { message } => {
+                assert!(message.contains("no Host is running"), "{message}");
+            }
+            _ => panic!("a stopped Host must be observed as unavailable"),
+        }
+
+        drop(owner);
+        fs::remove_dir_all(&root).unwrap();
+        match observe_host(&deployment).await {
+            HostObservation::Unavailable { message } => {
+                assert!(
+                    message.contains("does not exist or is not initialized"),
+                    "{message}"
+                );
+            }
+            _ => panic!("a missing State Root must be observed as unavailable"),
+        }
+    }
 }

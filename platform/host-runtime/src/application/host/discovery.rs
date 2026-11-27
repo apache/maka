@@ -19,7 +19,7 @@
 
 //! Root-bound discovery is a hint; clients verify its identity against live status.
 use super::{Host, LifecycleMode, Status, VERSION};
-use maka_event_log::root::{self, RootNamespaces, RootOwner};
+use maka_event_log::root::{self, RootLocation, RootNamespaces, RootOwner};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -65,17 +65,20 @@ impl Discovery {
 }
 
 pub fn read(root: &Path) -> io::Result<Discovery> {
-    read_with_namespaces(root, &RootNamespaces::for_current_account()?)
+    read_location(&root::resolve(root)?)
+}
+/// Read the discovery record for an already-resolved Root.
+pub fn read_location(root: &RootLocation) -> io::Result<Discovery> {
+    read_registration(root.root_id(), &RootNamespaces::for_current_account()?)
 }
 pub fn read_with_namespaces(root: &Path, namespaces: &RootNamespaces) -> io::Result<Discovery> {
-    let root = root::resolve(root)?;
-    let path = namespaces
-        .control
-        .join(root.root_id())
-        .join("registration.json");
+    read_registration(root::resolve(root)?.root_id(), namespaces)
+}
+fn read_registration(root_id: &str, namespaces: &RootNamespaces) -> io::Result<Discovery> {
+    let path = namespaces.control.join(root_id).join("registration.json");
     let discovery: Discovery = serde_json::from_slice(&read_record(&path)?)?;
     if discovery.version != VERSION
-        || discovery.root_id != root.root_id()
+        || discovery.root_id != root_id
         || discovery.host_epoch.is_nil()
         || !discovery.endpoint.is_absolute()
     {

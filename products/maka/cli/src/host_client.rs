@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use maka_event_log::root;
 use maka_host_runtime::{
     HostError,
     application::host::{
@@ -26,8 +27,10 @@ use maka_host_runtime::{
     ipc::{self, LocalStream},
 };
 use std::{
+    error::Error,
+    fmt, io,
     num::{NonZeroU16, NonZeroU32},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -46,23 +49,119 @@ pub(super) struct LiveHost {
     pub port: NonZeroU16,
 }
 
+/// Connection failure classified at the Host boundary.
+#[derive(Debug)]
+pub(super) enum ConnectError {
+    RootMissing { root: PathBuf },
+    RootUnusable { root: PathBuf, error: io::Error },
+    HostNotRunning { root: PathBuf, root_id: String },
+    Other(HostError),
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootMissing { root } => write!(
+                formatter,
+                "State Root {} does not exist or is not initialized",
+                root.display()
+            ),
+            Self::RootUnusable { root, error } => {
+                write!(
+                    formatter,
+                    "State Root {} is not usable: {error}",
+                    root.display()
+                )
+            }
+            Self::HostNotRunning { root, root_id } => write!(
+                formatter,
+                "no Host is running for State Root {} (root id {root_id})",
+                root.display()
+            ),
+            Self::Other(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl Error for ConnectError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::RootUnusable { error, .. } => Some(error),
+            Self::Other(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// NotFound and ConnectionRefused both mean an absent Host, not an O/S failure.
+pub(super) fn absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Resolve the Root once, then read its discovery record.
+fn discover(root: &Path) -> Result<(String, Discovery), ConnectError> {
+    let location = root::resolve(root).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => ConnectError::RootMissing {
+            root: root.to_owned(),
+        },
+        _ => ConnectError::RootUnusable {
+            root: root.to_owned(),
+            error,
+        },
+    })?;
+    let discovery = discovery::read_location(&location).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => ConnectError::HostNotRunning {
+            root: root.to_owned(),
+            root_id: location.root_id().to_owned(),
+        },
+        _ => ConnectError::Other(error.into()),
+    })?;
+    Ok((location.root_id().to_owned(), discovery))
+}
+
+fn classify(error: HostError, root: &Path, root_id: &str) -> ConnectError {
+    let gone = error.downcast_ref::<io::Error>().is_some_and(absent);
+    if gone {
+        ConnectError::HostNotRunning {
+            root: root.to_owned(),
+            root_id: root_id.to_owned(),
+        }
+    } else {
+        ConnectError::Other(error)
+    }
+}
+
 pub(super) struct HostClient {
     discovery: Discovery,
 }
 impl HostClient {
-    pub async fn connect(root: &Path, generation: Option<&str>) -> Result<Self, HostError> {
+    pub async fn connect(root: &Path, generation: Option<&str>) -> Result<Self, ConnectError> {
         let root = root.to_owned();
         tokio::time::timeout(Duration::from_secs(5), async {
-            let discovery = tokio::task::spawn_blocking(move || discovery::read(&root)).await??;
+            let (root_id, discovery) = tokio::task::spawn_blocking({
+                let root = root.clone();
+                move || discover(&root)
+            })
+            .await
+            .map_err(|error| ConnectError::Other(error.into()))??;
             if generation.is_some_and(|expected| discovery.generation.as_deref() != Some(expected))
             {
-                return Err("Host discovery belongs to another deployment revision".into());
+                return Err(ConnectError::Other(
+                    "Host discovery belongs to another deployment revision".into(),
+                ));
             }
             let client = Self { discovery };
-            client.live_status().await?;
+            client
+                .live_status()
+                .await
+                .map_err(|error| classify(error, &root, &root_id))?;
             Ok(client)
         })
-        .await?
+        .await
+        .map_err(|error| ConnectError::Other(error.into()))?
     }
     pub async fn anchor(&self) -> Result<Client, HostError> {
         Ok(tokio::time::timeout(
