@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 
 const PAIR_SCHEME: &str = "maka://pair/v1?payload=";
 const PROGRESS_WINDOW: u64 = 8;
-const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const CHAT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 const PROGRESS_ACK_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const ALLOWED_HOST_CALLS: &[&str] = &[
     "ios.bootstrap",
@@ -308,7 +308,7 @@ struct Bridge {
     snapshot_revision: Arc<AtomicU64>,
     shutdown: CancellationToken,
     progress_ack_stall_timeout: Duration,
-    send_timeout: Duration,
+    chat_mutation_timeout: Duration,
     runtime: Handle,
 }
 
@@ -399,7 +399,7 @@ impl HostBridge {
             support_dir,
             runtime,
             PROGRESS_ACK_STALL_TIMEOUT,
-            SEND_TIMEOUT,
+            CHAT_MUTATION_TIMEOUT,
         )
     }
 
@@ -408,7 +408,7 @@ impl HostBridge {
         support_dir: PathBuf,
         runtime: Handle,
         progress_ack_stall_timeout: Duration,
-        send_timeout: Duration,
+        chat_mutation_timeout: Duration,
     ) -> Result<Self, String> {
         let identity = crate::identity::load(&support_dir)?;
         let profile_path = support_dir.join("hosts.json");
@@ -433,7 +433,7 @@ impl HostBridge {
             snapshot_revision: Arc::new(AtomicU64::new(0)),
             shutdown: CancellationToken::new(),
             progress_ack_stall_timeout,
-            send_timeout,
+            chat_mutation_timeout,
         };
         for &name in ALLOWED_HOST_CALLS {
             let bridge = bridge.clone();
@@ -461,10 +461,13 @@ impl HostBridge {
                             Err(err) => call.reply(Err(err)),
                         }
                     } else if name == "ios.hostMutate" {
-                        let send = data["endpoint"] == "agent" && data["method"] == "send";
+                        let chat_mutation = data["endpoint"]
+                            .as_str()
+                            .zip(data["method"].as_str())
+                            .is_some_and(|(endpoint, method)| is_chat_mutation(endpoint, method));
                         let result = match bridge.mutate(data, Some(&call)).await {
                             Ok(value) => Ok(value),
-                            Err(MutationFailure::NotSubmitted(detail)) if send => {
+                            Err(MutationFailure::NotSubmitted(detail)) if chat_mutation => {
                                 Ok(json!({"notSubmitted": detail}))
                             }
                             Err(MutationFailure::NotSubmitted(detail) | MutationFailure::Unconfirmed(detail)) => Err(detail),
@@ -504,6 +507,10 @@ impl Drop for HostBridge {
             state.connections.clear();
         });
     }
+}
+
+fn is_chat_mutation(endpoint: &str, method: &str) -> bool {
+    endpoint == "agent" && matches!(method, "send" | "continueRun" | "stop")
 }
 
 #[derive(Debug)]
@@ -735,10 +742,10 @@ impl Bridge {
             Some(_) => return Err("secret must be UTF-8 text".to_owned().into()),
         };
         let rpc: Rpc = decode(data)?;
-        let send = rpc.endpoint == "agent" && rpc.method == "send";
-        let deadline = send.then(|| tokio::time::Instant::now() + self.send_timeout);
+        let deadline = is_chat_mutation(&rpc.endpoint, &rpc.method)
+            .then(|| tokio::time::Instant::now() + self.chat_mutation_timeout);
         let room_session = if rpc.prepare_room_post == Some(true) {
-            if !send {
+            if rpc.endpoint != "agent" || rpc.method != "send" {
                 return Err("Room post preparation requires agent.send"
                     .to_owned()
                     .into());
@@ -835,7 +842,7 @@ impl Bridge {
             let prepared = match deadline {
                 Some(deadline) => tokio::time::timeout_at(deadline, prepare)
                     .await
-                    .map_err(|_| "Timed out preparing the Host message".to_owned())??,
+                    .map_err(|_| "Timed out preparing the Host mutation".to_owned())??,
                 None => prepare.await?,
             };
             let on_progress = async |value| {
@@ -2093,7 +2100,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn progress_backpressure_is_lossless_and_isolated_to_the_call() {
         let (_dir, host, app, mut events) =
-            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
         let bridge = &host.bridge;
         let a = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let b = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2159,7 +2166,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retiring_the_host_wakes_unacked_progress_without_masking_the_error() {
         let (_dir, host, app, mut events) =
-            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -2202,7 +2209,7 @@ mod tests {
     async fn detaching_the_app_or_dropping_the_bridge_wakes_unacked_progress() {
         for detach_app in [true, false] {
             let (_dir, host, app, mut events) =
-                progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
+                progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
             let bridge = host.bridge.clone();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -2230,7 +2237,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stalled_progress_leaves_the_terminal_host_error_visible() {
         let stall_timeout = Duration::from_millis(50);
-        let (_dir, host, _app, mut events) = progress_fixture(stall_timeout, SEND_TIMEOUT);
+        let (_dir, host, _app, mut events) = progress_fixture(stall_timeout, CHAT_MUTATION_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -2278,7 +2285,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn room_post_identity_reaches_the_ui_before_confirming_the_mutation() {
         let (_dir, host, _app, mut events) =
-            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, SEND_TIMEOUT);
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
         let bridge = &host.bridge;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -2364,9 +2371,72 @@ mod tests {
         }).await.unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chat_controls_can_retry_after_prepare_failure() {
+        let (_dir, host, _app, mut events) =
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (generation, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            for method in ["continueRun", "stop"] {
+                let data = json!({"rootId":"root","generation":generation,"endpoint":"agent",
+                    "method":method,"input":{"sessionId":"chat","runId":"run","sourceRunId":"run"}});
+                bridge.channel.send("test.mutate", data.clone()).unwrap();
+                let (actual, mut call) = open_rpc(&listener, session).await;
+                assert_eq!(actual, method);
+                send_frame(&mut call, json!({"kind":"aborted","reason":"prepare refused"})).await;
+
+                let reply = events.recv().await.unwrap();
+                assert!(reply["reply"]["notSubmitted"].as_str().unwrap().contains("prepare refused"), "{reply}");
+                assert!(matches!(call.next().await, None | Some(Err(_))));
+
+                bridge.channel.send("test.mutate", data).unwrap();
+                let (actual, mut retry) = open_rpc(&listener, session).await;
+                assert_eq!(actual, method);
+                let reference = prepare_mutation(&mut retry).await;
+                finish_mutation(&mut retry, reference).await;
+                assert_eq!(events.recv().await.unwrap(), json!({"rootId":"root","reply":{"value":"done"}}));
+            }
+        }).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chat_controls_losing_the_connection_after_confirm_have_no_retryable_receipt() {
+        let (_dir, host, _app, mut events) =
+            progress_fixture(PROGRESS_ACK_STALL_TIMEOUT, CHAT_MUTATION_TIMEOUT);
+        let bridge = &host.bridge;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (generation, session, _anchor) = progress_host(bridge, &listener, "root").await;
+            for method in ["continueRun", "stop"] {
+                bridge.channel.send("test.mutate", json!({
+                    "rootId":"root","generation":generation,"endpoint":"agent","method":method,
+                    "input":{"sessionId":"chat","runId":"run","sourceRunId":"run"},
+                })).unwrap();
+                let (actual, mut call) = open_rpc(&listener, session).await;
+                assert_eq!(actual, method);
+                let _reference = prepare_mutation(&mut call).await;
+                drop(call);
+
+                let reply = events.recv().await.unwrap();
+                assert!(
+                    reply["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("not acknowledged"),
+                    "{reply}"
+                );
+                assert!(reply.get("reply").is_none(), "{reply}");
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     fn progress_fixture(
         stall_timeout: Duration,
-        send_timeout: Duration,
+        chat_mutation_timeout: Duration,
     ) -> (
         tempfile::TempDir,
         HostBridge,
@@ -2380,7 +2450,7 @@ mod tests {
             dir.path().into(),
             Handle::current(),
             stall_timeout,
-            send_timeout,
+            chat_mutation_timeout,
         )
         .unwrap();
         let bundle = nsh_engine::Bundle::source(

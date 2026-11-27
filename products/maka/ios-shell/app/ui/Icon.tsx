@@ -20,7 +20,7 @@
 import { Canvas, Path2D, Text, View, platform, token, type CanvasRenderingContext2D } from 'nsh';
 
 type Shape =
-  | { tag: 'path'; d: string }
+  | { tag: 'path' | 'filledPath'; d: string }
   | { tag: 'circle'; cx: number; cy: number; r: number }
   | { tag: 'rect'; x: number; y: number; width: number; height: number; rx?: number }
   | { tag: 'line'; x1: number; y1: number; x2: number; y2: number };
@@ -192,7 +192,8 @@ const glyphs = {
     { tag: 'line', x1: 12, y1: 18, x2: 12, y2: 6 },
     { tag: 'path', d: 'm7 11 5-5 5 5' },
   ],
-  stop: [{ tag: 'rect', x: 6.5, y: 6.5, width: 11, height: 11, rx: 2 }],
+  stop: [{ tag: 'filledPath', d: 'M4 4h16v16H4z' }],
+  play: [{ tag: 'filledPath', d: 'M6 3 21 12 6 21z' }],
   folder: [
     {
       tag: 'path',
@@ -243,7 +244,7 @@ export type IconName = keyof typeof glyphs;
 const pathCache = new Map<string, Path2D>();
 for (const shapes of Object.values(glyphs)) {
   for (const s of shapes) {
-    if (s.tag === 'path' && !pathCache.has(s.d)) {
+    if ((s.tag === 'path' || s.tag === 'filledPath') && !pathCache.has(s.d)) {
       pathCache.set(s.d, new Path2D(s.d));
     }
   }
@@ -251,6 +252,9 @@ for (const shapes of Object.values(glyphs)) {
 
 function drawShape(cx: CanvasRenderingContext2D, shape: Shape) {
   switch (shape.tag) {
+    case 'filledPath':
+      cx.fill(pathCache.get(shape.d)!);
+      return;
     case 'path':
       cx.stroke(pathCache.get(shape.d)!);
       return;
@@ -294,6 +298,7 @@ export function Icon(props: {
       draw={(cx) => {
         const scale = size() / 24;
         cx.scale(scale, scale);
+        cx.fillStyle = props.color;
         cx.strokeStyle = props.color;
         cx.lineWidth = props.strokeWidth ?? 1.9;
         cx.lineCap = 'round';

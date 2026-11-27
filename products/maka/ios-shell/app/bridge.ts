@@ -159,6 +159,9 @@ export type {
   AgentHistoryPage,
   AgentRoomMessage,
   AgentDeliveryPage,
+  AgentExecution,
+  AgentSessionMetrics,
+  ThinkingLevel,
   AgentQueue,
   AgentPreviewPage,
   AgentInteractionSummary,
@@ -364,6 +367,9 @@ export async function hostMutate<T = unknown>(
       throw new MutationNotSubmitted('mutation progress ID is already in use');
     progressListeners.set(key, onProgress);
   }
+  // Let Rust report which phase failed instead of timing out above it.
+  const chatMutation =
+    endpoint === 'agent' && (method === 'send' || method === 'continueRun' || method === 'stop');
   try {
     const res = (await host.call(
       'ios.hostMutate',
@@ -378,7 +384,7 @@ export async function hostMutate<T = unknown>(
         progressId: onProgress ? progressId : undefined,
         prepareRoomPost,
       },
-      onProgress || (endpoint === 'agent' && method === 'send') ? { timeout: 0 } : undefined,
+      onProgress || chatMutation ? { timeout: 0 } : undefined,
     )) as { value: T } | { notSubmitted: string };
     if ('notSubmitted' in res) throw new MutationNotSubmitted(res.notSubmitted);
     return res.value;

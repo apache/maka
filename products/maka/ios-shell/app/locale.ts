@@ -82,8 +82,12 @@ const THINKING_LEVEL_KEYS = {
   ultra: 'Ultra',
 } satisfies Record<ThinkingLevel, MessageKey>;
 
-export function thinkingLevelLabel(level: ThinkingLevel): string {
-  return Object.hasOwn(THINKING_LEVEL_KEYS, level) ? tr(THINKING_LEVEL_KEYS[level]) : level;
+export function isThinkingLevel(level: string): level is ThinkingLevel {
+  return Object.hasOwn(THINKING_LEVEL_KEYS, level);
+}
+
+export function thinkingLevelLabel(level: string): string {
+  return isThinkingLevel(level) ? tr(THINKING_LEVEL_KEYS[level]) : level;
 }
 
 function reportStorageError(cause: unknown) {

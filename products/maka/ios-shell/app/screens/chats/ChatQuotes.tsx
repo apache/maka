@@ -30,7 +30,6 @@ import {
   type HistoryRow,
 } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
-import { QueueSendMenu } from './ComposerPendingDock';
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { glassSurfaceStyle, ActionButton, Icon } from '../../ui';
@@ -295,7 +294,7 @@ export function DraftQuoteStrip(props: {
   onClearQuotes: () => void;
   onRemoveQuote: (id: number) => void;
   onRemoveLink: (id: string) => void;
-  mainActions?: { ask: () => void; send: () => void; queue?: () => void; canSend: boolean };
+  onAskSide?: () => void;
 }) {
   const chips = computed(() => [...props.quotes, ...props.links]);
   return (
@@ -446,32 +445,16 @@ export function DraftQuoteStrip(props: {
           </Each>
         </View>
       </Scroll>
-      <If when={props.mainActions}>
-        {(actions) => (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4, gap: 4 }}>
-            <QueueSendMenu
-              onQueue={actions().queue}
-              disabled={!actions().canSend}
-              trigger={
-                <ActionButton
-                  title={tr('Send to Main Chat')}
-                  variant="glassQuiet"
-                  compact
-                  minHeight={44}
-                  disabled={!actions().canSend}
-                  onPress={() => actions().send()}
-                />
-              }
-            />
-            <ActionButton
-              title={tr('Ask Side Question')}
-              variant="glassSecondary"
-              compact
-              minHeight={44}
-              onPress={() => actions().ask()}
-            />
-          </View>
-        )}
+      <If when={props.onAskSide}>
+        <View style={{ alignItems: 'flex-start' }}>
+          <ActionButton
+            title={tr('Ask Side Question')}
+            variant="glassQuiet"
+            compact
+            minHeight={44}
+            onPress={() => props.onAskSide?.()}
+          />
+        </View>
       </If>
     </View>
   );

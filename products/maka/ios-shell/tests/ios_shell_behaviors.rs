@@ -2966,9 +2966,22 @@ async fn chat_streaming_collapsible_tools_and_inline_approval() {
     held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
 }
 
+fn select_header_item(app: &mut Headless, id: u32) {
+    app.engine().control().dispatch_event(
+        nsh_core::ROOT_ID,
+        nsh_core::EventKind::Menu,
+        nsh_core::EventPayload::Map(vec![("id", nsh_core::PayloadValue::Number(f64::from(id)))]),
+    );
+    assert!(app.settle());
+}
+
 struct ComposerDockFixture {
     app: Headless,
+    header: Arc<std::sync::Mutex<Option<nsh_core::ScreenConfig>>>,
+    menus: mpsc::UnboundedReceiver<(String, (nsh_core::NodeId, Value))>,
     run: Arc<std::sync::Mutex<Value>>,
+    observation: Arc<std::sync::Mutex<Value>>,
+    observes: Arc<std::sync::atomic::AtomicUsize>,
     queue: Arc<std::sync::Mutex<Value>>,
     history: Arc<std::sync::Mutex<Vec<Value>>>,
     calls: mpsc::UnboundedReceiver<(Value, HostCall)>,
@@ -2977,6 +2990,7 @@ struct ComposerDockFixture {
     history_reads: mpsc::UnboundedReceiver<()>,
     hold_queue: Arc<std::sync::atomic::AtomicBool>,
     hold_history: Arc<std::sync::atomic::AtomicBool>,
+    hold_observe: Arc<std::sync::atomic::AtomicBool>,
 }
 
 const DOCK_RUN_ID: &str = "a91a2b3c-0000-4000-8000-000000000001";
@@ -3010,6 +3024,9 @@ impl ComposerDockFixture {
         let channel = HostChannel::new();
         channel.handle("ios.bootstrap", |call| call.resolve(dock_host(1)));
         let run = Arc::new(std::sync::Mutex::new(run));
+        let observation = Arc::new(std::sync::Mutex::new(json!({})));
+        let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (observation_q, observes_q) = (observation.clone(), observes.clone());
         let queue = Arc::new(std::sync::Mutex::new(queue));
         let mut answer = quote_history_row(1, "assistant", "An earlier answer");
         answer["finalOutput"] = json!(anchor);
@@ -3026,6 +3043,8 @@ impl ComposerDockFixture {
         let hold_queue_read = hold_queue.clone();
         let hold_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let hold_tail = hold_history.clone();
+        let hold_observe = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hold_observation = hold_observe.clone();
         let (run_q, queue_q, history_q) = (run.clone(), queue.clone(), history.clone());
         let (tx, calls) = mpsc::unbounded_channel();
         let query_tx = tx.clone();
@@ -3040,7 +3059,18 @@ impl ComposerDockFixture {
                 "list" => json!({"revision":"list","sessions":[session],"needsYouCount":0}),
                 "observe" if data["input"]["sessionId"] == "saved" =>
                     json!({"session":side,"through":1,"run":null}),
-                "observe" => json!({"session":session,"through":1,"run":*run_q.lock().unwrap()}),
+                "observe" => {
+                    observes_q.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if hold_observation.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        query_tx.send((data, call)).unwrap();
+                        return;
+                    }
+                    let mut obs = json!({"session":session,"through":1,"run":*run_q.lock().unwrap()});
+                    for (key, value) in observation_q.lock().unwrap().as_object().unwrap() {
+                        obs[key] = value.clone();
+                    }
+                    obs
+                },
                 "history" if hold_tail.swap(false, std::sync::atomic::Ordering::SeqCst) => {
                     query_tx.send((data, call)).unwrap();
                     return;
@@ -3070,11 +3100,27 @@ impl ComposerDockFixture {
                 }
                 "queue" => queue_q.lock().unwrap().clone(),
                 "pendingInteractions" => json!({"revision":1,"entries":[]}),
-                "models" => json!({"kind":"ready","choices":[]}),
+                "models" => json!({"kind":"ready","choices":[
+                    {"label":"Dock model","selection":dock_model(),"sourceName":"Test",
+                        "thinkingLevels":["off","minimal","high"],"defaultThinkingLevel":"high"},
+                    {"label":"Alternate thinker","selection":{"kind":"model","connectionId":"test","modelId":"alternate"},
+                        "sourceName":"Test","thinkingLevels":["low","high"]},
+                    {"label":"High-only model","selection":{"kind":"model","connectionId":"test","modelId":"high-only"},
+                        "sourceName":"Test","thinkingLevels":["high"]},
+                    {"label":"Other model","selection":{"kind":"model","connectionId":"other","modelId":"other"},"sourceName":"Other",
+                        "thinkingLevels":[]},
+                    {"label":"Executor","selection":{"kind":"executor","selection":{"executor":"codex","settings":{"runtime":"cli","model":"external"}}},"sourceName":"Codex",
+                        "thinkingLevels":[]},
+                    {"label":"Opus","sourceName":"Codex","selection":{"kind":"executor",
+                        "selection":{"executor":"codex","settings":{"runtime":"cli","model":"opus"}}},
+                        "aliases":[{"kind":"executor","selection":{"executor":"codex",
+                            "settings":{"runtime":"cli","model":"opus-high","thinkingLevel":"high"}}}],
+                        "thinkingLevels":["low","high"]}
+                ]}),
                 "botOutbox" => json!({"isBot":false}),
                 "connections" => json!({"kind":"ready","revision":1,"connections":[],"next":null,
                     "defaultTarget":{"connectionId":"test","modelId":"model"}}),
-                "queueMessage" | "resolveModel" => {
+                "queueMessage" | "resolveModel" | "execution" | "continuationAvailability" | "model" => {
                     query_tx.send((data, call)).unwrap();
                     return;
                 }
@@ -3111,6 +3157,15 @@ impl ComposerDockFixture {
             ..Environment::default()
         };
         let mut app = Headless::start(config).unwrap();
+        let header = Arc::new(std::sync::Mutex::new(None));
+        let mounted = header.clone();
+        let menus = native_menu_items(&mut app, move |item| {
+            if let nsh_core::MountItem::ScreenConfig { config, .. } = item
+                && config.title.as_deref() == Some("Dock Chat")
+            {
+                *mounted.lock().unwrap() = Some((**config).clone());
+            }
+        });
         app.wait_for("label:Conversation: Dock Chat").unwrap();
         app.press("label:Conversation: Dock Chat").unwrap();
         if !room {
@@ -3132,7 +3187,11 @@ impl ComposerDockFixture {
         while history_reads.try_recv().is_ok() {}
         Self {
             app,
+            header,
+            menus,
             run,
+            observation,
+            observes,
             queue,
             history,
             calls,
@@ -3141,7 +3200,52 @@ impl ComposerDockFixture {
             history_reads,
             hold_queue,
             hold_history,
+            hold_observe,
         }
+    }
+
+    fn navigation_action(&self, label: &str) -> Option<nsh_core::desktop::MenuAction> {
+        let config = self.header.lock().unwrap();
+        let more = config
+            .as_ref()?
+            .right_items
+            .iter()
+            .find(|item| item.key.as_deref() == Some("more"))?;
+        more.menu.as_ref()?.iter().find_map(|item| match item {
+            nsh_core::desktop::MenuItem::Action(action) if action.label == label => {
+                Some(action.clone())
+            }
+            _ => None,
+        })
+    }
+
+    fn navigation_item(&self, label: &str) -> Option<u32> {
+        self.navigation_action(label)
+            .filter(|action| action.enabled)
+            .map(|action| action.id)
+    }
+
+    fn confirm_backend(&self, reply: HostCall, revision: u64, backend: Value) {
+        let session = json!({"id":"chat","title":"Dock Chat","kind":"agent","revision":revision,
+            "backend":backend,"workspace":{"path":"/work"}});
+        self.observation.lock().unwrap()["session"] = session.clone();
+        reply.resolve(json!({"value":{"kind":"committed","session":session}}));
+    }
+
+    fn choose_navigation(&mut self, label: &str) {
+        let id = self
+            .navigation_item(label)
+            .unwrap_or_else(|| panic!("missing UIKit menu item: {label}"));
+        select_header_item(&mut self.app, id);
+    }
+
+    fn choose_model(&mut self, label: &str) {
+        self.app.wait_for("id:chat-keyboard-model").unwrap();
+        let item = std::iter::from_fn(|| self.menus.try_recv().ok())
+            .filter_map(|(title, action)| (title == label).then_some(action))
+            .last()
+            .unwrap_or_else(|| panic!("missing model: {label}"));
+        select_native_item(&mut self.app, item);
     }
 
     async fn prepare_room_post(&mut self, message_id: &str) -> HostCall {
@@ -3206,6 +3310,1225 @@ fn queued_result(message_id: &str, revision: u64) -> Value {
 
 fn missing_queued(reason: &str) -> Value {
     json!({"value":{"kind":"missing","reason":reason}})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_waits_for_the_observed_run_and_never_retargets_a_held_press() {
+    use nsh_core::{EventKind, EventPayload};
+
+    let mut run = dock_run();
+    run["state"] = json!("waiting_for_user");
+    let mut fx = ComposerDockFixture::start(run, dock_model(), empty_queue()).await;
+    let primary = "id:chat-primary-action";
+    assert_embedded_primary(&fx.app, "label:Stop current reply");
+    fx.app.press("label:Stop current reply").unwrap();
+    let (stop, reply) = fx.call("stop").await;
+    assert_eq!(stop, json!({"sessionId":"chat","runId":DOCK_RUN_ID}));
+    reply.resolve(json!({"value":{"requested":true}}));
+    fx.app.wait_for("label:Stopping reply…").unwrap();
+    assert!(!fx.app.screen().enabled(primary).unwrap());
+
+    let mut next = dock_run();
+    next["runId"] = json!("next-run");
+    next["state"] = json!("admitted");
+    *fx.run.lock().unwrap() = next.clone();
+    fx.transcript_changed(2, "opened");
+    fx.app.wait_for("label:Stop current reply").unwrap();
+
+    let id = fx.app.screen().id(primary).unwrap();
+    let control = fx.app.engine().control();
+    control.dispatch_event(
+        id,
+        EventKind::PressDown,
+        EventPayload::Press(Default::default()),
+    );
+    assert!(fx.app.settle());
+    next["runId"] = json!("later-run");
+    *fx.run.lock().unwrap() = next;
+    fx.transcript_changed(3, "opened");
+    assert!(fx.app.settle());
+    control.dispatch_event(
+        id,
+        EventKind::Press,
+        EventPayload::Press(Default::default()),
+    );
+    assert!(fx.app.settle());
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "a press begun on the replaced run must be cancelled"
+    );
+
+    fx.app.press(primary).unwrap();
+    let (stop, reply) = fx.call("stop").await;
+    assert_eq!(stop["runId"], "later-run");
+    reply.resolve(json!({"value":{"requested":false}}));
+    fx.app.wait_for("label:Stop current reply").unwrap();
+
+    fx.app.press(primary).unwrap();
+    let (_, reply) = fx.call("stop").await;
+    reply.reject("Stop receipt lost");
+    fx.app
+        .wait_for("label:Stop not confirmed. Refresh to check the reply.")
+        .unwrap();
+    assert!(!fx.app.screen().enabled(primary).unwrap());
+    assert!(fx.calls.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn navigation_menu_cannot_stop_a_replacement_run_but_can_queue_for_it() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app
+        .type_text("label:Message composer", "A draft for later")
+        .unwrap();
+    let captured_stop = fx.navigation_item("Stop current reply").unwrap();
+
+    let mut run = dock_run();
+    run["runId"] = json!("replacement-run");
+    *fx.run.lock().unwrap() = run;
+    fx.transcript_changed(2, "opened");
+    assert!(fx.app.settle());
+    select_header_item(&mut fx.app, captured_stop);
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "stale Stop must not retarget the replacement"
+    );
+
+    fx.choose_navigation("Add to queue");
+    let (send, reply) = fx.call("send").await;
+    assert_eq!(send["expectedRunId"], "replacement-run");
+    assert_eq!(send["delivery"], "queue");
+    assert_eq!(send["message"], "A draft for later");
+    reply.resolve(queued_result("nav-queued", 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn menu_stop_keeps_the_quoted_draft_for_sending_after_the_run_ends() {
+    let mut fx =
+        ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true).await;
+    let mut choose = watch_native_menu_items(&mut fx.app, |_| {});
+    fx.app.press("role:button[Quote] >> nth=0").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Keep this\nand this")
+        .unwrap();
+    fx.app.wait_for("label:Ask Side Question").unwrap();
+    fx.app.long_press("label:Send message").unwrap();
+    choose(&mut fx.app, "Stop current reply");
+    let (stop, reply) = fx.call("stop").await;
+    assert_eq!(stop["runId"], DOCK_RUN_ID);
+    reply.resolve(json!({"value":{"requested":true}}));
+    assert!(fx.app.settle());
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep this\nand this")
+    );
+    fx.app
+        .wait_for("label:Remove quote: An earlier answer")
+        .unwrap();
+    assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+
+    *fx.run.lock().unwrap() = Value::Null;
+    fx.transcript_changed(2, "ended");
+    fx.app.wait_for("label:Send message").unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (send, reply) = fx.call("send").await;
+    assert!(send["expectedRunId"].is_null());
+    assert_eq!(send["message"], "Keep this\nand this");
+    assert_eq!(send["quotes"][0]["text"], "An earlier answer");
+    reply.resolve(queued_result("quote", 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_slider_previews_steps_then_commits_and_rolls_back_a_rejected_tick() {
+    use nsh_core::geometry::Point;
+
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    backend["thinkingLevel"] = json!("high");
+    let mut fx = ComposerDockFixture::start(Value::Null, backend, empty_queue()).await;
+    let pill = "id:chat-thinking-accessory";
+    let slider = "id:chat-thinking-slider";
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:High")
+        .unwrap();
+    fx.choose_navigation("Thinking level");
+    fx.app.wait_for(slider).unwrap();
+    assert!(!fx.app.screen().matches("id:chat-details-scroll").unwrap());
+    fx.app.press("label:Minimal").unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(
+        change["backend"],
+        json!({"kind":"model","connectionId":"test","modelId":"model",
+        "serviceTier":"fast","thinkingLevel":"minimal"})
+    );
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:Minimal")
+        .unwrap();
+    assert!(!fx.navigation_action("Thinking level").unwrap().enabled);
+    reply.resolve(json!({"value":{"kind":"rejected","reason":"tools_unavailable"}}));
+    fx.app.wait_for("text:Could not change the model.").unwrap();
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:High")
+        .unwrap();
+
+    let thumb = "label:Thinking level · High";
+    let width = fx
+        .app
+        .screen()
+        .layout(slider)
+        .unwrap()
+        .unwrap()
+        .bounds
+        .size
+        .width;
+    fx.app
+        .drag_and_hold(thumb, Point::new(-width / 4., px(0.)), Default::default())
+        .unwrap();
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:Minimal")
+        .unwrap();
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "drag must not save before release"
+    );
+    fx.app.drop_held().unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"]["thinkingLevel"], "minimal");
+    assert_eq!(change["backend"]["serviceTier"], "fast");
+    let session = json!({"id":"chat","title":"Dock Chat","kind":"agent","revision":2,
+        "backend":change["backend"],"workspace":{"path":"/work"}});
+    fx.observation.lock().unwrap()["session"] = session.clone();
+    reply.resolve(json!({"value":{"kind":"committed","session":session}}));
+    fx.app.wait_for("label:Thinking level · Minimal").unwrap();
+    fx.app.press(pill).unwrap();
+    assert!(!fx.app.screen().matches(slider).unwrap());
+
+    fx.app.press(pill).unwrap();
+    fx.app.press("id:chat-thinking-backdrop").unwrap();
+    assert!(!fx.app.screen().matches(slider).unwrap());
+    fx.app.type_text("label:Message composer", "draft").unwrap();
+    fx.app.press(pill).unwrap();
+    fx.app.press("label:Dismiss keyboard").unwrap();
+    assert!(!fx.app.screen().matches(slider).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_drag_is_cancelled_when_observe_switches_models_mid_gesture() {
+    let mut backend = dock_model();
+    backend["thinkingLevel"] = json!("high");
+    let mut fx = ComposerDockFixture::start(Value::Null, backend, empty_queue()).await;
+    let slider = "id:chat-thinking-slider";
+    fx.choose_navigation("Thinking level");
+    let width = fx
+        .app
+        .screen()
+        .layout(slider)
+        .unwrap()
+        .unwrap()
+        .bounds
+        .size
+        .width;
+    fx.app
+        .drag_and_hold(
+            "label:Thinking level · High",
+            nsh_core::Point::new(-width / 4., px(0.)),
+            Default::default(),
+        )
+        .unwrap();
+    fx.app.wait_for("label:Thinking level · Minimal").unwrap();
+    let replacement = json!({"id":"chat","title":"Dock Chat","kind":"agent","revision":2,
+        "workspace":{"path":"/work"},"backend":{"kind":"model","connectionId":"test","modelId":"alternate"}});
+    *fx.observation.lock().unwrap() = json!({"session":replacement,"through":2});
+    fx.transcript_changed(2, "step_ended");
+    fx.app
+        .wait_for("id:chat-keyboard-model >> text:Alternate thinker")
+        .unwrap();
+    fx.app.wait_for("label:Thinking level · Default").unwrap();
+    fx.app.drop_held().unwrap();
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "old drag committed on a replacement model"
+    );
+    fx.app.press("label:Low").unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"]["modelId"], "alternate");
+    assert_eq!(change["backend"]["thinkingLevel"], "low");
+    fx.confirm_backend(reply, 3, change["backend"].clone());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_slider_can_return_to_the_host_default() {
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    let mut fx = ComposerDockFixture::start(Value::Null, backend.clone(), empty_queue()).await;
+    fx.choose_navigation("Thinking level");
+    let thumb = "label:Thinking level · Default";
+    fx.app.wait_for(thumb).unwrap();
+    let x = |app: &Headless, label| app.screen().layout(label).unwrap().unwrap().bounds.origin.x;
+    let first_stop = x(&fx.app, thumb);
+
+    fx.app.press("label:High").unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"]["thinkingLevel"], "high");
+    fx.confirm_backend(reply, 2, change["backend"].clone());
+    fx.app.wait_for("label:Thinking level · High").unwrap();
+    assert!(x(&fx.app, "label:Thinking level · High") > first_stop);
+
+    fx.app
+        .wait_until("thinking save finished", Duration::from_secs(2), |screen| {
+            screen.enabled("label:Default").unwrap_or(false)
+        })
+        .unwrap();
+    fx.app.press("label:Default").unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"], backend);
+    fx.confirm_backend(reply, 3, change["backend"].clone());
+    fx.app
+        .wait_until("default saved", Duration::from_secs(2), |screen| {
+            screen.enabled("label:Default").unwrap_or(false)
+        })
+        .unwrap();
+    fx.app.wait_for(thumb).unwrap();
+    assert_eq!(x(&fx.app, thumb), first_stop);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_explicit_thinking_level_still_offers_host_default() {
+    let default = json!({"kind":"model","connectionId":"test","modelId":"high-only"});
+    let mut selected = default.clone();
+    selected["thinkingLevel"] = json!("high");
+    let mut fx = ComposerDockFixture::start(Value::Null, selected, empty_queue()).await;
+    fx.app.wait_for("id:chat-thinking-accessory").unwrap();
+    fx.choose_navigation("Thinking level");
+    fx.app.wait_for("label:Thinking level · High").unwrap();
+
+    fx.app.press("label:Default").unwrap();
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"], default);
+    fx.confirm_backend(reply, 2, default);
+    fx.app.wait_for("label:Thinking level · Default").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_chat_hides_native_thinking_item_even_with_keyboard_closed() {
+    let queue = json!({"revision":1,"entries":[
+        {"messageId":"waiting","kind":"followup","preview":"Next question"}
+    ]});
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), queue).await;
+    fx.app.wait_for("id:chat-thinking-accessory").unwrap();
+    assert!(fx.navigation_item("Thinking level").is_some());
+
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape, keyboard closed", |env| {
+            env.safe_area.left = px(47.);
+            env.safe_area.right = px(47.);
+            env.safe_area.bottom = px(21.);
+            env.keyboard_height = px(0.);
+        })
+        .unwrap();
+    fx.app.wait_for("id:chat-composer-actions").unwrap();
+    assert!(fx.navigation_action("Thinking level").is_none());
+    assert!(fx.navigation_item("Usage & Details").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accessory_model_menu_remains_reachable_at_300_percent_dynamic_type() {
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    fx.app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
+    fx.app
+        .set_environment("300% Dynamic Type", |env| {
+            env.font_scale = 3.0;
+            env.keyboard_height = px(280.);
+        })
+        .unwrap();
+    let model = "id:chat-keyboard-model";
+    let layout = fx.app.screen().layout(model).unwrap().unwrap();
+    assert!(
+        layout.bounds.size.width >= px(72.) && !layout.clipped,
+        "{layout:?}"
+    );
+    assert!(fx.app.screen().enabled(model).unwrap());
+    // UIKit owns the press and menu presentation; deliver its selection event.
+    fx.choose_model("Other model");
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"]["modelId"], "other");
+    fx.confirm_backend(reply, 2, change["backend"].clone());
+    fx.app
+        .wait_for("id:chat-keyboard-model >> text:Other model")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn details_distinguish_current_and_cached_usage_and_refresh_once_per_step_page() {
+    use std::sync::atomic::Ordering;
+
+    let executor = json!({"kind":"executor","selection":{"executor":"codex","settings":{"runtime":"cli","model":"external"}}});
+    let mut fx = ComposerDockFixture::start(dock_run(), executor, empty_queue()).await;
+    assert!(!fx.app.screen().matches("id:chat-details-scroll").unwrap());
+    fx.choose_navigation("Usage & Details");
+    fx.app.wait_for("text:No usage data yet").unwrap();
+    let mut metrics = json!({"modelId":"measured-model","connectionId":"other-connection",
+        "approximate":false,"contextLastKnown":false});
+    let cases = [
+        (
+            json!(89_599),
+            json!(128_000),
+            json!(31.4),
+            false,
+            false,
+            "89,599 / 128,000 tokens · 70%",
+            "31.4 tok/s",
+        ),
+        (
+            json!(96_000),
+            json!(128_000),
+            json!(31.4),
+            false,
+            false,
+            "96,000 / 128,000 tokens · 75%",
+            "31.4 tok/s",
+        ),
+        (
+            json!(115_200),
+            json!(128_000),
+            json!(0),
+            true,
+            false,
+            "≈115,200 / 128,000 tokens · ≈90%",
+            "0.0 tok/s",
+        ),
+        (
+            json!(160_000),
+            json!(128_000),
+            Value::Null,
+            false,
+            true,
+            "160,000 / 128,000 tokens · 125%",
+            "Not measured",
+        ),
+        (
+            json!(0),
+            json!(128_000),
+            Value::Null,
+            false,
+            false,
+            "0 / 128,000 tokens · 0%",
+            "Not measured",
+        ),
+        (
+            json!(1),
+            json!(128_000),
+            Value::Null,
+            true,
+            false,
+            "≈1 / 128,000 tokens · ≈<1%",
+            "Not measured",
+        ),
+        (
+            json!(123),
+            Value::Null,
+            Value::Null,
+            true,
+            false,
+            "≈123 tokens used",
+            "Not measured",
+        ),
+        (
+            Value::Null,
+            json!(128_000),
+            Value::Null,
+            false,
+            false,
+            "128,000 token window",
+            "Not measured",
+        ),
+        (
+            json!(123),
+            json!(0),
+            Value::Null,
+            false,
+            false,
+            "123 tokens used",
+            "Not measured",
+        ),
+    ];
+    for (index, (used, window, speed, approximate, last, usage, rate)) in
+        cases.into_iter().enumerate()
+    {
+        let through = index + 2;
+        metrics["contextTokens"] = used;
+        metrics["contextWindow"] = window;
+        metrics["outputTokensPerSecond"] = speed;
+        metrics["approximate"] = json!(approximate);
+        metrics["contextLastKnown"] = json!(last);
+        *fx.observation.lock().unwrap() = json!({"through":through,"metrics":metrics});
+        let before = fx.observes.load(Ordering::SeqCst);
+        fx.deliver(json!({"kind":"events","through":through,"events":[
+            {"runId":DOCK_RUN_ID,"fact":{"kind":"step_ended"}},
+            {"runId":DOCK_RUN_ID,"fact":{"kind":"step_ended"}}
+        ]}));
+        fx.app.wait_for(&format!("text:{usage}")).unwrap();
+        fx.app.wait_for(&format!("text:{rate}")).unwrap();
+        assert_eq!(fx.observes.load(Ordering::SeqCst), before + 1);
+        assert_eq!(
+            fx.app
+                .shows("Context from the last request. Newer content isn’t included."),
+            last
+        );
+    }
+    fx.app
+        .wait_for("text:measured-model · other-connection")
+        .unwrap();
+    fx.app
+        .send_host_event("ios.hostState", side_host_state(9, None))
+        .unwrap();
+    fx.app
+        .wait_for("text:measured-model · other-connection · Last synced")
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_header_and_keyboard_model_keep_usage_and_settings_separate() {
+    use nsh_core::HeaderItemContent;
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    {
+        let config = fx.header.lock().unwrap();
+        let config = config.as_ref().unwrap();
+        assert!(config.right.is_none(), "custom iOS headerRight is mounted");
+        let symbols: Vec<_> = config
+            .right_items
+            .iter()
+            .map(|item| &item.content)
+            .collect();
+        assert_eq!(
+            symbols,
+            [
+                &HeaderItemContent::Symbol("folder".into()),
+                &HeaderItemContent::Symbol("ellipsis.circle".into()),
+            ]
+        );
+    }
+    let slider = "id:chat-thinking-slider";
+    let backdrop = "id:chat-thinking-backdrop";
+    fx.choose_navigation("Thinking level");
+    fx.app.wait_for(slider).unwrap();
+    fx.app.wait_for(backdrop).unwrap();
+    fx.app.set_viewport(Size::new(px(844.), px(390.))).unwrap();
+    fx.app
+        .set_environment("landscape keyboard", |env| {
+            env.safe_area.left = px(47.);
+            env.safe_area.right = px(47.);
+            env.safe_area.bottom = px(21.);
+            env.keyboard_height = px(240.);
+        })
+        .unwrap();
+    assert!(!fx.app.screen().matches(slider).unwrap());
+    assert!(!fx.app.screen().matches(backdrop).unwrap());
+    assert!(
+        !fx.app
+            .screen()
+            .enabled("id:chat-thinking-accessory")
+            .unwrap()
+    );
+    assert!(!fx.app.screen().matches("id:chat-details-scroll").unwrap());
+    fx.choose_model("Other model");
+    let (change, reply) = fx.call("selectBackend").await;
+    assert_eq!(change["backend"]["modelId"], "other");
+    let session = json!({"id":"chat","title":"Dock Chat","kind":"agent","revision":2,
+        "backend":change["backend"],"workspace":{"path":"/work"}});
+    fx.observation.lock().unwrap()["session"] = session.clone();
+    reply.resolve(json!({"value":{"kind":"committed","session":session}}));
+    fx.app
+        .wait_for("id:chat-keyboard-model >> text:Other model")
+        .unwrap();
+    assert!(
+        !fx.app
+            .screen()
+            .matches("id:chat-thinking-accessory")
+            .unwrap()
+    );
+    assert!(fx.navigation_item("Thinking level").is_none());
+    assert!(!fx.app.screen().matches("id:chat-details-scroll").unwrap());
+
+    fx.choose_navigation("Usage & Details");
+    fx.app.wait_for("id:chat-details-scroll").unwrap();
+    assert!(
+        !fx.app
+            .screen()
+            .matches("id:chat-details-scroll >> label:Model")
+            .unwrap()
+    );
+    assert!(
+        !fx.app
+            .screen()
+            .matches("id:chat-details-scroll >> label:Thinking level")
+            .unwrap()
+    );
+    assert_keyboard_target(&fx.app, "label:Done", 47., 797., 150.);
+    fx.app.press("label:Done").unwrap();
+
+    let room = ComposerDockFixture::start_room().await;
+    assert!(
+        !room
+            .app
+            .screen()
+            .matches("id:chat-thinking-accessory")
+            .unwrap()
+    );
+    assert!(room.navigation_item("Thinking level").is_none());
+    assert!(room.navigation_item("Usage & Details").is_none());
+}
+
+const CONTINUE_ACTION: &str = "label:Continue reply";
+
+fn stopped_source(state: &str) -> Value {
+    json!({"sessionId":"chat","runId":DOCK_RUN_ID,"turnId":"t1","highWater":7,"state":{"kind":state}})
+}
+
+async fn stopped_conversation(
+    queue: Value,
+    backend: Value,
+    tail_fallback: bool,
+) -> ComposerDockFixture {
+    let mut fx = ComposerDockFixture::start(dock_run(), backend, queue).await;
+    let mut last = quote_history_row(2, "assistant", "Interrupted answer");
+    last["runId"] = json!(DOCK_RUN_ID);
+    fx.history.lock().unwrap().push(last);
+    *fx.run.lock().unwrap() = Value::Null;
+    *fx.observation.lock().unwrap() = json!({"through":2,
+        "latestRunId":(!tail_fallback).then_some(DOCK_RUN_ID)});
+    fx.transcript_changed(2, "ended");
+    fx
+}
+
+async fn probe_continue_model(fx: &mut ComposerDockFixture, backend: &Value) -> HostCall {
+    let source = stopped_source("failed");
+    let (read, result) = fx.call("execution").await;
+    assert_eq!(read, json!({"sessionId":"chat","runId":DOCK_RUN_ID}));
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    result.resolve(json!({"value":{"kind":"found","execution":source}}));
+    let (read, result) = fx.call("continuationAvailability").await;
+    assert_eq!(read, json!({"sessionId":"chat","runId":DOCK_RUN_ID}));
+    result.resolve(json!({"value":{"kind":"ready","source":source}}));
+    let (read, result) = fx.call("model").await;
+    assert_eq!(&read["backend"], backend);
+    result
+}
+
+fn continue_model(backend: &Value) -> Value {
+    json!({"value":{"kind":"ready","choice":{"selection":backend,"label":"Dock model","sourceName":"Test",
+        "serviceTiers":[{"id":"fast","name":"Fast"}],"thinkingLevels":["off","minimal","high"]}}})
+}
+
+async fn verify_continue(fx: &mut ComposerDockFixture, backend: &Value) {
+    probe_continue_model(fx, backend)
+        .await
+        .resolve(continue_model(backend));
+    fx.app.wait_for(CONTINUE_ACTION).unwrap();
+}
+
+async fn tap_continue(fx: &mut ComposerDockFixture, backend: &Value) -> (Value, HostCall) {
+    fx.app.press(CONTINUE_ACTION).unwrap();
+    let (read, result) = fx.call("model").await;
+    assert_eq!(&read["backend"], backend);
+    result.resolve(continue_model(backend));
+    let (read, result) = fx.call("execution").await;
+    assert_eq!(read["runId"], DOCK_RUN_ID);
+    result.resolve(json!({"value":{"kind":"found","execution":stopped_source("failed")}}));
+    fx.call("continueRun").await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_failure_settles_while_a_side_chat_is_on_top() {
+    for submitted in [false, true] {
+        let mut fx =
+            ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true)
+                .await;
+        fx.app.press("label:Stop current reply").unwrap();
+        let (_, stop) = fx.call("stop").await;
+        fx.app.wait_for("label:Stopping reply…").unwrap();
+        fx.app
+            .press("label:Side questions (1) · Waiting for your response")
+            .unwrap();
+        fx.app.wait_for("text:Side Question · Dock Chat").unwrap();
+        if submitted {
+            stop.reject("Connection failed after confirm");
+        } else {
+            stop.resolve(json!({"notSubmitted":"Prepare refused"}));
+        }
+        assert!(fx.app.settle());
+        fx.app.press("label:Back").unwrap();
+
+        if submitted {
+            fx.app
+                .wait_for("label:Stop not confirmed. Refresh to check the reply.")
+                .unwrap();
+            assert!(fx.calls.try_recv().is_err());
+            fx.choose_navigation("Refresh");
+        }
+        fx.app.wait_for("label:Stop current reply").unwrap();
+        fx.app.press("label:Stop current reply").unwrap();
+        let (retry, stop) = fx.call("stop").await;
+        assert_eq!(retry["runId"], DOCK_RUN_ID);
+        stop.resolve(json!({"value":{"requested":false}}));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ended_queues_a_fresh_observe_even_if_step_snapshot_predates_backend_commit() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.hold_observe.store(true, SeqCst);
+    fx.transcript_changed(2, "step_ended");
+    let (_, old_step) = fx.call("observe").await;
+    fx.choose_model("Other model");
+    let (change, commit) = fx.call("selectBackend").await;
+
+    let committed = json!({"id":"chat","kind":"agent","title":"Dock Chat","revision":2,
+        "workspace":{"path":"/work"},"backend":change["backend"]});
+    commit.resolve(json!({"value":{"kind":"committed","session":committed}}));
+    fx.app
+        .wait_for("id:chat-keyboard-model >> text:Other model")
+        .unwrap();
+    fx.app.wait_for("label:Stop current reply").unwrap();
+
+    *fx.run.lock().unwrap() = Value::Null;
+    *fx.observation.lock().unwrap() = json!({"session":committed,"through":3});
+    fx.transcript_changed(3, "ended");
+    let before = fx.observes.load(SeqCst);
+    old_step.resolve(
+        json!({"value":{"session":{"id":"chat","kind":"agent","revision":1,
+        "title":"Dock Chat","backend":dock_model()},"through":2,"run":dock_run()}}),
+    );
+    fx.app.wait_for("label:Send message").unwrap();
+    assert_eq!(fx.observes.load(SeqCst), before + 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observe_failure_keeps_the_queued_ended_read_but_does_not_retry_on_its_own() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.hold_observe.store(true, SeqCst);
+    fx.transcript_changed(2, "step_ended");
+    let (_, read) = fx.call("observe").await;
+    let before = fx.observes.load(SeqCst);
+    read.reject("Unqueued observe failed");
+    fx.app.wait_for("text:/Unqueued observe failed/").unwrap();
+    assert!(fx.app.settle());
+    assert_eq!(fx.observes.load(SeqCst), before);
+    assert!(fx.app.screen().enabled("label:Stop current reply").unwrap());
+
+    fx.hold_observe.store(true, SeqCst);
+    fx.transcript_changed(3, "step_ended");
+    let (_, old) = fx.call("observe").await;
+    *fx.run.lock().unwrap() = Value::Null;
+    fx.observation.lock().unwrap()["through"] = json!(4);
+    fx.transcript_changed(4, "ended");
+    let before = fx.observes.load(SeqCst);
+    old.reject("Earlier step observe failed");
+
+    fx.app.wait_for("label:Send message").unwrap();
+    fx.app
+        .wait_for("text:/Earlier step observe failed/")
+        .unwrap();
+    assert_eq!(fx.observes.load(SeqCst), before + 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn whitespace_draft_disables_send_instead_of_stopping_or_continuing() {
+    let mut working = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    working
+        .app
+        .type_text("label:Message composer", "\n  ")
+        .unwrap();
+    assert!(!working.app.screen().enabled("label:Send message").unwrap());
+    assert!(working.app.press("id:chat-primary-action").is_err());
+    assert!(working.calls.try_recv().is_err());
+
+    let backend = dock_model();
+    let mut stopped = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    verify_continue(&mut stopped, &backend).await;
+    stopped
+        .app
+        .type_text("label:Message composer", "\n  ")
+        .unwrap();
+    assert!(!stopped.app.screen().enabled("label:Send message").unwrap());
+    assert!(stopped.app.press("id:chat-primary-action").is_err());
+    assert!(stopped.calls.try_recv().is_err());
+
+    stopped.app.clear("label:Message composer").unwrap();
+    stopped.app.press(CONTINUE_ACTION).unwrap();
+    let (_, model) = stopped.call("model").await;
+    stopped
+        .app
+        .type_text("label:Message composer", "\n  ")
+        .unwrap();
+    model.resolve(continue_model(&backend));
+    stopped.app.wait_for("label:Send message").unwrap();
+    assert!(!stopped.app.screen().enabled("label:Send message").unwrap());
+    assert!(stopped.calls.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_checks_explicit_tier_and_effort_both_times() {
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    backend["thinkingLevel"] = json!("high");
+    for (field, unsupported) in [
+        ("serviceTiers", json!([{"id":"slow","name":"Slow"}])),
+        ("thinkingLevels", json!(["minimal"])),
+    ] {
+        let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+        let mut unsupported_model = continue_model(&backend);
+        unsupported_model["value"]["choice"][field] = unsupported;
+        probe_continue_model(&mut fx, &backend)
+            .await
+            .resolve(unsupported_model.clone());
+        assert!(fx.app.settle());
+        assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+        assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+
+        fx.app
+            .send_host_event("ios.hostState", dock_host(2))
+            .unwrap();
+        verify_continue(&mut fx, &backend).await;
+        fx.app.press(CONTINUE_ACTION).unwrap();
+        let (_, model) = fx.call("model").await;
+        model.resolve(unsupported_model);
+        fx.app
+            .wait_for("text:The selected model is unavailable. Try again or choose another model.")
+            .unwrap();
+        assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+        assert!(fx.calls.try_recv().is_err());
+    }
+
+    let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    verify_continue(&mut fx, &backend).await;
+    fx.app.press(CONTINUE_ACTION).unwrap();
+    let (_, model) = fx.call("model").await;
+    model.resolve(json!({"value":{"kind":"unavailable","message":"Host diagnostic in English"}}));
+    fx.app
+        .wait_for("text:The selected model is unavailable. Try again or choose another model.")
+        .unwrap();
+    assert!(!fx.app.shows("Host diagnostic in English"));
+    assert!(fx.calls.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_successor_can_be_steered_and_queued_while_history_is_loading() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let backend = dock_model();
+    let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    let mut choose = watch_native_menu_items(&mut fx.app, |_| {});
+    verify_continue(&mut fx, &backend).await;
+    let (_, result) = tap_continue(&mut fx, &backend).await;
+    let mut run = dock_run();
+    run["runId"] = json!("successor");
+    *fx.run.lock().unwrap() = run;
+    fx.hold_history.store(true, SeqCst);
+    let mut execution = stopped_source("admitted");
+    execution["runId"] = json!("successor");
+    result.resolve(json!({"value":{"kind":"started","execution":execution}}));
+    let (_, history) = fx.call("history").await;
+    fx.app.wait_for("label:Stop current reply").unwrap();
+
+    fx.app
+        .type_text("label:Message composer", "Follow up")
+        .unwrap();
+    assert!(fx.app.screen().enabled("label:Send message").unwrap());
+    choose(&mut fx.app, "Add to queue");
+    let (send, reply) = fx.call("send").await;
+    assert_eq!(send["delivery"], "queue");
+    assert_eq!(send["expectedRunId"], "successor");
+    reply.resolve(queued_result("follow-up", 1));
+    history.resolve(history_page(
+        2,
+        fx.history.lock().unwrap().clone(),
+        Value::Null,
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_successor_finishing_before_its_continue_receipt_cannot_relock_the_composer() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let backend = dock_model();
+    let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    verify_continue(&mut fx, &backend).await;
+    let (_, late_receipt) = tap_continue(&mut fx, &backend).await;
+
+    let mut run = dock_run();
+    run["runId"] = json!("successor");
+    *fx.run.lock().unwrap() = run;
+    *fx.observation.lock().unwrap() = json!({"through":3});
+    fx.deliver(json!({"kind":"events","through":3,
+        "events":[{"runId":"successor","fact":{"kind":"opened"}}]}));
+    fx.app.wait_for("label:Stop current reply").unwrap();
+    let draft = "New draft while the old receipt is pending";
+    fx.app.type_text("label:Message composer", draft).unwrap();
+    assert!(fx.app.screen().enabled("label:Send message").unwrap());
+
+    *fx.run.lock().unwrap() = Value::Null;
+    fx.observation.lock().unwrap()["through"] = json!(4);
+    fx.hold_history.store(true, SeqCst);
+    fx.deliver(json!({"kind":"events","through":4,
+        "events":[{"runId":"successor","fact":{"kind":"ended"}}]}));
+    let (_, history) = fx.call("history").await;
+    // The successor projected no rows. Even if the old source is still
+    // offered by the eligibility reads, it cannot be submitted again.
+    history.resolve(history_page(
+        4,
+        fx.history.lock().unwrap().clone(),
+        Value::Null,
+    ));
+    probe_continue_model(&mut fx, &backend)
+        .await
+        .resolve(continue_model(&backend));
+    assert!(fx.app.settle());
+    assert!(fx.app.screen().enabled("label:Send message").unwrap());
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some(draft)
+    );
+
+    fx.app.clear("label:Message composer").unwrap();
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+
+    fx.app.type_text("label:Message composer", draft).unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (send, reply) = fx.call("send").await;
+    assert_eq!(send["message"], draft);
+    assert!(send["expectedRunId"].is_null());
+    let mut execution = stopped_source("completed");
+    execution["runId"] = json!("successor");
+    late_receipt.resolve(json!({"value":{"kind":"started","execution":execution}}));
+    reply.resolve(queued_result("new-draft", 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_executor_alias_shows_its_effort_and_edits_the_canonical_model() {
+    let backend = json!({"kind":"executor","selection":{
+        "executor":"codex","settings":{"runtime":"cli","model":"opus-high"}}});
+    let mut fx = ComposerDockFixture::start(Value::Null, backend, empty_queue()).await;
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:High")
+        .unwrap();
+    fx.choose_navigation("Thinking level");
+    let high = fx
+        .app
+        .screen()
+        .accessibility(Some("label:High"))
+        .unwrap()
+        .unwrap();
+    assert!(high.selected);
+    fx.app.press("label:Low").unwrap();
+    let (change, commit) = fx.call("selectBackend").await;
+    assert_eq!(
+        change["backend"],
+        json!({"kind":"executor","selection":{
+        "executor":"codex","settings":{"runtime":"cli","model":"opus","thinkingLevel":"low"}}})
+    );
+    let session = json!({"id":"chat","kind":"agent","title":"Dock Chat","workspace":{"path":"/work"},
+        "revision":2,"backend":change["backend"]});
+    fx.observation.lock().unwrap()["session"] = session.clone();
+    commit.resolve(json!({"value":{"kind":"committed","session":session}}));
+    fx.app
+        .wait_for("id:chat-thinking-accessory >> text:Low")
+        .unwrap();
+}
+
+fn detail_metrics(last_known: bool) -> Value {
+    json!({"modelId":"model","connectionId":"test","contextTokens":95_000,"contextWindow":100_000,
+        "approximate":false,"contextLastKnown":last_known,"outputTokensPerSecond":31.4})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_native_usage_menu_action_survives_step_telemetry() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app.wait_for("label:Stop current reply").unwrap();
+    fx.app.wait_for("id:chat-thinking-accessory").unwrap();
+    assert!(fx.navigation_item("Thinking level").is_some());
+    let usage = fx.navigation_item("Usage & Details").unwrap();
+    *fx.observation.lock().unwrap() = json!({"through":2,"metrics":detail_metrics(false),
+        "session":{"id":"chat","title":"Dock Chat","kind":"agent","revision":1,
+            "backend":dock_model(),"workspace":{"path":"/work/step-two"}}});
+    fx.transcript_changed(2, "step_ended");
+    fx.app.wait_for("id:chat-context >> text:step-two").unwrap();
+    assert_eq!(fx.navigation_item("Usage & Details"), Some(usage));
+    select_header_item(&mut fx.app, usage);
+    fx.app
+        .wait_for("id:chat-details-scroll >> text:31.4 tok/s")
+        .unwrap();
+    assert_eq!(fx.navigation_item("Usage & Details"), Some(usage));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn details_fit_or_scroll_on_short_iphone_and_captions_are_readable() {
+    use nsh_core::{Color, MountItem, TransformKind, animation::Animator, platform::ColorScheme};
+
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    *fx.observation.lock().unwrap() = json!({"through":1,"metrics":detail_metrics(true)});
+    fx.app.set_viewport(Size::new(px(375.), px(667.))).unwrap();
+    fx.app
+        .set_environment("short portrait", |env| {
+            env.keyboard_height = px(0.);
+            env.safe_area.top = px(20.);
+            env.safe_area.bottom = px(34.);
+        })
+        .unwrap();
+    // Layout frames omit detent transforms. Include what the native animator
+    // actually presents, or a medium sheet's offscreen rows look visible.
+    let presentation = Arc::new(std::sync::Mutex::new((
+        Animator::default(),
+        BTreeMap::new(),
+    )));
+    let mounted = presentation.clone();
+    fx.app.observe(move |_, batch| {
+        let (animator, transforms) = &mut *mounted.lock().unwrap();
+        for item in &batch.items {
+            animator.apply(item);
+            if let MountItem::ViewStyle { id, style } = item {
+                transforms.insert(*id, style.transform);
+            }
+        }
+    });
+    fx.choose_navigation("Usage & Details");
+    fx.app.wait_for("text:Last request").unwrap();
+    let scroll = "id:chat-details-scroll";
+    let source = "text:model · test";
+    let layout = |app: &Headless, selector| app.screen().layout(selector).unwrap().unwrap();
+    let sheet_offset = {
+        let (animator, transforms) = &mut *presentation.lock().unwrap();
+        animator.tick(0.0);
+        animator.tick(5.0);
+        let nodes = fx.app.screen().layout_nodes();
+        let mut ancestors = Vec::new();
+        let mut id = fx.app.screen().id(scroll).unwrap();
+        while let Some(node) = nodes.iter().find(|node| node.id == id) {
+            ancestors.push(id);
+            id = node.parent;
+        }
+        let mut offset = 0.0;
+        animator.write(
+            |id| ancestors.contains(&id).then_some(id),
+            |id, values, _| {
+                if let Some(transform) = transforms.get(&id) {
+                    for (i, op) in transform.ops().iter().enumerate() {
+                        if op.kind == TransformKind::TranslateY {
+                            offset += values.transform[i].unwrap_or(op.value);
+                        }
+                    }
+                }
+            },
+        );
+        px(offset)
+    };
+    let visible = |app: &Headless, selector| {
+        let row = layout(app, selector);
+        !row.hidden && !row.clipped && row.bounds.bottom() + sheet_offset <= px(633.)
+    };
+    if !visible(&fx.app, source) {
+        fx.app.scroll(scroll, px(500.)).unwrap();
+    }
+    for selector in ["text:Output speed", source] {
+        assert!(
+            visible(&fx.app, selector),
+            "{selector} is outside the visible sheet"
+        );
+    }
+
+    for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+        fx.app
+            .set_environment("appearance", |env| env.color_scheme = scheme)
+            .unwrap();
+        let nodes = fx.app.screen().layout_nodes();
+        for selector in ["text:Usage", source, "text:Usage & Details"] {
+            let id = fx.app.screen().id(selector).unwrap();
+            let node = nodes.iter().find(|node| node.id == id).unwrap();
+            let foreground = node.text.as_ref().unwrap().text.spans[0].style.color;
+            let mut parent = node.parent;
+            let background = loop {
+                let style = fx
+                    .app
+                    .screen()
+                    .view_style(&format!("view:{parent}"))
+                    .unwrap()
+                    .unwrap();
+                if let Some(fill) = style.background_color {
+                    break Color(fill);
+                }
+                parent = nodes.iter().find(|node| node.id == parent).unwrap().parent;
+            };
+            assert_readable_colors(selector, foreground, background);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_uses_run_local_fence_and_cancels_a_press_during_ime_composition() {
+    use nsh_core::{EventKind, EventPayload};
+
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    backend["thinkingLevel"] = json!("high");
+    let held =
+        json!({"revision":1,"entries":[{"kind":"held","messageId":"held","preview":"Held"}]});
+    let mut fx = stopped_conversation(held, backend.clone(), true).await;
+    verify_continue(&mut fx, &backend).await;
+    assert_embedded_primary(&fx.app, CONTINUE_ACTION);
+    let id = fx.app.screen().id(CONTINUE_ACTION).unwrap();
+    let control = fx.app.engine().control();
+    control.dispatch_event(
+        id,
+        EventKind::PressDown,
+        EventPayload::Press(Default::default()),
+    );
+    assert!(fx.app.settle());
+    fx.app.compose("label:Message composer", "ni").unwrap();
+    fx.app.wait_for("label:Send message").unwrap();
+    control.dispatch_event(
+        id,
+        EventKind::Press,
+        EventPayload::Press(Default::default()),
+    );
+    assert!(fx.app.settle());
+    assert!(fx.calls.try_recv().is_err());
+    fx.app.compose("label:Message composer", "").unwrap();
+    fx.app.wait_for(CONTINUE_ACTION).unwrap();
+
+    let (request, result) = tap_continue(&mut fx, &backend).await;
+    assert_eq!(
+        request,
+        json!({"sessionId":"chat","sourceRunId":DOCK_RUN_ID,"sourceHighWater":7,
+        "model":{"connectionId":"test","modelId":"model","serviceTier":"fast"},"thinkingLevel":"high"})
+    );
+    assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+    let mut run = dock_run();
+    run["runId"] = json!("continued-run");
+    *fx.run.lock().unwrap() = run;
+    let mut execution = stopped_source("admitted");
+    execution["runId"] = json!("continued-run");
+    result.resolve(json!({"value":{"kind":"started","execution":execution}}));
+    fx.app.wait_for("label:Stop current reply").unwrap();
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    assert!(
+        !fx.app
+            .screen()
+            .matches("id:chat-transcript >> text:Continue reply")
+            .unwrap()
+    );
+    assert!(fx.calls.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continue_blocks_runnable_queue_and_only_retries_a_known_unsubmitted_intent() {
+    let backend = dock_model();
+    let runnable = json!({"revision":1,"entries":[{"kind":"in_flight","messageId":"in-flight","preview":"Hidden"}]});
+    let mut fx = stopped_conversation(runnable, backend.clone(), false).await;
+    fx.app.wait_for("text:Interrupted answer").unwrap();
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    assert!(fx.calls.try_recv().is_err());
+    *fx.queue.lock().unwrap() = json!({"revision":2,"entries":[]});
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    verify_continue(&mut fx, &backend).await;
+    let (request, result) = tap_continue(&mut fx, &backend).await;
+    assert_eq!(request["thinkingLevel"], Value::Null);
+    result.resolve(json!({"notSubmitted":"The mutation was not confirmed"}));
+    fx.app.wait_for(CONTINUE_ACTION).unwrap();
+    let (_, result) = tap_continue(&mut fx, &backend).await;
+    fx.hold_observe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    result.reject("The confirmation reply was lost");
+    fx.app
+        .wait_for("text:Continue not confirmed. Refresh to check the reply.")
+        .unwrap();
+    let (query, observed) = fx.call("observe").await;
+    assert_eq!(query, json!({"sessionId":"chat"}));
+    observed.resolve(
+        json!({"value":{"session":{"id":"chat","kind":"agent","revision":1,
+        "title":"Dock Chat","workspace":{"path":"/work"},"backend":backend},"through":2,"run":null,
+        "latestRunId":DOCK_RUN_ID}}),
+    );
+    fx.app.wait_for("label:Send message").unwrap();
+    assert!(!fx.app.screen().enabled("id:chat-primary-action").unwrap());
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "an unknown result must only trigger reads, never resend"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_rejection_is_explained_and_old_generation_eligibility_is_ignored() {
+    let backend = dock_model();
+    let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    let (_, result) = fx.call("execution").await;
+    result.resolve(json!({"value":{"kind":"found","execution":stopped_source("completed")}}));
+    assert!(fx.app.settle());
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    assert!(fx.calls.try_recv().is_err());
+    fx.app
+        .send_host_event("ios.hostState", dock_host(2))
+        .unwrap();
+    verify_continue(&mut fx, &backend).await;
+    let (_, result) = tap_continue(&mut fx, &backend).await;
+    result.resolve(json!({"value":{"kind":"rejected","reason":"workspace_changed"}}));
+    fx.app
+        .wait_for("text:The workspace changed. Send a new message instead.")
+        .unwrap();
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+
+    fx.app
+        .send_host_event("ios.hostState", dock_host(3))
+        .unwrap();
+    let (_, stale) = fx.call("execution").await;
+    let mut offline = side_host_state(4, None);
+    offline["connections"]["root"]["autoReconnect"] = json!(false);
+    fx.app.send_host_event("ios.hostState", offline).unwrap();
+    fx.app.wait_for("text:Host is offline").unwrap();
+    stale.resolve(json!({"value":{"kind":"found","execution":stopped_source("cancelled")}}));
+    assert!(fx.app.settle());
+    assert!(fx.calls.try_recv().is_err());
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuation_rechecks_the_entire_observed_backend_before_submitting() {
+    let mut backend = dock_model();
+    backend["serviceTier"] = json!("fast");
+    let mut fx = stopped_conversation(empty_queue(), backend.clone(), false).await;
+    let (_, execution) = fx.call("execution").await;
+    let source = stopped_source("cancelled");
+    execution.resolve(json!({"value":{"kind":"found","execution":source}}));
+    let (_, availability) = fx.call("continuationAvailability").await;
+    let mut stale = source.clone();
+    stale["highWater"] = json!(6);
+    availability.resolve(json!({"value":{"kind":"ready","source":stale}}));
+    assert!(fx.app.settle());
+    assert!(!fx.app.screen().matches(CONTINUE_ACTION).unwrap());
+    assert!(fx.calls.try_recv().is_err());
+
+    fx.app
+        .send_host_event("ios.hostState", dock_host(2))
+        .unwrap();
+    verify_continue(&mut fx, &backend).await;
+    backend["thinkingLevel"] = json!("minimal");
+    fx.observation.lock().unwrap()["session"] = json!({
+        "id":"chat","title":"Dock Chat","kind":"agent","revision":2,
+        "workspace":{"path":"/work"},"backend":backend
+    });
+    fx.app.press(CONTINUE_ACTION).unwrap();
+    // The first call after fresh observe must be a new eligibility read,
+    // not model resolution or a mutation using the previous preference.
+    verify_continue(&mut fx, &backend).await;
+    assert!(fx.calls.try_recv().is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3301,7 +4624,7 @@ async fn chat_native_steer_uses_the_current_run_and_waits_across_queue_drain() {
 async fn chat_executor_steer_that_falls_back_to_queue_hands_off_to_its_entry() {
     let mut run = dock_run();
     run["backend"] = json!("executor");
-    let backend = json!({"kind":"executor","selection":{"executor":"codex"}});
+    let backend = json!({"kind":"executor","selection":{"executor":"codex","settings":{}}});
     let mut fx = ComposerDockFixture::start(run, backend.clone(), empty_queue()).await;
     fx.app
         .type_text("label:Message composer", "Executor follow-up")
@@ -3324,6 +4647,24 @@ async fn chat_executor_steer_that_falls_back_to_queue_hands_off_to_its_entry() {
     assert_eq!(fx.app.screen().count("text:Executor follow-up").unwrap(), 1);
 }
 
+fn assert_embedded_primary(app: &Headless, label: &str) {
+    let id = app.screen().id(label).unwrap();
+    assert_eq!(id, app.screen().id("id:chat-primary-action").unwrap());
+    let capsule = app.screen().id("id:chat-composer-input").unwrap();
+    let nodes = app.screen().layout_nodes();
+    let action = nodes.iter().find(|node| node.id == id).unwrap();
+    let mut inner = action;
+    while inner.parent != capsule {
+        inner = nodes
+            .iter()
+            .find(|node| node.id == inner.parent)
+            .expect("action outside input pill");
+    }
+    let pill = nodes.iter().find(|node| node.id == capsule).unwrap().bounds;
+    assert!(action.bounds.right() < pill.right() && action.bounds.bottom() < pill.bottom());
+    assert_eq!(action.bounds.size, Size::new(px(36.), px(36.)));
+}
+
 fn assert_dock_touch_target(app: &Headless, selector: &str) {
     let size = app
         .screen()
@@ -3338,15 +4679,12 @@ fn assert_dock_touch_target(app: &Headless, selector: &str) {
     );
 }
 
-fn watch_native_menu_items<F>(
+fn native_menu_items(
     app: &mut Headless,
-    mut observe: F,
-) -> impl FnMut(&mut Headless, &str) + use<F>
-where
-    F: FnMut(&nsh_core::MountItem) + std::marker::Send + 'static,
-{
-    use nsh_core::{EventKind, EventPayload, MountItem};
-    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    mut observe: impl FnMut(&nsh_core::MountItem) + std::marker::Send + 'static,
+) -> mpsc::UnboundedReceiver<(String, (nsh_core::NodeId, Value))> {
+    use nsh_core::MountItem;
+    let (menu_tx, menus) = mpsc::unbounded_channel();
     app.observe(move |_, batch| {
         for item in &batch.items {
             observe(item);
@@ -3357,7 +4695,14 @@ where
                         .and_then(Value::as_array)
                 })
             {
-                for item in items {
+                let actions = items.iter().flat_map(|item| {
+                    item["items"]
+                        .as_array()
+                        .filter(|items| !items.is_empty())
+                        .map(|items| items.as_slice())
+                        .unwrap_or_else(|| std::slice::from_ref(item))
+                });
+                for item in actions {
                     if let Some(label) = item["label"].as_str() {
                         menu_tx
                             .send((label.to_owned(), (*id, item["id"].clone())))
@@ -3367,6 +4712,30 @@ where
             }
         }
     });
+    menus
+}
+
+fn select_native_item(app: &mut Headless, (menu, action): (nsh_core::NodeId, Value)) {
+    use nsh_core::{EventKind, EventPayload};
+    app.engine().control().dispatch_event(
+        menu,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "select".into(),
+            data: action,
+        },
+    );
+    assert!(app.settle());
+}
+
+fn watch_native_menu_items<F>(
+    app: &mut Headless,
+    observe: F,
+) -> impl FnMut(&mut Headless, &str) + use<F>
+where
+    F: FnMut(&nsh_core::MountItem) + std::marker::Send + 'static,
+{
+    let mut menus = native_menu_items(app, observe);
     let mut items = BTreeMap::new();
     move |app, label| {
         // Headless has no UIKit presentation. Deliver the installed item
@@ -3374,18 +4743,10 @@ where
         while let Ok((label, action)) = menus.try_recv() {
             items.insert(label, action);
         }
-        let (menu, action) = items
+        let item = items
             .remove(label)
             .unwrap_or_else(|| panic!("missing native menu item: {label}"));
-        app.engine().control().dispatch_event(
-            menu,
-            EventKind::NativeEvent,
-            EventPayload::Native {
-                name: "select".into(),
-                data: action,
-            },
-        );
-        assert!(app.settle());
+        select_native_item(app, item);
     }
 }
 
@@ -3826,7 +5187,6 @@ async fn compact_keyboard_keeps_pending_dock_and_quotes_out_of_the_composer_row(
     for selector in [
         "id:chat-composer-actions",
         "id:chat-composer-input",
-        "label:Stop Run",
         "label:Send message",
     ] {
         if selector != "label:Send message" {
@@ -4072,7 +5432,7 @@ async fn stopped_steer_recovers_the_snapshot_after_the_queue_revision_changes() 
     fx.app
         .type_text("label:Message composer", "Don't lose this")
         .unwrap();
-    fx.app.press("label:Send to Main Chat").unwrap();
+    fx.app.press("label:Send message").unwrap();
     let (original, receipt) = fx.call("send").await;
     assert_eq!(original["quotes"][0]["text"], "An earlier answer");
     assert_eq!(
@@ -4086,11 +5446,11 @@ async fn stopped_steer_recovers_the_snapshot_after_the_queue_revision_changes() 
     let waiting = "text:Steer · Waiting for next step";
     fx.app.wait_for(waiting).unwrap();
 
-    fx.app.press("label:Stop Run").unwrap();
+    fx.app.press("label:Stop current reply").unwrap();
     let (stop, reply) = fx.call("stop").await;
     assert_eq!(stop["runId"], DOCK_RUN_ID);
     *fx.run.lock().unwrap() = Value::Null;
-    reply.resolve(json!({"value":{"kind":"stopped"}}));
+    reply.resolve(json!({"value":{"requested":true}}));
     fx.queue_item(json!({"revision":2,"entries":[]}));
     fx.transcript_changed(2, "ended");
     let (probe, reply) = fx.call("queueMessage").await;
@@ -4150,9 +5510,7 @@ async fn send_does_not_retarget_when_the_run_ends_during_backend_preflight() {
     let (_, default_model) = fx.call("resolveModel").await;
     *fx.run.lock().unwrap() = Value::Null;
     fx.transcript_changed(2, "ended");
-    fx.app
-        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
-        .unwrap();
+    assert!(fx.app.settle());
     default_model.resolve(json!({"value":{"kind":"ready","choice":{"selection":{"connectionId":"test","modelId":"model"}}}}));
 
     fx.app
@@ -4220,21 +5578,30 @@ async fn reopened_chat_checks_delivery_when_accepted_sends_are_outside_the_histo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_can_queue_from_the_side_question_quote_tray() {
+async fn quoted_multiline_draft_keeps_the_primary_send_and_its_menu() {
     let mut fx =
         ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true).await;
     let mut choose_menu_item = watch_native_menu_items(&mut fx.app, |_| {});
     fx.app.press("role:button[Quote] >> nth=0").unwrap();
     fx.app.wait_for("label:Ask Side Question").unwrap();
-    fx.app.wait_for("label:Send to Main Chat").unwrap();
-    assert!(!fx.app.screen().matches("label:Send message").unwrap());
-    fx.app.long_press("label:Send to Main Chat").unwrap();
+    for width in [375., 390., 430.] {
+        fx.app.set_viewport(Size::new(px(width), px(844.))).unwrap();
+        assert_embedded_primary(&fx.app, "label:Send message");
+    }
+    fx.app
+        .type_text(
+            "label:Message composer",
+            "First line\nSecond line\nThird line",
+        )
+        .unwrap();
+    fx.app.long_press("label:Send message").unwrap();
     assert!(fx.calls.try_recv().is_err());
     choose_menu_item(&mut fx.app, "Add to queue");
     let (input, reply) = fx.call("send").await;
     assert_eq!(input["delivery"], "queue");
     assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
     assert_eq!(input["quotes"][0]["text"], "An earlier answer");
+    assert_eq!(input["message"], "First line\nSecond line\nThird line");
     reply.resolve(queued_result("quote", 1));
 }
 
@@ -4259,15 +5626,15 @@ async fn stopped_steer_with_interrupted_verification_is_recoverable_and_can_be_r
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
     fx.app.press("role:button[Quote] >> nth=0").unwrap();
     accept_dock_steer(&mut fx).await;
-    fx.app.press("label:Stop Run").unwrap();
+    fx.app.press("label:Stop current reply").unwrap();
     let (_, stop) = fx.call("stop").await;
     *fx.run.lock().unwrap() = Value::Null;
-    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    stop.resolve(json!({"value":{"requested":true}}));
     let drained = json!({"revision":2,"entries":[]});
     fx.queue_item(drained.clone());
     fx.transcript_changed(2, "ended");
     fx.app
-        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .wait_for_gone("label:Stop current reply", Duration::from_secs(2))
         .unwrap();
     let (probe, reply) = fx.call("queueMessage").await;
     assert_eq!(probe["expectedRevision"], 2);
@@ -4509,12 +5876,12 @@ async fn stopped_steer_recovers_when_the_conflicting_revision_cannot_be_loaded()
     use std::sync::atomic::Ordering::SeqCst;
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
     accept_dock_steer(&mut fx).await;
-    fx.app.press("label:Stop Run").unwrap();
+    fx.app.press("label:Stop current reply").unwrap();
     let (_, stop) = fx.call("stop").await;
     *fx.run.lock().unwrap() = Value::Null;
-    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    stop.resolve(json!({"value":{"requested":true}}));
     fx.app
-        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .wait_for_gone("label:Stop current reply", Duration::from_secs(2))
         .unwrap();
 
     let drained = json!({"revision":2,"entries":[]});
@@ -4565,12 +5932,12 @@ async fn stopped_steer_recovers_when_the_conflicting_revision_cannot_be_loaded()
 async fn a_new_watch_revision_survives_the_old_conflict_refresh_failing() {
     let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
     accept_dock_steer(&mut fx).await;
-    fx.app.press("label:Stop Run").unwrap();
+    fx.app.press("label:Stop current reply").unwrap();
     let (_, stop) = fx.call("stop").await;
     *fx.run.lock().unwrap() = Value::Null;
-    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    stop.resolve(json!({"value":{"requested":true}}));
     fx.app
-        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .wait_for_gone("label:Stop current reply", Duration::from_secs(2))
         .unwrap();
 
     fx.queue_item(json!({"revision":2,"entries":[]}));
@@ -4729,7 +6096,8 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     // Type an unsent draft before navigating to ProjectFiles -> DiffScreen.
     app.type_text("label:Message composer", "Please check this:")
         .unwrap();
-    app.press("label:Files & Changes").unwrap();
+    app.press("label:More").unwrap();
+    app.choose_menu_item("Files & Changes").unwrap();
     app.wait_for("text:Reading git workspace diff from Travel Mac.")
         .unwrap();
     app.send_host_event("ios.hostState", workspace_host_state(3, "Office Mac"))
@@ -4749,7 +6117,8 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
     app.wait_for("text:/Please check this:/").unwrap();
     app.wait_for("text:src/auth.rs:1234").unwrap();
     app.wait_for("label:Remove quote: let ttl = 60;").unwrap();
-    app.press("label:Files & Changes").unwrap();
+    app.press("label:More").unwrap();
+    app.choose_menu_item("Files & Changes").unwrap();
     app.press("label:Files").unwrap();
     app.wait_for("label:.github").unwrap();
     app.press("label:.github").unwrap();
@@ -5782,6 +7151,7 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
         ..Environment::default()
     };
     let mut app = Headless::start(config).unwrap();
+    let mut choose_menu = watch_native_menu_items(&mut app, |_| {});
     app.wait_for("label:Conversation: Paged Chat").unwrap();
     app.press("label:Conversation: Paged Chat").unwrap();
     app.wait_for("text:Newest paragraph").unwrap();
@@ -5791,7 +7161,7 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
     );
     app.scroll("id:chat-transcript", px(-1600.)).unwrap();
     let (abandoned_input, abandoned) = fixture_recv(&mut history_rx).await;
-    app.press("label:Files & Changes").unwrap();
+    choose_menu(&mut app, "Files & Changes");
     app.wait_for("text:No uncommitted changes").unwrap();
     let mut older_fragment = visible.clone();
     older_fragment["offset"] = json!(0);
@@ -6291,7 +7661,7 @@ async fn side_chat_uses_transcript_order_and_keeps_the_main_draft() {
         .unwrap();
     assert!(fx.mutations.try_recv().is_err());
 
-    fx.app.press("label:Send to Main Chat").unwrap();
+    fx.app.press("label:Send message").unwrap();
     let (payload, receipt) = fx.mutation("send").await;
     let main: Send = serde_json::from_value(payload).unwrap();
     assert_eq!(main.session_id, "main");
@@ -6544,6 +7914,22 @@ async fn composer_and_keyboard_toolbar_keep_glass_and_touch_targets() {
     assert_hit_target("label:Clear all quotes", &app, &slop);
 }
 
+fn assert_readable_colors(
+    selector: &str,
+    foreground: nsh_core::Color,
+    background: nsh_core::Color,
+) {
+    let luminance = |color: nsh_core::Color| {
+        let (r, g, b, a) = color.to_f64();
+        assert_eq!(a, 1.0, "{selector}: transparent color {color:?}");
+        relative_luminance([r, g, b])
+    };
+    let bg = luminance(background);
+    let fg = luminance(foreground);
+    let contrast = (bg.max(fg) + 0.05) / (bg.min(fg) + 0.05);
+    assert!(contrast >= 4.5, "{selector}: {contrast:.2}:1");
+}
+
 fn assert_chat_button_contrast(
     app: &mut Headless,
     selector: &str,
@@ -6630,9 +8016,12 @@ async fn quote_actions_and_sheet_done_keep_contrast_when_pressed() {
         fx.app
             .set_environment("appearance", |env| env.color_scheme = scheme)
             .unwrap();
-        for selector in ["label:Ask Side Question", "label:Send to Main Chat"] {
-            assert_chat_button_contrast(&mut fx.app, selector, None, button_text_color);
-        }
+        assert_chat_button_contrast(
+            &mut fx.app,
+            "label:Ask Side Question",
+            None,
+            button_text_color,
+        );
         assert_chat_button_contrast(
             &mut fx.app,
             "label:Clear all quotes",
@@ -6997,7 +8386,7 @@ async fn side_chat_actions_are_absent_in_rooms_and_from_live_preview() {
     fx.app.press("label:Conversation: Room Chat").unwrap();
     fx.app.wait_for("text:Room message").unwrap();
     assert!(!fx.app.shows("label:Ask Side Question"));
-    assert!(!fx.app.shows("label:More"));
+    assert!(!fx.app.screen().matches("id:chat-details-scroll").unwrap());
     fx.app.press("label:Chats").unwrap();
     while fx.subscriptions.try_recv().is_ok() {}
     fx.open_main();
@@ -7455,51 +8844,15 @@ async fn side_chat_cannot_bring_a_link_to_a_removed_main_conversation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn side_chat_waits_for_the_parent_model_selection_to_commit() {
-    use nsh_core::{EventKind, EventPayload, MountItem};
-
+async fn side_chat_uses_the_confirmed_parent_model_selection() {
     let mut fx = side_chat_fixture_on(false, false, Os::Ios, 1);
-    let (menu_tx, mut menus) = mpsc::unbounded_channel();
-    fx.app.observe(move |_, batch| {
-        for item in &batch.items {
-            if let MountItem::ComponentProps { id, props } = item {
-                for (name, value) in props {
-                    if name.as_ref() == "items"
-                        && let Some(items) = value.as_ref().and_then(Value::as_array)
-                        && let Some(model) =
-                            items.iter().find(|item| item["label"] == "New side model")
-                    {
-                        menu_tx.send((*id, model["id"].clone())).unwrap();
-                    }
-                }
-            }
-        }
-    });
+    let mut choose = watch_native_menu_items(&mut fx.app, |_| {});
     fx.open_main();
-    let (menu, model) = tokio::time::timeout(Duration::from_secs(2), menus.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    fx.app.engine().control().dispatch_event(
-        menu,
-        EventKind::NativeEvent,
-        EventPayload::Native {
-            name: "select".into(),
-            data: model,
-        },
-    );
-    fx.app.settle(); // The model RPC is intentionally still pending.
+    fx.app.wait_for("id:chat-keyboard-model").unwrap();
+    choose(&mut fx.app, "New side model");
     let (selection, commit) = fx.mutation("selectBackend").await;
-    fx.app.press("label:Quote >> nth=0").unwrap();
-    fx.app.press("label:Ask Side Question").unwrap();
-    fx.app
-        .type_text("label:Message composer", "Use the just-selected model")
-        .unwrap();
-    fx.app.press("label:Send message").unwrap();
-    assert!(
-        fx.mutations.try_recv().is_err(),
-        "forked before the model selection committed"
-    );
+    assert!(!fx.app.screen().enabled("id:chat-keyboard-model").unwrap());
+    assert!(fx.mutations.try_recv().is_err());
 
     let backend = selection["backend"].clone();
     *fx.backend.lock().unwrap() = backend.clone();
@@ -7507,8 +8860,16 @@ async fn side_chat_waits_for_the_parent_model_selection_to_commit() {
         "id":"main","title":"Main Chat","kind":"agent","revision":42,"backend":backend,
         "branch":null,"workspace":{"path":"/work"}
     }}}));
+    fx.app.wait_for("text:New side model").unwrap();
+    fx.app.press("label:Quote >> nth=0").unwrap();
+    fx.app.press("label:Ask Side Question").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Use the just-selected model")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
     let (input, fork) = fx.mutation("fork").await;
-    assert_eq!(input["expectedRevision"], 42);
+    // The fork re-observes after the model change.
+    assert_eq!(input["expectedRevision"], 43);
     fork.resolve(json!({"value":{"kind":"forked","session":side_session("new-side","Use the new model",&backend)}}));
     let (input, send) = fx.mutation("send").await;
     assert_eq!(input["backend"]["modelId"], "new-model");
@@ -9625,7 +10986,6 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft() {
     use maka_agent_api::contract::{SelectBackend, Send, SendResult};
-    use nsh_core::{EventKind, EventPayload, MountItem};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     let channel = HostChannel::new();
@@ -9740,110 +11100,27 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     };
     let mut app = Headless::start(config).unwrap();
 
-    // Headless hosts the iOS view tree, not UIKit's native menu. Read the
-    // displayed items and return the chosen ID through the native select event.
-    let (menu_tx, mut menus) = mpsc::unbounded_channel();
-    let (header_tx, mut headers) = mpsc::unbounded_channel();
-    app.observe(move |_, batch| {
-        for item in &batch.items {
-            if let MountItem::ScreenConfig { config, .. } = item
-                && config.title.as_deref() == Some("Chat")
-            {
-                header_tx.send(config.clone()).unwrap();
-            }
-            if let MountItem::ComponentProps { id, props } = item {
-                for (name, value) in props {
-                    if name.as_ref() == "items"
-                        && let Some(items) = value.as_ref().and_then(Value::as_array)
-                        && items
-                            .iter()
-                            .any(|item| item["label"] == "Shared model · Second connector")
-                    {
-                        menu_tx.send((*id, items.clone())).unwrap();
-                    }
-                }
-            }
-        }
-    });
+    let mut choose = watch_native_menu_items(&mut app, |_| {});
     app.wait_for("label:Conversation: Chat").unwrap();
     app.set_viewport(Size::new(px(375.), px(812.))).unwrap();
     app.press("label:Conversation: Chat").unwrap();
     app.wait_for("text:work").unwrap();
-    let header = headers.try_recv().unwrap();
-    assert!(
-        header.title_view.is_none(),
-        "UIKit must fit the title to its actual buttons"
-    );
-    assert!(header.back_visible);
-    assert_eq!(header.right_items.len(), 2);
-    app.wait_for("text:Shared model · First connector").unwrap();
-    let (node, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
-    let checked: Vec<_> = items
-        .iter()
-        .filter(|item| item["checked"] == true)
-        .map(|item| &item["label"])
-        .collect();
-    assert_eq!(checked, [&json!("Shared model · First connector")]);
-    let selected = items.iter().find(|item| item["checked"] == true).unwrap();
-    app.engine().control().dispatch_event(
-        node,
-        EventKind::NativeEvent,
-        EventPayload::Native {
-            name: "select".into(),
-            data: selected["id"].clone(),
-        },
-    );
-    assert!(app.settle());
+    app.wait_for("id:chat-keyboard-model").unwrap();
+    choose(&mut app, "Shared model · First connector");
     assert!(
         mutations.try_recv().is_err(),
-        "reselecting must not overwrite tier or thinking level"
+        "reselecting must preserve tier and thinking"
     );
-    let choose =
-        |app: &mut Headless, menus: &mut mpsc::UnboundedReceiver<(_, Vec<Value>)>, label| {
-            let (id, items) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
-            assert_eq!(
-                items
-                    .iter()
-                    .map(|item| item["label"].as_str().unwrap())
-                    .collect::<Vec<_>>(),
-                [
-                    "Shared model · First connector",
-                    "Shared model · Second connector",
-                    "Unique model · Second connector",
-                    "Solo model",
-                    "Native agent"
-                ]
-            );
-            let item = items.iter().find(|item| item["label"] == label).unwrap();
-            if label == "Native agent" {
-                assert_eq!(item["checked"], true);
-            }
-            app.engine().control().dispatch_event(
-                id,
-                EventKind::NativeEvent,
-                EventPayload::Native {
-                    name: "select".into(),
-                    data: item["id"].clone(),
-                },
-            );
-            app.settle();
-        };
     *session.lock().unwrap() = row(2, model("first"));
     hold_observe.store(true, Ordering::SeqCst);
     generation.store(2, Ordering::SeqCst);
     app.send_host_event("ios.hostState", host_state(2, 2))
         .unwrap();
     let (observe, snapshot) = observations.try_recv().unwrap();
-    app.wait_for("text:Default").unwrap();
-    choose(&mut app, &mut menus, "Shared model · First connector");
-    assert!(mutations.try_recv().is_err());
+    app.wait_for("id:chat-keyboard-model >> text:Default")
+        .unwrap();
     observe.resolve(json!({"value":snapshot}));
-    assert!(app.settle());
-    assert!(
-        mutations.try_recv().is_err(),
-        "reselecting after observe must also be a no-op"
-    );
-
+    app.wait_for("text:Shared model · First connector").unwrap();
     app.type_text("label:Message composer", "Prior configured model")
         .unwrap();
     app.press("label:Send message").unwrap();
@@ -9856,7 +11133,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
             session_id:"chat".into(), message_id:"prior".into(), revision:1, completion:None
         }}));
     assert!(app.settle());
-    app.type_text("label:Message composer", "First draft")
+    app.type_text("label:Message composer", "Wait for the fresh snapshot")
         .unwrap();
 
     *session.lock().unwrap() = row(3, model("first"));
@@ -9865,19 +11142,28 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.send_host_event("ios.hostState", host_state(3, 3))
         .unwrap();
     let (observe, snapshot) = observations.try_recv().unwrap();
-    hold_selection.store(true, Ordering::SeqCst);
-    choose(&mut app, &mut menus, "Shared model · Second connector");
-    assert!(
-        mutations.try_recv().is_err(),
-        "selected before the current observation"
-    );
     app.press("label:Send message").unwrap();
     assert!(
         mutations.try_recv().is_err(),
         "sent before the current observation"
     );
     observe.resolve(json!({"value":snapshot}));
-    app.settle();
+    assert!(app.settle());
+    let (refreshed_send, receipt) = mutations.try_recv().unwrap();
+    assert_eq!(refreshed_send["generation"], 3);
+    assert_eq!(refreshed_send["input"]["backend"], model("first"));
+    assert_eq!(
+        refreshed_send["input"]["message"],
+        "Wait for the fresh snapshot"
+    );
+    receipt.unwrap().resolve(queued_result("refreshed", 1));
+    assert!(app.settle());
+    app.type_text("label:Message composer", "First draft")
+        .unwrap();
+
+    hold_selection.store(true, Ordering::SeqCst);
+    choose(&mut app, "Shared model · Second connector");
+    assert!(!app.screen().enabled("id:chat-keyboard-model").unwrap());
     let (selection, commit) = mutations.try_recv().unwrap();
     assert_eq!(selection["method"], "selectBackend");
     assert_eq!(selection["generation"], 3);
@@ -9888,7 +11174,9 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     commit
         .unwrap()
         .resolve(json!({"value":{"kind":"committed","session":*session.lock().unwrap()}}));
-    app.settle();
+    app.wait_for("text:Shared model · Second connector")
+        .unwrap();
+    app.press("label:Send message").unwrap();
     let (call, receipt) = mutations.try_recv().unwrap();
     let send: Send = serde_json::from_value(call["input"].clone()).unwrap();
     assert_eq!(call["generation"], 3);
@@ -9907,10 +11195,10 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     assert!(app.settle());
     app.wait_for("text:Next draft").unwrap();
 
-    choose(&mut app, &mut menus, "Shared model · First connector");
+    choose(&mut app, "Shared model · First connector");
     let (first, _) = mutations.try_recv().unwrap();
     assert_eq!(first["input"]["backend"]["connectionId"], "first");
-    choose(&mut app, &mut menus, "Shared model · Second connector");
+    choose(&mut app, "Shared model · Second connector");
     let (second, _) = mutations.try_recv().unwrap();
     assert_eq!(second["method"], "selectBackend");
     let select: SelectBackend = serde_json::from_value(second["input"].clone()).unwrap();
@@ -9919,6 +11207,8 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     assert!(backend["serviceTier"].is_null());
     app.wait_for("text:Shared model · Second connector")
         .unwrap();
+
+    app.clear("label:Message composer").unwrap();
 
     // An ended watch event arriving while a stale running observe is in flight
     // must schedule a catch-up observe rather than sticking in the running state.
@@ -9956,14 +11246,16 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
             "run": { "backend": "model", "runId": "r1", "turnId": "t1", "state": "running" }
         }
     }));
-    app.wait_for("label:Stop Run").unwrap();
+    app.wait_for("label:Stop current reply").unwrap();
     let (catch_up_observe, idle_snapshot) = observations
         .try_recv()
         .expect("ended event during an in-flight observe must schedule a catch-up observe");
+    let mut idle_snapshot = idle_snapshot;
+    idle_snapshot["through"] = json!(3);
     catch_up_observe.resolve(json!({ "value": idle_snapshot }));
     assert!(app.settle());
     assert!(
-        !app.shows("label:Stop Run"),
+        !app.screen().matches("label:Stop current reply").unwrap(),
         "catch-up observe after ended must clear the running state"
     );
     let executor = json!({"kind":"executor","selection":{"executor":"codex",
@@ -9973,7 +11265,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
     app.send_host_event("ios.hostState", host_state(4, 4))
         .unwrap();
     app.wait_for("text:Native agent").unwrap();
-    choose(&mut app, &mut menus, "Native agent");
+    choose(&mut app, "Native agent");
     assert!(
         mutations.try_recv().is_err(),
         "reselecting the executor must not overwrite its settings"
@@ -10282,17 +11574,11 @@ async fn model_menus_work_without_permission_to_read_connections() {
     });
     app.wait_for("label:Conversation: Permission test").unwrap();
     app.press("label:Conversation: Permission test").unwrap();
-    app.wait_for("text:First model").unwrap();
-    let (id, choice) = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
-    app.engine().control().dispatch_event(
-        id,
-        EventKind::NativeEvent,
-        EventPayload::Native {
-            name: "select".into(),
-            data: choice,
-        },
-    );
-    app.wait_for("text:Second model").unwrap();
+    app.wait_for("id:chat-keyboard-model").unwrap();
+    let item = std::iter::from_fn(|| menus.try_recv().ok()).last().unwrap();
+    select_native_item(&mut app, item);
+    app.wait_for("id:chat-keyboard-model >> text:Second model")
+        .unwrap();
     assert_eq!(writes.try_recv().unwrap()["method"], "selectBackend");
     app.type_text("label:Message composer", "Send with restricted settings")
         .unwrap();
