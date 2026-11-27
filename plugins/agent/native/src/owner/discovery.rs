@@ -48,6 +48,7 @@ mod context;
 mod records;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(extend("type" = "object"))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Report {
     /// Nothing worth notifying; record what was checked without waking the Bot.
@@ -1164,5 +1165,17 @@ pub(super) fn check_target(
         Err("scheduler_authorization_changed".into())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_complete_schema_declares_an_object_root() {
+        let schema = serde_json::to_value(schemars::schema_for!(Report)).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_some());
     }
 }

@@ -157,6 +157,7 @@ struct MemoryPage {
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(extend("type" = "object"))]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Input {
     /// Newest matching previews first. Continue with next_before when more history remains,
@@ -882,6 +883,13 @@ impl Owner {
 mod tests {
     use super::*;
     use maka_event_log::root::{RootNamespaces, RootOwner};
+
+    #[test]
+    fn discovery_memory_schema_declares_an_object_root() {
+        let schema = serde_json::to_value(schemars::schema_for!(Input)).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert!(schema.get("oneOf").is_some());
+    }
 
     #[tokio::test]
     async fn discovery_filtered_history_fills_pages_and_resumes_after_its_scan_budget() {
