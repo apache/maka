@@ -30,6 +30,7 @@ import {
   type HistoryRow,
 } from '../../state/chat';
 import { showToast } from '../../state/hostPool';
+import { QueueSendMenu } from './ComposerPendingDock';
 import { hapticSelection } from '../../state/preferences';
 import { type } from '../../theme/tokens';
 import { ActionButton, Icon } from '../../ui';
@@ -294,7 +295,7 @@ export function DraftQuoteStrip(props: {
   onClearQuotes: () => void;
   onRemoveQuote: (id: number) => void;
   onRemoveLink: (id: string) => void;
-  mainActions?: { ask: () => void; send: () => void; canSend: boolean };
+  mainActions?: { ask: () => void; send: () => void; queue?: () => void; canSend: boolean };
 }) {
   const chips = computed(() => [...props.quotes, ...props.links]);
   return (
@@ -425,13 +426,19 @@ export function DraftQuoteStrip(props: {
       <If when={props.mainActions}>
         {(actions) => (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4, gap: 4 }}>
-            <ActionButton
-              title={tr('Send to Main Chat')}
-              variant="quiet"
-              compact
-              minHeight={44}
+            <QueueSendMenu
+              onQueue={actions().queue}
               disabled={!actions().canSend}
-              onPress={() => actions().send()}
+              trigger={
+                <ActionButton
+                  title={tr('Send to Main Chat')}
+                  variant="quiet"
+                  compact
+                  minHeight={44}
+                  disabled={!actions().canSend}
+                  onPress={() => actions().send()}
+                />
+              }
             />
             <ActionButton
               title={tr('Ask Side Question')}

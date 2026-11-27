@@ -119,3 +119,19 @@ Approvals stay in a fixed one-row layout, with short press feedback and the outc
 Computer settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.
 
 Side questions push a chat with the same composer and quote tray. The first accepted fork replaces the draft with its real conversation; back and edge swipe keep the main transcript mounted. The system owns selection menus, context menus and the side-question sheet. Quote and link chips, anchor counts and submission feedback update in place.
+
+### iOS chat: composer delivery dock
+
+The inline dock sits above the composer: a brief delivery status for steer, a
+recoverable card on failure, and a single disclosure for the longer-lived queue.
+
+| Change | Motion | Reduced motion |
+| --- | --- | --- |
+| Send and dock action press/hover | Existing opacity feedback (fast); distinct 44pt targets, no hover-only actions | Immediate opacity |
+| Sending → steering; queue count or preview changes | No movement for Host updates; keep the row's position | Same |
+| Steer status arrives or lands | Fast opacity enter/exit; no delayed removal from the transcript handoff | Immediate |
+| Queue disclosure, inline edit and review | Disclosure uses normal layout animation; editing and review reveal in place | Immediate |
+| Failure card / optimistic user bubble | Immediate feedback; no scripted scroll for queue actions | Same |
+| Send and Send to Main Chat context menus | Native presentation/dismissal | System setting |
+| Selection or drag release | None added | — |
+| In-flight RPC and waiting for next step | Pulsing mark for RPC; static mark while waiting | Static mark |

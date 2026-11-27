@@ -462,7 +462,9 @@ impl Owner {
         }
         let writer = self.message_writer(scope)?;
         let room = RoomStore::new(writer.clone(), self.run_owner());
-        let message_id = format!("m_{}", self.operation_id(operation));
+        let reference = serde_json::to_vec(operation).expect("admitted operation reference");
+        let message_id = maka_operation_id::room_post(&input.session_id, &reference)
+            .ok_or("agent_session_unavailable")?;
         let caller_agent = scope.identity.agent();
         let author = caller_agent.map_or(RoomAuthor::Human, |execution| RoomAuthor::Session {
             execution: execution.clone(),

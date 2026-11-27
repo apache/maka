@@ -325,8 +325,7 @@ function MainTabShell() {
                       void sendDraft(
                         rootId,
                         session.id,
-                        false,
-                        async () => observed.session.backend ?? observed.rememberedBackend ?? null,
+                        observed.session.backend ?? observed.rememberedBackend ?? null,
                       );
                       if (chatsNav.routes().at(-1) === route)
                         chatsNav.replace(

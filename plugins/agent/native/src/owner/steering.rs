@@ -20,8 +20,11 @@
 use super::send::{PreparedAgentSend, PreparedSend};
 use super::*;
 use crate::executor::ActiveDelivery;
-use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
-use maka_agent_state::{Head, queue as durable_queue};
+use maka_agent_facts::{
+    durable::{BackendSpec, UnixMillis},
+    memory::MemoryAdmission,
+};
+use maka_agent_state::{Head, fold::RunView, queue as durable_queue};
 
 impl Owner {
     pub(super) async fn active_delivery(
@@ -60,20 +63,15 @@ impl Owner {
         unprepared: MessageInput,
         origin: Option<MessageOrigin>,
         key: &str,
-        execution: &ExecutionIdentity,
-        basis: &CapturedRun,
+        target: &RunView,
+        memory_admission: MemoryAdmission,
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
         completion_request: Option<completions::CompletionRequest>,
     ) -> Result<PreparedSend, String> {
-        let session = execution.session_id.as_str();
-        let target = self
-            .durable
-            .frontier(execution.run_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if target.spec.session_id != session
-            || target.spec.owner != self.run_owner()
+        let session = target.spec.session_id.as_str();
+        self.require_execution_spec(&target.spec).await?;
+        if target.spec.owner != self.run_owner()
             || !parent
                 .sandbox_floor()
                 .contains(&target.spec.permission_ceiling.sandbox)
@@ -85,8 +83,48 @@ impl Owner {
         {
             return Err("agent_steering_isolation_unavailable".into());
         }
-        let mut basis = basis.clone();
+        let current = self.mutable_session(session).await?;
+        if current.archived {
+            return Err("agent_session_configuration_changed".into());
+        }
+        if current.configuration.workspace.path != target.spec.workspace
+            || workspace::validate(
+                &self.workspace_roots,
+                &current.configuration.workspace,
+                &self.managed_worktrees,
+            )
+            .await
+            .is_err()
+        {
+            return Ok(PreparedSend::Returned(SendResult::Rejected {
+                session_id: session.into(),
+                reason: SendRejection::WorkspaceUnavailable,
+                skills: None,
+            }));
+        }
+        let live_basis = self
+            .runs
+            .state()
+            .await
+            .controls
+            .get(session)
+            .filter(|control| control.execution.run_id == target.run)
+            .map(|control| Arc::clone(&control.basis));
+        let mut basis = match live_basis {
+            Some(basis) => (*basis).clone(),
+            None => {
+                self.restored_data(target)
+                    .await
+                    .map_err(|error| public_error(error.cause))?
+                    .0
+            }
+        };
         basis.fingerprint = operation.fingerprint.clone();
+        basis.background = None;
+        basis.background_kind = BackgroundKind::Interactive;
+        basis.background_sandbox_ceiling = None;
+        basis.memory = None;
+        basis.memory_admission = memory_admission;
         let (message, required_tools) = match self
             .prepare_skills(
                 unprepared.clone(),
@@ -140,7 +178,7 @@ impl Owner {
             .await?;
         let command_id = self.control_id(operation, &format!("{key}:steer_message"));
         let at = UnixMillis(now().try_into().expect("Unix milliseconds"));
-        let Some(view) = self.session_run(session, execution.run_id).await? else {
+        let Some(view) = self.session_run(session, target.run).await? else {
             return Err("agent_execution_unavailable".into());
         };
         if view.stopped || view.terminal.is_some() {
@@ -163,7 +201,7 @@ impl Owner {
             edit: durable_queue::QueueEdit::Enqueue {
                 request: Box::new(request.clone()),
                 placement: durable_queue::Placement::Steering {
-                    run: execution.run_id,
+                    run: target.run,
                     expected_head: Head::from(&view),
                 },
             },

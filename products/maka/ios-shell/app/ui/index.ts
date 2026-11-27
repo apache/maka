@@ -21,6 +21,7 @@ export { ActionButton, type ButtonVariant } from './ActionButton';
 export { ApprovalCard } from './ApprovalCard';
 export { BannerNotice, type NoticeTone } from './BannerNotice';
 export { EmptyState } from './EmptyState';
+export { glassSurfaceStyle } from './Glass';
 export { Icon, IconBadge, type IconName } from './Icon';
 export { GroupDivider, GroupFooter, GroupHeader, GroupRow, InsetGroup } from './InsetGroup';
 export { ScopePills, type ScopePillItem } from './ScopePills';

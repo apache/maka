@@ -1282,6 +1282,7 @@ async fn multi_host_tab_shell_isolates_scopes_and_routes_inbox_approval_by_root(
                     "activity": if is_approved { "idle" } else { "waiting" }
                 }]
             }),
+            ("root-a" | "root-b", "queue") => json!({"revision":0,"entries":[]}),
             ("root-a", "pendingInteractions") => json!({ "revision": 1, "entries": [] }),
             ("root-b", "pendingInteractions") => json!({
                 "revision": 1,
@@ -1514,6 +1515,7 @@ async fn first_load_waits_for_catalogs_and_history_without_hiding_cached_chats()
             }
             "observe" => json!({"session":observed,"through":0,"run":null}),
             "models" => json!({"kind":"ready","choices":[]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"revision":0,"entries":[]}),
             _ => json!({}),
         };
@@ -2104,6 +2106,7 @@ async fn catalog_pagination_keeps_chats_and_pending_on_the_current_snapshot() {
                 return;
             }
             "botOutbox" => json!({"isBot":true,"through":2,"readThrough":0,"preview":"New bot preview"}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => {
                 let entry = |id| json!({"requestId":id,"kind":"service_approval","toolUseId":"tu"});
                 let entries = if input["sessionId"] == "s-32" {
@@ -2776,7 +2779,7 @@ async fn a_catalog_barely_taller_than_the_viewport_pages_without_dragging() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers() {
+async fn chat_streaming_collapsible_tools_and_inline_approval() {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     let channel = HostChannel::new();
@@ -2821,7 +2824,6 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
                 "run": { "backend": "model", "runId": "run-1", "turnId": "t1", "state": "running" },
                 "parts": [], "toolSeeds": []
             }),
-            "queue" => json!({"revision":3,"entries":[{"messageId":"q1","kind":"followup","preview":"Authoritative queue entry"}]}),
             "history" => json!({
                 "kind": "ready", "through": 5, "before": null, "after": null,
                 "chunks": [
@@ -2833,6 +2835,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
             }),
             "models" => json!({ "kind": "ready", "choices": [{ "selection": { "kind": "model", "modelId": "claude-sonnet", "thinkingLevel": "high" }, "label": "Claude Sonnet · High", "sourceName": "anthropic", "thinkingLevels": ["high"], "defaultThinkingLevel": "high" }] }),
             "pendingInteractions" if resolved => json!({"revision":2,"entries":[]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "perm-1", "kind": "permissions", "toolUseId": "tu2" }] }),
             "interaction" => json!({
                 "requestId": "perm-1", "outcome": null,
@@ -2864,19 +2867,7 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     let (send_tx, mut send_rx) = mpsc::unbounded_channel();
     channel.handle("ios.hostMutate", move |mut call| {
         let data = call.take_data();
-        let value = if data["method"] == "editQueue" {
-            json!(QueueMutationResult::RevisionConflict {
-                expected: 2,
-                actual: 3
-            })
-        } else if data["method"] == "send" {
-            json!(maka_agent_api::contract::SendResult::Queued {
-                session_id: "chat-1".into(),
-                message_id: "queued".into(),
-                revision: 4,
-                completion: None,
-            })
-        } else if data["method"] == "respond" {
+        let value = if data["method"] == "respond" {
             settled.store(true, Ordering::SeqCst);
             json!({"kind":"recorded","record":{"outcome":
                 InteractionOutcome::ServiceApprovalDecision { decision: Decision::Deny, committed_at: 1 }
@@ -2913,14 +2904,10 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.wait_for("text:/Test OAuth|Verify OAuth/").unwrap();
     app.wait_for("text:Run integration test suite").unwrap();
 
-    // Stream live Markdown preview + queued turn over watch subscription.
+    // Stream live Markdown preview over watch subscription.
     let (watch_handle, open_watch) = fixture_recv(&mut watch_rx).await;
     let watch_sub_id = &watch_handle["subscriptionId"];
     let generation = &watch_handle["generation"];
-    app.send_host_event("ios.subscriptionItem", json!({
-        "subscriptionId":watch_sub_id,"rootId":"root-a","generation":1,
-        "item":{"kind":"queue","queue":{"revision":2,"entries":[{"messageId":"stale","kind":"followup","preview":"Stale queued message"}]}}
-    })).unwrap();
     app.send_host_event("ios.subscriptionItem", json!({
         "subscriptionId": watch_sub_id,
         "rootId": "root-a",
@@ -2937,38 +2924,6 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     // Simulate JS receiving the first item before the subscribe promise runs.
     open_watch.resolve(watch_handle.clone());
     app.wait_for("text:Streaming live verification...").unwrap();
-    assert!(!app.screen().matches("text:1 message queued").unwrap());
-
-    app.send_host_event("ios.subscriptionItem", json!({
-        "subscriptionId": watch_sub_id,
-        "rootId": "root-a",
-        "generation": generation,
-        "item": {
-            "kind": "queue",
-            "queue": { "revision": 2, "entries": [{ "messageId": "q1", "kind": "followup", "preview": "Add changelog entry" }] }
-        }
-    })).unwrap();
-    app.wait_for("text:1 message queued").unwrap();
-    app.press("text:1 message queued").unwrap();
-    app.press("label:Remove queued message").unwrap();
-    let retract = send_rx.recv().await.unwrap();
-    assert_eq!(retract["method"], "editQueue");
-    let retract: QueueMutation = serde_json::from_value(retract["input"].clone()).unwrap();
-    assert_eq!(retract.expected_revision, 2);
-    assert!(matches!(retract.edit, QueueAction::Retract { message_id } if message_id == "q1"));
-    app.wait_for("text:Authoritative queue entry").unwrap();
-    app.press("label:Done").unwrap();
-
-    // Sending while running MUST use delivery = "queue" (never "steer").
-    app.type_text("label:Message composer", "Follow up after tests")
-        .unwrap();
-    app.press("label:Queue message").unwrap();
-    let sent = send_rx.recv().await.unwrap();
-    assert_eq!(sent["rootId"], "root-a");
-    assert_eq!(sent["method"], "send");
-    assert_eq!(sent["input"]["delivery"], "queue");
-    assert_eq!(sent["input"]["message"], "Follow up after tests");
-
     app.press("label:Deny").unwrap();
     let answered = fixture_recv(&mut send_rx).await;
     assert_eq!(answered["method"], "respond");
@@ -2978,6 +2933,1250 @@ async fn chat_streaming_collapsible_tools_inline_approval_and_queue_never_steers
     app.wait_for("id:main-tab-bar").unwrap();
     assert!(!app.screen().matches("id:main-tab-bar >> text:1").unwrap());
     held_refresh.resolve(json!({"value":{"revision":"2","needsYouCount":0,"before":null,"after":null,"sessions":[]}}));
+}
+
+struct ComposerDockFixture {
+    app: Headless,
+    run: Arc<std::sync::Mutex<Value>>,
+    queue: Arc<std::sync::Mutex<Value>>,
+    history: Arc<std::sync::Mutex<Vec<Value>>>,
+    calls: mpsc::UnboundedReceiver<(Value, HostCall)>,
+    watches: mpsc::UnboundedReceiver<Value>,
+    watch: Value,
+    history_reads: mpsc::UnboundedReceiver<()>,
+    hold_queue: Arc<std::sync::atomic::AtomicBool>,
+    hold_history: Arc<std::sync::atomic::AtomicBool>,
+}
+
+const DOCK_RUN_ID: &str = "a91a2b3c-0000-4000-8000-000000000001";
+
+fn dock_host(generation: u64) -> Value {
+    let host = json!({"rootId":"root","hostName":"Host","generation":generation,"endpoints":["agent","settings"]});
+    json!({"revision":generation,"hosts":[host],"active":host,
+        "connections":{"root":{"status":"connected","connection":host}}})
+}
+
+impl ComposerDockFixture {
+    async fn start(run: Value, backend: Value, queue: Value) -> Self {
+        Self::start_with_anchor(run, backend, queue, false).await
+    }
+
+    async fn start_with_anchor(run: Value, backend: Value, queue: Value, anchor: bool) -> Self {
+        Self::start_chat(run, backend, queue, anchor, false).await
+    }
+
+    async fn start_room() -> Self {
+        Self::start_chat(Value::Null, Value::Null, empty_queue(), false, true).await
+    }
+
+    async fn start_chat(
+        run: Value,
+        backend: Value,
+        queue: Value,
+        anchor: bool,
+        room: bool,
+    ) -> Self {
+        let channel = HostChannel::new();
+        channel.handle("ios.bootstrap", |call| call.resolve(dock_host(1)));
+        let run = Arc::new(std::sync::Mutex::new(run));
+        let queue = Arc::new(std::sync::Mutex::new(queue));
+        let mut answer = quote_history_row(1, "assistant", "An earlier answer");
+        answer["finalOutput"] = json!(anchor);
+        let mut side = side_session("saved", "Saved side question", &backend);
+        side["branch"]["sessionId"] = json!("chat");
+        side["branch"]["position"]["position"] = answer["position"].clone();
+        let side_on_watch = side.clone();
+        let history = Arc::new(std::sync::Mutex::new(if room {
+            vec![]
+        } else {
+            vec![answer]
+        }));
+        let hold_queue = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hold_queue_read = hold_queue.clone();
+        let hold_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hold_tail = hold_history.clone();
+        let (run_q, queue_q, history_q) = (run.clone(), queue.clone(), history.clone());
+        let (tx, calls) = mpsc::unbounded_channel();
+        let query_tx = tx.clone();
+        let (history_tx, mut history_reads) = mpsc::unbounded_channel();
+        channel.handle("ios.hostQuery", move |mut call| {
+            let data = call.take_data();
+            let session = json!({"id":"chat","kind":if room { "room" } else { "agent" },"title":"Dock Chat","revision":1,
+                "workspace":{"path":"/work"},"backend":backend,"updatedAt":1,"activity":"working"});
+            let value = match data["method"].as_str().unwrap() {
+                "list" if data["input"]["scope"]["kind"] == "side_questions" =>
+                    json!({"revision":"side","sessions":if anchor { vec![side.clone()] } else { vec![] },"needsYouCount":0}),
+                "list" => json!({"revision":"list","sessions":[session],"needsYouCount":0}),
+                "observe" if data["input"]["sessionId"] == "saved" =>
+                    json!({"session":side,"through":1,"run":null}),
+                "observe" => json!({"session":session,"through":1,"run":*run_q.lock().unwrap()}),
+                "history" if hold_tail.swap(false, std::sync::atomic::Ordering::SeqCst) => {
+                    query_tx.send((data, call)).unwrap();
+                    return;
+                }
+                "history" if room => {
+                    let rows = history_q.lock().unwrap();
+                    let through = rows.last().and_then(|row| row["sequence"].as_u64()).unwrap_or(0);
+                    call.resolve(json!({"value":{"kind":"room","page":{"items":*rows,"through":through,
+                        "before":null,"after":null}}}));
+                    history_tx.send(()).unwrap();
+                    return;
+                }
+                "history" => {
+                    let rows = history_q.lock().unwrap();
+                    let through = rows.last().unwrap()["position"]["sequence"].clone();
+                    let before = (rows[0]["position"]["sequence"].as_u64().unwrap() > 1)
+                        .then(|| history_cursor(&rows[0]));
+                    let page = json!({"kind":"ready","through":through,
+                        "chunks":*rows,"before":before,"after":null});
+                    call.resolve(json!({"value":page}));
+                    history_tx.send(()).unwrap();
+                    return;
+                }
+                "queue" if hold_queue_read.swap(false, std::sync::atomic::Ordering::SeqCst) => {
+                    query_tx.send((data, call)).unwrap();
+                    return;
+                }
+                "queue" => queue_q.lock().unwrap().clone(),
+                "pendingInteractions" => json!({"revision":1,"entries":[]}),
+                "models" => json!({"kind":"ready","choices":[]}),
+                "botOutbox" => json!({"isBot":false}),
+                "connections" => json!({"kind":"ready","revision":1,"connections":[],"next":null,
+                    "defaultTarget":{"connectionId":"test","modelId":"model"}}),
+                "queueMessage" | "resolveModel" => {
+                    query_tx.send((data, call)).unwrap();
+                    return;
+                }
+                method => panic!("unexpected query {method}"),
+            };
+            call.resolve(json!({"value":value}));
+        });
+        channel.handle("ios.ackMutationProgress", |call| call.resolve(Value::Null));
+        channel.handle("ios.hostMutate", move |mut call| {
+            let data = call.take_data();
+            tx.send((data, call)).unwrap();
+        });
+        let (watch_tx, mut watches) = mpsc::unbounded_channel();
+        let (side_tx, mut side_watch) = mpsc::unbounded_channel();
+        channel.handle("ios.subscribe", move |mut call| {
+            let data = call.take_data();
+            let handle = json!({"subscriptionId":data["subscriptionId"],"rootId":"root",
+                "generation":data["generation"].as_u64().unwrap()+10});
+            call.resolve(handle.clone());
+            if data["method"] == "watch" {
+                watch_tx.send(handle).unwrap();
+            } else if anchor && data["input"]["scope"]["kind"] == "side_questions" {
+                side_tx.send((handle, side_on_watch.clone())).unwrap();
+            }
+        });
+        channel.handle("ios.unsubscribe", |call| {
+            call.resolve(json!({"cancelled":true}))
+        });
+        let mut config = engine_config(channel, tokio::runtime::Handle::current());
+        config.viewport = Size::new(px(390.), px(844.));
+        config.environment = Environment {
+            os: Os::Ios,
+            reduce_motion: true,
+            ..Environment::default()
+        };
+        let mut app = Headless::start(config).unwrap();
+        app.wait_for("label:Conversation: Dock Chat").unwrap();
+        app.press("label:Conversation: Dock Chat").unwrap();
+        if !room {
+            app.wait_for("text:An earlier answer").unwrap();
+        }
+        let watch = fixture_recv(&mut watches).await;
+        if anchor {
+            let (handle, side) = fixture_recv(&mut side_watch).await;
+            app.send_host_event(
+                "ios.subscriptionItem",
+                json!({
+                    "subscriptionId":handle["subscriptionId"],"rootId":"root",
+                    "generation":handle["generation"],
+                    "item":{"revision":"side","sessions":[side],"needsYouCount":0}
+                }),
+            )
+            .unwrap();
+        }
+        while history_reads.try_recv().is_ok() {}
+        Self {
+            app,
+            run,
+            queue,
+            history,
+            calls,
+            watches,
+            watch,
+            history_reads,
+            hold_queue,
+            hold_history,
+        }
+    }
+
+    async fn prepare_room_post(&mut self, message_id: &str) -> HostCall {
+        let (data, call) = fixture_recv(&mut self.calls).await;
+        assert_eq!(data["method"], "send");
+        assert_eq!(data["input"]["delivery"], "steer");
+        assert_eq!(data["prepareRoomPost"], true);
+        assert!(call.sender().send("ios.mutationProgress", json!({
+            "rootId":"root","generation":1,"progressId":data["progressId"],
+            "deliveryId":1,"sequence":1,"requiresObserver":true,"value":{"kind":"room_post_prepared","messageId":message_id}
+        })).unwrap());
+        assert!(self.app.settle());
+        call
+    }
+
+    fn deliver(&mut self, item: Value) {
+        self.app
+            .send_host_event(
+                "ios.subscriptionItem",
+                json!({
+                    "subscriptionId":self.watch["subscriptionId"],"rootId":"root",
+                    "generation":self.watch["generation"],"item":item,
+                }),
+            )
+            .unwrap();
+    }
+
+    fn queue_item(&mut self, queue: Value) {
+        self.deliver(json!({"kind":"queue","queue":queue}));
+    }
+
+    fn transcript_changed(&mut self, through: u64, kind: &str) {
+        self.deliver(json!({"kind":"events","through":through,"events":[
+            {"runId":DOCK_RUN_ID,"fact":{"kind":kind}}
+        ]}));
+    }
+
+    async fn call(&mut self, method: &str) -> (Value, HostCall) {
+        let (data, call) = fixture_recv(&mut self.calls).await;
+        assert_eq!(data["method"], method);
+        (data["input"].clone(), call)
+    }
+}
+
+fn dock_model() -> Value {
+    json!({"kind":"model","connectionId":"test","modelId":"model"})
+}
+
+fn dock_run() -> Value {
+    json!({"backend":"model","runId":DOCK_RUN_ID,"turnId":"t1","state":"running"})
+}
+
+fn empty_queue() -> Value {
+    json!({"revision":0,"entries":[]})
+}
+
+fn queued_result(message_id: &str, revision: u64) -> Value {
+    json!({"value": SendResult::Queued {
+        session_id:"chat".into(), message_id:message_id.into(), revision, completion:None,
+    }})
+}
+
+fn missing_queued(reason: &str) -> Value {
+    json!({"value":{"kind":"missing","reason":reason}})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_native_steer_uses_the_current_run_and_waits_across_queue_drain() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app
+        .type_text("label:Message composer", "Change course")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    let input: Send = serde_json::from_value(input).unwrap();
+    assert!(matches!(
+        input.delivery,
+        Some(maka_agent_api::contract::SendDelivery::Steer)
+    ));
+    assert_eq!(
+        input.expected_run_id,
+        Some(serde_json::from_value(json!(DOCK_RUN_ID)).unwrap())
+    );
+    assert!(input.backend.is_none());
+    fx.app.wait_for("text:Sending…").unwrap();
+    fx.app.wait_for("text:Change course").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("")
+    );
+
+    let waiting = "text:Steer · Waiting for next step";
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"m2","kind":"steering","preview":"Change course"},
+        {"messageId":"remote","kind":"steering","preview":"Steer from another device"}
+    ]}));
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count("text:Change course").unwrap(), 1);
+    assert!(!fx.app.screen().matches(waiting).unwrap());
+    reply.resolve(queued_result("m2", 1));
+    fx.app.wait_for("text:Steer from another device").unwrap();
+    assert_eq!(fx.app.screen().count("text:Change course").unwrap(), 1);
+    assert!(!fx.app.screen().matches("text:1 queued").unwrap());
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    let mut probing = Vec::new();
+    for _ in 0..2 {
+        let (input, reply) = fx.call("queueMessage").await;
+        assert_eq!(input["expectedRevision"], 2);
+        probing.push((input["messageId"].as_str().unwrap().to_owned(), reply));
+    }
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count(waiting).unwrap(), 2);
+
+    let mut remote = quote_history_row(3, "user", "Steer from another device");
+    remote["messageId"] = json!("remote");
+    fx.history
+        .lock()
+        .unwrap()
+        .extend([quote_history_row(2, "user", "Change course"), remote]);
+    fx.transcript_changed(3, "transcript_changed");
+    fx.app
+        .wait_for_gone(waiting, Duration::from_secs(2))
+        .unwrap();
+    fx.app
+        .wait_for("id:chat-transcript >> text:Change course")
+        .unwrap();
+    fx.app
+        .wait_for("id:chat-transcript >> text:Steer from another device")
+        .unwrap();
+    assert_eq!(fx.app.screen().count("text:Change course").unwrap(), 1);
+    for (id, reply) in probing {
+        assert!(id == "m2" || id == "remote");
+        reply.resolve(missing_queued("delivered"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_executor_steer_that_falls_back_to_queue_hands_off_to_its_entry() {
+    let mut run = dock_run();
+    run["backend"] = json!("executor");
+    let backend = json!({"kind":"executor","selection":{"executor":"codex"}});
+    let mut fx = ComposerDockFixture::start(run, backend.clone(), empty_queue()).await;
+    fx.app
+        .type_text("label:Message composer", "Executor follow-up")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["delivery"], "steer");
+    assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
+    assert_eq!(input["backend"], backend);
+    reply.resolve(queued_result("executor-followup", 1));
+    let waiting = "text:Steer · Waiting for next step";
+    fx.app.wait_for(waiting).unwrap();
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"executor-followup","kind":"followup","preview":"Executor follow-up"}
+    ]}));
+    fx.app.wait_for("text:1 queued").unwrap();
+    fx.app
+        .wait_for_gone(waiting, Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(fx.app.screen().count("text:Executor follow-up").unwrap(), 1);
+}
+
+fn assert_dock_touch_target(app: &Headless, selector: &str) {
+    let size = app.screen().layout(selector).unwrap().unwrap().bounds.size;
+    assert!(
+        size.width >= px(44.) && size.height >= px(44.),
+        "{selector}: {size:?}"
+    );
+}
+
+fn watch_add_to_queue(app: &mut Headless) -> impl FnOnce(&mut Headless) + use<> {
+    use nsh_core::{EventKind, EventPayload, MountItem};
+    let (menu_tx, mut menus) = mpsc::unbounded_channel();
+    app.observe(move |_, batch| {
+        for item in &batch.items {
+            if let MountItem::ComponentProps { id, props } = item
+                && let Some(action) = props.iter().find_map(|(name, value)| {
+                    if name.as_ref() != "items" {
+                        return None;
+                    }
+                    value
+                        .as_ref()?
+                        .as_array()?
+                        .iter()
+                        .find(|item| item["label"] == "Add to queue")
+                })
+            {
+                menu_tx.send((*id, action["id"].clone())).unwrap();
+            }
+        }
+    });
+    move |app| {
+        // Headless has no UIKit presentation. Deliver the item that was installed
+        // on the native long-press menu through UIKit's selection event.
+        let (menu, action) = menus.try_recv().unwrap();
+        app.engine().control().dispatch_event(
+            menu,
+            EventKind::NativeEvent,
+            EventPayload::Native {
+                name: "select".into(),
+                data: action,
+            },
+        );
+        assert!(app.settle());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_explicit_queue_can_promote_review_edit_and_retract() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    let choose_queue = watch_add_to_queue(&mut fx.app);
+    fx.app
+        .type_text("label:Message composer", "Handle it later")
+        .unwrap();
+    assert_dock_touch_target(&fx.app, "label:Send message");
+    fx.app.long_press("label:Send message").unwrap();
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "long press also sent the message"
+    );
+    choose_queue(&mut fx.app);
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["delivery"], "queue");
+    assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
+    assert_eq!(input["backend"], dock_model());
+    let queue = json!({"revision":1,"entries":[
+        {"messageId":"running","kind":"in_flight","preview":"Running already"},
+        {"messageId":"system","kind":"followup","preview":"Completion","origin":{"kind":"session_completion"}},
+        {"messageId":"q1","kind":"followup","preview":"Handle it later"},
+        {"messageId":"q2","kind":"held","preview":"Other work"}
+    ]});
+    // The watch can beat the receipt, and the post-send query can lag both.
+    fx.queue_item(queue.clone());
+    fx.app.wait_for("text:2 queued").unwrap();
+    reply.resolve(queued_result("q1", 1));
+    fx.app
+        .wait_for_gone("text:Sending…", Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(fx.app.screen().count("text:Handle it later").unwrap(), 1);
+    assert!(!fx.app.screen().matches("label:Steer now").unwrap());
+
+    fx.app.press("label:Queued Messages (2)").unwrap();
+    assert!(!fx.app.screen().matches("text:Running already").unwrap());
+    assert!(!fx.app.screen().matches("text:Completion").unwrap());
+    for label in ["Steer now", "Edit queued message", "Remove queued message"] {
+        assert_dock_touch_target(&fx.app, &format!("label:{label} >> nth=0"));
+    }
+    fx.app.press("label:Steer now >> nth=0").unwrap();
+    let (input, reply) = fx.call("editQueue").await;
+    let promote: QueueMutation = serde_json::from_value(input).unwrap();
+    assert_eq!(promote.expected_revision, 1);
+    assert!(matches!(promote.edit, QueueAction::Promote {message_id} if message_id == "q1"));
+    let snapshot = |revision, text| {
+        json!({"revision":revision,"entries":[
+            {"messageId":"q2","kind":"held","preview":text}
+        ]})
+    };
+    *fx.queue.lock().unwrap() = snapshot(2, "Other work");
+    reply.resolve(json!({"value": QueueMutationResult::Committed {revision:2}}));
+    fx.app.wait_for("text:1 queued").unwrap();
+
+    fx.app.press("label:Edit queued message").unwrap();
+    let (read, reply) = fx.call("queueMessage").await;
+    assert_eq!(
+        read,
+        json!({"sessionId":"chat","messageId":"q2","expectedRevision":2})
+    );
+    let ready = |revision, message| {
+        json!({"value":{"kind":"ready","revision":revision,
+        "message":message,"hasAttachments":false,"quotes":[]}})
+    };
+    reply.resolve(ready(2, "Other work"));
+    let editor = "id:queue-message-editor";
+    fx.app.wait_for(editor).unwrap();
+    fx.app.type_text(editor, " plus tests").unwrap();
+    let edited = fx
+        .app
+        .screen()
+        .input_text(editor)
+        .unwrap()
+        .unwrap()
+        .to_owned();
+    assert!(edited.contains("plus tests"));
+    fx.app.compose(editor, "未提交").unwrap();
+    assert!(!fx.app.screen().enabled("label:Save").unwrap());
+    assert!(fx.app.press("label:Save").is_err());
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "an IME composition committed a partial edit"
+    );
+    fx.app.compose(editor, "").unwrap();
+    fx.app.press("label:Save").unwrap();
+    let (update, reply) = fx.call("editQueue").await;
+    assert_eq!(
+        update,
+        json!({"sessionId":"chat","expectedRevision":2,
+        "edit":{"kind":"update","messageId":"q2","message":edited}})
+    );
+
+    *fx.queue.lock().unwrap() = snapshot(3, "Changed elsewhere");
+    reply.resolve(json!({"value": QueueMutationResult::RevisionConflict {expected:2,actual:3}}));
+    fx.app
+        .wait_for("text:The queue changed. Review the current message before trying again.")
+        .unwrap();
+    fx.app.wait_for("label:Review latest").unwrap();
+    assert_eq!(
+        fx.app.screen().input_text(editor).unwrap(),
+        Some(edited.as_str())
+    );
+    assert!(fx.app.screen().matches("label:Copy edit").unwrap());
+    fx.app.press("label:Review latest").unwrap();
+    let (read, reply) = fx.call("queueMessage").await;
+    assert_eq!(read["expectedRevision"], 3);
+    reply.resolve(ready(3, "Changed elsewhere"));
+    fx.app.wait_for("text:Changed elsewhere").unwrap();
+    fx.app.press("label:Keep my edit").unwrap();
+    fx.app.press("label:Save").unwrap();
+    let (update, reply) = fx.call("editQueue").await;
+    assert_eq!(update["expectedRevision"], 3);
+    assert_eq!(update["edit"]["message"], edited);
+    *fx.queue.lock().unwrap() = snapshot(4, &edited);
+    reply.resolve(json!({"value": QueueMutationResult::Committed {revision:4}}));
+    fx.app.wait_for("label:Remove queued message").unwrap();
+
+    fx.app.press("label:Remove queued message").unwrap();
+    let (retract, reply) = fx.call("editQueue").await;
+    assert_eq!(
+        retract,
+        json!({"sessionId":"chat","expectedRevision":4,
+        "edit":{"kind":"retract","messageId":"q2"}})
+    );
+    *fx.queue.lock().unwrap() = json!({"revision":5,"entries":[]});
+    reply.resolve(json!({"value": QueueMutationResult::Committed {revision:5}}));
+    fx.app
+        .wait_for_gone("text:1 queued", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_stopped_send_can_restore_retry_or_dismiss_without_losing_the_next_draft() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app.press("role:button[Quote]").unwrap();
+    fx.app
+        .type_text("label:Message composer", "First draft")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["quotes"][0]["text"], "An earlier answer");
+    fx.app
+        .type_text("label:Message composer", "Next draft")
+        .unwrap();
+    fx.app.press("role:button[Quote]").unwrap();
+    let stopped =
+        || json!({"value":{"kind":"rejected","sessionId":"chat","reason":"turn_stopped"}});
+    let kept = "text:Stopped before delivery. Your message is kept.";
+    reply.resolve(stopped());
+    fx.app.wait_for(kept).unwrap();
+    fx.app.press("label:Edit").unwrap();
+    fx.app.wait_for_gone(kept, Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Next draft\n\nFirst draft")
+    );
+    fx.app.wait_for("text:1 quote").unwrap();
+
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["quotes"].as_array().unwrap().len(), 1);
+    reply.resolve(stopped());
+    fx.app.wait_for(kept).unwrap();
+    *fx.run.lock().unwrap() = Value::Null;
+    // No run-ended watch item has arrived yet; Retry must resolve the current turn.
+    fx.app.press("label:Retry").unwrap();
+    let (retry, reply) = fx.call("send").await;
+    assert_eq!(retry["message"], input["message"]);
+    assert_eq!(retry["quotes"], input["quotes"]);
+    assert!(retry["expectedRunId"].is_null());
+    assert_eq!(retry["backend"], dock_model());
+
+    reply.reject("Host disconnected before the send reply");
+    let unknown = "text:Could not confirm whether the message was sent. Check the conversation or queue before retrying.";
+    fx.app.wait_for(unknown).unwrap();
+    assert!(!fx.app.screen().matches("label:Retry").unwrap());
+    fx.app.press("label:Dismiss").unwrap();
+    fx.app
+        .wait_for_gone(unknown, Duration::from_secs(2))
+        .unwrap();
+    assert!(fx.calls.try_recv().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_queue_fetches_on_connection_and_ignores_older_watch_revisions() {
+    let queue = |revision, text| {
+        json!({"revision":revision,"entries":[
+            {"messageId":"q","kind":"followup","preview":text}
+        ]})
+    };
+    let mut fx =
+        ComposerDockFixture::start(Value::Null, dock_model(), queue(10, "Initial queue")).await;
+    fx.app.wait_for("text:Initial queue").unwrap();
+    fx.queue_item(queue(12, "Latest queue"));
+    fx.app.wait_for("text:Latest queue").unwrap();
+    fx.queue_item(queue(11, "Stale queue"));
+    assert!(fx.app.settle());
+    assert!(!fx.app.screen().matches("text:Stale queue").unwrap());
+    assert!(fx.app.screen().matches("text:Latest queue").unwrap());
+
+    *fx.queue.lock().unwrap() = queue(2, "New connection queue");
+    fx.app
+        .send_host_event("ios.hostState", dock_host(2))
+        .unwrap();
+    fx.app.wait_for("text:New connection queue").unwrap();
+    fx.queue_item(queue(13, "Old connection queue"));
+    fx.watch = fixture_recv(&mut fx.watches).await;
+    fx.queue_item(queue(1, "Stale queue"));
+    assert!(fx.app.settle());
+    assert!(
+        fx.app
+            .screen()
+            .matches("text:New connection queue")
+            .unwrap()
+    );
+    assert!(
+        !fx.app
+            .screen()
+            .matches("text:Old connection queue")
+            .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_idle_projection_counts_identical_prompts_once_each_when_history_beats_the_receipt() {
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    fx.history
+        .lock()
+        .unwrap()
+        .insert(0, quote_history_row(0, "user", "Repeat prompt"));
+    fx.transcript_changed(1, "transcript_changed");
+    let message = "id:chat-transcript >> text:Repeat prompt";
+    fx.app.wait_for(message).unwrap();
+    let _ = fixture_recv(&mut fx.history_reads).await;
+
+    fx.app
+        .type_text("label:Message composer", "Repeat prompt")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["delivery"], "steer");
+    assert!(input["expectedRunId"].is_null());
+    assert_eq!(fx.app.screen().count(message).unwrap(), 2);
+
+    let mut next = quote_history_row(2, "user", "Repeat prompt");
+    next["turnId"] = json!("t2");
+    let mut answer = quote_history_row(3, "assistant", "Durable reply");
+    answer["turnId"] = json!("t2");
+    fx.history.lock().unwrap().extend([next, answer]);
+    fx.transcript_changed(3, "transcript_changed");
+    fixture_recv(&mut fx.history_reads).await;
+    assert!(fx.app.settle());
+    assert_eq!(
+        fx.app.screen().count(message).unwrap(),
+        2,
+        "history beat the receipt; exactly one optimistic prompt should be visible"
+    );
+
+    reply.resolve(queued_result("m2", 1));
+    fx.app.wait_for("text:Durable reply").unwrap();
+    assert_eq!(
+        fx.app.screen().count(message).unwrap(),
+        2,
+        "the two distinct prompts must not collapse by text"
+    );
+    assert!(
+        !fx.app
+            .screen()
+            .matches("text:Steer · Waiting for next step")
+            .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_steer_recovers_the_snapshot_after_the_queue_revision_changes() {
+    let mut fx =
+        ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true).await;
+    fx.app
+        .wait_for("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app
+        .press("label:Side questions (1) · Waiting for your response")
+        .unwrap();
+    fx.app.wait_for("text:Side Question · Dock Chat").unwrap();
+    fx.app.press("label:Bring to Main Draft").unwrap();
+    fx.app
+        .wait_for("label:Remove conversation link: Saved side question")
+        .unwrap();
+
+    fx.app.press("role:button[Quote] >> nth=0").unwrap();
+    fx.app
+        .type_text("label:Message composer", "Don't lose this")
+        .unwrap();
+    fx.app.press("label:Send to Main Chat").unwrap();
+    let (original, receipt) = fx.call("send").await;
+    assert_eq!(original["quotes"][0]["text"], "An earlier answer");
+    assert_eq!(
+        original["message"],
+        "Don't lose this [@Saved side question](maka://session/saved)"
+    );
+    receipt.resolve(queued_result("steering", 1));
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"steering","kind":"steering","preview":"Don't lose this"}
+    ]}));
+    let waiting = "text:Steer · Waiting for next step";
+    fx.app.wait_for(waiting).unwrap();
+
+    fx.app.press("label:Stop Run").unwrap();
+    let (stop, reply) = fx.call("stop").await;
+    assert_eq!(stop["runId"], DOCK_RUN_ID);
+    *fx.run.lock().unwrap() = Value::Null;
+    reply.resolve(json!({"value":{"kind":"stopped"}}));
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    fx.transcript_changed(2, "ended");
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(
+        probe,
+        json!({"sessionId":"chat","messageId":"steering","expectedRevision":2})
+    );
+    *fx.queue.lock().unwrap() = json!({"revision":3,"entries":[]});
+    reply.resolve(json!({"value":QueueMutationResult::RevisionConflict {expected:2,actual:3}}));
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["expectedRevision"], 3);
+    reply.resolve(missing_queued("cancelled"));
+
+    let kept = "text:Stopped before delivery. Your message is kept.";
+    fx.app.wait_for(kept).unwrap();
+    assert!(!fx.app.screen().matches(waiting).unwrap());
+    for label in ["Edit", "Retry", "Dismiss"] {
+        assert_dock_touch_target(&fx.app, &format!("label:{label}"));
+    }
+    fx.app.press("label:Retry").unwrap();
+    let (retry, reply) = fx.call("send").await;
+    assert_eq!(retry["message"], original["message"]);
+    assert_eq!(retry["quotes"], original["quotes"]);
+    assert!(retry["expectedRunId"].is_null());
+    reply.resolve(
+        json!({"value":{"kind":"rejected","sessionId":"chat","reason":"model_unavailable"}}),
+    );
+    fx.app
+        .wait_for("text:The selected model is unavailable. Try again or choose another model.")
+        .unwrap();
+
+    fx.app.press("label:Edit").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: An earlier answer")
+        .unwrap();
+    fx.app
+        .wait_for("label:Remove conversation link: Saved side question")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Don't lose this")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_does_not_retarget_when_the_run_ends_during_backend_preflight() {
+    let mut run = dock_run();
+    run["backend"] = json!("executor");
+    let mut fx = ComposerDockFixture::start(run, Value::Null, empty_queue()).await;
+    fx.app
+        .type_text("label:Message composer", "Only for this turn")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, default_model) = fx.call("resolveModel").await;
+    *fx.run.lock().unwrap() = Value::Null;
+    fx.transcript_changed(2, "ended");
+    fx.app
+        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .unwrap();
+    default_model.resolve(json!({"value":{"kind":"ready","choice":{"selection":{"connectionId":"test","modelId":"model"}}}}));
+
+    fx.app
+        .wait_for("text:Stopped before delivery. Your message is kept.")
+        .unwrap();
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "send silently started a new turn"
+    );
+    fx.app.press("label:Edit").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Only for this turn")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reopened_chat_checks_delivery_when_accepted_sends_are_outside_the_history_page() {
+    for run in [Value::Null, dock_run()] {
+        let idle = run.is_null();
+        let mut fx = ComposerDockFixture::start(run, dock_model(), empty_queue()).await;
+        fx.app
+            .type_text("label:Message composer", "Old submission")
+            .unwrap();
+        fx.app.press("label:Send message").unwrap();
+        let (_, receipt) = fx.call("send").await;
+        receipt.resolve(queued_result("m2", 1));
+        fx.app
+            .wait_until("send acknowledged", Duration::from_secs(2), |screen| {
+                if idle {
+                    screen
+                        .matches("id:chat-transcript >> text:Old submission")
+                        .unwrap()
+                } else {
+                    screen
+                        .matches("text:Steer · Waiting for next step")
+                        .unwrap()
+                }
+            })
+            .unwrap();
+        fx.app.press("label:Chats").unwrap();
+
+        *fx.history.lock().unwrap() = vec![quote_history_row(12, "assistant", "Newer tail")];
+        *fx.queue.lock().unwrap() = json!({"revision":2,"entries":[]});
+        *fx.run.lock().unwrap() = Value::Null;
+        fx.app.press("label:Conversation: Dock Chat").unwrap();
+        fx.app.wait_for("text:Newer tail").unwrap();
+        assert!(
+            !fx.app
+                .screen()
+                .matches("id:chat-transcript >> text:Old submission")
+                .unwrap()
+        );
+        let (probe, reply) = fx.call("queueMessage").await;
+        assert_eq!(probe["messageId"], "m2");
+        assert_eq!(probe["expectedRevision"], 2);
+        reply.resolve(missing_queued("delivered"));
+        fx.app
+            .wait_for_gone("text:Old submission", Duration::from_secs(2))
+            .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_can_queue_from_the_side_question_quote_tray() {
+    let mut fx =
+        ComposerDockFixture::start_with_anchor(dock_run(), dock_model(), empty_queue(), true).await;
+    let choose_queue = watch_add_to_queue(&mut fx.app);
+    fx.app.press("role:button[Quote] >> nth=0").unwrap();
+    fx.app.wait_for("label:Ask Side Question").unwrap();
+    fx.app.wait_for("label:Send to Main Chat").unwrap();
+    assert!(!fx.app.screen().matches("label:Send message").unwrap());
+    fx.app.long_press("label:Send to Main Chat").unwrap();
+    assert!(fx.calls.try_recv().is_err());
+    choose_queue(&mut fx.app);
+    let (input, reply) = fx.call("send").await;
+    assert_eq!(input["delivery"], "queue");
+    assert_eq!(input["expectedRunId"], DOCK_RUN_ID);
+    assert_eq!(input["quotes"][0]["text"], "An earlier answer");
+    reply.resolve(queued_result("quote", 1));
+}
+
+const DOCK_WAITING: &str = "text:Steer · Waiting for next step";
+const DOCK_UNCONFIRMED: &str = "text:Could not confirm whether the message was sent. Check the conversation or queue before retrying.";
+
+async fn accept_dock_steer(fx: &mut ComposerDockFixture) {
+    fx.app
+        .type_text("label:Message composer", "Keep these words")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, reply) = fx.call("send").await;
+    reply.resolve(queued_result("m2", 1));
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"m2","kind":"steering","preview":"Keep these words"}
+    ]}));
+    fx.app.wait_for(DOCK_WAITING).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_steer_with_interrupted_verification_is_recoverable_and_can_be_rechecked() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.app.press("role:button[Quote] >> nth=0").unwrap();
+    accept_dock_steer(&mut fx).await;
+    fx.app.press("label:Stop Run").unwrap();
+    let (_, stop) = fx.call("stop").await;
+    *fx.run.lock().unwrap() = Value::Null;
+    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    let drained = json!({"revision":2,"entries":[]});
+    fx.queue_item(drained.clone());
+    fx.transcript_changed(2, "ended");
+    fx.app
+        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .unwrap();
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["expectedRevision"], 2);
+    reply.reject("Host queueMessage timed out");
+
+    fx.app.wait_for(DOCK_UNCONFIRMED).unwrap();
+    assert!(!fx.app.screen().matches(DOCK_WAITING).unwrap());
+    assert!(!fx.app.screen().matches("label:Retry").unwrap());
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "verification must not retry without a fresh snapshot"
+    );
+    fx.queue_item(drained);
+    let (rechecked, reply) = fx.call("queueMessage").await;
+    assert_eq!(rechecked, probe);
+    reply.resolve(missing_queued("unknown"));
+    fx.app.press("label:Edit").unwrap();
+    fx.app
+        .wait_for("label:Remove quote: An earlier answer")
+        .unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep these words")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unconfirmed_local_steer_replaces_its_watch_pill_and_dismisses_both() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    accept_dock_steer(&mut fx).await;
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["messageId"], "m2");
+    reply.resolve(missing_queued("unknown"));
+
+    fx.app.wait_for(DOCK_UNCONFIRMED).unwrap();
+    assert_eq!(fx.app.screen().count("text:Keep these words").unwrap(), 1);
+    assert!(!fx.app.screen().matches(DOCK_WAITING).unwrap());
+    fx.app.press("label:Dismiss").unwrap();
+    fx.app
+        .wait_for_gone(DOCK_UNCONFIRMED, Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(fx.app.screen().count("text:Keep these words").unwrap(), 0);
+    assert!(!fx.app.screen().matches(DOCK_WAITING).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_steer_delivery_holds_the_pill_until_the_transcript_can_replace_it() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"m2","kind":"steering","preview":"A remote steer"}
+    ]}));
+    fx.app.wait_for("text:A remote steer").unwrap();
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["messageId"], "m2");
+    fx.hold_history
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    reply.resolve(missing_queued("delivered"));
+    let (tail, refresh) = fx.call("history").await;
+    assert_eq!(tail["position"]["kind"], "tail");
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count(DOCK_WAITING).unwrap(), 1);
+    assert_eq!(fx.app.screen().count("text:A remote steer").unwrap(), 1);
+
+    refresh.resolve(history_page(
+        1,
+        fx.history.lock().unwrap().clone(),
+        Value::Null,
+    ));
+    assert!(fx.app.settle());
+    assert_eq!(
+        fx.app.screen().count(DOCK_WAITING).unwrap(),
+        1,
+        "an unchanged tail is not a handoff"
+    );
+    fx.history
+        .lock()
+        .unwrap()
+        .push(quote_history_row(2, "user", "A remote steer"));
+    fx.transcript_changed(2, "transcript_changed");
+    fx.app
+        .wait_for("id:chat-transcript >> text:A remote steer")
+        .unwrap();
+    assert_eq!(fx.app.screen().count("text:A remote steer").unwrap(), 1);
+    assert!(!fx.app.screen().matches(DOCK_WAITING).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reopened_chat_keeps_pending_idle_projection_until_the_original_receipt() {
+    let mut fx = ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await;
+    fx.app
+        .type_text("label:Message composer", "Pending submission")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let (_, receipt) = fx.call("send").await;
+    let prompt = "id:chat-transcript >> text:Pending submission";
+    fx.app.wait_for(prompt).unwrap();
+    fx.app.press("label:Chats").unwrap();
+    fx.app.press("label:Conversation: Dock Chat").unwrap();
+    fx.app.wait_for("text:An earlier answer").unwrap();
+    fx.app.wait_for(prompt).unwrap();
+    fx.watch = fixture_recv(&mut fx.watches).await;
+
+    fx.history
+        .lock()
+        .unwrap()
+        .push(quote_history_row(2, "user", "Pending submission"));
+    fx.transcript_changed(2, "transcript_changed");
+    // The fixture has now served both the reopened tail and the new watch tail.
+    for _ in 0..2 {
+        fixture_recv(&mut fx.history_reads).await;
+    }
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count(prompt).unwrap(), 1);
+
+    receipt.resolve(queued_result("m2", 1));
+    fx.app.wait_for(prompt).unwrap();
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count(prompt).unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn room_shows_another_post_while_our_post_is_awaiting_receipt_and_history() {
+    let mut fx = ComposerDockFixture::start_room().await;
+    fx.app
+        .type_text("label:Message composer", "My Room post")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let receipt = fx.prepare_room_post("mine").await;
+    let mine = "text:My Room post";
+    let other = "text:Another participant posted";
+    fx.app.wait_for(mine).unwrap();
+    fx.history
+        .lock()
+        .unwrap()
+        .push(room_post(1, "other", "Another participant posted"));
+    fx.deliver(json!({"kind":"room","through":1,"revision":1}));
+    fx.app.wait_for(other).unwrap();
+    assert_eq!(fx.app.screen().count(mine).unwrap(), 1);
+
+    receipt.resolve(json!({"value":SendResult::Posted{
+        session_id:"chat".into(),message_id:"mine".into(),deliveries:vec![],
+    }}));
+    for _ in 0..2 {
+        fixture_recv(&mut fx.history_reads).await;
+    }
+    assert!(fx.app.settle());
+    assert!(fx.app.screen().matches(other).unwrap());
+    assert_eq!(
+        fx.app.screen().count(mine).unwrap(),
+        1,
+        "an empty Room's first foreign post is not our handoff"
+    );
+
+    fx.history
+        .lock()
+        .unwrap()
+        .push(room_post(2, "mine", "My Room post"));
+    fx.deliver(json!({"kind":"room","through":2,"revision":2}));
+    fixture_recv(&mut fx.history_reads).await;
+    assert!(fx.app.settle());
+    assert!(fx.app.screen().matches(other).unwrap());
+    assert_eq!(fx.app.screen().count(mine).unwrap(), 1);
+}
+
+fn room_post(sequence: u64, id: &str, text: &str) -> Value {
+    json!({"id":id,"sequence":sequence,"at":1,
+        "author":{"kind":"human"},"content":{"text":text,"attachments":[]},"mentions":[],"deliveries":[]})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn room_hands_off_by_prepared_id_when_mixed_history_beats_the_receipt() {
+    let mut fx = ComposerDockFixture::start_room().await;
+    fx.app
+        .type_text("label:Message composer", "Same words")
+        .unwrap();
+    fx.app.press("label:Send message").unwrap();
+    let receipt = fx.prepare_room_post("mine").await;
+    let shared_text = "text:Same words";
+    let other = "text:Another participant posted";
+    assert_eq!(fx.app.screen().count(shared_text).unwrap(), 1);
+
+    fx.history.lock().unwrap().extend([
+        room_post(1, "other", "Another participant posted"),
+        room_post(2, "same-text-other", "Same words"),
+        room_post(3, "mine", "Same words"),
+    ]);
+    fx.deliver(json!({"kind":"room","through":3,"revision":3}));
+    fx.app.wait_for(other).unwrap();
+    assert_eq!(fx.app.screen().count(other).unwrap(), 1);
+    assert_eq!(
+        fx.app.screen().count(shared_text).unwrap(),
+        2,
+        "equal text from different posts must survive; only our optimistic copy should go"
+    );
+
+    receipt.resolve(json!({"value":SendResult::Posted{
+        session_id:"chat".into(),message_id:"mine".into(),deliveries:vec![],
+    }}));
+    for _ in 0..2 {
+        fixture_recv(&mut fx.history_reads).await;
+    }
+    assert!(fx.app.settle());
+    assert_eq!(fx.app.screen().count(other).unwrap(), 1);
+    assert_eq!(fx.app.screen().count(shared_text).unwrap(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_queue_does_not_withhold_remote_steering_while_waiting_for_receipt() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    let choose_queue = watch_add_to_queue(&mut fx.app);
+    fx.app
+        .type_text("label:Message composer", "Handle it later")
+        .unwrap();
+    choose_queue(&mut fx.app);
+    let (input, receipt) = fx.call("send").await;
+    assert_eq!(input["delivery"], "queue");
+    fx.queue_item(json!({"revision":1,"entries":[
+        {"messageId":"mine","kind":"followup","preview":"Handle it later"},
+        {"messageId":"remote","kind":"steering","preview":"Steer from another device"}
+    ]}));
+    fx.app.wait_for("text:1 queued").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .count("text:Steer from another device")
+            .unwrap(),
+        1
+    );
+    receipt.resolve(queued_result("mine", 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopped_steer_recovers_when_the_conflicting_revision_cannot_be_loaded() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    accept_dock_steer(&mut fx).await;
+    fx.app.press("label:Stop Run").unwrap();
+    let (_, stop) = fx.call("stop").await;
+    *fx.run.lock().unwrap() = Value::Null;
+    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    fx.app
+        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .unwrap();
+
+    let drained = json!({"revision":2,"entries":[]});
+    let conflict = json!({"value":{"kind":"revision_conflict","expected":2,"actual":3}});
+    fx.queue_item(drained.clone());
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["expectedRevision"], 2);
+    fx.hold_queue.store(true, SeqCst);
+    reply.resolve(conflict.clone());
+    fx.call("queue")
+        .await
+        .1
+        .reject("Host queue query timed out");
+
+    fx.app.wait_for(DOCK_UNCONFIRMED).unwrap();
+    assert!(fx.app.screen().matches("label:Edit").unwrap());
+    assert!(fx.app.screen().matches("label:Dismiss").unwrap());
+    assert!(!fx.app.screen().matches("label:Retry").unwrap());
+    assert!(!fx.app.screen().matches(DOCK_WAITING).unwrap());
+
+    fx.queue_item(drained.clone());
+    let (rechecked, reply) = fx.call("queueMessage").await;
+    assert_eq!(rechecked, probe);
+    fx.hold_queue.store(true, SeqCst);
+    reply.resolve(conflict);
+    fx.call("queue").await.1.resolve(json!({"value":drained}));
+    assert!(fx.app.settle());
+    assert!(
+        fx.calls.try_recv().is_err(),
+        "a stale refresh must not start a retry loop"
+    );
+
+    fx.queue_item(drained);
+    let (rechecked, reply) = fx.call("queueMessage").await;
+    assert_eq!(rechecked, probe);
+    reply.resolve(missing_queued("unknown"));
+    fx.app.press("label:Edit").unwrap();
+    assert_eq!(
+        fx.app
+            .screen()
+            .input_text("label:Message composer")
+            .unwrap(),
+        Some("Keep these words")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_watch_revision_survives_the_old_conflict_refresh_failing() {
+    let mut fx = ComposerDockFixture::start(dock_run(), dock_model(), empty_queue()).await;
+    accept_dock_steer(&mut fx).await;
+    fx.app.press("label:Stop Run").unwrap();
+    let (_, stop) = fx.call("stop").await;
+    *fx.run.lock().unwrap() = Value::Null;
+    stop.resolve(json!({"value":{"kind":"stopped"}}));
+    fx.app
+        .wait_for_gone("label:Stop Run", Duration::from_secs(2))
+        .unwrap();
+
+    fx.queue_item(json!({"revision":2,"entries":[]}));
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["expectedRevision"], 2);
+    fx.hold_queue
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    reply.resolve(json!({"value":{"kind":"revision_conflict","expected":2,"actual":3}}));
+    let (_, refresh) = fx.call("queue").await;
+    fx.queue_item(json!({"revision":3,"entries":[]}));
+    assert!(fx.app.settle());
+    refresh.reject("Old queue query timed out");
+
+    let (probe, reply) = fx.call("queueMessage").await;
+    assert_eq!(probe["expectedRevision"], 3);
+    assert_eq!(probe["messageId"], "m2");
+    reply.resolve(missing_queued("cancelled"));
+    fx.app.wait_for("label:Retry").unwrap();
+    assert!(!fx.app.screen().matches(DOCK_UNCONFIRMED).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_requires_proof_the_send_was_not_submitted() {
+    for room in [false, true] {
+        let mut fx = if room {
+            ComposerDockFixture::start_room().await
+        } else {
+            ComposerDockFixture::start(Value::Null, dock_model(), empty_queue()).await
+        };
+        fx.app
+            .type_text("label:Message composer", "Keep the draft")
+            .unwrap();
+        fx.app.press("label:Send message").unwrap();
+        let (input, reply) = fx.call("send").await;
+        reply.resolve(json!({"notSubmitted":"Timed out preparing the Host message"}));
+        fx.app.wait_for("label:Retry").unwrap();
+        assert!(!fx.app.screen().matches(DOCK_UNCONFIRMED).unwrap());
+
+        fx.app.press("label:Retry").unwrap();
+        let reply = if room {
+            fx.prepare_room_post("mine").await
+        } else {
+            let (retry, reply) = fx.call("send").await;
+            assert_eq!(retry, input);
+            reply
+        };
+        reply.reject("Host mutation result was not acknowledged: timed out");
+        fx.app.wait_for(DOCK_UNCONFIRMED).unwrap();
+        assert!(fx.app.screen().matches("label:Edit").unwrap());
+        assert!(fx.app.screen().matches("label:Dismiss").unwrap());
+        assert!(!fx.app.screen().matches("label:Retry").unwrap());
+        fx.app.press("label:Edit").unwrap();
+        assert_eq!(
+            fx.app
+                .screen()
+                .input_text("label:Message composer")
+                .unwrap(),
+            Some("Keep the draft")
+        );
+    }
 }
 
 fn workspace_host_state(revision: u64, name: &str) -> Value {
@@ -3027,6 +4226,7 @@ async fn diff_and_file_quotes_join_the_composer_without_changing_text() {
             "observe" => json!({ "session": session_q, "lastCompletedTurnId": null, "compacting": null, "through": 1, "run": null, "parts": [], "toolSeeds": [] }),
             "history" => json!({ "kind": "ready", "through": 1, "before": null, "after": null, "chunks": [] }),
             "models" => json!({ "kind": "ready", "choices": [] }),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({ "revision": 1, "entries": [] }),
             "listFiles" => {
                 files_tx.send(data["input"].clone()).unwrap();
@@ -3177,6 +4377,7 @@ fn quote_chat_fixture_with_work(
                 json!({"kind":"ready","chunks":rows,"through":17,"before":before,"after":null})
             }
             "models" => json!({"kind":"ready","choices":[]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "botOutbox" => json!({"isBot":false}),
             method => panic!("unexpected query: {method}"),
@@ -3374,6 +4575,7 @@ impl ProjectionFixture {
                 "observe" => json!({"session":session,"through":11,"run":null}),
                 "botOutbox" => json!({"isBot":false}),
                 "models" => json!({"kind":"ready","choices":[]}),
+                "queue" => json!({"revision":0,"entries":[]}),
                 "pendingInteractions" => json!({"entries":[]}),
                 "history" => {
                     let input = data["input"].clone();
@@ -3618,6 +4820,7 @@ async fn expanded_user_headed_work_follows_new_steps_and_ignores_an_old_generati
             "observe" => json!({"session":session,"through":20+phase,"run":{"turnId":"t1","runId":"work","state":"running"}}),
             "models" => json!({"kind":"ready","choices":[]}),
             "botOutbox" => json!({"isBot":false}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "history" if data["input"]["view"] == "steps" => {
                 steps_tx.send((data["input"].clone(), call)).unwrap();
@@ -3746,7 +4949,7 @@ async fn expanded_user_headed_work_follows_new_steps_and_ignores_an_old_generati
     app.scroll("id:chat-transcript", px(-1200.)).unwrap();
     app.type_text("label:Message composer", "Follow up")
         .unwrap();
-    app.press("label:Queue message").unwrap();
+    app.press("label:Send message").unwrap();
     let answer = "text:Working answer 5";
     app.wait_until(
         "sending returned to the latest answer",
@@ -3817,6 +5020,7 @@ async fn chat_scroll_completes_previous_turn_and_keeps_the_visible_text_anchored
             "gitWorkspaceDiff" => json!({"patch":"","truncated":false}),
             "models" => json!({"kind":"ready","choices":[]}),
             "botOutbox" => json!({"isBot":false}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "history" => {
                 let input = data["input"].clone();
@@ -4200,6 +5404,7 @@ fn side_chat_fixture_with_history(
             }}),
             "pendingInteractions" if input["sessionId"] == "saved" =>
                 json!({"entries":[{"requestId":"side-request","kind":"service_approval","toolUseId":"tool"}]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "interaction" if input["sessionId"] == "saved" => json!({
                 "requestId":"side-request","outcome":null,"request":{
@@ -5323,10 +6528,9 @@ async fn chat_quote_draft_sends_ordered_excerpts_without_text_and_renders_histor
         session_id:"chat".into(), reason:maka_agent_api::contract::SendRejection::ModelUnavailable,
         skills:None,
     }}));
-    app.wait_for("text:Could not send the message.").unwrap();
-    app.wait_for("text:2 quotes").unwrap();
-
-    app.press("label:Send message").unwrap();
+    app.wait_for("text:The selected model is unavailable. Try again or choose another model.")
+        .unwrap();
+    app.press("label:Retry").unwrap();
     let (retry, call) = sends.try_recv().unwrap();
     assert_eq!(retry.quotes, send.quotes);
     call.resolve(json!({"value":SendResult::Queued {
@@ -5461,8 +6665,8 @@ async fn chat_quote_limit_disables_the_seventeenth_quote() {
         (1..=16).map(|n| format!("Excerpt {n}")).collect::<Vec<_>>()
     );
 
-    // Edits during a pending send belong to the next draft.
-    app.press("label:Clear all quotes").unwrap();
+    // Dispatch consumes the submitted quotes; new quotes belong to the next draft.
+    assert!(!app.screen().matches("label:Clear all quotes").unwrap());
     app.press("role:button[Quote] >> nth=16").unwrap();
     app.press("role:button[Quote] >> nth=0").unwrap();
     call.resolve(json!({"value":SendResult::Queued {
@@ -5498,10 +6702,10 @@ async fn chat_quote_in_flight_survives_reopening_and_consumes_only_the_sent_quot
     app.type_text("label:Message composer", "Next draft")
         .unwrap();
     app.press("role:button[Quote] >> nth=1").unwrap();
-    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("text:1 quote").unwrap();
     app.press("label:Chats").unwrap();
     app.press("label:Conversation: Quotes Chat").unwrap();
-    app.wait_for("text:2 quotes").unwrap();
+    app.wait_for("text:1 quote").unwrap();
     assert!(!app.screen().enabled("label:Send message").unwrap());
     assert!(app.press("label:Send message").is_err());
     assert!(
@@ -5515,7 +6719,12 @@ async fn chat_quote_in_flight_survives_reopening_and_consumes_only_the_sent_quot
         }})
     };
     receipt.resolve(queued("first", 2));
-    app.wait_for("text:1 quote").unwrap();
+    app.wait_until(
+        "send ready for the next draft",
+        Duration::from_secs(2),
+        |screen| screen.enabled("label:Send message").unwrap(),
+    )
+    .unwrap();
     app.wait_for("text:Next draft").unwrap();
     assert!(!app.shows("label:Remove quote: First excerpt"));
     app.press("label:Send message").unwrap();
@@ -5546,8 +6755,12 @@ async fn chat_can_send_the_next_draft_before_history_refresh_returns() {
     receipt.resolve(json!({"value":SendResult::Queued {
         session_id:"chat".into(), message_id:"first".into(), revision:2, completion:None,
     }}));
-    app.wait_for_gone("label:Remove quote: First excerpt", Duration::from_secs(2))
-        .unwrap();
+    app.wait_until(
+        "send ready for the next draft",
+        Duration::from_secs(2),
+        |screen| screen.enabled("label:Send message").unwrap(),
+    )
+    .unwrap();
     let (history, page) = tokio::time::timeout(Duration::from_secs(2), refreshes.recv())
         .await
         .unwrap()
@@ -5674,6 +6887,7 @@ async fn inbox_review_detail_reflects_remote_desktop_resolution_and_disables_dup
                     "revision": 1, "updatedAt": 1700000002000u64, "archived": false, "pinned": false, "hasUnread": false, "activity": "waiting"
                 }]
             }),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({ "revision": 1, "entries": [{ "requestId": "req-1", "kind": "service_approval", "toolUseId": "tu-1" }] }),
             "interaction" => json!({
                 "requestId": "req-1",
@@ -6073,6 +7287,7 @@ async fn host_settings_edit_presets_plugins_mcp_and_skills() {
         let value = match (data["endpoint"].as_str().unwrap(),data["method"].as_str().unwrap()) {
             ("agent", "list") => json!({"sessions":[{"id":"project-session","title":"Workspace session","kind":"agent",
                 "workspace":{"path":"/work","name":"Fixture workspace"},"updatedAt":1700000000000u64,"activity":"idle"}]}),
+            ("agent", "queue") => json!({"revision":0,"entries":[]}),
             ("agent", "pendingInteractions") => json!({"revision":0,"entries":[]}),
             ("agent", "botOutbox") => json!({"isBot":false,"through":0,"readThrough":0}),
             ("agent", "projects") => json!({"kind":"projects","next":null,"projects":[
@@ -6584,6 +7799,7 @@ async fn approval_actions_match_the_scope_shown_and_fail_closed_for_future_grant
                 "list" => json!({"revision":"1","needsYouCount":1,"sessions":[{"id":"s","title":"Review report","kind":"agent",
                     "workspace":{"path":"/fixture","name":"Fixture"},"updatedAt":1700000000000u64,"activity":"waiting"}]}),
                 "botOutbox" => json!({"isBot":false,"through":0,"readThrough":0}),
+                "queue" => json!({"revision":0,"entries":[]}),
                 "pendingInteractions" => json!({"entries": if settled_q.load(std::sync::atomic::Ordering::SeqCst) {json!([])} else {
                     json!([{"requestId":"request","kind":request["kind"],"toolUseId":request["toolUseId"]}])
                 }}),
@@ -6745,6 +7961,7 @@ async fn room_watch_keeps_the_boundary_and_ignores_pagination_from_an_old_connec
             "botOutbox" => json!({"isBot":false}),
             "models" => json!({"kind":"ready","choices":[{"label":"Stale model",
                 "selection":{"kind":"model","connectionId":"conn","modelId":"stale-model"}}]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "history" => {
                 if data["input"]["position"]["kind"] == "before_message" {
@@ -6923,6 +8140,7 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
             "observe" => json!({"session":session,"through":2,"run":null}),
             "botOutbox" => json!({"isBot":false}),
             "models" => json!({"kind":"ready","choices":[]}),
+            "queue" => json!({"revision":0,"entries":[]}),
             "pendingInteractions" => json!({"entries":[]}),
             "history" if data["input"]["position"]["kind"] == "before" => older.clone(),
             "history" if tail_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => initial.clone(),
@@ -6983,7 +8201,7 @@ async fn agent_history_merges_overlapping_byte_ranges_and_coalesces_tail_refresh
             message_id: "queued".into(), kind: QueueKind::Followup, preview: "Queued".into(), origin: None,
         }] }}
     })).unwrap();
-    app.wait_for("text:1 message queued").unwrap();
+    app.wait_for("text:1 queued").unwrap();
     let first = tail_rx.try_recv().unwrap();
     assert!(
         tail_rx.try_recv().is_err(),
@@ -7060,6 +8278,7 @@ async fn default_model_is_sent_on_create_and_recovers_unbound_conversations() {
                 {"label":"Other Kimi model","selection":{"kind":"model","connectionId":"other","modelId":"other-model"}},
                 {"label":"Standalone model","selection":{"kind":"model","connectionId":"solo","modelId":"standalone"}}
             ],"next":null}),
+            ("agent", "queue") => json!({"revision":0,"entries":[]}),
             ("agent", "pendingInteractions") => json!({"entries":[]}),
             ("agent", "observe") => {
                 let (row, saved) = match input["sessionId"].as_str() {
@@ -7292,6 +8511,7 @@ async fn reconnect_waits_for_current_backend_and_send_preserves_the_next_draft()
             Some("history") => {
                 json!({"kind":"ready","chunks":[],"through":1,"before":null,"after":null})
             }
+            Some("queue") => json!({"revision":0,"entries":[]}),
             Some("pendingInteractions") => json!({"entries":[]}),
             Some("botOutbox") => json!({"isBot":false}),
             Some("models") => json!({"kind":"ready","choices":[
@@ -7838,6 +9058,7 @@ async fn model_menus_work_without_permission_to_read_connections() {
             Some("list") => json!({"sessions":[row]}),
             Some("observe") => json!({"session":row,"through":0,"run":null}),
             Some("history") => json!({"kind":"ready","chunks":[],"through":0,"before":null}),
+            Some("queue") => json!({"revision":0,"entries":[]}),
             Some("pendingInteractions") => json!({"entries":[]}),
             Some("botOutbox") => json!({"isBot":false}),
             Some("projects") => json!({"kind":"projects","projects":[],"next":null}),

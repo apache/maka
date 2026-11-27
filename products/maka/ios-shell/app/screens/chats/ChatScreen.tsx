@@ -23,16 +23,16 @@ import {
   List,
   openUrl,
   safeAreaInsets,
-  Scroll,
   signal,
   Text,
   View,
   token,
   type Accessor,
+  type JSX,
   type InputRef,
   type ListRef,
 } from 'nsh';
-import { Button, Input, MenuButton, NavPage, Sheet, TextView, type MenuButtonItem } from 'nsh/base';
+import { Button, Input, MenuButton, NavPage, TextView, type MenuButtonItem } from 'nsh/base';
 import { InputAccessoryView, isAvailable } from 'nsh/mobile';
 import {
   approvalControls,
@@ -77,6 +77,7 @@ import {
   type SideAnchor,
   type HistoryRow,
   type HistoryFence,
+  type SendDelivery,
 } from '../../state/chat';
 import {
   activeHostInfo,
@@ -97,19 +98,11 @@ import {
   type SideDraftRequest,
 } from '../../state/sideQuestions';
 import { spacing, type } from '../../theme/tokens';
-import {
-  ActionButton,
-  ApprovalCard,
-  BannerNotice,
-  GroupRow,
-  Icon,
-  InsetGroup,
-  ScreenHeader,
-  StatusDot,
-} from '../../ui';
+import { ActionButton, ApprovalCard, BannerNotice, Icon, ScreenHeader, StatusDot } from '../../ui';
 
 import { DraftQuoteStrip, HistoryQuotes, MessageBody, ReplyActions } from './ChatQuotes';
 import { SideQuestionList } from './ChatSideQuestions';
+import { ComposerPendingDock, QueueSendMenu } from './ComposerPendingDock';
 
 interface ToolSummaryItem {
   id: string;
@@ -399,6 +392,26 @@ function CollapsibleActivity(props: {
   );
 }
 
+function UserBubble(props: { children?: JSX.Element }) {
+  return (
+    <View style={{ alignItems: 'flex-end' }}>
+      <View
+        style={{
+          maxWidth: '84%',
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderRadius: 18,
+          borderCurve: 'continuous',
+          backgroundColor: token('user-bubble-tint'),
+          gap: 4,
+        }}
+      >
+        {props.children}
+      </View>
+    </View>
+  );
+}
+
 function RoomTranscriptItem(props: { message: AgentRoomMessage }) {
   const isHuman = () => props.message.author.kind === 'human';
   return (
@@ -570,7 +583,7 @@ export function ChatScreen(
   };
 
   const atBottom = signal(true);
-  const queueSheetOpen = signal(false);
+  const queueExpanded = signal(false);
   const followLatest = signal(true);
   let transcriptRef: ListRef | undefined;
   let pagingDrag: number | undefined;
@@ -599,6 +612,7 @@ export function ChatScreen(
       : turns(),
   );
   const isRunning = () => ctrl.observation()?.run != null;
+  const canQueue = () => !sideDraft && isRunning() && ctrl.hasDraftContent();
   const hostOnline = () => isHostConnected(rootId);
   const connectionProgress = () => hostConnectionProgress(rootId);
   const draft = () => getDraft(rootId, sessionId);
@@ -610,13 +624,38 @@ export function ChatScreen(
   const quoteLimitReached = () => quotes().length >= quoteLimit;
   const canSend = () =>
     sideDraft ? sideDraft.canSend() : ctrl.hasDraftContent() && !ctrl.sending();
-  const send = () => {
+  const send = (delivery: SendDelivery = 'steer') => {
     if (sideDraft) void sideDraft.submit();
     else
-      void ctrl.sendMessage().then((sent) => {
+      void ctrl.sendMessage(delivery).then((sent) => {
         if (sent && props.active()) scrollToBottom(false);
       });
   };
+
+  const sendButton = () => (
+    <View
+      role="button"
+      accessibilityLabel={tr('Send message')}
+      disabled={!canSend()}
+      onPress={() => send()}
+      class="active:opacity-70"
+      style={{
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: canSend() ? token('primary') : token('surface-muted'),
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Icon
+        name="send"
+        color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
+        size={18}
+        strokeWidth={2.3}
+      />
+    </View>
+  );
 
   const generation = computed(() => activeHostInfo(rootId)?.generation);
   const canAskSide = computed(
@@ -1092,26 +1131,14 @@ export function ChatScreen(
         </View>
       }
     >
-      <View style={{ alignItems: 'flex-end' }}>
-        <View
-          style={{
-            maxWidth: '84%',
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            borderRadius: 18,
-            borderCurve: 'continuous',
-            backgroundColor: token('user-bubble-tint'),
-            gap: 4,
-          }}
-        >
-          <HistoryQuotes quotes={props.turn.quotes ?? []} />
-          <Each of={props.turn.bodies} key={(row) => row.key}>
-            {(row) => (
-              <MessageBody row={row()} limitReached={quoteLimitReached()} onQuote={quoteMessage} />
-            )}
-          </Each>
-        </View>
-      </View>
+      <UserBubble>
+        <HistoryQuotes quotes={props.turn.quotes ?? []} />
+        <Each of={props.turn.bodies} key={(row) => row.key}>
+          {(row) => (
+            <MessageBody row={row()} limitReached={quoteLimitReached()} onQuote={quoteMessage} />
+          )}
+        </Each>
+      </UserBubble>
     </If>
   );
 
@@ -1142,13 +1169,13 @@ export function ChatScreen(
                   ...(canAskSide()
                     ? [{ label: tr('All Side Questions'), onSelect: showAllSides }]
                     : []),
-                  ...(ctrl.queue().entries.length > 0
+                  ...(ctrl.queuedMessages().length > 0
                     ? [
                         {
                           label: tr('Queued Messages ({count})', {
-                            count: ctrl.queue().entries.length,
+                            count: ctrl.queuedMessages().length,
                           }),
-                          onSelect: () => queueSheetOpen.set(true),
+                          onSelect: () => queueExpanded.set(true),
                         },
                       ]
                     : []),
@@ -1342,6 +1369,30 @@ export function ChatScreen(
           }
           footer={
             <View style={{ gap: 16 }}>
+              <Each of={ctrl.optimisticSends()} key={(send) => send.id}>
+                {(send) => (
+                  <UserBubble>
+                    <HistoryQuotes
+                      quotes={send().draft.quotes.map(({ reference }) => ({
+                        ...reference,
+                        truncated: false,
+                      }))}
+                    />
+                    <If when={send().draft.input.text}>
+                      <Text style={{ ...type.body, color: token('foreground') }}>
+                        {send().draft.input.text}
+                      </Text>
+                    </If>
+                    <Each of={send().draft.links} key={(link) => link.id}>
+                      {(link) => (
+                        <Text style={{ ...type.body, color: token('primary') }}>
+                          {link().title}
+                        </Text>
+                      )}
+                    </Each>
+                  </UserBubble>
+                )}
+              </Each>
               {/* Live Streaming Preview */}
               <If when={hasLivePreview()}>
                 <View style={{ width: '100%', gap: 4 }}>
@@ -1437,56 +1488,15 @@ export function ChatScreen(
           </If>
         </View>
 
-        {/* Queued Messages Compact Pill */}
-        <If when={ctrl.queue().entries.length > 0}>
-          <View
-            style={{
-              paddingHorizontal: spacing.pageX,
-              paddingBottom: 6,
-            }}
-          >
-            <View
-              role="button"
-              accessibilityLabel={tr('Queued Messages ({count})', {
-                count: ctrl.queue().entries.length,
-              })}
-              onPress={() => {
-                hapticSelection();
-                queueSheetOpen.set(true);
-              }}
-              class="active:opacity-75"
-              style={{
-                minHeight: 36,
-                paddingHorizontal: 12,
-                borderRadius: 10,
-                borderCurve: 'continuous',
-                backgroundColor: token('grouped-bg'),
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-              }}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
-                <Icon name="queue" color={token('primary')} size={15} />
-                <Text
-                  style={{
-                    ...type.footnote,
-                    fontWeight: '500',
-                    color: token('foreground'),
-                    flex: 1,
-                    numberOfLines: 1,
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {tr('{count, plural, one {# message queued} other {# messages queued}}', {
-                    count: ctrl.queue().entries.length,
-                  })}
-                </Text>
-              </View>
-              <Icon name="chevronRight" color={token('tertiary-foreground')} size={14} />
-            </View>
-          </View>
+        <If when={!sideDraft}>
+          <ComposerPendingDock
+            ctrl={ctrl}
+            expanded={queueExpanded()}
+            onExpandedChange={queueExpanded.set}
+            running={isRunning()}
+            generation={generation()}
+            focusComposer={() => inputRef?.focus()}
+          />
         </If>
 
         {/* Bottom Composer or Offline Notice */}
@@ -1516,7 +1526,12 @@ export function ChatScreen(
               onRemoveLink={(id) => removeDraftLink(rootId, sessionId, id)}
               mainActions={
                 canAskFromTray()
-                  ? { ask: () => askSide(traySource), send, canSend: canSend() }
+                  ? {
+                      ask: () => askSide(traySource),
+                      send,
+                      canSend: canSend(),
+                      queue: canQueue() ? () => send('queue') : undefined,
+                    }
                   : undefined
               }
             />
@@ -1598,7 +1613,7 @@ export function ChatScreen(
                     sideDraft
                       ? tr('Your question')
                       : isRunning()
-                        ? tr('Queue a follow-up message…')
+                        ? tr('Steer or message Maka…')
                         : tr('Message Maka…')
                   }
                   disabled={sideDraft?.busy()}
@@ -1634,28 +1649,11 @@ export function ChatScreen(
               </If>
 
               <If when={!canAskFromTray()}>
-                <View
-                  role="button"
-                  accessibilityLabel={isRunning() ? tr('Queue message') : tr('Send message')}
+                <QueueSendMenu
+                  trigger={sendButton()}
+                  onQueue={canQueue() ? () => send('queue') : undefined}
                   disabled={!canSend()}
-                  onPress={send}
-                  class="active:opacity-70"
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 20,
-                    backgroundColor: canSend() ? token('primary') : token('surface-muted'),
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Icon
-                    name="send"
-                    color={canSend() ? token('primary-foreground') : token('tertiary-foreground')}
-                    size={18}
-                    strokeWidth={2.3}
-                  />
-                </View>
+                />
               </If>
             </View>
           </If>
@@ -1778,102 +1776,6 @@ export function ChatScreen(
             onOpen={sideDraft ? undefined : openSide}
           />
         </If>
-
-        {/* Queued Messages Sheet */}
-        <Sheet
-          open={queueSheetOpen()}
-          accessibilityLabel={tr('Queued Messages')}
-          detents={['medium', 'large']}
-          defaultDetent="medium"
-          grabber
-          closeOnSwipe
-          onOpenChange={({ open }) => {
-            if (!open) queueSheetOpen.set(false);
-          }}
-          backdropStyle={{ backgroundColor: token('scrim') }}
-          popupStyle={{
-            backgroundColor: token('grouped-bg'),
-            borderTopLeftRadius: 20,
-            borderTopRightRadius: 20,
-            borderCurve: 'continuous',
-            paddingTop: 4,
-          }}
-          grabberStyle={{
-            width: 36,
-            height: 5,
-            borderRadius: 3,
-            alignSelf: 'center',
-            backgroundColor: token('tertiary-foreground'),
-            marginTop: 6,
-            marginBottom: 4,
-          }}
-        >
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              paddingHorizontal: spacing.pageX,
-              paddingTop: 6,
-              paddingBottom: 12,
-            }}
-          >
-            <Text style={{ ...type.headline, color: token('foreground') }}>
-              {tr('Queued Messages')}
-            </Text>
-            <View
-              role="button"
-              accessibilityLabel={tr('Done')}
-              onPress={() => queueSheetOpen.set(false)}
-              style={{ minHeight: 36, paddingHorizontal: 8, justifyContent: 'center' }}
-            >
-              <Text style={{ ...type.bodyMedium, color: token('primary') }}>{tr('Done')}</Text>
-            </View>
-          </View>
-          <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 32 }}>
-            <InsetGroup elevated>
-              <Each of={ctrl.queue().entries} key={(entry) => entry.messageId}>
-                {(entry, index) => (
-                  <GroupRow
-                    title={entry().preview || tr('Queued turn')}
-                    subtitle={
-                      entry().kind === 'in_flight'
-                        ? tr('Running now')
-                        : tr('Waiting for current turn')
-                    }
-                    trailing={
-                      entry().kind !== 'in_flight' ? (
-                        <View
-                          role="button"
-                          accessibilityLabel={tr('Remove queued message')}
-                          onPress={() => void ctrl.cancelQueuedMessage(entry().messageId)}
-                          style={{
-                            minHeight: 32,
-                            paddingHorizontal: 10,
-                            borderRadius: 8,
-                            backgroundColor: token('destructive-tint'),
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <Text
-                            style={{
-                              ...type.caption,
-                              fontWeight: '600',
-                              color: token('destructive'),
-                            }}
-                          >
-                            {tr('Remove')}
-                          </Text>
-                        </View>
-                      ) : undefined
-                    }
-                    divider={index() < ctrl.queue().entries.length - 1}
-                  />
-                )}
-              </Each>
-            </InsetGroup>
-          </Scroll>
-        </Sheet>
       </View>
     </NavPage>
   );

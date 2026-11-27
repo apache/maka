@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::executor::ActiveDelivery;
-use maka_agent_facts::durable::{BackendSpec, ExecutionIdentity, UnixMillis};
+use maka_agent_facts::durable::{BackendSpec, UnixMillis};
 use maka_agent_state::queue::{
     Followup, Placement as QueuePlacement, PreparedEnqueue, QueueCommand, QueueEdit,
 };
@@ -535,10 +535,36 @@ impl Owner {
         } else {
             latest.filter(|view| view.terminal.is_none())
         };
-        let active_delivery = match (&active, delivery, handoff) {
+        let active_delivery = match (&active, delivery, &handoff) {
             (Some(view), SendDelivery::Steer, None) => self.active_delivery(view).await?,
             _ => ActiveDelivery::Queue,
         };
+        // A later Run captures its own memory projection. Steering cannot change
+        // the active Run's projection, even when it falls back to a followup.
+        let queued_eligibility = if origin.is_none()
+            && matches!(
+                parent.identity,
+                maka_capabilities::call::Identity::Native
+                    | maka_capabilities::call::Identity::Remote { .. }
+            ) {
+            maka_agent_facts::memory::MemoryAdmission::Disabled
+        } else {
+            maka_agent_facts::memory::MemoryAdmission::Excluded
+        };
+        if let (Some(view), ActiveDelivery::Steer) = (&active, &active_delivery) {
+            return self
+                .steer_message(
+                    unprepared,
+                    origin,
+                    key,
+                    view,
+                    queued_eligibility,
+                    operation,
+                    parent,
+                    completion_request,
+                )
+                .await;
+        }
         let mut backend = backend;
         let followup = active.as_ref().map(|view| {
             if handoff.is_some() || matches!(active_delivery, ActiveDelivery::InterruptResume) {
@@ -565,12 +591,6 @@ impl Owner {
         } else {
             PinCapture::NewRun
         };
-        let user_message = origin.is_none()
-            && matches!(
-                parent.identity,
-                maka_capabilities::call::Identity::Native
-                    | maka_capabilities::call::Identity::Remote { .. }
-            );
         let mut basis = match self
             .capture_current_run(&id, backend, operation.fingerprint.clone(), pins, parent)
             .await
@@ -588,33 +608,6 @@ impl Owner {
             }
             Err(error) => return Err(error.into()),
         };
-        // A queued spec records the submitter's eligibility. Mutable session
-        // settings and the projection are selected when it starts a Run.
-        let queued_eligibility = if user_message {
-            maka_agent_facts::memory::MemoryAdmission::Disabled
-        } else {
-            maka_agent_facts::memory::MemoryAdmission::Excluded
-        };
-        if let (Some(view), ActiveDelivery::Steer) = (&active, active_delivery) {
-            basis.memory_admission = queued_eligibility;
-            let execution = ExecutionIdentity {
-                session_id: id.clone(),
-                turn_id: view.spec.turn_id.clone(),
-                run_id: view.run,
-            };
-            return self
-                .steer_message(
-                    unprepared,
-                    origin,
-                    key,
-                    &execution,
-                    &basis,
-                    operation,
-                    parent,
-                    completion_request,
-                )
-                .await;
-        }
         // Check known fixed inputs for immediate feedback. The queue carries only
         // eligibility; the scheduler freezes the projection for the actual Run.
         self.check_pinned_model(&id, &basis)?;

@@ -70,6 +70,7 @@ members = [
     "plugins/agent/providers",
     "platform/host-runtime",
     "platform/remote-client",
+    "platform/operation-id",
     "platform/remote-pairing",
     "platform/remote-transport",
     "platform/host-js",
@@ -184,6 +185,7 @@ maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
 maka-host-runtime = { path = "platform/host-runtime" }
 maka-remote-client = { path = "platform/remote-client" }
+maka-operation-id = { path = "platform/operation-id" }
 maka-remote-pairing = { path = "platform/remote-pairing" }
 maka-remote-transport = { path = "platform/remote-transport" }
 maka-host-js = { path = "platform/host-js" }

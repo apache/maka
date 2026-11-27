@@ -8953,6 +8953,7 @@ dependencies = [
  "maka-mock-ai",
  "maka-model",
  "maka-network",
+ "maka-operation-id",
  "maka-packages",
  "maka-plugin-core",
  "maka-presentation",
@@ -9688,6 +9689,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-operation-id",
  "maka-packages",
  "maka-remote-client",
  "maka-remote-pairing",
@@ -9878,6 +9880,14 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maka-operation-id"
+version = "0.3.0"
+dependencies = [
+ "hex",
+ "sha2 0.11.2",
 ]
 
 [[package]]
