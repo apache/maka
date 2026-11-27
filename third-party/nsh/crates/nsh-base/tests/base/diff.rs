@@ -115,6 +115,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let moves = signal(0u32);
     let offset = signal(String::from("-"));
     let height = signal(px(400.0));
+    let padding = signal(px(0.0));
     let dv = component_ref::<DiffView>();
     let api = move |f: &dyn Fn(&DiffViewApi)| {
         if let Some(api) = dv.api::<DiffViewApi>() {
@@ -131,6 +132,8 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let mut el = diff_view()
         .layout(props.layout)
         .soft_wrap(props.soft_wrap)
+        .scroll_padding_top(move || padding.get())
+        .scroll_padding_bottom(move || padding.get() / 2.0)
         .on_change(move |c: &DiffChange| {
             old.set(c.old_value.clone());
             new.set(c.new_value.clone());
@@ -214,6 +217,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                         hunks.set(hunks_text(&a.hunks()));
                     }),
                 ))
+                .child(button("pad", Box::new(move |_| padding.set(px(90.0)))))
                 .child(button("revert-0", Box::new(|a| a.revert_hunk(0))))
                 .child(button("revert-1", Box::new(|a| a.revert_hunk(1))))
                 .child(button("accept-0", Box::new(|a| a.accept_hunk(0))))
@@ -1002,6 +1006,21 @@ fn the_view_reports_a_change_moved_within_rows_of_the_same_height() {
     see(&mut app, "Scrolled 0 0 800 80 300");
     app.wait(std::time::Duration::from_millis(100)).unwrap();
     assert_eq!(moves(&app), before);
+}
+
+#[test]
+fn hunk_bounds_and_scroll_report_the_same_padded_content_space() {
+    let mut app = start(texts("a\nb\nC", "a\nb\nc"));
+    see(&mut app, "Moved 0@0,40+800x20");
+    app.press("id:marks").unwrap();
+    see(&mut app, "Marks 0@0,40+800x20");
+    app.press("id:pad").unwrap();
+    see(&mut app, "Moved 0@0,130+800x20");
+    see(&mut app, "Scrolled 0 0 800 195 400");
+    app.press("id:read-offset").unwrap();
+    see(&mut app, "Offset 0 0");
+    app.press("id:marks").unwrap();
+    see(&mut app, "Marks 0@0,130+800x20");
 }
 
 /// Both header renderers must occupy the row immediately after the first

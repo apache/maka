@@ -17,8 +17,18 @@
  * under the License.
  */
 
-import { effect, lifecycle, safeAreaInsets, signal, Text, View, token } from 'nsh';
-import { NavPage } from 'nsh/base';
+import {
+  effect,
+  lifecycle,
+  safeAreaInsets,
+  Scroll,
+  signal,
+  Text,
+  View,
+  token,
+  windowSize,
+} from 'nsh';
+import { Button, NavPage } from 'nsh/base';
 import { AppSettings } from 'nsh/mobile';
 import { CodeScanner } from '../../CodeScanner';
 import { tr } from '../../locale';
@@ -33,6 +43,7 @@ import {
 import { hapticNotification, hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, Icon, ScreenHeader } from '../../ui';
+import { glassSurfaceStyle } from '../../ui/Glass';
 
 type ScannerState = 'initializing' | 'ready' | 'denied' | 'restricted' | 'unavailable' | 'error';
 
@@ -66,6 +77,8 @@ function ReticleCorner(props: {
 
 export function ScanScreen(props: { onBack: () => void; onTicketReady: () => void }) {
   const insets = safeAreaInsets();
+  const short = () => windowSize().height <= 430;
+  const reticleSize = () => (short() ? 148 : Math.min(244, windowSize().width - 64));
   const status = signal<ScannerState>('initializing');
   const torch = signal(false);
   const paused = signal(false);
@@ -115,14 +128,13 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
     <NavPage
       style={{ flex: 1 }}
       title={tr('Scan QR Code')}
-      headerTransparent={showCamera()}
+      headerVisible={!showCamera()}
       headerShadowVisible={false}
-      headerStyle={
-        showCamera() ? { color: token('scanner-fg'), tintColor: token('scanner-fg') } : undefined
-      }
       statusBar={showCamera() ? { foreground: 'light' } : undefined}
       header={
-        <ScreenHeader title={tr('Scan QR Code')} backLabel={tr('Back')} onBack={props.onBack} />
+        showCamera() ? undefined : (
+          <ScreenHeader title={tr('Scan QR Code')} backLabel={tr('Back')} onBack={props.onBack} />
+        )
       }
     >
       <View
@@ -162,55 +174,21 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
           />
         </If>
 
-        <View
-          style={{
-            flex: 1,
-            paddingTop: insets().top + 56,
-            paddingBottom: Math.max(insets().bottom, 20) + 16,
-            paddingHorizontal: spacing.pageX + 4,
-            justifyContent: 'space-between',
-          }}
-        >
-          {/* Top toolbar row: Torch button when live camera is ready */}
-          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', minHeight: 44 }}>
-            <If when={status() === 'ready'}>
-              <View
-                role="button"
-                accessibilityLabel={torch() ? tr('Turn off flashlight') : tr('Turn on flashlight')}
-                onPress={() => {
-                  hapticSelection();
-                  torch.update((on) => !on);
-                }}
-                class="active:opacity-70"
-                style={{
-                  minWidth: 44,
-                  minHeight: 44,
-                  paddingHorizontal: 14,
-                  borderRadius: 22,
-                  backgroundColor: torch() ? token('primary') : token('scanner-pill'),
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 6,
-                }}
-              >
-                <Icon name="torch" color={token('scanner-fg')} size={18} />
-                <Text
-                  style={{
-                    ...type.footnote,
-                    fontWeight: '600',
-                    color: token('scanner-fg'),
-                  }}
-                >
-                  {torch() ? tr('Flash On') : tr('Flash')}
-                </Text>
-              </View>
-            </If>
-          </View>
-
-          {/* Center: Camera reticle OR Simulator / Permission Denied calm card */}
-          <View style={{ alignItems: 'center', justifyContent: 'center', gap: 20 }}>
-            <If when={isUnavailable()}>
+        <If
+          when={showCamera()}
+          else={
+            <Scroll
+              style={{ flex: 1 }}
+              contentStyle={{
+                flexGrow: 1,
+                alignItems: 'center',
+                justifyContent: 'center',
+                paddingTop: insets().top + 12,
+                paddingBottom: Math.max(insets().bottom, 12),
+                paddingLeft: Math.max(spacing.pageX, insets().left),
+                paddingRight: Math.max(spacing.pageX, insets().right),
+              }}
+            >
               <View
                 style={{
                   width: '100%',
@@ -229,66 +207,21 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                     height: 52,
                     borderRadius: 14,
                     borderCurve: 'continuous',
-                    backgroundColor: token('primary-tint'),
+                    backgroundColor: token(isUnavailable() ? 'primary-tint' : 'warning-tint'),
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
-                  <Icon name="camera" color={token('primary')} size={24} />
-                </View>
-                <Text style={{ ...type.headline, color: token('foreground'), textAlign: 'center' }}>
-                  {tr('Camera unavailable on this device')}
-                </Text>
-                <Text
-                  style={{
-                    ...type.subheadline,
-                    color: token('muted-foreground'),
-                    textAlign: 'center',
-                    maxWidth: 268,
-                  }}
-                >
-                  {tr(
-                    'This device or simulator has no camera. Paste a pairing link copied from Maka on your computer instead.',
-                  )}
-                </Text>
-                <View style={{ width: '100%', marginTop: 6 }}>
-                  <ActionButton
-                    title={tr('Paste pairing link')}
-                    icon="link"
-                    onPress={() => openAdvancedConnectSheet()}
+                  <Icon
+                    name="camera"
+                    color={token(isUnavailable() ? 'primary' : 'warning')}
+                    size={24}
                   />
                 </View>
-              </View>
-            </If>
-
-            <If when={isDenied()}>
-              <View
-                style={{
-                  width: '100%',
-                  maxWidth: 320,
-                  padding: 24,
-                  borderRadius: 18,
-                  borderCurve: 'continuous',
-                  backgroundColor: token('surface'),
-                  alignItems: 'center',
-                  gap: 12,
-                }}
-              >
-                <View
-                  style={{
-                    width: 52,
-                    height: 52,
-                    borderRadius: 14,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('warning-tint'),
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Icon name="camera" color={token('warning')} size={24} />
-                </View>
                 <Text style={{ ...type.headline, color: token('foreground'), textAlign: 'center' }}>
-                  {tr('Camera access required')}
+                  {isUnavailable()
+                    ? tr('Camera unavailable on this device')
+                    : tr('Camera access required')}
                 </Text>
                 <Text
                   style={{
@@ -297,14 +230,19 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                     textAlign: 'center',
                   }}
                 >
-                  {tr(
-                    'Allow Maka to use the camera in iOS Settings to scan your computer’s QR code, or paste a pairing link.',
-                  )}
+                  {isUnavailable()
+                    ? tr(
+                        'This device or simulator has no camera. Paste a pairing link copied from Maka on your computer instead.',
+                      )
+                    : tr(
+                        'Allow Maka to use the camera in iOS Settings to scan your computer’s QR code, or paste a pairing link.',
+                      )}
                 </Text>
                 <View style={{ width: '100%', gap: 8, marginTop: 6 }}>
-                  <If when={canOpenSettings()}>
+                  <If when={isDenied() && canOpenSettings()}>
                     <ActionButton
                       title={tr('Open Settings')}
+                      variant="glassPrimary"
                       onPress={() => {
                         void AppSettings.open().catch(() => {});
                       }}
@@ -312,136 +250,207 @@ export function ScanScreen(props: { onBack: () => void; onTicketReady: () => voi
                   </If>
                   <ActionButton
                     title={tr('Paste pairing link')}
-                    variant={canOpenSettings() ? 'secondary' : 'primary'}
+                    icon={isUnavailable() ? 'link' : undefined}
+                    variant={isDenied() && canOpenSettings() ? 'glassSecondary' : 'glassPrimary'}
                     onPress={() => openAdvancedConnectSheet()}
                   />
                 </View>
               </View>
-            </If>
-
-            <If when={showCamera()}>
-              <View style={{ alignItems: 'center', gap: 20 }}>
-                <View style={{ width: 244, height: 244, position: 'relative' }}>
-                  <ReticleCorner
-                    top={0}
-                    left={0}
-                    borderTopWidth={3.5}
-                    borderLeftWidth={3.5}
-                    borderTopLeftRadius={14}
-                  />
-                  <ReticleCorner
-                    top={0}
-                    right={0}
-                    borderTopWidth={3.5}
-                    borderRightWidth={3.5}
-                    borderTopRightRadius={14}
-                  />
-                  <ReticleCorner
-                    bottom={0}
-                    left={0}
-                    borderBottomWidth={3.5}
-                    borderLeftWidth={3.5}
-                    borderBottomLeftRadius={14}
-                  />
-                  <ReticleCorner
-                    bottom={0}
-                    right={0}
-                    borderBottomWidth={3.5}
-                    borderRightWidth={3.5}
-                    borderBottomRightRadius={14}
-                  />
-                </View>
-
-                <Text
-                  style={{
-                    ...type.subheadline,
-                    color: token('scanner-fg'),
-                    textAlign: 'center',
-                    maxWidth: 280,
-                    opacity: 0.9,
+            </Scroll>
+          }
+        >
+          <View
+            style={{
+              flex: 1,
+              paddingTop: insets().top + 8,
+              paddingBottom: insets().bottom + 8,
+              paddingLeft: Math.max(spacing.pageX, insets().left),
+              paddingRight: Math.max(spacing.pageX, insets().right),
+              gap: 8,
+              pointerEvents: 'box-none',
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                minHeight: 44,
+                pointerEvents: 'box-none',
+              }}
+            >
+              <ScannerButton icon="chevronLeft" label={tr('Back')} onPress={props.onBack} />
+              <If when={status() === 'ready'}>
+                <ScannerButton
+                  icon="torch"
+                  label={torch() ? tr('Turn off flashlight') : tr('Turn on flashlight')}
+                  selected={torch()}
+                  onPress={() => {
+                    hapticSelection();
+                    torch.update((on) => !on);
                   }}
-                >
-                  {isPairingBusy()
-                    ? tr('Checking pairing invite…')
-                    : tr('Open Maka Settings on your computer to show the pairing QR code.')}
-                </Text>
+                />
+              </If>
+            </View>
 
-                <If when={scanError()}>
-                  <View
-                    style={{
-                      paddingHorizontal: 16,
-                      paddingVertical: 12,
-                      borderRadius: 12,
-                      borderCurve: 'continuous',
-                      backgroundColor: token('scanner-pill'),
-                      alignItems: 'center',
-                      gap: 8,
-                      maxWidth: 300,
-                    }}
-                  >
-                    <Text
+            <Scroll
+              style={{ flex: 1, minHeight: 0 }}
+              contentStyle={{
+                flexGrow: 1,
+                flexDirection: short() ? 'row' : 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: short() ? 24 : 16,
+              }}
+            >
+              <If
+                when={scanError()}
+                else={
+                  <>
+                    <View style={{ width: reticleSize(), height: reticleSize(), flexShrink: 0 }}>
+                      <ReticleCorner
+                        top={0}
+                        left={0}
+                        borderTopWidth={3.5}
+                        borderLeftWidth={3.5}
+                        borderTopLeftRadius={14}
+                      />
+                      <ReticleCorner
+                        top={0}
+                        right={0}
+                        borderTopWidth={3.5}
+                        borderRightWidth={3.5}
+                        borderTopRightRadius={14}
+                      />
+                      <ReticleCorner
+                        bottom={0}
+                        left={0}
+                        borderBottomWidth={3.5}
+                        borderLeftWidth={3.5}
+                        borderBottomLeftRadius={14}
+                      />
+                      <ReticleCorner
+                        bottom={0}
+                        right={0}
+                        borderBottomWidth={3.5}
+                        borderRightWidth={3.5}
+                        borderBottomRightRadius={14}
+                      />
+                    </View>
+                    <View
                       style={{
-                        ...type.footnote,
-                        color: token('scanner-fg'),
-                        textAlign: 'center',
+                        ...scannerGlassStyle(16),
+                        flexShrink: 1,
+                        maxWidth: 280,
+                        paddingHorizontal: 14,
+                        paddingVertical: 10,
                       }}
                     >
-                      {scanError()}
-                    </Text>
-                    <ActionButton
-                      title={tr('Scan again')}
-                      variant="primary"
-                      compact
-                      onPress={() => {
-                        if (status() === 'ready') {
-                          scanError.set(null);
-                          paused.set(false);
-                        } else restart();
-                      }}
-                    />
-                  </View>
-                </If>
-              </View>
-            </If>
-          </View>
+                      <Text
+                        style={{
+                          ...type.subheadline,
+                          color: token('glass-foreground'),
+                          textAlign: 'center',
+                        }}
+                      >
+                        {isPairingBusy()
+                          ? tr('Checking pairing invite…')
+                          : tr('Open Maka Settings on your computer to show the pairing QR code.')}
+                      </Text>
+                    </View>
+                  </>
+                }
+              >
+                <View
+                  style={{
+                    ...scannerGlassStyle(20),
+                    padding: 12,
+                    alignItems: 'center',
+                    gap: 8,
+                    maxWidth: 300,
+                  }}
+                >
+                  <Text
+                    style={{
+                      ...type.footnote,
+                      color: token('glass-foreground'),
+                      textAlign: 'center',
+                    }}
+                  >
+                    {scanError()}
+                  </Text>
+                  <ActionButton
+                    title={tr('Scan again')}
+                    variant="glassPrimary"
+                    compact
+                    minHeight={spacing.rowMinHeight}
+                    onPress={() => {
+                      if (status() === 'ready') {
+                        scanError.set(null);
+                        paused.set(false);
+                      } else restart();
+                    }}
+                  />
+                </View>
+              </If>
+            </Scroll>
 
-          {/* Bottom floating pill action */}
-          <View style={{ alignItems: 'center' }}>
-            <If when={showCamera()}>
-              <View
-                role="button"
-                accessibilityLabel={tr('Paste pairing link')}
+            <View style={{ alignItems: 'center', pointerEvents: 'box-none' }}>
+              <ScannerButton
+                icon="link"
+                label={tr('Paste pairing link')}
+                showLabel
                 onPress={() => {
                   hapticSelection();
                   openAdvancedConnectSheet();
                 }}
-                class="active:opacity-75"
-                style={{
-                  minHeight: 46,
-                  paddingHorizontal: 20,
-                  borderRadius: 23,
-                  backgroundColor: token('scanner-pill'),
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                }}
-              >
-                <Icon name="link" color={token('scanner-fg')} size={17} />
-                <Text
-                  style={{
-                    ...type.subheadlineMedium,
-                    fontWeight: '600',
-                    color: token('scanner-fg'),
-                  }}
-                >
-                  {tr('Paste pairing link')}
-                </Text>
-              </View>
-            </If>
+              />
+            </View>
           </View>
-        </View>
+        </If>
       </View>
     </NavPage>
+  );
+}
+
+function scannerGlassStyle(radius: number) {
+  return { ...glassSurfaceStyle(radius), backgroundColor: token('scanner-glass-bg') };
+}
+
+function ScannerButton(props: {
+  icon: 'chevronLeft' | 'torch' | 'link';
+  label: string;
+  showLabel?: boolean;
+  selected?: boolean;
+  onPress: () => void;
+}) {
+  const color = () => token(props.selected ? 'glass-accent' : 'glass-foreground');
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      accessibilityState={{ pressed: props.selected }}
+      onPress={props.onPress}
+      activeStyle={{ backgroundColor: token('glass-action-pressed-bg') }}
+      style={{
+        ...scannerGlassStyle(22),
+        backgroundColor: token(props.selected ? 'glass-action-bg' : 'scanner-glass-bg'),
+        minHeight: spacing.rowMinHeight,
+        minWidth: spacing.rowMinHeight,
+        paddingHorizontal: props.showLabel ? 16 : 0,
+        paddingVertical: props.showLabel ? 8 : 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+      }}
+    >
+      <Icon name={props.icon} color={color()} size={20} />
+      <If when={props.showLabel}>
+        <Text
+          style={{ ...type.subheadlineMedium, color: color(), flexShrink: 1, textAlign: 'center' }}
+        >
+          {props.label}
+        </Text>
+      </If>
+    </Button>
   );
 }

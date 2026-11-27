@@ -25,6 +25,7 @@ import { Icon, type IconName } from './Icon';
 export type ButtonVariant =
   | 'primary'
   | 'secondary'
+  | 'glassPrimary'
   | 'glassSecondary'
   | 'glassQuiet'
   | 'quiet'
@@ -39,12 +40,14 @@ export function ActionButton(props: {
   disabled?: boolean;
   compact?: boolean;
   minHeight?: number;
+  pill?: boolean;
   accessibilityLabel?: string;
   testID?: string;
 }) {
   const variant = () => props.variant ?? 'primary';
   const compact = () => !!props.compact;
-  const glass = () => variant() === 'glassSecondary' || variant() === 'glassQuiet';
+  const glass = () =>
+    variant() === 'glassPrimary' || variant() === 'glassSecondary' || variant() === 'glassQuiet';
 
   const backgroundColor = () => {
     switch (variant()) {
@@ -52,6 +55,8 @@ export function ActionButton(props: {
         return token('primary');
       case 'secondary':
         return token('primary-tint');
+      case 'glassPrimary':
+        return token('glass-accent');
       case 'glassSecondary':
         return token('glass-action-bg');
       case 'glassQuiet':
@@ -70,6 +75,8 @@ export function ActionButton(props: {
       case 'primary':
       case 'destructiveFilled':
         return token('primary-foreground');
+      case 'glassPrimary':
+        return token('glass-primary-fg');
       case 'secondary':
       case 'quiet':
         return token('primary');
@@ -92,12 +99,23 @@ export function ActionButton(props: {
           ? 'disabled:opacity-45'
           : 'active:opacity-70 transition-opacity duration-150 disabled:opacity-45'
       }
-      activeStyle={glass() ? { backgroundColor: token('glass-action-pressed-bg') } : undefined}
+      activeStyle={
+        glass()
+          ? {
+              backgroundColor: token(
+                variant() === 'glassPrimary'
+                  ? 'glass-primary-pressed-bg'
+                  : 'glass-action-pressed-bg',
+              ),
+            }
+          : undefined
+      }
       style={{
         minHeight: props.minHeight ?? (compact() ? 40 : spacing.buttonMinHeight),
+        minWidth: spacing.rowMinHeight,
         paddingHorizontal: compact() ? 14 : 18,
         paddingVertical: compact() ? 9 : 13,
-        borderRadius: spacing.controlRadius,
+        borderRadius: props.pill ? spacing.pillRadius : spacing.controlRadius,
         borderCurve: 'continuous',
         backgroundColor: backgroundColor(),
         flexDirection: 'row',
@@ -114,6 +132,7 @@ export function ActionButton(props: {
           ...(compact() ? type.subheadlineMedium : type.headline),
           fontWeight: variant() === 'quiet' || variant() === 'glassQuiet' ? '500' : '600',
           color: foregroundColor(),
+          flexShrink: 1,
           textAlign: 'center',
         }}
       >

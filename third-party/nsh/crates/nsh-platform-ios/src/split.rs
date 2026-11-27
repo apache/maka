@@ -504,7 +504,7 @@ fn show_columns(controller: &UISplitViewController, visibility: ColumnVisibility
 }
 
 /// What a navigation controller is to a `SplitView`'s split, for the
-/// system tab bar (`navigation::slide_bottom_bar`): the pages the split
+/// system tab bar (`navigation::update_bottom_bar`): the pages the split
 /// shows move the bar as the pages of a stack in the split's place would.
 pub(crate) enum BarRole {
     /// None of a split's: a stack's own, or one in a page of a column.

@@ -102,16 +102,23 @@ pub(crate) fn render(dv: Dv) -> impl IntoElement {
                 .absolute()
                 .inset_0()
                 .on_scroll(move |e: &ScrollEvent| {
-                    scroll_dv.scroll_y.set(e.offset.y);
+                    let y = e.offset.y;
+                    scroll_dv.content_scroll_y.set(y);
                     scroll_dv.viewport.set(e.size);
                     // Lines scrolled into view far past the parse are guessed.
                     scroll_dv.schedule_highlight();
-                    scroll_dv.scrolled_to(e.offset.y);
+                    scroll_dv.scrolled_to(y);
                 })
                 .on_layout(move |b: &Bounds<Points>| layout_dv.viewport.set(b.size))
                 .child(
                     view()
+                        .flex_shrink_0()
+                        .h(move || props.scroll_padding_top.get()),
+                )
+                .child(
+                    view()
                         .relative()
+                        .flex_shrink_0()
                         .h(move || Length::from(height()))
                         .child(
                             when(
@@ -142,6 +149,11 @@ pub(crate) fn render(dv: Dv) -> impl IntoElement {
                         .child(hunk_actions(dv.clone(), rows))
                         .child(annotations(dv.clone()))
                         .child(add_controls(dv.clone())),
+                )
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .h(move || props.scroll_padding_bottom.get()),
                 ),
         )
 }
@@ -614,6 +626,15 @@ fn line_row(
                 props,
                 list,
             );
+            if tint != Tint::Filler && props.select_line_on_press.get() {
+                let dv = wrap.clone();
+                let side = column.side().unwrap_or(if tint == Tint::Deleted {
+                    DiffSide::Old
+                } else {
+                    DiffSide::New
+                });
+                el = el.on_press(move || dv.number_press(row, side));
+            }
             for (index, spans) in lines.into_iter().enumerate() {
                 let spans = spans
                     .into_iter()

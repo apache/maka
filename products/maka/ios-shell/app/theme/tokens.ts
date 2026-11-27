@@ -43,6 +43,7 @@ const light = {
   'glass-foreground': '#171719',
   'glass-muted': '#4F4F57',
   'glass-accent': '#0059B8',
+  'glass-primary-fg': '#FFFFFF',
   'glass-primary-pressed-bg': '#004B9C',
   'glass-destructive': '#9C3040',
   'glass-action-bg': '#E0ECFA',
@@ -54,6 +55,7 @@ const light = {
   success: '#34C759',
   'success-tint': 'rgba(52, 199, 89, 0.13)',
   warning: '#FF9500',
+  'warning-foreground': '#805100',
   'warning-tint': 'rgba(255, 149, 0, 0.13)',
   destructive: '#FF3B30',
   'destructive-tint': 'rgba(255, 59, 48, 0.12)',
@@ -71,9 +73,8 @@ const light = {
   'diff-del-fg': '#C9251D',
   scrim: 'rgba(0, 0, 0, 0.28)',
   'scanner-bg': '#000000',
-  'scanner-scrim': 'rgba(0, 0, 0, 0.56)',
+  'scanner-glass-bg': 'rgba(255, 255, 255, 0.86)',
   'scanner-fg': '#FFFFFF',
-  'scanner-pill': 'rgba(28, 28, 30, 0.78)',
 };
 
 type IosColors = { [K in keyof typeof light]: string };
@@ -109,6 +110,7 @@ export function installTheme() {
         'glass-foreground': '#FAFAFC',
         'glass-muted': '#C8C8D0',
         'glass-accent': '#8DC8FF',
+        'glass-primary-fg': '#101C28',
         'glass-primary-pressed-bg': '#70B3F4',
         'glass-destructive': '#E99A9B',
         'glass-action-bg': '#273B51',
@@ -120,6 +122,7 @@ export function installTheme() {
         success: '#30D158',
         'success-tint': 'rgba(48, 209, 88, 0.18)',
         warning: '#FF9F0A',
+        'warning-foreground': '#FFC467',
         'warning-tint': 'rgba(255, 159, 10, 0.18)',
         destructive: '#FF453A',
         'destructive-tint': 'rgba(255, 69, 58, 0.16)',
@@ -137,9 +140,8 @@ export function installTheme() {
         'diff-del-fg': '#FF7A73',
         scrim: 'rgba(0, 0, 0, 0.56)',
         'scanner-bg': '#000000',
-        'scanner-scrim': 'rgba(0, 0, 0, 0.64)',
+        'scanner-glass-bg': 'rgba(20, 20, 22, 0.92)',
         'scanner-fg': '#FFFFFF',
-        'scanner-pill': 'rgba(44, 44, 46, 0.82)',
       },
     },
   });

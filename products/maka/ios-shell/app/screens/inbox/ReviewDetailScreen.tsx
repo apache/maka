@@ -21,6 +21,7 @@ import {
   cleanup,
   computed,
   effect,
+  keyboardFrame,
   safeAreaInsets,
   Scroll,
   signal,
@@ -29,7 +30,7 @@ import {
   untracked,
   View,
 } from 'nsh';
-import { Input, NavPage } from 'nsh/base';
+import { NavPage } from 'nsh/base';
 import {
   approvalControls,
   approvalDetail,
@@ -44,13 +45,13 @@ import {
   type AgentInteractionRecord,
 } from '../../bridge';
 import { ApprovalActions, ApprovalOutcome } from '../../ui/ApprovalCard';
-import { QuestionForm } from '../../ui/QuestionForm';
+import { QuestionFields, questionDraft } from '../../ui/QuestionForm';
 import { tr } from '../../locale';
 import { activeHostInfo, hostById } from '../../state/hostPool';
 import { isInboxItemBusy, respondInboxItem, type InboxItem } from '../../state/inbox';
-import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, GroupRow, Icon, InsetGroup, ScreenHeader, StatusDot } from '../../ui';
+import { glassSurfaceStyle } from '../../ui/Glass';
 
 function outcomeSummary(
   outcome: import('../../../../../../packages/plugin-sdk/src/generated/runtime').InteractionOutcome,
@@ -75,7 +76,7 @@ export function ReviewDetailScreen(props: {
     sessionTitle: string,
   ) => void;
 }) {
-  const insets = safeAreaInsets();
+  const draft = questionDraft();
   const hostName = () => hostById(props.item.rootId)?.hostName ?? props.item.hostName;
   const liveRecord = signal<AgentInteractionRecord | null>(props.item.record);
   let disposed = false;
@@ -144,7 +145,7 @@ export function ReviewDetailScreen(props: {
   const scopeDetail = () => (req() ? approvalDetail(req()!) : {});
   const controls = () => approvalControls(req());
 
-  const submitAnswer = async (payload: Record<string, unknown>, kind: 'success' | 'warning') => {
+  const submitAnswer = async (payload: Record<string, unknown>) => {
     if (isResolvedRemotely() || busy()) return;
     const result = await respondInboxItem(props.item, payload);
     if (result) {
@@ -165,11 +166,16 @@ export function ReviewDetailScreen(props: {
     return r?.kind === 'question' ? r.questions : null;
   };
 
+  const showActions = () =>
+    !isResolvedRemotely() && (questions() || controls().primary || controls().deny);
+
   return (
     <NavPage
       style={{ flex: 1 }}
       title={interactionBadge(props.item.summary.kind)}
       hidesBottomBarWhenPushed
+      headerTransparent
+      headerBackgroundOnScroll
       headerShadowVisible={false}
       header={
         <ScreenHeader
@@ -179,12 +185,26 @@ export function ReviewDetailScreen(props: {
         />
       }
     >
+      <ReviewContent />
+    </NavPage>
+  );
+
+  function ReviewContent() {
+    const insets = safeAreaInsets();
+    const actionsHeight = signal(0);
+    const keyboardHeight = () => keyboardFrame().height;
+    const bottom = () => (keyboardHeight() || insets().bottom) + 8;
+    return (
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
         <Scroll
+          testID="review-details"
           style={{ flex: 1 }}
+          keyboardShouldPersistTaps="handled"
           contentStyle={{
-            paddingTop: 16,
-            paddingBottom: Math.max(insets().bottom, 20) + 28,
+            paddingTop: insets().top + 16,
+            paddingLeft: Math.max(0, insets().left - spacing.pageX),
+            paddingRight: Math.max(0, insets().right - spacing.pageX),
+            paddingBottom: bottom() + (showActions() ? actionsHeight() + 8 : 12),
           }}
         >
           {/* Authoritative Remote Resolution Banner */}
@@ -231,95 +251,73 @@ export function ReviewDetailScreen(props: {
           </InsetGroup>
 
           {/* Request Details */}
-          <InsetGroup header={tr('Request details')}>
-            <View style={{ paddingHorizontal: 16, paddingVertical: 14, gap: 10 }}>
-              <If when={!isResolvedRemotely()}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <StatusDot kind={'waiting'} size={7} />
-                  <Text
+          <If when={!questions() || isResolvedRemotely()}>
+            <InsetGroup header={tr('Request details')}>
+              <View style={{ paddingHorizontal: 16, paddingVertical: 14, gap: 10 }}>
+                <If when={!isResolvedRemotely()}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <StatusDot kind={'waiting'} size={7} />
+                    <Text
+                      style={{
+                        ...type.caption,
+                        fontWeight: '600',
+                        color: token('warning-foreground'),
+                      }}
+                    >
+                      {interactionBadge(props.item.summary.kind)}
+                    </Text>
+                  </View>
+                </If>
+                <Text style={{ ...type.headline, color: token('foreground') }}>{title()}</Text>
+
+                <If when={scopeDetail().command}>
+                  <View
                     style={{
-                      ...type.caption,
-                      fontWeight: '600',
-                      color: token('warning'),
+                      padding: 12,
+                      borderRadius: 10,
+                      borderCurve: 'continuous',
+                      backgroundColor: token('grouped-bg'),
                     }}
                   >
-                    {interactionBadge(props.item.summary.kind)}
-                  </Text>
-                </View>
-              </If>
-              <Text style={{ ...type.headline, color: token('foreground') }}>{title()}</Text>
+                    <Text style={{ ...type.mono, color: token('foreground') }}>
+                      {scopeDetail().command}
+                    </Text>
+                  </View>
+                </If>
 
-              <If when={scopeDetail().command}>
-                <View
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('grouped-bg'),
-                  }}
-                >
-                  <Text style={{ ...type.mono, color: token('foreground') }}>
-                    {scopeDetail().command}
-                  </Text>
-                </View>
-              </If>
-
-              <If when={scopeDetail().permissions}>
-                <View
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    borderCurve: 'continuous',
-                    backgroundColor: token('grouped-bg'),
-                  }}
-                >
-                  <Text style={{ ...type.subheadline, color: token('foreground') }}>
-                    {scopeDetail().permissions}
-                  </Text>
-                </View>
-              </If>
-            </View>
-          </InsetGroup>
-
-          <If when={questions() && !isResolvedRemotely()}>
-            <QuestionForm
-              questions={questions()!}
-              busy={busy()}
-              submit={(answer) => void submitAnswer(answer, 'success')}
-            />
+                <If when={scopeDetail().permissions}>
+                  <View
+                    style={{
+                      padding: 12,
+                      borderRadius: 10,
+                      borderCurve: 'continuous',
+                      backgroundColor: token('grouped-bg'),
+                    }}
+                  >
+                    <Text style={{ ...type.subheadline, color: token('foreground') }}>
+                      {scopeDetail().permissions}
+                    </Text>
+                  </View>
+                </If>
+              </View>
+            </InsetGroup>
           </If>
 
-          {/* Approval Actions (hidden/disabled once resolved remotely) */}
-          <If
-            when={!isResolvedRemotely() && !questions() && (controls().primary || controls().deny)}
-          >
-            <View style={{ paddingHorizontal: spacing.pageX }}>
-              <ApprovalActions
-                allowLabel={controls().primary?.label}
-                denyLabel={tr('Deny')}
-                busy={busy()}
-                onAllow={
-                  controls().primary
-                    ? () => void submitAnswer(controls().primary!.answer, 'success')
-                    : undefined
-                }
-                onDeny={
-                  controls().deny ? () => void submitAnswer(controls().deny!, 'warning') : undefined
-                }
-                onAllowSession={
-                  controls().session
-                    ? () => void submitAnswer(controls().session!, 'success')
-                    : undefined
-                }
-              />
-            </View>
+          <If when={questions() && !isResolvedRemotely()}>
+            <QuestionFields
+              questions={questions()!}
+              busy={busy()}
+              draft={draft}
+              surface="grouped"
+            />
           </If>
 
           {/* Open Conversation Shortcut */}
           <View style={{ paddingHorizontal: spacing.pageX, marginTop: 14 }}>
             <ActionButton
+              testID="review-open-conversation"
               title={tr('Open Conversation')}
-              variant="quiet"
+              variant="glassQuiet"
               onPress={() =>
                 props.onOpenConversation(
                   props.item.rootId,
@@ -331,7 +329,52 @@ export function ReviewDetailScreen(props: {
             />
           </View>
         </Scroll>
+        <If when={showActions()}>
+          <View
+            testID="review-actions"
+            onLayout={({ bounds }) => actionsHeight.set(Math.ceil(bounds.size.height))}
+            style={{
+              ...glassSurfaceStyle(20),
+              position: 'absolute',
+              left: Math.max(spacing.pageX, insets().left),
+              right: Math.max(spacing.pageX, insets().right),
+              bottom: 8,
+              marginBottom: keyboardHeight() > 0 ? 'env(keyboard-inset-height)' : insets().bottom,
+              padding: 6,
+            }}
+          >
+            <If
+              when={questions()}
+              else={
+                <ApprovalActions
+                  floating
+                  allowLabel={controls().primary?.label}
+                  denyLabel={tr('Deny')}
+                  busy={busy()}
+                  onAllow={
+                    controls().primary
+                      ? () => void submitAnswer(controls().primary!.answer)
+                      : undefined
+                  }
+                  onDeny={controls().deny ? () => void submitAnswer(controls().deny!) : undefined}
+                  onAllowSession={
+                    controls().session ? () => void submitAnswer(controls().session!) : undefined
+                  }
+                />
+              }
+            >
+              <ActionButton
+                title={tr('Submit Answer')}
+                variant="glassPrimary"
+                compact
+                minHeight={spacing.rowMinHeight}
+                disabled={busy()}
+                onPress={() => void submitAnswer(draft.answer(questions()!.length))}
+              />
+            </If>
+          </View>
+        </If>
       </View>
-    </NavPage>
-  );
+    );
+  }
 }

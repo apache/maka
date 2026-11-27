@@ -23,6 +23,7 @@ import { isAvailable, SegmentedControl } from 'nsh/mobile';
 import { formatCount, tr } from '../../locale';
 import {
   appendFileQuote,
+  formatFilePath,
   getDraft,
   quoteLimit,
   fetchGitWorkspaceDiff,
@@ -58,7 +59,6 @@ export function ProjectFilesScreen(props: {
   onOpenDiff: (file: ParsedDiffFile) => void;
   onQuotedBackToChat: () => void;
 }) {
-  const insets = safeAreaInsets();
   const rootId = props.item.rootId;
   const sessionId = props.item.session.id;
   const canQuote = props.item.session.kind !== 'room';
@@ -73,6 +73,7 @@ export function ProjectFilesScreen(props: {
   const diffError = signal<string | null>(null);
 
   const currentDir = signal<string>('');
+  const currentDirName = () => formatFilePath(Buffer.from(currentDir(), 'base64'));
   const dirStack = signal<string[]>([]);
   const dirEntries = signal<{ name: string; path: string; kind: string }[]>([]);
   const dirLoading = signal(false);
@@ -123,7 +124,7 @@ export function ProjectFilesScreen(props: {
           ...page.entries.map(({ path, kind }) => ({
             path: path.bytesBase64,
             kind,
-            name: Buffer.from(path.bytesBase64, 'base64').toString('utf8').split('/').at(-1) ?? '',
+            name: formatFilePath(Buffer.from(path.bytesBase64, 'base64')).split('/').at(-1) ?? '',
           })),
         ]);
         after = page.next;
@@ -152,7 +153,7 @@ export function ProjectFilesScreen(props: {
     if (entry.kind !== 'directory') {
       if (
         !canQuote ||
-        !appendFileQuote(rootId, sessionId, Buffer.from(entry.path, 'base64').toString('utf8'), 1)
+        !appendFileQuote(rootId, sessionId, formatFilePath(Buffer.from(entry.path, 'base64')), 1)
       )
         return;
       hapticNotification('success');
@@ -178,6 +179,8 @@ export function ProjectFilesScreen(props: {
       style={{ flex: 1 }}
       title={workspaceName ?? tr('Workspace')}
       hidesBottomBarWhenPushed
+      headerTransparent
+      headerBackgroundOnScroll
       headerShadowVisible={false}
       header={
         <ScreenHeader
@@ -187,85 +190,95 @@ export function ProjectFilesScreen(props: {
         />
       }
     >
+      <ProjectContent />
+    </NavPage>
+  );
+
+  function ProjectContent() {
+    const insets = safeAreaInsets();
+    return (
       <View style={{ flex: 1, backgroundColor: token('grouped-bg') }}>
-        {/* Segmented Control */}
-        <View
-          style={{
-            paddingHorizontal: spacing.pageX,
-            paddingTop: 12,
-            paddingBottom: 12,
+        <Scroll
+          style={{ flex: 1 }}
+          contentStyle={{
+            flexGrow: 1,
+            paddingTop: insets().top,
+            paddingLeft: Math.max(0, insets().left - spacing.pageX),
+            paddingRight: Math.max(0, insets().right - spacing.pageX),
+            paddingBottom: Math.max(insets().bottom, 20) + 24,
           }}
         >
-          <If
-            when={isAvailable}
-            else={
-              <View
-                style={{
-                  flexDirection: 'row',
-                  backgroundColor: token('surface-muted'),
-                  borderRadius: 10,
-                  padding: 3,
-                  gap: 4,
-                }}
-              >
-                <View
-                  role="button"
-                  accessibilityLabel={changesLabel()}
-                  onPress={() => segment.set(0)}
-                  style={{
-                    flex: 1,
-                    minHeight: 34,
-                    borderRadius: 8,
-                    backgroundColor: segment() === 0 ? token('surface') : 'transparent',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Text style={{ ...type.subheadlineMedium, color: token('foreground') }}>
-                    {changesLabel()}
-                  </Text>
-                </View>
-                <View
-                  role="button"
-                  accessibilityLabel={tr('Files')}
-                  onPress={() => segment.set(1)}
-                  style={{
-                    flex: 1,
-                    minHeight: 34,
-                    borderRadius: 8,
-                    backgroundColor: segment() === 1 ? token('surface') : 'transparent',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Text style={{ ...type.subheadlineMedium, color: token('foreground') }}>
-                    {tr('Files')}
-                  </Text>
-                </View>
-              </View>
-            }
-          >
-            <SegmentedControl
-              items={[{ title: changesLabel() }, { title: tr('Files') }]}
-              selectedIndex={segment()}
-              onChange={({ index }) => {
-                hapticSelection();
-                segment.set(index);
-              }}
-              style={{ height: 34 }}
-            />
-          </If>
-        </View>
-
-        {/* Tab 0: Git Changes */}
-        <If when={segment() === 0}>
-          <Scroll
-            style={{ flex: 1 }}
-            contentStyle={{
-              flexGrow: 1,
-              paddingBottom: Math.max(insets().bottom, 20) + 24,
+          {/* Segmented Control */}
+          <View
+            style={{
+              paddingHorizontal: spacing.pageX,
+              paddingTop: 12,
+              paddingBottom: 12,
             }}
           >
+            <If
+              when={isAvailable}
+              else={
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    backgroundColor: token('surface-muted'),
+                    borderRadius: 10,
+                    padding: 3,
+                    gap: 4,
+                  }}
+                >
+                  <View
+                    role="button"
+                    accessibilityLabel={changesLabel()}
+                    onPress={() => segment.set(0)}
+                    style={{
+                      flex: 1,
+                      minHeight: spacing.rowMinHeight,
+                      borderRadius: 8,
+                      backgroundColor: segment() === 0 ? token('surface') : 'transparent',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Text style={{ ...type.subheadlineMedium, color: token('foreground') }}>
+                      {changesLabel()}
+                    </Text>
+                  </View>
+                  <View
+                    role="button"
+                    accessibilityLabel={tr('Files')}
+                    onPress={() => segment.set(1)}
+                    style={{
+                      flex: 1,
+                      minHeight: spacing.rowMinHeight,
+                      borderRadius: 8,
+                      backgroundColor: segment() === 1 ? token('surface') : 'transparent',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Text style={{ ...type.subheadlineMedium, color: token('foreground') }}>
+                      {tr('Files')}
+                    </Text>
+                  </View>
+                </View>
+              }
+            >
+              <SegmentedControl
+                items={[{ title: changesLabel() }, { title: tr('Files') }]}
+                selectedIndex={segment()}
+                onChange={({ index }) => {
+                  hapticSelection();
+                  segment.set(index);
+                }}
+                style={{ minHeight: spacing.rowMinHeight }}
+              />
+            </If>
+          </View>
+
+          {/* Tab 0: Git Changes */}
+          <If when={segment() === 0}>
             <If when={diffError()}>
               <BannerNotice tone="destructive" title={diffError()!} />
             </If>
@@ -380,18 +393,10 @@ export function ProjectFilesScreen(props: {
                 </Each>
               </InsetGroup>
             </If>
-          </Scroll>
-        </If>
+          </If>
 
-        {/* Tab 1: Workspace Files */}
-        <If when={segment() === 1}>
-          <Scroll
-            style={{ flex: 1 }}
-            contentStyle={{
-              flexGrow: 1,
-              paddingBottom: Math.max(insets().bottom, 20) + 24,
-            }}
-          >
+          {/* Tab 1: Workspace Files */}
+          <If when={segment() === 1}>
             <If when={dirError()}>
               <BannerNotice tone="destructive" title={dirError()!} />
             </If>
@@ -401,7 +406,7 @@ export function ProjectFilesScreen(props: {
                 <GroupRow
                   leading={<Icon name="chevronLeft" color={token('primary')} size={18} />}
                   title={tr('Parent directory')}
-                  subtitle={Buffer.from(currentDir(), 'base64').toString('utf8')}
+                  subtitle={currentDirName()}
                   tone="primary"
                   onPress={goUpDir}
                 />
@@ -424,9 +429,7 @@ export function ProjectFilesScreen(props: {
               }
             >
               <InsetGroup
-                header={
-                  currentDir() ? Buffer.from(currentDir(), 'base64').toString('utf8') : tr('Files')
-                }
+                header={currentDir() ? currentDirName() : tr('Files')}
                 footer={
                   !canQuote
                     ? undefined
@@ -458,9 +461,9 @@ export function ProjectFilesScreen(props: {
                 </Each>
               </InsetGroup>
             </If>
-          </Scroll>
-        </If>
+          </If>
+        </Scroll>
       </View>
-    </NavPage>
-  );
+    );
+  }
 }

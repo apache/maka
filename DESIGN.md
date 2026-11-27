@@ -114,10 +114,11 @@ Inspect UI changes in the native desktop renderer across both light and dark the
 | Conversation and Bot work | Desktop five-stroke mark (4 s) and native text shimmer; static mark and solid text under Reduce Motion |
 | Approval actions | Approval press at 0.96 scale with a short opacity transition; no scale under Reduce Motion |
 | Chat glass chrome | UIKit owns bar, menu and keyboard motion. The context pill does not intercept scroll gestures. Composer, quote and sheet controls change fill without dimming their foregrounds. Jump to Latest scrolls, or jumps under Reduce Motion. |
+| Diff, review and camera controls | Navigation glass follows the scroll edge. Quote and approval actions stay in thumb reach while the document scrolls and reserve room for its last row. Camera chrome and sheet actions change fill without dimming labels; no extra entrance animation or focus change. |
 | Composer and transcript | Composer height, quotes, queue and live content reflow without a second animation. The composer and retained transcript rows follow NSH's keyboard transition when pinned to the tail. Keep the reading position otherwise. |
 | Short chat viewport | Context hides; quotes, pending sends, queue and Latest stay reachable in the composer menu. Both sheets scroll above the keyboard and stay within the horizontal safe area. The quote sheet works offline. |
 
-Approvals stay in a fixed one-row layout, with short press feedback and the outcome replacing the card’s action row. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
+Approvals stay in a one-row layout, with short press feedback and no actions after resolution. In review detail, approval and answer submission float above the details and follow the keyboard. Question fields and options stay on solid cards, with full-width wrapping in both the transcript and review. Pending uses the system segmented control (pill fallback off iOS); settings disclosures use the existing grouped rows and native confirmation dialogs.
 
 Computer settings use native pushes for editors, menus for workspace scope, and native alerts for destructive changes and project MCP consent. Lists refresh in place on return; saving and download status stay inline. System transitions honor Reduce Motion; no custom animation is needed for form or catalog updates.
 

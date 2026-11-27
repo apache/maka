@@ -54,7 +54,7 @@ use objc2_ui_kit::{
     UIViewControllerTransitionCoordinatorContext,
 };
 
-use crate::{mount::SharedMounter, native_view::NshView};
+use crate::{bottom_bar::Update as BottomBarUpdate, mount::SharedMounter, native_view::NshView};
 
 fn insets_payload(i: EdgeInsets) -> EventPayload {
     EventPayload::Map(vec![
@@ -1338,7 +1338,7 @@ define_class!(
             // UIKit's own hook for this: it runs for pushes and pops, before
             // the transition starts, with a live `transitionCoordinator` — the
             // place a `UITabBarController` moves its bar from.
-            slide_bottom_bar(nav, bottom_bar_hidden(nav));
+            update_bottom_bar(nav, BottomBarUpdate::AlongsideTransition);
             // A swipe back that the user cancels ends without `didShow`, so the
             // bar has to be put back where the stack now says it belongs once
             // the interaction ends (a completed one lands on the same value).
@@ -1353,7 +1353,7 @@ define_class!(
                     move |_context: NonNull<
                         ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
                     >| {
-                        slide_bottom_bar(&nav, bottom_bar_hidden(&nav));
+                        update_bottom_bar(&nav, BottomBarUpdate::AlongsideTransition);
                     },
                 );
                 coordinator.notifyWhenInteractionChangesUsingBlock(&block);
@@ -1399,9 +1399,9 @@ define_class!(
             if let Some(view) = controller.viewIfLoaded() {
                 view.setNeedsLayout();
             }
-            // Safety net: whatever the transition did, the bar ends where the
-            // stack says it goes.
-            slide_bottom_bar(nav, bottom_bar_hidden(nav));
+            // UIKit may still expose the coordinator here, but the animation
+            // is over. Reconcile the bar directly against the final stack.
+            update_bottom_bar(nav, BottomBarUpdate::Settled);
             let stack = self.ivars().stack;
             self.with_mounter(|m| m.stack_did_show(stack));
             // UIKit installs its own pop delegate while loading the navigation
@@ -2178,7 +2178,7 @@ impl StackHost {
         {
             return;
         }
-        slide_bottom_bar(&self.nav, bottom_bar_hidden(&self.nav));
+        update_bottom_bar(&self.nav, BottomBarUpdate::Settled);
     }
 }
 
@@ -2229,7 +2229,7 @@ fn hides_bar(nav: &UINavigationController) -> bool {
 /// which is where a `UITabBarController` moves its own bar from — and from
 /// `sync_bottom_bar` for a stack that did not move. The app owns its
 /// independent `hidden` prop throughout both paths.
-pub(crate) fn slide_bottom_bar(nav: &UINavigationController, hiding: bool) {
+fn update_bottom_bar(nav: &UINavigationController, update: BottomBarUpdate) {
     let Some(view) = nav.view() else {
         return;
     };
@@ -2286,6 +2286,7 @@ pub(crate) fn slide_bottom_bar(nav: &UINavigationController, hiding: bool) {
     if bars.is_empty() {
         return;
     }
+    let hiding = bottom_bar_hidden(nav);
     // The bar moves itself (`nshSetBottomHidden:`): its own layout sets the
     // frame on every pass, so a transform set from here would be undone by
     // the next one whenever a screen below it changes size.
@@ -2304,9 +2305,12 @@ pub(crate) fn slide_bottom_bar(nav: &UINavigationController, hiding: bool) {
             }
         }
     });
-    let apply = apply.clone();
-    match nav.transitionCoordinator() {
-        Some(coordinator) => {
+    update.apply(
+        || {
+            let Some(coordinator) = nav.transitionCoordinator() else {
+                return false;
+            };
+            let apply = apply.clone();
             let block = RcBlock::new(
                 move |_context: NonNull<
                     ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
@@ -2314,12 +2318,10 @@ pub(crate) fn slide_bottom_bar(nav: &UINavigationController, hiding: bool) {
                     apply();
                 },
             );
-            coordinator.animateAlongsideTransition_completion(Some(&block), None);
-        }
-        // Not in a transition (the first screen, a change with nothing to
-        // animate): place it at once.
-        None => apply(),
-    }
+            coordinator.animateAlongsideTransition_completion(Some(&block), None)
+        },
+        || apply(),
+    );
 }
 
 /// One screen.

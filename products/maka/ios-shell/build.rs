@@ -28,21 +28,26 @@ fn main() {
         .parent()
         .unwrap();
     let compiler = maka_ui_build::compiler_identity().expect("UI build script identity");
-    let entry = "app/Entry.tsx";
-    println!("cargo:rerun-if-changed={entry}");
-    let module = maka_ui_build::compile_cached(
-        std::path::Path::new(entry),
-        &output.join("ios-shell"),
-        Some(repo),
-        &compiler,
-    )
-    .expect("bundle iOS shell UI");
-    for input in &module.inputs {
-        println!("cargo:rerun-if-changed={}", input.display());
+    let mut entries = vec![("app/Entry.tsx", "ios-shell")];
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("ios") {
+        entries.push(("tests/fixtures/parse-diff.ts", "parse-diff"));
     }
-    maka_ui_build::write_if_changed(
-        &output.join("ios-shell.js"),
-        &std::fs::read(module.module).expect("read compiled iOS shell UI"),
-    )
-    .expect("write compiled iOS shell UI");
+    for (entry, name) in entries {
+        println!("cargo:rerun-if-changed={entry}");
+        let module = maka_ui_build::compile_cached(
+            std::path::Path::new(entry),
+            &output.join(name),
+            Some(repo),
+            &compiler,
+        )
+        .unwrap_or_else(|error| panic!("bundle {entry}: {error}"));
+        for input in &module.inputs {
+            println!("cargo:rerun-if-changed={}", input.display());
+        }
+        maka_ui_build::write_if_changed(
+            &output.join(format!("{name}.js")),
+            &std::fs::read(module.module).expect("read compiled iOS shell UI"),
+        )
+        .expect("write compiled iOS shell UI");
+    }
 }

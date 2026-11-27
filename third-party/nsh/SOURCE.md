@@ -67,6 +67,9 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
 
 ## Retained local capabilities
 
+- **Diff controls:** DiffView reserves scroll padding for floating iOS chrome and reports hunk bounds and scroll offsets in content coordinates. Changing padding moves hunk bounds but does not itself scroll the view. The iOS quote view opts in to tap selection in the code as well as the gutter; both report the displayed file number separately from the diff's internal text index.
+- **iOS accessibility:** Input labels and identifiers belong to the UIKit editor, not its decoration container, and survive an editor swap. A Sheet grabber can style its visible decoration independently of its touch and accessibility frame.
+
 - **Terminal transport:** `crates/nsh-terminal` and `third-party/icy_sixel`
   provide Kitty, Sixel and iTerm2 pixel transport, shared with the AppKit and
   Direct2D offscreen terminal surfaces and the TUI image store. GPUI and its
@@ -102,6 +105,10 @@ terminal surfaces. Desktop window operations take explicit `WindowRef` values.
   against the docked guide when UIKit sends no new keyboard notification.
   A docked keyboard remains visible to the platform even if the resized
   surface temporarily has zero overlap.
+- **iOS navigation:** the persistent system tab bar reconciles directly with
+  the visible stack at `didShow`, even when UIKit still exposes the finished
+  transition coordinator. A coordinator that refuses an animation does not
+  drop the bar update.
 
 ## Maintenance and verification
 

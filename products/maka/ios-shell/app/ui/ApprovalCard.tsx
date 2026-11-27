@@ -30,17 +30,30 @@ export function ApprovalButton(props: {
   title: string;
   kind: 'allow' | 'session' | 'deny';
   busy?: boolean;
+  floating?: boolean;
   weight: number;
   onPress: () => void;
 }) {
-  const color = () =>
-    token(
-      props.kind === 'allow'
-        ? 'primary-foreground'
-        : props.kind === 'deny'
-          ? 'approval-reject'
-          : 'primary',
-    );
+  const color = () => {
+    switch (props.kind) {
+      case 'allow':
+        return token(props.floating ? 'glass-primary-fg' : 'primary-foreground');
+      case 'deny':
+        return token(props.floating ? 'glass-foreground' : 'approval-reject');
+      case 'session':
+        return token(props.floating ? 'glass-accent' : 'primary');
+    }
+  };
+  const fill = () => {
+    switch (props.kind) {
+      case 'allow':
+        return token(props.floating ? 'glass-accent' : 'primary');
+      case 'deny':
+        return token(props.floating ? 'surface-elevated' : 'surface-muted');
+      case 'session':
+        return token(props.floating ? 'glass-action-bg' : 'approval-session-bg');
+    }
+  };
   return (
     <Button
       accessibilityLabel={props.title}
@@ -50,25 +63,30 @@ export function ApprovalButton(props: {
         props.onPress();
       }}
       class={
-        reduceMotion()
-          ? 'active:opacity-85 disabled:opacity-45'
-          : 'active:scale-[0.96] active:opacity-85 disabled:opacity-45 transition duration-150'
+        props.floating
+          ? 'disabled:opacity-45'
+          : reduceMotion()
+            ? 'active:opacity-85 disabled:opacity-45'
+            : 'active:scale-[0.96] active:opacity-85 disabled:opacity-45 transition duration-150'
+      }
+      activeStyle={
+        props.floating
+          ? {
+              backgroundColor: token(
+                props.kind === 'allow' ? 'glass-primary-pressed-bg' : 'glass-action-pressed-bg',
+              ),
+            }
+          : undefined
       }
       style={{
         minHeight: 44,
         flex: props.weight,
-        minWidth: 0,
+        minWidth: props.floating ? 44 : 0,
         paddingHorizontal: 5,
         paddingVertical: 8,
-        borderRadius: 13,
+        borderRadius: props.floating ? spacing.controlRadius : 13,
         borderCurve: 'continuous',
-        backgroundColor: token(
-          props.kind === 'allow'
-            ? 'primary'
-            : props.kind === 'deny'
-              ? 'surface-muted'
-              : 'approval-session-bg',
-        ),
+        backgroundColor: fill(),
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
@@ -81,7 +99,7 @@ export function ApprovalButton(props: {
       <Text
         style={{
           ...type.footnote,
-          numberOfLines: 1,
+          numberOfLines: props.floating ? undefined : 1,
           textOverflow: 'ellipsis',
           fontWeight: '600',
           color: color(),
@@ -153,6 +171,7 @@ export function ApprovalActions(props: {
   onDeny?: () => void;
   onAllowSession?: () => void;
   busy?: boolean;
+  floating?: boolean;
 }) {
   return (
     <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -162,6 +181,7 @@ export function ApprovalActions(props: {
           kind="deny"
           weight={props.onAllowSession ? 0.72 : 1}
           busy={props.busy}
+          floating={props.floating}
           onPress={props.onDeny!}
         />
       </If>
@@ -171,6 +191,7 @@ export function ApprovalActions(props: {
           kind="session"
           weight={1.04}
           busy={props.busy}
+          floating={props.floating}
           onPress={props.onAllowSession!}
         />
       </If>
@@ -180,6 +201,7 @@ export function ApprovalActions(props: {
           kind="allow"
           weight={props.onAllowSession ? 1.24 : 1}
           busy={props.busy}
+          floating={props.floating}
           onPress={props.onAllow!}
         />
       </If>

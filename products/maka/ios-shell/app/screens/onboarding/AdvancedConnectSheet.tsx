@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { Clipboard, effect, Scroll, signal, Text, View, token } from 'nsh';
-import { Input, Sheet, type SheetDetent } from 'nsh/base';
+import { Clipboard, keyboardFrame, effect, Scroll, signal, Text, View, token } from 'nsh';
+import { Button, Input, Sheet, type SheetDetent } from 'nsh/base';
 import { tr } from '../../locale';
 import {
   closeAdvancedConnectSheet,
@@ -32,8 +32,10 @@ import {
 import { hapticSelection } from '../../state/preferences';
 import { spacing, type } from '../../theme/tokens';
 import { ActionButton, BannerNotice, GroupDivider, Icon, InsetGroup } from '../../ui';
+import { confirmDiscard, SheetHeader, sheetInsets } from '../../ui/SheetHeader';
 
 export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
+  const layout = sheetInsets();
   const uri = signal('');
   const relayUrl = signal('');
   const relayToken = signal('');
@@ -74,6 +76,34 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
     await connectManualWebSocket(wsEndpoint(), wsRootId(), wsBearer(), wsClientInstance());
   };
 
+  const dirty = () =>
+    uri().trim() !== (currentIncomingPairUri() ?? '') ||
+    !!(
+      relayUrl() ||
+      relayToken() ||
+      wsEndpoint() ||
+      wsRootId() ||
+      wsBearer() ||
+      wsClientInstance()
+    );
+  const canDismiss = () => !isPairingBusy() && !dirty();
+  const close = () => {
+    showAdvanced.set(false);
+    detent.set('medium');
+    closeAdvancedConnectSheet();
+    uri.set(currentIncomingPairUri() ?? '');
+    relayUrl.set('');
+    relayToken.set('');
+    wsEndpoint.set('');
+    wsRootId.set('');
+    wsBearer.set('');
+    wsClientInstance.set('');
+  };
+  const done = async () => {
+    if (isPairingBusy() || (dirty() && !(await confirmDiscard()))) return;
+    close();
+  };
+
   return (
     <Sheet
       open={isAdvancedSheetOpen()}
@@ -81,17 +111,18 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
       detents={['medium', 'large']}
       detent={detent()}
       onDetentChange={(e) => detent.set(e.detent)}
-      grabber
-      closeOnSwipe
+      grabber={keyboardFrame().height === 0}
+      grabberAccessibilityLabel={tr('Adjust sheet height')}
+      closeOnSwipe={canDismiss()}
+      closeOnEscape={canDismiss()}
+      closeOnBackdropPress={canDismiss()}
       onOpenChange={({ open }) => {
-        if (!open) {
-          showAdvanced.set(false);
-          detent.set('medium');
-          closeAdvancedConnectSheet();
-        }
+        if (!open && canDismiss()) close();
       }}
       backdropStyle={{ backgroundColor: token('scrim') }}
       popupStyle={{
+        ...layout.extraGutters(),
+        ...layout.keyboardBounds(),
         backgroundColor: token('grouped-bg'),
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
@@ -99,43 +130,38 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
         paddingTop: 4,
       }}
       grabberStyle={{
-        width: 36,
-        height: 5,
-        borderRadius: 3,
+        width: spacing.rowMinHeight,
+        height: spacing.rowMinHeight,
         alignSelf: 'center',
-        backgroundColor: token('tertiary-foreground'),
-        marginTop: 6,
-        marginBottom: 4,
+        alignItems: 'center',
+        justifyContent: 'center',
       }}
-    >
-      {/* Sheet Header */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          paddingHorizontal: spacing.pageX,
-          paddingTop: 6,
-          paddingBottom: 12,
-        }}
-      >
-        <Text style={{ ...type.headline, color: token('foreground') }}>{tr('Pair with Link')}</Text>
+      grabberContent={
         <View
-          role="button"
-          accessibilityLabel={tr('Close')}
-          onPress={closeAdvancedConnectSheet}
-          class="active:opacity-60"
+          accessible={false}
           style={{
-            minHeight: 36,
-            paddingHorizontal: 10,
-            justifyContent: 'center',
+            pointerEvents: 'none',
+            width: 36,
+            height: 5,
+            borderRadius: 3,
+            backgroundColor: token('tertiary-foreground'),
           }}
-        >
-          <Text style={{ ...type.bodyMedium, color: token('primary') }}>{tr('Done')}</Text>
-        </View>
-      </View>
+        />
+      }
+    >
+      <SheetHeader
+        title={tr('Pair with Link')}
+        action={tr('Done')}
+        disabled={isPairingBusy()}
+        onPress={() => void done()}
+      />
 
-      <Scroll style={{ flex: 1 }} contentStyle={{ paddingBottom: 36 }}>
+      <Scroll
+        testID="advanced-connect-form"
+        style={{ flex: 1, minHeight: 0 }}
+        contentStyle={{ paddingBottom: layout.bottomPadding() }}
+        keyboardShouldPersistTaps="handled"
+      >
         <If when={currentPairingError()}>
           <BannerNotice tone="destructive" title={currentPairingError()!} />
         </If>
@@ -155,7 +181,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
               placeholder="maka://pair/v1?payload=…"
               onChange={({ value }) => uri.set(value)}
               style={{
-                minHeight: 40,
+                minHeight: spacing.rowMinHeight,
                 ...type.mono,
                 color: token('foreground'),
                 placeholderColor: token('muted-foreground'),
@@ -164,28 +190,29 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
             />
           </View>
           <GroupDivider inset={16} />
-          <View
-            role="button"
+          <Button
             accessibilityLabel={tr('Paste from Clipboard')}
             onPress={() => void handlePaste()}
-            class="active:bg-row-pressed"
+            activeStyle={{ backgroundColor: token('glass-action-pressed-bg') }}
             style={{
-              minHeight: 44,
+              minHeight: spacing.rowMinHeight,
+              backgroundColor: token('surface-elevated'),
               paddingHorizontal: 16,
               flexDirection: 'row',
               alignItems: 'center',
               gap: 8,
             }}
           >
-            <Icon name="clipboard" color={token('primary')} size={17} />
-            <Text style={{ ...type.bodyMedium, color: token('primary') }}>
+            <Icon name="clipboard" color={token('glass-accent')} size={17} />
+            <Text style={{ ...type.bodyMedium, color: token('glass-accent') }}>
               {tr('Paste from Clipboard')}
             </Text>
-          </View>
+          </Button>
         </InsetGroup>
 
         <View style={{ paddingHorizontal: spacing.pageX, marginBottom: 24 }}>
           <ActionButton
+            variant="glassPrimary"
             title={isPairingBusy() ? tr('Connecting…') : tr('Connect and compare')}
             accessibilityLabel={tr('Connect and compare')}
             disabled={isPairingBusy() || !uri().trim()}
@@ -235,7 +262,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 placeholder="https://relay.example.com"
                 onChange={({ value }) => relayUrl.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.body,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -254,7 +281,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 masked
                 onChange={({ value }) => relayToken.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.body,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -280,7 +307,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 placeholder="wss://host.local:8443"
                 onChange={({ value }) => wsEndpoint.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.mono,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -298,7 +325,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 placeholder="root-id"
                 onChange={({ value }) => wsRootId.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.mono,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -317,7 +344,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 masked
                 onChange={({ value }) => wsBearer.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.mono,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -335,7 +362,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
                 placeholder={tr('Defaults to device Peer ID')}
                 onChange={({ value }) => wsClientInstance.set(value)}
                 style={{
-                  minHeight: 38,
+                  minHeight: spacing.rowMinHeight,
                   ...type.mono,
                   color: token('foreground'),
                   backgroundColor: 'transparent',
@@ -347,7 +374,7 @@ export function AdvancedConnectSheet(props: { onTicketReady: () => void }) {
           <View style={{ paddingHorizontal: spacing.pageX }}>
             <ActionButton
               title={tr('Connect via WebSocket')}
-              variant="secondary"
+              variant="glassSecondary"
               disabled={
                 isPairingBusy() || !wsEndpoint().trim() || !wsRootId().trim() || !wsBearer().trim()
               }

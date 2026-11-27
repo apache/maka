@@ -27,7 +27,7 @@ export function GroupHeader(props: { title: string; trailing?: JSX.Element }) {
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: 8,
         paddingHorizontal: spacing.pageX + 16,
         marginBottom: 6,
       }}
@@ -35,6 +35,8 @@ export function GroupHeader(props: { title: string; trailing?: JSX.Element }) {
       <Text
         style={{
           ...type.footnote,
+          flex: 1,
+          minWidth: 0,
           fontWeight: '500',
           color: token('muted-foreground'),
         }}

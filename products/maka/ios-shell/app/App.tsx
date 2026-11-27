@@ -661,89 +661,85 @@ function MainTabShell() {
         </NavStack>
       </View>
 
-      <If
-        when={
-          (activeTab() === 0 && chatsNav.routes().length === 1) ||
-          (activeTab() === 1 && inboxNav.routes().length === 1) ||
-          (activeTab() === 2 && settingsNav.routes().length === 1)
-        }
-      >
-        {/* Native iOS UITabBar (Liquid Glass on iOS 26+) */}
+      {/* The visible UIKit stack owns the bar’s visibility; keep the bar mounted. */}
+      {isAvailable ? (
+        <TabBar
+          testID="main-tab-bar"
+          items={tabItems()}
+          selectedIndex={activeTab()}
+          onChange={({ index }) => handleTabChange(index)}
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+          }}
+        />
+      ) : (
         <If
-          when={isAvailable}
-          else={
-            <View
-              testID="main-tab-bar"
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: 0,
-                height: 54,
-                backgroundColor: token('surface'),
-                borderTopWidth: 0.5,
-                borderTopColor: token('separator'),
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-around',
-              }}
-            >
-              <Each of={tabItems()} key={(item) => item.title}>
-                {(item, index) => (
-                  <View
-                    role="button"
-                    accessibilityLabel={item().title}
-                    onPress={() => handleTabChange(index())}
-                    style={{
-                      flex: 1,
-                      minHeight: 44,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexDirection: 'row',
-                      gap: 4,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        ...type.footnote,
-                        fontWeight: activeTab() === index() ? '600' : '400',
-                        color:
-                          activeTab() === index() ? token('primary') : token('muted-foreground'),
-                      }}
-                    >
-                      {item().title}
-                    </Text>
-                    <If when={item().badge}>
-                      <Text
-                        style={{
-                          ...type.caption,
-                          fontWeight: '700',
-                          color: token('primary'),
-                        }}
-                      >
-                        {item().badge}
-                      </Text>
-                    </If>
-                  </View>
-                )}
-              </Each>
-            </View>
+          when={
+            (activeTab() === 0 && chatsNav.routes().length === 1) ||
+            (activeTab() === 1 && inboxNav.routes().length === 1) ||
+            (activeTab() === 2 && settingsNav.routes().length === 1)
           }
         >
-          <TabBar
+          <View
             testID="main-tab-bar"
-            items={tabItems()}
-            selectedIndex={activeTab()}
-            onChange={({ index }) => handleTabChange(index)}
             style={{
               position: 'absolute',
               left: 0,
               right: 0,
               bottom: 0,
+              height: 54,
+              backgroundColor: token('surface'),
+              borderTopWidth: 0.5,
+              borderTopColor: token('separator'),
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-around',
             }}
-          />
+          >
+            <Each of={tabItems()} key={(item) => item.title}>
+              {(item, index) => (
+                <View
+                  role="button"
+                  accessibilityLabel={item().title}
+                  onPress={() => handleTabChange(index())}
+                  style={{
+                    flex: 1,
+                    minHeight: 44,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      ...type.footnote,
+                      fontWeight: activeTab() === index() ? '600' : '400',
+                      color: activeTab() === index() ? token('primary') : token('muted-foreground'),
+                    }}
+                  >
+                    {item().title}
+                  </Text>
+                  <If when={item().badge}>
+                    <Text
+                      style={{
+                        ...type.caption,
+                        fontWeight: '700',
+                        color: token('primary'),
+                      }}
+                    >
+                      {item().badge}
+                    </Text>
+                  </If>
+                </View>
+              )}
+            </Each>
+          </View>
         </If>
-      </If>
+      )}
     </View>
   );
 }

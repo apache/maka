@@ -85,6 +85,8 @@ pub struct SheetProps {
     /// The inline style of the grabber, over its classes.
     #[prop(default)]
     pub grabber_style: Prop<Style>,
+    /// Decoration inside the grabber, separate from its touch and accessibility frame.
+    pub grabber_content: Prop<Option<Slot>>,
     /// What screen readers call the grabber.
     pub grabber_accessibility_label: Prop<Option<SharedString>>,
     /// What shows at the bottom of the panel, after the content (an input
@@ -435,6 +437,7 @@ struct Detents {
     detent: Prop<Option<SheetDetent>>,
     grabber_class: Prop<Option<SharedString>>,
     grabber_style: Prop<Style>,
+    grabber_content: Prop<Option<Slot>>,
     grabber_label: Prop<Option<SharedString>>,
     cx: Scope<SheetEvent>,
     motion: SheetMotion,
@@ -507,6 +510,7 @@ impl Detents {
             detent,
             grabber_class: props.grabber_class,
             grabber_style: props.grabber_style,
+            grabber_content: props.grabber_content,
             grabber_label: props.grabber_accessibility_label,
             cx,
             motion,
@@ -849,6 +853,7 @@ impl Detents {
                 _ => {}
             })
             .on_press(move || self.cycle())
+            .child(self.grabber_content.place(|content| content))
     }
 }
 
