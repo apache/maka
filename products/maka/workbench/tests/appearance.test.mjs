@@ -191,6 +191,14 @@ test('a saved shape keeps the values in range, and the default radius draws corn
   assert.equal(read.cssVars.theme['border-width'], 2);
   assert.equal(look.lookShadow(read, true), '4px 4px 0px 0px #55555eff');
   for (const n of [1, 4, 8, 12, 16, 20]) assert.equal(look.scaledRadius(n, 8), n);
+  // A shadow at no opacity is none, and a left-out shadow color is black.
+  const faded = structuredClone(look.presetLooks.default);
+  Object.assign(faded.cssVars.theme, { 'shadow-x': 4, 'shadow-y': 4, 'shadow-opacity': 0 });
+  faded.cssVars.dark['shadow-color'] = '#f0f1f3';
+  assert.ok(look.unchanged(faded));
+  const black = structuredClone(look.presetLooks.morandi);
+  black.cssVars.light['shadow-color'] = '#000000';
+  assert.ok(look.unchanged(black));
 });
 
 test('every preset reads in both appearances', () => {

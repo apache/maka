@@ -25,6 +25,7 @@ import { tr } from './locale';
 import { appearance, colorThemes } from './appearance';
 import {
   contrast,
+  darkBackground,
   derivedColors,
   fontChoice,
   fontChoices,
@@ -33,6 +34,7 @@ import {
   lookShadow,
   lookTokens,
   minimumContrast,
+  mix,
   pickedColors,
   presetLooks,
   readable,
@@ -63,13 +65,10 @@ import {
   codeTextStyle,
   defaultColors,
   floatingStyle,
-  inputBorderRadius,
   lookColors,
   lookShape,
-  letterSpacing,
   lineWidth,
   radius,
-  raisedShadow,
   secondaryTextStyle,
 } from './ui';
 
@@ -366,7 +365,7 @@ function Specimen(props: { look(): Look | null }) {
           minHeight: 32,
           paddingHorizontal: 10,
           justifyContent: 'center',
-          borderRadius: inputBorderRadius(),
+          borderRadius: radius(8),
           borderWidth: lineWidth(),
           borderColor: C.line,
           backgroundColor: C.background,
@@ -717,13 +716,18 @@ function shadowChoice(look: Look): ShadowChoice {
   return matches(shadowPresets.soft) ? 'soft' : matches(shadowPresets.hard) ? 'hard' : 'custom';
 }
 /** The shown look with its shadow started over: none, a soft one, or a hard one in the text's
- * color. */
+ * color (a dark gray on a dark background). */
 function withShadow(choice: Exclude<ShadowChoice, 'custom'>): Look {
   const cleared = Object.fromEntries(shadowKeys.map((key) => [key, undefined]));
   const look = withTheme({ ...cleared, ...(choice === 'none' ? {} : shadowPresets[choice]) });
   const color = (colors: Look['cssVars']['light']) => {
     const { 'shadow-color': _, ...rest } = colors;
-    return choice === 'hard' ? { ...rest, 'shadow-color': colors.foreground } : rest;
+    if (choice !== 'hard') return rest;
+    // A light shadow on a dark background reads as a glow, so there it is a dark gray.
+    const shadow = darkBackground(colors.background)
+      ? mix(colors.background, colors.foreground, 0.28)
+      : colors.foreground;
+    return { ...rest, 'shadow-color': shadow };
   };
   return {
     ...look,

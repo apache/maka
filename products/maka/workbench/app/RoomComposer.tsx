@@ -70,6 +70,7 @@ import {
   inputTextStyle,
   lineWidth,
   radius,
+  raisedShadow,
 } from './ui';
 import { tr } from './locale';
 import {
@@ -936,7 +937,13 @@ export function RoomComposer(props: {
         </If>
         <View
           ref={(node) => composerCard.set(node)}
-          style={{ backgroundColor: C.card, borderRadius: radius(20), padding: 16, gap: 12 }}
+          style={{
+            backgroundColor: C.card,
+            borderRadius: radius(20),
+            padding: 16,
+            gap: 12,
+            ...raisedShadow(),
+          }}
         >
           <If when={replyTo() !== null}>
             <View

@@ -29,10 +29,10 @@ import { LoadingIndicator } from './Loading';
 import { tr } from './locale';
 import {
   C,
-  bodyTextStyle,
   captionTextStyle,
   controlFocusStyle,
   controlStyle,
+  readingTextStyle,
   textTooltip,
 } from './ui';
 
@@ -57,7 +57,7 @@ export function PendingMessage(props: {
       <If when={props.message.text !== ''}>
         <Text
           style={[
-            { ...bodyTextStyle, color: C.text },
+            { ...readingTextStyle(), color: C.text },
             { numberOfLines: 4, userSelect: 'text' },
           ]}
         >

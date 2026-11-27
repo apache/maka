@@ -246,14 +246,18 @@ export const presetLooks: Record<LookId, Look> = {
   ),
 };
 
-const colorKeys: (keyof LookColors)[] = [...pickedColors, ...derivedColors, 'shadow-color'];
+const colorKeys: LookColor[] = [...pickedColors, ...derivedColors];
 const sameColors = (a: LookColors, b: LookColors) => colorKeys.every((key) => a[key] === b[key]);
-/** Whether two looks draw alike: the same colors, font and shape, from whichever preset. */
+const outlineKeys = shapeKeys.filter((key) => !key.startsWith('shadow-'));
+/** Whether two looks draw alike: the same colors, font, corners, lines and shadow, from whichever
+ * preset. Shadows compare as drawn, so one at no opacity is none. */
 export const sameAppearance = (a: Look, b: Look) =>
   sameColors(a.cssVars.light, b.cssVars.light) &&
   sameColors(a.cssVars.dark, b.cssVars.dark) &&
   a.cssVars.theme['font-sans'] === b.cssVars.theme['font-sans'] &&
-  shapeKeys.every((key) => shapeValue(a, key) === shapeValue(b, key));
+  outlineKeys.every((key) => shapeValue(a, key) === shapeValue(b, key)) &&
+  lookShadow(a, false) === lookShadow(b, false) &&
+  lookShadow(a, true) === lookShadow(b, true);
 /** Whether two looks, or the absence of one, are the same. */
 export const sameLook = (a: Look | null, b: Look | null) =>
   a === b || (!!a && !!b && a.base === b.base && sameAppearance(a, b));

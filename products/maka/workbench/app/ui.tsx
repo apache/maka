@@ -254,6 +254,11 @@ export const C = lookColors(() => appearance.look());
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.idiom === 'terminal' ? 16 : 24 };
+/** A conversation's text: the body style with the look's letter spacing. */
+export const readingTextStyle = () => {
+  const spacing = letterSpacing();
+  return spacing ? { ...bodyTextStyle, letterSpacing: spacing } : bodyTextStyle;
+};
 export const secondaryTextStyle = {
   fontSize: 13,
   lineHeight: platform.idiom === 'terminal' ? 16 : 20,

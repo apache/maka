@@ -32,15 +32,7 @@ import { tr } from './locale';
 import { notePassage, type SideMark } from './sideQuestions';
 import { splitSpecMarkdown } from './spec/session.ts';
 import type { BindTextViewToc } from './turnToc';
-import {
-  bodyTextStyle,
-  C,
-  isDark,
-  letterSpacing,
-  lineWidth,
-  radius,
-  secondaryTextStyle,
-} from './ui';
+import { C, isDark, lineWidth, radius, readingTextStyle, secondaryTextStyle } from './ui';
 
 export function MarkdownBody(props: {
   row: () => Row;
@@ -163,11 +155,7 @@ export function MarkdownBody(props: {
   };
 
   // A look's letter spacing reaches a conversation's text, not its compact notes.
-  const readingStyle = () => {
-    const spacing = props.compact ? 0 : letterSpacing();
-    const base = props.compact ? secondaryTextStyle : bodyTextStyle;
-    return spacing ? { ...base, letterSpacing: spacing } : base;
-  };
+  const readingStyle = () => (props.compact ? secondaryTextStyle : readingTextStyle());
   const color = () => (props.compact && !props.fullColor ? C.muted : C.text);
   const blockGap = props.compact ? 6 : 16;
 

@@ -42,7 +42,6 @@ import {
 } from './roomMessage';
 import { createJumpHighlightValue, runJumpHighlight, useLiveMessageStyle } from './roomMotion';
 import {
-  bodyTextStyle,
   C,
   captionTextStyle,
   controlFocusStyle,
@@ -52,6 +51,8 @@ import {
   menuRowHoverStyle,
   menuRowStyle,
   radius,
+  raisedShadow,
+  readingTextStyle,
   textTooltip,
 } from './ui';
 
@@ -234,7 +235,7 @@ export function RoomMessageRow(props: {
                   />
                 }
               >
-                <Text style={{ ...bodyTextStyle, color: C.text }}>
+                <Text style={{ ...readingTextStyle(), color: C.text }}>
                   {props.message().content.text}
                 </Text>
               </If>
@@ -570,6 +571,7 @@ export function RoomMessageRow(props: {
                       borderTopRightRadius: props.isContinuation() ? radius(8) : radius(18),
                       backgroundColor: isDeleted() ? C.surface : C.card,
                       gap: 6,
+                      ...raisedShadow(),
                     }}
                   >
                     {replyQuoteBlock()}
