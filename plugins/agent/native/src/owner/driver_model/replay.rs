@@ -845,7 +845,19 @@ mod tests {
         let blob = |value: &Value| {
             let bytes = serde_json::to_vec(value).unwrap();
             let digest = maka_agent_facts::artifact::content_digest(&bytes);
-            let id = maka_event_log::content::put(&db, &digest, &bytes).unwrap();
+            db.execute(
+                "INSERT INTO contents(content_sha256,payload) VALUES(?1,?2)
+                 ON CONFLICT(content_sha256) DO NOTHING",
+                params![digest, bytes],
+            )
+            .unwrap();
+            let id: i64 = db
+                .query_row(
+                    "SELECT id FROM contents WHERE content_sha256=?1",
+                    [&digest],
+                    |r| r.get(0),
+                )
+                .unwrap();
             (id, digest)
         };
         let services = [
@@ -886,19 +898,11 @@ mod tests {
                 )
                 .unwrap();
                 db.execute(
-                    "INSERT OR IGNORE INTO agent_namespaces(owner,session) VALUES('owner','chat')",
-                    [],
+                    "INSERT INTO agent_session_history(owner,session,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
+                     VALUES('owner','chat',?,?,1,?,'prefix',?,0,?,?,?)",
+                    params![seq, run, kind, is_call, fact, !is_call, name],
                 )
                 .unwrap();
-                let ns_id: i64 = db
-                    .query_row(
-                        "SELECT id FROM agent_namespaces WHERE owner='owner' AND session='chat'",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .unwrap();
-                db.execute("INSERT INTO agent_session_history(namespace_id,sequence,run,admission_sequence,kind,prefix_digest,tool_start,opening_message,fact_id,result_source,tool_use_id)
-                    VALUES(?,?,?,1,?,'prefix',?,0,?,?,?)",params![ns_id,seq,run,kind,is_call,fact,!is_call,name]).unwrap();
             }
         }
         maka_event_log::migration::run(&db, &migrations).unwrap();
