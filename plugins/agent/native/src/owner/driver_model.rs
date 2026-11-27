@@ -139,6 +139,8 @@ struct FrozenInput {
     prompt: ContentRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     prompt_chunks: Vec<ContentRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_media: Vec<ContentRef>,
     layout: preparation::FrozenPromptLayout,
     covered_prefix: Option<CoveredPrefix>,
     normalization: Option<maka_model::ProviderKind>,
@@ -227,6 +229,7 @@ impl FrozenInput {
             run,
             &self.prompt,
             &self.prompt_chunks,
+            &self.prompt_media,
             &self.layout,
             cancellation,
         )
@@ -238,6 +241,11 @@ impl FrozenInput {
         } else {
             self.prompt_chunks.clone()
         };
+        for reference in &self.prompt_media {
+            if !refs.contains(reference) {
+                refs.push(reference.clone());
+            }
+        }
         for notice in &self.notifications {
             for reference in &notice.dependencies {
                 if !refs.contains(reference) {
@@ -927,7 +935,7 @@ impl DriverModel {
                 &self.cancellation,
             )
             .await?;
-            let (prompt_content, chunks, layout, cleanup) = snapshot.into_parts();
+            let (prompt_content, chunks, media, layout, cleanup) = snapshot.into_parts();
             let cleanup_evidence = self.cleanup.clone();
             self.workers.spawn(async move {
                 if let Err(error) = cleanup.await {
@@ -945,6 +953,7 @@ impl DriverModel {
                 language: request.request.language,
                 prompt: prompt_content,
                 prompt_chunks: chunks.iter().map(|chunk| chunk.reference().clone()).collect(),
+                prompt_media: media.iter().map(|blob| blob.reference().clone()).collect(),
                 layout,
                 covered_prefix,
                 normalization: request.request.prompt.normalization().cloned(),
@@ -1081,6 +1090,7 @@ impl DriverModel {
                         contents.push(blob);
                     }
                     contents.extend(chunks);
+                    contents.extend(media);
                     contents.extend(steering_contents);
                     contents.extend(texts);
                     contents
@@ -5075,6 +5085,35 @@ mod frozen_text_tests {
             Some(shared)
         );
         assert_eq!(hydrated.content_refs(), to_seal.content_refs());
+    }
+
+    #[test]
+    fn prompt_media_round_trips_and_pins_in_content_refs() {
+        let base = minimal_wire_value();
+        let legacy: FrozenInput = serde_json::from_value(base.clone()).unwrap();
+        assert!(legacy.prompt_media.is_empty());
+        let legacy_wire: Value = serde_json::to_value(&legacy).unwrap();
+        assert!(
+            legacy_wire.get("promptMedia").is_none(),
+            "empty promptMedia must stay omitted on wire: {legacy_wire}"
+        );
+
+        let media_a = ContentBlob::new(b"png-bytes-a".to_vec())
+            .reference()
+            .clone();
+        let media_b = ContentBlob::new(b"png-bytes-b".to_vec())
+            .reference()
+            .clone();
+        let mut with_media: FrozenInput = serde_json::from_value(base).unwrap();
+        with_media.prompt_media = vec![media_a.clone(), media_b.clone(), media_a.clone()];
+        let refs = with_media.content_refs();
+        assert_eq!(refs.iter().filter(|r| **r == media_a).count(), 1);
+        assert_eq!(refs.iter().filter(|r| **r == media_b).count(), 1);
+
+        let encoded = serde_json::to_vec(&with_media).unwrap();
+        let decoded: FrozenInput = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.prompt_media, with_media.prompt_media);
+        assert_eq!(decoded.content_refs(), refs);
     }
 
     #[test]

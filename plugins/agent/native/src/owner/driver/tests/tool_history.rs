@@ -1452,6 +1452,12 @@ async fn ended_calls_with_unknown_results_reach_the_model_and_settle_the_run() {
             run,
             &serde_json::from_value(frozen["prompt"].clone())?,
             &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
+            &frozen
+                .get("promptMedia")
+                .cloned()
+                .map(serde_json::from_value::<Vec<_>>)
+                .transpose()?
+                .unwrap_or_default(),
             &serde_json::from_value(frozen["layout"].clone())?,
             &CancellationToken::new(),
         )
@@ -5925,6 +5931,462 @@ async fn recall_jump_anchors_verify_for_executor_deltas_and_hidden_facts() {
             )
             .await?;
         assert_eq!(raw.hits.len(), 1);
+
+        Ok::<_, Box<dyn Error + Send + Sync>>(())
+    }))
+    .catch_unwind()
+    .await;
+    let cleanup = rig.finish().await;
+    assert!(matches!(&result, Ok(Ok(Ok(())))), "{result:?}");
+    assert!(cleanup.is_empty(), "{cleanup:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frozen_prompt_externalizes_and_deduplicates_media_with_tamper_guards() {
+    use maka_agent_engine::preparation;
+    use maka_agent_facts::model::prompt_source::source::{
+        ContentRecipe, MessageRecipe, SourceBytes, ToolOutputRecipe, json as prompt_json,
+    };
+    use maka_model::prompt::{ContentPart, FileData, Message, ToolOutput};
+
+    async fn read_all_bytes(
+        source: &SourceBytes,
+        budget: &Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>,
+    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut cursor = source.open(budget.clone());
+        let mut buf = budget.allocate(32 * 1024).await?;
+        let mut out = Vec::new();
+        loop {
+            let read = cursor.read_chunk(buf).await?;
+            out.extend_from_slice(&read.buffer.as_ref()[..read.bytes_read]);
+            buf = read.buffer;
+            if read.eof {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    let mut rig = Rig::new().unwrap();
+    let result = AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(60), async {
+        let session = rig.start().await?;
+        rig.assemble(&session).await?;
+        let driver = rig.driver.as_ref().unwrap();
+        let owner = driver.owner.run_owner();
+        let run = driver.access.execution().run_id;
+        let resources = driver.owner.services.model_preparation_resources();
+        let io = || preparation::PreparationIo::new(&rig.lease.as_ref().unwrap().store());
+
+        // Two distinct 96 KiB incompressible synthetic payloads (equal length to test swap detection).
+        let image_a: Vec<u8> = (0..(96 * 1024))
+            .map(|i| ((i * 31 + 17) ^ (i >> 3)) as u8)
+            .collect();
+        let image_b: Vec<u8> = (0..(96 * 1024))
+            .map(|i| ((i * 53 + 99) ^ (i >> 5)) as u8)
+            .collect();
+        let expected_ref_a = ContentBlob::new(image_a.clone()).reference().clone();
+        let expected_ref_b = ContentBlob::new(image_b.clone()).reference().clone();
+        let b64_a = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_a);
+        let b64_b = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image_b);
+
+        let build_prompt = |system_text: &str| {
+            let system_text = system_text.to_owned();
+            let b64_a = b64_a.clone();
+            let b64_b = b64_b.clone();
+            let resources = resources.clone();
+            let io_val = io().unwrap();
+            async move {
+                let mut builder =
+                    preparation::PromptBuilder::new(io_val, resources, &CancellationToken::new())
+                        .await?;
+                builder
+                    .append(Message::System {
+                        content: system_text,
+                        provider_options: None,
+                    })
+                    .await?;
+                builder
+                    .append(Message::User {
+                        content: vec![
+                            ContentPart::Text {
+                                text: "inspect screenshot A".into(),
+                                provider_options: None,
+                            },
+                            ContentPart::File {
+                                data: FileData::Data(b64_a.clone()),
+                                media_type: "image/png".into(),
+                                provider_options: Some(
+                                    json!({ "openai": { "imageDetail": "high" } }),
+                                ),
+                            },
+                        ],
+                        provider_options: None,
+                    })
+                    .await?;
+                builder
+                    .append(Message::tool(
+                        "call-img-1",
+                        "screenshot",
+                        ToolOutput::Content(vec![
+                            ContentPart::Text {
+                                text: "captured again".into(),
+                                provider_options: None,
+                            },
+                            ContentPart::File {
+                                data: FileData::Data(b64_a),
+                                media_type: "image/png".into(),
+                                provider_options: None,
+                            },
+                        ]),
+                    ))
+                    .await?;
+                builder
+                    .append(Message::User {
+                        content: vec![ContentPart::File {
+                            data: FileData::Data(b64_b),
+                            media_type: "image/webp".into(),
+                            provider_options: None,
+                        }],
+                        provider_options: None,
+                    })
+                    .await?;
+                builder.finish().await
+            }
+        };
+
+        // 1. Snapshot prompt with repeated image A (user + tool) and distinct image B.
+        let live_prompt = build_prompt("system-prefix-v1").await?;
+        let live_model = live_prompt.model();
+        let live_identity = live_model.identity().to_owned();
+        let snap1 = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &live_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        live_prompt.close().await?;
+        let (ref1, chunks1, media1, layout1, cleanup1) = snap1.into_parts();
+
+        assert_eq!(layout1.version, 3, "media-bearing prompt must use Layout v3");
+        assert_eq!(
+            media1.len(),
+            2,
+            "repeated image A must deduplicate into one media blob"
+        );
+        assert_eq!(media1[0].reference(), &expected_ref_a);
+        assert_eq!(media1[1].reference(), &expected_ref_b);
+        let total_chunk_bytes: u64 = chunks1.iter().map(|c| c.reference().bytes).sum();
+        assert!(
+            total_chunk_bytes < 8 * 1024,
+            "chunks must hold only compact refs, not base64 or raw images (got {total_chunk_bytes} bytes)"
+        );
+
+        // 2. Shifting an earlier system-prompt byte must keep media ContentRefs identical.
+        let shifted_prompt = build_prompt("system-prefix-v1-shifted-by-bytes").await?;
+        let shifted_model = shifted_prompt.model();
+        let snap2 = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &shifted_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        shifted_prompt.close().await?;
+        let (_ref2, chunks2, media2, layout2, cleanup2) = snap2.into_parts();
+        assert_eq!(layout2.version, 3);
+        assert_eq!(media2.len(), 2);
+        assert_eq!(media2[0].reference(), &expected_ref_a);
+        assert_eq!(media2[1].reference(), &expected_ref_b);
+        drop(chunks2);
+        drop(media2);
+        cleanup2.await?;
+
+        // Build a text-only Layout v3 snapshot so we can persist its chunks alongside snap1
+        // and verify paired legacy v2 restore (empty media OK vs non-empty media explicit error).
+        let mut text_builder =
+            preparation::PromptBuilder::new(io()?, resources.clone(), &CancellationToken::new())
+                .await?;
+        text_builder.append(Message::user("plain text only")).await?;
+        let text_prompt = text_builder.finish().await?;
+        let text_model = text_prompt.model();
+        let text_snap = preparation::snapshot_prompt(
+            io()?,
+            resources.clone(),
+            &text_model,
+            &CancellationToken::new(),
+        )
+        .await?;
+        text_prompt.close().await?;
+        let (t_ref, t_chunks, t_media, t_layout, t_cleanup) = text_snap.into_parts();
+        assert_eq!(
+            t_layout.version, 3,
+            "all new frozen prompt snapshots must emit Layout v3 uniformly"
+        );
+        assert!(t_media.is_empty());
+        let t_chunk_refs: Vec<_> = t_chunks.iter().map(|c| c.reference().clone()).collect();
+
+        // 3. Persist chunks + media into SQLite via StepPrepared request_contents and verify live restore.
+        let chunk_refs1: Vec<_> = chunks1.iter().map(|c| c.reference().clone()).collect();
+        let media_refs1: Vec<_> = media1.iter().map(|m| m.reference().clone()).collect();
+        let placeholder = ContentBlob::json(&json!({"kind": "media-test-placeholder"}))?;
+        let surface_blob = ContentBlob::json(&json!({"tools": [], "sources": []}))?;
+        let view = driver.state.frontier(run).await?;
+        let mut all_refs = chunk_refs1.clone();
+        all_refs.extend(media_refs1.clone());
+        all_refs.extend(t_chunk_refs.iter().cloned());
+        let step = StepId::new();
+        let step_spec = RequestSpec {
+            memory_replay: Default::default(),
+            schema_version: SCHEMA_VERSION,
+            step,
+            composition: RequestComposition {
+                surface: surface_blob.reference().clone(),
+                dynamic_context: Vec::new(),
+                tool_catalog_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+                provider_options: None,
+                max_output_tokens: Some(256),
+            },
+            accounting: maka_agent_facts::accounting::ModelEvidence {
+                binding: maka_agent_facts::execution::ModelBinding {
+                    connection_id: "test-conn".into(),
+                    connection_slug: "test".into(),
+                    model: "test-model".into(),
+                },
+                model_id: "test-model".into(),
+                purpose: ModelPurpose::Main,
+                quote: None,
+            },
+            summary_repair_of: None,
+            compaction_recovery: None,
+            source_capture: placeholder.reference().clone(),
+            source_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            effective_source_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            provenance: placeholder.reference().clone(),
+            tool_contracts: None,
+            projection: None,
+            adjudications: Vec::new(),
+            steering: Vec::new(),
+            request: placeholder.reference().clone(),
+            request_contents: all_refs,
+            recovery_contract: placeholder.reference().clone(),
+            protocol: "maka.test".into(),
+            protocol_version: 1,
+        };
+        let step_blob = ContentBlob::json(&step_spec)?;
+        let step_ref = step_blob.reference().clone();
+        let mut persist_blobs = vec![placeholder, surface_blob, step_blob];
+        persist_blobs.extend(chunks1);
+        persist_blobs.extend(media1);
+        persist_blobs.extend(t_chunks);
+        driver
+            .state
+            .append(
+                driver.access.claim(),
+                (&view).into(),
+                vec![Change::new(
+                    Fact::StepPrepared {
+                        step,
+                        request: step_ref,
+                        adjudications: Vec::new(),
+                    },
+                    at(),
+                )],
+                persist_blobs,
+            )
+            .await?;
+        cleanup1.await?;
+        t_cleanup.await?;
+
+        let history = driver.state.session_history(owner, session.clone());
+        let cut = history.capture().await?;
+        let restored = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &ref1,
+            &chunk_refs1,
+            &media_refs1,
+            &layout1,
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(
+            restored.model().identity(),
+            live_identity,
+            "restored Layout v3 prompt identity must match v2 inline prompt bit-for-bit"
+        );
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let mut observed_media = Vec::new();
+        let mut messages = restored.recipes().ok_or("restored recipes missing")?.open(0);
+        while let Some(msg) = messages.next().await? {
+            match msg {
+                MessageRecipe::User { content, .. } => {
+                    let mut parts = content.open(0);
+                    while let Some(part) = parts.next().await? {
+                        if let ContentRecipe::Media { media, .. } = part {
+                            let bytes = read_all_bytes(&media.bytes, &budget).await?;
+                            let is_png =
+                                prompt_json::text_eq(&media.media_type, "image/png", budget.clone())
+                                    .await?;
+                            let is_high = match media.detail {
+                                Some(d) => prompt_json::text_eq(&d, "high", budget.clone()).await?,
+                                None => false,
+                            };
+                            observed_media.push(("user", bytes, is_png, is_high));
+                        }
+                    }
+                }
+                MessageRecipe::Tool { content, .. } => {
+                    let mut results = content.open(0);
+                    while let Some(res) = results.next().await? {
+                        if let ToolOutputRecipe::Content(parts_src) = res.output {
+                            let mut parts = parts_src.open(0);
+                            while let Some(part) = parts.next().await? {
+                                if let ContentRecipe::Media { media, .. } = part {
+                                    let bytes = read_all_bytes(&media.bytes, &budget).await?;
+                                    let is_png = prompt_json::text_eq(
+                                        &media.media_type,
+                                        "image/png",
+                                        budget.clone(),
+                                    )
+                                    .await?;
+                                    observed_media.push(("tool", bytes, is_png, false));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        drop((budget, work));
+        restored.close().await?;
+        assert_eq!(observed_media.len(), 3);
+        assert_eq!(observed_media[0].0, "user");
+        assert_eq!(observed_media[0].1, image_a);
+        assert!(observed_media[0].2 && observed_media[0].3);
+        assert_eq!(observed_media[1].0, "tool");
+        assert_eq!(observed_media[1].1, image_a);
+        assert!(observed_media[1].2);
+        assert_eq!(observed_media[2].0, "user");
+        assert_eq!(observed_media[2].1, image_b);
+        assert!(!observed_media[2].2);
+
+        // 4. Restore boundary guards must fail closed BEFORE returning PreparedPrompt.
+        // 4a. Swapped equal-length media refs fail at restore boundary.
+        let swapped = vec![media_refs1[1].clone(), media_refs1[0].clone()];
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &swapped,
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "swapped equal-length prompt_media refs must fail at restore boundary"
+        );
+
+        // 4b. Media-bearing v3 prompt with missing media fails at restore boundary.
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &[],
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "v3 prompt referencing external media must fail at restore boundary when media refs are missing"
+        );
+
+        // 4c. Extra unreferenced trailing pinned media ref fails at restore boundary.
+        let extra = vec![
+            media_refs1[0].clone(),
+            media_refs1[1].clone(),
+            media_refs1[0].clone(),
+        ];
+        assert!(
+            preparation::restore_prompt(
+                io()?,
+                resources.clone(),
+                &history,
+                &cut,
+                run,
+                &ref1,
+                &chunk_refs1,
+                &extra,
+                &layout1,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err(),
+            "v3 prompt with extra unreferenced media slot must fail at restore boundary"
+        );
+
+        // 4d. Legacy v2 paired assertions on persisted chunks: empty media restores cleanly,
+        //     non-empty media fails with the explicit legacy-v2 version error.
+        let mut legacy_v2_layout = t_layout.clone();
+        legacy_v2_layout.version = 2;
+        let restored_v2 = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &t_ref,
+            &t_chunk_refs,
+            &[],
+            &legacy_v2_layout,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let mut v2_msgs = restored_v2.recipes().ok_or("v2 recipes missing")?.open(0);
+        let work = resources.acquire_work().await?;
+        let budget = work.budget();
+        let Some(MessageRecipe::User { content, .. }) = v2_msgs.next().await? else {
+            return Err("expected user message in restored v2 prompt".into());
+        };
+        let Some(ContentRecipe::Text { text, .. }) = content.open(0).next().await? else {
+            return Err("expected text part in restored v2 prompt".into());
+        };
+        assert!(prompt_json::text_eq(&text, "plain text only", budget).await?);
+        drop(work);
+        restored_v2.close().await?;
+
+        let bad_v2 = preparation::restore_prompt(
+            io()?,
+            resources.clone(),
+            &history,
+            &cut,
+            run,
+            &t_ref,
+            &t_chunk_refs,
+            &media_refs1,
+            &legacy_v2_layout,
+            &CancellationToken::new(),
+        )
+        .await;
+        let Err(maka_agent_engine::RunError::InvalidInput(msg)) = bad_v2 else {
+            return Err("expected InvalidInput for v2 layout with non-empty media".into());
+        };
+        assert!(msg.contains("legacy v2"), "unexpected error message: {msg}");
 
         Ok::<_, Box<dyn Error + Send + Sync>>(())
     }))

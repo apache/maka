@@ -2299,13 +2299,15 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
         host.quit(&mut client).await.expect("Host quit");
 
         // Verify the exact post-upgrade continuation run newly inserted PR 5 zstd-compressed
-        // contents rows (id > pre_upgrade_max_content_id) and wrote PR 6 out-of-line toolContracts.
+        // contents rows (id > pre_upgrade_max_content_id), wrote PR 6 out-of-line toolContracts,
+        // and emitted PR 8 Layout v3 FrozenInput payloads after upgrading legacy v2 capsules.
         {
             let mut dbs = Vec::new();
             collect_sqlite_files(&dirs.root, &mut dbs);
             let mut matched_continuation_run = false;
             let mut saw_newly_inserted_compressed = false;
             let mut saw_compact_request_spec = false;
+            let mut saw_layout_v3_request = false;
             for db in dbs {
                 let conn =
                     Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
@@ -2374,6 +2376,31 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
                     {
                         saw_compact_request_spec = true;
                     }
+                    let req_digest = parsed
+                        .get("request")
+                        .and_then(|v| v.get("digest"))
+                        .and_then(Value::as_str)
+                        .expect("RequestSpec.request.digest must be present");
+                    let frozen_raw: String = conn
+                        .query_row(
+                            "SELECT maka_content_text(payload, encoding)
+                             FROM contents
+                             WHERE content_sha256 = ?1",
+                            [req_digest],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    let frozen: Value = serde_json::from_str(&frozen_raw).unwrap();
+                    let layout_version = frozen
+                        .get("layout")
+                        .and_then(|v| v.get("version"))
+                        .and_then(Value::as_u64);
+                    assert_eq!(
+                        layout_version,
+                        Some(3),
+                        "post-upgrade continuation run {continuation_run_id} must emit Layout v3 FrozenInput"
+                    );
+                    saw_layout_v3_request = true;
                 }
             }
             assert!(
@@ -2387,6 +2414,10 @@ async fn verify_capsule(bin: &Path, capsule_dir: &Path) {
             assert!(
                 saw_compact_request_spec,
                 "post-upgrade continuation run {continuation_run_id} must write out-of-line RequestSpec.toolContracts"
+            );
+            assert!(
+                saw_layout_v3_request,
+                "post-upgrade continuation run {continuation_run_id} must record at least one Layout v3 FrozenInput"
             );
         }
 

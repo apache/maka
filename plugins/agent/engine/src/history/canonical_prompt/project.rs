@@ -220,11 +220,28 @@ async fn index_content(
         r[1] = store.text_node(f.text(1)?).await?;
         r[2] = store.json_node(f.json(4)).await?;
     } else {
-        r[0] = 2;
-        let data = Fields::open(&f.value(2)?.source, &["data"], budget).await?;
-        let range = decode_media(store, data.text(0)?, budget, cancel).await?;
-        r[1] = range.start;
-        r[2] = range.end;
+        let data = Fields::open(
+            &f.value(2)?.source,
+            &["type", "data", "digest", "bytes"],
+            budget,
+        )
+        .await?;
+        if data.is(0, "ref", budget).await? {
+            let digest_text = read_bounded_text(data.text(2)?, 128, budget, cancel).await?;
+            let expected_bytes = json::u64_value(&data.value(3)?.source, budget.clone()).await?;
+            let (slot, digest_bytes) = store.lookup_external_media(&digest_text, expected_bytes)?;
+            r[0] = 3;
+            r[1] = slot as u64;
+            r[2] = expected_bytes;
+            put_digest(&mut r[6..10], digest_bytes);
+        } else if data.is(0, "data", budget).await? {
+            r[0] = 2;
+            let range = decode_media(store, data.text(1)?, budget, cancel).await?;
+            r[1] = range.start;
+            r[2] = range.end;
+        } else {
+            return Err(invalid());
+        }
         r[3] = store.text_node(f.text(3)?).await?;
         if let Some(options) = f.json(4)
             && let Some(detail) =
@@ -374,6 +391,37 @@ fn index_result<'a>(
         Ok(r)
     })
 }
+async fn read_bounded_text(
+    source: TextSource,
+    max_bytes: usize,
+    budget: &Arc<dyn SourceBudget>,
+    cancel: &CancellationToken,
+) -> io::Result<String> {
+    let mut cursor = text::cursor(source, budget.clone());
+    let mut buffer = budget.allocate(max_bytes.clamp(64, 4096)).await?;
+    let mut out = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(crate::preparation_cancelled(
+                "canonical media capture cancelled",
+            ));
+        }
+        let read = cursor.read_chunk(buffer).await?;
+        buffer = read.buffer;
+        if out.len().saturating_add(read.bytes_read) > max_bytes {
+            return Err(invalid());
+        }
+        out.extend_from_slice(&buffer.as_ref()[..read.bytes_read]);
+        if read.eof {
+            break;
+        }
+        if read.bytes_read == 0 {
+            return Err(invalid());
+        }
+    }
+    String::from_utf8(out).map_err(|_| invalid())
+}
+
 async fn decode_media(
     store: &Store,
     data: TextSource,
@@ -560,6 +608,23 @@ impl Decode for ContentRecipe {
                     },
                     provider_options: store.read_json(r[5]).await?,
                 }),
+                3 => {
+                    let slot = usize::try_from(r[1]).map_err(|_| invalid())?;
+                    let expected_digest = digest(&r[6..10]);
+                    let bytes = store.external_media_bytes(slot, r[2], expected_digest)?;
+                    Ok(Self::Media {
+                        media: MediaSource {
+                            bytes,
+                            media_type: store.read_text(r[3]).await?,
+                            detail: if r[4] == 0 {
+                                None
+                            } else {
+                                Some(store.read_text(r[4]).await?)
+                            },
+                        },
+                        provider_options: store.read_json(r[5]).await?,
+                    })
+                }
                 _ => Err(invalid()),
             }
         })

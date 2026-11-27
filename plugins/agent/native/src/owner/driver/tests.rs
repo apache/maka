@@ -6548,6 +6548,12 @@ mod model_recovery {
                 resources.clone(), &history, &cut, target_run,
                 &serde_json::from_value(frozen["prompt"].clone())?,
                 &serde_json::from_value::<Vec<_>>(frozen["promptChunks"].clone())?,
+                &frozen
+                    .get("promptMedia")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<_>>)
+                    .transpose()?
+                    .unwrap_or_default(),
                 &serde_json::from_value(frozen["layout"].clone())?,
                 &CancellationToken::new(),
             ).await?;
