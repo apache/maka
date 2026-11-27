@@ -311,7 +311,6 @@ export function SessionFamilyTrigger(props: {
         trigger={
           <Button
             accessibilityLabel={tr('Subagents')}
-            onPress={() => open.set(!open())}
             style={{
               height: 28,
               minHeight: 28,
@@ -454,7 +453,6 @@ export function SessionFamilyBreadcrumb(props: {
         trigger={
           <Button
             accessibilityLabel={props.title()}
-            onPress={() => open.set(!open())}
             style={{
               height: 28,
               minHeight: 28,
