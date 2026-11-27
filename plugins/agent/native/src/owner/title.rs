@@ -70,6 +70,12 @@ impl Registry {
         })
     }
 
+    pub(super) fn cancel(&self, session: &str) {
+        if let Some(work) = self.active.lock().unwrap().get(session) {
+            work.cancellation.cancel();
+        }
+    }
+
     // Called under the lifecycle gate, which excludes new title admission.
     pub(super) async fn cancel_and_wait(&self, session: &str) -> Result<(), ()> {
         let work = self.active.lock().unwrap().get(session).cloned();
@@ -577,43 +583,109 @@ impl Owner {
                 }
             }
         };
-        // Main execution also moves the public revision. Retry metadata only;
-        // each attempt gives queued manual changes and shutdown a turn at the gate.
+        self.commit_automatic_title(
+            &execution.session_id,
+            &work,
+            &cancellation,
+            Some(&session.configuration.title),
+            title,
+        )
+        .await
+    }
+
+    pub(super) async fn apply_executor_title(
+        &self,
+        session_id: &str,
+        raw_title: &str,
+        custody: &dyn WorkCustody,
+        cancellation: &CancellationToken,
+    ) {
+        if !self.settings.automatic_titles
+            || self.stop.is_cancelled()
+            || cancellation.is_cancelled()
+        {
+            return;
+        }
+        let Some(title) = maka_session_title::normalize(raw_title) else {
+            return;
+        };
+        self.titles.cancel(session_id);
+        let work = match self.store.session_for_work(custody, session_id) {
+            Ok(work) => work,
+            Err(
+                maka_event_log::StoreError::SessionNotFound
+                | maka_event_log::StoreError::SessionRetired
+                | maka_event_log::StoreError::SessionBusy,
+            ) => return,
+            Err(error) => {
+                tracing::warn!(stage = "executor_title_work_unavailable", session_id, cause = %error,
+                    "Failed to open session store for executor title update");
+                return;
+            }
+        };
+        if let Err(error) = self
+            .commit_automatic_title(session_id, &work, cancellation, None, title)
+            .await
+        {
+            tracing::warn!(stage = "executor_title_update_failed", session_id, cause = %ToolError::from(error),
+                "Failed to commit executor session title");
+        }
+    }
+
+    // Main execution also moves the public revision. Retry metadata only;
+    // each attempt gives queued manual changes and shutdown a turn at the gate.
+    async fn commit_automatic_title(
+        &self,
+        session_id: &str,
+        work: &maka_event_log::SessionStore,
+        cancellation: &CancellationToken,
+        expected_title: Option<&str>,
+        title: String,
+    ) -> Result<(), TitleWorkError> {
         loop {
             let _admission = tokio::select! {
                 biased;
+                () = self.stop.cancelled() => return Ok(()),
                 () = cancellation.cancelled() => return Ok(()),
-                admission = self.runs.ordered(&execution.session_id) => admission,
+                admission = self.runs.ordered(session_id) => admission,
             };
-            let runs = tokio::select! {
-                biased;
-                () = cancellation.cancelled() => return Ok(()),
-                runs = self.runs.state() => runs,
+            let closing = {
+                let runs = tokio::select! {
+                    biased;
+                    () = self.stop.cancelled() => return Ok(()),
+                    () = cancellation.cancelled() => return Ok(()),
+                    runs = self.runs.state() => runs,
+                };
+                runs.closing
             };
-            if runs.closing || self.stop.is_cancelled() {
+            if closing || self.stop.is_cancelled() || cancellation.is_cancelled() {
                 return Ok(());
             }
-            let Some(current) = work
-                .get::<StoredSessionConfiguration>()
-                .await
-                .map_err(persistence)?
-            else {
-                return Ok(());
+            let current = match work.get::<StoredSessionConfiguration>().await {
+                Ok(Some(current)) => current,
+                Ok(None) => return Ok(()),
+                Err(
+                    maka_event_log::StoreError::SessionNotFound
+                    | maka_event_log::StoreError::SessionRetired
+                    | maka_event_log::StoreError::SessionBusy,
+                ) => return Ok(()),
+                Err(error) => return Err(persistence(error).into()),
             };
             if current.archived
                 || current.configuration.title_is_manual
-                || current.configuration.title != session.configuration.title
+                || current.configuration.title == title
+                || expected_title.is_some_and(|expected| current.configuration.title != expected)
             {
                 return Ok(());
             }
-            let title = title.clone();
+            let next_title = title.clone();
             match work
                 .update_session_metadata(
-                    &execution.session_id,
+                    session_id,
                     current.revision,
                     move |configuration: &mut StoredSessionConfiguration| {
                         if !configuration.title_is_manual {
-                            configuration.title = title;
+                            configuration.title = next_title;
                         }
                         Ok(())
                     },

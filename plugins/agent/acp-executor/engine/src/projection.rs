@@ -189,11 +189,19 @@ impl Projection {
             acp::SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = Some(update.config_options);
             }
+            acp::SessionUpdate::SessionInfoUpdate(info) => {
+                if let Some(title) = info
+                    .title
+                    .value()
+                    .and_then(|title| maka_session_title::normalize(title))
+                {
+                    emit(sink, Output::SessionTitle { title }).await?;
+                }
+            }
             // User echoes and session metadata do not form assistant output.
             acp::SessionUpdate::UserMessageChunk(_)
             | acp::SessionUpdate::AvailableCommandsUpdate(_)
             | acp::SessionUpdate::CurrentModeUpdate(_)
-            | acp::SessionUpdate::SessionInfoUpdate(_)
             | acp::SessionUpdate::UsageUpdate(_) => {}
             _ => return Err(invalid("unsupported ACP session update")),
         }
@@ -685,6 +693,49 @@ mod tests {
         );
         assert!(
             matches!(&events[3], Output::ToolResult { text, is_error: false, .. } if text == &"x".repeat(64 * 1024))
+        );
+    }
+
+    #[tokio::test]
+    async fn session_info_update_projects_normalized_titles_without_splitting_messages() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        for value in [
+            serde_json::json!({"sessionUpdate":"session_info_update","updatedAt":"2026-11-26T00:00:00Z"}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":null}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":" \t\n\u{200b}\u{202e} "}),
+            serde_json::json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello "}}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":"  cafe\u{301}\n\u{202e}two\u{200b}  "}),
+            serde_json::json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"world"}}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":"🦊".repeat(85)}),
+        ] {
+            projection.update(update(value), &sink).await.unwrap();
+        }
+        projection.finish(&sink, true).await.unwrap();
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            vec![
+                Output::MessageStart {
+                    message_id: "4:turn:message:0".into()
+                },
+                Output::OutputDelta {
+                    message_id: "4:turn:message:0".into(),
+                    text: "hello ".into()
+                },
+                Output::SessionTitle {
+                    title: "café two".into()
+                },
+                Output::OutputDelta {
+                    message_id: "4:turn:message:0".into(),
+                    text: "world".into()
+                },
+                Output::SessionTitle {
+                    title: "🦊".repeat(80)
+                },
+                Output::MessageEnd {
+                    message_id: "4:turn:message:0".into()
+                },
+            ]
         );
     }
 }

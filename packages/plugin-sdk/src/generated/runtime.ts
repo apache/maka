@@ -1176,6 +1176,10 @@ export type ExecutorOutput =
   | {
       type: 'turn_usage';
       usage: ExecutorTurnUsage;
+    }
+  | {
+      type: 'session_title';
+      title: string;
     };
 export type ProtocolProcessProgress =
   | {

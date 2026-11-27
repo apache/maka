@@ -61762,6 +61762,20 @@ export const contracts: {
                     },
                     required: ['type', 'usage'],
                   },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'session_title',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'title'],
+                  },
                 ],
                 description:
                   'External tool activity is observation, never a request to dispatch a Host tool.',
@@ -62113,6 +62127,20 @@ export const contracts: {
                       },
                     },
                     required: ['type', 'usage'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'session_title',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['type', 'title'],
                   },
                 ],
                 description:

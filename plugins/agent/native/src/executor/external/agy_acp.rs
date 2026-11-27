@@ -185,6 +185,13 @@ impl Protocol<'_> {
         {
             turn.event(event, self.output.as_ref()).await?;
         }
+        if let Some(event) = io
+            .setup_title
+            .take()
+            .filter(|e| e["params"]["sessionId"] == session)
+        {
+            turn.event(event, self.output.as_ref()).await?;
+        }
         let outcome = turn
             .observe(io, self.output.as_ref(), &self.bridge)
             .await
@@ -663,6 +670,14 @@ fn usage(result: &Value) -> Option<TurnUsage> {
     })
 }
 
+pub(super) fn is_valid_session_title_update(event: &Value) -> bool {
+    event
+        .pointer("/params/update/title")
+        .and_then(Value::as_str)
+        .and_then(maka_session_title::normalize)
+        .is_some()
+}
+
 pub(super) async fn replay(
     context: bool,
     session: &str,
@@ -700,19 +715,28 @@ pub(super) async fn replay(
     // Setup may replay history or a prior instructions-only prompt. Its final RPC
     // acknowledgement precedes the current prompt, which is the only turn projected.
     let mut setup_usage = None;
+    let mut setup_title = None;
     let mut model = None;
     loop {
         let event = stream.required().await?;
         if let Some(current) = active_model(&event["result"]) {
             model = Some(current);
         }
-        if context
-            && event["method"] == "session/update"
-            && event["params"]["sessionId"] == session
-            && event["params"]["update"]["sessionUpdate"] == "usage_update"
-        {
-            setup_usage = Some(event);
-            continue;
+        if event["method"] == "session/update" && event["params"]["sessionId"] == session {
+            match event
+                .pointer("/params/update/sessionUpdate")
+                .and_then(Value::as_str)
+            {
+                Some("usage_update") if context => {
+                    setup_usage = Some(event);
+                    continue;
+                }
+                Some("session_info_update") if is_valid_session_title_update(&event) => {
+                    setup_title = Some(event);
+                    continue;
+                }
+                _ => {}
+            }
         }
         if is_response(&event, prompt_id - 1) && event.get("result").is_some() {
             break;
@@ -721,6 +745,9 @@ pub(super) async fn replay(
     let mut turn = Turn::new(session.into(), prompt_id, context);
     turn.model = model;
     if let Some(event) = setup_usage {
+        turn.event(event, output).await?;
+    }
+    if let Some(event) = setup_title {
         turn.event(event, output).await?;
     }
     loop {
@@ -909,5 +936,79 @@ mod tests {
         assert!(superseded.contains("Revised"));
         let cleared = system_prompt_text(None, true).unwrap();
         assert!(cleared.contains("previous Maka instruction blocks are now cleared"));
+    }
+
+    #[tokio::test]
+    async fn session_info_update_matches_between_live_and_replay_including_setup() {
+        let setup_title =
+            update(json!({"sessionUpdate":"session_info_update","title":"  Setup\tACP   Title  "}));
+        let events = [
+            update(json!({"sessionUpdate":"session_info_update","title":null})),
+            update(json!({"sessionUpdate":"session_info_update","title":"  \n\t "})),
+            update(
+                json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Part 1 "}}),
+            ),
+            update(json!({"sessionUpdate":"session_info_update","title":"Fixing ACP Title Sync"})),
+            update(
+                json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Part 2"}}),
+            ),
+            json!({"id":3,"result":{"stopReason":"end_turn"}}),
+        ];
+        let live = Sink::default();
+        let mut turn = Turn::new("session".into(), 3, true);
+        turn.event(setup_title.clone(), &live).await.unwrap();
+        let mut terminal = None;
+        for event in &events {
+            terminal = turn.event(event.clone(), &live).await.unwrap();
+        }
+        let replayed = Sink::default();
+        let setup_events = [
+            setup_title,
+            update(json!({"sessionUpdate":"session_info_update","title":null})),
+            update(
+                json!({"sessionUpdate":"session_info_update","updatedAt":"2026-11-26T00:00:00Z"}),
+            ),
+            json!({"id":2,"result":{"sessionId":"session"}}),
+        ];
+        let outcome = replay(
+            true,
+            "session",
+            3,
+            &mut spool([
+                json!({"id":1,"method":"initialize"}),
+                json!({"id":2,"method":"session/resume","params":{"sessionId":"session"}}),
+                json!({"id":3,"method":"session/prompt","params":{"sessionId":"session","prompt":[{"type":"text","text":"task"}]}}),
+            ]),
+            &mut spool(setup_events.into_iter().chain(events)),
+            &replayed,
+        ).await.unwrap();
+        assert!(replay::same_outcome(&terminal.unwrap(), &outcome));
+        let observations = live.0.into_inner().unwrap();
+        assert_eq!(observations, replayed.0.into_inner().unwrap());
+        assert_eq!(
+            observations,
+            vec![
+                Output::SessionTitle {
+                    title: "Setup ACP Title".into()
+                },
+                Output::MessageStart {
+                    message_id: "5:agy:3:message:0".into()
+                },
+                Output::OutputDelta {
+                    message_id: "5:agy:3:message:0".into(),
+                    text: "Part 1 ".into()
+                },
+                Output::SessionTitle {
+                    title: "Fixing ACP Title Sync".into()
+                },
+                Output::OutputDelta {
+                    message_id: "5:agy:3:message:0".into(),
+                    text: "Part 2".into()
+                },
+                Output::MessageEnd {
+                    message_id: "5:agy:3:message:0".into()
+                },
+            ]
+        );
     }
 }

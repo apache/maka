@@ -65,6 +65,9 @@ pub enum Output {
     TurnUsage {
         usage: TurnUsage,
     },
+    SessionTitle {
+        title: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -114,6 +117,10 @@ impl Output {
             | Self::ToolResult {
                 tool_call_id, text, ..
             } => (Some(tool_call_id), Some(text)),
+            Self::SessionTitle { title } => {
+                opaque(title).map_err(|_| "invalid executor session title")?;
+                (None, None)
+            }
             Self::ContextUsage(_) | Self::TurnUsage { .. } => (None, None),
         };
         if let Some(id) = id {
@@ -131,4 +138,32 @@ fn opaque(value: &str) -> Result<(), &'static str> {
         return Err("invalid executor activity identity");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_title_output_validates_and_round_trips() {
+        let valid = Output::SessionTitle {
+            title: "Fix ACP title sync".into(),
+        };
+        assert!(valid.validate().is_ok());
+        let json = serde_json::to_value(&valid).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "session_title", "title": "Fix ACP title sync"})
+        );
+        assert_eq!(serde_json::from_value::<Output>(json).unwrap(), valid);
+        for invalid in ["", "line1\nline2", "nul\0byte"] {
+            assert!(
+                Output::SessionTitle {
+                    title: invalid.into()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
 }

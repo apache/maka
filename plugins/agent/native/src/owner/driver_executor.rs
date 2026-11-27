@@ -92,6 +92,7 @@ struct Publications {
     publication: Mutex<PublicationState>,
     frozen: TaskDescriptor<FrozenInput>,
     state: Store,
+    access: Arc<super::access::RunAccess>,
     root_observation: CancellationToken,
     owner_stop: CancellationToken,
     cleanup_proof: Mutex<OperationCleanup>,
@@ -318,11 +319,28 @@ impl OutputSink for Publications {
             output
                 .validate()
                 .map_err(|error| Error::Invalid(error.into()))?;
+            let session_title = match &output {
+                maka_agent_facts::executor::Output::SessionTitle { title } => Some(title.clone()),
+                _ => None,
+            };
             self.publish(ExternalObservation::Output {
                 output,
                 model_time_ms: None,
             })
-            .await
+            .await?;
+            if let Some(title) = session_title
+                && let Some(owner) = self.access.owner.upgrade()
+            {
+                owner
+                    .apply_executor_title(
+                        &self.access.execution().session_id,
+                        &title,
+                        self.access.custody().as_ref(),
+                        &self.root_observation,
+                    )
+                    .await;
+            }
+            Ok(())
         })
     }
 }
@@ -877,6 +895,7 @@ impl DriverExecutor {
             owner_stop,
             publication_source,
             state: self.state.clone(),
+            access: self.access.clone(),
             root_observation: self.root_observation.clone(),
             authority,
             send: send.clone(),

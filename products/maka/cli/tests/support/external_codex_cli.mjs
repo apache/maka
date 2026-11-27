@@ -382,7 +382,15 @@ async function acp(id, method, params) {
       resumeRequest = id;
       return record('resume_pending', { job: 'ACP-handoff', thread });
     }
-    return reply(id, method === 'session/resume' ? {} : { sessionId: thread });
+    await reply(id, method === 'session/resume' ? {} : { sessionId: thread });
+    const resumeTitlesPath = join(process.env.HOME, 'acp-resume-title.json');
+    if (method === 'session/resume' && existsSync(resumeTitlesPath)) {
+      const updates = JSON.parse(await readFile(resumeTitlesPath, 'utf8'));
+      for (const update of updates) {
+        await event('session/update', { sessionId: thread, update });
+      }
+    }
+    return;
   }
   if (method === 'session/prompt' && params.sessionId === thread) {
     const text = params.prompt.findLast((block) => block.type === 'text').text;
@@ -399,6 +407,11 @@ async function acp(id, method, params) {
       job.label === 'ACP-child'
         ? 'MAKA_EXTERNAL_CASE {"label":"ACP-receipt"}'
         : `ACP checkpoint ${job.label}`;
+    if (Array.isArray(job.sessionInfoUpdates)) {
+      for (const update of job.sessionInfoUpdates) {
+        await event('session/update', { sessionId: thread, update });
+      }
+    }
     if (job.label !== 'ACP-followup') {
       await event('session/update', {
         sessionId: thread,

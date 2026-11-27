@@ -198,9 +198,17 @@ impl Projection {
                 self.observation(serde_json::to_string(&chunk)?, sink)
                     .await?
             }
-            acp::SessionUpdate::AvailableCommandsUpdate(_)
-            | acp::SessionUpdate::SessionInfoUpdate(_)
-            | acp::SessionUpdate::UsageUpdate(_) => {}
+            acp::SessionUpdate::SessionInfoUpdate(info) => {
+                if let Some(title) = info
+                    .title
+                    .value()
+                    .and_then(|title| maka_session_title::normalize(title))
+                {
+                    emit(sink, Output::SessionTitle { title }).await?;
+                }
+            }
+            acp::SessionUpdate::AvailableCommandsUpdate(_) | acp::SessionUpdate::UsageUpdate(_) => {
+            }
             other => {
                 self.observation(serde_json::to_string(&other)?, sink)
                     .await?
@@ -360,5 +368,31 @@ mod tests {
         assert!(!projection.completed());
         projection.accept("user".into()).unwrap();
         assert!(projection.completed());
+    }
+
+    #[tokio::test]
+    async fn session_info_update_projects_normalized_titles_and_skips_empty_or_replay() {
+        let sink = Sink::default();
+        let mut projection = Projection::new("s".into(), "turn".into());
+        let replay = serde_json::from_value(serde_json::json!({
+            "sessionId": "s",
+            "update": {"sessionUpdate": "session_info_update", "title": "Replayed title"}
+        }))
+        .unwrap();
+        projection.update(replay, &sink, true).await.unwrap();
+        for value in [
+            serde_json::json!({"sessionUpdate":"session_info_update","updatedAt":"2026-11-26T00:00:00Z"}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":null}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":" \n\t\u{200b} "}),
+            serde_json::json!({"sessionUpdate":"session_info_update","title":"  Refined\tACP   title  "}),
+        ] {
+            update(&mut projection, &sink, value).await;
+        }
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            vec![Output::SessionTitle {
+                title: "Refined ACP title".into()
+            }]
+        );
     }
 }

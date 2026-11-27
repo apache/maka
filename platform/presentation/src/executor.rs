@@ -166,7 +166,9 @@ impl Execution {
                     .ok_or(ProjectionError::Invalid("result for unknown executor tool"))?;
                 result(event, ts, event.id.clone(), id, text.clone(), *is_error)
             }
-            Output::ContextUsage(_) | Output::TurnUsage { .. } => return Ok(vec![]),
+            Output::ContextUsage(_) | Output::TurnUsage { .. } | Output::SessionTitle { .. } => {
+                return Ok(vec![]);
+            }
         };
         Ok(vec![row])
     }
