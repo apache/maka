@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { cleanup, Clipboard, computed, platform, signal, Text, View } from 'nsh';
+import { cleanup, Clipboard, computed, platform, reduceMotion, signal, Text, View } from 'nsh';
 import { Button, ContextMenu, MenuItem, TextView } from 'nsh/base';
 import { MarkdownImageView } from './MarkdownImage';
 import { MermaidView } from './MermaidView';
 import { SpecView, markdownExtensions } from './SpecView';
+import { workerLabel, shownWorkers, workerPulse } from './botWorkerStatus';
+import type { ActiveWorker } from './botTranscriptCore';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
 import { compactCopyInset, CompactReplyFooter, LocalMessageCopy } from './CompactReplyFooter';
@@ -250,17 +252,19 @@ export function BotReply(props: {
 
 /** Shown at the end of the Bot's Chat for a conversation it created that is running or waits. */
 export function BotWaiting(props: {
-  workers: () => readonly { id: string; title: string; activity: 'working' | 'waiting' }[];
+  workers: () => readonly ActiveWorker[];
   open?(id: string): void;
 }) {
+  const expanded = signal(false);
+  const toggleLabel = () =>
+    expanded()
+      ? tr('Collapse tasks')
+      : tr('Show {count} more tasks', { count: props.workers().length - 2 });
   return (
     <View style={{ width: '100%', paddingVertical: 8, gap: 8 }}>
-      <Each of={props.workers()} key={(worker) => worker.id}>
+      <Each of={shownWorkers(props.workers(), expanded())} key={(worker) => worker.id}>
         {(worker) => {
-          const label = () =>
-            worker().activity === 'waiting'
-              ? tr('{title} is waiting for your reply. Open it.', { title: worker().title })
-              : tr('{title} is working. See its progress.', { title: worker().title });
+          const label = () => workerLabel(worker(), tr);
           return (
             <Button
               disabled={!props.open}
@@ -274,10 +278,24 @@ export function BotWaiting(props: {
               }}
               onPress={() => props.open?.(worker().id)}
             >
-              <Icon
-                name="activity"
-                color={worker().activity === 'waiting' ? C.warning : C.accentText}
-              />
+              <View
+                style={{
+                  animationName: workerPulse(
+                    worker().activity,
+                    platform.idiom === 'terminal',
+                    reduceMotion(),
+                  ),
+                  animationDuration: 2000,
+                  animationIterationCount: 'infinite',
+                  animationTimingFunction: 'ease-in-out',
+                  animationFrameRate: 24,
+                }}
+              >
+                <Icon
+                  name="activity"
+                  color={worker().activity === 'waiting' ? C.warning : C.accentText}
+                />
+              </View>
               <Text
                 style={[
                   { ...captionTextStyle, color: C.text, flexShrink: 1 },
@@ -290,6 +308,17 @@ export function BotWaiting(props: {
           );
         }}
       </Each>
+      <If when={props.workers().length > 2}>
+        <Button
+          accessibilityLabel={toggleLabel()}
+          style={{ alignSelf: 'flex-start' }}
+          hoverStyle={{ backgroundColor: C.raised }}
+          focusStyle={{ backgroundColor: C.pressed }}
+          onPress={() => expanded.set(!expanded())}
+        >
+          <Text style={captionTextStyle}>{toggleLabel()}</Text>
+        </Button>
+      </If>
     </View>
   );
 }

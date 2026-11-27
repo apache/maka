@@ -553,6 +553,7 @@ impl Rig {
                 "editQueue",
                 "openBot",
                 "botOutbox",
+                "watchWorkerProgress",
                 "sessionList",
                 "sessionRead",
                 "sessionCreate",

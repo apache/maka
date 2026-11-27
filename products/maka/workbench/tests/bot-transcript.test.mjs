@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import {
@@ -45,7 +46,11 @@ const native = {
   locale: `export const tr = key => key;`,
 };
 globalThis.__botWorkersCleanup = (fn) => {
-  currentCleanup = fn;
+  const previous = currentCleanup;
+  currentCleanup = () => {
+    previous();
+    fn();
+  };
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -565,6 +570,8 @@ test('worker catalog observation cancellation rebinds without clearing current w
   const workerHost = {
     subscribe: async (endpoint, method) => {
       assert.equal(endpoint, 'agent');
+      if (method === 'watchWorkerProgress')
+        return { next: () => new Promise(() => {}), close: async () => {} };
       assert.equal(method, 'catalog');
       let pending = null;
       const queued = [];
@@ -747,4 +754,122 @@ test('Bot Chat hidden rows resolve to their Trajectory record once reading switc
   const target = trajectoryByKey().get(key);
   assert.equal(target?.kind, 'trajectory-record');
   assert.equal(target?.rowId, assistantId);
+});
+
+test('worker rows keep their session targets, localized status and motion preference', async () => {
+  const { workerLabel, shownWorkers, workerPulse } = await import('../app/botWorkerStatus.ts');
+  const sessions = ['a', 'b', 'c'].map((id, i) => ({
+    id,
+    title: id,
+    activity: i === 2 ? 'waiting' : 'working',
+    parentSessionId: 'bot',
+    archived: false,
+  }));
+  const rows = activeWorkers(
+    sessions,
+    'bot',
+    new Map([
+      ['a', { kind: 'command', detail: 'cargo test' }],
+      ['c', { kind: 'approval' }],
+    ]),
+  );
+  const translate = (key, args) => key.replace('{detail}', args?.detail ?? '');
+  assert.deepEqual(
+    shownWorkers(rows, false).map((row) => row.id),
+    ['c', 'a'],
+  );
+  assert.deepEqual(
+    shownWorkers(rows, true).map((row) => row.id),
+    ['c', 'a', 'b'],
+  );
+  assert.deepEqual(
+    rows.map((r) => workerLabel(r, translate)),
+    ['c · Waiting for approval', 'a · Worker running · Running cargo test', 'b · Worker running'],
+  );
+  assert.equal(shownWorkers(rows.slice(1, 2), false)[0].id, 'a');
+  assert.equal(workerPulse('working', false, false), 'pulse');
+  assert.equal(workerPulse('working', true, false), 'none');
+  assert.equal(workerPulse('working', false, true), 'none');
+  assert.equal(workerPulse('waiting', false, false), 'none');
+});
+
+test('worker rows use translated status text in every Workbench locale', async () => {
+  const { workerLabel } = await import('../app/botWorkerStatus.ts');
+  const dir = new URL('../locales/', import.meta.url);
+  const read = (file) => JSON.parse(readFileSync(new URL(file, dir), 'utf8'));
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.json'))) {
+    const messages = file === 'zh-HK.json' ? { ...read('zh-TW.json'), ...read(file) } : read(file);
+    const tr = (key, args) => {
+      assert.ok(messages[key], `${file} is missing ${key}`);
+      return messages[key].replace('{detail}', args?.detail ?? '');
+    };
+    const worker = { title: 'task1', activity: 'working' };
+    for (const kind of ['thinking', 'generating', 'command', 'tool', 'read', 'edit']) {
+      const label = workerLabel({ ...worker, progress: { kind, detail: 'cargo test' } }, tr);
+      if (file === 'zh-CN.json' && kind === 'command')
+        assert.equal(label, 'task1 · 处理中 · 正在运行 cargo test');
+    }
+    for (const kind of ['question', 'approval', 'permission', 'form'])
+      workerLabel({ ...worker, activity: 'waiting', progress: { kind } }, tr);
+    tr('Collapse tasks');
+    tr('Show {count} more tasks');
+  }
+});
+
+test('worker progress subscription merges ordered deltas independently of catalog pages', async () => {
+  let deliver;
+  let closed = false;
+  const host = {
+    subscribe: async (_, method, input) => {
+      if (method === 'catalog') return { next: () => new Promise(() => {}), close: async () => {} };
+      assert.equal(method, 'watchWorkerProgress');
+      assert.deepEqual(input, { parentSessionId: 'bot' });
+      return {
+        next: () =>
+          new Promise((resolve) => {
+            deliver = resolve;
+          }),
+        close: async () => {
+          closed = true;
+        },
+      };
+    },
+    query: () => assert.fail('progress updates must not refresh the catalog'),
+  };
+  const workers = createBotWorkers(
+    host,
+    () => 'bot',
+    () => true,
+  );
+  await settle();
+  const row = { sessionId: 'child', runId: 'one', seq: 3, kind: 'command', detail: 'cargo test' };
+  deliver({ snapshot: true, upsert: [row], remove: [] });
+  await settle();
+  deliver({ snapshot: false, upsert: [{ ...row, seq: 2, detail: 'obsolete' }], remove: [] });
+  await settle();
+  assert.deepEqual(workers.progress().get('child'), row);
+  deliver({
+    snapshot: false,
+    upsert: [{ ...row, runId: 'two', seq: 5, kind: 'working', detail: '' }],
+    remove: [],
+  });
+  await settle();
+  deliver({ snapshot: false, upsert: [{ ...row, seq: 4 }], remove: [] });
+  await settle();
+  assert.equal(workers.progress().get('child').runId, 'two');
+  const catalog = { id: 'child', parentSessionId: 'bot', title: 'Task', archived: false };
+  for (const [activity, kind, expected, seq] of [
+    ['working', 'approval', 'waiting', 6],
+    ['waiting', 'command', 'working', 7],
+  ]) {
+    deliver({ snapshot: false, upsert: [{ ...row, runId: 'two', seq, kind }], remove: [] });
+    await settle();
+    const [worker] = activeWorkers([{ ...catalog, activity }], 'bot', workers.progress());
+    assert.equal(worker.activity, expected);
+  }
+  deliver({ snapshot: false, upsert: [], remove: ['child'] });
+  await settle();
+  assert.equal(workers.progress().size, 0);
+  currentCleanup();
+  assert.equal(closed, true);
 });

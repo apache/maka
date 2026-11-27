@@ -190,6 +190,8 @@ export type RuntimeProtocol =
   | AgentGoalView
   | AgentGoalChange
   | AgentGoalResult
+  | AgentWorkerProgressRead
+  | AgentWorkerProgressFrame
   | AgentChecklistRead
   | AgentChecklist
   | AgentRecapRead
@@ -2499,6 +2501,19 @@ export type AgentGoalResult =
       kind: 'rejected';
       reason: string;
     };
+export type AgentWorkerProgressKind =
+  | 'working'
+  | 'thinking'
+  | 'generating'
+  | 'summary'
+  | 'command'
+  | 'edit'
+  | 'read'
+  | 'tool'
+  | 'approval'
+  | 'question'
+  | 'form'
+  | 'permission';
 export type AgentTodoStatus = 'pending' | 'in_progress' | 'completed';
 export type AgentRecapReceipt =
   | {
@@ -7671,6 +7686,23 @@ export interface BindingStamp {
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
+}
+export interface AgentWorkerProgressRead {
+  parentSessionId: string;
+}
+export interface AgentWorkerProgressFrame {
+  snapshot: boolean;
+  upsert: AgentWorkerProgress[];
+  remove: string[];
+  [k: string]: unknown | undefined;
+}
+export interface AgentWorkerProgress {
+  sessionId: string;
+  runId: RunId;
+  seq: number;
+  kind: AgentWorkerProgressKind;
+  detail: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentChecklistRead {
   sessionId: string;

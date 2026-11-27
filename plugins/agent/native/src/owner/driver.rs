@@ -1276,6 +1276,22 @@ impl DriverPorts for NativeDriver {
             };
             let effects = self.original_effects.clone();
             let (custody, future) = running.execute();
+            let progress = self
+                .access
+                .worker_progress()
+                .filter(|_| !matches!(tool.call.name.as_str(), "exec" | "wait"))
+                .map(|run| {
+                    run.track(
+                        format!("native/{sequence}"),
+                        super::worker_progress::tool(
+                            &tool.call.name,
+                            tool.call
+                                .input
+                                .as_json()
+                                .unwrap_or(&serde_json::Value::Null),
+                        ),
+                    )
+                });
             let original = effects.own(custody, tool.key, selected, source);
             let cleanup = self.cleanup.clone();
             let (reply, observation) = oneshot::channel();
@@ -1289,6 +1305,7 @@ impl DriverPorts for NativeDriver {
                     cleanup.observe_tool(error);
                 }
                 let result = effects.complete(original, result, local).await;
+                drop(progress);
                 let _ = reply.send(result);
             });
             observation

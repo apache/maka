@@ -4861,6 +4861,11 @@ export interface ServiceMethods {
       input: Runtime.AgentScheduleRead;
       output: Runtime.AgentSchedules;
     };
+    watchWorkerProgress: {
+      mode: 'subscription';
+      input: Runtime.AgentWorkerProgressRead;
+      output: Runtime.AgentWorkerProgressFrame;
+    };
     withdrawSubmission: {
       mode: 'mutation';
       input: {
