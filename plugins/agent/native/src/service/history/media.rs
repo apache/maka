@@ -214,7 +214,7 @@ pub(crate) async fn attachment_image(
     scope: &Scope,
     input: ui::AttachmentImageRead,
 ) -> Result<ui::AttachmentImagePage, String> {
-    let before = authorize(owner, scope, &input.session_id, None).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let image = match &input.source {
         ui::AttachmentImageSource::Room {
             message_id,
@@ -298,7 +298,7 @@ pub(crate) async fn attachment_image(
             .await?
         }
     };
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let mut page = ui::AttachmentImagePage::Ready {
         source: input.source,
         offset: input.offset,
@@ -369,7 +369,7 @@ pub(crate) async fn tool_image(
     scope: &Scope,
     input: ui::ToolImageRead,
 ) -> Result<ui::ToolImagePage, String> {
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
         .await
@@ -384,7 +384,7 @@ pub(crate) async fn tool_image(
     ensure_visible(owner, scope, &tree, &input.position).await?;
     let reference = stream::selected_image(&selected, input.image, &scope.cancellation).await?;
     let image = historical(owner, scope, &selected, &reference, input.offset).await?;
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     let mut page = ui::ToolImagePage::Ready {
         through: cut.through_sequence,
         position: input.position,

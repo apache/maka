@@ -365,50 +365,7 @@ impl Owner {
         }
         management(scope)
     }
-    pub(crate) async fn history_read_start(&self, call: &Scope) -> Result<Option<u64>, String> {
-        if call.identity.agent().is_none() {
-            return Ok(None);
-        }
-        self.memory_data(call)?
-            .query(stored::reads::SearchVisibility)
-            .await
-            .map(Some)
-            .map_err(|e| e.to_string())
-    }
-    pub(crate) async fn record_history_read(
-        &self,
-        call: &Scope,
-        session: &str,
-        before: Option<u64>,
-    ) -> Result<Option<u64>, String> {
-        self.record_history_sources(
-            call,
-            stored::reads::HistorySources::session(session),
-            before,
-        )
-        .await
-    }
-    pub(crate) async fn record_history_sources(
-        &self,
-        call: &Scope,
-        sources: stored::reads::HistorySources,
-        before: Option<u64>,
-    ) -> Result<Option<u64>, String> {
-        if let Some(execution) = call.identity.agent() {
-            return self
-                .memory_data(call)?
-                .write(stored::reads::RecordHistory {
-                    sources,
-                    before,
-                    owner: self.run_owner(),
-                    execution: execution.clone(),
-                })
-                .await
-                .map(Some)
-                .map_err(|e| e.to_string());
-        }
-        Ok(None)
-    }
+
     pub(super) async fn record_memory_reads(
         &self,
         call: &Scope,

@@ -25,7 +25,7 @@ pub(crate) async fn search(
     scope: &Scope,
     input: ui::HistorySearch,
 ) -> Result<ui::HistorySearchPage, String> {
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
         .await
@@ -66,7 +66,7 @@ pub(crate) async fn search(
         }
         request.after = page.next_after;
     };
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistorySearchPage::Ready {
         through: cut.through_sequence,
         matches: page
@@ -96,7 +96,7 @@ pub(crate) async fn landmarks(
     scope: &Scope,
     input: ui::HistoryLandmarksRead,
 ) -> Result<ui::HistoryLandmarks, String> {
-    let (history, before) = open(owner, scope, &input.session_id).await?;
+    let history = open(owner, scope, &input.session_id).await?;
     let cut = cut(&history, Some(input.through)).await?;
     let tree = maka_agent_state::session_history::source_tree::SourceTree::live(&history, &cut)
         .await
@@ -111,7 +111,7 @@ pub(crate) async fn landmarks(
             .await
             .map_err(|e| e.to_string())?;
     }
-    authorize(owner, scope, &input.session_id, before).await?;
+    authorize(owner, scope, &input.session_id).await?;
     Ok(ui::HistoryLandmarks {
         through: cut.through_sequence,
         landmarks: landmarks

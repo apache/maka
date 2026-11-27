@@ -1119,10 +1119,6 @@ async fn run_case(crash: bool) {
                 confirmed_task(&a_facts,&a_bound["task"]); confirmed_task(&b_facts,&b_bound["task"]);
                 confirmed_effect(&a_facts,&a_bound["task"],&effect,&title,&session);
                 assert!(!b_facts.iter().any(|f| f["kind"] == "external_effect"));
-                // Reopen with the v53 migration outcome for A and an unaffected journal for B.
-                rusqlite::Connection::open(rig.sandbox.root.join("runtime-rust.sqlite"))
-                    .and_then(|db| db.execute("INSERT INTO agent_memory_external_epochs(session) VALUES(?)", [&session]))
-                    .map_err(|e| e.to_string())?;
                 let (mut reopened, continuation) = phase("reopen Host before the next native turn",rig.start()).await?;
                 assert_ne!(anchor.epoch(),reopened.epoch());
                 let resumed_run = phase("send a new turn on the same Maka session",
@@ -1148,18 +1144,7 @@ async fn run_case(crash: bool) {
                     assert!(chunks.iter().any(|chunk| chunk["timing"]["executorUsage"]["totalTokens"] == expected),
                         "missing per-turn usage {expected}: {history}");
                 }
-                let rotated_run = send_native(&continuation, &session, "E", &title, false).await?;
-                let rotated = rig.controller.event("E", "ready").await?;
-                assert_ne!(rotated["thread"], ready["thread"]);
-                let pid = rotated["pid"].as_u64().unwrap();
-                rig.controller.send(pid, json!({"action":"complete"}))?;
-                terminal_state(&continuation, &session, &rotated_run, "completed").await?;
-                let wire = rig.transcript(pid).await?;
-                assert!(wire.input.iter().any(|row| row["method"] == "thread/start"));
-                assert!(!wire.input.iter().any(|row| row["method"] == "thread/resume"));
-                let turn = wire.input.iter().find(|row| row["method"] == "turn/start").unwrap();
-                assert!(turn["params"]["input"][0]["text"].as_str().unwrap().contains("Read the prior conversation context from this file"));
-                rig.controller.assert_submissions(4,1);
+                rig.controller.assert_submissions(3,1);
                 phase("close resumed SDK reader",continuation.close()).await?;
                 rig.clients.pop();
                 phase("reopened Host quit/wait",rig.hosts[1].quit(&mut reopened)).await?;
@@ -1651,7 +1636,7 @@ async fn installed_program_runs_with_private_inputs_and_publishes_its_snapshot()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pinned_memory_rejects_external_send_before_original_provider_submission() {
+async fn pinned_memory_is_skipped_for_external_executor_without_blocking_send() {
     let mut rig = Rig::new().await.expect("owned external job fixture");
     let outcome = AssertUnwindSafe(async {
         let (mut anchor, bootstrap) = phase("start Host", rig.start()).await?;
@@ -1673,10 +1658,20 @@ async fn pinned_memory_rejects_external_send_before_original_provider_submission
             "backend":{"kind":"executor","selection":{"executor":"external","settings":{"runtime":"codex","model":"gpt-fixture"}}}
         })).await?;
         assert_eq!(session["kind"],"created","{session}");
-        let error = mutate(&sdk,"agent","send",json!({"sessionId":session["session"]["id"],"message":"Run with pinned memory"})).await.unwrap_err();
-        assert!(error.contains("agent_memory_executor_unavailable"),"{error}");
-        let events = rig.controller.events();
-        assert!(events.is_empty(), "external process contacted the controller: {events:?}");
+        let session_id = session["session"]["id"].as_str().ok_or("missing session id")?;
+        let run = send_native(&sdk, session_id, "B", "External memory boundary", false).await?;
+        let ready = rig.controller.event("B", "ready").await?;
+        let pid = ready["pid"].as_u64().unwrap();
+        rig.controller.send(pid, json!({"action":"complete"}))?;
+        terminal_state(&sdk, session_id, &run, "completed").await?;
+        let loaded = query(&sdk, "agent", "loadedMemories", json!({"sessionId": session_id, "runId": run})).await?;
+        assert_eq!(loaded, json!([]), "external executor should skip pinned memories: {loaded}");
+        let wire = rig.transcript(pid).await?;
+        assert!(
+            !wire.input.iter().any(|row| row.to_string().contains("External boundary fixture")),
+            "pinned memory leaked into external executor prompt: {:?}",
+            wire.input
+        );
         sdk.close().await?;
         rig.clients.pop();
         rig.hosts[0].quit(&mut anchor).await?;

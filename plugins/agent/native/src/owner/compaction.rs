@@ -326,21 +326,13 @@ impl super::driver::NativeDriver {
         let user_run = writer
             .query(maka_agent_state::memory::reads::OriginalUserRun(view.run))
             .await?;
-        let (mut admission_kind, memory) = owner
-            .admit_memory(
-                session,
-                &metadata.configuration,
-                user_run.unwrap_or(true),
-                &policy,
-            )
-            .await
-            .map_err(RunError::InvalidInput)?;
-        if user_run.is_none() {
-            if memory.is_some() {
-                return Err(RunError::InvalidInput("original memory admission unavailable; start a new user Run to load pinned memory".into()));
-            }
-            admission_kind = maka_agent_facts::memory::MemoryAdmission::Unknown;
-        }
+        let (admission_kind, memory) = match user_run {
+            Some(user_run) => owner
+                .admit_memory(session, &metadata.configuration, user_run, &policy)
+                .await
+                .map_err(RunError::InvalidInput)?,
+            None => (maka_agent_facts::memory::MemoryAdmission::Unknown, None),
+        };
         if let Some(memory) = &memory {
             let system: Option<SystemPrompt> = owner
                 .run_content(view.run, &view.spec.system_prompt)

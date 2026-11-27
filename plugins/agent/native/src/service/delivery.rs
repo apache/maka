@@ -280,7 +280,7 @@ pub(super) async fn watch(
     input: Watch,
     context: &Context,
 ) -> Result<serde_json::Value, String> {
-    history::authorize_session(owner, context.scope(), &input.session_id).await?;
+    history::authorize(owner, context.scope(), &input.session_id).await?;
     let rooms = history::scoped_state(owner, context.scope())?.rooms(owner.run_owner());
     if rooms
         .exists(&input.session_id)
@@ -289,7 +289,7 @@ pub(super) async fn watch(
     {
         return watch_room(owner, &rooms, input, context).await;
     }
-    let (history, before) = history::open(owner, context.scope(), &input.session_id).await?;
+    let history = history::open(owner, context.scope(), &input.session_id).await?;
     // Subscribe before the initial query: a racing commit remains a pending level.
     let mut changes = owner.durable.subscribe().map_err(|e| e.to_string())?;
     let mut preview = preview::Delivery::new(owner.preview_epoch());
@@ -314,7 +314,7 @@ pub(super) async fn watch(
         stale |= new_attempt;
         if stale {
             changes.borrow_and_update();
-            history::authorize(owner, context.scope(), &input.session_id, before).await?;
+            history::authorize(owner, context.scope(), &input.session_id).await?;
             let cut = history.capture().await.map_err(|e| e.to_string())?;
             if after > cut.through_sequence {
                 return Err("agent_cursor_invalid".into());
@@ -364,7 +364,7 @@ pub(super) async fn watch(
             }
             after = page.next.unwrap_or(cut.through_sequence);
             stale = page.next.is_some();
-            history::authorize(owner, context.scope(), &input.session_id, before).await?;
+            history::authorize(owner, context.scope(), &input.session_id).await?;
             context
                 .emit(encode(DeliveryPage::Events {
                     through: cut.through_sequence,
@@ -375,7 +375,7 @@ pub(super) async fn watch(
         }
         let mut ready = stale;
         if let Some(page) = preview.next(after)? {
-            history::authorize(owner, context.scope(), &input.session_id, before).await?;
+            history::authorize(owner, context.scope(), &input.session_id).await?;
             context
                 .emit(encode(DeliveryPage::Preview { page })?)
                 .await?;
@@ -409,7 +409,7 @@ async fn watch_room(
     let mut delivered: Option<(u64, u64)> = None;
     loop {
         changes.borrow_and_update();
-        history::authorize_session(owner, context.scope(), &input.session_id).await?;
+        history::authorize(owner, context.scope(), &input.session_id).await?;
         let watermark = rooms
             .watch_watermark(&input.session_id)
             .await
@@ -419,7 +419,7 @@ async fn watch_room(
             return Err("agent_cursor_invalid".into());
         }
         if delivered != Some(watermark) {
-            history::authorize_session(owner, context.scope(), &input.session_id).await?;
+            history::authorize(owner, context.scope(), &input.session_id).await?;
             context
                 .emit(encode(DeliveryPage::Room { through, revision })?)
                 .await?;

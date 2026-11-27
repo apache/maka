@@ -459,10 +459,11 @@ impl Owner {
                     .runtime_policy()
                     .await
                     .map_err(|error| error.to_string())?;
-                let same_workspace = queued.spec.workspace == current.configuration.workspace.path
+                let eligible = matches!(queued.spec.backend, BackendSpec::Model { .. })
+                    && queued.spec.workspace == current.configuration.workspace.path
                     && queued.spec.permission_basis == current.configuration.permission_basis();
                 let kind =
-                    self.memory_admission(session, &current.configuration, same_workspace, &policy);
+                    self.memory_admission(session, &current.configuration, eligible, &policy);
                 queued.spec.memory_admission = kind;
                 queued.spec.memory_projection = None;
                 if kind == MemoryAdmission::Enabled {

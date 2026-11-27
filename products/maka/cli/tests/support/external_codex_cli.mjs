@@ -599,7 +599,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           marker = text.lastIndexOf('MAKA_EXTERNAL_CASE ');
         if (marker < 0) throw Error('Missing closed test input');
         job = JSON.parse(text.slice(marker + 'MAKA_EXTERNAL_CASE '.length).split('\n')[0]);
-        if (!['A', 'B', 'C', 'D', 'E'].includes(job.label)) throw Error('Unknown test scenario');
+        if (!['A', 'B', 'C', 'D'].includes(job.label)) throw Error('Unknown test scenario');
         turn = randomUUID();
         await reply(id, { turn: { id: turn } });
         await record('started', { thread, turn });
@@ -658,7 +658,7 @@ createInterface({ input: socket }).on('line', (line) => {
         ['ACP-schedule', 'ACP-peer', 'ACP-child'].includes(job?.label)
       )
         return reply(command.promptId, { stopReason: 'end_turn' });
-      if (command.action === 'complete' && ['B', 'D', 'E'].includes(job?.label))
+      if (command.action === 'complete' && ['B', 'D'].includes(job?.label))
         return terminal('completed');
       throw Error('Invalid controller action');
     })

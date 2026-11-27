@@ -287,33 +287,10 @@ async fn execute(
         let read: maka_agent_facts::read::ReadInput =
             serde_json::from_value(input.clone()).map_err(failed)?;
         let mut request = read.resolve().map_err(failed)?;
-        use maka_agent_state::memory::reads::HistorySources;
-        let data = || {
-            root.data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
-                .map_err(failed)
-        };
-        let history_start = async || {
-            data()?
-                .query(maka_agent_state::memory::reads::SearchVisibility)
-                .await
-                .map_err(failed)
-        };
-        let record_history = async |sources, before| {
-            data()?
-                .write(maka_agent_state::memory::reads::RecordHistory {
-                    sources,
-                    before: Some(before),
-                    owner: access.run_owner().clone(),
-                    execution: tool_context.execution.clone(),
-                })
-                .await
-                .map_err(failed)
-        };
         if let Some(address) =
             maka_agent_facts::read::parse_imported_tool_result_path(request.path())
                 .map_err(failed)?
         {
-            let before = history_start().await?;
             let result = async {
                 let history = maka_agent_state::session_history::SessionHistory::new(
                     root.data_writer_for_work(custody.as_ref(), &tool_context.execution.session_id)
@@ -363,13 +340,7 @@ async fn execute(
             }
             .await;
             cancelled(cancellation)?;
-            let page = result?;
-            record_history(
-                HistorySources::session(&tool_context.execution.session_id),
-                before,
-            )
-            .await?;
-            return Ok(page);
+            return result;
         }
         if let Some(address) =
             maka_agent_facts::read::ResourceAddress::parse(request.path()).map_err(failed)?
@@ -409,15 +380,7 @@ async fn execute(
                             .bind_resource(&ResourceAddress::Attachment(id.clone()))
                             .map_err(failed)?;
                     }
-                    let source = HistorySources::Attachment {
-                        session: scope.session.clone(),
-                        artifact: id.clone(),
-                    };
-                    let before = history_start().await?;
-                    let page =
-                        attachments::read(&artifacts, scope, id, request, cancellation).await?;
-                    record_history(source, before).await?;
-                    return Ok(page);
+                    return attachments::read(&artifacts, scope, id, request, cancellation).await;
                 }
                 ResourceAddress::SessionAttachment {
                     session_id,
@@ -454,16 +417,14 @@ async fn execute(
                             })
                             .map_err(failed)?;
                     }
-                    let source = HistorySources::Attachment {
-                        session: scope.session.clone(),
-                        artifact: attachment_id.clone(),
-                    };
-                    let before = history_start().await?;
-                    let page =
-                        attachments::read(&artifacts, scope, attachment_id, request, cancellation)
-                            .await?;
-                    record_history(source, before).await?;
-                    return Ok(page);
+                    return attachments::read(
+                        &artifacts,
+                        scope,
+                        attachment_id,
+                        request,
+                        cancellation,
+                    )
+                    .await;
                 }
                 ResourceAddress::ToolResult(id) => {
                     let history = maka_agent_state::session_history::SessionHistory::new(
@@ -488,11 +449,6 @@ async fn execute(
                             ))
                             .map_err(failed)?;
                     }
-                    let before = history_start().await?;
-                    let provenance = HistorySources::Producer {
-                        session: tool_context.execution.session_id.clone(),
-                        run: source.item.recorded.run,
-                    };
                     let page = archive::read(
                         &history,
                         &cut,
@@ -503,7 +459,6 @@ async fn execute(
                     )
                     .await?;
                     cancelled(cancellation)?;
-                    record_history(provenance, before).await?;
                     return serde_json::to_value(page).map(Output::Json).map_err(failed);
                 }
                 ResourceAddress::Session {
@@ -549,8 +504,6 @@ async fn execute(
                     let budget: Arc<dyn SourceBudget> = Arc::new(archive::Budget(Arc::new(
                         tokio::sync::Semaphore::new(2 * 1024 * 1024),
                     )));
-                    let before = history_start().await?;
-                    let provenance = HistorySources::session(&session_id);
                     let selected = tree
                         .imported_tool_result(&address, budget.clone(), cancellation)
                         .await
@@ -593,7 +546,6 @@ async fn execute(
                     .await
                     .map_err(failed)?;
                     cancelled(cancellation)?;
-                    record_history(provenance, before).await?;
                     return serde_json::to_value(page).map(Output::Json).map_err(failed);
                 }
                 ResourceAddress::SessionToolResult {
@@ -615,11 +567,6 @@ async fn execute(
                         .await
                         .map_err(failed)?
                         .ok_or_else(|| failed("Tool result was not found in the target Session"))?;
-                    let before = history_start().await?;
-                    let provenance = HistorySources::Producer {
-                        session: session_id.clone(),
-                        run: source.item.recorded.run,
-                    };
                     if !request.is_continuation() {
                         request
                             .bind_resource(&ResourceAddress::SessionToolResult {
@@ -638,7 +585,6 @@ async fn execute(
                     )
                     .await?;
                     cancelled(cancellation)?;
-                    record_history(provenance, before).await?;
                     return serde_json::to_value(page).map(Output::Json).map_err(failed);
                 }
             }
