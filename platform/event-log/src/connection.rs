@@ -116,6 +116,11 @@ impl OpenOptions {
         self.path.as_os_str().is_empty() || self.path == Path::new(":memory:")
     }
     fn open(&self) -> Result<Connection, StoreError> {
+        verify_sqlite_runtime_version(
+            rusqlite::version_number(),
+            rusqlite::version(),
+            rusqlite::ffi::SQLITE_VERSION_NUMBER,
+        )?;
         let mut flags = if self.read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
@@ -340,6 +345,23 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.store(true, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn linked_sqlite_runtime_matches_compiled_headers_and_rejects_older_shadow() {
+        verify_sqlite_runtime_version(
+            rusqlite::version_number(),
+            rusqlite::version(),
+            rusqlite::ffi::SQLITE_VERSION_NUMBER,
+        )
+        .expect("bundled SQLite runtime must be at least as new as compiled headers");
+
+        let err = verify_sqlite_runtime_version(3_046_001, "3.46.1", 3_054_001)
+            .expect_err("older shadowed SQLite runtime must be rejected");
+        assert!(
+            err.to_string().contains("3.46.1") && err.to_string().contains("3054001"),
+            "unexpected error message: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1406,6 +1428,21 @@ fn read_loop(
     }
     Ok(())
 }
+/// Reject a linked SQLite library older than the bundled headers we compiled against
+/// (e.g., if linker search order silently shadowed bundled libsqlite3.a with a host archive).
+fn verify_sqlite_runtime_version(
+    runtime_version: i32,
+    runtime_text: &str,
+    compiled_version: i32,
+) -> Result<(), StoreError> {
+    if runtime_version < compiled_version {
+        return Err(StoreError::Io(std::io::Error::other(format!(
+            "linked SQLite runtime {runtime_text} ({runtime_version}) is older than compiled headers ({compiled_version}); check linker search paths for shadowed libsqlite3"
+        ))));
+    }
+    Ok(())
+}
+
 fn close(
     connection: Connection,
     authority: &Arc<ConnectionAuthority>,

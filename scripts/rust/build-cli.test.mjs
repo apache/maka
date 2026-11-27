@@ -434,38 +434,46 @@ test('the Host app has a valid stable bundle signature', {
   );
 });
 
-test('linuxSystemLibraryRustflags exposes host system library dirs for zigbuild', () => {
+test('linuxSystemLibraryRustflags appends host system library dirs only to final link args', () => {
   const shlib = '-C link-arg=-Wl,--allow-shlib-undefined';
   const ubuntuX64 = (dir) => dir === '/usr/lib/x86_64-linux-gnu' || dir === '/usr/lib';
-  assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, ubuntuX64), {
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
+  const x64Flags = linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, ubuntuX64);
+  assert.deepEqual(x64Flags, {
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-L/usr/lib/x86_64-linux-gnu -C link-arg=-L/usr/lib ${shlib}`,
   });
+  assert.equal(
+    x64Flags.CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS.includes('-L native='),
+    false,
+    'must not pass -L native= ahead of crate OUT_DIRs where host static libs shadow bundled -sys crates',
+  );
   assert.deepEqual(
     linuxSystemLibraryRustflags(
       'x86_64-unknown-linux-gnu',
-      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-s -L native=/usr/lib' },
+      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-s -C link-arg=-L/usr/lib' },
       ubuntuX64,
     ),
     {
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-s -L native=/usr/lib -L native=/usr/lib/x86_64-linux-gnu ${shlib}`,
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-s -C link-arg=-L/usr/lib -C link-arg=-L/usr/lib/x86_64-linux-gnu ${shlib}`,
     },
   );
   assert.deepEqual(
     linuxSystemLibraryRustflags(
       'x86_64-unknown-linux-gnu',
-      { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-L native=/usr/lib/x86_64-linux-gnu' },
+      {
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-L/usr/lib/x86_64-linux-gnu',
+      },
       ubuntuX64,
     ),
     {
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/x86_64-linux-gnu -L native=/usr/lib ${shlib}`,
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-L/usr/lib/x86_64-linux-gnu -C link-arg=-L/usr/lib ${shlib}`,
     },
   );
   const ubuntuArm64 = (dir) => dir === '/usr/lib/aarch64-linux-gnu' || dir === '/usr/lib';
   assert.deepEqual(linuxSystemLibraryRustflags('aarch64-unknown-linux-gnu', {}, ubuntuArm64), {
-    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib/aarch64-linux-gnu -L native=/usr/lib ${shlib}`,
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-L/usr/lib/aarch64-linux-gnu -C link-arg=-L/usr/lib ${shlib}`,
   });
   const fedora = (dir) => dir === '/usr/lib64' || dir === '/usr/lib';
   assert.deepEqual(linuxSystemLibraryRustflags('x86_64-unknown-linux-gnu', {}, fedora), {
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-L native=/usr/lib64 -L native=/usr/lib ${shlib}`,
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: `-C link-arg=-L/usr/lib64 -C link-arg=-L/usr/lib ${shlib}`,
   });
 });
