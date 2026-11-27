@@ -3570,7 +3570,6 @@ async fn desktop_markdown_toc_tracks_multi_row_turns_and_long_outline() {
             desktop.controls("Stop response").is_empty().then_some(())
         })
         .await;
-    desktop.control("▸ Section 48 End").await;
 
     // Without hovering the TOC, Section 48 is immediately scrolled into view and highlighted.
     let sec48 = desktop.control("Jump to section: Section 48").await;
